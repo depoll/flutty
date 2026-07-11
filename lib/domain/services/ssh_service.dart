@@ -3044,6 +3044,9 @@ class SshSession {
   /// The terminal multiplexer session name currently attached in this session.
   String? remoteMuxSessionName;
 
+  /// Whether the attached MonkeyMux server publishes its shared PTY grid size.
+  bool monkeyMuxViewportClippingEnabled = false;
+
   /// Whether OSC 52 clipboard sharing is enabled for this session.
   bool clipboardSharingEnabled;
 

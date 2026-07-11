@@ -70,6 +70,10 @@ class MonkeyMuxServerStatus {
   /// Whether the server can be shut down through the control channel.
   bool get supportsShutdown => capabilities.contains('shutdown');
 
+  /// Whether attached clients can clip a focused client's shared PTY grid.
+  bool get supportsViewportClipping =>
+      capabilities.contains('client-viewport-clipping');
+
   /// Whether this server differs from the app-bundled helper version.
   bool needsUpdate(String bundledVersion) {
     final runningVersion = version?.trim();
@@ -90,6 +94,7 @@ String buildMonkeyMuxAttachCommand({
   String? terminalThemeReports,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
+  bool clipViewport = false,
   bool windows = false,
 }) {
   final themeHint = terminalThemeReports?.trim();
@@ -101,6 +106,7 @@ String buildMonkeyMuxAttachCommand({
       '--client-id',
       _monkeyMuxQuoteArg(clientId.trim(), windows: windows),
     ],
+    if (clipViewport) '--clip-viewport',
     if (serverUpdatePolicy != null) ...[
       '--update-policy',
       serverUpdatePolicy.cliValue,
@@ -582,6 +588,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     final response = await _runControlCommand(session, sessionName, {
       'type': 'query_attach_state',
+      'clientId': session.monkeyMuxClientId,
     });
     return response.hasForegroundClient;
   }
