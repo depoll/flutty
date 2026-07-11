@@ -1980,6 +1980,46 @@ func TestObserveKittyGraphicsRetainsAnimationCommandsInOrder(t *testing.T) {
 	}
 }
 
+func TestObserveKittyGraphicsResolvesImageNumberAnimations(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME\x1b\\" +
+			"\x1b_Ga=a,I=5,s=3,v=1\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	for _, want := range []string{"i=7,I=5", "a=f,I=5", "a=a,I=5"} {
+		if !strings.Contains(replay, want) {
+			t.Fatalf("image-number animation missing %q: %q", want, replay)
+		}
+	}
+}
+
+func TestObserveKittyGraphicsDropsAnimationThatExceedsPerIDBudget(t *testing.T) {
+	originalBudget := kittyImagePerIDBudgetBytes
+	kittyImagePerIDBudgetBytes = 160
+	t.Cleanup(func() { kittyImagePerIDBudgetBytes = originalBudget })
+
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,I=5,f=100;ROOT\x1b\\"),
+	)
+	for i := 0; i < 20 && len(window.kittyImages) > 0; i++ {
+		window.observeKittyGraphicsLocked(
+			[]byte("\x1b_Ga=a,I=5,s=3,v=1,q=2\x1b\\"),
+		)
+	}
+
+	if len(window.kittyImages) != 0 ||
+		len(window.kittyImageAnimations) != 0 ||
+		len(window.kittyImageReplayLocked(nil)) != 0 {
+		t.Fatalf("oversized animation replay cache was not dropped")
+	}
+	if _, ok := window.kittyImageNumberToID["5"]; ok {
+		t.Fatalf("image-number mapping survived cache eviction")
+	}
+}
+
 func TestObserveKittyGraphicsNewRootResetsRetainedAnimation(t *testing.T) {
 	window := &muxWindow{}
 	window.observeKittyGraphicsLocked([]byte(
@@ -2012,11 +2052,32 @@ func TestObserveKittyGraphicsDeleteRemovesRetainedImage(t *testing.T) {
 	}
 }
 
+func TestObserveKittyGraphicsDeleteByNumberRemovesRetainedImage(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,I=5,f=100;PAYLOAD\x1b\\"),
+	)
+
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=d,d=n,I=5\x1b\\"),
+	)
+
+	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
+		t.Fatalf("image deleted by number still retained: %q", got)
+	}
+	if _, ok := window.kittyImageNumberToID["5"]; ok {
+		t.Fatalf("deleted image-number mapping still retained")
+	}
+}
+
 func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 	window := &muxWindow{}
 
 	for i := 0; i < maxRetainedKittyImages+5; i++ {
-		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;DATA%d\x1b\\", i, i)
+		seq := fmt.Sprintf(
+			"\x1b_Ga=T,U=1,i=%d,I=%d,f=100;DATA%d\x1b\\",
+			i, i, i,
+		)
 		window.observeKittyGraphicsLocked([]byte(seq))
 	}
 
@@ -2028,6 +2089,9 @@ func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 	replay := string(window.kittyImageReplayLocked(nil))
 	if strings.Contains(replay, "DATA0") {
 		t.Fatalf("oldest image should have been evicted: %q", replay)
+	}
+	if _, ok := window.kittyImageNumberToID["0"]; ok {
+		t.Fatalf("evicted image-number mapping should be removed")
 	}
 	newest := fmt.Sprintf("DATA%d", maxRetainedKittyImages+4)
 	if !strings.Contains(replay, newest) {

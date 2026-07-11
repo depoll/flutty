@@ -1517,10 +1517,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     manager.onChanged ??= notifyListeners;
     final imageId = _resolveGraphicsImageId(manager, args);
     if (imageId == null) {
+      _respondToGraphicsFailure(args, 'ENOENT: image not found');
       return;
     }
     final image = await manager.resolveImage(imageId);
     if (image == null) {
+      _respondToGraphicsFailure(args, 'ENOENT: image not found');
       return;
     }
 
@@ -1542,6 +1544,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           imageId: imageId.toString(),
           action: 'f',
         );
+        _respondToGraphicsFailure(args, 'EINVAL: invalid compressed frame');
         return;
       }
       payload = inflated;
@@ -1575,10 +1578,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       reused: false,
     );
     if (decoded == null) {
+      _respondToGraphicsFailure(args, 'EINVAL: invalid frame data');
       return;
     }
 
-    await manager.addAnimationFrame(
+    final result = await manager.addAnimationFrame(
       imageId,
       decoded,
       x: int.tryParse(args['x'] ?? '') ?? 0,
@@ -1591,6 +1595,23 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       editFrame: int.tryParse(args['r'] ?? '') ?? 0,
       gap: _graphicsAnimationGap(args),
     );
+    final error = switch (result) {
+      TerminalAnimationFrameResult.success => null,
+      TerminalAnimationFrameResult.imageNotFound => 'ENOENT: image not found',
+      TerminalAnimationFrameResult.frameNotFound =>
+        'ENOENT: base or edit frame not found',
+      TerminalAnimationFrameResult.invalidRectangle =>
+        'EINVAL: invalid frame rectangle',
+      TerminalAnimationFrameResult.noSpace =>
+        'ENOSPC: image memory limit exceeded',
+      TerminalAnimationFrameResult.rasterizationFailed =>
+        'EINVAL: frame composition failed',
+    };
+    if (error == null) {
+      _respondToGraphicsSuccess(args);
+    } else {
+      _respondToGraphicsFailure(args, error);
+    }
   }
 
   Future<void> _controlGraphicsAnimation(
@@ -1625,14 +1646,13 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   ) async {
     manager.onChanged ??= notifyListeners;
     final imageId = _resolveGraphicsImageId(manager, args);
-    if (imageId == null || await manager.resolveImage(imageId) == null) {
+    if (imageId == null) {
+      _respondToGraphicsFailure(args, 'ENOENT: image not found');
       return;
     }
+    await manager.resolveImage(imageId);
     final sourceFrame = int.tryParse(args['r'] ?? '') ?? 0;
     final destinationFrame = int.tryParse(args['c'] ?? '') ?? 0;
-    if (sourceFrame <= 0 || destinationFrame <= 0) {
-      return;
-    }
     final result = await manager.composeAnimationFrames(
       imageId,
       sourceFrame: sourceFrame,
@@ -1683,6 +1703,18 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         'I=$imageNumber',
     ];
     onOutput?.call('\x1b_G${control.join(',')};$error\x1b\\');
+  }
+
+  void _respondToGraphicsSuccess(Map<String, String> args) {
+    if (_graphicsResponseSuppressed(args, success: true)) {
+      return;
+    }
+    final control = <String>[
+      if (args['i'] case final imageId? when imageId.isNotEmpty) 'i=$imageId',
+      if (args['I'] case final imageNumber? when imageNumber.isNotEmpty)
+        'I=$imageNumber',
+    ];
+    onOutput?.call('\x1b_G${control.join(',')};OK\x1b\\');
   }
 
   Future<void> _finalizeGraphics(
@@ -1840,7 +1872,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // handshake so the client learns the id it can address later.
     final imageNumber = int.tryParse(args['I'] ?? '');
     if (imageNumber != null && imageNumber > 0) {
-      manager.registerImageNumber(imageNumber, storedImageId);
+      final explicitImageId = int.tryParse(args['i'] ?? '');
+      if (explicitImageId == null || explicitImageId <= 0) {
+        manager.registerImageNumber(imageNumber, storedImageId);
+      }
       if (!_graphicsResponseSuppressed(args, success: true)) {
         onOutput?.call('\x1b_GI=$imageNumber,i=$storedImageId;OK\x1b\\');
       }
@@ -2140,8 +2175,58 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       final height = payload[8] | (payload[9] << 8);
       return width > 0 && height > 0 ? (width: width, height: height) : null;
     }
+    final jpegDimensions = _graphicsJpegDimensions(payload);
+    if (jpegDimensions != null) {
+      return jpegDimensions;
+    }
     return null;
   }
+
+  ({int width, int height})? _graphicsJpegDimensions(Uint8List data) {
+    if (data.length < 4 || data[0] != 0xFF || data[1] != 0xD8) {
+      return null;
+    }
+    var offset = 2;
+    while (offset + 3 < data.length) {
+      while (offset < data.length && data[offset] != 0xFF) {
+        offset += 1;
+      }
+      while (offset < data.length && data[offset] == 0xFF) {
+        offset += 1;
+      }
+      if (offset >= data.length) {
+        return null;
+      }
+      final marker = data[offset++];
+      if (marker == 0xD9 || marker == 0xDA) {
+        return null;
+      }
+      if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8)) {
+        continue;
+      }
+      if (offset + 1 >= data.length) {
+        return null;
+      }
+      final segmentLength = (data[offset] << 8) | data[offset + 1];
+      if (segmentLength < 2 || offset + segmentLength > data.length) {
+        return null;
+      }
+      if (_isGraphicsJpegStartOfFrame(marker) && segmentLength >= 7) {
+        final height = (data[offset + 3] << 8) | data[offset + 4];
+        final width = (data[offset + 5] << 8) | data[offset + 6];
+        return width > 0 && height > 0 ? (width: width, height: height) : null;
+      }
+      offset += segmentLength;
+    }
+    return null;
+  }
+
+  bool _isGraphicsJpegStartOfFrame(int marker) =>
+      marker >= 0xC0 &&
+      marker <= 0xCF &&
+      marker != 0xC4 &&
+      marker != 0xC8 &&
+      marker != 0xCC;
 
   int _readGraphicsUint32(Uint8List data, int offset) =>
       (data[offset] << 24) |
