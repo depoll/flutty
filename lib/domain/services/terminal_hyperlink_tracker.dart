@@ -86,7 +86,7 @@ class TerminalHyperlinkTracker {
 
     final activeHyperlink = _pendingHyperlink;
     if (activeHyperlink != null &&
-        _containsOffset(
+        _containsExclusiveOffset(
           start: activeHyperlink.startAnchor.offset,
           end: _currentCursorOffset(terminal),
           target: offset,
@@ -117,14 +117,18 @@ class TerminalHyperlinkTracker {
     _pruneDetachedHyperlinks();
 
     final queryStart = CellOffset(startColumn, row);
-    final queryEnd = CellOffset(endColumn + 1, row);
-    bool intersects(CellOffset start, CellOffset end) =>
-        _compareOffsets(start, queryEnd) < 0 &&
+    final queryEndInclusive = CellOffset(endColumn, row);
+    final queryEndExclusive = CellOffset(endColumn + 1, row);
+    bool intersectsExclusive(CellOffset start, CellOffset end) =>
+        _compareOffsets(start, queryEndExclusive) < 0 &&
         _compareOffsets(queryStart, end) < 0;
+    bool intersectsInclusive(CellOffset start, CellOffset end) =>
+        _compareOffsets(start, queryEndInclusive) <= 0 &&
+        _compareOffsets(queryStart, end) <= 0;
 
     final activeHyperlink = _pendingHyperlink;
     if (activeHyperlink != null &&
-        intersects(
+        intersectsExclusive(
           activeHyperlink.startAnchor.offset,
           _currentCursorOffset(terminal),
         )) {
@@ -133,9 +137,9 @@ class TerminalHyperlinkTracker {
 
     for (final hyperlink in _trackedHyperlinks) {
       if (hyperlink.attached &&
-          intersects(
+          intersectsInclusive(
             hyperlink.startAnchor.offset,
-            hyperlink.endAnchor.offset,
+            hyperlink.lastCellAnchor.offset,
           )) {
         return true;
       }
@@ -182,7 +186,7 @@ class TerminalHyperlinkTracker {
       if (hyperlink.attached) {
         consider(
           hyperlink.startAnchor.offset,
-          hyperlink.endAnchor.offset,
+          hyperlink.lastCellAnchor.offset,
           hyperlink.uri,
         );
       }
@@ -214,11 +218,33 @@ class TerminalHyperlinkTracker {
       return;
     }
 
-    final endAnchor = terminal.buffer.createAnchorFromCursor();
+    final endOffset = _currentCursorOffset(terminal);
+    if (!pendingHyperlink.attached ||
+        _compareOffsets(pendingHyperlink.startAnchor.offset, endOffset) >= 0) {
+      pendingHyperlink.dispose();
+      _pendingHyperlink = null;
+      return;
+    }
+
+    final lastCellOffset = _previousCellOffset(
+      endOffset,
+      terminal.buffer.viewWidth,
+    );
+    if (lastCellOffset == null ||
+        _compareOffsets(pendingHyperlink.startAnchor.offset, lastCellOffset) >
+            0) {
+      pendingHyperlink.dispose();
+      _pendingHyperlink = null;
+      return;
+    }
+
+    final lastCellAnchor = terminal.buffer.createAnchorFromOffset(
+      lastCellOffset,
+    );
     final hyperlink = _TrackedTerminalHyperlink(
       uri: pendingHyperlink.uri,
       startAnchor: pendingHyperlink.startAnchor,
-      endAnchor: endAnchor,
+      lastCellAnchor: lastCellAnchor,
     );
 
     if (hyperlink.isEmpty) {
@@ -279,21 +305,21 @@ class _TrackedTerminalHyperlink {
   _TrackedTerminalHyperlink({
     required this.uri,
     required this.startAnchor,
-    required this.endAnchor,
+    required this.lastCellAnchor,
   });
 
   final Uri uri;
   final CellAnchor startAnchor;
-  final CellAnchor endAnchor;
+  final CellAnchor lastCellAnchor;
 
-  bool get attached => startAnchor.attached && endAnchor.attached;
+  bool get attached => startAnchor.attached && lastCellAnchor.attached;
 
   bool get isEmpty {
     if (!attached) {
       return true;
     }
 
-    return _compareOffsets(startAnchor.offset, endAnchor.offset) >= 0;
+    return _compareOffsets(startAnchor.offset, lastCellAnchor.offset) > 0;
   }
 
   bool contains(CellOffset offset) {
@@ -301,24 +327,40 @@ class _TrackedTerminalHyperlink {
       return false;
     }
 
-    return _containsOffset(
+    return _containsInclusiveOffset(
       start: startAnchor.offset,
-      end: endAnchor.offset,
+      end: lastCellAnchor.offset,
       target: offset,
     );
   }
 
   void dispose() {
     startAnchor.dispose();
-    endAnchor.dispose();
+    lastCellAnchor.dispose();
   }
 }
 
-bool _containsOffset({
+bool _containsExclusiveOffset({
   required CellOffset start,
   required CellOffset end,
   required CellOffset target,
 }) => _compareOffsets(start, target) <= 0 && _compareOffsets(target, end) < 0;
+
+bool _containsInclusiveOffset({
+  required CellOffset start,
+  required CellOffset end,
+  required CellOffset target,
+}) => _compareOffsets(start, target) <= 0 && _compareOffsets(target, end) <= 0;
+
+CellOffset? _previousCellOffset(CellOffset offset, int lineWidth) {
+  if (offset.x > 0) {
+    return CellOffset(offset.x - 1, offset.y);
+  }
+  if (offset.y <= 0 || lineWidth <= 0) {
+    return null;
+  }
+  return CellOffset(lineWidth - 1, offset.y - 1);
+}
 
 int _compareOffsets(CellOffset a, CellOffset b) {
   if (a.y != b.y) {

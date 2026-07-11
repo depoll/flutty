@@ -14,6 +14,7 @@ import '../providers/entity_list_providers.dart';
 import '../widgets/brand_empty_state.dart';
 import '../widgets/brand_error_state.dart';
 import '../widgets/brand_list_skeleton.dart';
+import 'port_forward_browser_screen.dart';
 
 /// Screen displaying list of port forwards grouped by host.
 class PortForwardsScreen extends ConsumerWidget {
@@ -178,18 +179,35 @@ class PortForwardsScreen extends ConsumerWidget {
       );
       return;
     }
+    final browserHost = activeTunnel.browserHost;
+    final browserPort = activeTunnel.browserPort;
+    if (browserHost == null || browserPort == null || browserPort < 1) {
+      _showPortForwardMessage(
+        context,
+        'Could not create an isolated browser endpoint for "${portForward.name}".',
+      );
+      return;
+    }
     final browserUri = buildPortForwardBrowserUriForBind(
+      localHost: browserHost,
+      localPort: browserPort,
+    );
+    final sourceUri = buildPortForwardBrowserUriForBind(
       localHost: activeTunnel.localHost,
       localPort: activeTunnel.localPort,
     );
 
     await context.pushNamed<void>(
       Routes.portForwardBrowser,
-      queryParameters: {
-        'url': browserUri.toString(),
-        'port': browserUri.port.toString(),
-        'title': portForward.name,
-      },
+      extra: PortForwardBrowserLaunch(
+        tabs: [
+          PortForwardBrowserInitialTab(
+            uri: browserUri,
+            sourceUri: sourceUri,
+            title: portForward.name,
+          ),
+        ],
+      ),
     );
   }
 
