@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -25,15 +26,139 @@ void Function({
 /// Bounds all terminal image decodes across eager and deferred graphics paths.
 final AsyncSemaphore terminalGraphicsDecodeGate = AsyncSemaphore(3);
 
+/// Playback state for a Kitty graphics animation.
+enum TerminalAnimationState {
+  /// The current frame remains visible until explicitly changed.
+  stopped,
+
+  /// Frames advance until the last available frame, then wait for more frames.
+  loading,
+
+  /// Frames advance and loop according to the image's loop count.
+  running,
+}
+
+/// A fully decoded frame and the time it remains visible.
+class TerminalImageFrame {
+  /// Creates a decoded terminal image frame.
+  const TerminalImageFrame(this.image, {this.duration});
+
+  /// The decoded pixels for this frame.
+  final ui.Image image;
+
+  /// Time to show the frame before advancing.
+  ///
+  /// `null` means the frame remains indefinitely. [Duration.zero] is a Kitty
+  /// protocol gapless frame that is skipped immediately.
+  final Duration? duration;
+
+  /// Approximate decoded RGBA memory used by this frame.
+  int get sizeBytes => image.width * image.height * 4;
+}
+
+/// A decoded static or animated image before it is assigned a terminal id.
+class DecodedTerminalImage {
+  /// Creates a decoded terminal image.
+  DecodedTerminalImage({
+    required List<TerminalImageFrame> frames,
+    required this.sourceWidth,
+    required this.sourceHeight,
+    this.repetitionCount = 0,
+  }) : frames = List<TerminalImageFrame>.unmodifiable(frames);
+
+  /// Creates a one-frame image whose logical dimensions match [image].
+  factory DecodedTerminalImage.single(ui.Image image) => DecodedTerminalImage(
+        frames: <TerminalImageFrame>[TerminalImageFrame(image)],
+        sourceWidth: image.width,
+        sourceHeight: image.height,
+      );
+
+  /// Fully composed frames in playback order.
+  final List<TerminalImageFrame> frames;
+
+  /// Original image width before decode-time downscaling.
+  final int sourceWidth;
+
+  /// Original image height before decode-time downscaling.
+  final int sourceHeight;
+
+  /// Number of repeats requested by the encoded image.
+  ///
+  /// Matches [ui.Codec.repetitionCount]: `0` plays once and `-1` repeats
+  /// forever.
+  final int repetitionCount;
+
+  /// Approximate decoded RGBA memory used by every frame.
+  int get sizeBytes =>
+      frames.fold<int>(0, (total, frame) => total + frame.sizeBytes);
+}
+
 /// A decoded image retained for the Kitty graphics protocol.
 class TerminalImage {
-  TerminalImage(this.id, this.image, {this.sourceSignature = 0});
+  TerminalImage(this.id, ui.Image image, {this.sourceSignature = 0})
+      : sourceWidth = image.width,
+        sourceHeight = image.height,
+        _frames = <TerminalImageFrame>[TerminalImageFrame(image)];
+
+  /// Creates a retained image from a decoded frame sequence.
+  TerminalImage.fromDecoded(
+    this.id,
+    DecodedTerminalImage decoded, {
+    this.sourceSignature = 0,
+  })  : sourceWidth = decoded.sourceWidth,
+        sourceHeight = decoded.sourceHeight,
+        _frames = List<TerminalImageFrame>.of(decoded.frames) {
+    if (_frames.length > 1) {
+      _animationState = TerminalAnimationState.running;
+      _maxLoops = decoded.repetitionCount < 0 ? 0 : decoded.repetitionCount + 1;
+      _timedFrameCount = _frames
+          .where(
+            (frame) =>
+                frame.duration != null && frame.duration! > Duration.zero,
+          )
+          .length;
+    }
+  }
 
   /// Image id assigned by the [GraphicsManager].
   final int id;
 
-  /// The decoded image.
-  final ui.Image image;
+  /// The image for the frame that should currently be painted.
+  ui.Image get image => _frames[_currentFrameIndex].image;
+
+  /// Original image width before decode-time downscaling.
+  final int sourceWidth;
+
+  /// Original image height before decode-time downscaling.
+  final int sourceHeight;
+
+  /// Number of decoded frames, including the root frame.
+  int get frameCount => _frames.length;
+
+  /// Current frame number using Kitty's one-based frame numbering.
+  int get currentFrame => _currentFrameIndex + 1;
+
+  /// Current animation playback state.
+  TerminalAnimationState get animationState => _animationState;
+
+  /// Duration for the one-based [frameNumber], or null if it is invalid or
+  /// remains visible indefinitely.
+  Duration? frameDuration(int frameNumber) {
+    final index = frameNumber - 1;
+    if (index < 0 || index >= _frames.length) {
+      return null;
+    }
+    return _frames[index].duration;
+  }
+
+  /// Decoded image for the one-based [frameNumber], or null if it is invalid.
+  ui.Image? imageAtFrame(int frameNumber) {
+    final index = frameNumber - 1;
+    if (index < 0 || index >= _frames.length) {
+      return null;
+    }
+    return _frames[index].image;
+  }
 
   /// A cheap hash of the source payload this image was decoded from. Used to
   /// skip re-decoding when the same id is transmitted again with identical
@@ -41,10 +166,153 @@ class TerminalImage {
   /// Zero means "unknown" and never matches an incoming signature.
   final int sourceSignature;
 
-  /// Approximate size of the decoded image in bytes (RGBA).
-  int get sizeBytes => image.width * image.height * 4;
+  /// Approximate size of every decoded frame in bytes (RGBA).
+  int get sizeBytes =>
+      _frames.fold<int>(0, (total, frame) => total + frame.sizeBytes);
 
   int _lastAccess = 0;
+  final List<TerminalImageFrame> _frames;
+  var _animationState = TerminalAnimationState.stopped;
+  var _currentFrameIndex = 0;
+  var _maxLoops = 0;
+  var _currentLoop = 0;
+  var _frameElapsed = Duration.zero;
+  var _waitingForFrames = false;
+  var _timedFrameCount = 0;
+
+  bool get _atLoopLimit => _maxLoops > 0 && _currentLoop >= _maxLoops;
+
+  bool get _needsAnimationTick =>
+      _animationState != TerminalAnimationState.stopped &&
+      _frames.length > 1 &&
+      !_waitingForFrames &&
+      !_atLoopLimit &&
+      _timedFrameCount > 0 &&
+      _frames[_currentFrameIndex].duration != null;
+
+  bool _advance(Duration elapsed) {
+    if (!_needsAnimationTick || elapsed.isNegative) {
+      return false;
+    }
+    _frameElapsed += elapsed;
+    var changed = false;
+
+    // At most one timed frame advances per render tick. Gapless frames may be
+    // skipped in the same tick, matching Kitty's reference implementation.
+    for (var transitions = 0; transitions <= _frames.length; transitions++) {
+      final duration = _frames[_currentFrameIndex].duration;
+      if (duration == null) {
+        break;
+      }
+      if (duration > Duration.zero && _frameElapsed < duration) {
+        break;
+      }
+      if (duration > Duration.zero) {
+        _frameElapsed = Duration.zero;
+      }
+      if (!_moveToNextFrame()) {
+        break;
+      }
+      changed = true;
+      if (_frames[_currentFrameIndex].duration case final nextDuration?
+          when nextDuration > Duration.zero) {
+        break;
+      }
+    }
+    return changed;
+  }
+
+  bool _moveToNextFrame() {
+    final next = (_currentFrameIndex + 1) % _frames.length;
+    if (next == 0) {
+      if (_animationState == TerminalAnimationState.loading) {
+        _waitingForFrames = true;
+        return false;
+      }
+      _currentLoop += 1;
+      if (_atLoopLimit) {
+        return false;
+      }
+    }
+    _currentFrameIndex = next;
+    return true;
+  }
+
+  bool _setCurrentFrame(int frameNumber) {
+    final index = frameNumber - 1;
+    if (index < 0 || index >= _frames.length || index == _currentFrameIndex) {
+      return false;
+    }
+    _currentFrameIndex = index;
+    _frameElapsed = Duration.zero;
+    _waitingForFrames = false;
+    return true;
+  }
+
+  void _setAnimationState(TerminalAnimationState state) {
+    _animationState = state;
+    _currentLoop = 0;
+    _frameElapsed = Duration.zero;
+    _waitingForFrames = false;
+  }
+
+  void _setProtocolLoopCount(int loopCount) {
+    if (loopCount <= 0) {
+      return;
+    }
+    _maxLoops = loopCount - 1;
+  }
+
+  bool _setFrameDuration(int frameNumber, Duration duration) {
+    final index = frameNumber - 1;
+    if (index < 0 || index >= _frames.length) {
+      return false;
+    }
+    final previous = _frames[index];
+    if (previous.duration == duration) {
+      return false;
+    }
+    if (previous.duration != null && previous.duration! > Duration.zero) {
+      _timedFrameCount -= 1;
+    }
+    if (duration > Duration.zero) {
+      _timedFrameCount += 1;
+    }
+    _frames[index] = TerminalImageFrame(previous.image, duration: duration);
+    if (index == _currentFrameIndex) {
+      _frameElapsed = Duration.zero;
+      _waitingForFrames = false;
+    }
+    return true;
+  }
+
+  void _appendProtocolFrame(ui.Image image, Duration duration) {
+    if (_frames.length == 1 && _frames.first.duration == null) {
+      _frames[0] = TerminalImageFrame(
+        _frames.first.image,
+        duration: Duration.zero,
+      );
+    }
+    if (_waitingForFrames) {
+      final currentDuration = _frames[_currentFrameIndex].duration;
+      _frameElapsed = currentDuration ?? Duration.zero;
+      _waitingForFrames = false;
+    }
+    _frames.add(TerminalImageFrame(image, duration: duration));
+    if (duration > Duration.zero) {
+      _timedFrameCount += 1;
+    }
+  }
+
+  bool _replaceFrame(int frameNumber, ui.Image image) {
+    final index = frameNumber - 1;
+    if (index < 0 || index >= _frames.length) {
+      return false;
+    }
+    final previous = _frames[index];
+    _frames[index] = TerminalImageFrame(image, duration: previous.duration);
+    return index == _currentFrameIndex;
+  }
 }
 
 /// A placement of a [TerminalImage] anchored to a cell in the buffer.
@@ -229,7 +497,7 @@ class GraphicsManager {
   // Encoded images awaiting a first paint reference (see [_PendingGraphicsImage]
   // and [storePendingImage]). Insertion-ordered so the oldest can be evicted.
   final Map<int, _PendingGraphicsImage> _pendingImages = {};
-  final Set<int> _decodingIds = {};
+  final Map<int, Future<TerminalImage?>> _decodingImages = {};
   // Maps a client-assigned image number (`I=`) to the most recent image id it
   // was transmitted with, so later commands can address the image by number.
   final Map<int, int> _imageNumberToId = {};
@@ -412,7 +680,7 @@ class GraphicsManager {
       return direct;
     }
     if (_pendingImages.containsKey(id)) {
-      unawaited(_beginDecode(id));
+      unawaited(resolveImage(id));
       return null;
     }
 
@@ -443,7 +711,7 @@ class GraphicsManager {
       }
     }
     if (pendingMatch != null) {
-      unawaited(_beginDecode(pendingMatch));
+      unawaited(resolveImage(pendingMatch));
     }
     return null;
   }
@@ -457,9 +725,38 @@ class GraphicsManager {
       return image;
     }
     if (_pendingImages.containsKey(id)) {
-      unawaited(_beginDecode(id));
+      unawaited(resolveImage(id));
     }
     return null;
+  }
+
+  /// Resolves [id] to a decoded image, awaiting a deferred decode when needed.
+  ///
+  /// Concurrent callers share one decode. This is used by animation-frame
+  /// commands, which need the root image's pixels before they can compose a new
+  /// frame.
+  Future<TerminalImage?> resolveImage(int id) {
+    final decoded = imageById(id);
+    if (decoded != null) {
+      return Future<TerminalImage?>.value(decoded);
+    }
+    final inFlight = _decodingImages[id];
+    if (inFlight != null) {
+      return inFlight;
+    }
+    final pending = _pendingImages[id];
+    if (pending == null) {
+      return Future<TerminalImage?>.value();
+    }
+
+    late final Future<TerminalImage?> future;
+    future = _decodePendingImage(id, pending).whenComplete(() {
+      if (identical(_decodingImages[id], future)) {
+        _decodingImages.remove(id);
+      }
+    });
+    _decodingImages[id] = future;
+    return future;
   }
 
   /// Whether image [id] has been transmitted but not yet decoded.
@@ -535,21 +832,16 @@ class GraphicsManager {
     }
   }
 
-  Future<void> _beginDecode(int id) async {
-    if (_decodingIds.contains(id)) {
-      return;
-    }
-    final pending = _pendingImages[id];
-    if (pending == null) {
-      return;
-    }
-    _decodingIds.add(id);
+  Future<TerminalImage?> _decodePendingImage(
+    int id,
+    _PendingGraphicsImage pending,
+  ) async {
     final observer = terminalGraphicsDecodeObserver;
     final stopwatch = observer == null ? null : (Stopwatch()..start());
-    ui.Image? image;
+    DecodedTerminalImage? decoded;
     await terminalGraphicsDecodeGate.acquire();
     try {
-      image = await decodeTerminalImage(
+      decoded = await decodeTerminalImageSequence(
         pending.payload,
         format: pending.format,
         width: pending.width,
@@ -557,41 +849,55 @@ class GraphicsManager {
       );
     } finally {
       terminalGraphicsDecodeGate.release();
-      _decodingIds.remove(id);
     }
 
     // The pending entry may have been evicted, deleted (`a=d`) or replaced with
     // fresh bytes while decoding; only commit when it is still the same image.
     if (!identical(_pendingImages[id], pending)) {
-      return;
+      return imageById(id);
     }
     observer?.call(
       payloadBytes: pending.payload.length,
       inflateMicros: 0,
       decodeMicros: stopwatch?.elapsedMicroseconds ?? 0,
       compressed: false,
-      success: image != null,
+      success: decoded != null,
       imageId: id.toString(),
       action: 'lazy',
       reused: false,
     );
     _pendingImages.remove(id);
     _pendingBytes -= pending.payload.length;
-    if (image == null) {
-      return;
+    if (decoded == null) {
+      return null;
     }
-    storeImageWithId(id, image, sourceSignature: pending.sourceSignature);
+    storeDecodedImageWithId(
+      id,
+      decoded,
+      sourceSignature: pending.sourceSignature,
+    );
     onChanged?.call();
+    return imageById(id);
   }
 
   /// Stores [image] and returns its new id.
-  int storeImage(ui.Image image, {int sourceSignature = 0}) {
-    final sizeBytes = image.width * image.height * 4;
+  int storeImage(ui.Image image, {int sourceSignature = 0}) =>
+      storeDecodedImage(
+        DecodedTerminalImage.single(image),
+        sourceSignature: sourceSignature,
+      );
+
+  /// Stores a decoded static or animated [image] and returns its new id.
+  int storeDecodedImage(DecodedTerminalImage image, {int sourceSignature = 0}) {
+    final sizeBytes = image.sizeBytes;
     _evictIfNeeded(sizeBytes);
 
     final id = _nextImageId++;
-    _images[id] = TerminalImage(id, image, sourceSignature: sourceSignature)
-      .._lastAccess = ++_accessClock;
+    _images[id] = TerminalImage.fromDecoded(
+      id,
+      image,
+      sourceSignature: sourceSignature,
+    ).._lastAccess = ++_accessClock;
     _currentMemoryBytes += sizeBytes;
     return id;
   }
@@ -604,20 +910,35 @@ class GraphicsManager {
   /// referenced image finishes decoding, so dropping them here (as a full
   /// [_dropImage] would) leaves the freshly stored image with nothing to paint
   /// over — the cells render as bare placeholder glyphs instead of the image.
-  int storeImageWithId(int id, ui.Image image, {int sourceSignature = 0}) {
+  int storeImageWithId(int id, ui.Image image, {int sourceSignature = 0}) =>
+      storeDecodedImageWithId(
+        id,
+        DecodedTerminalImage.single(image),
+        sourceSignature: sourceSignature,
+      );
+
+  /// Stores a decoded static or animated [image] using a protocol-supplied id.
+  int storeDecodedImageWithId(
+    int id,
+    DecodedTerminalImage image, {
+    int sourceSignature = 0,
+  }) {
     if (id <= 0) {
-      return storeImage(image, sourceSignature: sourceSignature);
+      return storeDecodedImage(image, sourceSignature: sourceSignature);
     }
 
-    final sizeBytes = image.width * image.height * 4;
+    final sizeBytes = image.sizeBytes;
     final existing = _images.remove(id);
     if (existing != null) {
       _currentMemoryBytes -= existing.sizeBytes;
     }
     _evictIfNeeded(sizeBytes);
 
-    _images[id] = TerminalImage(id, image, sourceSignature: sourceSignature)
-      .._lastAccess = ++_accessClock;
+    _images[id] = TerminalImage.fromDecoded(
+      id,
+      image,
+      sourceSignature: sourceSignature,
+    ).._lastAccess = ++_accessClock;
     _retainedImageIds.add(id);
     _currentMemoryBytes += sizeBytes;
     if (id >= _nextImageId) {
@@ -637,6 +958,304 @@ class GraphicsManager {
     }
     final existing = _images[id];
     return existing != null && existing.sourceSignature == sourceSignature;
+  }
+
+  /// Whether at least one displayed image currently needs animation ticks.
+  bool get hasActiveAnimations {
+    for (final entry in _images.entries) {
+      if (entry.value._needsAnimationTick && _isImageDisplayed(entry.key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Advances displayed animations by [elapsed].
+  ///
+  /// Returns true when at least one current frame changed. The host renderer
+  /// calls this from its ticker and repaints through [onChanged].
+  bool advanceAnimations(Duration elapsed) {
+    var changed = false;
+    for (final entry in _images.entries) {
+      if (_isImageDisplayed(entry.key) && entry.value._advance(elapsed)) {
+        entry.value._lastAccess = ++_accessClock;
+        changed = true;
+      }
+    }
+    if (changed) {
+      onChanged?.call();
+    }
+    return changed;
+  }
+
+  /// Applies Kitty `a=a` playback controls to [imageId].
+  ///
+  /// [currentFrame], [gapFrame], and frame numbering are one-based. A
+  /// [protocolLoopCount] of `1` means infinite playback; larger values follow
+  /// Kitty's `v - 1` loop-limit representation.
+  bool controlAnimation(
+    int imageId, {
+    int? currentFrame,
+    TerminalAnimationState? state,
+    int? protocolLoopCount,
+    int? gapFrame,
+    Duration? gap,
+  }) {
+    final image = _images[imageId];
+    if (image == null) {
+      return false;
+    }
+    var applied = false;
+    if (gapFrame != null && gap != null) {
+      applied = image._setFrameDuration(gapFrame, gap) || applied;
+    }
+    if (currentFrame != null) {
+      applied = image._setCurrentFrame(currentFrame) || applied;
+    }
+    if (state != null) {
+      image._setAnimationState(state);
+      applied = true;
+    }
+    if (protocolLoopCount != null && protocolLoopCount > 0) {
+      image._setProtocolLoopCount(protocolLoopCount);
+      applied = true;
+    }
+    if (applied) {
+      image._lastAccess = ++_accessClock;
+      onChanged?.call();
+    }
+    return applied;
+  }
+
+  /// Adds or edits a Kitty protocol animation frame.
+  ///
+  /// [x], [y], [width], and [height] describe the transmitted block in the
+  /// image's original pixel coordinate space. New frames may use a prior
+  /// [backgroundFrame] or an RGBA [backgroundColor]. [editFrame] composites the
+  /// block onto an existing one-based frame instead.
+  Future<bool> addAnimationFrame(
+    int imageId,
+    DecodedTerminalImage frameData, {
+    int x = 0,
+    int y = 0,
+    int width = 0,
+    int height = 0,
+    int backgroundFrame = 0,
+    int? backgroundColor,
+    bool replace = false,
+    int editFrame = 0,
+    Duration? gap,
+  }) async {
+    final image = _images[imageId];
+    if (image == null || frameData.frames.isEmpty) {
+      return false;
+    }
+    final regionWidth = width > 0 ? width : frameData.sourceWidth;
+    final regionHeight = height > 0 ? height : frameData.sourceHeight;
+    if (x < 0 ||
+        y < 0 ||
+        regionWidth <= 0 ||
+        regionHeight <= 0 ||
+        x + regionWidth > image.sourceWidth ||
+        y + regionHeight > image.sourceHeight) {
+      return false;
+    }
+
+    ui.Image? background;
+    if (editFrame > 0) {
+      background = image.imageAtFrame(editFrame);
+      if (background == null) {
+        return false;
+      }
+    } else if (backgroundFrame > 0) {
+      background = image.imageAtFrame(backgroundFrame);
+      if (background == null) {
+        return false;
+      }
+    }
+
+    final root = image.imageAtFrame(1);
+    if (root == null) {
+      return false;
+    }
+    final newFrameBytes = root.width * root.height * 4;
+    if (editFrame <= 0 &&
+        !_evictAdditionalMemory(
+          newFrameBytes,
+          protectedImageId: imageId,
+        )) {
+      return false;
+    }
+    final composed = await _composeTerminalFrame(
+      outputWidth: root.width,
+      outputHeight: root.height,
+      logicalWidth: image.sourceWidth,
+      logicalHeight: image.sourceHeight,
+      background: background,
+      backgroundColor: editFrame > 0 ? null : backgroundColor,
+      overlay: frameData.frames.first.image,
+      overlayX: x,
+      overlayY: y,
+      overlayWidth: regionWidth,
+      overlayHeight: regionHeight,
+      replace: replace,
+    );
+    if (composed == null) {
+      return false;
+    }
+    if (!identical(_images[imageId], image)) {
+      // This image was never stored or exposed to a painter, so unlike retained
+      // Kitty images it is safe to release immediately.
+      composed.dispose();
+      return false;
+    }
+
+    if (editFrame > 0) {
+      final previous = image.imageAtFrame(editFrame)!;
+      final delta = composed.width * composed.height * 4 -
+          previous.width * previous.height * 4;
+      if (!_evictAdditionalMemory(
+        math.max(0, delta),
+        protectedImageId: imageId,
+      )) {
+        composed.dispose();
+        return false;
+      }
+      final currentChanged = image._replaceFrame(editFrame, composed);
+      _currentMemoryBytes += delta;
+      if (gap != null) {
+        image._setFrameDuration(editFrame, gap);
+      }
+      image._lastAccess = ++_accessClock;
+      onChanged?.call();
+      return currentChanged || gap != null;
+    }
+
+    if (!_evictAdditionalMemory(newFrameBytes, protectedImageId: imageId)) {
+      composed.dispose();
+      return false;
+    }
+    image._appendProtocolFrame(
+      composed,
+      gap ?? const Duration(milliseconds: 40),
+    );
+    _currentMemoryBytes += newFrameBytes;
+    image._lastAccess = ++_accessClock;
+    onChanged?.call();
+    return true;
+  }
+
+  /// Composes a rectangle from [sourceFrame] onto [destinationFrame].
+  ///
+  /// Frame numbers and coordinates use Kitty's one-based frame numbers and
+  /// original image pixel coordinate space. Returns false for missing frames,
+  /// out-of-bounds rectangles, or an overlapping self-composition.
+  Future<bool> composeAnimationFrames(
+    int imageId, {
+    required int sourceFrame,
+    required int destinationFrame,
+    int sourceX = 0,
+    int sourceY = 0,
+    int destinationX = 0,
+    int destinationY = 0,
+    int width = 0,
+    int height = 0,
+    bool replace = false,
+  }) async {
+    final image = _images[imageId];
+    final source = image?.imageAtFrame(sourceFrame);
+    final destination = image?.imageAtFrame(destinationFrame);
+    if (image == null || source == null || destination == null) {
+      return false;
+    }
+    final regionWidth = width > 0 ? width : image.sourceWidth;
+    final regionHeight = height > 0 ? height : image.sourceHeight;
+    if (!_rectWithinImage(
+          sourceX,
+          sourceY,
+          regionWidth,
+          regionHeight,
+          image.sourceWidth,
+          image.sourceHeight,
+        ) ||
+        !_rectWithinImage(
+          destinationX,
+          destinationY,
+          regionWidth,
+          regionHeight,
+          image.sourceWidth,
+          image.sourceHeight,
+        )) {
+      return false;
+    }
+    if (sourceFrame == destinationFrame &&
+        _rectanglesOverlap(
+          sourceX,
+          sourceY,
+          destinationX,
+          destinationY,
+          regionWidth,
+          regionHeight,
+        )) {
+      return false;
+    }
+
+    final composed = await _composeTerminalFrameRegion(
+      destination: destination,
+      source: source,
+      logicalWidth: image.sourceWidth,
+      logicalHeight: image.sourceHeight,
+      sourceX: sourceX,
+      sourceY: sourceY,
+      destinationX: destinationX,
+      destinationY: destinationY,
+      width: regionWidth,
+      height: regionHeight,
+      replace: replace,
+    );
+    if (composed == null) {
+      return false;
+    }
+    if (!identical(_images[imageId], image)) {
+      // The composed image has never been retained or painted.
+      composed.dispose();
+      return false;
+    }
+
+    final previousBytes = destination.width * destination.height * 4;
+    final nextBytes = composed.width * composed.height * 4;
+    if (!_evictAdditionalMemory(
+      math.max(0, nextBytes - previousBytes),
+      protectedImageId: imageId,
+    )) {
+      composed.dispose();
+      return false;
+    }
+    image._replaceFrame(destinationFrame, composed);
+    _currentMemoryBytes += nextBytes - previousBytes;
+    image._lastAccess = ++_accessClock;
+    onChanged?.call();
+    return true;
+  }
+
+  bool _isImageDisplayed(int imageId) {
+    if (_placements.any(
+      (placement) => placement.imageId == imageId && placement.attached,
+    )) {
+      return true;
+    }
+    for (final placeholder in _placeholders) {
+      if (!placeholder.attached) {
+        continue;
+      }
+      final mask = placeholder.imageIdBitWidth >= 24 ? 0xFFFFFF : 0xFF;
+      if (placeholder.imageId == imageId ||
+          (_retainedImageIds.contains(imageId) &&
+              (imageId & mask) == placeholder.imageId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// Creates a placement of [imageId] anchored at [anchor], optionally spanning
@@ -678,8 +1297,11 @@ class GraphicsManager {
   }
 
   /// Records a virtual placement prototype for [imageId].
-  void setVirtualPlacement(int imageId,
-      {required int cols, required int rows}) {
+  void setVirtualPlacement(
+    int imageId, {
+    required int cols,
+    required int rows,
+  }) {
     if (imageId <= 0 || cols <= 0 || rows <= 0) {
       return;
     }
@@ -977,6 +1599,39 @@ class GraphicsManager {
     }
   }
 
+  bool _evictAdditionalMemory(
+    int requiredBytes, {
+    required int protectedImageId,
+  }) {
+    if (requiredBytes <= 0) {
+      return true;
+    }
+    final highWaterMemory = (maxMemoryBytes * 0.7).toInt();
+    if (_currentMemoryBytes + requiredBytes <= highWaterMemory) {
+      return true;
+    }
+
+    final targetMemory = (maxMemoryBytes * 0.5).toInt();
+    while (_images.length > 1 &&
+        _currentMemoryBytes + requiredBytes > targetMemory) {
+      MapEntry<int, TerminalImage>? oldest;
+      for (final entry in _images.entries) {
+        if (entry.key == protectedImageId) {
+          continue;
+        }
+        if (oldest == null ||
+            entry.value._lastAccess < oldest.value._lastAccess) {
+          oldest = entry;
+        }
+      }
+      if (oldest == null) {
+        break;
+      }
+      _dropImage(oldest.key);
+    }
+    return _currentMemoryBytes + requiredBytes <= maxMemoryBytes;
+  }
+
   void _dropImage(int imageId) {
     final image = _images.remove(imageId);
     if (image != null) {
@@ -986,7 +1641,6 @@ class GraphicsManager {
     if (pending != null) {
       _pendingBytes -= pending.payload.length;
     }
-    _decodingIds.remove(imageId);
     _retainedImageIds.remove(imageId);
     _virtualPlacements.remove(imageId);
     _imageNumberToId.removeWhere((_, id) => id == imageId);
@@ -1040,6 +1694,192 @@ int terminalGraphicsSourceSignature(Uint8List bytes) {
   return hash == 0 ? 1 : hash;
 }
 
+bool _rectWithinImage(
+  int x,
+  int y,
+  int width,
+  int height,
+  int imageWidth,
+  int imageHeight,
+) =>
+    x >= 0 &&
+    y >= 0 &&
+    width > 0 &&
+    height > 0 &&
+    x + width <= imageWidth &&
+    y + height <= imageHeight;
+
+bool _rectanglesOverlap(
+  int sourceX,
+  int sourceY,
+  int destinationX,
+  int destinationY,
+  int width,
+  int height,
+) =>
+    math.max(sourceX, destinationX) <
+        math.min(sourceX + width, destinationX + width) &&
+    math.max(sourceY, destinationY) <
+        math.min(sourceY + height, destinationY + height);
+
+ui.Rect _scaledTerminalRect(
+  int x,
+  int y,
+  int width,
+  int height, {
+  required int logicalWidth,
+  required int logicalHeight,
+  required int pixelWidth,
+  required int pixelHeight,
+}) {
+  final scaleX = pixelWidth / logicalWidth;
+  final scaleY = pixelHeight / logicalHeight;
+  return ui.Rect.fromLTWH(
+    x * scaleX,
+    y * scaleY,
+    width * scaleX,
+    height * scaleY,
+  );
+}
+
+ui.Color _colorFromRgba(int rgba) => ui.Color.fromARGB(
+      rgba & 0xFF,
+      (rgba >> 24) & 0xFF,
+      (rgba >> 16) & 0xFF,
+      (rgba >> 8) & 0xFF,
+    );
+
+Future<ui.Image?> _composeTerminalFrame({
+  required int outputWidth,
+  required int outputHeight,
+  required int logicalWidth,
+  required int logicalHeight,
+  required ui.Image? background,
+  required int? backgroundColor,
+  required ui.Image overlay,
+  required int overlayX,
+  required int overlayY,
+  required int overlayWidth,
+  required int overlayHeight,
+  required bool replace,
+}) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(recorder);
+  if (background != null) {
+    canvas.drawImageRect(
+      background,
+      ui.Rect.fromLTWH(
+        0,
+        0,
+        background.width.toDouble(),
+        background.height.toDouble(),
+      ),
+      ui.Rect.fromLTWH(0, 0, outputWidth.toDouble(), outputHeight.toDouble()),
+      ui.Paint()..blendMode = ui.BlendMode.src,
+    );
+  } else if (backgroundColor != null) {
+    canvas.drawColor(_colorFromRgba(backgroundColor), ui.BlendMode.src);
+  }
+  canvas.drawImageRect(
+    overlay,
+    ui.Rect.fromLTWH(0, 0, overlay.width.toDouble(), overlay.height.toDouble()),
+    _scaledTerminalRect(
+      overlayX,
+      overlayY,
+      overlayWidth,
+      overlayHeight,
+      logicalWidth: logicalWidth,
+      logicalHeight: logicalHeight,
+      pixelWidth: outputWidth,
+      pixelHeight: outputHeight,
+    ),
+    ui.Paint()
+      ..blendMode = replace ? ui.BlendMode.src : ui.BlendMode.srcOver
+      ..filterQuality = ui.FilterQuality.medium,
+  );
+  return _rasterizeTerminalPicture(recorder, outputWidth, outputHeight);
+}
+
+Future<ui.Image?> _composeTerminalFrameRegion({
+  required ui.Image destination,
+  required ui.Image source,
+  required int logicalWidth,
+  required int logicalHeight,
+  required int sourceX,
+  required int sourceY,
+  required int destinationX,
+  required int destinationY,
+  required int width,
+  required int height,
+  required bool replace,
+}) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(recorder);
+  canvas
+    ..drawImageRect(
+      destination,
+      ui.Rect.fromLTWH(
+        0,
+        0,
+        destination.width.toDouble(),
+        destination.height.toDouble(),
+      ),
+      ui.Rect.fromLTWH(
+        0,
+        0,
+        destination.width.toDouble(),
+        destination.height.toDouble(),
+      ),
+      ui.Paint()..blendMode = ui.BlendMode.src,
+    )
+    ..drawImageRect(
+      source,
+      _scaledTerminalRect(
+        sourceX,
+        sourceY,
+        width,
+        height,
+        logicalWidth: logicalWidth,
+        logicalHeight: logicalHeight,
+        pixelWidth: source.width,
+        pixelHeight: source.height,
+      ),
+      _scaledTerminalRect(
+        destinationX,
+        destinationY,
+        width,
+        height,
+        logicalWidth: logicalWidth,
+        logicalHeight: logicalHeight,
+        pixelWidth: destination.width,
+        pixelHeight: destination.height,
+      ),
+      ui.Paint()
+        ..blendMode = replace ? ui.BlendMode.src : ui.BlendMode.srcOver
+        ..filterQuality = ui.FilterQuality.medium,
+    );
+  return _rasterizeTerminalPicture(
+    recorder,
+    destination.width,
+    destination.height,
+  );
+}
+
+Future<ui.Image?> _rasterizeTerminalPicture(
+  ui.PictureRecorder recorder,
+  int width,
+  int height,
+) async {
+  final picture = recorder.endRecording();
+  try {
+    return await picture.toImage(width, height);
+  } catch (_) {
+    return null;
+  } finally {
+    picture.dispose();
+  }
+}
+
 /// Maximum width/height a decoded terminal image is kept at. Source images
 /// larger than this on their longest side are downscaled during decode, with
 /// aspect ratio preserved. A terminal renders images into a small cell grid, so
@@ -1049,13 +1889,28 @@ int terminalGraphicsSourceSignature(Uint8List bytes) {
 /// while bounding each decode to ~6.5 MB.
 const _maxDecodedImageDimension = 1280;
 
-/// Decodes Kitty graphics payload [bytes] into a [ui.Image].
+/// Maximum number of frames decoded from one encoded animation.
+const _maxDecodedAnimationFrames = 256;
+
+/// Maximum approximate RGBA bytes decoded for one animation before storage.
+const _maxDecodedAnimationBytes = 100 * 1024 * 1024;
+
+/// Minimum delay for encoded frames whose codec reports zero.
 ///
-/// Uses Flutter's built-in codecs for `f=100`/`f=98` (PNG/JPEG/GIF first frame)
-/// and [ui.decodeImageFromPixels] for raw pixels (`f=32` RGBA, `f=24` RGB).
+/// Flutter's own animated-image scheduler treats a zero duration as immediately
+/// eligible for the next frame. A small positive floor preserves that behavior
+/// without making a fully zero-delay GIF churn through multiple frames per
+/// display tick.
+const _minimumEncodedFrameDuration = Duration(milliseconds: 10);
+
+/// Decodes Kitty graphics payload [bytes] into all available frames.
+///
+/// Uses Flutter's built-in codecs for `f=100`/`f=98` (PNG/JPEG/GIF/APNG) and
+/// [ui.decodeImageFromPixels] for raw pixels (`f=32` RGBA, `f=24` RGB).
 /// Encoded images larger than [_maxDecodedImageDimension] are downscaled during
-/// decode to bound memory. Returns null on any failure rather than throwing.
-Future<ui.Image?> decodeTerminalImage(
+/// decode to bound memory. Frame count and aggregate decoded bytes are capped to
+/// prevent a compact hostile animation from exhausting memory.
+Future<DecodedTerminalImage?> decodeTerminalImageSequence(
   Uint8List bytes, {
   int format = 100,
   int width = 0,
@@ -1075,20 +1930,49 @@ Future<ui.Image?> decodeTerminalImage(
         ui.PixelFormat.rgba8888,
         completer.complete,
       );
-      return await completer.future.timeout(
+      final image = await completer.future.timeout(
         const Duration(seconds: 5),
         onTimeout: () => throw 'timeout',
       );
+      return DecodedTerminalImage(
+        frames: <TerminalImageFrame>[TerminalImageFrame(image)],
+        sourceWidth: width,
+        sourceHeight: height,
+      );
     }
-    return await _decodeEncodedImageBounded(bytes);
+    return await _decodeEncodedImageSequenceBounded(bytes);
   } catch (_) {
     return null;
   }
 }
 
-/// Decodes an encoded image (PNG/JPEG/GIF), downscaling to
+/// Decodes Kitty graphics payload [bytes] and returns its first frame.
+///
+/// Prefer [decodeTerminalImageSequence] when retaining the result so animated
+/// GIF/APNG frames and durations are preserved.
+Future<ui.Image?> decodeTerminalImage(
+  Uint8List bytes, {
+  int format = 100,
+  int width = 0,
+  int height = 0,
+}) async {
+  final decoded = await decodeTerminalImageSequence(
+    bytes,
+    format: format,
+    width: width,
+    height: height,
+  );
+  if (decoded == null || decoded.frames.isEmpty) {
+    return null;
+  }
+  return decoded.frames.first.image;
+}
+
+/// Decodes an encoded image sequence, downscaling to
 /// [_maxDecodedImageDimension] on its longest side when larger.
-Future<ui.Image?> _decodeEncodedImageBounded(Uint8List bytes) async {
+Future<DecodedTerminalImage?> _decodeEncodedImageSequenceBounded(
+  Uint8List bytes,
+) async {
   final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
   ui.ImageDescriptor? descriptor;
   try {
@@ -1100,8 +1984,10 @@ Future<ui.Image?> _decodeEncodedImageBounded(Uint8List bytes) async {
     final longest = srcWidth > srcHeight ? srcWidth : srcHeight;
     if (longest > _maxDecodedImageDimension && longest > 0) {
       final scale = _maxDecodedImageDimension / longest;
-      targetWidth =
-          (srcWidth * scale).round().clamp(1, _maxDecodedImageDimension);
+      targetWidth = (srcWidth * scale).round().clamp(
+            1,
+            _maxDecodedImageDimension,
+          );
       targetHeight = (srcHeight * scale).round().clamp(
             1,
             _maxDecodedImageDimension,
@@ -1112,8 +1998,37 @@ Future<ui.Image?> _decodeEncodedImageBounded(Uint8List bytes) async {
       targetHeight: targetHeight,
     );
     try {
-      final frame = await codec.getNextFrame();
-      return frame.image;
+      final decodedWidth = targetWidth ?? srcWidth;
+      final decodedHeight = targetHeight ?? srcHeight;
+      final frameBytes = decodedWidth * decodedHeight * 4;
+      final memoryFrameLimit = frameBytes <= 0
+          ? 1
+          : math.max(1, _maxDecodedAnimationBytes ~/ frameBytes);
+      final frameLimit = math.min(
+        codec.frameCount,
+        math.min(_maxDecodedAnimationFrames, memoryFrameLimit),
+      );
+      final frames = <TerminalImageFrame>[];
+      for (var index = 0; index < frameLimit; index++) {
+        final frame = await codec.getNextFrame();
+        frames.add(
+          TerminalImageFrame(
+            frame.image,
+            duration: frame.duration == Duration.zero
+                ? _minimumEncodedFrameDuration
+                : frame.duration,
+          ),
+        );
+      }
+      if (frames.isEmpty) {
+        return null;
+      }
+      return DecodedTerminalImage(
+        frames: frames,
+        sourceWidth: srcWidth,
+        sourceHeight: srcHeight,
+        repetitionCount: codec.repetitionCount,
+      );
     } finally {
       codec.dispose();
     }

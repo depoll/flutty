@@ -753,7 +753,7 @@ class MonkeyTerminalView extends StatefulWidget {
 }
 
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   static const _touchScrollReportedWheelLinesPerEvent = 3.0;
 
   late FocusNode _focusNode;
@@ -770,8 +770,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
   late final Ticker _touchScrollInertiaTicker;
+  late final Ticker _graphicsAnimationTicker;
   Simulation? _touchScrollInertiaSimulation;
   double _lastTouchScrollInertiaOffset = 0;
+  Duration _lastGraphicsAnimationElapsed = Duration.zero;
+  bool _graphicsAnimationsEnabled = true;
   int _lastTerminalViewWidth = 0;
   Timer? _pendingFocusInReportTimer;
 
@@ -799,6 +802,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   /// or null if it is not attached. Exposed for window-switch diagnostics.
   int? get terminalChangeCount => _renderTerminalOrNull?.terminalChangeCount;
 
+  /// Whether the Kitty graphics frame ticker is currently running.
+  @visibleForTesting
+  bool get graphicsAnimationTickerActive => _graphicsAnimationTicker.isActive;
+
   /// Forces the live terminal to relayout and repaint its current buffer.
   /// Used as a safety net after a multiplexer window switch.
   void forceFullRepaint() => _renderTerminalOrNull?.forceFullRepaint();
@@ -824,6 +831,15 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     };
     super.initState();
     _touchScrollInertiaTicker = createTicker(_onTouchScrollInertiaTick);
+    _graphicsAnimationTicker = createTicker(_onGraphicsAnimationTick);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _graphicsAnimationsEnabled =
+        !(MediaQuery.maybeOf(context)?.disableAnimations ?? false);
+    _syncGraphicsAnimationTicker();
   }
 
   @override
@@ -842,6 +858,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   void didUpdateWidget(covariant MonkeyTerminalView oldWidget) {
     if (oldWidget.terminal != widget.terminal) {
       oldWidget.terminal.removeListener(_handleTerminalMetricsChanged);
+      _stopGraphicsAnimationTicker();
       _lastTerminalViewWidth = widget.terminal.viewWidth;
       widget.terminal.addListener(_handleTerminalMetricsChanged);
       _stopTouchScrollInertia();
@@ -883,6 +900,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
     super.didUpdateWidget(oldWidget);
+    _syncGraphicsAnimationTicker();
   }
 
   @override
@@ -892,6 +910,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
     _touchScrollInertiaTicker.dispose();
+    _stopGraphicsAnimationTicker();
+    _graphicsAnimationTicker.dispose();
     if (widget.focusNode == null) {
       _focusNode.dispose();
     }
@@ -930,6 +950,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _handleTerminalMetricsChanged() {
+    _syncGraphicsAnimationTicker();
     final currentViewWidth = widget.terminal.viewWidth;
     if (currentViewWidth == _lastTerminalViewWidth) {
       return;
@@ -938,6 +959,36 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (mounted) {
       setState(() {});
     }
+  }
+
+  void _syncGraphicsAnimationTicker() {
+    final shouldAnimate =
+        _graphicsAnimationsEnabled &&
+        widget.terminal.graphics.hasActiveAnimations;
+    if (shouldAnimate) {
+      if (!_graphicsAnimationTicker.isActive) {
+        _lastGraphicsAnimationElapsed = Duration.zero;
+        _graphicsAnimationTicker.start();
+      }
+      return;
+    }
+    _stopGraphicsAnimationTicker();
+  }
+
+  void _stopGraphicsAnimationTicker() {
+    if (_graphicsAnimationTicker.isActive) {
+      _graphicsAnimationTicker.stop();
+    }
+    _lastGraphicsAnimationElapsed = Duration.zero;
+  }
+
+  void _onGraphicsAnimationTick(Duration elapsed) {
+    final delta = elapsed - _lastGraphicsAnimationElapsed;
+    _lastGraphicsAnimationElapsed = elapsed;
+    if (!delta.isNegative) {
+      widget.terminal.graphics.advanceAnimations(delta);
+    }
+    _syncGraphicsAnimationTicker();
   }
 
   /// Re-sends focus reports after terminal state changes.

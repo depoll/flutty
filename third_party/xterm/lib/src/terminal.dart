@@ -134,6 +134,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _graphicsActive = false;
   Map<String, String> _graphicsArgs = const {};
   final List<int> _graphicsData = [];
+  final Map<GraphicsManager, Map<String, Future<void>>> _graphicsOperations =
+      {};
   _PendingKittyPlaceholder? _pendingKittyPlaceholder;
   _PendingKittyPlaceholder? _lastKittyPlaceholder;
 
@@ -1344,17 +1346,54 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
+    final manager = _buffer.graphics;
     if (action == 'd') {
-      _deleteGraphics(args);
+      final selector = args['d'] ?? 'a';
+      if ((selector == 'i' ||
+              selector == 'I' ||
+              selector == 'n' ||
+              selector == 'N') &&
+          _graphicsOperationKey(args) != null) {
+        final buffer = _buffer;
+        _scheduleGraphicsOperation(
+          manager,
+          args,
+          () async => _deleteGraphics(args, buffer),
+        );
+      } else {
+        _deleteGraphics(args, _buffer);
+      }
       return;
     }
 
-    // Only transmit (a=t) and transmit-and-display (a=T) are rendered here.
-    // Animation actions (a=f transmit-frame, a=a control, a=c compose) are
-    // intentionally not supported — no client we target uses protocol-level
-    // animation, and it requires a frame-advancing ticker in the render widget.
-    // They are ignored safely: the chunk state was already reset above, so the
-    // payload is simply discarded.
+    if (action == 'f') {
+      if (data.isNotEmpty) {
+        _scheduleGraphicsOperation(
+          manager,
+          args,
+          () => _finalizeAnimationFrame(args, data, manager),
+        );
+      }
+      return;
+    }
+    if (action == 'a') {
+      _scheduleGraphicsOperation(
+        manager,
+        args,
+        () => _controlGraphicsAnimation(args, manager),
+      );
+      return;
+    }
+    if (action == 'c') {
+      _scheduleGraphicsOperation(
+        manager,
+        args,
+        () => _composeGraphicsAnimationFrames(args, manager),
+      );
+      return;
+    }
+
+    // Only transmit (a=t) and transmit-and-display (a=T) remain.
     if ((action != 't' && action != 'T') || data.isEmpty) {
       return;
     }
@@ -1388,9 +1427,218 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       }
     }
 
-    unawaited(
-      _finalizeGraphics(args, data, anchor, buffer.graphics, generation),
+    _scheduleGraphicsOperation(
+      buffer.graphics,
+      args,
+      () => _finalizeGraphics(
+        args,
+        data,
+        anchor,
+        buffer.graphics,
+        generation,
+      ),
     );
+  }
+
+  void _scheduleGraphicsOperation(
+    GraphicsManager manager,
+    Map<String, String> args,
+    Future<void> Function() operation,
+  ) {
+    final key = _graphicsOperationKey(args);
+    if (key == null) {
+      unawaited(operation());
+      return;
+    }
+
+    final operations = _graphicsOperations.putIfAbsent(manager, () => {});
+    final previous = operations[key];
+    final future =
+        previous == null ? operation() : previous.then((_) => operation());
+    operations[key] = future;
+    unawaited(
+      future.whenComplete(() {
+        if (identical(operations[key], future)) {
+          operations.remove(key);
+          if (operations.isEmpty) {
+            _graphicsOperations.remove(manager);
+          }
+        }
+      }),
+    );
+  }
+
+  String? _graphicsOperationKey(Map<String, String> args) {
+    final imageId = int.tryParse(args['i'] ?? '');
+    if (imageId != null && imageId > 0) {
+      return 'i:$imageId';
+    }
+    final imageNumber = int.tryParse(args['I'] ?? '');
+    if (imageNumber != null && imageNumber > 0) {
+      return 'I:$imageNumber';
+    }
+    return null;
+  }
+
+  int? _resolveGraphicsImageId(
+    GraphicsManager manager,
+    Map<String, String> args,
+  ) {
+    final imageId = int.tryParse(args['i'] ?? '');
+    if (imageId != null && imageId > 0) {
+      return imageId;
+    }
+    final imageNumber = int.tryParse(args['I'] ?? '');
+    if (imageNumber == null || imageNumber <= 0) {
+      return null;
+    }
+    return manager.imageIdForNumber(imageNumber);
+  }
+
+  Future<void> _finalizeAnimationFrame(
+    Map<String, String> args,
+    Uint8List data,
+    GraphicsManager manager,
+  ) async {
+    manager.onChanged ??= notifyListeners;
+    final imageId = _resolveGraphicsImageId(manager, args);
+    if (imageId == null) {
+      return;
+    }
+    final image = await manager.resolveImage(imageId);
+    if (image == null) {
+      return;
+    }
+
+    final observer = terminalGraphicsDecodeObserver;
+    final compressed = args['o'] == 'z';
+    var payload = data;
+    var inflateMicros = 0;
+    if (compressed) {
+      final inflateStopwatch = observer == null ? null : (Stopwatch()..start());
+      final inflated = inflateZlibData(data);
+      inflateMicros = inflateStopwatch?.elapsedMicroseconds ?? 0;
+      if (inflated == null) {
+        observer?.call(
+          payloadBytes: data.length,
+          inflateMicros: inflateMicros,
+          decodeMicros: 0,
+          compressed: true,
+          success: false,
+          imageId: imageId.toString(),
+          action: 'f',
+        );
+        return;
+      }
+      payload = inflated;
+    }
+
+    final format = _graphicsFormat(args);
+    final blockWidth = int.tryParse(args['s'] ?? '') ?? image.sourceWidth;
+    final blockHeight = int.tryParse(args['v'] ?? '') ?? image.sourceHeight;
+    final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
+    await terminalGraphicsDecodeGate.acquire();
+    final decoded = await () async {
+      try {
+        return await decodeTerminalImageSequence(
+          payload,
+          format: format,
+          width: blockWidth,
+          height: blockHeight,
+        );
+      } finally {
+        terminalGraphicsDecodeGate.release();
+      }
+    }();
+    observer?.call(
+      payloadBytes: payload.length,
+      inflateMicros: inflateMicros,
+      decodeMicros: decodeStopwatch?.elapsedMicroseconds ?? 0,
+      compressed: compressed,
+      success: decoded != null,
+      imageId: imageId.toString(),
+      action: 'f',
+      reused: false,
+    );
+    if (decoded == null) {
+      return;
+    }
+
+    await manager.addAnimationFrame(
+      imageId,
+      decoded,
+      x: int.tryParse(args['x'] ?? '') ?? 0,
+      y: int.tryParse(args['y'] ?? '') ?? 0,
+      width: int.tryParse(args['s'] ?? '') ?? 0,
+      height: int.tryParse(args['v'] ?? '') ?? 0,
+      backgroundFrame: int.tryParse(args['c'] ?? '') ?? 0,
+      backgroundColor: int.tryParse(args['Y'] ?? ''),
+      replace: args['X'] == '1',
+      editFrame: int.tryParse(args['r'] ?? '') ?? 0,
+      gap: _graphicsAnimationGap(args),
+    );
+  }
+
+  Future<void> _controlGraphicsAnimation(
+    Map<String, String> args,
+    GraphicsManager manager,
+  ) async {
+    manager.onChanged ??= notifyListeners;
+    final imageId = _resolveGraphicsImageId(manager, args);
+    if (imageId == null || await manager.resolveImage(imageId) == null) {
+      return;
+    }
+
+    final state = switch (int.tryParse(args['s'] ?? '')) {
+      1 => TerminalAnimationState.stopped,
+      2 => TerminalAnimationState.loading,
+      3 => TerminalAnimationState.running,
+      _ => null,
+    };
+    manager.controlAnimation(
+      imageId,
+      currentFrame: int.tryParse(args['c'] ?? ''),
+      state: state,
+      protocolLoopCount: int.tryParse(args['v'] ?? ''),
+      gapFrame: int.tryParse(args['r'] ?? ''),
+      gap: _graphicsAnimationGap(args),
+    );
+  }
+
+  Future<void> _composeGraphicsAnimationFrames(
+    Map<String, String> args,
+    GraphicsManager manager,
+  ) async {
+    manager.onChanged ??= notifyListeners;
+    final imageId = _resolveGraphicsImageId(manager, args);
+    if (imageId == null || await manager.resolveImage(imageId) == null) {
+      return;
+    }
+    final sourceFrame = int.tryParse(args['r'] ?? '') ?? 0;
+    final destinationFrame = int.tryParse(args['c'] ?? '') ?? 0;
+    if (sourceFrame <= 0 || destinationFrame <= 0) {
+      return;
+    }
+    await manager.composeAnimationFrames(
+      imageId,
+      sourceFrame: sourceFrame,
+      destinationFrame: destinationFrame,
+      sourceX: int.tryParse(args['X'] ?? '') ?? 0,
+      sourceY: int.tryParse(args['Y'] ?? '') ?? 0,
+      destinationX: int.tryParse(args['x'] ?? '') ?? 0,
+      destinationY: int.tryParse(args['y'] ?? '') ?? 0,
+      width: int.tryParse(args['w'] ?? '') ?? 0,
+      height: int.tryParse(args['h'] ?? '') ?? 0,
+      replace: args['C'] == '1',
+    );
+  }
+
+  Duration? _graphicsAnimationGap(Map<String, String> args) {
+    final milliseconds = int.tryParse(args['z'] ?? '');
+    if (milliseconds == null || milliseconds == 0) {
+      return null;
+    }
+    return Duration(milliseconds: max(0, milliseconds));
   }
 
   Future<void> _finalizeGraphics(
@@ -1492,9 +1740,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
     final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
     await terminalGraphicsDecodeGate.acquire();
-    final image = await () async {
+    final decoded = await () async {
       try {
-        return await decodeTerminalImage(
+        return await decodeTerminalImageSequence(
           payload,
           format: format,
           width: width,
@@ -1509,7 +1757,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       inflateMicros: inflateMicros,
       decodeMicros: decodeStopwatch?.elapsedMicroseconds ?? 0,
       compressed: compressed,
-      success: image != null,
+      success: decoded != null,
       imageId: args['i'],
       action: args['a'],
       reused: false,
@@ -1518,14 +1766,18 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // Skip placing if the decode failed, the anchored cell is gone, or the
     // screen was cleared while we were decoding (e.g. a MonkeyMux replay clear
     // racing this decode — placing now would leave a duplicate/stale image).
-    if (image == null) {
+    if (decoded == null) {
       anchor?.dispose();
       return;
     }
 
     final storedImageId = imageId == null
-        ? manager.storeImage(image, sourceSignature: signature)
-        : manager.storeImageWithId(imageId, image, sourceSignature: signature);
+        ? manager.storeDecodedImage(decoded, sourceSignature: signature)
+        : manager.storeDecodedImageWithId(
+            imageId,
+            decoded,
+            sourceSignature: signature,
+          );
     _placeStoredImageId(manager, storedImageId, anchor, args, generation);
   }
 
@@ -1628,8 +1880,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// client placed and then explicitly asked to remove (e.g. Copilot CLI closing
   /// its full-screen image viewer) would linger as a stale overlay behind later
   /// output.
-  void _deleteGraphics(Map<String, String> args) {
-    final buffer = _buffer;
+  void _deleteGraphics(Map<String, String> args, Buffer buffer) {
     // Kitty `x`/`y` are 1-based cell coordinates in the cursor's (viewport)
     // space; translate the row into the absolute buffer coordinates placements
     // are tracked in.
