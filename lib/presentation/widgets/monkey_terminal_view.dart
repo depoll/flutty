@@ -775,6 +775,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   double _lastTouchScrollInertiaOffset = 0;
   Duration _lastGraphicsAnimationElapsed = Duration.zero;
   bool _graphicsAnimationsEnabled = true;
+  bool _graphicsAnimationSyncScheduled = false;
   int _lastTerminalViewWidth = 0;
   Timer? _pendingFocusInReportTimer;
 
@@ -815,6 +816,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _focusNode = widget.focusNode ?? FocusNode();
     _controller = widget.controller ?? TerminalController();
     _scrollController = widget.scrollController ?? ScrollController();
+    _scrollController.addListener(_handleViewportScrolled);
     _lastTerminalViewWidth = widget.terminal.viewWidth;
     widget.terminal.addListener(_handleTerminalMetricsChanged);
     _shortcutManager = ShortcutManager(
@@ -846,11 +848,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   void activate() {
     super.activate();
     _logAndroidBackLifecycle('activate');
+    _scheduleGraphicsAnimationSync();
   }
 
   @override
   void deactivate() {
     _logAndroidBackLifecycle('deactivate');
+    _stopGraphicsAnimationTicker();
     super.deactivate();
   }
 
@@ -877,10 +881,12 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _controller = widget.controller ?? TerminalController();
     }
     if (oldWidget.scrollController != widget.scrollController) {
+      _scrollController.removeListener(_handleViewportScrolled);
       if (oldWidget.scrollController == null) {
         _scrollController.dispose();
       }
       _scrollController = widget.scrollController ?? ScrollController();
+      _scrollController.addListener(_handleViewportScrolled);
     }
     if (oldWidget.simulateScroll != widget.simulateScroll) {
       _stopTouchScrollInertia();
@@ -912,6 +918,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _touchScrollInertiaTicker.dispose();
     _stopGraphicsAnimationTicker();
     _graphicsAnimationTicker.dispose();
+    _scrollController.removeListener(_handleViewportScrolled);
     if (widget.focusNode == null) {
       _focusNode.dispose();
     }
@@ -951,6 +958,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   void _handleTerminalMetricsChanged() {
     _syncGraphicsAnimationTicker();
+    _scheduleGraphicsAnimationSync();
     final currentViewWidth = widget.terminal.viewWidth;
     if (currentViewWidth == _lastTerminalViewWidth) {
       return;
@@ -961,10 +969,30 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
   }
 
+  void _handleViewportScrolled() => _scheduleGraphicsAnimationSync();
+
+  void _scheduleGraphicsAnimationSync() {
+    if (_graphicsAnimationSyncScheduled) {
+      return;
+    }
+    _graphicsAnimationSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _graphicsAnimationSyncScheduled = false;
+      if (mounted) {
+        _syncGraphicsAnimationTicker();
+      }
+    });
+  }
+
   void _syncGraphicsAnimationTicker() {
+    final graphics = widget.terminal.graphics;
+    final visibleImageIds =
+        _renderTerminalOrNull?._paintedVisibleGraphicsImageIds;
     final shouldAnimate =
         _graphicsAnimationsEnabled &&
-        widget.terminal.graphics.hasActiveAnimations;
+        (visibleImageIds == null
+            ? graphics.hasActiveAnimations
+            : graphics.hasActiveAnimationsFor(visibleImageIds));
     if (shouldAnimate) {
       if (!_graphicsAnimationTicker.isActive) {
         _lastGraphicsAnimationElapsed = Duration.zero;
@@ -986,7 +1014,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     final delta = elapsed - _lastGraphicsAnimationElapsed;
     _lastGraphicsAnimationElapsed = elapsed;
     if (!delta.isNegative) {
-      widget.terminal.graphics.advanceAnimations(delta);
+      widget.terminal.graphics.advanceAnimations(
+        delta,
+        imageIds: _renderTerminalOrNull?._paintedVisibleGraphicsImageIds,
+      );
     }
     _syncGraphicsAnimationTicker();
   }
@@ -2845,6 +2876,12 @@ class MonkeyRenderTerminal extends RenderBox
 
   final MonkeyTerminalPainter _painter;
 
+  final Set<int> _visibleGraphicsImageIds = <int>{};
+  bool _hasPaintedGraphicsVisibility = false;
+
+  Set<int>? get _paintedVisibleGraphicsImageIds =>
+      _hasPaintedGraphicsVisibility ? _visibleGraphicsImageIds : null;
+
   var _stickToBottom = true;
 
   int? _selectionStartOffset;
@@ -3952,6 +3989,8 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   void _paint(PaintingContext context, Offset offset) {
+    _visibleGraphicsImageIds.clear();
+    _hasPaintedGraphicsVisibility = true;
     final canvas = context.canvas;
     final lines = _terminal.buffer.lines;
     final charHeight = _painter.cellSize.height;
@@ -4146,6 +4185,7 @@ class MonkeyRenderTerminal extends RenderBox
       if (placement.row + rowSpan < firstLine || placement.row > lastLine) {
         continue;
       }
+      _visibleGraphicsImageIds.add(stored.id);
 
       // Apply the in-cell pixel offset (X=,Y=) to the destination top-left.
       final topLeft = _linePaintOffset(offset, placement.row).translate(
@@ -4547,6 +4587,7 @@ class MonkeyRenderTerminal extends RenderBox
         continue;
       }
       _kittyResolvedInstances++;
+      _visibleGraphicsImageIds.add(stored.id);
       final imageIntKey = start.imageId * 64 + start.bitWidth;
       final cols = gridColsByImage[imageIntKey] ?? 1;
       final rows = gridRowsByImage[imageIntKey] ?? 1;

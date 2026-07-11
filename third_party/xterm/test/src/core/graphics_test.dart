@@ -756,13 +756,14 @@ void main() {
     await tester.runAsync(() async {
       final manager = GraphicsManager(maxMemoryBytes: 8);
       final root = await _buildImage(1, 1);
-      final frame = await _buildImage(1, 1);
+      final firstFrame = await _buildImage(1, 1);
+      final rejectedFrame = await _buildImage(1, 1);
       manager.storeImageWithId(1, root);
 
       expect(
         await manager.addAnimationFrame(
           1,
-          DecodedTerminalImage.single(frame),
+          DecodedTerminalImage.single(firstFrame),
         ),
         isTrue,
       );
@@ -770,12 +771,128 @@ void main() {
       expect(
         await manager.addAnimationFrame(
           1,
-          DecodedTerminalImage.single(frame),
+          DecodedTerminalImage.single(rejectedFrame),
         ),
         isFalse,
       );
       expect(manager.imageById(1)!.frameCount, 2);
       expect(manager.currentMemoryBytes, 8);
+    });
+  });
+
+  testWidgets('protocol animation consumes every decoded payload frame', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager();
+      manager.storeImageWithId(1, await _buildImage(3, 3));
+      final decoded = await decodeTerminalImageSequence(
+        base64.decode(_animatedGifBase64),
+      );
+      expect(decoded, isNotNull);
+      final payloadImages =
+          decoded!.frames.map((frame) => frame.image).toList();
+
+      expect(await manager.addAnimationFrame(1, decoded), isTrue);
+      expect(payloadImages.every((image) => image.debugDisposed), isTrue);
+      expect(manager.imageById(1)!.frameCount, 2);
+    });
+  });
+
+  testWidgets('retransmitting an animated id resets stale protocol frames', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      final red = base64.encode(<int>[255, 0, 0, 255]);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+
+      terminal
+        ..write('\x1b_Ga=t,i=27,f=32,s=1,v=1;$red\x1b\\')
+        ..write('\x1b_Ga=f,i=27,f=32,s=1,v=1,z=50;$blue\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(27)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageById(27)!.frameCount, 2);
+      expect(
+        terminal.heldImageSignatures(),
+        isNot(contains(27)),
+        reason:
+            'a root-only signature cannot prove that animation state is current',
+      );
+
+      terminal.write('\x1b_Ga=t,i=27,f=32,s=1,v=1;$red\x1b\\');
+      terminal.graphics.imageForPlacement(27);
+      waited = 0;
+      while ((terminal.graphics.imageById(27)?.frameCount ?? 2) != 1 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageById(27)!.frameCount, 1);
+      expect(
+        terminal.graphics.imageById(27)!.animationState,
+        TerminalAnimationState.stopped,
+      );
+    });
+  });
+
+  testWidgets('image id and number animation commands share one decode queue', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      final red = base64.encode(<int>[255, 0, 0, 255]);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+
+      terminal
+        ..write('\x1b_Ga=T,i=28,I=9,f=32,s=1,v=1;$red\x1b\\')
+        ..write('\x1b_Ga=f,I=9,f=32,s=1,v=1,z=50;$blue\x1b\\')
+        ..write('\x1b_Ga=a,I=9,r=1,z=40,s=3,v=1\x1b\\');
+
+      var waited = 0;
+      while (waited < 2000) {
+        final image = terminal.graphics.imageById(28);
+        if (image?.frameCount == 2 &&
+            image?.animationState == TerminalAnimationState.running) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final image = terminal.graphics.imageById(28);
+      expect(image, isNotNull);
+      expect(image!.frameCount, 2);
+      expect(image.frameDuration(1), const Duration(milliseconds: 40));
+      expect(image.animationState, TerminalAnimationState.running);
+    });
+  });
+
+  testWidgets('invalid a=c reports a protocol error unless silenced', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final red = base64.encode(<int>[255, 0, 0, 255]);
+      final responses = <String>[];
+      final terminal = Terminal(onOutput: responses.add);
+
+      terminal
+        ..write('\x1b_Ga=t,i=29,f=32,s=1,v=1;$red\x1b\\')
+        ..write('\x1b_Ga=c,i=29,r=2,c=1,w=1,h=1\x1b\\');
+      var waited = 0;
+      while (responses.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses.single, contains('ENOENT'));
+
+      responses.clear();
+      terminal.write('\x1b_Ga=c,i=29,r=2,c=1,w=1,h=1,q=2\x1b\\');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(responses, isEmpty);
     });
   });
 
@@ -1422,7 +1539,7 @@ void main() {
         // before the next, so it takes the first internal placement slot.
         terminal.write('\x1b_Ga=T,i=999,p=7,f=100,c=4,r=2;$pngBase64\x1b\\');
         var waited = 0;
-        while (terminal.graphics.placements.length < 1 && waited < 2000) {
+        while (terminal.graphics.placements.isEmpty && waited < 2000) {
           await Future<void>.delayed(const Duration(milliseconds: 20));
           waited += 20;
         }

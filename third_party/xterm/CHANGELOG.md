@@ -102,9 +102,11 @@ out of scope.
   sequences with Kitty-compatible gaps, loading/loop/stop state and bounded
   decoded memory. Encoded GIF/APNG transmissions preserve all decoded frames,
   durations and repetition metadata instead of freezing on frame one. The host
-  renderer advances only displayed, active animations and paints the current
-  frame; keep the frame model and animation APIs in `graphics_manager.dart`
-  when re-syncing.
+  renderer advances only visible, active animations and paints the current
+  frame. MonkeyMux 0.1.94 retains and replays each image's ordered frame,
+  composition and control commands so reconnects/window switches do not restore
+  only a static root image. Keep the frame model and animation APIs in
+  `graphics_manager.dart` when re-syncing.
 * XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
   implements the kitty graphics + keyboard protocols, so it reports a
   kitty-family identity. CLIs such as the GitHub Copilot CLI gate their richer

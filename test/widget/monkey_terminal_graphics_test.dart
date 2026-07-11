@@ -324,6 +324,7 @@ void main() {
       expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
       expect(await tester.runAsync(() => _boundaryHasRed(boundaryKey)), isTrue);
 
+      await tester.pump();
       await tester.pump(const Duration(milliseconds: 69));
       expect(image.currentFrame, 1);
       await tester.pump(const Duration(milliseconds: 1));
@@ -383,6 +384,91 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(image.currentFrame, 1);
     expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+  });
+
+  testWidgets('animated GIF advances through Unicode placeholders', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepaintBoundary(
+          key: boundaryKey,
+          child: MonkeyTerminalView(
+            terminal,
+            key: viewKey,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    terminal
+      ..write('\x1b_Ga=T,U=1,i=53,f=100,c=4,r=2;$_animatedGifBase64\x1b\\')
+      ..write(_placeholderGrid(53, cols: 4, rows: 2));
+    await tester.pump();
+    await _pumpUntilImagesDecoded(tester, terminal, const [53]);
+    await tester.pump();
+
+    final image = terminal.graphics.imageById(53)!;
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+    expect(image.currentFrame, 1);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+    expect(image.currentFrame, 2);
+    expect(
+      await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+      greaterThan(0),
+    );
+  });
+
+  testWidgets('animation ticker stops off-screen and resumes when revealed', (
+    tester,
+  ) async {
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+    final terminal = Terminal(maxLines: 200);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 400,
+          height: 160,
+          child: MonkeyTerminalView(
+            terminal,
+            key: viewKey,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=54,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(54)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+    terminal.write(List.filled(80, 'line\r\n').join());
+    await tester.pump();
+    await tester.pump();
+    expect(scrollController.offset, greaterThan(0));
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+    scrollController.jumpTo(0);
+    await tester.pump();
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
   });
 
   testWidgets(
