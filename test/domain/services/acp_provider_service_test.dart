@@ -3,6 +3,7 @@
 import 'dart:convert';
 
 import 'package:drift/native.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
@@ -250,6 +251,121 @@ void main() {
       );
       expect(all.last.id, custom.id);
       expect(all.last.isCustom, isTrue);
+    });
+  });
+
+  group('watchAllProviders', () {
+    test('emits built-ins immediately, then refreshes after add, edit, and '
+        'remove without any manual invalidation', () async {
+      final emissions = <List<AcpProvider>>[];
+      final subscription = service.watchAllProviders().listen(emissions.add);
+      addTearDown(subscription.cancel);
+
+      await pumpEventQueue();
+      expect(emissions, hasLength(1));
+      expect(
+        emissions.single.map((p) => p.id),
+        acpBuiltinProviders.map((p) => p.id),
+      );
+
+      final added = AcpCustomProviderDefinition.create(
+        id: 'agent-1',
+        label: 'Agent One',
+        launchCommand: AcpLaunchCommand(executable: 'agent-1'),
+      );
+      await service.saveCustomProvider(added);
+      await pumpEventQueue();
+      expect(emissions, hasLength(2));
+      expect(emissions.last.map((p) => p.id).last, 'agent-1');
+      expect(emissions.last.last.label, 'Agent One');
+
+      final edited = added.update(label: 'Agent One Renamed');
+      await service.saveCustomProvider(edited);
+      await pumpEventQueue();
+      expect(emissions, hasLength(3));
+      expect(emissions.last.last.label, 'Agent One Renamed');
+
+      await service.removeCustomProvider('agent-1');
+      await pumpEventQueue();
+      expect(emissions, hasLength(4));
+      expect(
+        emissions.last.map((p) => p.id),
+        acpBuiltinProviders.map((p) => p.id),
+      );
+    });
+
+    test('recovers to an empty custom list after malformed storage', () async {
+      final emissions = <List<AcpProvider>>[];
+      final subscription = service.watchAllProviders().listen(emissions.add);
+      addTearDown(subscription.cancel);
+      await pumpEventQueue();
+
+      await settings.setString(
+        SettingKeys.acpCustomProviders,
+        '{not valid json',
+      );
+      await pumpEventQueue();
+
+      expect(
+        emissions.last.map((p) => p.id),
+        acpBuiltinProviders.map((p) => p.id),
+      );
+    });
+  });
+
+  group('acpProvidersProvider', () {
+    late AppDatabase providerDb;
+    late ProviderContainer container;
+
+    setUp(() {
+      providerDb = AppDatabase.forTesting(NativeDatabase.memory());
+      container = ProviderContainer(
+        overrides: [databaseProvider.overrideWithValue(providerDb)],
+      );
+    });
+
+    tearDown(() async {
+      container.dispose();
+      await providerDb.close();
+    });
+
+    test('refreshes automatically after add, edit, and remove without the '
+        'caller manually invalidating the provider', () async {
+      final emissions = <AsyncValue<List<AcpProvider>>>[];
+      final subscription = container.listen(
+        acpProvidersProvider,
+        (previous, next) => emissions.add(next),
+        fireImmediately: true,
+      );
+      addTearDown(subscription.close);
+
+      await container.read(acpProvidersProvider.future);
+      expect(
+        emissions.last.value!.map((p) => p.id),
+        acpBuiltinProviders.map((p) => p.id),
+      );
+
+      final providerService = container.read(acpProviderServiceProvider);
+      final added = AcpCustomProviderDefinition.create(
+        id: 'agent-1',
+        label: 'Agent One',
+        launchCommand: AcpLaunchCommand(executable: 'agent-1'),
+      );
+      await providerService.saveCustomProvider(added);
+      await pumpEventQueue();
+      expect(emissions.last.value!.map((p) => p.id).last, 'agent-1');
+
+      final edited = added.update(label: 'Agent One Renamed');
+      await providerService.saveCustomProvider(edited);
+      await pumpEventQueue();
+      expect(emissions.last.value!.last.label, 'Agent One Renamed');
+
+      await providerService.removeCustomProvider('agent-1');
+      await pumpEventQueue();
+      expect(
+        emissions.last.value!.map((p) => p.id),
+        acpBuiltinProviders.map((p) => p.id),
+      );
     });
   });
 }

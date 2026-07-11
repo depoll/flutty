@@ -35,29 +35,7 @@ class AcpProviderService {
   /// prevents the rest of the list from loading.
   Future<List<AcpCustomProviderDefinition>> listCustomProviders() async {
     final raw = await _settings.getString(SettingKeys.acpCustomProviders);
-    if (raw == null || raw.isEmpty) {
-      return const [];
-    }
-
-    List<dynamic> decoded;
-    try {
-      final value = jsonDecode(raw);
-      if (value is! List) {
-        return const [];
-      }
-      decoded = value;
-    } on FormatException {
-      return const [];
-    }
-
-    final definitions = <AcpCustomProviderDefinition>[];
-    for (final item in decoded) {
-      final definition = AcpCustomProviderDefinition.tryFromJson(item);
-      if (definition != null) {
-        definitions.add(definition);
-      }
-    }
-    return List.unmodifiable(definitions);
+    return _decodeCustomProviders(raw);
   }
 
   /// Loads a single persisted custom provider by [id], if one exists.
@@ -67,13 +45,19 @@ class AcpProviderService {
   }
 
   /// Lists built-in providers followed by persisted custom providers.
-  Future<List<AcpProvider>> listAllProviders() async {
-    final custom = await listCustomProviders();
-    return [
-      for (final builtin in builtinProviders) AcpBuiltinProviderView(builtin),
-      for (final definition in custom) AcpCustomProviderView(definition),
-    ];
-  }
+  Future<List<AcpProvider>> listAllProviders() async =>
+      _combineProviders(await listCustomProviders());
+
+  /// Streams the combined list of built-in providers followed by persisted
+  /// custom providers, re-emitting automatically whenever custom provider
+  /// storage changes.
+  ///
+  /// Backed by [SettingsService.watchString], so callers (including
+  /// [acpProvidersProvider]) never need to manually invalidate or refetch
+  /// after [saveCustomProvider] or [removeCustomProvider].
+  Stream<List<AcpProvider>> watchAllProviders() => _settings
+      .watchString(SettingKeys.acpCustomProviders)
+      .map((raw) => _combineProviders(_decodeCustomProviders(raw)));
 
   /// Saves [definition], inserting it or updating an existing entry with the
   /// same ID in place without disturbing the order of other entries.
@@ -129,6 +113,42 @@ class AcpProviderService {
     _mutationQueue = operation.catchError((_) {});
     return operation;
   }
+
+  // Shared defensive decoding used by both the one-shot future path
+  // (listCustomProviders) and the reactive stream path (watchAllProviders),
+  // so malformed storage is handled identically no matter how it is read.
+  List<AcpCustomProviderDefinition> _decodeCustomProviders(String? raw) {
+    if (raw == null || raw.isEmpty) {
+      return const [];
+    }
+
+    List<dynamic> decoded;
+    try {
+      final value = jsonDecode(raw);
+      if (value is! List) {
+        return const [];
+      }
+      decoded = value;
+    } on FormatException {
+      return const [];
+    }
+
+    final definitions = <AcpCustomProviderDefinition>[];
+    for (final item in decoded) {
+      final definition = AcpCustomProviderDefinition.tryFromJson(item);
+      if (definition != null) {
+        definitions.add(definition);
+      }
+    }
+    return List.unmodifiable(definitions);
+  }
+
+  List<AcpProvider> _combineProviders(
+    List<AcpCustomProviderDefinition> customProviders,
+  ) => [
+    for (final builtin in builtinProviders) AcpBuiltinProviderView(builtin),
+    for (final definition in customProviders) AcpCustomProviderView(definition),
+  ];
 }
 
 /// Provider for [AcpProviderService].
@@ -138,6 +158,12 @@ final acpProviderServiceProvider = Provider<AcpProviderService>(
 
 /// Provider for the combined list of built-in and persisted custom ACP
 /// providers.
-final acpProvidersProvider = FutureProvider<List<AcpProvider>>(
-  (ref) => ref.watch(acpProviderServiceProvider).listAllProviders(),
+///
+/// Backed by [AcpProviderService.watchAllProviders], which streams from
+/// [SettingsService.watchString]. Watchers therefore refresh automatically
+/// after [AcpProviderService.saveCustomProvider] or
+/// [AcpProviderService.removeCustomProvider]; callers never need to manually
+/// invalidate this provider.
+final acpProvidersProvider = StreamProvider<List<AcpProvider>>(
+  (ref) => ref.watch(acpProviderServiceProvider).watchAllProviders(),
 );
