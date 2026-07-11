@@ -541,6 +541,13 @@ void main() {
         isNotNull,
         reason: 'Unicode placeholder clients reference the virtual placement',
       );
+      expect(
+        terminal.graphics.imageById(43),
+        isNull,
+        reason:
+            'virtual images stay encoded until visible placeholders need them',
+      );
+      expect(terminal.graphics.hasPendingImage(43), isTrue);
 
       await _decodeDeferredImage(terminal, 43);
 

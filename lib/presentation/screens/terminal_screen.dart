@@ -308,6 +308,19 @@ class _ClipboardUploadTarget {
       remoteShellPathForSftpPath(sftpPath, windows: windows);
 }
 
+typedef _UploadedAttachmentPasteMode = ({
+  String? activeWindowKey,
+  bool bracketedPasteMode,
+  int? connectionId,
+  bool isMuxActive,
+  RemoteMuxBackend muxBackend,
+  String? muxSessionName,
+  bool refreshAttempted,
+  bool refreshSucceeded,
+  SshSession? session,
+  Terminal terminal,
+});
+
 /// Resolves the retry schedule used for tmux detection after connect.
 @visibleForTesting
 List<Duration> resolveTmuxDetectionRetrySchedule({bool skipDelay = false}) =>
@@ -428,18 +441,40 @@ RemoteMuxBackend resolveRemoteMuxStartupBackend(
 @visibleForTesting
 String? resolveTmuxWindowWorkingDirectory({
   String? explicitWorkingDirectory,
+  String? configuredWorkingDirectory,
+  String? launchWorkingDirectory,
   String? currentPaneWorkingDirectory,
   String? observedWorkingDirectory,
-  String? launchWorkingDirectory,
+}) => _firstNonEmptyWorkingDirectory([
+  explicitWorkingDirectory,
+  configuredWorkingDirectory,
+  launchWorkingDirectory,
+  currentPaneWorkingDirectory,
+  observedWorkingDirectory,
+]);
+
+/// Resolves the host-configured directory for the active multiplexer session.
+@visibleForTesting
+String? resolveConfiguredMuxWorkingDirectory({
+  required AgentLaunchPreset? agentPreset,
+  required RemoteMuxBackend backend,
+  required String sessionName,
   String? hostWorkingDirectory,
 }) {
-  for (final candidate in <String?>[
-    explicitWorkingDirectory,
-    currentPaneWorkingDirectory,
-    observedWorkingDirectory,
-    launchWorkingDirectory,
+  final presetSessionName = agentPreset?.tmuxSessionName?.trim();
+  final presetMatchesSession =
+      agentPreset != null &&
+      agentPreset.usesMuxSession &&
+      agentPreset.effectiveRemoteMuxBackend == backend &&
+      presetSessionName == sessionName;
+  return _firstNonEmptyWorkingDirectory([
+    if (presetMatchesSession) agentPreset.workingDirectory,
     hostWorkingDirectory,
-  ]) {
+  ]);
+}
+
+String? _firstNonEmptyWorkingDirectory(Iterable<String?> candidates) {
+  for (final candidate in candidates) {
     final trimmed = candidate?.trim();
     if (trimmed != null && trimmed.isNotEmpty) {
       return trimmed;
@@ -822,6 +857,28 @@ bool? resolveTmuxBarActiveWindowBracketedPasteMode(
     .firstOrNull
     ?.terminalBracketedPasteMode;
 
+/// Resolves a stable identity for the active mux window.
+@visibleForTesting
+String? resolveTmuxBarActiveWindowKey(Iterable<TmuxWindow>? windows) {
+  final activeWindow = windows?.where((window) => window.isActive).firstOrNull;
+  if (activeWindow == null) {
+    return null;
+  }
+  return activeWindow.id ?? '#${activeWindow.index}';
+}
+
+/// Whether attachment input still targets the same settled mux window.
+@visibleForTesting
+bool terminalAttachmentPasteTargetsCurrentMuxWindow({
+  required bool hasPendingWindowSelection,
+  required String? pasteWindowKey,
+  required String? currentWindowKey,
+}) =>
+    !hasPendingWindowSelection &&
+    (pasteWindowKey == null ||
+        currentWindowKey == null ||
+        currentWindowKey == pasteWindowKey);
+
 /// Applies active mux-window bracketed-paste state to the local terminal.
 @visibleForTesting
 bool inheritTerminalBracketedPasteModeFromMuxWindow({
@@ -834,6 +891,25 @@ bool inheritTerminalBracketedPasteModeFromMuxWindow({
   }
   terminal.setBracketedPasteMode(activeWindowBracketedPasteMode);
   return true;
+}
+
+/// Refreshes [terminal] from the active window in a fresh mux snapshot.
+@visibleForTesting
+Future<({bool bracketedPasteMode, String? activeWindowKey})>
+refreshTerminalBracketedPasteModeFromMuxWindows({
+  required Terminal terminal,
+  required Future<Iterable<TmuxWindow>> Function() loadWindows,
+}) async {
+  final windows = await loadWindows();
+  inheritTerminalBracketedPasteModeFromMuxWindow(
+    terminal: terminal,
+    activeWindowBracketedPasteMode:
+        resolveTmuxBarActiveWindowBracketedPasteMode(windows),
+  );
+  return (
+    bracketedPasteMode: terminal.bracketedPasteMode,
+    activeWindowKey: resolveTmuxBarActiveWindowKey(windows),
+  );
 }
 
 String _telemetryMuxBackendName(RemoteMuxBackend backend) => switch (backend) {
@@ -3136,11 +3212,13 @@ enum _TerminalExclusiveAction { sftpBrowser, tmuxNavigator }
 class _PortForwardBrowserOption {
   const _PortForwardBrowserOption({
     required this.uri,
+    required this.sourceUri,
     required this.port,
     required this.title,
   });
 
   final Uri uri;
+  final Uri sourceUri;
   final int port;
   final String title;
 }
@@ -4759,6 +4837,188 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           resolveTmuxBarActiveWindowBracketedPasteMode(
             _currentTmuxWindowsSnapshot,
           ),
+    );
+  }
+
+  Future<_UploadedAttachmentPasteMode?>
+  _resolveUploadedAttachmentPasteMode() async {
+    _syncTerminalModesFromActiveMuxWindow();
+    final terminal = _terminal;
+    final connectionId = _connectionId;
+    final muxBackend = _activeMuxBackend;
+    final activeSession = _activeSession();
+    final isMuxActive = _isTmuxActive && _tmuxStateConnectionId == connectionId;
+    final currentActiveWindowKey = isMuxActive
+        ? resolveTmuxBarActiveWindowKey(_currentTmuxWindowsSnapshot)
+        : null;
+    final currentMuxSessionName = isMuxActive ? _tmuxSessionName : null;
+    if (!isMuxActive || muxBackend != RemoteMuxBackend.monkeyMux) {
+      return (
+        activeWindowKey: currentActiveWindowKey,
+        bracketedPasteMode: terminal.bracketedPasteMode,
+        connectionId: connectionId,
+        isMuxActive: isMuxActive,
+        muxBackend: muxBackend,
+        muxSessionName: currentMuxSessionName,
+        refreshAttempted: false,
+        refreshSucceeded: false,
+        session: activeSession,
+        terminal: terminal,
+      );
+    }
+
+    final session = activeSession;
+    final sessionName = session == null
+        ? null
+        : _activeMonkeyMuxSessionName(session);
+    if (session == null || sessionName == null) {
+      return (
+        activeWindowKey: resolveTmuxBarActiveWindowKey(
+          _currentTmuxWindowsSnapshot,
+        ),
+        bracketedPasteMode: terminal.bracketedPasteMode,
+        connectionId: connectionId,
+        isMuxActive: isMuxActive,
+        muxBackend: muxBackend,
+        muxSessionName: currentMuxSessionName,
+        refreshAttempted: false,
+        refreshSucceeded: false,
+        session: session,
+        terminal: terminal,
+      );
+    }
+
+    bool stillOwnsTerminalContext() =>
+        mounted &&
+        _connectionId == connectionId &&
+        identical(_activeSession(), session) &&
+        identical(_terminal, terminal) &&
+        _isTmuxActive == isMuxActive &&
+        _tmuxStateConnectionId == connectionId &&
+        _activeMuxBackend == muxBackend &&
+        _activeMonkeyMuxSessionName(session) == sessionName;
+
+    try {
+      final refreshedMode =
+          await refreshTerminalBracketedPasteModeFromMuxWindows(
+            terminal: terminal,
+            loadWindows: () async {
+              final windows = await _monkeyMuxService.refreshWindows(
+                session,
+                sessionName,
+                extraFlags: _activeTmuxExtraFlags,
+              );
+              return stillOwnsTerminalContext()
+                  ? windows
+                  : const <TmuxWindow>[];
+            },
+          );
+      if (!stillOwnsTerminalContext()) {
+        return null;
+      }
+      return (
+        activeWindowKey: refreshedMode.activeWindowKey,
+        bracketedPasteMode: refreshedMode.bracketedPasteMode,
+        connectionId: connectionId,
+        isMuxActive: isMuxActive,
+        muxBackend: muxBackend,
+        muxSessionName: sessionName,
+        refreshAttempted: true,
+        refreshSucceeded: true,
+        session: session,
+        terminal: terminal,
+      );
+    } on TimeoutException catch (error) {
+      _logAttachmentPasteModeRefreshFailure(session, error);
+    } on MonkeyMuxInstallException catch (error) {
+      _logAttachmentPasteModeRefreshFailure(session, error);
+    } on SSHError catch (error) {
+      _logAttachmentPasteModeRefreshFailure(session, error);
+    } on IOException catch (error) {
+      _logAttachmentPasteModeRefreshFailure(session, error);
+    }
+
+    if (!stillOwnsTerminalContext()) {
+      return null;
+    }
+    return (
+      activeWindowKey: resolveTmuxBarActiveWindowKey(
+        _currentTmuxWindowsSnapshot,
+      ),
+      bracketedPasteMode: terminal.bracketedPasteMode,
+      connectionId: connectionId,
+      isMuxActive: isMuxActive,
+      muxBackend: muxBackend,
+      muxSessionName: sessionName,
+      refreshAttempted: true,
+      refreshSucceeded: false,
+      session: session,
+      terminal: terminal,
+    );
+  }
+
+  bool _uploadedAttachmentPasteModeOwnsCurrentTerminalContext(
+    _UploadedAttachmentPasteMode pasteMode,
+  ) {
+    if (!mounted ||
+        _connectionId != pasteMode.connectionId ||
+        !identical(_activeSession(), pasteMode.session) ||
+        !identical(_terminal, pasteMode.terminal) ||
+        _isTmuxActive != pasteMode.isMuxActive ||
+        _activeMuxBackend != pasteMode.muxBackend) {
+      return false;
+    }
+    if (!pasteMode.isMuxActive) {
+      return true;
+    }
+    if (_tmuxStateConnectionId != pasteMode.connectionId) {
+      return false;
+    }
+    final session = _activeSession();
+    if (session == null) {
+      return false;
+    }
+    return pasteMode.muxBackend == RemoteMuxBackend.monkeyMux
+        ? _activeMonkeyMuxSessionName(session) == pasteMode.muxSessionName
+        : _tmuxSessionName == pasteMode.muxSessionName;
+  }
+
+  bool _sameUploadedAttachmentTerminalContext(
+    _UploadedAttachmentPasteMode previous,
+    _UploadedAttachmentPasteMode next,
+  ) =>
+      previous.connectionId == next.connectionId &&
+      identical(previous.session, next.session) &&
+      identical(previous.terminal, next.terminal) &&
+      previous.isMuxActive == next.isMuxActive &&
+      previous.muxBackend == next.muxBackend &&
+      previous.muxSessionName == next.muxSessionName;
+
+  bool _uploadedAttachmentPasteModeTargetsCurrentWindow(
+    _UploadedAttachmentPasteMode pasteMode,
+  ) {
+    final activeWindowKey = pasteMode.activeWindowKey;
+    if (!pasteMode.isMuxActive) {
+      return true;
+    }
+    return terminalAttachmentPasteTargetsCurrentMuxWindow(
+      hasPendingWindowSelection:
+          _tmuxBarKey.currentState?.hasPendingWindowSelection ?? false,
+      pasteWindowKey: activeWindowKey,
+      currentWindowKey: resolveTmuxBarActiveWindowKey(
+        _currentTmuxWindowsSnapshot,
+      ),
+    );
+  }
+
+  void _logAttachmentPasteModeRefreshFailure(SshSession session, Object error) {
+    DiagnosticsLogService.instance.warning(
+      'terminal.clipboard',
+      'attachment_mode_refresh_failed',
+      fields: {
+        'connectionId': session.connectionId,
+        'errorType': error.runtimeType,
+      },
     );
   }
 
@@ -8245,8 +8505,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _tmuxSessionName = command.sessionName;
       _tmuxStateConnectionId = session.connectionId;
       _showTmuxBar = true;
-      _tmuxLaunchWorkingDirectory = _host?.tmuxWorkingDirectory;
-      _tmuxWorkingDirectory = _host?.tmuxWorkingDirectory;
+      final configuredWorkingDirectory = _configuredRemoteMuxWorkingDirectory(
+        backend: command.backend,
+        sessionName: command.sessionName,
+      );
+      _tmuxLaunchWorkingDirectory = configuredWorkingDirectory;
+      _tmuxWorkingDirectory = configuredWorkingDirectory;
       _tmuxCurrentCommand = null;
       _shellCompletionTmuxContextRefreshedAt = null;
       _shellCompletionTmuxContextConnectionId = null;
@@ -8305,6 +8569,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       tmuxExtraFlags: host?.tmuxExtraFlags,
     );
   }
+
+  String? _configuredRemoteMuxWorkingDirectory({
+    required RemoteMuxBackend backend,
+    required String sessionName,
+  }) => resolveConfiguredMuxWorkingDirectory(
+    agentPreset: _autoConnectAgentPreset,
+    backend: backend,
+    sessionName: sessionName,
+    hostWorkingDirectory: _host?.tmuxWorkingDirectory,
+  );
 
   void _clearTmuxState() {
     _stopTmuxForegroundVerification();
@@ -8497,7 +8771,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
     final hadVisibleOrPrimedTmuxState =
         hasExistingVisibleTmuxState || shouldPrimeTmuxStateWhileDetecting;
-    final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
+    final preferredWorkingDirectory = candidateSessionName == null
+        ? null
+        : _configuredRemoteMuxWorkingDirectory(
+            backend: muxBackend,
+            sessionName: candidateSessionName,
+          );
     var confirmedTmuxActive = false;
     var hadDetectionFailure = false;
 
@@ -9530,9 +9809,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// Creates a new tmux window via exec channel, then reattaches the visible
   /// terminal if tmux is no longer in the foreground there.
   ///
-  /// Prefers the tmux session's current pane directory so "new window" starts
-  /// where the user is actually working, while still preserving explicit
-  /// working-directory overrides (e.g. resuming an AI session).
+  /// Uses explicit session-resume directories first, then the host's configured
+  /// directory. The session launch directory and active pane are fallbacks for
+  /// hosts without a configured directory.
   Future<void> _createTmuxWindow(
     SshSession session, {
     String? command,
@@ -9543,17 +9822,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (sessionName == null) return;
 
     final backend = _activeTerminalConnectionBackend(session);
+    final configuredWorkingDirectory = _configuredRemoteMuxWorkingDirectory(
+      backend: backend.remoteMuxBackend ?? _activeMuxBackend,
+      sessionName: sessionName,
+    );
+    var resolvedWorkingDirectory = resolveTmuxWindowWorkingDirectory(
+      explicitWorkingDirectory: workingDirectory,
+      configuredWorkingDirectory: configuredWorkingDirectory,
+      launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
+    );
     String? currentPaneWorkingDirectory;
-    if (!(workingDirectory?.trim().isNotEmpty ?? false)) {
+    if (resolvedWorkingDirectory == null) {
       currentPaneWorkingDirectory = await backend.currentPanePath();
     }
     if (!mounted) return;
-    final resolvedWorkingDirectory = resolveTmuxWindowWorkingDirectory(
-      explicitWorkingDirectory: workingDirectory,
+    resolvedWorkingDirectory ??= resolveTmuxWindowWorkingDirectory(
       currentPaneWorkingDirectory: currentPaneWorkingDirectory,
       observedWorkingDirectory: _tmuxWorkingDirectory ?? _workingDirectoryPath,
-      launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
-      hostWorkingDirectory: _host?.tmuxWorkingDirectory,
     );
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       await _syncActiveMonkeyMuxTerminalSize(
@@ -13349,20 +13634,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     if (isPortForwardBrowserSupported() &&
-        ref.read(portForwardBrowserLinksNotifierProvider) &&
-        shouldOpenUriInPortForwardBrowser(
+        ref.read(portForwardBrowserLinksNotifierProvider)) {
+      final options = _activePortForwardBrowserOptions();
+      _PortForwardBrowserOption? targetOption;
+      Uri? browserUri;
+      for (final option in options) {
+        final rewritten = rewriteUriForPortForwardBrowser(
           uri,
-          activeLocalPorts: _activeLocalForwardPorts(),
-        )) {
-      final browserUri = normalizePortForwardBrowserUri(uri);
-      await _openPortForwardBrowserOption(
-        _PortForwardBrowserOption(
-          uri: browserUri,
-          port: browserUri.port,
-          title: browserUri.authority,
-        ),
-      );
-      return;
+          sourceUri: option.sourceUri,
+          browserUri: option.uri,
+        );
+        if (rewritten != null) {
+          targetOption = option;
+          browserUri = rewritten;
+          break;
+        }
+      }
+      if (targetOption != null && browserUri != null) {
+        await _openPortForwardBrowserOption(
+          _PortForwardBrowserOption(
+            uri: browserUri,
+            sourceUri: targetOption.sourceUri,
+            port: targetOption.port,
+            title: targetOption.title,
+          ),
+        );
+        return;
+      }
     }
 
     var launched = false;
@@ -13378,9 +13676,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _showTerminalLinkMessage('Could not open $link');
   }
 
-  Iterable<int> _activeLocalForwardPorts() =>
-      _activePortForwardBrowserOptions().map((option) => option.port);
-
   List<_PortForwardBrowserOption> _activePortForwardBrowserOptions() {
     final connectionId = _connectionId;
     final session = connectionId == null
@@ -13392,17 +13687,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   tunnel.isLocal &&
                   isPortForwardBrowserHost(tunnel.localHost) &&
                   tunnel.localPort >= 1 &&
-                  tunnel.localPort <= 65535,
+                  tunnel.localPort <= 65535 &&
+                  tunnel.browserHost != null &&
+                  tunnel.browserPort != null &&
+                  tunnel.browserPort! >= 1 &&
+                  tunnel.browserPort! <= 65535,
             )
             .map((tunnel) {
-              final uri = buildPortForwardBrowserUriForBind(
+              final sourceUri = buildPortForwardBrowserUriForBind(
                 localHost: tunnel.localHost,
                 localPort: tunnel.localPort,
               );
+              final uri = buildPortForwardBrowserUriForBind(
+                localHost: tunnel.browserHost!,
+                localPort: tunnel.browserPort!,
+              );
               return _PortForwardBrowserOption(
                 uri: uri,
+                sourceUri: sourceUri,
                 port: tunnel.localPort,
-                title: uri.authority,
+                title: sourceUri.authority,
               );
             })
             .toList(growable: false) ??
@@ -13431,7 +13735,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       extra: PortForwardBrowserLaunch(
         tabs: [
           for (final option in options)
-            PortForwardBrowserInitialTab(uri: option.uri, title: option.title),
+            PortForwardBrowserInitialTab(
+              uri: option.uri,
+              sourceUri: option.sourceUri,
+              title: option.title,
+            ),
         ],
       ),
     );
@@ -14709,14 +15017,101 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     List<String> remotePaths, {
     required bool windows,
   }) async {
-    _syncTerminalModesFromActiveMuxWindow();
+    final pathCount = remotePaths
+        .where((remotePath) => remotePath.isNotEmpty)
+        .length;
+    if (pathCount == 0) {
+      return;
+    }
+    var pasteMode = await _resolveUploadedAttachmentPasteMode();
+    if (pasteMode == null || !mounted) {
+      return;
+    }
+    if (!_uploadedAttachmentPasteModeOwnsCurrentTerminalContext(pasteMode)) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'attachment_input_skipped_context_changed',
+        fields: {'connectionId': _connectionId, 'pathCount': pathCount},
+      );
+      return;
+    }
+    if (!_uploadedAttachmentPasteModeTargetsCurrentWindow(pasteMode)) {
+      final refreshedPasteMode = await _resolveUploadedAttachmentPasteMode();
+      if (refreshedPasteMode == null || !mounted) {
+        return;
+      }
+      if (!_sameUploadedAttachmentTerminalContext(
+            pasteMode,
+            refreshedPasteMode,
+          ) ||
+          !_uploadedAttachmentPasteModeOwnsCurrentTerminalContext(
+            refreshedPasteMode,
+          )) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'attachment_input_skipped_context_changed',
+          fields: {'connectionId': _connectionId, 'pathCount': pathCount},
+        );
+        return;
+      }
+      pasteMode = refreshedPasteMode;
+      if (!_uploadedAttachmentPasteModeTargetsCurrentWindow(pasteMode)) {
+        _syncTerminalModesFromActiveMuxWindow();
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'attachment_input_skipped_window_changed',
+          fields: {'connectionId': _connectionId, 'pathCount': pathCount},
+        );
+        return;
+      }
+    }
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
-      bracketedPasteMode: _terminal.bracketedPasteMode,
+      bracketedPasteMode: pasteMode.bracketedPasteMode,
       windows: windows,
+    );
+    final usedBracketedPaste = segments.any(
+      (segment) => segment.startsWith('\x1b[200~'),
+    );
+    DiagnosticsLogService.instance.debug(
+      'terminal.clipboard',
+      'attachment_input',
+      fields: {
+        'connectionId': _connectionId,
+        'pathCount': pathCount,
+        'bracketedPasteMode': pasteMode.bracketedPasteMode,
+        'usedBracketedPaste': usedBracketedPaste,
+        'modeRefreshAttempted': pasteMode.refreshAttempted,
+        'modeRefreshSucceeded': pasteMode.refreshSucceeded,
+      },
     );
     for (var i = 0; i < segments.length; i++) {
       if (!mounted) {
+        return;
+      }
+      if (!_uploadedAttachmentPasteModeOwnsCurrentTerminalContext(pasteMode)) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'attachment_input_stopped_context_changed',
+          fields: {
+            'connectionId': _connectionId,
+            'pathCount': pathCount,
+            'sentCount': i,
+          },
+        );
+        return;
+      }
+      if (!_uploadedAttachmentPasteModeTargetsCurrentWindow(pasteMode)) {
+        _syncTerminalModesFromActiveMuxWindow();
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'attachment_input_stopped_window_changed',
+          fields: {
+            'connectionId': _connectionId,
+            'pathCount': pathCount,
+            'sentCount': i,
+          },
+        );
         return;
       }
       _terminal.onOutput?.call(segments[i]);

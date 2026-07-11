@@ -5,10 +5,29 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to release (e.g., 1.2.0)'
+      channel:
+        description: 'Deployment channel'
         required: true
+        type: choice
+        default: production
+        options:
+          - production
+          - internal
+      ios:
+        description: 'Release iOS'
+        required: true
+        type: boolean
+        default: true
+      android:
+        description: 'Release Android'
+        required: true
+        type: boolean
+        default: true
+      version:
+        description: 'Exact x.y.z version override (blank selects automatically)'
+        required: false
         type: string
+        default: ''
 
 concurrency:
   group: release
@@ -27,19 +46,81 @@ jobs:
       build-number: ${{ steps.version.outputs.build-number }}
       build-codename: ${{ steps.version.outputs.build-codename }}
       build-display: ${{ steps.version.outputs.build-display }}
+      channel: ${{ steps.version.outputs.channel }}
+      release-ios: ${{ steps.version.outputs.release-ios }}
+      release-android: ${{ steps.version.outputs.release-android }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
+      - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1.316.0
+        if: github.event_name == 'release' || (inputs.channel == 'production' && inputs.ios)
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Test App Store version resolver
+        if: github.event_name == 'release' || (inputs.channel == 'production' && inputs.ios)
+        run: bundle exec ruby scripts/resolve_next_app_store_patch_version_test.rb
+
       - name: Compute version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_IOS: ${{ inputs.ios }}
+          INPUT_ANDROID: ${{ inputs.android }}
+          PREPARE_APP_STORE: ${{ github.event_name == 'release' || (inputs.channel == 'production' && inputs.ios) }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            BUILD_NAME="${{ github.event.release.tag_name }}"
-            BUILD_NAME="${BUILD_NAME#v}"
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            CHANNEL=production
+            RELEASE_IOS=true
+            RELEASE_ANDROID=true
+            REQUESTED_VERSION="${RELEASE_TAG#v}"
           else
-            BUILD_NAME="${{ inputs.version }}"
+            CHANNEL="$INPUT_CHANNEL"
+            RELEASE_IOS="$INPUT_IOS"
+            RELEASE_ANDROID="$INPUT_ANDROID"
+            REQUESTED_VERSION="${INPUT_VERSION#v}"
+          fi
+
+          if [ "$RELEASE_IOS" != "true" ] && [ "$RELEASE_ANDROID" != "true" ]; then
+            echo "::error title=No release platform selected::Select iOS, Android, or both."
+            exit 1
+          fi
+
+          VERSION_LINE="$(grep '^version:' pubspec.yaml | head -n 1)"
+          if [ -z "$VERSION_LINE" ]; then
+            echo "::error title=Missing app version::Unable to determine version from pubspec.yaml."
+            exit 1
+          fi
+          BASE_VERSION="$(printf '%s' "$VERSION_LINE" | sed 's/^version:[[:space:]]*//' | cut -d'+' -f1 | xargs)"
+
+          if [ "$PREPARE_APP_STORE" = "true" ]; then
+            VERSION_OUTPUT="$RUNNER_TEMP/release-version"
+            bundle exec ruby scripts/resolve_next_app_store_patch_version.rb \
+              "$BASE_VERSION" \
+              xyz.depollsoft.monkeyssh \
+              "$VERSION_OUTPUT" \
+              "$REQUESTED_VERSION" \
+              resolve
+            BUILD_NAME="$(cat "$VERSION_OUTPUT")"
+          else
+            BUILD_NAME="${REQUESTED_VERSION:-$BASE_VERSION}"
+          fi
+
+          if [[ ! "$BUILD_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid release version::Version must use numeric x.y.z format; received '$BUILD_NAME'."
+            exit 1
           fi
 
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
@@ -53,9 +134,15 @@ jobs:
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "build-codename=${BUILD_CODENAME}" >> "$GITHUB_OUTPUT"
           echo "build-display=${BUILD_DISPLAY}" >> "$GITHUB_OUTPUT"
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
+          echo "release-ios=${RELEASE_IOS}" >> "$GITHUB_OUTPUT"
+          echo "release-android=${RELEASE_ANDROID}" >> "$GITHUB_OUTPUT"
           echo "## Release Info" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${BUILD_DISPLAY}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Build Number:** ${BUILD_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Channel:** ${CHANNEL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **iOS:** ${RELEASE_IOS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Android:** ${RELEASE_ANDROID}" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     name: Build & Deploy Release
@@ -69,10 +156,13 @@ jobs:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
       build-codename: ${{ needs.compute-version.outputs.build-codename }}
+      build-ios: ${{ needs.compute-version.outputs.release-ios == 'true' }}
+      build-android: ${{ needs.compute-version.outputs.release-android == 'true' }}
+      enable-diagnostics: ${{ needs.compute-version.outputs.channel == 'internal' }}
       flavor: production
-      deploy-ios-to: appstore
-      deploy-android-to: production
-      sync-metadata: true
+      deploy-ios-to: ${{ needs.compute-version.outputs.release-ios == 'true' && (needs.compute-version.outputs.channel == 'production' && 'appstore' || 'testflight') || 'none' }}
+      deploy-android-to: ${{ needs.compute-version.outputs.release-android == 'true' && (needs.compute-version.outputs.channel == 'production' && 'production' || 'internal') || 'none' }}
+      sync-metadata: ${{ needs.compute-version.outputs.channel == 'production' }}
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -85,6 +175,10 @@ jobs:
       APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
       APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
       APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+      APP_REVIEW_CONTACT_FIRST_NAME: ${{ secrets.APP_REVIEW_CONTACT_FIRST_NAME }}
+      APP_REVIEW_CONTACT_LAST_NAME: ${{ secrets.APP_REVIEW_CONTACT_LAST_NAME }}
+      APP_REVIEW_CONTACT_EMAIL: ${{ secrets.APP_REVIEW_CONTACT_EMAIL }}
+      APP_REVIEW_CONTACT_PHONE: ${{ secrets.APP_REVIEW_CONTACT_PHONE }}
       FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON }}
       FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON }}
       FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST }}

@@ -54,6 +54,10 @@ abstract final class SettingKeys {
   /// Open forwarded localhost links in the embedded browser.
   static const portForwardBrowserLinks = 'port_forward_browser_links';
 
+  /// Whether legacy shared-origin WebView cookies have been cleared.
+  static const portForwardBrowserCookieIsolationMigration =
+      'port_forward_browser_cookie_isolation_v1';
+
   /// Enable shell completion popups while typing in the terminal.
   static const shellCompletions = 'shell_completions';
 

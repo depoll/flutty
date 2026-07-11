@@ -471,6 +471,7 @@ Host _buildHost({
   required int id,
   String? autoConnectCommand,
   String? tmuxSessionName,
+  String? tmuxWorkingDirectory,
   String? tmuxExtraFlags,
   RemoteMuxBackend? remoteMuxBackend,
 }) => Host(
@@ -481,6 +482,7 @@ Host _buildHost({
   username: 'root',
   autoConnectCommand: autoConnectCommand,
   tmuxSessionName: tmuxSessionName,
+  tmuxWorkingDirectory: tmuxWorkingDirectory,
   tmuxExtraFlags: tmuxExtraFlags,
   isFavorite: false,
   createdAt: DateTime(2026),
@@ -1429,14 +1431,23 @@ void main() {
         );
 
         await pumpScreen(tester);
-        // A real CLI (gh, `ls --hyperlink`, build tools, …) emits an OSC 8
-        // hyperlink whose label is plain text and whose URL is hidden, and its
-        // TUI enables SGR mouse tracking. Tapping the label must open the URL
-        // locally rather than forwarding a mouse click to the host (which would
-        // make the remote process open it server-side over SSH).
+        // Copilot CLI emits an OSC 8 hyperlink, closes it at the end of the
+        // label, and immediately erases the rest of that rendered TUI row. It
+        // also enables SGR mouse tracking. Tapping the label must still open the
+        // URL locally rather than forwarding an inert click to the host.
         session.terminal!
           ..write('\x1b[?1003h\x1b[?1006h')
-          ..write('\x1b]8;;$url\x07Issue #1\x1b]8;;\x07');
+          ..write(
+            [
+              '\x1b[4;2H',
+              '\x1b[4m',
+              '\x1b]8;id=md-link;$url\x07',
+              'Issue #1',
+              '\x1b[0m',
+              '\x1b]8;;\x07',
+              '\x1b[K',
+            ].join(),
+          );
         await tester.pumpAndSettle();
 
         final render = tester
@@ -1456,7 +1467,7 @@ void main() {
 
         // Tapping the hyperlink label opens locally and forwards nothing.
         shellWrites.clear();
-        await tester.tapAt(cellCenter(const CellOffset(3, 0)));
+        await tester.tapAt(cellCenter(const CellOffset(3, 3)));
         await tester.pumpAndSettle();
 
         expect(launchedUrls, [url]);
@@ -1746,6 +1757,8 @@ void main() {
               portForwardId: 42,
               localHost: '127.0.0.1',
               localPort: 49152,
+              browserHost: 'monkeyssh-16.localhost',
+              browserPort: 60142,
               remoteHost: 'example.com',
               remotePort: 80,
               isLocal: true,
@@ -1754,6 +1767,8 @@ void main() {
               portForwardId: 43,
               localHost: '0.0.0.0',
               localPort: 3000,
+              browserHost: 'monkeyssh-17.localhost',
+              browserPort: 60143,
               remoteHost: 'localhost',
               remotePort: 3000,
               isLocal: true,
@@ -1831,6 +1846,10 @@ void main() {
         final launch = openedLaunches.last;
         expect(launch.selectedIndex, 0);
         expect(launch.tabs.map((tab) => tab.uri.toString()).toList(), [
+          'http://monkeyssh-16.localhost:60142',
+          'http://monkeyssh-17.localhost:60143',
+        ]);
+        expect(launch.tabs.map((tab) => tab.sourceUri.toString()).toList(), [
           'http://127.0.0.1:49152',
           'http://127.0.0.1:3000',
         ]);
@@ -5590,6 +5609,45 @@ void main() {
         TargetPlatform.android,
         TargetPlatform.iOS,
       }),
+    );
+
+    testWidgets(
+      'new windows use the configured host directory without reading the active pane',
+      (tester) async {
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: 'work',
+          tmuxWorkingDirectory: '/home/demo/configured',
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.tap(find.text('New Window'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Empty window'));
+        await tester.pump();
+
+        verify(
+          () => tmuxService.createWindow(
+            session,
+            'work',
+            workingDirectory: '/home/demo/configured',
+          ),
+        ).called(1);
+        verifyNever(
+          () => tmuxService.currentPanePath(
+            session,
+            'work',
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
     testWidgets(

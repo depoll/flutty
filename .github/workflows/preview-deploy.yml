@@ -72,12 +72,24 @@ jobs:
       - name: Validate PR is safe to deploy
         id: validate
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+          INPUT_SOURCE_SHA: ${{ inputs.source-sha }}
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const pull_number = Number('${{ inputs.pr-number }}');
-            const requestedSourceSha = '${{ inputs.source-sha }}'.trim();
+            const pullNumberValue = (process.env.INPUT_PR_NUMBER || '').trim();
+            const requestedSourceSha = (process.env.INPUT_SOURCE_SHA || '').trim();
+            if (!/^[1-9][0-9]*$/.test(pullNumberValue)) {
+              core.setFailed('PR number must be a positive integer.');
+              return;
+            }
+            if (requestedSourceSha && !/^[0-9a-f]{40}$/.test(requestedSourceSha)) {
+              core.setFailed('Source SHA must be a full lowercase commit SHA.');
+              return;
+            }
+            const pull_number = Number(pullNumberValue);
             const {data: pr} = await github.rest.pulls.get({
               owner,
               repo,
@@ -133,9 +145,22 @@ jobs:
       - name: Reuse requested build version
         id: provided-version
         if: inputs.preview-build-name != '' && inputs.preview-build-number != ''
+        env:
+          PREVIEW_BUILD_NAME: ${{ inputs.preview-build-name }}
+          PREVIEW_BUILD_NUMBER: ${{ inputs.preview-build-number }}
         run: |
-          echo "build-name=${{ inputs.preview-build-name }}" >> "$GITHUB_OUTPUT"
-          echo "build-number=${{ inputs.preview-build-number }}" >> "$GITHUB_OUTPUT"
+          if [[ ! "$PREVIEW_BUILD_NAME" =~ ^[0-9]+(\.[0-9]+){2}(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error title=Invalid build name::Expected a semantic version such as 1.2.3 or 1.2.3-pr.42."
+            exit 1
+          fi
+          if [[ ! "$PREVIEW_BUILD_NUMBER" =~ ^[1-9][0-9]{0,9}$ ]] ||
+             (( PREVIEW_BUILD_NUMBER > 2147483647 )); then
+            echo "::error title=Invalid build number::Expected a positive Android-compatible build number."
+            exit 1
+          fi
+
+          printf 'build-name=%s\n' "$PREVIEW_BUILD_NAME" >> "$GITHUB_OUTPUT"
+          printf 'build-number=%s\n' "$PREVIEW_BUILD_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Compute version
         id: source-version
@@ -144,8 +169,13 @@ jobs:
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
 
-          echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          if [[ ! "$BASE_VERSION" =~ ^[0-9]+(\.[0-9]+){2}(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error title=Invalid source version::pubspec.yaml must contain a safe semantic version."
+            exit 1
+          fi
+
+          printf 'build-name=%s\n' "$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'build-number=%s\n' "$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Resolve codename
         id: version-codename
@@ -362,7 +392,8 @@ jobs:
             const rebuildRequired =
               '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
             const androidArtifactName = `android-unsigned-private-${buildName}-${buildNumber}`;
-            const iosArtifactName = `ios-unsigned-private-${buildName}-${buildNumber}.ipa`;
+            const iosArtifactName =
+              `ios-unsigned-private-${buildName}-${buildNumber}-${deploySha}.ipa`;
             // Android and iOS unsigned intermediates are produced by two separate
             // preview workflows (PR Preview / PR Preview iOS), so resolve each by
             // artifact name across the repo rather than assuming one shared run.
@@ -389,28 +420,72 @@ jobs:
             }
 
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const {data: previewIosWorkflow} = await github.rest.actions.getWorkflow({
+              owner,
+              repo,
+              workflow_id: 'preview-ios.yml',
+            });
 
             // Returns the run id of a non-expired artifact with the exact name that
-            // was produced by a run for the deploy SHA, or null if not present yet.
-            const findArtifactRunId = async (name) => {
+            // was produced by the expected workflow/source, or null if not present yet.
+            const findArtifactRunId = async ({
+              name,
+              expectedHeadSha = '',
+              expectedWorkflowId = null,
+            }) => {
               const artifacts = await github.paginate(
                 github.rest.actions.listArtifactsForRepo,
                 {owner, repo, name, per_page: 100},
               );
-              const match = artifacts.find(
-                (artifact) =>
-                  !artifact.expired &&
-                  artifact.name === name &&
-                  artifact.workflow_run?.head_sha === deploySha,
+              const candidates = artifacts.filter(
+                (artifact) => !artifact.expired && artifact.name === name,
               );
-              return match ? String(match.workflow_run.id) : null;
+
+              for (const artifact of candidates) {
+                const workflowRun = artifact.workflow_run;
+                if (!workflowRun?.id) {
+                  continue;
+                }
+                if (expectedHeadSha && workflowRun.head_sha !== expectedHeadSha) {
+                  continue;
+                }
+                if (expectedWorkflowId !== null) {
+                  const {data: run} = await github.rest.actions.getWorkflowRun({
+                    owner,
+                    repo,
+                    run_id: workflowRun.id,
+                  });
+                  if (
+                    run.workflow_id !== expectedWorkflowId ||
+                    run.event !== 'workflow_run'
+                  ) {
+                    continue;
+                  }
+                }
+                return String(workflowRun.id);
+              }
+
+              return null;
             };
 
             let androidRunId = null;
             let iosRunId = null;
             for (let attempt = 0; attempt < maxWaitAttempts; attempt += 1) {
-              androidRunId = androidRunId ?? (await findArtifactRunId(androidArtifactName));
-              iosRunId = iosRunId ?? (await findArtifactRunId(iosArtifactName));
+              androidRunId =
+                androidRunId ??
+                (await findArtifactRunId({
+                  name: androidArtifactName,
+                  expectedHeadSha: deploySha,
+                }));
+              // workflow_run-triggered iOS runs report main's SHA in artifact
+              // metadata. The source-qualified artifact name binds it to the PR
+              // commit, while the workflow id verifies the trusted producer.
+              iosRunId =
+                iosRunId ??
+                (await findArtifactRunId({
+                  name: iosArtifactName,
+                  expectedWorkflowId: previewIosWorkflow.id,
+                }));
               if (androidRunId && iosRunId) {
                 break;
               }
@@ -625,7 +700,7 @@ jobs:
       android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.ios-run-id || '' }}
-      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}.ipa', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
+      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}-{3}.ipa', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number, needs.validate-pr.outputs.deploy-sha) || '' }}
       ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       update-pr-deploy-comment: true
