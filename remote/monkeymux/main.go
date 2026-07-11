@@ -56,7 +56,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.93"
+	monkeyMuxVersion                  = "0.1.94"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -66,6 +66,7 @@ const (
 	runCommandOutputMaxBytes          = 8 * 1024 * 1024
 	runCommandTimeout                 = 20 * time.Second
 	socketTimeout                     = 2 * time.Second
+	idleUpgradeTimeout                = 25 * time.Second
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
 	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
 	windowUpdateMinInterval           = 750 * time.Millisecond
@@ -178,6 +179,7 @@ var capabilities = []string{
 	"attach-update-policy",
 	"attach-state",
 	"upgrade-restore-v1",
+	"idle-upgrade-v1",
 }
 
 var (
@@ -185,6 +187,7 @@ var (
 	errRunCommandClientClosed = errors.New("control client closed")
 	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
 	errRunCommandTimeout      = errors.New("command timed out")
+	errServerUpgradeBusy      = errors.New("MonkeyMux server upgrade is busy")
 )
 
 var simulateForegroundResize = func(window *muxWindow, width int, height int) {
@@ -252,6 +255,7 @@ const (
 	serverUpdatePolicyPrompt = "prompt"
 	serverUpdatePolicyNever  = "never"
 	serverUpdatePolicyAlways = "always"
+	serverUpdatePolicyIdle   = "idle"
 )
 
 var (
@@ -328,6 +332,7 @@ type controlResponse struct {
 	Data           string           `json:"data,omitempty"`
 	ExitCode       int              `json:"exitCode,omitempty"`
 	HasAttach      bool             `json:"hasForegroundClient,omitempty"`
+	Upgrading      bool             `json:"upgrading,omitempty"`
 	Restore        *serverRestore   `json:"restore,omitempty"`
 }
 
@@ -381,16 +386,18 @@ type muxServer struct {
 	width   int
 	height  int
 
-	mu         sync.Mutex
-	windows    []*muxWindow
-	activeID   string
-	nextID     int
-	listener   net.Listener
-	attachConn net.Conn
-	attachMu   sync.Mutex
-	controls   map[*controlClient]struct{}
-	themeHint  []byte
-	closed     bool
+	mu          sync.Mutex
+	windows     []*muxWindow
+	activeID    string
+	nextID      int
+	listener    net.Listener
+	attachConn  net.Conn
+	attachMu    sync.Mutex
+	lifecycleMu sync.Mutex
+	controls    map[*controlClient]struct{}
+	themeHint   []byte
+	closed      bool
+	upgrading   bool
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -632,6 +639,9 @@ func controlCommand(args []string) {
 		usageAndExit()
 	}
 	session := fs.Arg(0)
+	if err := upgradeIdleServerForControl(session); err != nil {
+		fatal(err)
+	}
 
 	conn, err := dialSession(session)
 	if err != nil {
@@ -732,6 +742,42 @@ func gcCommand() {
 	}
 }
 
+func upgradeIdleServerForControl(session string) error {
+	_, err := maybeUpgradeIdleServerForControl(
+		session,
+		queryRunningServerStatus,
+		func() (bool, error) {
+			err := ensureServer(
+				session,
+				createWindowOptions{},
+				serverUpdatePolicyIdle,
+				false,
+				0,
+				0,
+			)
+			if errors.Is(err, errServerUpgradeBusy) {
+				return false, nil
+			}
+			return err == nil, err
+		},
+	)
+	return err
+}
+
+func maybeUpgradeIdleServerForControl(
+	session string,
+	statusProbe func(string) (runningServerStatus, error),
+	upgrade func() (bool, error),
+) (bool, error) {
+	status, err := statusProbe(session)
+	if err != nil ||
+		status.version == monkeyMuxVersion ||
+		!status.supportsCapability("idle-upgrade-v1") {
+		return false, nil
+	}
+	return upgrade()
+}
+
 func ensureServer(
 	session string,
 	initialWindow createWindowOptions,
@@ -741,40 +787,85 @@ func ensureServer(
 	height int,
 ) error {
 	var restore *serverRestore
-	if status, err := queryRunningServerStatus(session); err == nil {
+	status, statusErr := queryRunningServerStatus(session)
+	if statusErr != nil && updatePolicy == serverUpdatePolicyIdle {
+		return errServerUpgradeBusy
+	}
+	if statusErr == nil {
+		if status.upgrading {
+			if waitForServerVersion(session, monkeyMuxVersion, idleUpgradeTimeout) {
+				return nil
+			}
+			return fmt.Errorf(
+				"timed out waiting for MonkeyMux session %q to finish upgrading",
+				session,
+			)
+		}
 		if status.version == monkeyMuxVersion {
 			return nil
 		}
-		if !shouldUpdateRunningServer(
-			os.Stdin,
-			os.Stderr,
-			session,
-			status,
-			updatePolicy,
-		) {
-			return nil
-		}
-		restore = collectServerRestore(session, status)
-		if restore != nil {
-			restore.StartInYoloMode = startInYoloMode
-		}
-		if status.supportsCapability("shutdown") {
-			requestServerShutdown(session)
+		if updatePolicy == serverUpdatePolicyIdle {
+			if !status.supportsCapability("idle-upgrade-v1") {
+				return errServerUpgradeBusy
+			}
+			var claimed bool
+			var err error
+			restore, claimed, err = requestIdleServerUpgrade(session)
+			if err != nil {
+				return err
+			}
+			if !claimed {
+				if latest, err := queryRunningServerStatus(session); err == nil &&
+					latest.upgrading {
+					if waitForServerVersion(session, monkeyMuxVersion, idleUpgradeTimeout) {
+						return nil
+					}
+					return fmt.Errorf(
+						"timed out waiting for MonkeyMux session %q to finish upgrading",
+						session,
+					)
+				}
+				return errServerUpgradeBusy
+			}
+			if restore != nil {
+				restore.StartInYoloMode = startInYoloMode
+			}
 			if !waitForServerExit(session, 2*time.Second) {
-				fmt.Fprintf(
-					os.Stderr,
-					"monkeymux: running session did not exit; continuing with helper %s\r\n",
-					status.displayVersion(),
+				return fmt.Errorf(
+					"MonkeyMux session %q did not exit for an idle upgrade",
+					session,
 				)
-				return nil
 			}
 		} else {
-			fmt.Fprintf(
+			if !shouldUpdateRunningServer(
+				os.Stdin,
 				os.Stderr,
-				"monkeymux: abandoning helper %s socket and starting helper %s\r\n",
-				status.displayVersion(),
-				monkeyMuxVersion,
-			)
+				session,
+				status,
+				updatePolicy,
+			) {
+				return nil
+			}
+			restore = collectServerRestore(session, status)
+			if restore != nil {
+				restore.StartInYoloMode = startInYoloMode
+			}
+			if status.supportsCapability("shutdown") {
+				requestServerShutdown(session)
+				if !waitForServerExit(session, 2*time.Second) {
+					return fmt.Errorf(
+						"running MonkeyMux session %q did not exit; disconnect and reconnect to finish updating",
+						session,
+					)
+				}
+			} else {
+				fmt.Fprintf(
+					os.Stderr,
+					"monkeymux: abandoning helper %s socket and starting helper %s\r\n",
+					status.displayVersion(),
+					monkeyMuxVersion,
+				)
+			}
 		}
 	}
 
@@ -912,6 +1003,59 @@ func requestServerRestore(session string) (*serverRestore, error) {
 			return nil, errors.New("empty restore snapshot")
 		}
 		return response.Restore, nil
+	}
+}
+
+func requestIdleServerUpgrade(
+	session string,
+) (*serverRestore, bool, error) {
+	conn, err := dialSession(session)
+	if err != nil {
+		return nil, false, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(idleUpgradeTimeout))
+
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return nil, false, err
+	}
+	if _, err := readControlHello(dec); err != nil {
+		return nil, false, err
+	}
+	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := enc.Encode(controlMessage{
+		ID:      requestID,
+		Type:    "idle_upgrade",
+		Session: session,
+	}); err != nil {
+		return nil, false, err
+	}
+	for {
+		var response controlResponse
+		if err := dec.Decode(&response); err != nil {
+			return nil, false, err
+		}
+		if response.ID != requestID {
+			continue
+		}
+		if response.Status == "busy" {
+			return nil, false, nil
+		}
+		if response.Status == "error" || response.Type == "error" {
+			return nil, false, errors.New(response.Error)
+		}
+		if response.Type != "idle_upgrade" {
+			return nil, false, fmt.Errorf(
+				"unexpected MonkeyMux idle-upgrade response %q",
+				response.Type,
+			)
+		}
+		if response.Restore == nil || len(response.Restore.Windows) == 0 {
+			return nil, false, errors.New("empty idle-upgrade restore snapshot")
+		}
+		return response.Restore, true, nil
 	}
 }
 
@@ -3330,7 +3474,14 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	var themeHintWindowID string
 	var sendFocusTransition bool
 	var sendFocusRefresh bool
+	s.lifecycleMu.Lock()
 	s.mu.Lock()
+	if s.closed || s.upgrading {
+		s.mu.Unlock()
+		s.lifecycleMu.Unlock()
+		_ = conn.Close()
+		return
+	}
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
 	}
@@ -3356,6 +3507,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		}
 	}
 	s.mu.Unlock()
+	s.lifecycleMu.Unlock()
 	s.attachMu.Lock()
 	redrew := s.writeAttachReplayAndResizeLocked(conn, replay, redrawWindow)
 	s.flushPendingTerminalQueriesLocked(conn, activeWindowID)
@@ -3410,6 +3562,7 @@ func (s *muxServer) handleControl(conn net.Conn, reader *bufio.Reader) {
 		Version:      monkeyMuxVersion,
 		Session:      s.session,
 		Capabilities: capabilities,
+		Upgrading:    s.isUpgrading(),
 	})
 	client.send(controlResponse{
 		Type:    "window_list",
@@ -3435,6 +3588,33 @@ func (s *muxServer) handleControl(conn net.Conn, reader *bufio.Reader) {
 }
 
 func (s *muxServer) handleControlRequest(client *controlClient, request controlMessage) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if request.Type == "idle_upgrade" {
+		restore, claimed := s.prepareIdleUpgradeLocked()
+		if !claimed {
+			client.send(controlResponse{
+				ID:      request.ID,
+				Type:    "idle_upgrade",
+				Status:  "busy",
+				Session: s.session,
+			})
+			return
+		}
+		client.send(controlResponse{
+			ID:      request.ID,
+			Type:    "idle_upgrade",
+			Status:  "ok",
+			Session: s.session,
+			Restore: restore,
+		})
+		go s.close()
+		return
+	}
+	if s.isUpgrading() {
+		client.sendError(request, errors.New("MonkeyMux server upgrade in progress"))
+		return
+	}
 	switch request.Type {
 	case "ping":
 		client.send(controlResponse{ID: request.ID, Type: "pong", Status: "ok"})
@@ -3725,10 +3905,39 @@ func (s *muxServer) snapshotsLocked() []windowSnapshot {
 	return windows
 }
 
+func (s *muxServer) isUpgrading() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upgrading
+}
+
+func (s *muxServer) prepareIdleUpgrade() (*serverRestore, bool) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.prepareIdleUpgradeLocked()
+}
+
+func (s *muxServer) prepareIdleUpgradeLocked() (*serverRestore, bool) {
+	s.mu.Lock()
+	if s.closed || s.upgrading || s.attachConn != nil {
+		s.mu.Unlock()
+		return nil, false
+	}
+	s.upgrading = true
+	restore := s.restoreSnapshotLocked()
+	s.mu.Unlock()
+
+	enrichRestoreWithAgentSessionIDs(restore)
+	return restore, true
+}
+
 func (s *muxServer) restoreSnapshot() *serverRestore {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.restoreSnapshotLocked()
+}
 
+func (s *muxServer) restoreSnapshotLocked() *serverRestore {
 	restore := &serverRestore{
 		SchemaVersion: restoreSchemaVersion,
 		Windows:       make([]restoreWindowState, 0, len(s.windows)),
@@ -6987,6 +7196,7 @@ func (s *muxServer) isClosed() bool {
 type runningServerStatus struct {
 	version      string
 	capabilities []string
+	upgrading    bool
 }
 
 func (s runningServerStatus) displayVersion() string {
@@ -7092,6 +7302,7 @@ func queryRunningServerStatus(session string) (runningServerStatus, error) {
 	return runningServerStatus{
 		version:      hello.Version,
 		capabilities: hello.Capabilities,
+		upgrading:    hello.Upgrading,
 	}, nil
 }
 
@@ -7127,6 +7338,22 @@ func waitForServerExit(session string, timeout time.Duration) bool {
 			return true
 		}
 		_ = conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+func waitForServerVersion(
+	session string,
+	version string,
+	timeout time.Duration,
+) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, err := queryRunningServerStatus(session)
+		if err == nil && status.version == version && !status.upgrading {
+			return true
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return false

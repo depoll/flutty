@@ -6191,9 +6191,30 @@ void main() {
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
 
-    testWidgets(
-      'uses MonkeyMux helper update prompt as server update approval',
-      (tester) async {
+    for (final testCase in const [
+      (
+        name: 'restarts an idle MonkeyMux server after helper update approval',
+        hasForegroundClient: false,
+        supportsIdleUpgrade: false,
+        expectedPolicy: 'always',
+        expectsDeferredNotice: false,
+      ),
+      (
+        name: 'defers a MonkeyMux server update while a terminal is attached',
+        hasForegroundClient: true,
+        supportsIdleUpgrade: false,
+        expectedPolicy: 'never',
+        expectsDeferredNotice: true,
+      ),
+      (
+        name: 'defers an atomic-capable server that remains mismatched',
+        hasForegroundClient: true,
+        supportsIdleUpgrade: true,
+        expectedPolicy: 'never',
+        expectsDeferredNotice: true,
+      ),
+    ]) {
+      testWidgets(testCase.name, (tester) async {
         final monkeyMuxInstallerService = _PromptingMonkeyMuxInstallerService(
           request: const MonkeyMuxInstallRequest(
             platform: 'darwin-arm64',
@@ -6206,9 +6227,12 @@ void main() {
             version: '0.1.13',
             capabilities: {'shutdown'},
           )
-          ..runningStatus = const MonkeyMuxServerStatus(
+          ..runningStatus = MonkeyMuxServerStatus(
             version: '0.1.13',
-            capabilities: {'shutdown'},
+            capabilities: {
+              'shutdown',
+              if (testCase.supportsIdleUpgrade) 'idle-upgrade-v1',
+            },
           );
         final tmuxService = _MockTmuxService();
         const sessionName = 'work';
@@ -6234,10 +6258,14 @@ void main() {
           executedCommands.add(invocation.positionalArguments.single as String);
           return shellChannel;
         });
+        var hasForegroundClientCalls = 0;
         when(
           () =>
               monkeyMuxService.hasForegroundClientOrThrow(session, sessionName),
-        ).thenAnswer((_) async => true);
+        ).thenAnswer((_) async {
+          hasForegroundClientCalls++;
+          return hasForegroundClientCalls != 1 || testCase.hasForegroundClient;
+        });
         when(
           () => monkeyMuxService.listWindows(session, sessionName),
         ).thenAnswer(
@@ -6299,7 +6327,10 @@ void main() {
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
         expect(startupCommand, contains("'/tmp/monkeymux' attach"));
-        expect(startupCommand, contains('--update-policy always'));
+        expect(
+          startupCommand,
+          contains('--update-policy ${testCase.expectedPolicy}'),
+        );
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[true]);
         expect(
@@ -6307,11 +6338,17 @@ void main() {
           1,
         );
         expect(monkeyMuxService.runningServerStatusCalls, 1);
+        expect(
+          find.text(
+            'MonkeyMux was updated, but this workspace is still using the '
+            'previous server. Restart the workspace to finish updating.',
+          ),
+          testCase.expectsDeferredNotice ? findsOneWidget : findsNothing,
+        );
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
-      },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
-    );
+      }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+    }
 
     testWidgets(
       'opens a regular terminal when MonkeyMux install prompt is declined',

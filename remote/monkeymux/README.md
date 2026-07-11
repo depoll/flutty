@@ -10,17 +10,19 @@ The foreground path is intentionally a direct byte relay. MonkeyMux does not
 parse, cache, wrap, or rewrite terminal control sequences in the hot path. All
 structured state and commands belong on the control backchannel.
 
-`attach` is the only command that starts a session server. Optional `--cwd`,
-`--name`, and `--command` flags seed the initial window only when a new server
-is created, so MonkeySSH can launch a coding agent without creating a duplicate
-window on reconnect. The server inherits the environment from the shell that
-launched `attach` exactly, so profile-managed values such as `PATH` and
-tool-specific variables remain user-owned. PTY windows inherit that environment
-and add terminal defaults such as `TERM=xterm-256color` and
-`COLORTERM=truecolor` only when the launch environment does not already provide
-usable terminal hints. They also advertise `FORCE_HYPERLINK=1` (unless already
-set) so OSC 8 capable CLIs such as Copilot and `gh` emit clickable hyperlinks,
-which MonkeySSH renders and opens.
+`attach` starts new session servers. A newer `control` client may also replace
+an older server before connecting, but only while no foreground terminal is
+attached; it restores the existing windows and leaves active terminals
+uninterrupted. Optional `--cwd`, `--name`, and `--command` flags seed the
+initial window only when a new server is created, so MonkeySSH can launch a
+coding agent without creating a duplicate window on reconnect. The server
+inherits the environment from the command that launched it exactly, so
+profile-managed values such as `PATH` and tool-specific variables remain
+user-owned. PTY windows inherit that environment and add terminal defaults such
+as `TERM=xterm-256color` and `COLORTERM=truecolor` only when the launch
+environment does not already provide usable terminal hints. They also advertise
+`FORCE_HYPERLINK=1` (unless already set) so OSC 8 capable CLIs such as Copilot
+and `gh` emit clickable hyperlinks, which MonkeySSH renders and opens.
 
 Window switching and reconnect repaint from raw byte history for the selected
 window. Main-screen shell history is capped for responsive switching; active
@@ -55,6 +57,13 @@ before replacing that session. Choosing no attaches to the running server
 best-effort so app updates do not silently discard in-progress windows. If the
 old helper predates safe shutdown support, the prompt says the update may
 abandon existing windows before starting the newer helper.
+
+JSON `control` clients update a mismatched server automatically when it supports
+the atomic idle-upgrade handshake. The server claims the upgrade and snapshots
+its windows only if no foreground terminal is attached, then rejects new
+attaches until the replacement is ready. If a terminal is attached, the control
+client keeps using the running server so background window operations cannot
+interrupt active work.
 
 The target matrix covers Linux and macOS on amd64 and arm64, plus Windows on
 amd64 and arm64. On Windows the foreground path is backed by a ConPTY

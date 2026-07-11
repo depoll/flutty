@@ -27,6 +27,7 @@ typedef _MonkeyMuxAgentSessionMetadata = ({
 const _oneShotControlResponseTimeout = Duration(seconds: 10);
 const _oneShotRunCommandResponseTimeout = Duration(seconds: 25);
 const _monkeyMuxSessionStdinCloseTimeout = Duration(milliseconds: 250);
+const _monkeyMuxServerStatusTimeout = Duration(seconds: 30);
 
 /// MonkeyMux-backed implementation of [RemoteMultiplexerService].
 final monkeyMuxServiceProvider = Provider<MonkeyMuxService>(
@@ -69,6 +70,10 @@ class MonkeyMuxServerStatus {
 
   /// Whether the server can be shut down through the control channel.
   bool get supportsShutdown => capabilities.contains('shutdown');
+
+  /// Whether a newer control client can atomically claim and replace this
+  /// server while no foreground terminal is attached.
+  bool get supportsIdleUpgrade => capabilities.contains('idle-upgrade-v1');
 
   /// Whether this server differs from the app-bundled helper version.
   bool needsUpdate(String bundledVersion) {
@@ -1033,7 +1038,7 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
             .cast<List<int>>()
             .transform(utf8.decoder)
             .transform(const LineSplitter())
-            .timeout(const Duration(seconds: 5))) {
+            .timeout(_monkeyMuxServerStatusTimeout)) {
       final response = _MonkeyMuxControlResponse.tryParse(line);
       if (response == null || response.type != 'hello') {
         continue;
