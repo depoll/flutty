@@ -8,17 +8,25 @@ import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/xterm.dart';
 
-Future<String> _buildPngBase64(int width, int height) async {
-  final image = await _buildImage(width, height);
+Future<String> _buildPngBase64(
+  int width,
+  int height, {
+  Color color = const Color(0xFFFF0000),
+}) async {
+  final image = await _buildImage(width, height, color: color);
   final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
   return base64.encode(bytes!.buffer.asUint8List());
 }
 
-Future<ui.Image> _buildImage(int width, int height) async {
+Future<ui.Image> _buildImage(
+  int width,
+  int height, {
+  Color color = const Color(0xFFFF0000),
+}) async {
   final recorder = ui.PictureRecorder();
   ui.Canvas(recorder).drawRect(
     Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
-    Paint()..color = const Color(0xFFFF0000),
+    Paint()..color = color,
   );
   return recorder.endRecording().toImage(width, height);
 }
@@ -750,6 +758,63 @@ void main() {
     });
   });
 
+  testWidgets('Copilot c-only animation survives the following prompt', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final root = await _buildPngBase64(240, 160);
+      final teal = await _buildPngBase64(
+        240,
+        160,
+        color: const Color(0xFF00A6A6),
+      );
+      final purple = await _buildPngBase64(
+        240,
+        160,
+        color: const Color(0xFF5B5BD6),
+      );
+      final terminal = Terminal();
+      terminal.graphics.setCellPixelSize(10, 20);
+
+      terminal
+        ..write('\x1b_Ga=T,f=100,i=3102001,q=2,c=30,m=0;$root\x1b\\')
+        ..write('\x1b_Ga=a,i=3102001,r=1,z=450,q=2\x1b\\')
+        ..write(
+          '\x1b_Ga=f,f=100,i=3102001,q=2,z=450,X=1,m=0;'
+          '$teal\x1b\\',
+        )
+        ..write(
+          '\x1b_Ga=f,f=100,i=3102001,q=2,z=450,X=1,m=0;'
+          '$purple\x1b\\',
+        )
+        ..write('\x1b_Ga=a,i=3102001,s=3,v=1,q=2\x1b\\');
+
+      var waited = 0;
+      while ((terminal.graphics.imageById(3102001)?.frameCount ?? 0) < 3 &&
+          waited < 3000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.buffer.cursorY, 10);
+      expect(terminal.graphics.placements, hasLength(1));
+
+      // Copilot/shell redraws the current row after the image command. The
+      // placement is anchored above it and must remain active.
+      terminal.write('\x1b[2Kprompt');
+      expect(terminal.graphics.placements, hasLength(1));
+      expect(terminal.graphics.hasActiveAnimations, isTrue);
+
+      final image = terminal.graphics.imageById(3102001)!;
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 450),
+        ),
+        isTrue,
+      );
+      expect(image.currentFrame, 2);
+    });
+  });
+
   testWidgets('protocol animation frames respect the decoded memory cap', (
     tester,
   ) async {
@@ -1243,6 +1308,55 @@ void main() {
 
       // 'X' should land three rows below where the image was anchored.
       expect(terminal.buffer.lines[3].getText().trimRight(), 'X');
+    });
+  });
+
+  testWidgets('a=T computes cursor rows when only c is specified', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(240, 160);
+      final terminal = Terminal();
+      terminal.graphics.setCellPixelSize(10, 20);
+
+      terminal.write('\x1b_Ga=T,f=100,c=30;$pngBase64\x1b\\X');
+
+      // 240x160 at 30 ten-pixel columns is 200 pixels high, or ten rows.
+      expect(terminal.buffer.lines[10].getText().trimRight(), 'X');
+      expect(terminal.buffer.lines[0].getText().trimRight(), isEmpty);
+    });
+  });
+
+  testWidgets('c-only cursor rows use the effective source crop', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(240, 160);
+      final terminal = Terminal();
+      terminal.graphics.setCellPixelSize(10, 20);
+
+      terminal.write(
+        '\x1b_Ga=T,f=100,c=30,x=120;$pngBase64\x1b\\X',
+      );
+
+      // Cropping 120 pixels from the 240-pixel width leaves a 120x160 source.
+      expect(terminal.buffer.lines[20].getText().trimRight(), 'X');
+    });
+  });
+
+  testWidgets('a=p computes cursor rows when only c is specified', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(240, 160);
+      final terminal = Terminal();
+      terminal.graphics.setCellPixelSize(10, 20);
+      terminal.write('\x1b_Ga=t,f=100,i=42;$pngBase64\x1b\\');
+      await _decodeDeferredImage(terminal, 42);
+
+      terminal.write('\x1b_Ga=p,i=42,c=30\x1b\\X');
+
+      expect(terminal.buffer.lines[10].getText().trimRight(), 'X');
     });
   });
 

@@ -107,8 +107,10 @@ out of scope.
   composition and control commands so reconnects/window switches do not restore
   only a static root image. Android UI animation scales no longer pause terminal
   media (a common emulator/developer setting), while iOS Reduce Motion still
-  keeps animated images static. Keep the frame model and animation APIs in
-  `graphics_manager.dart` when re-syncing.
+  keeps animated images static. Width-only/height-only placements now preserve
+  aspect ratio and compute the missing cursor row span, so Copilot CLI's
+  `a=T,c=...` animation is not erased by its next prompt redraw. Keep the frame
+  model and animation APIs in `graphics_manager.dart` when re-syncing.
 * XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
   implements the kitty graphics + keyboard protocols, so it reports a
   kitty-family identity. CLIs such as the GitHub Copilot CLI gate their richer

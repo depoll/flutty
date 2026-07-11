@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:math' show max;
+import 'dart:math' show max, min;
 import 'dart:typed_data';
 
 import 'package:xterm/src/base/observable.dart';
@@ -1430,7 +1430,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // redrawing a full-screen image in place keeps the cursor where it is, and
     // advancing it past the bottom margin would scroll the screen.
     final keepCursor = args['C'] == '1';
-    final rows = int.tryParse(args['r'] ?? '') ?? 0;
+    final rows = _graphicsDisplayRows(args, data, buffer.graphics);
     if (shouldPlace && !keepCursor) {
       for (var i = 0; i < rows; i++) {
         buffer.index();
@@ -1893,25 +1893,34 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   void _placeStoredGraphics(Map<String, String> args) {
+    final manager = _buffer.graphics;
     var imageId = int.tryParse(args['i'] ?? '');
     // a=p may address the image by number (`I=`) instead of id.
     if (imageId == null) {
       final number = int.tryParse(args['I'] ?? '');
       if (number != null) {
-        imageId = _buffer.graphics.imageIdForNumber(number);
+        imageId = manager.imageIdForNumber(number);
       }
     }
-    if (imageId == null ||
-        (_buffer.graphics.imageById(imageId) == null &&
-            !_buffer.graphics.hasPendingImage(imageId))) {
+    if (imageId == null) {
+      return;
+    }
+    final image = manager.imageById(imageId);
+    if (image == null && !manager.hasPendingImage(imageId)) {
       return;
     }
     final anchor = _buffer.currentLine.createAnchor(_buffer.cursorX);
-    _placeImageWithDisplayArgs(_buffer.graphics, imageId, anchor, args);
+    _placeImageWithDisplayArgs(manager, imageId, anchor, args);
     // Respect the no-cursor-movement policy (C=1); otherwise drop below the
     // image so subsequent output does not overlap it.
     final keepCursor = args['C'] == '1';
-    final rows = int.tryParse(args['r'] ?? '') ?? 0;
+    final rows = image == null
+        ? (int.tryParse(args['r'] ?? '') ?? 0)
+        : _graphicsDisplayRowsForDimensions(
+            args,
+            manager,
+            (width: image.sourceWidth, height: image.sourceHeight),
+          );
     if (!keepCursor) {
       for (var i = 0; i < rows; i++) {
         _buffer.index();
@@ -2035,6 +2044,110 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   int _graphicsFormat(Map<String, String> args) =>
       int.tryParse(args['f'] ?? '') ?? 32;
+
+  int _graphicsDisplayRows(
+    Map<String, String> args,
+    Uint8List data,
+    GraphicsManager manager,
+  ) {
+    final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
+    if (explicitRows > 0) {
+      return explicitRows;
+    }
+    final columns = int.tryParse(args['c'] ?? '') ?? 0;
+    if (columns <= 0) {
+      return 0;
+    }
+    final dimensions = _graphicsPayloadDimensions(args, data);
+    if (dimensions == null) {
+      return 1;
+    }
+    return _graphicsDisplayRowsForDimensions(
+      args,
+      manager,
+      dimensions,
+    );
+  }
+
+  int _graphicsDisplayRowsForDimensions(
+    Map<String, String> args,
+    GraphicsManager manager,
+    ({int width, int height}) dimensions,
+  ) {
+    final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
+    if (explicitRows > 0) {
+      return explicitRows;
+    }
+    final columns = int.tryParse(args['c'] ?? '') ?? 0;
+    if (columns <= 0) {
+      return 0;
+    }
+    final x = (int.tryParse(args['x'] ?? '') ?? 0).clamp(
+      0,
+      dimensions.width,
+    );
+    final y = (int.tryParse(args['y'] ?? '') ?? 0).clamp(
+      0,
+      dimensions.height,
+    );
+    final availableWidth = dimensions.width - x;
+    final availableHeight = dimensions.height - y;
+    final requestedWidth = int.tryParse(args['w'] ?? '') ?? 0;
+    final requestedHeight = int.tryParse(args['h'] ?? '') ?? 0;
+    final width = requestedWidth > 0
+        ? min(requestedWidth, availableWidth)
+        : availableWidth;
+    final height = requestedHeight > 0
+        ? min(requestedHeight, availableHeight)
+        : availableHeight;
+    if (width <= 0 || height <= 0) {
+      return 1;
+    }
+    return max(
+      1,
+      (height / width * columns * manager.cellPixelAspectRatio).ceil(),
+    );
+  }
+
+  ({int width, int height})? _graphicsPayloadDimensions(
+    Map<String, String> args,
+    Uint8List data,
+  ) {
+    final rawWidth = int.tryParse(args['s'] ?? '') ?? 0;
+    final rawHeight = int.tryParse(args['v'] ?? '') ?? 0;
+    if (rawWidth > 0 && rawHeight > 0) {
+      return (width: rawWidth, height: rawHeight);
+    }
+
+    var payload = data;
+    if (args['o'] == 'z') {
+      final inflated = inflateZlibData(data);
+      if (inflated == null) {
+        return null;
+      }
+      payload = inflated;
+    }
+    if (_looksLikePng(payload) && payload.length >= 24) {
+      final width = _readGraphicsUint32(payload, 16);
+      final height = _readGraphicsUint32(payload, 20);
+      return width > 0 && height > 0 ? (width: width, height: height) : null;
+    }
+    if (payload.length >= 10 &&
+        payload[0] == 0x47 &&
+        payload[1] == 0x49 &&
+        payload[2] == 0x46) {
+      final width = payload[6] | (payload[7] << 8);
+      final height = payload[8] | (payload[9] << 8);
+      return width > 0 && height > 0 ? (width: width, height: height) : null;
+    }
+    return null;
+  }
+
+  int _readGraphicsUint32(Uint8List data, int offset) =>
+      (data[offset] << 24) |
+      (data[offset + 1] << 16) |
+      (data[offset + 2] << 8) |
+      data[offset + 3];
 
   bool _graphicsResponseSuppressed(
     Map<String, String> args, {

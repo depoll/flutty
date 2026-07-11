@@ -550,6 +550,8 @@ class GraphicsManager {
   int _generation = 0;
   int _currentMemoryBytes = 0;
   int _accessClock = 0;
+  double _cellPixelWidth = 0;
+  double _cellPixelHeight = 0;
 
   /// Active placements, oldest first.
   List<TerminalImagePlacement> get placements => _placements;
@@ -657,6 +659,21 @@ class GraphicsManager {
 
   /// Approximate decoded image memory currently retained.
   int get currentMemoryBytes => _currentMemoryBytes;
+
+  /// Updates the cell pixel dimensions used to resolve one-dimensional Kitty
+  /// placements (`c=` without `r=`, or vice versa).
+  void setCellPixelSize(double width, double height) {
+    if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
+      return;
+    }
+    _cellPixelWidth = width;
+    _cellPixelHeight = height;
+  }
+
+  /// Cell width divided by cell height, with a terminal-like fallback.
+  double get cellPixelAspectRatio => _cellPixelWidth > 0 && _cellPixelHeight > 0
+      ? _cellPixelWidth / _cellPixelHeight
+      : 0.5;
 
   /// Number of decoded images currently retained.
   int get imageCount => _images.length;
