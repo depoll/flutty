@@ -110,6 +110,9 @@ enum MonetizationFeature {
   /// Guided launch presets for coding-agent CLIs.
   agentLaunchPresets,
 
+  /// More than one concurrently live ACP coding-agent session.
+  concurrentAcpSessions,
+
   /// Per-host terminal theme overrides.
   hostSpecificThemes,
 }
@@ -122,6 +125,7 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
     MonetizationFeature.migrationImportExport => 'Migration import/export',
     MonetizationFeature.autoConnectAutomation => 'Auto-connect automation',
     MonetizationFeature.agentLaunchPresets => 'Agent launch presets',
+    MonetizationFeature.concurrentAcpSessions => 'Concurrent agent sessions',
     MonetizationFeature.hostSpecificThemes => 'Host-specific themes',
   };
 
@@ -135,6 +139,8 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
       'Run commands or saved snippets automatically after connect.',
     MonetizationFeature.agentLaunchPresets =>
       'Save repeatable startup flows for tools like Codex, Claude Code, Copilot CLI, or OpenCode.',
+    MonetizationFeature.concurrentAcpSessions =>
+      'Keep multiple coding-agent sessions live across hosts and providers.',
     MonetizationFeature.hostSpecificThemes =>
       'Save terminal theme overrides for individual hosts while keeping app-wide defaults unchanged.',
   };
@@ -148,6 +154,8 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
       'Save auto-connect commands and snippets',
     MonetizationFeature.agentLaunchPresets =>
       'Save coding-agent launch presets',
+    MonetizationFeature.concurrentAcpSessions =>
+      'Keep another coding-agent session live',
     MonetizationFeature.hostSpecificThemes => 'Save a host-specific theme',
   };
 
@@ -161,6 +169,8 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
       'Unlock Pro to run a command or saved snippet automatically after connecting.',
     MonetizationFeature.agentLaunchPresets =>
       'Unlock Pro to repeat your preferred coding-agent startup flow on each host.',
+    MonetizationFeature.concurrentAcpSessions =>
+      'Unlock Pro to keep multiple coding-agent sessions running and switch between them instantly.',
     MonetizationFeature.hostSpecificThemes =>
       'Unlock Pro to keep this host on its own terminal theme while preserving your app defaults.',
   };

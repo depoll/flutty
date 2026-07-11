@@ -577,6 +577,35 @@ void main() {
       );
     });
 
+    testWidgets('agents destination opens the ACP session panel', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value(const <Host>[]),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.text('Agents').first);
+      await tester.pump();
+
+      expect(find.text('no agent sessions yet'), findsOneWidget);
+      expect(find.textContaining('keep the work moving'), findsOneWidget);
+    });
+
     testWidgets('repeated connection taps push one terminal route', (
       tester,
     ) async {
