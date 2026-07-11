@@ -38,6 +38,27 @@ enum TerminalAnimationState {
   running,
 }
 
+/// Result of a Kitty `a=c` frame composition request.
+enum TerminalAnimationCompositionResult {
+  /// The destination frame was updated.
+  success,
+
+  /// The image no longer exists.
+  imageNotFound,
+
+  /// The source or destination frame does not exist.
+  frameNotFound,
+
+  /// A rectangle is out of bounds or overlaps itself.
+  invalidRectangle,
+
+  /// The composed frame would exceed the decoded-image memory budget.
+  noSpace,
+
+  /// The engine could not rasterize the composed frame.
+  rasterizationFailed,
+}
+
 /// A fully decoded frame and the time it remains visible.
 class TerminalImageFrame {
   /// Creates a decoded terminal image frame.
@@ -179,6 +200,7 @@ class TerminalImage {
   var _frameElapsed = Duration.zero;
   var _waitingForFrames = false;
   var _timedFrameCount = 0;
+  var _protocolAnimationModified = false;
 
   bool get _atLoopLimit => _maxLoops > 0 && _currentLoop >= _maxLoops;
 
@@ -246,6 +268,7 @@ class TerminalImage {
     _currentFrameIndex = index;
     _frameElapsed = Duration.zero;
     _waitingForFrames = false;
+    _protocolAnimationModified = true;
     return true;
   }
 
@@ -254,6 +277,7 @@ class TerminalImage {
     _currentLoop = 0;
     _frameElapsed = Duration.zero;
     _waitingForFrames = false;
+    _protocolAnimationModified = true;
   }
 
   void _setProtocolLoopCount(int loopCount) {
@@ -261,6 +285,7 @@ class TerminalImage {
       return;
     }
     _maxLoops = loopCount - 1;
+    _protocolAnimationModified = true;
   }
 
   bool _setFrameDuration(int frameNumber, Duration duration) {
@@ -283,6 +308,7 @@ class TerminalImage {
       _frameElapsed = Duration.zero;
       _waitingForFrames = false;
     }
+    _protocolAnimationModified = true;
     return true;
   }
 
@@ -302,6 +328,7 @@ class TerminalImage {
     if (duration > Duration.zero) {
       _timedFrameCount += 1;
     }
+    _protocolAnimationModified = true;
   }
 
   bool _replaceFrame(int frameNumber, ui.Image image) {
@@ -311,6 +338,7 @@ class TerminalImage {
     }
     final previous = _frames[index];
     _frames[index] = TerminalImageFrame(image, duration: previous.duration);
+    _protocolAnimationModified = true;
     return index == _currentFrameIndex;
   }
 }
@@ -550,7 +578,8 @@ class GraphicsManager {
   Map<int, int> heldImageSignatures() {
     final result = <int, int>{};
     for (final entry in _images.entries) {
-      if (!_retainedImageIds.contains(entry.key)) {
+      if (!_retainedImageIds.contains(entry.key) ||
+          entry.value._protocolAnimationModified) {
         continue;
       }
       final signature = entry.value.sourceSignature;
@@ -957,13 +986,24 @@ class GraphicsManager {
       return false;
     }
     final existing = _images[id];
-    return existing != null && existing.sourceSignature == sourceSignature;
+    return existing != null &&
+        !existing._protocolAnimationModified &&
+        existing.sourceSignature == sourceSignature;
   }
 
   /// Whether at least one displayed image currently needs animation ticks.
-  bool get hasActiveAnimations {
+  bool get hasActiveAnimations => hasActiveAnimationsFor();
+
+  /// Whether at least one active animation is displayed.
+  ///
+  /// When [imageIds] is supplied, only those images are considered. The render
+  /// widget uses this to stop ticking animations outside the visible viewport.
+  bool hasActiveAnimationsFor([Set<int>? imageIds]) {
     for (final entry in _images.entries) {
-      if (entry.value._needsAnimationTick && _isImageDisplayed(entry.key)) {
+      if ((imageIds == null
+              ? _isImageDisplayed(entry.key)
+              : imageIds.contains(entry.key)) &&
+          entry.value._needsAnimationTick) {
         return true;
       }
     }
@@ -974,10 +1014,13 @@ class GraphicsManager {
   ///
   /// Returns true when at least one current frame changed. The host renderer
   /// calls this from its ticker and repaints through [onChanged].
-  bool advanceAnimations(Duration elapsed) {
+  bool advanceAnimations(Duration elapsed, {Set<int>? imageIds}) {
     var changed = false;
     for (final entry in _images.entries) {
-      if (_isImageDisplayed(entry.key) && entry.value._advance(elapsed)) {
+      final displayed = imageIds == null
+          ? _isImageDisplayed(entry.key)
+          : imageIds.contains(entry.key);
+      if (displayed && entry.value._advance(elapsed)) {
         entry.value._lastAccess = ++_accessClock;
         changed = true;
       }
@@ -1046,111 +1089,114 @@ class GraphicsManager {
     int editFrame = 0,
     Duration? gap,
   }) async {
-    final image = _images[imageId];
-    if (image == null || frameData.frames.isEmpty) {
-      return false;
-    }
-    final regionWidth = width > 0 ? width : frameData.sourceWidth;
-    final regionHeight = height > 0 ? height : frameData.sourceHeight;
-    if (x < 0 ||
-        y < 0 ||
-        regionWidth <= 0 ||
-        regionHeight <= 0 ||
-        x + regionWidth > image.sourceWidth ||
-        y + regionHeight > image.sourceHeight) {
-      return false;
-    }
-
-    ui.Image? background;
-    if (editFrame > 0) {
-      background = image.imageAtFrame(editFrame);
-      if (background == null) {
+    try {
+      final image = _images[imageId];
+      if (image == null || frameData.frames.isEmpty) {
         return false;
       }
-    } else if (backgroundFrame > 0) {
-      background = image.imageAtFrame(backgroundFrame);
-      if (background == null) {
+      final regionWidth = width > 0 ? width : frameData.sourceWidth;
+      final regionHeight = height > 0 ? height : frameData.sourceHeight;
+      if (x < 0 ||
+          y < 0 ||
+          regionWidth <= 0 ||
+          regionHeight <= 0 ||
+          x + regionWidth > image.sourceWidth ||
+          y + regionHeight > image.sourceHeight) {
         return false;
       }
-    }
 
-    final root = image.imageAtFrame(1);
-    if (root == null) {
-      return false;
-    }
-    final newFrameBytes = root.width * root.height * 4;
-    if (editFrame <= 0 &&
-        !_evictAdditionalMemory(
-          newFrameBytes,
-          protectedImageId: imageId,
-        )) {
-      return false;
-    }
-    final composed = await _composeTerminalFrame(
-      outputWidth: root.width,
-      outputHeight: root.height,
-      logicalWidth: image.sourceWidth,
-      logicalHeight: image.sourceHeight,
-      background: background,
-      backgroundColor: editFrame > 0 ? null : backgroundColor,
-      overlay: frameData.frames.first.image,
-      overlayX: x,
-      overlayY: y,
-      overlayWidth: regionWidth,
-      overlayHeight: regionHeight,
-      replace: replace,
-    );
-    if (composed == null) {
-      return false;
-    }
-    if (!identical(_images[imageId], image)) {
-      // This image was never stored or exposed to a painter, so unlike retained
-      // Kitty images it is safe to release immediately.
-      composed.dispose();
-      return false;
-    }
+      ui.Image? background;
+      if (editFrame > 0) {
+        background = image.imageAtFrame(editFrame);
+        if (background == null) {
+          return false;
+        }
+      } else if (backgroundFrame > 0) {
+        background = image.imageAtFrame(backgroundFrame);
+        if (background == null) {
+          return false;
+        }
+      }
 
-    if (editFrame > 0) {
-      final previous = image.imageAtFrame(editFrame)!;
-      final delta = composed.width * composed.height * 4 -
-          previous.width * previous.height * 4;
-      if (!_evictAdditionalMemory(
-        math.max(0, delta),
-        protectedImageId: imageId,
-      )) {
+      final root = image.imageAtFrame(1);
+      if (root == null) {
+        return false;
+      }
+      final newFrameBytes = root.width * root.height * 4;
+      if (editFrame <= 0 &&
+          !_evictAdditionalMemory(
+            newFrameBytes,
+            protectedImageId: imageId,
+          )) {
+        return false;
+      }
+      final composed = await _composeTerminalFrame(
+        outputWidth: root.width,
+        outputHeight: root.height,
+        logicalWidth: image.sourceWidth,
+        logicalHeight: image.sourceHeight,
+        background: background,
+        backgroundColor: editFrame > 0 ? null : backgroundColor,
+        overlay: frameData.frames.first.image,
+        overlayX: x,
+        overlayY: y,
+        overlayWidth: regionWidth,
+        overlayHeight: regionHeight,
+        replace: replace,
+      );
+      if (composed == null) {
+        return false;
+      }
+      if (!identical(_images[imageId], image)) {
+        // This image was never stored or exposed to a painter, so unlike
+        // retained Kitty images it is safe to release immediately.
         composed.dispose();
         return false;
       }
-      final currentChanged = image._replaceFrame(editFrame, composed);
-      _currentMemoryBytes += delta;
-      if (gap != null) {
-        image._setFrameDuration(editFrame, gap);
+
+      if (editFrame > 0) {
+        final previous = image.imageAtFrame(editFrame)!;
+        final delta = composed.width * composed.height * 4 -
+            previous.width * previous.height * 4;
+        if (!_evictAdditionalMemory(
+          math.max(0, delta),
+          protectedImageId: imageId,
+        )) {
+          composed.dispose();
+          return false;
+        }
+        final currentChanged = image._replaceFrame(editFrame, composed);
+        _currentMemoryBytes += delta;
+        if (gap != null) {
+          image._setFrameDuration(editFrame, gap);
+        }
+        image._lastAccess = ++_accessClock;
+        onChanged?.call();
+        return currentChanged || gap != null;
       }
+
+      if (!_evictAdditionalMemory(newFrameBytes, protectedImageId: imageId)) {
+        composed.dispose();
+        return false;
+      }
+      image._appendProtocolFrame(
+        composed,
+        gap ?? const Duration(milliseconds: 40),
+      );
+      _currentMemoryBytes += newFrameBytes;
       image._lastAccess = ++_accessClock;
       onChanged?.call();
-      return currentChanged || gap != null;
+      return true;
+    } finally {
+      _disposeDecodedTerminalImage(frameData);
     }
-
-    if (!_evictAdditionalMemory(newFrameBytes, protectedImageId: imageId)) {
-      composed.dispose();
-      return false;
-    }
-    image._appendProtocolFrame(
-      composed,
-      gap ?? const Duration(milliseconds: 40),
-    );
-    _currentMemoryBytes += newFrameBytes;
-    image._lastAccess = ++_accessClock;
-    onChanged?.call();
-    return true;
   }
 
   /// Composes a rectangle from [sourceFrame] onto [destinationFrame].
   ///
   /// Frame numbers and coordinates use Kitty's one-based frame numbers and
-  /// original image pixel coordinate space. Returns false for missing frames,
-  /// out-of-bounds rectangles, or an overlapping self-composition.
-  Future<bool> composeAnimationFrames(
+  /// original image pixel coordinate space.
+  Future<TerminalAnimationCompositionResult> composeAnimationFrames(
     int imageId, {
     required int sourceFrame,
     required int destinationFrame,
@@ -1163,10 +1209,13 @@ class GraphicsManager {
     bool replace = false,
   }) async {
     final image = _images[imageId];
-    final source = image?.imageAtFrame(sourceFrame);
-    final destination = image?.imageAtFrame(destinationFrame);
-    if (image == null || source == null || destination == null) {
-      return false;
+    if (image == null) {
+      return TerminalAnimationCompositionResult.imageNotFound;
+    }
+    final source = image.imageAtFrame(sourceFrame);
+    final destination = image.imageAtFrame(destinationFrame);
+    if (source == null || destination == null) {
+      return TerminalAnimationCompositionResult.frameNotFound;
     }
     final regionWidth = width > 0 ? width : image.sourceWidth;
     final regionHeight = height > 0 ? height : image.sourceHeight;
@@ -1186,7 +1235,7 @@ class GraphicsManager {
           image.sourceWidth,
           image.sourceHeight,
         )) {
-      return false;
+      return TerminalAnimationCompositionResult.invalidRectangle;
     }
     if (sourceFrame == destinationFrame &&
         _rectanglesOverlap(
@@ -1197,7 +1246,7 @@ class GraphicsManager {
           regionWidth,
           regionHeight,
         )) {
-      return false;
+      return TerminalAnimationCompositionResult.invalidRectangle;
     }
 
     final composed = await _composeTerminalFrameRegion(
@@ -1214,12 +1263,12 @@ class GraphicsManager {
       replace: replace,
     );
     if (composed == null) {
-      return false;
+      return TerminalAnimationCompositionResult.rasterizationFailed;
     }
     if (!identical(_images[imageId], image)) {
       // The composed image has never been retained or painted.
       composed.dispose();
-      return false;
+      return TerminalAnimationCompositionResult.imageNotFound;
     }
 
     final previousBytes = destination.width * destination.height * 4;
@@ -1229,13 +1278,13 @@ class GraphicsManager {
       protectedImageId: imageId,
     )) {
       composed.dispose();
-      return false;
+      return TerminalAnimationCompositionResult.noSpace;
     }
     image._replaceFrame(destinationFrame, composed);
     _currentMemoryBytes += nextBytes - previousBytes;
     image._lastAccess = ++_accessClock;
     onChanged?.call();
-    return true;
+    return TerminalAnimationCompositionResult.success;
   }
 
   bool _isImageDisplayed(int imageId) {
@@ -1880,6 +1929,12 @@ Future<ui.Image?> _rasterizeTerminalPicture(
   }
 }
 
+void _disposeDecodedTerminalImage(DecodedTerminalImage decoded) {
+  for (final frame in decoded.frames) {
+    frame.image.dispose();
+  }
+}
+
 /// Maximum width/height a decoded terminal image is kept at. Source images
 /// larger than this on their longest side are downscaled during decode, with
 /// aspect ratio preserved. A terminal renders images into a small cell grid, so
@@ -2009,16 +2064,23 @@ Future<DecodedTerminalImage?> _decodeEncodedImageSequenceBounded(
         math.min(_maxDecodedAnimationFrames, memoryFrameLimit),
       );
       final frames = <TerminalImageFrame>[];
-      for (var index = 0; index < frameLimit; index++) {
-        final frame = await codec.getNextFrame();
-        frames.add(
-          TerminalImageFrame(
-            frame.image,
-            duration: frame.duration == Duration.zero
-                ? _minimumEncodedFrameDuration
-                : frame.duration,
-          ),
-        );
+      try {
+        for (var index = 0; index < frameLimit; index++) {
+          final frame = await codec.getNextFrame();
+          frames.add(
+            TerminalImageFrame(
+              frame.image,
+              duration: frame.duration == Duration.zero
+                  ? _minimumEncodedFrameDuration
+                  : frame.duration,
+            ),
+          );
+        }
+      } catch (_) {
+        for (final frame in frames) {
+          frame.image.dispose();
+        }
+        rethrow;
       }
       if (frames.isEmpty) {
         return null;

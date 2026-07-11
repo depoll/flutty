@@ -1954,6 +1954,49 @@ func TestObserveKittyGraphicsReassemblesSplitTransmission(t *testing.T) {
 	}
 }
 
+func TestObserveKittyGraphicsRetainsAnimationCommandsInOrder(t *testing.T) {
+	window := &muxWindow{}
+	stream := []byte(
+		"\x1b_Ga=T,U=1,i=7,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100,m=1;FRAME-A\x1b\\" +
+			"\x1b_Gm=0;FRAME-B\x1b\\" +
+			"\x1b_Ga=c,i=7,r=2,c=1,w=1,h=1\x1b\\" +
+			"\x1b_Ga=a,i=7,r=1,z=80,s=3,v=1\x1b\\")
+
+	window.observeKittyGraphicsLocked(stream)
+	replay := string(window.kittyImageReplayLocked(nil))
+
+	parts := []string{"ROOT", "FRAME-A", "FRAME-B", "a=c", "a=a"}
+	last := -1
+	for _, part := range parts {
+		index := strings.Index(replay, part)
+		if index <= last {
+			t.Fatalf("animation replay order lost at %q: %q", part, replay)
+		}
+		last = index
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("root transmit must be replayed store-only: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsNewRootResetsRetainedAnimation(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,f=100;OLD-ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100;OLD-FRAME\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,f=100;NEW-ROOT\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "NEW-ROOT") {
+		t.Fatalf("replacement root missing: %q", replay)
+	}
+	if strings.Contains(replay, "OLD-ROOT") || strings.Contains(replay, "OLD-FRAME") {
+		t.Fatalf("replacement root retained stale animation state: %q", replay)
+	}
+}
+
 func TestObserveKittyGraphicsDeleteRemovesRetainedImage(t *testing.T) {
 	window := &muxWindow{}
 

@@ -1347,13 +1347,23 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     final manager = _buffer.graphics;
+    final explicitImageId = int.tryParse(args['i'] ?? '');
+    final imageNumber = int.tryParse(args['I'] ?? '');
+    if (explicitImageId != null &&
+        explicitImageId > 0 &&
+        imageNumber != null &&
+        imageNumber > 0) {
+      // Keep commands that switch from the explicit id to its image number on
+      // the same async queue, even before the root image finishes decoding.
+      manager.registerImageNumber(imageNumber, explicitImageId);
+    }
     if (action == 'd') {
       final selector = args['d'] ?? 'a';
       if ((selector == 'i' ||
               selector == 'I' ||
               selector == 'n' ||
               selector == 'N') &&
-          _graphicsOperationKey(args) != null) {
+          _graphicsOperationKey(manager, args) != null) {
         final buffer = _buffer;
         _scheduleGraphicsOperation(
           manager,
@@ -1445,7 +1455,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     Map<String, String> args,
     Future<void> Function() operation,
   ) {
-    final key = _graphicsOperationKey(args);
+    final key = _graphicsOperationKey(manager, args);
     if (key == null) {
       unawaited(operation());
       return;
@@ -1468,14 +1478,18 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     );
   }
 
-  String? _graphicsOperationKey(Map<String, String> args) {
+  String? _graphicsOperationKey(
+    GraphicsManager manager,
+    Map<String, String> args,
+  ) {
     final imageId = int.tryParse(args['i'] ?? '');
     if (imageId != null && imageId > 0) {
       return 'i:$imageId';
     }
     final imageNumber = int.tryParse(args['I'] ?? '');
     if (imageNumber != null && imageNumber > 0) {
-      return 'I:$imageNumber';
+      final mappedId = manager.imageIdForNumber(imageNumber);
+      return mappedId == null ? 'I:$imageNumber' : 'i:$mappedId';
     }
     return null;
   }
@@ -1619,7 +1633,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     if (sourceFrame <= 0 || destinationFrame <= 0) {
       return;
     }
-    await manager.composeAnimationFrames(
+    final result = await manager.composeAnimationFrames(
       imageId,
       sourceFrame: sourceFrame,
       destinationFrame: destinationFrame,
@@ -1631,6 +1645,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       height: int.tryParse(args['h'] ?? '') ?? 0,
       replace: args['C'] == '1',
     );
+    final error = switch (result) {
+      TerminalAnimationCompositionResult.success => null,
+      TerminalAnimationCompositionResult.imageNotFound ||
+      TerminalAnimationCompositionResult.frameNotFound =>
+        'ENOENT: image or frame not found',
+      TerminalAnimationCompositionResult.invalidRectangle =>
+        'EINVAL: invalid composition rectangle',
+      TerminalAnimationCompositionResult.noSpace =>
+        'ENOSPC: image memory limit exceeded',
+      TerminalAnimationCompositionResult.rasterizationFailed =>
+        'EINVAL: frame composition failed',
+    };
+    if (error != null) {
+      _respondToGraphicsFailure(args, error);
+    }
   }
 
   Duration? _graphicsAnimationGap(Map<String, String> args) {
@@ -1639,6 +1668,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return null;
     }
     return Duration(milliseconds: max(0, milliseconds));
+  }
+
+  void _respondToGraphicsFailure(
+    Map<String, String> args,
+    String error,
+  ) {
+    if (_graphicsResponseSuppressed(args, success: false)) {
+      return;
+    }
+    final control = <String>[
+      if (args['i'] case final imageId? when imageId.isNotEmpty) 'i=$imageId',
+      if (args['I'] case final imageNumber? when imageNumber.isNotEmpty)
+        'I=$imageNumber',
+    ];
+    onOutput?.call('\x1b_G${control.join(',')};$error\x1b\\');
   }
 
   Future<void> _finalizeGraphics(

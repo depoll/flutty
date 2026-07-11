@@ -56,7 +56,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.93"
+	monkeyMuxVersion                  = "0.1.94"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -464,8 +464,9 @@ type muxWindow struct {
 	// bytes must survive independently of the rolling visible history (which
 	// evicts them once enough newer output arrives) or reattached placeholders
 	// render blank. Keyed by protocol image id; kittyImageOrder tracks recency.
-	kittyImages     map[string][]byte
-	kittyImageOrder []string
+	kittyImages          map[string][]byte
+	kittyImageAnimations map[string][]byte
+	kittyImageOrder      []string
 	// kittyImageSeq records a global monotonic store sequence per image id so a
 	// machine-wide budget can evict the globally-oldest image across all
 	// windows. Protected by the server lock, like the maps above.
@@ -5254,11 +5255,13 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 	return output
 }
 
-// kittyTransmission is a single complete Kitty graphics image transmission in
-// store-only form (action downgraded to a=t), keyed by its protocol image id.
+// kittyTransmission is a complete Kitty graphics root-image or animation
+// command, keyed by its protocol image id. Root display transmissions are
+// downgraded to store-only form; animation commands retain their original action.
 type kittyTransmission struct {
-	id  string
-	buf []byte
+	id        string
+	buf       []byte
+	animation bool
 }
 
 // scanKittyTransmissions parses complete Kitty graphics image transmissions from
@@ -5293,7 +5296,7 @@ func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []str
 			consumed = i
 			continue
 		}
-		end, buf, id, isDelete, ok := assembleKittyTransmission(data, i)
+		end, buf, id, isDelete, isAnimation, ok := assembleKittyTransmission(data, i)
 		if !ok {
 			// Incomplete transmission: carry everything from here forward.
 			return txs, deletes, i
@@ -5303,7 +5306,9 @@ func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []str
 				deletes = append(deletes, id)
 			}
 		} else if buf != nil {
-			txs = append(txs, kittyTransmission{id: id, buf: buf})
+			txs = append(txs, kittyTransmission{
+				id: id, buf: buf, animation: isAnimation,
+			})
 		}
 		i = end
 		consumed = end
@@ -5320,10 +5325,10 @@ func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []str
 func assembleKittyTransmission(
 	data []byte,
 	start int,
-) (end int, buf []byte, id string, isDelete bool, ok bool) {
+) (end int, buf []byte, id string, isDelete bool, isAnimation bool, ok bool) {
 	apcEnd := kittyApcEnd(data, start)
 	if apcEnd < 0 {
-		return 0, nil, "", false, false
+		return 0, nil, "", false, false, false
 	}
 	args := parseKittyControl(kittyControl(data, start, apcEnd))
 	action := args["a"]
@@ -5332,32 +5337,40 @@ func assembleKittyTransmission(
 	}
 	switch action {
 	case "d":
-		return apcEnd, nil, args["i"], true, true
+		return apcEnd, nil, args["i"], true, false, true
 	case "t", "T":
 		// An image transmission; assemble continuation chunks below.
+		buf = append(buf, rewriteKittyTransmitAction(data[start:apcEnd])...)
+	case "f":
+		// Animation frame payloads use the same continuation rules as roots.
+		buf = append(buf, data[start:apcEnd]...)
+		isAnimation = true
+	case "a", "c":
+		// Control/composition commands have no chunked payload.
+		return apcEnd, append([]byte(nil), data[start:apcEnd]...),
+			args["i"], false, true, true
 	default:
 		// Queries (a=q), placements (a=p) etc. are complete but not retained.
-		return apcEnd, nil, "", false, true
+		return apcEnd, nil, "", false, false, true
 	}
 
-	buf = append(buf, rewriteKittyTransmitAction(data[start:apcEnd])...)
 	more := args["m"] == "1"
 	next := apcEnd
 	for more {
 		if next+2 >= len(data) || data[next] != '\x1b' ||
 			data[next+1] != '_' || data[next+2] != 'G' {
-			return 0, nil, "", false, false
+			return 0, nil, "", false, false, false
 		}
 		chunkEnd := kittyApcEnd(data, next)
 		if chunkEnd < 0 {
-			return 0, nil, "", false, false
+			return 0, nil, "", false, false, false
 		}
 		chunkArgs := parseKittyControl(kittyControl(data, next, chunkEnd))
 		buf = append(buf, data[next:chunkEnd]...)
 		more = chunkArgs["m"] == "1"
 		next = chunkEnd
 	}
-	return next, buf, args["i"], false, true
+	return next, buf, args["i"], false, isAnimation, true
 }
 
 // observeKittyGraphicsLocked retains the Kitty image transmissions seen in chunk
@@ -5386,8 +5399,12 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 		if tx.id == "" {
 			continue // cannot dedupe or replay without an id
 		}
-		w.storeKittyImageLocked(tx.id, tx.buf)
-		changed = true
+		if tx.animation {
+			changed = w.appendKittyImageAnimationLocked(tx.id, tx.buf) || changed
+		} else {
+			w.storeKittyImageLocked(tx.id, tx.buf)
+			changed = true
+		}
 	}
 
 	remainder := data[consumed:]
@@ -5420,10 +5437,30 @@ func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
 	}
 	w.kittyImageOrder = append(w.kittyImageOrder, id)
 	w.kittyImages[id] = append([]byte(nil), buf...)
+	delete(w.kittyImageAnimations, id)
 	w.kittyImageToken[id] = kittyTransmissionPayloadSignature(buf)
 	kittyImageStoreSeq++
 	w.kittyImageSeq[id] = kittyImageStoreSeq
 	w.enforceKittyImageCapsLocked()
+}
+
+func (w *muxWindow) appendKittyImageAnimationLocked(id string, buf []byte) bool {
+	if len(buf) == 0 {
+		return false
+	}
+	if _, exists := w.kittyImages[id]; !exists {
+		return false
+	}
+	if w.kittyImageAnimations == nil {
+		w.kittyImageAnimations = map[string][]byte{}
+	}
+	w.kittyImageAnimations[id] = append(w.kittyImageAnimations[id], buf...)
+	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
+	w.kittyImageOrder = append(w.kittyImageOrder, id)
+	kittyImageStoreSeq++
+	w.kittyImageSeq[id] = kittyImageStoreSeq
+	w.enforceKittyImageCapsLocked()
+	return true
 }
 
 func (w *muxWindow) removeKittyImageLocked(id string) bool {
@@ -5431,6 +5468,7 @@ func (w *muxWindow) removeKittyImageLocked(id string) bool {
 		return false
 	}
 	delete(w.kittyImages, id)
+	delete(w.kittyImageAnimations, id)
 	delete(w.kittyImageSeq, id)
 	delete(w.kittyImageToken, id)
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
@@ -5439,16 +5477,17 @@ func (w *muxWindow) removeKittyImageLocked(id string) bool {
 
 func (w *muxWindow) enforceKittyImageCapsLocked() {
 	total := 0
-	for _, b := range w.kittyImages {
-		total += len(b)
+	for id, b := range w.kittyImages {
+		total += len(b) + len(w.kittyImageAnimations[id])
 	}
 	for len(w.kittyImageOrder) > 0 &&
 		(len(w.kittyImageOrder) > maxRetainedKittyImages ||
 			(total > maxRetainedKittyImageBytes && len(w.kittyImageOrder) > 1)) {
 		oldest := w.kittyImageOrder[0]
 		w.kittyImageOrder = w.kittyImageOrder[1:]
-		total -= len(w.kittyImages[oldest])
+		total -= len(w.kittyImages[oldest]) + len(w.kittyImageAnimations[oldest])
 		delete(w.kittyImages, oldest)
+		delete(w.kittyImageAnimations, oldest)
 		delete(w.kittyImageSeq, oldest)
 		delete(w.kittyImageToken, oldest)
 	}
@@ -5476,8 +5515,8 @@ func (s *muxServer) enforceGlobalKittyImageBudgetLocked() {
 	total := 0
 	count := 0
 	for _, w := range s.windows {
-		for _, b := range w.kittyImages {
-			total += len(b)
+		for id, b := range w.kittyImages {
+			total += len(b) + len(w.kittyImageAnimations[id])
 			count++
 		}
 	}
@@ -5505,7 +5544,8 @@ func (s *muxServer) enforceGlobalKittyImageBudgetLocked() {
 		if !found || victimWin == nil {
 			return
 		}
-		total -= len(victimWin.kittyImages[victimID])
+		total -= len(victimWin.kittyImages[victimID]) +
+			len(victimWin.kittyImageAnimations[victimID])
 		count--
 		victimWin.removeKittyImageLocked(victimID)
 	}
@@ -5554,15 +5594,15 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 	total := 0
 	for i := len(w.kittyImageOrder) - 1; i >= 0; i-- {
 		id := w.kittyImageOrder[i]
-		buf := w.kittyImages[id]
+		imageBytes := len(w.kittyImages[id]) + len(w.kittyImageAnimations[id])
 		if len(selected) >= maxReplayedKittyImages {
 			break
 		}
-		if len(selected) > 0 && total+len(buf) > maxReplayedKittyImageBytes {
+		if len(selected) > 0 && total+imageBytes > maxReplayedKittyImageBytes {
 			break
 		}
 		selected = append(selected, id)
-		total += len(buf)
+		total += imageBytes
 	}
 	// Emit oldest-kept first so ids are established in chronological order,
 	// skipping any the client already holds with identical content.
@@ -5575,6 +5615,7 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 			}
 		}
 		out = append(out, w.kittyImages[id]...)
+		out = append(out, w.kittyImageAnimations[id]...)
 	}
 	return out
 }
@@ -5607,6 +5648,7 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(ids []string) []byte {
 		}
 		seen[id] = struct{}{}
 		out = append(out, buf...)
+		out = append(out, w.kittyImageAnimations[id]...)
 	}
 	return out
 }
