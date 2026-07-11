@@ -380,6 +380,22 @@ func TestNormalizeServerUpdatePolicy(t *testing.T) {
 	}
 }
 
+func TestDecodeArgsBase64PreservesArgumentBoundaries(t *testing.T) {
+	want := []string{"printf", "%s", "a b", "", "x; echo unsafe"}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := decodeArgsBase64(base64.StdEncoding.EncodeToString(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded argv = %#v, want %#v", got, want)
+	}
+}
+
 func TestShouldUpdateRunningServerNeverIsSilent(t *testing.T) {
 	var output bytes.Buffer
 	update := shouldUpdateRunningServer(
@@ -448,6 +464,570 @@ func TestHasAttachClientReportsAttachConnection(t *testing.T) {
 	server.mu.Unlock()
 	if !server.hasAttachClient() {
 		t.Fatal("server did not report attach client")
+	}
+}
+
+func TestMultipleAttachClientsReceiveActiveOutput(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	firstConn := &recordingConn{}
+	secondConn := &recordingConn{}
+	registerTestAttachClient(t, server, firstConn, "first", 120, 40)
+	registerTestAttachClient(t, server, secondConn, "second", 80, 24)
+
+	server.handleWindowOutput("@1", []byte("shared output"))
+
+	waitForRecordedOutput(t, firstConn, "shared output")
+	waitForRecordedOutput(t, secondConn, "shared output")
+	if got := server.attachCount(); got != 2 {
+		t.Fatalf("attach count = %d, want 2", got)
+	}
+}
+
+func TestMultipleAttachClientsRouteTerminalQueriesOnlyToPrimary(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	secondaryConn := &recordingConn{}
+	primaryConn := &recordingConn{}
+	registerTestAttachClient(t, server, secondaryConn, "secondary", 120, 40)
+	registerTestAttachClient(t, server, primaryConn, "primary", 80, 24)
+
+	server.handleWindowOutput(
+		"@1",
+		[]byte(
+			"before\x1b[cafter\x1b[14tmode\x1b[?2031$p"+
+				"theme\x1b[?996ncolor\x1b]10;?\x07"+
+				"kitty\x1b_Ga=q,i=31;AAAA\x1b\\done",
+		),
+	)
+
+	waitForRecordedOutput(
+		t,
+		primaryConn,
+		"before\x1b[cafter\x1b[14tmode\x1b[?2031$p"+
+			"theme\x1b[?996ncolor\x1b]10;?\x07"+
+			"kitty\x1b_Ga=q,i=31;AAAA\x1b\\done",
+	)
+	waitForRecordedOutput(
+		t,
+		secondaryConn,
+		"beforeaftermodethemecolorkittydone",
+	)
+}
+
+func TestSecondaryAttachQueryFilterCarriesSplitQueries(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	secondaryConn := &recordingConn{}
+	primaryConn := &recordingConn{}
+	secondary := registerTestAttachClient(
+		t,
+		server,
+		secondaryConn,
+		"secondary",
+		120,
+		40,
+	)
+	registerTestAttachClient(t, server, primaryConn, "primary", 80, 24)
+
+	server.handleWindowOutput("@1", []byte("left\x1b[>"))
+	server.promoteAttachClient(secondary)
+	server.handleWindowOutput("@1", []byte("qright"))
+
+	waitForRecordedOutput(t, primaryConn, "left\x1b[>qright")
+	waitForRecordedOutput(t, secondaryConn, "leftright")
+}
+
+func TestTerminalQueryDeliveryFailsOverFromClosedPrimary(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	secondaryConn := &recordingConn{}
+	primaryConn := &recordingConn{}
+	secondary := registerTestAttachClient(
+		t,
+		server,
+		secondaryConn,
+		"secondary",
+		120,
+		40,
+	)
+	primary := registerTestAttachClient(
+		t,
+		server,
+		primaryConn,
+		"primary",
+		80,
+		24,
+	)
+	primary.close()
+
+	server.handleWindowOutput("@1", []byte("before\x1b[cafter"))
+
+	waitForRecordedOutput(t, secondaryConn, "before\x1b[cafter")
+	server.mu.Lock()
+	gotPrimary := server.attachConn
+	server.mu.Unlock()
+	if gotPrimary != secondary.conn {
+		t.Fatal("failed query delivery did not promote a healthy terminal")
+	}
+}
+
+func TestTerminalQueryDeliveryRetriesAfterAcceptedWriteFails(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	secondaryConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		secondaryConn,
+		"secondary",
+		120,
+		40,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		failingConn{},
+		"primary",
+		80,
+		24,
+	)
+
+	server.handleWindowOutput("@1", []byte("before\x1b[cafter"))
+
+	waitForRecordedOutput(t, secondaryConn, "before\x1b[cafter")
+}
+
+func TestSplitTerminalQueryFailsOverWithItsCarriedPrefix(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	secondaryConn := &recordingConn{}
+	primaryConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		secondaryConn,
+		"secondary",
+		120,
+		40,
+	)
+	primary := registerTestAttachClient(
+		t,
+		server,
+		primaryConn,
+		"primary",
+		80,
+		24,
+	)
+
+	server.handleWindowOutput("@1", []byte("left\x1b[>"))
+	primary.close()
+	server.handleWindowOutput("@1", []byte("qright"))
+
+	waitForRecordedOutput(t, secondaryConn, "left\x1b[>qright")
+}
+
+func TestLiveQueryCarryTransfersToPendingWhenWindowBecomesHidden(t *testing.T) {
+	server := newMuxServer("test")
+	first := &muxWindow{id: "@1", index: 0, lastActivity: time.Now()}
+	second := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{first, second}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	registerTestAttachClient(t, server, conn, "primary", 80, 24)
+
+	server.handleWindowOutput("@1", []byte("left\x1b[>"))
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+	server.handleWindowOutput("@1", []byte("qright"))
+
+	server.mu.Lock()
+	pending := string(first.pendingTerminalQueries)
+	carry := string(first.secondaryQueryCarry)
+	server.mu.Unlock()
+	if pending != "\x1b[>q" {
+		t.Fatalf("pending hidden query = %q, want complete XTVERSION query", pending)
+	}
+	if carry != "" {
+		t.Fatalf("live query carry remained after hiding window: %q", carry)
+	}
+}
+
+func TestPendingQueryCarryTransfersToLiveWhenClientAttaches(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{id: "@1", index: 0, lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@1", []byte("left\x1b[>"))
+	conn := &recordingConn{}
+	registerTestAttachClient(t, server, conn, "primary", 80, 24)
+	server.handleWindowOutput("@1", []byte("qright"))
+
+	waitForRecordedOutput(t, conn, "\x1b[>qright")
+	server.mu.Lock()
+	carry := string(window.pendingTerminalQueryCarry)
+	server.mu.Unlock()
+	if carry != "" {
+		t.Fatalf("pending query carry remained after attach: %q", carry)
+	}
+}
+
+func TestWindowOutputSkipsClientsThatJoinedAfterObservation(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	firstConn := &recordingConn{}
+	first := registerTestAttachClient(t, server, firstConn, "first", 80, 24)
+	observedSequence := first.sequence
+	joiningConn := &recordingConn{}
+	registerTestAttachClient(t, server, joiningConn, "joining", 80, 24)
+
+	server.writeAttachOutputIfActive(
+		"@1",
+		first.conn,
+		[]byte("once"),
+		[]byte("once"),
+		[]byte("once"),
+		observedSequence,
+	)
+
+	waitForRecordedOutput(t, firstConn, "once")
+	time.Sleep(10 * time.Millisecond)
+	if got := joiningConn.String(); got != "" {
+		t.Fatalf("joining client received already-replayed output: %q", got)
+	}
+}
+
+func TestTerminalQueryRetryCanUseClientThatJoinedAfterObservation(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	primary := registerTestAttachClient(
+		t,
+		server,
+		failingConn{},
+		"primary",
+		80,
+		24,
+	)
+	observedSequence := primary.sequence
+	joiningConn := &recordingConn{}
+	registerTestAttachClient(t, server, joiningConn, "joining", 80, 24)
+
+	server.writeAttachOutputIfActive(
+		"@1",
+		primary.conn,
+		[]byte("\x1b[c"),
+		[]byte("\x1b[c"),
+		nil,
+		observedSequence,
+	)
+
+	waitForRecordedOutput(t, joiningConn, "\x1b[c")
+}
+
+func TestPausedRedrawRetriesCompleteCarriedQuery(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                              "@1",
+		index:                           0,
+		lastActivity:                    time.Now(),
+		redrawForwardingPaused:          true,
+		redrawForwardingGeneration:      1,
+		redrawForwardingBuffer:          []byte("qright"),
+		redrawForwardingFailoverBuffer:  []byte("\x1b[>qright"),
+		redrawForwardingSecondaryBuffer: []byte("right"),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	secondaryConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		secondaryConn,
+		"secondary",
+		120,
+		40,
+	)
+	primary := registerTestAttachClient(
+		t,
+		server,
+		failingConn{},
+		"primary",
+		80,
+		24,
+	)
+	window.redrawForwardingPrimaryConn = primary.conn
+
+	server.resumePausedAttachForwarding("@1", 1)
+
+	waitForRecordedOutput(t, secondaryConn, "\x1b[>qright")
+}
+
+func TestPausedRedrawUsesFailoverBufferForReboundPrimary(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                                   "@1",
+		index:                                0,
+		lastActivity:                         time.Now(),
+		redrawForwardingPaused:               true,
+		redrawForwardingGeneration:           1,
+		redrawForwardingBuffer:               []byte("qright"),
+		redrawForwardingFailoverBuffer:       []byte("\x1b[>qright"),
+		redrawForwardingSecondaryBuffer:      []byte("right"),
+		redrawForwardingPrimaryNeedsFailover: true,
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	primary := registerTestAttachClient(
+		t,
+		server,
+		conn,
+		"replacement",
+		80,
+		24,
+	)
+	window.redrawForwardingPrimaryConn = primary.conn
+
+	server.resumePausedAttachForwarding("@1", 1)
+
+	waitForRecordedOutput(t, conn, "\x1b[>qright")
+}
+
+func TestPendingTerminalQueryFlushIsSingleFlight(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                     "@1",
+		index:                  0,
+		lastActivity:           time.Now(),
+		pendingTerminalQueries: []byte("\x1b[c"),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	gate := make(chan struct{})
+	conn := &gatedConn{recordingConn: &recordingConn{}, gate: gate}
+	registerTestAttachClient(t, server, conn, "primary", 80, 24)
+
+	server.attachMu.Lock()
+	server.flushPendingTerminalQueriesLocked(conn, "@1")
+	server.flushPendingTerminalQueriesLocked(conn, "@1")
+	server.attachMu.Unlock()
+	server.mu.Lock()
+	server.storePendingTerminalQueriesLocked(window, []byte("\x1b[14t"))
+	inFlight := string(window.pendingTerminalQueriesInFlight)
+	server.mu.Unlock()
+	if inFlight != "\x1b[c" {
+		t.Fatalf("in-flight query = %q, want one device query", inFlight)
+	}
+
+	close(gate)
+	waitForRecordedOutput(t, conn.recordingConn, "\x1b[c")
+	waitForPendingQueryState(t, server, window, "", "\x1b[14t")
+
+	server.attachMu.Lock()
+	server.flushPendingTerminalQueriesLocked(conn, "@1")
+	server.attachMu.Unlock()
+	waitForRecordedOutput(t, conn.recordingConn, "\x1b[c\x1b[14t")
+}
+
+func TestAttachQueueRejectsOversizedBacklog(t *testing.T) {
+	client := newAttachClient(
+		&recordingConn{},
+		controlMessage{ClientID: "bounded"},
+	)
+	t.Cleanup(client.close)
+
+	if _, queued := client.enqueue(
+		make([]byte, attachWriteQueueLimitBytes+1),
+		false,
+	); queued {
+		t.Fatal("oversized attach write was queued")
+	}
+	select {
+	case <-client.done:
+	default:
+		t.Fatal("oversized attach write did not disconnect the client")
+	}
+}
+
+func TestAttachSizeUsesSmallestWidthAndHeightAcrossClients(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	first := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"wide",
+		200,
+		20,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"tall",
+		80,
+		50,
+	)
+
+	server.resizeForClient("wide", 200, 20, false)
+
+	server.mu.Lock()
+	width, height := server.width, server.height
+	server.mu.Unlock()
+	if width != 80 || height != 20 {
+		t.Fatalf("shared size = %dx%d, want 80x20", width, height)
+	}
+
+	server.removeAttachClient(first)
+	server.mu.Lock()
+	width, height = server.width, server.height
+	server.mu.Unlock()
+	if width != 80 || height != 50 {
+		t.Fatalf("size after detach = %dx%d, want 80x50", width, height)
+	}
+}
+
+func TestConcurrentClientResizesLeaveCurrentMinimum(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	registerTestAttachClient(t, server, &recordingConn{}, "first", 120, 40)
+	registerTestAttachClient(t, server, &recordingConn{}, "second", 80, 50)
+
+	var updates sync.WaitGroup
+	for index := 0; index < 100; index++ {
+		updates.Add(2)
+		go func(value int) {
+			defer updates.Done()
+			server.resizeForClient("first", 100+value%10, 30+value%7, false)
+		}(index)
+		go func(value int) {
+			defer updates.Done()
+			server.resizeForClient("second", 70+value%8, 45+value%5, false)
+		}(index)
+	}
+	updates.Wait()
+
+	server.mu.Lock()
+	wantWidth, wantHeight := server.minimumAttachSizeLocked()
+	gotWidth, gotHeight := server.width, server.height
+	server.mu.Unlock()
+	if gotWidth != wantWidth || gotHeight != wantHeight {
+		t.Fatalf(
+			"shared size = %dx%d, current minimum = %dx%d",
+			gotWidth,
+			gotHeight,
+			wantWidth,
+			wantHeight,
+		)
+	}
+}
+
+func TestAttachPrefixSwitchesWindowsAndSendsLiteralPrefix(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:           "@1",
+			index:        0,
+			pty:          wrapPty(inputWriter),
+			lastActivity: time.Now(),
+		},
+		{id: "@2", index: 1, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	client := &attachClient{prefixEnabled: true}
+
+	if detached := server.handleAttachInput(client, []byte{0x02}); detached {
+		t.Fatal("prefix byte detached the client")
+	}
+	if detached := server.handleAttachInput(client, []byte{'n'}); detached {
+		t.Fatal("next-window command detached the client")
+	}
+	if got := server.activeWindowID(); got != "@2" {
+		t.Fatalf("active window = %q, want @2", got)
+	}
+	if detached := server.handleAttachInput(client, []byte{0x02, 'p'}); detached {
+		t.Fatal("previous-window command detached the client")
+	}
+	if got := server.activeWindowID(); got != "@1" {
+		t.Fatalf("active window = %q, want @1", got)
+	}
+	if detached := server.handleAttachInput(client, []byte{0x02, 0x02}); detached {
+		t.Fatal("literal-prefix command detached the client")
+	}
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return output == "\x02"
+	})
+	if got != "\x02" {
+		t.Fatalf("literal prefix output = %q, want Ctrl-B", got)
+	}
+}
+
+func TestAttachPrefixSelectsLastIndexClosesAndDetaches(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		{id: "@2", index: 1, lastActivity: time.Now()},
+		{id: "@3", index: 2, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := registerTestAttachClient(t, server, conn, "keys", 80, 24)
+
+	server.handleAttachInput(client, []byte{0x02, '2'})
+	if got := server.activeWindowID(); got != "@3" {
+		t.Fatalf("indexed active window = %q, want @3", got)
+	}
+	server.handleAttachInput(client, []byte{0x02, 'l'})
+	if got := server.activeWindowID(); got != "@1" {
+		t.Fatalf("last active window = %q, want @1", got)
+	}
+	server.handleAttachInput(client, []byte{0x02, '&'})
+	if got := server.activeWindowID(); got != "@1" {
+		t.Fatalf("window closed before confirmation: active = %q", got)
+	}
+	server.handleAttachInput(client, []byte{'y'})
+	if got := server.activeWindowID(); got != "@2" {
+		t.Fatalf("active window after close = %q, want @2", got)
+	}
+	if detached := server.handleAttachInput(client, []byte{0x02, 'd'}); !detached {
+		t.Fatal("detach prefix command did not detach")
+	}
+	select {
+	case <-client.done:
+	default:
+		t.Fatal("detach prefix command left client open")
 	}
 }
 
@@ -1835,9 +2415,19 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 				"before" +
 					"\x1b[c" +
 					"\x1b[>0c" +
+					"\x1b[=c" +
 					"\x1b[6n" +
+					"\x1b[14t" +
+					"\x1b[4$p" +
+					"\x1b[?2031$p" +
+					"\x1b[?996n" +
+					"\x1b[?u" +
 					"\x1b[>q" +
 					"\x1b]11;?\x07" +
+					"\x1b]52;c;?\x07" +
+					"\x1bP$qm\x1b\\" +
+					"\x1bP+q544e\x1b\\" +
+					"\x1b_Ga=q,i=31;AAAA\x1b\\" +
 					"\x1b]2;Gemini\x07" +
 					"after",
 			),
@@ -1851,9 +2441,19 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 	for _, stripped := range []string{
 		"\x1b[c",
 		"\x1b[>0c",
+		"\x1b[=c",
 		"\x1b[6n",
+		"\x1b[14t",
+		"\x1b[4$p",
+		"\x1b[?2031$p",
+		"\x1b[?996n",
+		"\x1b[?u",
 		"\x1b[>q",
 		"\x1b]11;?\x07",
+		"\x1b]52;c;?\x07",
+		"\x1bP$qm\x1b\\",
+		"\x1bP+q544e\x1b\\",
+		"\x1b_Ga=q,i=31;AAAA\x1b\\",
 	} {
 		if strings.Contains(replay, stripped) {
 			t.Fatalf("replay retained terminal query %q in %q", stripped, replay)
@@ -2034,8 +2634,9 @@ func TestKittyImageTransmissionsForReplaysRequestedIdsBeyondReplayCap(t *testing
 	if strings.Contains(string(window.kittyImageReplayLocked(nil)), "i=0,") {
 		t.Fatalf("precondition: id 0 should be beyond the bounded replay cap")
 	}
-	// ...but a targeted request replays exactly it, ignoring the caps.
-	got := string(window.kittyImageTransmissionsForLocked([]string{oldID}))
+	// ...but a targeted request replays exactly it.
+	payload, served := window.kittyImageTransmissionsForLocked([]string{oldID})
+	got := string(payload)
 	if !strings.Contains(got, "i=0,") || !strings.Contains(got, "PAY0") {
 		t.Fatalf("requested id 0 not replayed: %q", got)
 	}
@@ -2044,6 +2645,9 @@ func TestKittyImageTransmissionsForReplaysRequestedIdsBeyondReplayCap(t *testing
 	}
 	if strings.Contains(got, "a=T") {
 		t.Fatalf("requested transmit must stay store-only (a=t): %q", got)
+	}
+	if !reflect.DeepEqual(served, []string{oldID}) {
+		t.Fatalf("served ids = %#v, want [%s]", served, oldID)
 	}
 }
 
@@ -2055,8 +2659,10 @@ func TestKittyImageTransmissionsForSkipsUnknownAndDeduplicates(t *testing.T) {
 		[]byte("\x1b_Ga=T,U=1,i=22,f=100;BETA\x1b\\"))
 
 	// Unknown ids are skipped; a duplicated id is emitted once.
-	got := string(window.kittyImageTransmissionsForLocked(
-		[]string{"11", "999", "11", ""}))
+	payload, served := window.kittyImageTransmissionsForLocked(
+		[]string{"11", "999", "11", ""},
+	)
+	got := string(payload)
 	if strings.Count(got, "i=11,") != 1 {
 		t.Fatalf("id 11 should be replayed exactly once: %q", got)
 	}
@@ -2066,8 +2672,12 @@ func TestKittyImageTransmissionsForSkipsUnknownAndDeduplicates(t *testing.T) {
 	if strings.Contains(got, "i=999") {
 		t.Fatalf("unknown id 999 must be skipped: %q", got)
 	}
+	if !reflect.DeepEqual(served, []string{"11"}) {
+		t.Fatalf("served ids = %#v, want [11]", served)
+	}
 	// No ids requested replays nothing.
-	if len(window.kittyImageTransmissionsForLocked(nil)) != 0 {
+	payload, served = window.kittyImageTransmissionsForLocked(nil)
+	if len(payload) != 0 || len(served) != 0 {
 		t.Fatalf("empty request must replay nothing")
 	}
 }
@@ -2125,6 +2735,29 @@ func TestKittyImageReplaySkipsImagesClientAlreadyHolds(t *testing.T) {
 	full := string(window.kittyImageReplayLocked(nil))
 	if !strings.Contains(full, "i=101") || !strings.Contains(full, "i=202") {
 		t.Fatalf("nil skip-set must replay every image: %q", full)
+	}
+}
+
+func TestRequestedKittyImagesRespectReplayByteLimit(t *testing.T) {
+	window := &muxWindow{
+		kittyImages: map[string][]byte{
+			"1": bytes.Repeat([]byte{'a'}, 5*1024*1024),
+			"2": bytes.Repeat([]byte{'b'}, 5*1024*1024),
+		},
+	}
+
+	payload, served := window.kittyImageTransmissionsForLocked(
+		[]string{"1", "2"},
+	)
+
+	if len(payload) != 5*1024*1024 {
+		t.Fatalf("requested image payload = %d bytes, want 5 MiB", len(payload))
+	}
+	if len(payload) > maxReplayedKittyImageBytes {
+		t.Fatalf("requested image payload exceeded replay limit: %d", len(payload))
+	}
+	if !reflect.DeepEqual(served, []string{"1"}) {
+		t.Fatalf("served ids = %#v, want [1]", served)
 	}
 }
 
@@ -5683,6 +6316,15 @@ type errReader struct{}
 
 type discardConn struct{}
 
+type failingConn struct {
+	discardConn
+}
+
+type gatedConn struct {
+	*recordingConn
+	gate <-chan struct{}
+}
+
 func (errReader) Read([]byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
 }
@@ -5693,6 +6335,15 @@ func (discardConn) Read([]byte) (int, error) {
 
 func (discardConn) Write(data []byte) (int, error) {
 	return len(data), nil
+}
+
+func (failingConn) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func (c *gatedConn) Write(data []byte) (int, error) {
+	<-c.gate
+	return c.recordingConn.Write(data)
 }
 
 func (discardConn) Close() error {
@@ -5765,6 +6416,77 @@ func (c *recordingConn) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.buf.String()
+}
+
+func registerTestAttachClient(
+	t *testing.T,
+	server *muxServer,
+	conn net.Conn,
+	clientID string,
+	width int,
+	height int,
+) *attachClient {
+	t.Helper()
+	client := newAttachClient(
+		conn,
+		controlMessage{
+			ClientID: clientID,
+			Width:    width,
+			Height:   height,
+		},
+	)
+	server.mu.Lock()
+	server.nextAttachSequence++
+	client.sequence = server.nextAttachSequence
+	server.attachClients[conn] = client
+	server.attachConn = conn
+	server.mu.Unlock()
+	t.Cleanup(client.close)
+	return client
+}
+
+func waitForRecordedOutput(t *testing.T, conn *recordingConn, want string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := conn.String(); got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("recorded output = %q, want %q", conn.String(), want)
+}
+
+func waitForPendingQueryState(
+	t *testing.T,
+	server *muxServer,
+	window *muxWindow,
+	inFlight string,
+	pending string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		server.mu.Lock()
+		gotInFlight := string(window.pendingTerminalQueriesInFlight)
+		gotPending := string(window.pendingTerminalQueries)
+		server.mu.Unlock()
+		if gotInFlight == inFlight && gotPending == pending {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	server.mu.Lock()
+	gotInFlight := string(window.pendingTerminalQueriesInFlight)
+	gotPending := string(window.pendingTerminalQueries)
+	server.mu.Unlock()
+	t.Fatalf(
+		"query state = in-flight %q, pending %q; want %q and %q",
+		gotInFlight,
+		gotPending,
+		inFlight,
+		pending,
+	)
 }
 
 type testAddr string

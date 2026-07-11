@@ -7050,7 +7050,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final toRequest = <int>[
       for (final id in unresolved)
-        if (_requestedMissingImageIds.add(id)) id,
+        if (!_requestedMissingImageIds.contains(id)) id,
     ];
     if (toRequest.isEmpty) {
       return;
@@ -7063,6 +7063,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (sessionName == null) {
       return;
     }
+    _requestedMissingImageIds.addAll(toRequest);
     DiagnosticsLogService.instance.debug(
       'terminal.graphics',
       'request_missing_images',
@@ -7072,7 +7073,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'unresolved': unresolved.length,
       },
     );
-    unawaited(_monkeyMuxService.requestImages(session, sessionName, toRequest));
+    unawaited(
+      _monkeyMuxService.requestImages(session, sessionName, toRequest).then((
+        served,
+      ) {
+        if (!mounted) {
+          return;
+        }
+        _requestedMissingImageIds.removeAll(
+          toRequest.where((id) => !served.contains(id)),
+        );
+      }),
+    );
   }
 
   void _resetMissingImageRecoveryState() {
@@ -7873,6 +7885,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             command: buildMonkeyMuxAttachCommand(
               executablePath: installation.executablePath,
               sessionName: sessionName,
+              clientId: session.monkeyMuxClientId,
               workingDirectory: host.tmuxWorkingDirectory,
               terminalThemeReports: terminalThemeReports,
               serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
@@ -7886,6 +7899,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           command: buildMonkeyMuxAttachCommand(
             executablePath: installation.executablePath,
             sessionName: sessionName,
+            clientId: session.monkeyMuxClientId,
             workingDirectory: host.tmuxWorkingDirectory,
             terminalThemeReports: terminalThemeReports,
             serverUpdatePolicy: updatePolicy,
@@ -8048,8 +8062,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               Text('Size: ${_formatMonkeyMuxInstallSize(request.size)}'),
               const SizedBox(height: 12),
               const Text(
-                'It will be installed under ~/.monkeyssh/bin/monkeymux on the '
-                'connected host.',
+                'The versioned helper is stored under '
+                '~/.monkeyssh/bin/monkeymux. A managed launcher is added to '
+                '~/.local/bin so it can also be used from the host terminal.',
               ),
             ],
           ),
@@ -8168,6 +8183,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       attachCommand = buildMonkeyMuxAttachCommand(
         executablePath: installation.executablePath,
         sessionName: sessionName,
+        clientId: session.monkeyMuxClientId,
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,

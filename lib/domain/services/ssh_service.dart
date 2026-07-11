@@ -2964,7 +2964,10 @@ class SshSession {
     this.terminalFontSize,
     this.clipboardSharingEnabled = false,
     this.localClipboardReadEnabled = false,
-  }) : createdAt = DateTime.now();
+    String? monkeyMuxClientId,
+  }) : monkeyMuxClientId =
+           monkeyMuxClientId ?? _createMonkeyMuxClientId(connectionId),
+       createdAt = DateTime.now();
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
   static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
@@ -2974,11 +2977,28 @@ class SshSession {
   ];
   static const _previewLineCount = 17;
   static const _previewMaxChars = 1700;
+  static final _monkeyMuxClientIdRandom = math.Random.secure();
   static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
   static final _windowTitleSanitizerPattern = RegExp(r'[\x00-\x1F\x7F]');
 
+  static String _createMonkeyMuxClientId(int connectionId) {
+    final random = List<String>.generate(
+      4,
+      (_) => _monkeyMuxClientIdRandom
+          .nextInt(1 << 32)
+          .toRadixString(16)
+          .padLeft(8, '0'),
+      growable: false,
+    ).join();
+    return 'monkeyssh-$connectionId-$random';
+  }
+
   /// The connection ID for this active session.
   final int connectionId;
+
+  /// Unique foreground-client identity shared by MonkeyMux attach and control
+  /// channels for this SSH session.
+  final String monkeyMuxClientId;
 
   /// The host ID this session is connected to.
   final int hostId;

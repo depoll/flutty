@@ -6,21 +6,70 @@ per-user helper that runs on the SSH target and exposes:
 - `monkeymux attach <session>` for the foreground terminal path.
 - `monkeymux control <session> --json` for newline-delimited JSON control.
 
+## Using MonkeyMux on the host
+
+MonkeySSH installs a managed launcher at `~/.local/bin/monkeymux`. Add that
+directory to `PATH` once if the host does not already include it:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Running `monkeymux` with no arguments creates `main` when nothing is running,
+attaches immediately when there is one session, or shows a numbered chooser
+when several sessions are available.
+
+The direct CLI accepts both concise and familiar tmux-style commands:
+
+```sh
+monkeymux                         # attach, create, or choose
+monkeymux attach work             # attach to work
+monkeymux attach-session -t work  # same operation, tmux spelling
+monkeymux new-session -s review   # create and attach
+monkeymux new-session -d -s build # create in the background
+monkeymux list-sessions           # alias: ls
+monkeymux kill-session -t review
+```
+
+Every attached terminal remains connected. The active window is shared, as it
+is for clients attached to the same tmux session, so a switch made on the phone
+also switches a host terminal. Input from every client reaches that window.
+MonkeyMux uses the smallest attached width and height for the shared PTY so all
+clients render safely, and a stalled client is disconnected instead of blocking
+the others.
+
+### Prefix keys
+
+The default prefix is `Ctrl-B`:
+
+| Keys | Action |
+| --- | --- |
+| `Ctrl-B c` | Create a window in the active window's directory |
+| `Ctrl-B n` / `Ctrl-B p` | Select the next / previous window |
+| `Ctrl-B 0` ... `Ctrl-B 9` | Select a window by index |
+| `Ctrl-B l` | Return to the last window |
+| `Ctrl-B &`, then `y` | Close the current window |
+| `Ctrl-B d` | Detach only this terminal |
+| `Ctrl-B Ctrl-B` | Send a literal `Ctrl-B` to the program |
+
+Use `monkeymux attach --no-prefix <session>` when an application must receive
+every `Ctrl-B` unchanged.
+
 The foreground path is intentionally a direct byte relay. MonkeyMux does not
 parse, cache, wrap, or rewrite terminal control sequences in the hot path. All
 structured state and commands belong on the control backchannel.
 
-`attach` is the only command that starts a session server. Optional `--cwd`,
+`attach` and `new-session` can start a session server. Optional `--cwd`,
 `--name`, and `--command` flags seed the initial window only when a new server
 is created, so MonkeySSH can launch a coding agent without creating a duplicate
 window on reconnect. The server inherits the environment from the shell that
-launched `attach` exactly, so profile-managed values such as `PATH` and
-tool-specific variables remain user-owned. PTY windows inherit that environment
-and add terminal defaults such as `TERM=xterm-256color` and
-`COLORTERM=truecolor` only when the launch environment does not already provide
-usable terminal hints. They also advertise `FORCE_HYPERLINK=1` (unless already
-set) so OSC 8 capable CLIs such as Copilot and `gh` emit clickable hyperlinks,
-which MonkeySSH renders and opens.
+launched it exactly, so profile-managed values such as `PATH` and tool-specific
+variables remain user-owned. PTY windows inherit that environment and add
+terminal defaults such as `TERM=xterm-256color` and `COLORTERM=truecolor` only
+when the launch environment does not already provide usable terminal hints.
+They also advertise `FORCE_HYPERLINK=1` (unless already set) so OSC 8 capable
+CLIs such as Copilot and `gh` emit clickable hyperlinks, which MonkeySSH renders
+and opens.
 
 Window switching and reconnect repaint from raw byte history for the selected
 window. Main-screen shell history is capped for responsive switching; active
@@ -49,6 +98,11 @@ opening unrelated SSH exec sessions.
 Theme/focus refresh requests are backchannel hints. MonkeyMux only forwards
 focus transitions to recognized foreground agent TUIs; it does not inject
 tmux-style palette reports into shell windows.
+
+Live terminal identity, status, and color queries are sent to one primary
+terminal only. Ordinary output and notifications still reach every attached
+terminal. This prevents several real terminals from returning duplicate query
+responses to the foreground program.
 
 When `attach` finds an existing server from a different helper version, it asks
 before replacing that session. Choosing no attaches to the running server

@@ -336,6 +336,12 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   RemoteMultiplexerService get _mux => widget.remoteMultiplexerService;
 
+  String get _muxLabel => switch (widget.remoteMuxBackend) {
+    RemoteMuxBackend.monkeyMux => 'MonkeyMux',
+    RemoteMuxBackend.tmux => 'tmux',
+    RemoteMuxBackend.auto => 'remote multiplexer',
+  };
+
   AgentSessionDiscoveryService get _discovery =>
       widget.ref.read(agentSessionDiscoveryServiceProvider);
 
@@ -465,7 +471,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         setState(() {
           _windows = null;
           _error = shouldShowRecoveryMessage
-              ? 'tmux did not return any windows yet. Retrying...'
+              ? '$_muxLabel did not return any windows yet. Retrying...'
               : null;
           _isLoadingWindows = !shouldShowRecoveryMessage;
         });
@@ -497,7 +503,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       setState(() {
         _error = _windows?.isEmpty ?? true
             ? shouldShowRecoveryMessage
-                  ? 'Could not refresh tmux windows yet. Retrying...'
+                  ? 'Could not refresh $_muxLabel windows yet. Retrying...'
                   : e.toString()
             : null;
         _isLoadingWindows = false;
@@ -739,7 +745,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                   const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.close, size: 20),
-                    tooltip: 'Close tmux navigator',
+                    tooltip: 'Close window navigator',
                     onPressed: () => Navigator.pop(context),
                     visualDensity: VisualDensity.compact,
                   ),
@@ -765,12 +771,15 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                     Padding(
                       padding: const EdgeInsets.all(16),
                       child: Text(
-                        'Could not load tmux windows. Check that tmux is still running, then try again.',
+                        'Could not load $_muxLabel windows. Check that $_muxLabel is still running, then try again.',
                         style: TextStyle(color: theme.colorScheme.error),
                       ),
                     )
                   else if (_windows != null && _windows!.isNotEmpty)
                     ..._windows!.map(_buildWindowTile),
+                  if (widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux &&
+                      (_windows?.isNotEmpty ?? false))
+                    _buildMonkeyMuxShortcutHint(theme),
                   const Divider(height: 1),
                   // New Window button
                   ListTile(
@@ -802,6 +811,30 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       ),
     );
   }
+
+  Widget _buildMonkeyMuxShortcutHint(ThemeData theme) => Padding(
+    key: const ValueKey('monkeymux-shortcut-hint'),
+    padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+    child: Row(
+      children: [
+        Icon(
+          Icons.keyboard_alt_outlined,
+          size: 16,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            'Ctrl-B: c new / n,p switch / 0-9 select / & close / d detach',
+            style: FluttyTheme.monoStyle.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontSize: 11,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 
   Widget _buildWindowTile(TmuxWindow window) {
     final theme = Theme.of(context);
