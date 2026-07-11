@@ -151,6 +151,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   List<TmuxWindow>? get currentWindowsSnapshot => _windows;
 
+  bool get hasPendingWindowSelection => _pendingSelectedWindowIndex != null;
+
   bool get _emptyWindowListEndsSession =>
       widget.activeMuxBackend == RemoteMuxBackend.monkeyMux;
 
