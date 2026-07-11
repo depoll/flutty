@@ -364,6 +364,31 @@ void main() {
       );
     });
 
+    test('rejects picker names that can escape the upload directory', () {
+      expect(validateSftpUploadFileName('notes.txt'), isNull);
+      expect(validateSftpUploadFileName('..'), isNotNull);
+      expect(validateSftpUploadFileName('../authorized_keys'), isNotNull);
+      expect(validateSftpUploadFileName(r'..\authorized_keys'), isNotNull);
+      expect(validateSftpUploadFileName('/tmp/payload'), isNotNull);
+      expect(validateSftpUploadFileName('bad\x00name'), isNotNull);
+    });
+
+    test('does not echo unsafe upload names in validation feedback', () {
+      expect(
+        resolveUnsafeSftpUploadNameMessage([
+          PlatformFile(name: '../authorized_keys', size: 0),
+        ]),
+        'The selected file has an unsafe name',
+      );
+      expect(
+        resolveUnsafeSftpUploadNameMessage([
+          PlatformFile(name: '../one', size: 0),
+          PlatformFile(name: r'..\two', size: 0),
+        ]),
+        '2 selected files have unsafe names',
+      );
+    });
+
     test('validates new folder names before creating directories', () {
       expect(validateSftpDirectoryName(''), 'Folder name is required');
       expect(validateSftpDirectoryName('  '), 'Folder name is required');

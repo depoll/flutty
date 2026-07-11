@@ -26,6 +26,7 @@ import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/interactive_auth_prompt.dart';
+import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/wifi_network_service.dart';
@@ -1323,6 +1324,8 @@ void main() {
       expect(info.portForwardId, 1);
       expect(info.localHost, '127.0.0.1');
       expect(info.localPort, 3306);
+      expect(info.browserHost, isNull);
+      expect(info.browserPort, isNull);
       expect(info.remoteHost, 'db.internal');
       expect(info.remotePort, 3306);
       expect(info.isLocal, isTrue);
@@ -2528,9 +2531,15 @@ void main() {
           isTrue,
         );
 
+        final activeTunnel = session.activeTunnels.single;
+        expect(
+          activeTunnel.browserHost,
+          portForwardBrowserHostForPortForwardId(activeTunnel.portForwardId),
+        );
+        expect(activeTunnel.browserPort, isNotNull);
         final socket = await Socket.connect(
-          InternetAddress.loopbackIPv4,
-          localPort,
+          activeTunnel.browserHost,
+          activeTunnel.browserPort!,
         );
         socket.destroy();
         await Future<void>.delayed(Duration.zero);
