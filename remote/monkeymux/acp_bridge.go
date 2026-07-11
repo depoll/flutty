@@ -88,10 +88,20 @@ type acpReplayEvent struct {
 }
 
 type acpBridgeClient struct {
-	id   string
-	conn net.Conn
-	send chan acpWireMessage
-	ack  uint64
+	id         string
+	conn       net.Conn
+	send       chan acpWireMessage
+	done       chan struct{}
+	doneOnce   sync.Once
+	writerDone chan struct{}
+	ack        uint64
+}
+
+func (c *acpBridgeClient) cancel() {
+	c.doneOnce.Do(func() {
+		close(c.done)
+		_ = c.conn.Close()
+	})
 }
 
 type acpBridge struct {
@@ -103,21 +113,23 @@ type acpBridge struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 
-	mu              sync.Mutex
-	stdinMu         sync.Mutex
-	state           string
-	startedAt       time.Time
-	lastActivity    time.Time
-	nextSequence    uint64
-	replay          []acpReplayEvent
-	replayBytes     int
-	clients         map[string]*acpBridgeClient
-	writerClientID  string
-	pendingRequests map[string]struct{}
-	inFlightTurns   map[string]struct{}
-	exitCode        *int
-	stopOnce        sync.Once
-	done            chan struct{}
+	mu               sync.Mutex
+	stdinMu          sync.Mutex
+	state            string
+	startedAt        time.Time
+	lastActivity     time.Time
+	nextSequence     uint64
+	replay           []acpReplayEvent
+	replayBytes      int
+	clients          map[string]*acpBridgeClient
+	writerClientID   string
+	pendingRequests  map[string]struct{}
+	inFlightTurns    map[string]struct{}
+	exitCode         *int
+	providerDone     chan struct{}
+	providerDoneOnce sync.Once
+	stopOnce         sync.Once
+	done             chan struct{}
 }
 
 func acpCommand(args []string) {
@@ -199,7 +211,8 @@ func acpStartCommand(args []string) {
 				break
 			}
 			_ = stdin.Close()
-			stopAcpProvider(candidate)
+			_ = candidate.Process.Kill()
+			_ = candidate.Process.Release()
 		} else {
 			_ = stdin.Close()
 		}
@@ -406,6 +419,7 @@ func newAcpBridge(id string, provider string, command string, cwd string) (*acpB
 		clients:         map[string]*acpBridgeClient{},
 		pendingRequests: map[string]struct{}{},
 		inFlightTurns:   map[string]struct{}{},
+		providerDone:    make(chan struct{}),
 		done:            make(chan struct{}),
 	}
 	go bridge.readProviderOutput(stdout)
@@ -504,6 +518,7 @@ func readBoundedAcpLine(reader *bufio.Reader) ([]byte, error) {
 
 func (b *acpBridge) waitForProvider() {
 	err := b.cmd.Wait()
+	b.providerDoneOnce.Do(func() { close(b.providerDone) })
 	exitCode := 0
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		exitCode = exitErr.ExitCode()
@@ -704,7 +719,9 @@ func (b *acpBridge) handleAttach(
 		// A complete bounded replay must fit before the writer goroutine gets a
 		// scheduling turn; live slow consumers are still disconnected once this
 		// bounded queue fills and can resume with ACK.
-		send: make(chan acpWireMessage, acpReplayMaxEvents+4),
+		send:       make(chan acpWireMessage, acpReplayMaxEvents+4),
+		done:       make(chan struct{}),
+		writerDone: make(chan struct{}),
 	}
 	go b.writeClient(client)
 
@@ -823,7 +840,21 @@ func replayHasGap(replay []acpReplayEvent, after uint64) bool {
 }
 
 func (b *acpBridge) writeClient(client *acpBridgeClient) {
-	for message := range client.send {
+	defer close(client.writerDone)
+	for {
+		// Prefer cancellation when both it and a queued message are ready. This
+		// avoids retaining a writer goroutine for a disconnected idle client.
+		select {
+		case <-client.done:
+			return
+		default:
+		}
+		var message acpWireMessage
+		select {
+		case <-client.done:
+			return
+		case message = <-client.send:
+		}
 		if err := writeAcpWireFrame(client.conn, message); err != nil {
 			b.detachClient(client.id)
 			return
@@ -839,6 +870,13 @@ func (b *acpBridge) enqueue(client *acpBridgeClient, message acpWireMessage) {
 		return
 	}
 	select {
+	case <-client.done:
+		return
+	default:
+	}
+	select {
+	case <-client.done:
+		return
 	case client.send <- message:
 	default:
 		// A slow SSH client must not block the provider or unbound the replay
@@ -859,7 +897,7 @@ func (b *acpBridge) detachClient(clientID string) {
 	}
 	b.mu.Unlock()
 	if ok {
-		_ = client.conn.Close()
+		client.cancel()
 	}
 }
 
@@ -956,10 +994,10 @@ func (b *acpBridge) stop() {
 		if stdin != nil {
 			_ = stdin.Close()
 		}
-		stopAcpProvider(b.cmd)
+		stopAcpProvider(b.cmd, b.providerDone)
 		close(b.done)
 		for _, client := range clients {
-			_ = client.conn.Close()
+			client.cancel()
 		}
 	})
 }

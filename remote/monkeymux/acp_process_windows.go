@@ -27,9 +27,14 @@ func newAcpProviderCommand(command string) *exec.Cmd {
 	return cmd
 }
 
-func stopAcpProvider(cmd *exec.Cmd) {
+func stopAcpProvider(cmd *exec.Cmd, providerDone <-chan struct{}) {
 	if cmd == nil || cmd.Process == nil {
 		return
+	}
+	select {
+	case <-providerDone:
+		return
+	default:
 	}
 	pid := cmd.Process.Pid
 	if pid > 0 {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -31,6 +32,51 @@ func TestAcpWireFramingRoundTrip(t *testing.T) {
 	if got.Type != want.Type || got.BridgeID != want.BridgeID ||
 		!bytes.Equal(got.Data, want.Data) {
 		t.Fatalf("wire frame = %#v, want %#v", got, want)
+	}
+}
+
+func TestAcpDetachedIdleClientStopsWriter(t *testing.T) {
+	server, peer := net.Pipe()
+	defer peer.Close()
+	client := &acpBridgeClient{
+		id:         "client",
+		conn:       server,
+		send:       make(chan acpWireMessage, 1),
+		done:       make(chan struct{}),
+		writerDone: make(chan struct{}),
+	}
+	bridge := &acpBridge{
+		clients: map[string]*acpBridgeClient{client.id: client},
+	}
+	go bridge.writeClient(client)
+
+	bridge.detachClient(client.id)
+
+	select {
+	case <-client.writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("idle detached client left its writer goroutine running")
+	}
+}
+
+func TestAcpProviderExitCancelsDelayedForceStop(t *testing.T) {
+	cmd := newAcpProviderCommand("sleep 30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	forced := make(chan struct{}, 1)
+
+	stopAcpProviderAfter(cmd, done, 250*time.Millisecond, func(*exec.Cmd) {
+		forced <- struct{}{}
+	})
+	_ = cmd.Wait()
+	close(done)
+
+	select {
+	case <-forced:
+		t.Fatal("force stop ran after the provider had exited")
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 
