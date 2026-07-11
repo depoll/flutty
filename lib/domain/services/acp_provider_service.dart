@@ -17,6 +17,13 @@ class AcpProviderService {
 
   final SettingsService _settings;
 
+  // Chains every mutating operation onto a single queue so a save/remove
+  // always reads the settings table only after every previously queued
+  // save/remove has finished writing. Without this, two overlapping
+  // read-modify-write cycles can each read the same starting list and the
+  // later write silently discards the earlier caller's change.
+  Future<void> _mutationQueue = Future<void>.value();
+
   /// All built-in ACP providers bundled with the app.
   List<AcpBuiltinProvider> get builtinProviders => acpBuiltinProviders;
 
@@ -70,24 +77,30 @@ class AcpProviderService {
 
   /// Saves [definition], inserting it or updating an existing entry with the
   /// same ID in place without disturbing the order of other entries.
-  Future<void> saveCustomProvider(
-    AcpCustomProviderDefinition definition,
-  ) async {
-    final providers = await listCustomProviders();
-    final index = providers.indexWhere(
-      (provider) => provider.id == definition.id,
-    );
-    final updated = List<AcpCustomProviderDefinition>.from(providers);
-    if (index >= 0) {
-      updated[index] = definition;
-    } else {
-      updated.add(definition);
-    }
-    await _writeCustomProviders(updated);
-  }
+  ///
+  /// Concurrent mutations (saves and/or removes) are serialized so that two
+  /// overlapping calls can never race on the same underlying
+  /// read-modify-write cycle and silently drop one another's changes.
+  Future<void> saveCustomProvider(AcpCustomProviderDefinition definition) =>
+      _withMutationLock(() async {
+        final providers = await listCustomProviders();
+        final index = providers.indexWhere(
+          (provider) => provider.id == definition.id,
+        );
+        final updated = List<AcpCustomProviderDefinition>.from(providers);
+        if (index >= 0) {
+          updated[index] = definition;
+        } else {
+          updated.add(definition);
+        }
+        await _writeCustomProviders(updated);
+      });
 
   /// Removes the persisted custom provider with [id], if one exists.
-  Future<void> removeCustomProvider(String id) async {
+  ///
+  /// See [saveCustomProvider] for the concurrency guarantee shared by all
+  /// mutating operations on this service.
+  Future<void> removeCustomProvider(String id) => _withMutationLock(() async {
     final providers = await listCustomProviders();
     final updated = providers
         .where((provider) => provider.id != id)
@@ -96,7 +109,7 @@ class AcpProviderService {
       return;
     }
     await _writeCustomProviders(updated);
-  }
+  });
 
   Future<void> _writeCustomProviders(
     List<AcpCustomProviderDefinition> providers,
@@ -109,6 +122,12 @@ class AcpProviderService {
       for (final provider in providers) provider.toJson(),
     ]);
     await _settings.setString(SettingKeys.acpCustomProviders, encoded);
+  }
+
+  Future<void> _withMutationLock(Future<void> Function() action) {
+    final operation = _mutationQueue.then((_) => action());
+    _mutationQueue = operation.catchError((_) {});
+    return operation;
   }
 }
 

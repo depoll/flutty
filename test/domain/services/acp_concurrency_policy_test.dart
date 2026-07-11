@@ -71,18 +71,33 @@ void main() {
     });
 
     test('AcpConcurrencyRequiresChoice has value equality', () {
-      const a = AcpConcurrencyRequiresChoice(
-        blockingSessionKeys: ['session-a'],
+      final a = AcpConcurrencyRequiresChoice(
+        blockingSessionKeys: const ['session-a'],
       );
-      const b = AcpConcurrencyRequiresChoice(
-        blockingSessionKeys: ['session-a'],
+      final b = AcpConcurrencyRequiresChoice(
+        blockingSessionKeys: const ['session-a'],
       );
-      const c = AcpConcurrencyRequiresChoice(
-        blockingSessionKeys: ['session-b'],
+      final c = AcpConcurrencyRequiresChoice(
+        blockingSessionKeys: const ['session-b'],
       );
       expect(a, b);
       expect(a.hashCode, b.hashCode);
       expect(a == c, isFalse);
     });
+
+    test(
+      'AcpConcurrencyRequiresChoice defensively copies blockingSessionKeys '
+      'so later mutation of the source list does not change the decision',
+      () {
+        final mutableKeys = ['session-a'];
+        final decision = AcpConcurrencyRequiresChoice(
+          blockingSessionKeys: mutableKeys,
+        );
+
+        mutableKeys.add('session-b');
+
+        expect(decision.blockingSessionKeys, ['session-a']);
+      },
+    );
   });
 }

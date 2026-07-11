@@ -28,10 +28,13 @@ final class AcpConcurrencyAllowed extends AcpConcurrencyDecision {
 final class AcpConcurrencyRequiresChoice extends AcpConcurrencyDecision {
   /// Creates a decision requiring the user to stop/replace a session or
   /// unlock [requiredFeature].
-  const AcpConcurrencyRequiresChoice({
-    required this.blockingSessionKeys,
+  ///
+  /// [blockingSessionKeys] is defensively copied so later mutations to a
+  /// caller-owned list can never change this decision after construction.
+  AcpConcurrencyRequiresChoice({
+    required List<String> blockingSessionKeys,
     this.requiredFeature = MonetizationFeature.concurrentAcpSessions,
-  });
+  }) : blockingSessionKeys = List.unmodifiable(blockingSessionKeys);
 
   /// Keys of the currently live sessions that block the requested session.
   final List<String> blockingSessionKeys;

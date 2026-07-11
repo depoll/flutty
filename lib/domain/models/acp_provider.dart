@@ -153,7 +153,15 @@ String computeAcpLaunchCommandFingerprint(AcpLaunchCommand command) {
 @immutable
 class AcpLaunchCommand {
   /// Creates a new [AcpLaunchCommand].
-  const AcpLaunchCommand({required this.executable, this.arguments = const []});
+  ///
+  /// [arguments] is defensively copied so later mutations to a caller-owned
+  /// list can never change this command after construction (which would
+  /// otherwise let an already-approved command's fingerprint go stale
+  /// without detection).
+  AcpLaunchCommand({
+    required this.executable,
+    List<String> arguments = const [],
+  }) : arguments = List.unmodifiable(arguments);
 
   /// Decodes an [AcpLaunchCommand] from JSON.
   ///
@@ -230,17 +238,22 @@ class AcpLaunchCommand {
   int get hashCode => Object.hash(executable, _listEquality.hash(arguments));
 
   @override
-  String toString() => 'AcpLaunchCommand(${argv.join(' ')})';
+  String toString() => 'AcpLaunchCommand(argumentCount: ${arguments.length})';
 }
 
 /// Metadata used to detect whether an ACP provider's executable is installed.
 @immutable
 class AcpExecutableProbe {
   /// Creates a new [AcpExecutableProbe].
-  const AcpExecutableProbe({
-    required this.candidateExecutableNames,
-    this.versionArguments = const ['--version'],
-  });
+  ///
+  /// [candidateExecutableNames] and [versionArguments] are defensively
+  /// copied so later mutations to a caller-owned list can never change this
+  /// probe after construction.
+  AcpExecutableProbe({
+    required List<String> candidateExecutableNames,
+    List<String> versionArguments = const ['--version'],
+  }) : candidateExecutableNames = List.unmodifiable(candidateExecutableNames),
+       versionArguments = List.unmodifiable(versionArguments);
 
   /// Executable names or aliases that may resolve to this provider on PATH.
   final List<String> candidateExecutableNames;
@@ -330,12 +343,12 @@ class AcpBuiltinProvider {
 }
 
 /// Built-in Copilot CLI ACP provider.
-const acpCopilotCliProvider = AcpBuiltinProvider(
+final acpCopilotCliProvider = AcpBuiltinProvider(
   id: AcpBuiltinProviderIds.copilotCli,
   label: 'Copilot CLI',
   launchCommand: AcpLaunchCommand(
     executable: 'copilot',
-    arguments: [
+    arguments: const [
       '--acp',
       '--no-color',
       '--no-auto-update',
@@ -344,35 +357,38 @@ const acpCopilotCliProvider = AcpBuiltinProvider(
     ],
   ),
   executableProbe: AcpExecutableProbe(
-    candidateExecutableNames: ['copilot', 'github-copilot'],
+    candidateExecutableNames: const ['copilot', 'github-copilot'],
   ),
-  // Copilot CLI walks the user through its own device-code sign-in when run
-  // interactively without pre-existing credentials.
-  terminalAuthCommand: AcpLaunchCommand(executable: 'copilot'),
+  // Explicitly runs Copilot CLI's own sign-in flow rather than an ambiguous
+  // bare interactive session.
+  terminalAuthCommand: AcpLaunchCommand(
+    executable: 'copilot',
+    arguments: const ['login'],
+  ),
 );
 
 /// Built-in OpenCode ACP provider.
-const acpOpenCodeProvider = AcpBuiltinProvider(
+final acpOpenCodeProvider = AcpBuiltinProvider(
   id: AcpBuiltinProviderIds.openCode,
   label: 'OpenCode',
   launchCommand: AcpLaunchCommand(
     executable: 'opencode',
-    arguments: ['acp', '--log-level', 'ERROR'],
+    arguments: const ['acp', '--log-level', 'ERROR'],
   ),
   executableProbe: AcpExecutableProbe(
-    candidateExecutableNames: ['opencode', 'open-code'],
+    candidateExecutableNames: const ['opencode', 'open-code'],
   ),
   terminalAuthCommand: AcpLaunchCommand(
     executable: 'opencode',
-    arguments: ['auth', 'login'],
+    arguments: const ['auth', 'login'],
   ),
 );
 
 /// All built-in ACP providers bundled with the app, in display order.
-const acpBuiltinProviders = <AcpBuiltinProvider>[
+final acpBuiltinProviders = List<AcpBuiltinProvider>.unmodifiable([
   acpCopilotCliProvider,
   acpOpenCodeProvider,
-];
+]);
 
 /// Approval record for a custom ACP provider's exact launch command.
 ///
@@ -510,8 +526,13 @@ class AcpCustomProviderDefinition {
     if (approval == null) {
       return null;
     }
-    final createdAt = DateTime.tryParse(json['createdAt'] as String? ?? '');
-    final updatedAt = DateTime.tryParse(json['updatedAt'] as String? ?? '');
+    final rawCreatedAt = json['createdAt'];
+    final rawUpdatedAt = json['updatedAt'];
+    if (rawCreatedAt is! String || rawUpdatedAt is! String) {
+      return null;
+    }
+    final createdAt = DateTime.tryParse(rawCreatedAt);
+    final updatedAt = DateTime.tryParse(rawUpdatedAt);
     if (createdAt == null || updatedAt == null) {
       return null;
     }
@@ -561,10 +582,12 @@ class AcpCustomProviderDefinition {
   /// Returns a copy of this definition with [label] and/or [launchCommand]
   /// replaced.
   ///
-  /// Changing [launchCommand] to a value that differs from the current one
-  /// re-approves it as of [now]; an unchanged command keeps its existing
-  /// [approval] untouched. Throws a [FormatException] if the new [label] or
-  /// [launchCommand] fail validation.
+  /// This never silently re-approves a changed command: [approval] is
+  /// always preserved as-is, so changing [launchCommand] to a different
+  /// value makes [isCommandApproved] become `false` until the UI explicitly
+  /// calls [approveCurrentCommand] after the user reviews and confirms the
+  /// new exact command text. Throws a [FormatException] if the new [label]
+  /// or [launchCommand] fail validation.
   AcpCustomProviderDefinition update({
     String? label,
     AcpLaunchCommand? launchCommand,
@@ -577,15 +600,30 @@ class AcpCustomProviderDefinition {
     if (launchCommand != null) {
       validateAcpLaunchCommand(launchCommand);
     }
-    final commandChanged = nextCommand != this.launchCommand;
     final timestamp = (now ?? DateTime.now()).toUtc();
     return AcpCustomProviderDefinition._(
       id: id,
       label: normalizedLabel,
       launchCommand: nextCommand,
-      approval: commandChanged
-          ? AcpCommandApproval.approve(nextCommand, now: timestamp)
-          : approval,
+      approval: approval,
+      createdAt: createdAt,
+      updatedAt: timestamp,
+    );
+  }
+
+  /// Approves the current [launchCommand] as of [now] (defaulting to the
+  /// current UTC time), making [isCommandApproved] become `true`.
+  ///
+  /// The UI must call this only after the user has reviewed and explicitly
+  /// confirmed the exact current command text; it must never be called
+  /// automatically as a side effect of [update].
+  AcpCustomProviderDefinition approveCurrentCommand({DateTime? now}) {
+    final timestamp = (now ?? DateTime.now()).toUtc();
+    return AcpCustomProviderDefinition._(
+      id: id,
+      label: label,
+      launchCommand: launchCommand,
+      approval: AcpCommandApproval.approve(launchCommand, now: timestamp),
       createdAt: createdAt,
       updatedAt: timestamp,
     );

@@ -50,7 +50,7 @@ void main() {
       final valid = AcpCustomProviderDefinition.create(
         id: 'valid-agent',
         label: 'Valid Agent',
-        launchCommand: const AcpLaunchCommand(executable: 'valid-agent'),
+        launchCommand: AcpLaunchCommand(executable: 'valid-agent'),
       );
       await settings.setString(
         SettingKeys.acpCustomProviders,
@@ -72,12 +72,12 @@ void main() {
       final first = AcpCustomProviderDefinition.create(
         id: 'first',
         label: 'First',
-        launchCommand: const AcpLaunchCommand(executable: 'first'),
+        launchCommand: AcpLaunchCommand(executable: 'first'),
       );
       final second = AcpCustomProviderDefinition.create(
         id: 'second',
         label: 'Second',
-        launchCommand: const AcpLaunchCommand(executable: 'second'),
+        launchCommand: AcpLaunchCommand(executable: 'second'),
       );
 
       await service.saveCustomProvider(first);
@@ -91,12 +91,12 @@ void main() {
       final first = AcpCustomProviderDefinition.create(
         id: 'first',
         label: 'First',
-        launchCommand: const AcpLaunchCommand(executable: 'first'),
+        launchCommand: AcpLaunchCommand(executable: 'first'),
       );
       final second = AcpCustomProviderDefinition.create(
         id: 'second',
         label: 'Second',
-        launchCommand: const AcpLaunchCommand(executable: 'second'),
+        launchCommand: AcpLaunchCommand(executable: 'second'),
       );
       await service.saveCustomProvider(first);
       await service.saveCustomProvider(second);
@@ -113,7 +113,7 @@ void main() {
       final first = AcpCustomProviderDefinition.create(
         id: 'first',
         label: 'First',
-        launchCommand: const AcpLaunchCommand(executable: 'first'),
+        launchCommand: AcpLaunchCommand(executable: 'first'),
       );
       await service.saveCustomProvider(first);
 
@@ -125,12 +125,12 @@ void main() {
       final first = AcpCustomProviderDefinition.create(
         id: 'first',
         label: 'First',
-        launchCommand: const AcpLaunchCommand(executable: 'first'),
+        launchCommand: AcpLaunchCommand(executable: 'first'),
       );
       final second = AcpCustomProviderDefinition.create(
         id: 'second',
         label: 'Second',
-        launchCommand: const AcpLaunchCommand(executable: 'second'),
+        launchCommand: AcpLaunchCommand(executable: 'second'),
       );
       await service.saveCustomProvider(first);
       await service.saveCustomProvider(second);
@@ -147,7 +147,7 @@ void main() {
         final first = AcpCustomProviderDefinition.create(
           id: 'first',
           label: 'First',
-          launchCommand: const AcpLaunchCommand(executable: 'first'),
+          launchCommand: AcpLaunchCommand(executable: 'first'),
         );
         await service.saveCustomProvider(first);
         await service.removeCustomProvider('first');
@@ -163,7 +163,7 @@ void main() {
       final first = AcpCustomProviderDefinition.create(
         id: 'first',
         label: 'First',
-        launchCommand: const AcpLaunchCommand(executable: 'first'),
+        launchCommand: AcpLaunchCommand(executable: 'first'),
       );
       await service.saveCustomProvider(first);
       await service.removeCustomProvider('missing');
@@ -172,12 +172,73 @@ void main() {
     });
   });
 
+  group('concurrent mutations', () {
+    test('concurrent saveCustomProvider calls do not lose entries '
+        '(read-modify-write is serialized)', () async {
+      final definitions = List.generate(
+        10,
+        (i) => AcpCustomProviderDefinition.create(
+          id: 'agent-$i',
+          label: 'Agent $i',
+          launchCommand: AcpLaunchCommand(executable: 'agent-$i'),
+        ),
+      );
+
+      // Fire every save without awaiting individually so their internal
+      // read-modify-write cycles genuinely overlap.
+      await Future.wait([
+        for (final definition in definitions)
+          service.saveCustomProvider(definition),
+      ]);
+
+      final loaded = await service.listCustomProviders();
+      expect(
+        loaded.map((d) => d.id).toSet(),
+        definitions.map((d) => d.id).toSet(),
+      );
+      expect(loaded, hasLength(definitions.length));
+    });
+
+    test(
+      'a concurrent save and remove do not lose an unrelated entry',
+      () async {
+        final kept = AcpCustomProviderDefinition.create(
+          id: 'kept',
+          label: 'Kept',
+          launchCommand: AcpLaunchCommand(executable: 'kept'),
+        );
+        await service.saveCustomProvider(kept);
+
+        final removable = AcpCustomProviderDefinition.create(
+          id: 'removable',
+          label: 'Removable',
+          launchCommand: AcpLaunchCommand(executable: 'removable'),
+        );
+        await service.saveCustomProvider(removable);
+
+        final added = AcpCustomProviderDefinition.create(
+          id: 'added',
+          label: 'Added',
+          launchCommand: AcpLaunchCommand(executable: 'added'),
+        );
+
+        await Future.wait([
+          service.saveCustomProvider(added),
+          service.removeCustomProvider('removable'),
+        ]);
+
+        final loaded = await service.listCustomProviders();
+        expect(loaded.map((d) => d.id).toSet(), {'kept', 'added'});
+      },
+    );
+  });
+
   group('listAllProviders', () {
     test('lists built-ins before persisted custom providers', () async {
       final custom = AcpCustomProviderDefinition.create(
         id: 'custom-agent',
         label: 'Custom Agent',
-        launchCommand: const AcpLaunchCommand(executable: 'custom-agent'),
+        launchCommand: AcpLaunchCommand(executable: 'custom-agent'),
       );
       await service.saveCustomProvider(custom);
 

@@ -6,29 +6,65 @@ import 'package:monkeyssh/domain/models/acp_provider.dart';
 void main() {
   group('AcpLaunchCommand', () {
     test('argv includes executable first', () {
-      const command = AcpLaunchCommand(
+      final command = AcpLaunchCommand(
         executable: 'copilot',
-        arguments: ['--acp', '--no-color'],
+        arguments: const ['--acp', '--no-color'],
       );
       expect(command.argv, ['copilot', '--acp', '--no-color']);
     });
 
     test('round-trips through JSON', () {
-      const command = AcpLaunchCommand(
+      final command = AcpLaunchCommand(
         executable: 'opencode',
-        arguments: ['acp', '--log-level', 'ERROR'],
+        arguments: const ['acp', '--log-level', 'ERROR'],
       );
       final decoded = AcpLaunchCommand.fromJson(command.toJson());
       expect(decoded, command);
     });
 
     test('equality and hashCode are value-based', () {
-      const a = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
-      const b = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
-      const c = AcpLaunchCommand(executable: 'copilot', arguments: ['--yolo']);
+      final a = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: const ['--acp'],
+      );
+      final b = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: const ['--acp'],
+      );
+      final c = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: const ['--yolo'],
+      );
       expect(a, b);
       expect(a.hashCode, b.hashCode);
       expect(a == c, isFalse);
+    });
+
+    test('defensively copies arguments so later mutation of the source list '
+        'does not change the command', () {
+      final mutableArguments = ['--acp'];
+      final command = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: mutableArguments,
+      );
+      final fingerprintBefore = computeAcpLaunchCommandFingerprint(command);
+
+      mutableArguments.add('--malicious-flag');
+
+      expect(command.arguments, ['--acp']);
+      expect(computeAcpLaunchCommandFingerprint(command), fingerprintBefore);
+    });
+
+    test('toString does not leak the executable or argument values', () {
+      final command = AcpLaunchCommand(
+        executable: '/secret/path/to/agent',
+        arguments: const ['--api-key', 'super-secret-value'],
+      );
+      final rendered = command.toString();
+      expect(rendered, isNot(contains('/secret/path/to/agent')));
+      expect(rendered, isNot(contains('super-secret-value')));
+      expect(rendered, isNot(contains('--api-key')));
+      expect(rendered, contains('argumentCount: 2'));
     });
 
     group('tryFromJson', () {
@@ -97,13 +133,13 @@ void main() {
         });
         expect(
           command,
-          const AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']),
+          AcpLaunchCommand(executable: 'copilot', arguments: const ['--acp']),
         );
       });
 
       test('accepts input without an arguments key', () {
         final command = AcpLaunchCommand.tryFromJson({'executable': 'copilot'});
-        expect(command, const AcpLaunchCommand(executable: 'copilot'));
+        expect(command, AcpLaunchCommand(executable: 'copilot'));
       });
     });
   });
@@ -111,8 +147,7 @@ void main() {
   group('validateAcpLaunchCommand', () {
     test('throws for a blank executable', () {
       expect(
-        () =>
-            validateAcpLaunchCommand(const AcpLaunchCommand(executable: '  ')),
+        () => validateAcpLaunchCommand(AcpLaunchCommand(executable: '  ')),
         throwsFormatException,
       );
     });
@@ -120,9 +155,9 @@ void main() {
     test('throws for a NUL byte in an argument', () {
       expect(
         () => validateAcpLaunchCommand(
-          const AcpLaunchCommand(
+          AcpLaunchCommand(
             executable: 'copilot',
-            arguments: ['--acp\u0000'],
+            arguments: const ['--acp\u0000'],
           ),
         ),
         throwsFormatException,
@@ -145,7 +180,7 @@ void main() {
     test('accepts a well-formed command', () {
       expect(
         () => validateAcpLaunchCommand(
-          const AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']),
+          AcpLaunchCommand(executable: 'copilot', arguments: const ['--acp']),
         ),
         returnsNormally,
       );
@@ -210,8 +245,14 @@ void main() {
 
   group('computeAcpLaunchCommandFingerprint', () {
     test('is deterministic for identical commands', () {
-      const a = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
-      const b = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
+      final a = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: const ['--acp'],
+      );
+      final b = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: const ['--acp'],
+      );
       expect(
         computeAcpLaunchCommandFingerprint(a),
         computeAcpLaunchCommandFingerprint(b),
@@ -219,8 +260,14 @@ void main() {
     });
 
     test('changes when the executable changes', () {
-      const a = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
-      const b = AcpLaunchCommand(executable: 'opencode', arguments: ['--acp']);
+      final a = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: const ['--acp'],
+      );
+      final b = AcpLaunchCommand(
+        executable: 'opencode',
+        arguments: const ['--acp'],
+      );
       expect(
         computeAcpLaunchCommandFingerprint(a),
         isNot(computeAcpLaunchCommandFingerprint(b)),
@@ -228,8 +275,14 @@ void main() {
     });
 
     test('changes when an argument changes', () {
-      const a = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
-      const b = AcpLaunchCommand(executable: 'copilot', arguments: ['--yolo']);
+      final a = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: const ['--acp'],
+      );
+      final b = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: const ['--yolo'],
+      );
       expect(
         computeAcpLaunchCommandFingerprint(a),
         isNot(computeAcpLaunchCommandFingerprint(b)),
@@ -237,13 +290,13 @@ void main() {
     });
 
     test('changes when argument order changes', () {
-      const a = AcpLaunchCommand(
+      final a = AcpLaunchCommand(
         executable: 'copilot',
-        arguments: ['--a', '--b'],
+        arguments: const ['--a', '--b'],
       );
-      const b = AcpLaunchCommand(
+      final b = AcpLaunchCommand(
         executable: 'copilot',
-        arguments: ['--b', '--a'],
+        arguments: const ['--b', '--a'],
       );
       expect(
         computeAcpLaunchCommandFingerprint(a),
@@ -252,7 +305,7 @@ void main() {
     });
 
     test('is a lowercase hex SHA-256 digest', () {
-      const command = AcpLaunchCommand(executable: 'copilot');
+      final command = AcpLaunchCommand(executable: 'copilot');
       final fingerprint = computeAcpLaunchCommandFingerprint(command);
       expect(fingerprint, matches(RegExp(r'^[0-9a-f]{64}$')));
     });
@@ -301,8 +354,14 @@ void main() {
       expect(acpOpenCodeProvider.terminalAuthCommand, isNotNull);
     });
 
+    test('Copilot CLI terminal auth explicitly runs "copilot login"', () {
+      final terminalAuthCommand = acpCopilotCliProvider.terminalAuthCommand!;
+      expect(terminalAuthCommand.executable, 'copilot');
+      expect(terminalAuthCommand.arguments, ['login']);
+    });
+
     test('AcpBuiltinProviderView exposes the wrapped provider', () {
-      const view = AcpBuiltinProviderView(acpCopilotCliProvider);
+      final view = AcpBuiltinProviderView(acpCopilotCliProvider);
       expect(view.id, acpCopilotCliProvider.id);
       expect(view.label, acpCopilotCliProvider.label);
       expect(view.launchCommand, acpCopilotCliProvider.launchCommand);
@@ -310,9 +369,27 @@ void main() {
     });
   });
 
+  group('AcpExecutableProbe', () {
+    test('defensively copies its lists so later mutation of the source lists '
+        'does not change the probe', () {
+      final mutableCandidates = ['agent'];
+      final mutableVersionArgs = ['--version'];
+      final probe = AcpExecutableProbe(
+        candidateExecutableNames: mutableCandidates,
+        versionArguments: mutableVersionArgs,
+      );
+
+      mutableCandidates.add('other-agent');
+      mutableVersionArgs.add('--extra');
+
+      expect(probe.candidateExecutableNames, ['agent']);
+      expect(probe.versionArguments, ['--version']);
+    });
+  });
+
   group('AcpCommandApproval', () {
     test('approve computes a matching fingerprint', () {
-      const command = AcpLaunchCommand(executable: 'copilot');
+      final command = AcpLaunchCommand(executable: 'copilot');
       final approval = AcpCommandApproval.approve(
         command,
         now: DateTime.utc(2026),
@@ -325,7 +402,7 @@ void main() {
     });
 
     test('round-trips through JSON', () {
-      const command = AcpLaunchCommand(executable: 'copilot');
+      final command = AcpLaunchCommand(executable: 'copilot');
       final approval = AcpCommandApproval.approve(
         command,
         now: DateTime.utc(2026),
@@ -372,9 +449,9 @@ void main() {
   });
 
   group('AcpCustomProviderDefinition', () {
-    const command = AcpLaunchCommand(
+    final command = AcpLaunchCommand(
       executable: 'my-agent',
-      arguments: ['--acp'],
+      arguments: const ['--acp'],
     );
 
     test('create validates id, label, and command', () {
@@ -398,7 +475,7 @@ void main() {
         () => AcpCustomProviderDefinition.create(
           id: 'my-agent',
           label: 'My Agent',
-          launchCommand: const AcpLaunchCommand(executable: ''),
+          launchCommand: AcpLaunchCommand(executable: ''),
         ),
         throwsFormatException,
       );
@@ -436,9 +513,9 @@ void main() {
         launchCommand: command,
         now: DateTime.utc(2026),
       );
-      const changedCommand = AcpLaunchCommand(
+      final changedCommand = AcpLaunchCommand(
         executable: 'my-agent',
-        arguments: ['--acp', '--extra'],
+        arguments: const ['--acp', '--extra'],
       );
       // Simulate storage drift by round-tripping with a mismatched command,
       // as would happen if the approval were stale relative to the command.
@@ -451,31 +528,31 @@ void main() {
     });
 
     group('update', () {
-      test('re-approves when the launch command changes', () {
-        final definition = AcpCustomProviderDefinition.create(
-          id: 'my-agent',
-          label: 'My Agent',
-          launchCommand: command,
-          now: DateTime.utc(2026),
-        );
-        const newCommand = AcpLaunchCommand(
-          executable: 'my-agent',
-          arguments: ['--acp', '--extra'],
-        );
-        final updated = definition.update(
-          launchCommand: newCommand,
-          now: DateTime.utc(2026, 2),
-        );
-        expect(updated.launchCommand, newCommand);
-        expect(updated.isCommandApproved, isTrue);
-        expect(
-          updated.approval.commandFingerprint,
-          isNot(definition.approval.commandFingerprint),
-        );
-        expect(updated.approval.approvedAt, DateTime.utc(2026, 2));
-        expect(updated.createdAt, definition.createdAt);
-        expect(updated.updatedAt, DateTime.utc(2026, 2));
-      });
+      test(
+        'does NOT silently approve a changed command '
+        '(preserves the prior approval so isCommandApproved becomes false)',
+        () {
+          final definition = AcpCustomProviderDefinition.create(
+            id: 'my-agent',
+            label: 'My Agent',
+            launchCommand: command,
+            now: DateTime.utc(2026),
+          );
+          final newCommand = AcpLaunchCommand(
+            executable: 'my-agent',
+            arguments: const ['--acp', '--extra'],
+          );
+          final updated = definition.update(
+            launchCommand: newCommand,
+            now: DateTime.utc(2026, 2),
+          );
+          expect(updated.launchCommand, newCommand);
+          expect(updated.isCommandApproved, isFalse);
+          expect(updated.approval, definition.approval);
+          expect(updated.createdAt, definition.createdAt);
+          expect(updated.updatedAt, DateTime.utc(2026, 2));
+        },
+      );
 
       test('keeps the existing approval when the command is unchanged', () {
         final definition = AcpCustomProviderDefinition.create(
@@ -490,6 +567,7 @@ void main() {
         );
         expect(updated.label, 'Renamed Agent');
         expect(updated.approval, definition.approval);
+        expect(updated.isCommandApproved, isTrue);
         expect(updated.updatedAt, DateTime.utc(2026, 2));
       });
 
@@ -503,13 +581,14 @@ void main() {
             now: DateTime.utc(2026),
           );
           final updated = definition.update(
-            launchCommand: const AcpLaunchCommand(
+            launchCommand: AcpLaunchCommand(
               executable: 'my-agent',
-              arguments: ['--acp'],
+              arguments: const ['--acp'],
             ),
             now: DateTime.utc(2026, 2),
           );
           expect(updated.approval, definition.approval);
+          expect(updated.isCommandApproved, isTrue);
         },
       );
 
@@ -521,6 +600,56 @@ void main() {
         );
         expect(() => definition.update(label: ''), throwsFormatException);
         expect(definition.label, 'My Agent');
+      });
+    });
+
+    group('approveCurrentCommand', () {
+      test('approves the current command, making isCommandApproved true', () {
+        final definition = AcpCustomProviderDefinition.create(
+          id: 'my-agent',
+          label: 'My Agent',
+          launchCommand: command,
+          now: DateTime.utc(2026),
+        );
+        final newCommand = AcpLaunchCommand(
+          executable: 'my-agent',
+          arguments: const ['--acp', '--extra'],
+        );
+        final changed = definition.update(
+          launchCommand: newCommand,
+          now: DateTime.utc(2026, 2),
+        );
+        expect(changed.isCommandApproved, isFalse);
+
+        final approved = changed.approveCurrentCommand(
+          now: DateTime.utc(2026, 3),
+        );
+        expect(approved.isCommandApproved, isTrue);
+        expect(
+          approved.approval.commandFingerprint,
+          computeAcpLaunchCommandFingerprint(newCommand),
+        );
+        expect(approved.approval.approvedAt, DateTime.utc(2026, 3));
+        expect(approved.updatedAt, DateTime.utc(2026, 3));
+        expect(approved.launchCommand, newCommand);
+      });
+
+      test('is a no-op for isCommandApproved when already approved', () {
+        final definition = AcpCustomProviderDefinition.create(
+          id: 'my-agent',
+          label: 'My Agent',
+          launchCommand: command,
+          now: DateTime.utc(2026),
+        );
+        final reApproved = definition.approveCurrentCommand(
+          now: DateTime.utc(2026, 2),
+        );
+        expect(reApproved.isCommandApproved, isTrue);
+        expect(
+          reApproved.approval.commandFingerprint,
+          definition.approval.commandFingerprint,
+        );
+        expect(reApproved.approval.approvedAt, DateTime.utc(2026, 2));
       });
     });
 
@@ -611,6 +740,54 @@ void main() {
           isNull,
         );
       });
+
+      test('returns null instead of throwing when createdAt/updatedAt are '
+          'non-string malformed values (e.g. numbers)', () {
+        expect(
+          AcpCustomProviderDefinition.tryFromJson({
+            'id': 'my-agent',
+            'label': 'My Agent',
+            'launchCommand': command.toJson(),
+            'approval': AcpCommandApproval.approve(command).toJson(),
+            'createdAt': 1234567890,
+            'updatedAt': '2026-01-01T00:00:00Z',
+          }),
+          isNull,
+        );
+        expect(
+          AcpCustomProviderDefinition.tryFromJson({
+            'id': 'my-agent',
+            'label': 'My Agent',
+            'launchCommand': command.toJson(),
+            'approval': AcpCommandApproval.approve(command).toJson(),
+            'createdAt': '2026-01-01T00:00:00Z',
+            'updatedAt': 1234567890,
+          }),
+          isNull,
+        );
+        expect(
+          AcpCustomProviderDefinition.tryFromJson({
+            'id': 'my-agent',
+            'label': 'My Agent',
+            'launchCommand': command.toJson(),
+            'approval': AcpCommandApproval.approve(command).toJson(),
+            'createdAt': null,
+            'updatedAt': '2026-01-01T00:00:00Z',
+          }),
+          isNull,
+        );
+        expect(
+          AcpCustomProviderDefinition.tryFromJson({
+            'id': 'my-agent',
+            'label': 'My Agent',
+            'launchCommand': command.toJson(),
+            'approval': AcpCommandApproval.approve(command).toJson(),
+            'createdAt': ['2026-01-01T00:00:00Z'],
+            'updatedAt': '2026-01-01T00:00:00Z',
+          }),
+          isNull,
+        );
+      });
     });
 
     test('equality and hashCode are value-based', () {
@@ -638,7 +815,7 @@ void main() {
       final definition = AcpCustomProviderDefinition.create(
         id: 'my-agent',
         label: 'My Agent',
-        launchCommand: const AcpLaunchCommand(executable: 'my-agent'),
+        launchCommand: AcpLaunchCommand(executable: 'my-agent'),
       );
       final view = AcpCustomProviderView(definition);
       expect(view.id, definition.id);
