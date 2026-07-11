@@ -32,10 +32,10 @@ Future<void> _awaitImage(Terminal terminal, int id) async {
   }
 }
 
-/// Store-only (`a=t`) images are decoded lazily: the bytes are retained and only
-/// decoded when something paints them. Tests that assert on the decoded image
-/// must first reference it the way the renderer does on a visible frame, then
-/// wait for the async decode.
+/// Store-only (`a=t`) and virtual (`a=T,U=1`) images are decoded lazily: the
+/// bytes are retained and only decoded when something paints them. Tests that
+/// assert on the decoded image must first reference it the way the renderer
+/// does on a visible frame, then wait for the async decode.
 Future<void> _decodeDeferredImage(Terminal terminal, int id) async {
   terminal.graphics.imageForPlacement(id);
   await _awaitImage(terminal, id);
@@ -522,7 +522,7 @@ void main() {
     });
   });
 
-  testWidgets('Kitty virtual transmit-and-place decodes eagerly', (
+  testWidgets('Kitty virtual transmit-and-place uses a virtual placement', (
     tester,
   ) async {
     await tester.runAsync(() async {
@@ -534,18 +534,22 @@ void main() {
       // U=1 means the client displays the image through Unicode placeholder
       // cells, so the terminal must not create a physical placement (that would
       // draw a duplicate image at the cursor). The virtual placement is
-      // registered immediately.
+      // registered immediately even though the decode is deferred.
       expect(terminal.graphics.hasPlacements, isFalse);
       expect(
         terminal.graphics.virtualPlacementById(43),
         isNotNull,
         reason: 'Unicode placeholder clients reference the virtual placement',
       );
+      expect(
+        terminal.graphics.imageById(43),
+        isNull,
+        reason:
+            'virtual images stay encoded until visible placeholders need them',
+      );
+      expect(terminal.graphics.hasPendingImage(43), isTrue);
 
-      // Copilot's inline image is visible immediately. It must decode without
-      // waiting for the painter to reference it; otherwise the first frame is
-      // blank until its eager full-screen viewer decodes the same image id.
-      await _awaitImage(terminal, 43);
+      await _decodeDeferredImage(terminal, 43);
 
       final stored = terminal.graphics.imageById(43);
       expect(stored, isNotNull);
