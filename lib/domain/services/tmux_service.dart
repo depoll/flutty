@@ -4474,9 +4474,16 @@ flutty_process_start_epoch() {
 }
 flutty_file_mtime_epoch() {
   file=\$1
-  stat -f %m "\$file" 2>/dev/null ||
-    stat -c %Y "\$file" 2>/dev/null ||
-    return 0
+  value=\$(stat -f %m "\$file" 2>/dev/null)
+  case "\$value" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s' "\$value"; return 0 ;;
+  esac
+  value=\$(stat -c %Y "\$file" 2>/dev/null)
+  case "\$value" in
+    ''|*[!0-9]*) return 0 ;;
+    *) printf '%s' "\$value" ;;
+  esac
 }
 flutty_file_is_newer_than_process() {
   file=\$1
@@ -4485,6 +4492,34 @@ flutty_file_is_newer_than_process() {
   mtime=\$(flutty_file_mtime_epoch "\$file")
   case "\$mtime" in ''|*[!0-9]*) return 1 ;; esac
   [ "\$mtime" -ge "\$((process_start_epoch - 2))" ]
+}
+flutty_copilot_lock_match() {
+  pid=\$1
+  process_start_epoch=\$2
+  [ -d "\$state_dir" ] || return 0
+  freshest_lock=
+  freshest_mtime=
+  for lock in "\$state_dir"/*/inuse."\$pid".lock; do
+    [ -e "\$lock" ] || continue
+    if [ -n "\$process_start_epoch" ]; then
+      flutty_file_is_newer_than_process "\$lock" "\$process_start_epoch" || continue
+    fi
+    lock_mtime=\$(flutty_file_mtime_epoch "\$lock")
+    case "\$lock_mtime" in ''|*[!0-9]*) continue ;; esac
+    if [ -z "\$freshest_lock" ] || [ "\$lock_mtime" -gt "\$freshest_mtime" ]; then
+      freshest_lock=\$lock
+      freshest_mtime=\$lock_mtime
+    fi
+  done
+  [ -n "\$freshest_lock" ] || return 0
+  dir=\${freshest_lock%/*}
+  session_id=\${dir##*/}
+  workspace=\$dir/workspace.yaml
+  title=
+  if [ -r "\$workspace" ]; then
+    title=\$(flutty_copilot_workspace_title "\$workspace")
+  fi
+  flutty_emit_lsof_match "\$session_id" "\$title"
 }
 flutty_iso8601_epoch() {
   value=\$1
@@ -4767,17 +4802,14 @@ END {
       session_id=
       title=
       confidence=medium
+      process_start_epoch=
       if [ "\$tool" = copilot ] && [ -d "\$state_dir" ]; then
-        for lock in "\$state_dir"/*/inuse."\$pid".lock; do
-          [ -e "\$lock" ] || continue
-          dir=\${lock%/*}
-          session_id=\${dir##*/}
-          workspace=\$dir/workspace.yaml
-          if [ -r "\$workspace" ]; then
-            title=\$(flutty_copilot_workspace_title "\$workspace")
-          fi
-          break
-        done
+        process_start_epoch=\$(flutty_process_start_epoch "\$pid")
+        lock_match=\$(flutty_copilot_lock_match "\$pid" "\$process_start_epoch")
+        if [ -n "\$lock_match" ]; then
+          session_id=\$(printf '%s' "\$lock_match" | awk -F "\$sep" '{ print \$1; exit }')
+          title=\$(printf '%s' "\$lock_match" | awk -F "\$sep" '{ print \$2; exit }')
+        fi
       fi
       if [ -z "\$session_id" ]; then
         lsof_match=\$(flutty_lsof_session_match "\$pid" "\$tool" || true)
@@ -4788,7 +4820,9 @@ END {
       fi
       if [ -z "\$session_id" ]; then
         process_cwd=\$(flutty_process_cwd "\$pid")
-        process_start_epoch=\$(flutty_process_start_epoch "\$pid")
+        if [ -z "\$process_start_epoch" ]; then
+          process_start_epoch=\$(flutty_process_start_epoch "\$pid")
+        fi
         case "\$tool" in
           codex) recent_match=\$(flutty_codex_recent_session_match "\$process_cwd" "\$process_start_epoch" "\$pid" || true) ;;
           gemini) recent_match=\$(flutty_gemini_recent_session_match "\$process_cwd" "\$process_start_epoch" || true) ;;

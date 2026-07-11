@@ -539,49 +539,79 @@ void main() {
       expect(resolvePreferredTmuxSessionName(), isNull);
     });
 
-    test('prefers explicit and active tmux directories for new windows', () {
+    test('prefers explicit and configured directories for new windows', () {
       expect(
         resolveTmuxWindowWorkingDirectory(
           explicitWorkingDirectory: '/tmp/explicit',
+          configuredWorkingDirectory: '/tmp/configured',
+          launchWorkingDirectory: '/tmp/launch',
           currentPaneWorkingDirectory: '/tmp/current',
           observedWorkingDirectory: '/tmp/observed',
-          launchWorkingDirectory: '/tmp/launch',
-          hostWorkingDirectory: '/tmp/host',
         ),
         '/tmp/explicit',
       );
       expect(
         resolveTmuxWindowWorkingDirectory(
+          configuredWorkingDirectory: '/tmp/configured',
+          launchWorkingDirectory: '/tmp/launch',
           currentPaneWorkingDirectory: '/tmp/current',
           observedWorkingDirectory: '/tmp/observed',
-          launchWorkingDirectory: '/tmp/launch',
-          hostWorkingDirectory: '/tmp/host',
         ),
-        '/tmp/current',
+        '/tmp/configured',
       );
     });
 
-    test('falls back through observed, launch, and host tmux directories', () {
+    test('falls back through launch, active, and observed directories', () {
       expect(
         resolveTmuxWindowWorkingDirectory(
+          launchWorkingDirectory: '/tmp/launch',
+          currentPaneWorkingDirectory: '/tmp/current',
           observedWorkingDirectory: '/tmp/observed',
-          launchWorkingDirectory: '/tmp/launch',
-          hostWorkingDirectory: '/tmp/host',
-        ),
-        '/tmp/observed',
-      );
-      expect(
-        resolveTmuxWindowWorkingDirectory(
-          launchWorkingDirectory: '/tmp/launch',
-          hostWorkingDirectory: '/tmp/host',
         ),
         '/tmp/launch',
       );
       expect(
-        resolveTmuxWindowWorkingDirectory(hostWorkingDirectory: '/tmp/host'),
-        '/tmp/host',
+        resolveTmuxWindowWorkingDirectory(
+          currentPaneWorkingDirectory: '/tmp/current',
+          observedWorkingDirectory: '/tmp/observed',
+        ),
+        '/tmp/current',
+      );
+      expect(
+        resolveTmuxWindowWorkingDirectory(
+          observedWorkingDirectory: '/tmp/observed',
+        ),
+        '/tmp/observed',
       );
       expect(resolveTmuxWindowWorkingDirectory(), isNull);
+    });
+
+    test('uses a matching agent preset before the host mux directory', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.copilotCli,
+        workingDirectory: '/tmp/agent',
+        tmuxSessionName: 'agents',
+        remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+      );
+
+      expect(
+        resolveConfiguredMuxWorkingDirectory(
+          agentPreset: preset,
+          backend: RemoteMuxBackend.monkeyMux,
+          sessionName: 'agents',
+          hostWorkingDirectory: '/tmp/host',
+        ),
+        '/tmp/agent',
+      );
+      expect(
+        resolveConfiguredMuxWorkingDirectory(
+          agentPreset: preset,
+          backend: RemoteMuxBackend.monkeyMux,
+          sessionName: 'other',
+          hostWorkingDirectory: '/tmp/host',
+        ),
+        '/tmp/host',
+      );
     });
 
     test('reattaches tmux window actions only when tmux lost foreground', () {

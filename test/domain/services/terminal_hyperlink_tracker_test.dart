@@ -110,6 +110,37 @@ void main() {
       );
     });
 
+    test('retains a TUI link when trailing cells are erased', () {
+      const url = 'https://github.com';
+      terminal.write(
+        '\u001b[4;2H'
+        '\u001b[4m'
+        '\u001b]8;id=md-link;$url\u0007'
+        'LINKTARGET'
+        '\u001b[0m'
+        '\u001b]8;;\u0007'
+        '\u001b[K',
+      );
+
+      expect(tracker.trackedHyperlinkCount, 1);
+      expect(tracker.resolveLinkAt(const CellOffset(1, 3)), url);
+      expect(tracker.resolveLinkAt(const CellOffset(10, 3)), url);
+      expect(tracker.resolveLinkAt(const CellOffset(11, 3)), isNull);
+    });
+
+    test('drops a TUI link when its rendered cells are erased', () {
+      terminal
+        ..write(
+          '\u001b]8;;https://example.com/erased\u0007'
+          'link'
+          '\u001b]8;;\u0007',
+        )
+        ..write('\r\u001b[K');
+
+      expect(tracker.resolveLinkAt(const CellOffset(0, 0)), isNull);
+      expect(tracker.trackedHyperlinkCount, 0);
+    });
+
     test('tracks an OSC 8 link delivered across separate writes', () {
       terminal
         ..write('\u001b]8;;https://example.com/chunked\u0007')
@@ -150,6 +181,11 @@ void main() {
         tracker.resolveLinkAt(const CellOffset(1, 1)),
         'https://example.com/reflow',
       );
+      expect(
+        tracker.resolveLinkAt(const CellOffset(5, 1)),
+        'https://example.com/reflow',
+      );
+      expect(tracker.resolveLinkAt(const CellOffset(0, 2)), isNull);
     });
 
     test('prunes detached hyperlinks while processing later OSC 8 output', () {
