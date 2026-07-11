@@ -776,6 +776,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Duration _lastGraphicsAnimationElapsed = Duration.zero;
   bool _graphicsAnimationsEnabled = true;
   bool _graphicsAnimationSyncScheduled = false;
+  bool? _lastLoggedGraphicsAnimationActive;
+  int _graphicsAnimationFrameLogAtMs = 0;
   int _lastTerminalViewWidth = 0;
   Timer? _pendingFocusInReportTimer;
 
@@ -839,8 +841,18 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // Terminal images are user-requested media, not UI transitions. Android
+    // reports disableAnimations when developer/emulator animation scales are
+    // zero, which must not freeze GIFs in the terminal. iOS exposes its actual
+    // Reduce Motion preference separately, so honor that signal here.
+    final mediaQuery = MediaQuery.maybeOf(context);
+    final accessibilityFeatures = View.maybeOf(
+      context,
+    )?.platformDispatcher.accessibilityFeatures;
     _graphicsAnimationsEnabled =
-        !(MediaQuery.maybeOf(context)?.disableAnimations ?? false);
+        !(accessibilityFeatures?.reduceMotion ??
+            mediaQuery?.disableAnimations ??
+            false);
     _syncGraphicsAnimationTicker();
   }
 
@@ -993,6 +1005,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         (visibleImageIds == null
             ? graphics.hasActiveAnimations
             : graphics.hasActiveAnimationsFor(visibleImageIds));
+    _maybeLogGraphicsAnimationState(shouldAnimate, graphics, visibleImageIds);
     if (shouldAnimate) {
       if (!_graphicsAnimationTicker.isActive) {
         _lastGraphicsAnimationElapsed = Duration.zero;
@@ -1014,12 +1027,64 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     final delta = elapsed - _lastGraphicsAnimationElapsed;
     _lastGraphicsAnimationElapsed = elapsed;
     if (!delta.isNegative) {
-      widget.terminal.graphics.advanceAnimations(
+      final visibleImageIds =
+          _renderTerminalOrNull?._paintedVisibleGraphicsImageIds;
+      final changed = widget.terminal.graphics.advanceAnimations(
         delta,
-        imageIds: _renderTerminalOrNull?._paintedVisibleGraphicsImageIds,
+        imageIds: visibleImageIds,
       );
+      if (changed) {
+        _maybeLogGraphicsAnimationFrame(visibleImageIds?.length);
+      }
     }
     _syncGraphicsAnimationTicker();
+  }
+
+  void _maybeLogGraphicsAnimationState(
+    bool active,
+    GraphicsManager graphics,
+    Set<int>? visibleImageIds,
+  ) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled ||
+        _lastLoggedGraphicsAnimationActive == active ||
+        (!active &&
+            _lastLoggedGraphicsAnimationActive == null &&
+            graphics.animationImageCount == 0)) {
+      return;
+    }
+    _lastLoggedGraphicsAnimationActive = active;
+    diagnostics.debug(
+      'terminal.graphics',
+      'animation_ticker',
+      fields: {
+        'state': active ? 'running' : 'stopped',
+        'reducedMotion': !_graphicsAnimationsEnabled,
+        'tickerMuted': _graphicsAnimationTicker.muted,
+        'animatedImages': graphics.animationImageCount,
+        'visibleImages': visibleImageIds?.length ?? -1,
+      },
+    );
+  }
+
+  void _maybeLogGraphicsAnimationFrame(int? visibleImageCount) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled) {
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _graphicsAnimationFrameLogAtMs < 1000) {
+      return;
+    }
+    _graphicsAnimationFrameLogAtMs = nowMs;
+    diagnostics.debug(
+      'terminal.graphics',
+      'animation_frame',
+      fields: {
+        'visibleImages': visibleImageCount ?? -1,
+        'tickerMuted': _graphicsAnimationTicker.muted,
+      },
+    );
   }
 
   /// Re-sends focus reports after terminal state changes.

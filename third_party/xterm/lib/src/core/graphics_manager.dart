@@ -661,6 +661,10 @@ class GraphicsManager {
   /// Number of decoded images currently retained.
   int get imageCount => _images.length;
 
+  /// Number of retained images that contain more than one frame.
+  int get animationImageCount =>
+      _images.values.where((image) => image.frameCount > 1).length;
+
   /// Whether any images are currently placed.
   bool get hasPlacements => _placements.isNotEmpty;
 

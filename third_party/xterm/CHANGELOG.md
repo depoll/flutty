@@ -105,7 +105,9 @@ out of scope.
   renderer advances only visible, active animations and paints the current
   frame. MonkeyMux 0.1.94 retains and replays each image's ordered frame,
   composition and control commands so reconnects/window switches do not restore
-  only a static root image. Keep the frame model and animation APIs in
+  only a static root image. Android UI animation scales no longer pause terminal
+  media (a common emulator/developer setting), while iOS Reduce Motion still
+  keeps animated images static. Keep the frame model and animation APIs in
   `graphics_manager.dart` when re-syncing.
 * XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
   implements the kitty graphics + keyboard protocols, so it reports a

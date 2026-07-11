@@ -424,6 +424,9 @@ void main() {
   testWidgets('reduced motion keeps animated terminal images static', (
     tester,
   ) async {
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(reduceMotion: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
     final viewKey = GlobalKey<MonkeyTerminalViewState>();
     final terminal = Terminal();
 
@@ -439,13 +442,10 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: MediaQuery(
-          data: const MediaQueryData(disableAnimations: true),
-          child: MonkeyTerminalView(
-            terminal,
-            key: viewKey,
-            hardwareKeyboardOnly: true,
-          ),
+        home: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          hardwareKeyboardOnly: true,
         ),
       ),
     );
@@ -456,6 +456,41 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(image.currentFrame, 1);
     expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+  });
+
+  testWidgets('disabled UI transitions do not pause terminal GIFs', (
+    tester,
+  ) async {
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=55,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(55)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          hardwareKeyboardOnly: true,
+        ),
+      ),
+    );
+
+    final image = terminal.graphics.imageById(55)!;
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+    expect(image.currentFrame, 2);
   });
 
   testWidgets('animated GIF advances through Unicode placeholders', (
