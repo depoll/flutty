@@ -72,12 +72,24 @@ jobs:
       - name: Validate PR is safe to deploy
         id: validate
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+          INPUT_SOURCE_SHA: ${{ inputs.source-sha }}
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const pull_number = Number('${{ inputs.pr-number }}');
-            const requestedSourceSha = '${{ inputs.source-sha }}'.trim();
+            const pullNumberValue = (process.env.INPUT_PR_NUMBER || '').trim();
+            const requestedSourceSha = (process.env.INPUT_SOURCE_SHA || '').trim();
+            if (!/^[1-9][0-9]*$/.test(pullNumberValue)) {
+              core.setFailed('PR number must be a positive integer.');
+              return;
+            }
+            if (requestedSourceSha && !/^[0-9a-f]{40}$/.test(requestedSourceSha)) {
+              core.setFailed('Source SHA must be a full lowercase commit SHA.');
+              return;
+            }
+            const pull_number = Number(pullNumberValue);
             const {data: pr} = await github.rest.pulls.get({
               owner,
               repo,
@@ -133,9 +145,22 @@ jobs:
       - name: Reuse requested build version
         id: provided-version
         if: inputs.preview-build-name != '' && inputs.preview-build-number != ''
+        env:
+          PREVIEW_BUILD_NAME: ${{ inputs.preview-build-name }}
+          PREVIEW_BUILD_NUMBER: ${{ inputs.preview-build-number }}
         run: |
-          echo "build-name=${{ inputs.preview-build-name }}" >> "$GITHUB_OUTPUT"
-          echo "build-number=${{ inputs.preview-build-number }}" >> "$GITHUB_OUTPUT"
+          if [[ ! "$PREVIEW_BUILD_NAME" =~ ^[0-9]+(\.[0-9]+){2}(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error title=Invalid build name::Expected a semantic version such as 1.2.3 or 1.2.3-pr.42."
+            exit 1
+          fi
+          if [[ ! "$PREVIEW_BUILD_NUMBER" =~ ^[1-9][0-9]{0,9}$ ]] ||
+             (( PREVIEW_BUILD_NUMBER > 2147483647 )); then
+            echo "::error title=Invalid build number::Expected a positive Android-compatible build number."
+            exit 1
+          fi
+
+          printf 'build-name=%s\n' "$PREVIEW_BUILD_NAME" >> "$GITHUB_OUTPUT"
+          printf 'build-number=%s\n' "$PREVIEW_BUILD_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Compute version
         id: source-version
@@ -144,8 +169,13 @@ jobs:
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
 
-          echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          if [[ ! "$BASE_VERSION" =~ ^[0-9]+(\.[0-9]+){2}(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error title=Invalid source version::pubspec.yaml must contain a safe semantic version."
+            exit 1
+          fi
+
+          printf 'build-name=%s\n' "$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'build-number=%s\n' "$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Resolve codename
         id: version-codename

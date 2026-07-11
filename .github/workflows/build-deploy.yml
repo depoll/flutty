@@ -210,11 +210,39 @@ env:
   FLUTTER_VERSION: '3.44.4'
 
 jobs:
+  validate-build-inputs:
+    name: Validate Build Inputs
+    runs-on: ubuntu-latest
+    env:
+      BUILD_FLAVOR: ${{ inputs.flavor }}
+      BUILD_NAME: ${{ inputs.build-name }}
+      BUILD_NUMBER: ${{ inputs.build-number }}
+    steps:
+      - name: Validate version and flavor
+        run: |
+          if [[ "$BUILD_FLAVOR" != 'private' && "$BUILD_FLAVOR" != 'production' ]]; then
+            echo "::error title=Invalid flavor::Flavor must be private or production."
+            exit 1
+          fi
+          if [[ ! "$BUILD_NAME" =~ ^[0-9]+(\.[0-9]+){2}(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error title=Invalid build name::Expected a semantic version such as 1.2.3 or 1.2.3-pr.42."
+            exit 1
+          fi
+          if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]{0,9}$ ]] ||
+             (( BUILD_NUMBER > 2147483647 )); then
+            echo "::error title=Invalid build number::Expected a positive Android-compatible build number."
+            exit 1
+          fi
+
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
+    needs: validate-build-inputs
     if: inputs.build-android
     runs-on: ${{ inputs.android-runner }}
     env:
+      BUILD_FLAVOR: ${{ inputs.flavor }}
+      BUILD_NAME: ${{ inputs.build-name }}
+      BUILD_NUMBER: ${{ inputs.build-number }}
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
       FLUTTY_DIAGNOSTICS_ENABLED: ${{ inputs.enable-diagnostics || inputs.pr-number != '' }}
@@ -427,11 +455,11 @@ jobs:
             EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
           fi
           flutter build appbundle \
-            --flavor ${{ inputs.flavor }} \
+            --flavor "$BUILD_FLAVOR" \
             --release \
             "${EXTRA_ANDROID_FLAGS[@]}" \
-            --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }} \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
@@ -462,12 +490,12 @@ jobs:
             EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
           fi
           flutter build appbundle \
-            --flavor ${{ inputs.flavor }} \
+            --flavor "$BUILD_FLAVOR" \
             --release \
             --no-tree-shake-icons \
             "${EXTRA_ANDROID_FLAGS[@]}" \
-            --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }} \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
@@ -483,12 +511,12 @@ jobs:
             EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
           fi
           flutter build appbundle \
-            --flavor ${{ inputs.flavor }} \
+            --flavor "$BUILD_FLAVOR" \
             --debug \
             --no-tree-shake-icons \
             "${EXTRA_ANDROID_FLAGS[@]}" \
-            --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }} \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
@@ -544,7 +572,7 @@ jobs:
           AAB_PATH="${{ steps.preview-aab.outputs.path }}"
           APKS_PATH="$RUNNER_TEMP/app-${{ inputs.flavor }}-preview.apks"
           APK_DIR="$RUNNER_TEMP/app-${{ inputs.flavor }}-preview-apks"
-          APK_PATH="build/app/outputs/flutter-apk/android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.apk"
+          APK_PATH="build/app/outputs/flutter-apk/android-apk-${BUILD_FLAVOR}-${BUILD_NAME}-${BUILD_NUMBER}.apk"
           DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
 
           curl \
@@ -800,9 +828,13 @@ jobs:
 
   build-ios:
     name: Build & Deploy iOS (${{ inputs.flavor }})
+    needs: validate-build-inputs
     if: inputs.build-ios
     runs-on: macos-26
     env:
+      BUILD_FLAVOR: ${{ inputs.flavor }}
+      BUILD_NAME: ${{ inputs.build-name }}
+      BUILD_NUMBER: ${{ inputs.build-number }}
       # Keep release validation on the runner Xcode that includes the installed
       # iOS simulator runtime. Newer side-by-side Xcodes can drift ahead of the
       # available runtime and fail builds before Flutter starts.
@@ -936,12 +968,12 @@ jobs:
             EXTRA_FLAGS+=(--no-tree-shake-icons)
           fi
           flutter build ios \
-            --flavor ${{ inputs.flavor }} \
+            --flavor "$BUILD_FLAVOR" \
             --release \
             --no-codesign \
             "${EXTRA_FLAGS[@]}" \
-            --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }} \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
@@ -1004,7 +1036,7 @@ jobs:
             if [ -d SwiftSupport ]; then
               ZIP_INPUTS+=(SwiftSupport)
             fi
-            zip -qry "../ipa/ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa" "${ZIP_INPUTS[@]}"
+            zip -qry "../ipa/ios-unsigned-${BUILD_FLAVOR}-${BUILD_NAME}-${BUILD_NUMBER}.ipa" "${ZIP_INPUTS[@]}"
           )
 
       - name: Download reusable IPA artifact
@@ -1201,7 +1233,7 @@ jobs:
             exit 1
           fi
 
-          ARTIFACT_PATH="build/ios/ipa/ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa"
+          ARTIFACT_PATH="build/ios/ipa/ios-${BUILD_FLAVOR}-${BUILD_NAME}-${BUILD_NUMBER}.ipa"
           if [ "$IPA_PATH" != "$ARTIFACT_PATH" ]; then
             cp "$IPA_PATH" "$ARTIFACT_PATH"
           fi
@@ -1429,9 +1461,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Write private deploy build marker
+        env:
+          BUILD_NUMBER: ${{ inputs.build-number }}
         run: |
           mkdir -p build/private-deploy-marker
-          printf '%s\n' '${{ inputs.build-number }}' > build/private-deploy-marker/build-number.txt
+          printf '%s\n' "$BUILD_NUMBER" > build/private-deploy-marker/build-number.txt
 
       - name: Upload private deploy build marker
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
