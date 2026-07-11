@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -205,6 +206,51 @@ func TestScheduleRestoreRedrawFollowUpsIgnoresNilConn(t *testing.T) {
 	// The pending entry is preserved for the next real attach.
 	if !server.restoreRedrawPending["@1"] {
 		t.Fatal("pending redraw entry was consumed without an attached client")
+	}
+}
+
+func TestRestoreRedrawUsesCurrentPrimaryClientSize(t *testing.T) {
+	withStubbedRestoreRedraw(t)
+
+	var simulated []string
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+	server := newMuxServerWithSize("restore-primary-size", 80, 24)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "codex",
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"primary",
+		132,
+		43,
+	)
+	server.mu.Lock()
+	server.width = 80
+	server.height = 24
+	server.mu.Unlock()
+
+	server.redrawRestoredWindow("@1")
+
+	server.mu.Lock()
+	width, height := server.width, server.height
+	server.mu.Unlock()
+	if width != 132 || height != 43 {
+		t.Fatalf("restored redraw size = %dx%d, want 132x43", width, height)
+	}
+	if !reflect.DeepEqual(simulated, []string{"@1:132x43"}) {
+		t.Fatalf("restored redraw simulation = %#v", simulated)
 	}
 }
 

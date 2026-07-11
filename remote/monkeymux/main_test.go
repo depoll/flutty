@@ -521,6 +521,138 @@ func TestMultipleAttachClientsRouteTerminalQueriesOnlyToPrimary(t *testing.T) {
 	)
 }
 
+func TestMultipleAttachClientsRouteC1QueriesOnlyToPrimary(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	secondaryConn := &recordingConn{}
+	primaryConn := &recordingConn{}
+	registerTestAttachClient(t, server, secondaryConn, "secondary", 120, 40)
+	registerTestAttachClient(t, server, primaryConn, "primary", 80, 24)
+	query := []byte{0x9b, 'c'}
+
+	server.handleWindowOutput("@1", append([]byte("before"), append(query, []byte("after")...)...))
+
+	waitForRecordedOutput(
+		t,
+		primaryConn,
+		string(append([]byte("before"), append(query, []byte("after")...)...)),
+	)
+	waitForRecordedOutput(t, secondaryConn, "beforeafter")
+}
+
+func TestC1QueryScannerPreservesUtf8ContinuationBytes(t *testing.T) {
+	window := &muxWindow{}
+	input := []byte{'a', 0xc5, 0x9b, 0xf0, 0x9f, 0x98, 0x80, 'b'}
+
+	filtered := window.secondaryAttachOutputLocked(input)
+
+	if !bytes.Equal(filtered, input) {
+		t.Fatalf("UTF-8 output = %q, want %q", filtered, input)
+	}
+	if queries := terminalQueriesFromData(input); len(queries) != 0 {
+		t.Fatalf("UTF-8 output produced terminal queries: %q", queries)
+	}
+}
+
+func TestC1QueryScannerPreservesUtf8SplitAcrossChunks(t *testing.T) {
+	window := &muxWindow{}
+	first := []byte{'a', 0xf0}
+	second := []byte{0x9f, 0x98, 0x80, 'b'}
+
+	filtered := append(
+		[]byte(nil),
+		window.secondaryAttachOutputLocked(first)...,
+	)
+	filtered = append(
+		filtered,
+		window.secondaryAttachOutputLocked(second)...,
+	)
+
+	want := append(append([]byte(nil), first...), second...)
+	if !bytes.Equal(filtered, want) {
+		t.Fatalf("split UTF-8 output = %q, want %q", filtered, want)
+	}
+	if len(window.secondaryQueryCarry) != 0 {
+		t.Fatalf(
+			"split UTF-8 left query carry: %q",
+			window.secondaryQueryCarry,
+		)
+	}
+}
+
+func TestPendingQueryScannerIgnoresUtf8SplitAcrossChunks(t *testing.T) {
+	window := &muxWindow{}
+
+	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2})
+	window.appendPendingTerminalQueriesLocked([]byte{0x9b, 'b'})
+
+	if len(window.pendingTerminalQueries) != 0 {
+		t.Fatalf(
+			"split UTF-8 buffered a false query: %q",
+			window.pendingTerminalQueries,
+		)
+	}
+	if len(window.pendingTerminalQueryCarry) != 0 {
+		t.Fatalf(
+			"split UTF-8 left pending query carry: %q",
+			window.pendingTerminalQueryCarry,
+		)
+	}
+}
+
+func TestQueryScannersPreserveUtf8AcrossThreeChunks(t *testing.T) {
+	liveWindow := &muxWindow{}
+	filtered := append(
+		[]byte(nil),
+		liveWindow.secondaryAttachOutputLocked([]byte{0xe2})...,
+	)
+	filtered = append(
+		filtered,
+		liveWindow.secondaryAttachOutputLocked([]byte{0x80})...,
+	)
+	filtered = append(
+		filtered,
+		liveWindow.secondaryAttachOutputLocked([]byte{0x9b, 'c'})...,
+	)
+	want := []byte{0xe2, 0x80, 0x9b, 'c'}
+	if !bytes.Equal(filtered, want) {
+		t.Fatalf("three-chunk UTF-8 output = %q, want %q", filtered, want)
+	}
+
+	pendingWindow := &muxWindow{}
+	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0xe2})
+	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x80})
+	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x9b, 'c'})
+	if len(pendingWindow.pendingTerminalQueries) != 0 ||
+		len(pendingWindow.pendingTerminalQueryCarry) != 0 {
+		t.Fatalf(
+			"three-chunk UTF-8 became pending query %q carry %q",
+			pendingWindow.pendingTerminalQueries,
+			pendingWindow.pendingTerminalQueryCarry,
+		)
+	}
+}
+
+func TestUtf8QueryStateTransfersFromPendingToLiveRouting(t *testing.T) {
+	window := &muxWindow{}
+
+	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2})
+	filtered := window.secondaryAttachOutputLocked([]byte{0x9b, 'c'})
+
+	if !bytes.Equal(filtered, []byte{0x9b, 'c'}) {
+		t.Fatalf("pending-to-live UTF-8 output = %q", filtered)
+	}
+	if len(window.secondaryQueryCarry) != 0 {
+		t.Fatalf(
+			"pending-to-live transition left query carry: %q",
+			window.secondaryQueryCarry,
+		)
+	}
+}
+
 func TestSecondaryAttachQueryFilterCarriesSplitQueries(t *testing.T) {
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{
@@ -576,11 +708,18 @@ func TestTerminalQueryDeliveryFailsOverFromClosedPrimary(t *testing.T) {
 	server.handleWindowOutput("@1", []byte("before\x1b[cafter"))
 
 	waitForRecordedOutput(t, secondaryConn, "before\x1b[cafter")
+	server.removeAttachClient(primary)
 	server.mu.Lock()
 	gotPrimary := server.attachConn
+	width, height := server.width, server.height
 	server.mu.Unlock()
-	if gotPrimary != secondary.conn {
-		t.Fatal("failed query delivery did not promote a healthy terminal")
+	if gotPrimary != secondary.conn || width != 120 || height != 40 {
+		t.Fatalf(
+			"query failover client = %v at %dx%d, want secondary at 120x40",
+			gotPrimary,
+			width,
+			height,
+		)
 	}
 }
 
@@ -710,6 +849,7 @@ func TestWindowOutputSkipsClientsThatJoinedAfterObservation(t *testing.T) {
 		[]byte("once"),
 		[]byte("once"),
 		[]byte("once"),
+		nil,
 		observedSequence,
 	)
 
@@ -744,6 +884,7 @@ func TestTerminalQueryRetryCanUseClientThatJoinedAfterObservation(t *testing.T) 
 		[]byte("\x1b[c"),
 		[]byte("\x1b[c"),
 		nil,
+		[]byte("\x1b[c"),
 		observedSequence,
 	)
 
@@ -761,6 +902,7 @@ func TestPausedRedrawRetriesCompleteCarriedQuery(t *testing.T) {
 		redrawForwardingBuffer:          []byte("qright"),
 		redrawForwardingFailoverBuffer:  []byte("\x1b[>qright"),
 		redrawForwardingSecondaryBuffer: []byte("right"),
+		redrawForwardingQueryBuffer:     []byte("\x1b[>q"),
 	}
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
@@ -799,6 +941,7 @@ func TestPausedRedrawUsesFailoverBufferForReboundPrimary(t *testing.T) {
 		redrawForwardingBuffer:               []byte("qright"),
 		redrawForwardingFailoverBuffer:       []byte("\x1b[>qright"),
 		redrawForwardingSecondaryBuffer:      []byte("right"),
+		redrawForwardingQueryBuffer:          []byte("\x1b[>q"),
 		redrawForwardingPrimaryNeedsFailover: true,
 	}
 	server.windows = []*muxWindow{window}
@@ -817,6 +960,50 @@ func TestPausedRedrawUsesFailoverBufferForReboundPrimary(t *testing.T) {
 	server.resumePausedAttachForwarding("@1", 1)
 
 	waitForRecordedOutput(t, conn, "\x1b[>qright")
+}
+
+func TestPausedRedrawKeepsSplitQueryBoundToOriginalClient(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                         "@1",
+		index:                      0,
+		lastActivity:               time.Now(),
+		redrawForwardingPaused:     true,
+		redrawForwardingGeneration: 1,
+		secondaryQueryCarry:        []byte("\x1b[>"),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	originalConn := &recordingConn{}
+	original := registerTestAttachClient(
+		t,
+		server,
+		originalConn,
+		"original",
+		120,
+		40,
+	)
+	replacementConn := &recordingConn{}
+	replacement := registerTestAttachClient(
+		t,
+		server,
+		replacementConn,
+		"replacement",
+		80,
+		24,
+	)
+	window.secondaryQueryPrimary = original.conn
+	window.redrawForwardingPrimaryConn = replacement.conn
+	_, _ = originalConn.Write([]byte("\x1b[>"))
+
+	server.handleWindowOutput("@1", []byte("qright"))
+
+	if window.redrawForwardingPrimaryConn != original.conn {
+		t.Fatal("redraw did not retain the split query's original client")
+	}
+	server.resumePausedAttachForwarding("@1", 1)
+	waitForRecordedOutput(t, originalConn, "\x1b[>qright")
+	waitForRecordedOutput(t, replacementConn, "right")
 }
 
 func TestPendingTerminalQueryFlushIsSingleFlight(t *testing.T) {
@@ -875,7 +1062,7 @@ func TestAttachQueueRejectsOversizedBacklog(t *testing.T) {
 	}
 }
 
-func TestAttachSizeUsesSmallestWidthAndHeightAcrossClients(t *testing.T) {
+func TestAttachSizeFollowsPrimaryClient(t *testing.T) {
 	server := newMuxServerWithSize("test", 160, 60)
 	first := registerTestAttachClient(
 		t,
@@ -899,8 +1086,22 @@ func TestAttachSizeUsesSmallestWidthAndHeightAcrossClients(t *testing.T) {
 	server.mu.Lock()
 	width, height := server.width, server.height
 	server.mu.Unlock()
-	if width != 80 || height != 20 {
-		t.Fatalf("shared size = %dx%d, want 80x20", width, height)
+	if width != 80 || height != 50 {
+		t.Fatalf("shared size after background resize = %dx%d, want 80x50", width, height)
+	}
+
+	server.promoteAttachClient(first)
+	server.mu.Lock()
+	width, height = server.width, server.height
+	primary := server.attachConn
+	server.mu.Unlock()
+	if primary != first.conn || width != 200 || height != 20 {
+		t.Fatalf(
+			"focused client = %v at %dx%d, want wide client at 200x20",
+			primary,
+			width,
+			height,
+		)
 	}
 
 	server.removeAttachClient(first)
@@ -912,7 +1113,7 @@ func TestAttachSizeUsesSmallestWidthAndHeightAcrossClients(t *testing.T) {
 	}
 }
 
-func TestConcurrentClientResizesLeaveCurrentMinimum(t *testing.T) {
+func TestConcurrentClientResizesLeavePrimarySize(t *testing.T) {
 	server := newMuxServerWithSize("test", 160, 60)
 	registerTestAttachClient(t, server, &recordingConn{}, "first", 120, 40)
 	registerTestAttachClient(t, server, &recordingConn{}, "second", 80, 50)
@@ -932,16 +1133,479 @@ func TestConcurrentClientResizesLeaveCurrentMinimum(t *testing.T) {
 	updates.Wait()
 
 	server.mu.Lock()
-	wantWidth, wantHeight := server.minimumAttachSizeLocked()
+	wantWidth, wantHeight := server.primaryAttachSizeLocked()
 	gotWidth, gotHeight := server.width, server.height
 	server.mu.Unlock()
 	if gotWidth != wantWidth || gotHeight != wantHeight {
 		t.Fatalf(
-			"shared size = %dx%d, current minimum = %dx%d",
+			"shared size = %dx%d, primary size = %dx%d",
 			gotWidth,
 			gotHeight,
 			wantWidth,
 			wantHeight,
+		)
+	}
+}
+
+func TestFocusClientControlPromotesAndResizesClient(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	first := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"first",
+		132,
+		43,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"second",
+		80,
+		24,
+	)
+
+	server.handleControlRequest(
+		newControlClient(nil),
+		controlMessage{
+			Type:     "focus_client",
+			ClientID: "first",
+			Width:    132,
+			Height:   43,
+		},
+	)
+	server.mu.Lock()
+	primary := server.attachConn
+	width, height := server.width, server.height
+	server.mu.Unlock()
+	if primary != first.conn || width != 132 || height != 43 {
+		t.Fatalf(
+			"focused client = %v at %dx%d, want first client at 132x43",
+			primary,
+			width,
+			height,
+		)
+	}
+}
+
+func TestTerminalProtocolResponseDoesNotStealClientFocus(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	oldPrimary := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"old",
+		120,
+		40,
+	)
+	newPrimary := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"new",
+		80,
+		24,
+	)
+	oldPrimary.expectTerminalResponse()
+
+	if oldPrimary.inputClaimsFocus([]byte("\x1b[?62;4c")) {
+		server.promoteAttachClient(oldPrimary)
+	}
+
+	server.mu.Lock()
+	primary := server.attachConn
+	width, height := server.width, server.height
+	server.mu.Unlock()
+	if primary != newPrimary.conn || width != 80 || height != 24 {
+		t.Fatalf(
+			"protocol response changed focus to %v at %dx%d",
+			primary,
+			width,
+			height,
+		)
+	}
+}
+
+func TestRealInputClaimsFocusDuringTerminalResponseGrace(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	first := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"first",
+		120,
+		40,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"second",
+		80,
+		24,
+	)
+	first.expectTerminalResponse()
+
+	for _, input := range [][]byte{
+		[]byte("x"),
+		[]byte("P"),
+		[]byte("_"),
+		[]byte("["),
+		[]byte("\x1b[A"),
+		[]byte("\x1b[I"),
+		[]byte("\x1b[<0;2;3M"),
+	} {
+		if !first.inputClaimsFocus(input) {
+			t.Fatalf("real input %q was mistaken for a terminal response", input)
+		}
+	}
+	server.promoteAttachClient(first)
+
+	server.mu.Lock()
+	primary := server.attachConn
+	width, height := server.width, server.height
+	server.mu.Unlock()
+	if primary != first.conn || width != 120 || height != 40 {
+		t.Fatalf(
+			"real input focused %v at %dx%d, want first client at 120x40",
+			primary,
+			width,
+			height,
+		)
+	}
+}
+
+func TestFocusOutDoesNotClaimClientFocus(t *testing.T) {
+	for _, input := range [][]byte{
+		[]byte("\x1b[O"),
+		[]byte{0x9b, 'O'},
+	} {
+		client := &attachClient{}
+		if client.inputClaimsFocus(input) {
+			t.Fatalf("focus-out report %q claimed client focus", input)
+		}
+	}
+}
+
+func TestSplitFocusOutDoesNotClaimClientFocus(t *testing.T) {
+	client := &attachClient{}
+	for _, chunk := range [][]byte{
+		[]byte{'\x1b'},
+		[]byte{'['},
+		[]byte{'O'},
+		[]byte{0x9b},
+		[]byte{'O'},
+	} {
+		if client.inputClaimsFocus(chunk) {
+			t.Fatalf("split focus-out chunk %q claimed client focus", chunk)
+		}
+	}
+	if !client.inputClaimsFocus([]byte("x")) {
+		t.Fatal("real input after split focus-out did not claim focus")
+	}
+}
+
+func TestStandaloneEscapeClaimsFocusWithoutPoisoningLaterFocusOut(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	first := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"first",
+		120,
+		40,
+	)
+	second := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"second",
+		80,
+		24,
+	)
+
+	if first.inputClaimsFocus([]byte{'\x1b'}) {
+		t.Fatal("ambiguous Escape claimed focus before its carry delay")
+	}
+	waitForPrimaryClient(t, server, first.conn, 120, 40)
+
+	server.promoteAttachClient(second)
+	if first.inputClaimsFocus([]byte("\x1b[O")) {
+		t.Fatal("later focus-out claimed focus")
+	}
+	waitForPrimaryClient(t, server, second.conn, 80, 24)
+}
+
+func TestDelayedEscapeDoesNotOverwriteNewerClientFocus(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	first := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"first",
+		120,
+		40,
+	)
+	second := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"second",
+		80,
+		24,
+	)
+
+	if first.inputClaimsFocus([]byte{'\x1b'}) {
+		t.Fatal("ambiguous Escape claimed focus before its carry delay")
+	}
+	server.promoteAttachClient(second)
+	time.Sleep(focusInputCarryDelay + 25*time.Millisecond)
+
+	waitForPrimaryClient(t, server, second.conn, 80, 24)
+}
+
+func TestSplitTerminalProtocolResponseDoesNotClaimFocus(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse()
+
+	if client.inputClaimsFocus([]byte("\x1b]11;rgb:ffff/")) {
+		t.Fatal("partial terminal response claimed focus")
+	}
+	if client.inputClaimsFocus([]byte("ffff/ffff\x1b\\")) {
+		t.Fatal("completed split terminal response claimed focus")
+	}
+}
+
+func TestSplitResponseEscapeDoesNotClaimFocusDuringGrace(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	responder := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"responder",
+		120,
+		40,
+	)
+	active := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"active",
+		80,
+		24,
+	)
+	responder.expectTerminalResponse()
+
+	if responder.inputClaimsFocus([]byte{'\x1b'}) {
+		t.Fatal("split response Escape claimed focus immediately")
+	}
+	time.Sleep(focusInputCarryDelay + 25*time.Millisecond)
+	waitForPrimaryClient(t, server, active.conn, 80, 24)
+	if responder.inputClaimsFocus([]byte("[?62;4c")) {
+		t.Fatal("completed split terminal response claimed focus")
+	}
+	waitForPrimaryClient(t, server, active.conn, 80, 24)
+}
+
+func TestSupportedTerminalResponseFormsDoNotClaimFocus(t *testing.T) {
+	responses := [][]byte{
+		[]byte("\x1b[5;768;1024t"),
+		[]byte("\x1b]Licon title\x1b\\"),
+		[]byte("\x1b]lwindow title\x1b\\"),
+		[]byte("\x1bP!|00000000\x1b\\"),
+		[]byte{0x9b, '?', '6', '2', ';', '4', 'c'},
+		[]byte{0x9d, '1', '1', ';', 'r', 'g', 'b', ':', 'f', 'f', 0x9c},
+		[]byte{0x90, '!', '|', '0', '0', 0x9c},
+	}
+	for _, response := range responses {
+		client := &attachClient{}
+		client.expectTerminalResponse()
+		if client.inputClaimsFocus(response) {
+			t.Fatalf("terminal response %q claimed focus", response)
+		}
+	}
+}
+
+func TestLargeSplitClipboardResponseUsesBoundedFocusParserState(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse()
+	payload := append(
+		[]byte("\x1b]52;c;"),
+		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes+1024)...,
+	)
+	for len(payload) > 0 {
+		size := 32 * 1024
+		if len(payload) < size {
+			size = len(payload)
+		}
+		if client.inputClaimsFocus(payload[:size]) {
+			t.Fatal("large split clipboard response claimed focus")
+		}
+		payload = payload[size:]
+	}
+	if client.inputClaimsFocus([]byte{'\a'}) {
+		t.Fatal("clipboard response terminator claimed focus")
+	}
+	if !client.inputClaimsFocus([]byte("x")) {
+		t.Fatal("real input after clipboard response did not claim focus")
+	}
+}
+
+func TestLargeSplitResponseDoesNotTreatUtf8ContinuationAsC1ST(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse()
+	payload := append(
+		[]byte("\x1b]52;c;"),
+		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes)...,
+	)
+	payload = append(payload, 0xc5)
+	for len(payload) > 0 {
+		size := 32 * 1024
+		if len(payload) < size {
+			size = len(payload)
+		}
+		if client.inputClaimsFocus(payload[:size]) {
+			t.Fatal("large UTF-8 response prefix claimed focus")
+		}
+		payload = payload[size:]
+	}
+	if client.inputClaimsFocus([]byte{0x9c, '\a'}) {
+		t.Fatal("UTF-8 continuation byte was mistaken for C1 ST")
+	}
+}
+
+func TestTerminalStringTerminatorsIgnoreUtf8ContinuationBytes(t *testing.T) {
+	payload := []byte{'a', 0xc5, 0x9c, 'b', '\a'}
+	end, length, ok := findOscTerminator(payload)
+	if !ok || end != 4 || length != 1 {
+		t.Fatalf(
+			"OSC terminator = end %d length %d ok %v, want BEL at 4",
+			end,
+			length,
+			ok,
+		)
+	}
+	payload = []byte{'a', 0xc5, 0x9c, 'b', 0x9c}
+	end, length, ok = findStringTerminator(payload)
+	if !ok || end != 4 || length != 1 {
+		t.Fatalf(
+			"string terminator = end %d length %d ok %v, want C1 ST at 4",
+			end,
+			length,
+			ok,
+		)
+	}
+}
+
+func TestQueryWriteArmsResponseGraceBeforeSocketWrite(t *testing.T) {
+	conn := &responseCheckConn{}
+	client := newAttachClient(conn, controlMessage{ClientID: "response-check"})
+	conn.client = client
+	t.Cleanup(client.close)
+
+	completion, queued := client.enqueueTerminalQuery([]byte("\x1b[c"), true)
+	if !queued || !client.waitForWrite(completion) {
+		t.Fatal("terminal query was not written")
+	}
+	if conn.responseClaimedFocus {
+		t.Fatal("immediate terminal response claimed focus before grace was armed")
+	}
+}
+
+func TestWindowSelectionPromotesRequestingClient(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		{id: "@2", index: 1, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	first := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"first",
+		120,
+		40,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"second",
+		80,
+		24,
+	)
+
+	windowIndex := 1
+	server.handleControlRequest(
+		newControlClient(nil),
+		controlMessage{
+			Type:        "select_window",
+			ClientID:    "first",
+			WindowIndex: &windowIndex,
+		},
+	)
+
+	server.mu.Lock()
+	primary := server.attachConn
+	width, height := server.width, server.height
+	activeID := server.activeID
+	server.mu.Unlock()
+	if primary != first.conn || width != 120 || height != 40 {
+		t.Fatalf(
+			"selecting client = %v at %dx%d, want first client at 120x40",
+			primary,
+			width,
+			height,
+		)
+	}
+	if activeID != "@2" {
+		t.Fatalf("active window = %q, want @2", activeID)
+	}
+}
+
+func TestMostRecentlyFocusedRemainingClientTakesOverAfterDetach(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	first := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"first",
+		120,
+		40,
+	)
+	second := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"second",
+		80,
+		24,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"third",
+		100,
+		30,
+	)
+
+	server.promoteAttachClient(first)
+	server.promoteAttachClient(second)
+	server.removeAttachClient(second)
+
+	server.mu.Lock()
+	primary := server.attachConn
+	width, height := server.width, server.height
+	server.mu.Unlock()
+	if primary != first.conn || width != 120 || height != 40 {
+		t.Fatalf(
+			"fallback client = %v at %dx%d, want prior focused client at 120x40",
+			primary,
+			width,
+			height,
 		)
 	}
 }
@@ -1818,6 +2482,41 @@ func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
 	}
 }
 
+func TestRedrawResizePreservesBufferedTerminalQueries(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                             "@1",
+		index:                          0,
+		foregroundCommand:              "codex",
+		lastActivity:                   time.Now(),
+		redrawForwardingPaused:         true,
+		redrawForwardingGeneration:     1,
+		redrawForwardingBuffer:         []byte("\x1b[>q"),
+		redrawForwardingFailoverBuffer: []byte("\x1b[>q"),
+		redrawForwardingQueryBuffer:    []byte("\x1b[>q"),
+		redrawForwardingPrimaryConn:    conn,
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 41)
+	generation := window.redrawForwardingGeneration
+	buffered := string(window.redrawForwardingQueryBuffer)
+	server.mu.Unlock()
+	if buffered != "\x1b[>q" {
+		t.Fatalf("superseded redraw query buffer = %q", buffered)
+	}
+
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "\x1b[>q" {
+		t.Fatalf("terminal query after superseded redraw = %q", got)
+	}
+}
+
 func TestRedrawResizePreservesPendingReplay(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}
@@ -2464,6 +3163,17 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 	}
 	if !strings.Contains(replay, "before") || !strings.Contains(replay, "after") {
 		t.Fatalf("replay = %q, want normal output preserved", replay)
+	}
+}
+
+func TestReplayStripsC1TerminalQueries(t *testing.T) {
+	query := []byte{0x9b, 'c'}
+	history := append([]byte("before"), append(query, []byte("after")...)...)
+
+	replay := stripTerminalQueriesFromReplay(history)
+
+	if got := string(replay); got != "beforeafter" {
+		t.Fatalf("C1 query replay = %q, want normal output only", got)
 	}
 }
 
@@ -6325,6 +7035,12 @@ type gatedConn struct {
 	gate <-chan struct{}
 }
 
+type responseCheckConn struct {
+	discardConn
+	client               *attachClient
+	responseClaimedFocus bool
+}
+
 func (errReader) Read([]byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
 }
@@ -6344,6 +7060,11 @@ func (failingConn) Write([]byte) (int, error) {
 func (c *gatedConn) Write(data []byte) (int, error) {
 	<-c.gate
 	return c.recordingConn.Write(data)
+}
+
+func (c *responseCheckConn) Write(data []byte) (int, error) {
+	c.responseClaimedFocus = c.client.inputClaimsFocus([]byte("\x1b[?62;4c"))
+	return len(data), nil
 }
 
 func (discardConn) Close() error {
@@ -6435,11 +7156,23 @@ func registerTestAttachClient(
 			Height:   height,
 		},
 	)
+	client.focusSequenceSnapshot = server.focusSequenceSnapshot
+	client.focusClaim = func(expectedFocusSequence uint64) {
+		server.focusAttachClientIfUnchanged(client, expectedFocusSequence)
+	}
 	server.mu.Lock()
 	server.nextAttachSequence++
 	client.sequence = server.nextAttachSequence
+	server.nextFocusSequence++
+	client.focusSequence.Store(server.nextFocusSequence)
 	server.attachClients[conn] = client
 	server.attachConn = conn
+	if width > 0 {
+		server.width = width
+	}
+	if height > 0 {
+		server.height = height
+	}
 	server.mu.Unlock()
 	t.Cleanup(client.close)
 	return client
@@ -6455,6 +7188,40 @@ func waitForRecordedOutput(t *testing.T, conn *recordingConn, want string) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("recorded output = %q, want %q", conn.String(), want)
+}
+
+func waitForPrimaryClient(
+	t *testing.T,
+	server *muxServer,
+	want net.Conn,
+	width int,
+	height int,
+) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		server.mu.Lock()
+		primary := server.attachConn
+		gotWidth, gotHeight := server.width, server.height
+		server.mu.Unlock()
+		if primary == want && gotWidth == width && gotHeight == height {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	server.mu.Lock()
+	primary := server.attachConn
+	gotWidth, gotHeight := server.width, server.height
+	server.mu.Unlock()
+	t.Fatalf(
+		"primary client = %v at %dx%d, want %v at %dx%d",
+		primary,
+		gotWidth,
+		gotHeight,
+		want,
+		width,
+		height,
+	)
 }
 
 func waitForPendingQueryState(

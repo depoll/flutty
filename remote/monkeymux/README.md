@@ -34,9 +34,11 @@ monkeymux kill-session -t review
 Every attached terminal remains connected. The active window is shared, as it
 is for clients attached to the same tmux session, so a switch made on the phone
 also switches a host terminal. Input from every client reaches that window.
-MonkeyMux uses the smallest attached width and height for the shared PTY so all
-clients render safely, and a stalled client is disconnected instead of blocking
-the others.
+The client that most recently types, taps the MonkeySSH terminal, or selects a
+window becomes primary, and MonkeyMux resizes the shared PTY to that client's
+viewport. Other clients stay attached and follow the same window; interacting
+with one immediately makes its screen size authoritative. A stalled client is
+disconnected instead of blocking the others.
 
 ### Prefix keys
 
