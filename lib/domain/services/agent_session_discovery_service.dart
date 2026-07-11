@@ -5,8 +5,12 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/acp_protocol.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
+import 'acp_client.dart';
+import 'acp_json_rpc_connection.dart';
+import 'acp_ssh_exec_transport.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'terminal_connection_backend_service.dart';
@@ -960,34 +964,16 @@ List<ToolSessionInfo> parseAcpSessionListResult(
   String toolName,
   Map<String, dynamic> result,
 ) {
-  final rawSessions = _readListField(result, 'sessions');
-  if (rawSessions == null || rawSessions.isEmpty) {
-    return const <ToolSessionInfo>[];
-  }
-
+  final parsed = AcpSessionListResult.fromJson(result);
   final sessions = <ToolSessionInfo>[];
-  for (final rawSession in rawSessions.whereType<Map>()) {
-    final session = rawSession.map((key, value) => MapEntry('$key', value));
-    final sessionId = _readStringField(session, 'sessionId');
-    if (sessionId == null || sessionId.isEmpty) continue;
-
+  for (final session in parsed.sessions) {
     sessions.add(
       ToolSessionInfo(
         toolName: toolName,
-        sessionId: sessionId,
-        workingDirectory:
-            _readStringField(session, 'cwd') ??
-            _readStringField(session, 'workingDirectory') ??
-            _readStringField(session, 'directory'),
-        lastActive:
-            _parseDateTimeValue(session['updatedAt']) ??
-            _parseDateTimeValue(session['updated_at']) ??
-            _parseDateTimeValue(session['updated']),
-        summary:
-            _readStringField(session, 'title') ??
-            _readStringField(session, 'summary') ??
-            _readStringField(session, 'name') ??
-            _truncateSessionIdValue(sessionId),
+        sessionId: session.sessionId,
+        workingDirectory: session.cwd.isEmpty ? null : session.cwd,
+        lastActive: _parseDateTimeValue(session.updatedAt),
+        summary: session.title ?? _truncateSessionIdValue(session.sessionId),
       ),
     );
   }
@@ -3815,128 +3801,58 @@ print(json.dumps(sessions))
     final execSession = await session.execute(
       '$_profileSourcingPrefix${_buildAcpSessionListCommand(provider, workingDirectory)}',
     );
-    final pendingResponses = <int, Completer<Map<String, dynamic>>>{};
-    late final StreamSubscription<String> stdoutSubscription;
-    late final StreamSubscription<List<int>> stderrSubscription;
-
-    void completePendingWithError(Object error, StackTrace stackTrace) {
-      for (final completer in pendingResponses.values) {
-        if (!completer.isCompleted) {
-          completer.completeError(error, stackTrace);
-        }
-      }
-      pendingResponses.clear();
-    }
-
-    stdoutSubscription = execSession.stdout
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen(
-          (line) {
-            final decoded = _tryDecodeJsonObject(line.trim());
-            if (decoded == null) return;
-            final id = decoded['id'];
-            if (id is! int) return;
-            final completer = pendingResponses.remove(id);
-            if (completer != null && !completer.isCompleted) {
-              completer.complete(decoded);
-            }
-          },
-          onError: completePendingWithError,
-          onDone: () => completePendingWithError(
-            StateError('ACP process closed before responding'),
-            StackTrace.current,
-          ),
-        );
-    stderrSubscription = execSession.stderr.listen((_) {});
-
     var nextRequestId = 0;
-
-    Future<Map<String, dynamic>> request(
-      String method, [
-      Map<String, dynamic>? params,
-    ]) {
-      final id = nextRequestId++;
-      final completer = Completer<Map<String, dynamic>>();
-      pendingResponses[id] = completer;
-      final payload = <String, dynamic>{
-        'jsonrpc': '2.0',
-        'id': id,
-        'method': method,
-        'params': ?params,
-      };
-      execSession.write(
-        Uint8List.fromList(utf8.encode('${jsonEncode(payload)}\n')),
-      );
-      return completer.future.timeout(_acpResponseTimeout);
-    }
-
+    final connection = AcpJsonRpcConnection(
+      transport: AcpSshExecTransport(execSession),
+      defaultRequestTimeout: _acpResponseTimeout,
+      requestIdFactory: () => nextRequestId++,
+    );
+    final client = AcpClient(connection);
     try {
-      final initializeResponse = await request('initialize', {
-        'protocolVersion': 1,
-        'clientCapabilities': {
-          'fs': {'readTextFile': false, 'writeTextFile': false},
-          'terminal': false,
-        },
-        'clientInfo': {'name': 'monkeyssh', 'title': 'MonkeySSH'},
-      });
-      if (initializeResponse.containsKey('error')) return null;
-
-      final result = _readMapField(initializeResponse, 'result');
-      final capabilities = _readMapField(result, 'agentCapabilities');
-      final sessionCapabilities = _readMapField(
-        capabilities,
-        'sessionCapabilities',
+      final initialization = await client.initialize(
+        capabilities: const AcpClientCapabilities(
+          fileSystem: AcpFileSystemCapabilities(),
+          booleanConfigOptions: false,
+        ),
+        timeout: _acpResponseTimeout,
       );
-      if (sessionCapabilities == null ||
-          !sessionCapabilities.containsKey('list')) {
+      if (!initialization.agentCapabilities.session.list) {
         return null;
       }
 
       final sessionsById = <String, ToolSessionInfo>{};
-      var hadError = false;
       for (final listWorkingDirectory in listWorkingDirectories) {
         String? cursor;
         do {
-          final params = <String, dynamic>{
-            'cwd': ?listWorkingDirectory,
-            'cursor': ?cursor,
-          };
-          final listResponse = await request('session/list', params);
-          final error = _readMapField(listResponse, 'error');
-          if (error != null) {
-            return null;
-          }
-
-          final listResult = _readMapField(listResponse, 'result');
-          if (listResult == null) {
-            hadError = true;
-            break;
-          }
-          for (final info in parseAcpSessionListResult(toolName, listResult)) {
+          final listResult = await client.listSessions(
+            cwd: listWorkingDirectory,
+            cursor: cursor,
+            timeout: _acpResponseTimeout,
+          );
+          for (final sessionInfo in listResult.sessions) {
+            final info = ToolSessionInfo(
+              toolName: toolName,
+              sessionId: sessionInfo.sessionId,
+              workingDirectory: sessionInfo.cwd.isEmpty
+                  ? null
+                  : sessionInfo.cwd,
+              lastActive: _parseDateTimeValue(sessionInfo.updatedAt),
+              summary:
+                  sessionInfo.title ??
+                  _truncateSessionIdValue(sessionInfo.sessionId),
+            );
             sessionsById.putIfAbsent(info.sessionId, () => info);
           }
-          cursor = _readStringField(listResult, 'nextCursor');
+          cursor = listResult.nextCursor;
         } while (cursor != null && sessionsById.length < max);
       }
 
       return _AcpSessionListResult(
         sessions: sortAndLimitDiscoveredSessions(sessionsById.values, max),
-        hadError: hadError,
+        hadError: false,
       );
     } finally {
-      for (final completer in pendingResponses.values) {
-        if (!completer.isCompleted) {
-          completer.completeError(
-            StateError('ACP session discovery was cancelled'),
-          );
-        }
-      }
-      pendingResponses.clear();
-      await stdoutSubscription.cancel();
-      await stderrSubscription.cancel();
-      execSession.close();
+      await client.close();
     }
   }, priority: SshExecPriority.low);
 
