@@ -3097,6 +3097,10 @@ class MonkeyRenderTerminal extends RenderBox
     size = constraints.biggest;
 
     _updateViewportSize();
+    _terminal.graphics.setCellPixelSize(
+      _painter.cellSize.width,
+      _painter.cellSize.height,
+    );
     _updateScrollOffset();
 
     if (_liveOutputAutoScroll && _stickToBottom) {
@@ -4234,6 +4238,12 @@ class MonkeyRenderTerminal extends RenderBox
       if (placement.cols > 0 && placement.rows > 0) {
         dstWidth = placement.cols * cellWidth;
         dstHeight = placement.rows * cellHeight;
+      } else if (placement.cols > 0) {
+        dstWidth = placement.cols * cellWidth;
+        dstHeight = srcHeight * (dstWidth / srcWidth);
+      } else if (placement.rows > 0) {
+        dstHeight = placement.rows * cellHeight;
+        dstWidth = srcWidth * (dstHeight / srcHeight);
       } else {
         // No explicit cell span: fit the (cropped) source width within the row.
         final maxWidth =
