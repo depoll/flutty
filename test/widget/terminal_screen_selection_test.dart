@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -458,6 +459,118 @@ void main() {
           '/home/u/.cache/monkeyssh/uploads/a.png',
         ], bracketedPasteMode: terminal.bracketedPasteMode),
         const ['\x1b[200~/home/u/.cache/monkeyssh/uploads/a.png\x1b[201~ '],
+      );
+    });
+  });
+
+  group('refreshTerminalBracketedPasteModeFromMuxWindows', () {
+    test(
+      'refreshes a stale disabled mode before attachment insertion',
+      () async {
+        final terminal = Terminal();
+        final windows = Completer<Iterable<TmuxWindow>>();
+        final refresh = refreshTerminalBracketedPasteModeFromMuxWindows(
+          terminal: terminal,
+          loadWindows: () => windows.future,
+        );
+
+        expect(terminal.bracketedPasteMode, isFalse);
+        windows.complete(const [
+          TmuxWindow(
+            index: 0,
+            name: 'copilot',
+            isActive: true,
+            terminalBracketedPasteMode: true,
+          ),
+        ]);
+
+        expect(await refresh, (
+          bracketedPasteMode: true,
+          activeWindowKey: '#0',
+        ));
+        expect(terminal.bracketedPasteMode, isTrue);
+      },
+    );
+
+    test('applies known disabled mode and preserves unknown mode', () async {
+      final terminal = Terminal()..setBracketedPasteMode(true);
+
+      expect(
+        await refreshTerminalBracketedPasteModeFromMuxWindows(
+          terminal: terminal,
+          loadWindows: () async => const [
+            TmuxWindow(
+              index: 0,
+              name: 'shell',
+              isActive: true,
+              terminalBracketedPasteMode: false,
+            ),
+          ],
+        ),
+        (bracketedPasteMode: false, activeWindowKey: '#0'),
+      );
+
+      terminal.setBracketedPasteMode(true);
+      expect(
+        await refreshTerminalBracketedPasteModeFromMuxWindows(
+          terminal: terminal,
+          loadWindows: () async => const [
+            TmuxWindow(index: 0, name: 'legacy', isActive: true),
+          ],
+        ),
+        (bracketedPasteMode: true, activeWindowKey: '#0'),
+      );
+    });
+
+    test('returns the stable id for the refreshed active window', () async {
+      final terminal = Terminal();
+
+      expect(
+        await refreshTerminalBracketedPasteModeFromMuxWindows(
+          terminal: terminal,
+          loadWindows: () async => const [
+            TmuxWindow(
+              index: 4,
+              id: '@9',
+              name: 'copilot',
+              isActive: true,
+              terminalBracketedPasteMode: true,
+            ),
+          ],
+        ),
+        (bracketedPasteMode: true, activeWindowKey: '@9'),
+      );
+    });
+  });
+
+  group('terminalAttachmentPasteTargetsCurrentMuxWindow', () {
+    test('rejects an optimistic window switch before its snapshot arrives', () {
+      expect(
+        terminalAttachmentPasteTargetsCurrentMuxWindow(
+          hasPendingWindowSelection: true,
+          pasteWindowKey: '@1',
+          currentWindowKey: '@1',
+        ),
+        isFalse,
+      );
+    });
+
+    test('accepts the same settled window or an unavailable snapshot', () {
+      expect(
+        terminalAttachmentPasteTargetsCurrentMuxWindow(
+          hasPendingWindowSelection: false,
+          pasteWindowKey: '@1',
+          currentWindowKey: '@1',
+        ),
+        isTrue,
+      );
+      expect(
+        terminalAttachmentPasteTargetsCurrentMuxWindow(
+          hasPendingWindowSelection: false,
+          pasteWindowKey: '@1',
+          currentWindowKey: null,
+        ),
+        isTrue,
       );
     });
   });

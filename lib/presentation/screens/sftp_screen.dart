@@ -412,6 +412,29 @@ String resolveUnreadableSftpUploadMessage(List<PlatformFile> files) {
   return 'Unable to read ${files.length} selected files';
 }
 
+/// Returns an error when a picker-provided upload name is not a single file.
+@visibleForTesting
+String? validateSftpUploadFileName(String name) {
+  final trimmedName = name.trim();
+  if (trimmedName.isEmpty) {
+    return 'File name is required';
+  }
+  if (trimmedName == '.' || trimmedName == '..') {
+    return 'File name cannot be a navigation shortcut';
+  }
+  if (name.contains('/') || name.contains(r'\') || name.contains('\x00')) {
+    return 'File name cannot contain path separators';
+  }
+  return null;
+}
+
+/// Resolves the message shown when selected uploads contain unsafe names.
+@visibleForTesting
+String resolveUnsafeSftpUploadNameMessage(List<PlatformFile> files) =>
+    files.length == 1
+    ? 'The selected file has an unsafe name'
+    : '${files.length} selected files have unsafe names';
+
 /// Returns a validation error for a new remote folder name, or null if valid.
 @visibleForTesting
 String? validateSftpDirectoryName(String name) {
@@ -1920,6 +1943,31 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     final selectedFiles = result.files;
+    final unsafeUploads = selectedFiles
+        .where((file) => validateSftpUploadFileName(file.name) != null)
+        .toList();
+    if (unsafeUploads.isNotEmpty) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logSftpTransferFailed(
+              direction: 'upload',
+              fileCount: selectedFiles.length,
+              sizeBytes: _selectedUploadSizeBytes(selectedFiles),
+              duration: Duration.zero,
+              failureCategory: 'invalid_name',
+            ),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(resolveUnsafeSftpUploadNameMessage(unsafeUploads)),
+          ),
+        );
+      }
+      return;
+    }
+
     final uploads = <({PlatformFile file, Stream<List<int>>? readStream})>[
       for (final file in selectedFiles)
         (file: file, readStream: resolvePickedSftpUploadReadStream(file)),

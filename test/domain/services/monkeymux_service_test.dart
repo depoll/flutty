@@ -461,6 +461,58 @@ void main() {
         await service.clearCache(900);
       },
     );
+
+    test(
+      'refreshWindows starts a new query after an older request fails',
+      () async {
+        final client = _MockSshClient();
+        final installer = _MockMonkeyMuxInstaller();
+        final session = _buildSession(client, connectionId: 901);
+        final stdoutController = StreamController<Uint8List>();
+        final controlSession = _buildSilentControlSession(stdoutController);
+        final requests = <Map<String, Object?>>[];
+
+        when(
+          () => installer.ensureInstalled(session),
+        ).thenAnswer((_) async => _fakeInstallation);
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => controlSession);
+        when(() => controlSession.write(any())).thenAnswer((invocation) {
+          final data = invocation.positionalArguments.single as List<int>;
+          requests.add(jsonDecode(utf8.decode(data)) as Map<String, Object?>);
+        });
+
+        final service = MonkeyMuxService(
+          installer: installer,
+          agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+        )..watchWindowChanges(session, 'work');
+        final firstRequest = service.listWindows(session, 'work');
+        final freshRequest = service.refreshWindows(session, 'work');
+        await pumpEventQueue();
+
+        expect(requests, hasLength(1));
+        _respondToControlError(stdoutController, requests.single);
+        await expectLater(
+          firstRequest,
+          throwsA(isA<MonkeyMuxInstallException>()),
+        );
+        await pumpEventQueue();
+
+        expect(requests, hasLength(2));
+        _respondToWindowListRequest(
+          stdoutController,
+          requests.last,
+          terminalBracketedPasteMode: true,
+        );
+        final windows = await freshRequest;
+
+        expect(windows.single.terminalBracketedPasteMode, isTrue);
+
+        await stdoutController.close();
+        await service.clearCache(901);
+      },
+    );
   });
 }
 
@@ -541,4 +593,36 @@ SSHSession _buildRespondingControlSession(
     );
   });
   return session;
+}
+
+void _respondToWindowListRequest(
+  StreamController<Uint8List> stdoutController,
+  Map<String, Object?> request, {
+  required bool terminalBracketedPasteMode,
+}) {
+  final response = jsonEncode({
+    'id': request['id'],
+    'type': 'window_list',
+    'status': 'ok',
+    'windows': [
+      {
+        ..._fakeWindowJson,
+        'terminalBracketedPasteMode': terminalBracketedPasteMode,
+      },
+    ],
+  });
+  stdoutController.add(Uint8List.fromList(utf8.encode('$response\n')));
+}
+
+void _respondToControlError(
+  StreamController<Uint8List> stdoutController,
+  Map<String, Object?> request,
+) {
+  final response = jsonEncode({
+    'id': request['id'],
+    'type': 'error',
+    'status': 'error',
+    'error': 'stale request failed',
+  });
+  stdoutController.add(Uint8List.fromList(utf8.encode('$response\n')));
 }
