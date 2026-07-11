@@ -80,6 +80,71 @@ func TestAcpProviderExitCancelsDelayedForceStop(t *testing.T) {
 	}
 }
 
+func TestAcpConcurrentStopAndProviderWrite(t *testing.T) {
+	input := &blockingAcpInput{
+		writeStarted: make(chan struct{}),
+		releaseWrite: make(chan struct{}),
+		closed:       make(chan struct{}),
+	}
+	bridge := &acpBridge{
+		stdin:        input,
+		clients:      map[string]*acpBridgeClient{},
+		providerDone: make(chan struct{}),
+		done:         make(chan struct{}),
+	}
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		_ = bridge.writeProvider(json.RawMessage(
+			`{"jsonrpc":"2.0","method":"session/prompt"}`,
+		))
+	}()
+	<-input.writeStarted
+	stopDone := make(chan struct{})
+	go func() {
+		bridge.stop()
+		close(stopDone)
+	}()
+	close(input.releaseWrite)
+
+	select {
+	case <-writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("provider write did not finish after stop")
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("provider stop did not finish after write")
+	}
+	select {
+	case <-input.closed:
+	case <-time.After(time.Second):
+		t.Fatal("provider stdin was not closed")
+	}
+}
+
+type blockingAcpInput struct {
+	writeStarted chan struct{}
+	releaseWrite chan struct{}
+	closed       chan struct{}
+	started      bool
+}
+
+func (w *blockingAcpInput) Write(data []byte) (int, error) {
+	if !w.started {
+		w.started = true
+		close(w.writeStarted)
+	}
+	<-w.releaseWrite
+	return len(data), nil
+}
+
+func (w *blockingAcpInput) Close() error {
+	close(w.closed)
+	return nil
+}
+
 func TestAcpBridgeStartConnectListStatusAndStop(t *testing.T) {
 	bridge, cleanup := startTestAcpBridge(t, "cat")
 	defer cleanup()

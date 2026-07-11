@@ -983,23 +983,29 @@ func (b *acpBridge) stop() {
 		b.mu.Lock()
 		b.state = "stopped"
 		b.lastActivity = time.Now()
-		stdin := b.stdin
-		b.stdin = nil
 		clients := make([]*acpBridgeClient, 0, len(b.clients))
 		for _, client := range b.clients {
 			clients = append(clients, client)
 		}
 		b.clients = map[string]*acpBridgeClient{}
 		b.mu.Unlock()
-		if stdin != nil {
-			_ = stdin.Close()
-		}
+		b.closeProviderInput()
 		stopAcpProvider(b.cmd, b.providerDone)
 		close(b.done)
 		for _, client := range clients {
 			client.cancel()
 		}
 	})
+}
+
+func (b *acpBridge) closeProviderInput() {
+	b.stdinMu.Lock()
+	defer b.stdinMu.Unlock()
+	if b.stdin == nil {
+		return
+	}
+	_ = b.stdin.Close()
+	b.stdin = nil
 }
 
 func acpSocketPath(id string) (string, error) {
