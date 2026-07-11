@@ -103,14 +103,17 @@ out of scope.
   decoded memory. Encoded GIF/APNG transmissions preserve all decoded frames,
   durations and repetition metadata instead of freezing on frame one. The host
   renderer advances only visible, active animations and paints the current
-  frame. MonkeyMux 0.1.94 retains and replays each image's ordered frame,
+  frame. MonkeyMux 0.1.95 retains and replays each image's ordered frame,
   composition and control commands so reconnects/window switches do not restore
-  only a static root image. Android UI animation scales no longer pause terminal
-  media (a common emulator/developer setting), while iOS Reduce Motion still
-  keeps animated images static. Width-only/height-only placements now preserve
-  aspect ratio and compute the missing cursor row span, so Copilot CLI's
-  `a=T,c=...` animation is not erased by its next prompt redraw. Keep the frame
-  model and animation APIs in `graphics_manager.dart` when re-syncing.
+  only a static root image, resolves `I=` image-number commands, and drops
+  over-budget per-image replay histories. Protocol frame/composition failures
+  now return Kitty errors unless silenced. Android UI animation scales no longer
+  pause terminal media (a common emulator/developer setting), while iOS Reduce
+  Motion still keeps animated images static. Width-only/height-only placements
+  now preserve aspect ratio and compute the missing cursor row span (including
+  JPEG sources), so Copilot CLI's `a=T,c=...` animation is not erased by its next
+  prompt redraw. Keep the frame model and animation APIs in
+  `graphics_manager.dart` when re-syncing.
 * XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
   implements the kitty graphics + keyboard protocols, so it reports a
   kitty-family identity. CLIs such as the GitHub Copilot CLI gate their richer

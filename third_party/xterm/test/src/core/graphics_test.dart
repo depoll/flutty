@@ -52,6 +52,17 @@ const _zeroDelayGifBase64 =
     'AAAAACwAAAAAAwADAAAIBwABCBw4MCAAIfkEBAAAAAAsAAAAAAMAAwCBAAD/AAAA'
     'AAAAAAAACAcAAQgcODAgADs=';
 
+const _jpeg240x160Base64 =
+    '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIf'
+    'IiEmKzcvJik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7'
+    'Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCACgAPADASIA'
+    'AhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFgEB'
+    'AQEAAAAAAAAAAAAAAAAAAAYH/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AlQE6'
+    '2YAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB/9k=';
+
 /// Waits until image [id] has finished its (deferred) decode and is stored.
 Future<void> _awaitImage(Terminal terminal, int id) async {
   var waited = 0;
@@ -552,6 +563,19 @@ void main() {
     });
   });
 
+  testWidgets('decodeTerminalImage keeps first-frame compatibility for GIF', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final image = await decodeTerminalImage(
+        base64.decode(_animatedGifBase64),
+      );
+
+      expect(image, isNotNull);
+      expect(await _pixelColor(image!, 0, 0), const Color(0xFFFF0000));
+    });
+  });
+
   testWidgets('zero-delay GIF frames use a finite playback floor', (
     tester,
   ) async {
@@ -707,6 +731,79 @@ void main() {
     });
   });
 
+  testWidgets('repeated running control preserves the finite loop counter', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      final red = base64.encode(<int>[255, 0, 0, 255]);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+      terminal
+        ..write('\x1b_Ga=T,i=18,f=32,s=1,v=1;$red\x1b\\')
+        ..write('\x1b_Ga=f,i=18,f=32,s=1,v=1,z=20;$blue\x1b\\')
+        ..write('\x1b_Ga=a,i=18,r=1,z=20,s=3,v=3\x1b\\');
+
+      var waited = 0;
+      while ((terminal.graphics.imageById(18)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final image = terminal.graphics.imageById(18)!;
+      terminal.graphics
+        ..advanceAnimations(const Duration(milliseconds: 20))
+        ..advanceAnimations(const Duration(milliseconds: 20));
+      expect(image.currentFrame, 1, reason: 'first loop completed');
+
+      terminal.write('\x1b_Ga=a,i=18,s=3\x1b\\');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      terminal.graphics
+        ..advanceAnimations(const Duration(milliseconds: 20))
+        ..advanceAnimations(const Duration(milliseconds: 20));
+
+      expect(image.currentFrame, 2);
+      expect(terminal.graphics.hasActiveAnimations, isFalse);
+    });
+  });
+
+  testWidgets('a=f reports success and structured failures', (tester) async {
+    await tester.runAsync(() async {
+      final pixel = base64.encode(<int>[255, 0, 0, 255]);
+      final responses = <String>[];
+      final terminal = Terminal(onOutput: responses.add);
+
+      terminal
+        ..write('\x1b_Ga=T,i=19,f=32,s=1,v=1;$pixel\x1b\\')
+        ..write('\x1b_Ga=f,i=19,f=32,s=1,v=1,q=0;$pixel\x1b\\');
+      var waited = 0;
+      while (responses.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses.single, '\x1b_Gi=19;OK\x1b\\');
+
+      responses.clear();
+      terminal.write('\x1b_Ga=f,i=999,f=32,s=1,v=1,q=0;$pixel\x1b\\');
+      waited = 0;
+      while (responses.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses.single, contains('ENOENT'));
+
+      responses.clear();
+      terminal.write(
+        '\x1b_Ga=f,i=19,f=32,s=1,v=1,x=2,q=0;$pixel\x1b\\',
+      );
+      waited = 0;
+      while (responses.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses.single, contains('EINVAL'));
+    });
+  });
+
   testWidgets('Kitty a=f composes partial frames and a=c copies regions', (
     tester,
   ) async {
@@ -830,7 +927,7 @@ void main() {
           1,
           DecodedTerminalImage.single(firstFrame),
         ),
-        isTrue,
+        TerminalAnimationFrameResult.success,
       );
       expect(manager.currentMemoryBytes, 8);
       expect(
@@ -838,7 +935,7 @@ void main() {
           1,
           DecodedTerminalImage.single(rejectedFrame),
         ),
-        isFalse,
+        TerminalAnimationFrameResult.noSpace,
       );
       expect(manager.imageById(1)!.frameCount, 2);
       expect(manager.currentMemoryBytes, 8);
@@ -858,7 +955,10 @@ void main() {
       final payloadImages =
           decoded!.frames.map((frame) => frame.image).toList();
 
-      expect(await manager.addAnimationFrame(1, decoded), isTrue);
+      expect(
+        await manager.addAnimationFrame(1, decoded),
+        TerminalAnimationFrameResult.success,
+      );
       expect(payloadImages.every((image) => image.debugDisposed), isTrue);
       expect(manager.imageById(1)!.frameCount, 2);
     });
@@ -936,6 +1036,31 @@ void main() {
     });
   });
 
+  testWidgets('newest explicit id remains authoritative for an image number', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final slowPng = await _buildPngBase64(1200, 800);
+      final fastPng = await _buildPngBase64(2, 2);
+      final terminal = Terminal();
+
+      terminal
+        ..write('\x1b_Ga=T,i=100,I=5,f=100,c=4,r=2;$slowPng\x1b\\')
+        ..write('\x1b_Ga=T,i=200,I=5,f=100,c=4,r=2;$fastPng\x1b\\');
+
+      var waited = 0;
+      while ((terminal.graphics.imageById(100) == null ||
+              terminal.graphics.imageById(200) == null) &&
+          waited < 5000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageById(100), isNotNull);
+      expect(terminal.graphics.imageById(200), isNotNull);
+      expect(terminal.graphics.imageIdForNumber(5), 200);
+    });
+  });
+
   testWidgets('invalid a=c reports a protocol error unless silenced', (
     tester,
   ) async {
@@ -958,6 +1083,23 @@ void main() {
       terminal.write('\x1b_Ga=c,i=29,r=2,c=1,w=1,h=1,q=2\x1b\\');
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(responses, isEmpty);
+
+      terminal.write('\x1b_Ga=c,i=999,r=1,c=1,q=0\x1b\\');
+      waited = 0;
+      while (responses.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses.single, contains('ENOENT'));
+
+      responses.clear();
+      terminal.write('\x1b_Ga=c,i=29,q=0\x1b\\');
+      waited = 0;
+      while (responses.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses.single, contains('ENOENT'));
     });
   });
 
@@ -1341,6 +1483,20 @@ void main() {
 
       // Cropping 120 pixels from the 240-pixel width leaves a 120x160 source.
       expect(terminal.buffer.lines[20].getText().trimRight(), 'X');
+    });
+  });
+
+  testWidgets('JPEG c-only placement computes its cursor rows', (tester) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      terminal.graphics.setCellPixelSize(10, 20);
+
+      terminal.write(
+        '\x1b_Ga=T,f=98,c=30;$_jpeg240x160Base64\x1b\\X',
+      );
+
+      expect(terminal.buffer.cursorY, 10);
+      expect(terminal.buffer.lines[10].getText().trimRight(), 'X');
     });
   });
 

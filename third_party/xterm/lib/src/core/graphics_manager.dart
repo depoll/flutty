@@ -38,6 +38,27 @@ enum TerminalAnimationState {
   running,
 }
 
+/// Result of a Kitty `a=f` frame transmission.
+enum TerminalAnimationFrameResult {
+  /// The frame was added or edited.
+  success,
+
+  /// The target image no longer exists.
+  imageNotFound,
+
+  /// A requested base or edit frame does not exist.
+  frameNotFound,
+
+  /// The transmitted frame rectangle is invalid.
+  invalidRectangle,
+
+  /// The frame would exceed the decoded-image memory budget.
+  noSpace,
+
+  /// The engine could not rasterize the composed frame.
+  rasterizationFailed,
+}
+
 /// Result of a Kitty `a=c` frame composition request.
 enum TerminalAnimationCompositionResult {
   /// The destination frame was updated.
@@ -273,10 +294,18 @@ class TerminalImage {
   }
 
   void _setAnimationState(TerminalAnimationState state) {
+    final previous = _animationState;
     _animationState = state;
-    _currentLoop = 0;
-    _frameElapsed = Duration.zero;
-    _waitingForFrames = false;
+    if (state == TerminalAnimationState.stopped) {
+      _currentLoop = 0;
+      _frameElapsed = Duration.zero;
+      _waitingForFrames = false;
+    } else if (previous == TerminalAnimationState.stopped) {
+      _frameElapsed = Duration.zero;
+      _waitingForFrames = false;
+    } else if (state != previous) {
+      _waitingForFrames = false;
+    }
     _protocolAnimationModified = true;
   }
 
@@ -904,6 +933,9 @@ class GraphicsManager {
     // The pending entry may have been evicted, deleted (`a=d`) or replaced with
     // fresh bytes while decoding; only commit when it is still the same image.
     if (!identical(_pendingImages[id], pending)) {
+      if (decoded != null) {
+        _disposeDecodedTerminalImage(decoded);
+      }
       return imageById(id);
     }
     observer?.call(
@@ -1097,7 +1129,7 @@ class GraphicsManager {
   /// image's original pixel coordinate space. New frames may use a prior
   /// [backgroundFrame] or an RGBA [backgroundColor]. [editFrame] composites the
   /// block onto an existing one-based frame instead.
-  Future<bool> addAnimationFrame(
+  Future<TerminalAnimationFrameResult> addAnimationFrame(
     int imageId,
     DecodedTerminalImage frameData, {
     int x = 0,
@@ -1113,7 +1145,7 @@ class GraphicsManager {
     try {
       final image = _images[imageId];
       if (image == null || frameData.frames.isEmpty) {
-        return false;
+        return TerminalAnimationFrameResult.imageNotFound;
       }
       final regionWidth = width > 0 ? width : frameData.sourceWidth;
       final regionHeight = height > 0 ? height : frameData.sourceHeight;
@@ -1123,25 +1155,25 @@ class GraphicsManager {
           regionHeight <= 0 ||
           x + regionWidth > image.sourceWidth ||
           y + regionHeight > image.sourceHeight) {
-        return false;
+        return TerminalAnimationFrameResult.invalidRectangle;
       }
 
       ui.Image? background;
       if (editFrame > 0) {
         background = image.imageAtFrame(editFrame);
         if (background == null) {
-          return false;
+          return TerminalAnimationFrameResult.frameNotFound;
         }
       } else if (backgroundFrame > 0) {
         background = image.imageAtFrame(backgroundFrame);
         if (background == null) {
-          return false;
+          return TerminalAnimationFrameResult.frameNotFound;
         }
       }
 
       final root = image.imageAtFrame(1);
       if (root == null) {
-        return false;
+        return TerminalAnimationFrameResult.frameNotFound;
       }
       final newFrameBytes = root.width * root.height * 4;
       if (editFrame <= 0 &&
@@ -1149,7 +1181,7 @@ class GraphicsManager {
             newFrameBytes,
             protectedImageId: imageId,
           )) {
-        return false;
+        return TerminalAnimationFrameResult.noSpace;
       }
       final composed = await _composeTerminalFrame(
         outputWidth: root.width,
@@ -1166,13 +1198,13 @@ class GraphicsManager {
         replace: replace,
       );
       if (composed == null) {
-        return false;
+        return TerminalAnimationFrameResult.rasterizationFailed;
       }
       if (!identical(_images[imageId], image)) {
         // This image was never stored or exposed to a painter, so unlike
         // retained Kitty images it is safe to release immediately.
         composed.dispose();
-        return false;
+        return TerminalAnimationFrameResult.imageNotFound;
       }
 
       if (editFrame > 0) {
@@ -1184,21 +1216,21 @@ class GraphicsManager {
           protectedImageId: imageId,
         )) {
           composed.dispose();
-          return false;
+          return TerminalAnimationFrameResult.noSpace;
         }
-        final currentChanged = image._replaceFrame(editFrame, composed);
+        image._replaceFrame(editFrame, composed);
         _currentMemoryBytes += delta;
         if (gap != null) {
           image._setFrameDuration(editFrame, gap);
         }
         image._lastAccess = ++_accessClock;
         onChanged?.call();
-        return currentChanged || gap != null;
+        return TerminalAnimationFrameResult.success;
       }
 
       if (!_evictAdditionalMemory(newFrameBytes, protectedImageId: imageId)) {
         composed.dispose();
-        return false;
+        return TerminalAnimationFrameResult.noSpace;
       }
       image._appendProtocolFrame(
         composed,
@@ -1207,7 +1239,7 @@ class GraphicsManager {
       _currentMemoryBytes += newFrameBytes;
       image._lastAccess = ++_accessClock;
       onChanged?.call();
-      return true;
+      return TerminalAnimationFrameResult.success;
     } finally {
       _disposeDecodedTerminalImage(frameData);
     }
@@ -2032,23 +2064,33 @@ Future<ui.Image?> decodeTerminalImage(
   int width = 0,
   int height = 0,
 }) async {
-  final decoded = await decodeTerminalImageSequence(
-    bytes,
-    format: format,
-    width: width,
-    height: height,
-  );
-  if (decoded == null || decoded.frames.isEmpty) {
+  if (bytes.isEmpty) {
     return null;
   }
-  return decoded.frames.first.image;
+  try {
+    final decoded = format == 32 || format == 24
+        ? await decodeTerminalImageSequence(
+            bytes,
+            format: format,
+            width: width,
+            height: height,
+          )
+        : await _decodeEncodedImageSequenceBounded(bytes, maxFrames: 1);
+    if (decoded == null || decoded.frames.isEmpty) {
+      return null;
+    }
+    return decoded.frames.first.image;
+  } catch (_) {
+    return null;
+  }
 }
 
 /// Decodes an encoded image sequence, downscaling to
 /// [_maxDecodedImageDimension] on its longest side when larger.
 Future<DecodedTerminalImage?> _decodeEncodedImageSequenceBounded(
-  Uint8List bytes,
-) async {
+  Uint8List bytes, {
+  int? maxFrames,
+}) async {
   final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
   ui.ImageDescriptor? descriptor;
   try {
@@ -2082,7 +2124,10 @@ Future<DecodedTerminalImage?> _decodeEncodedImageSequenceBounded(
           : math.max(1, _maxDecodedAnimationBytes ~/ frameBytes);
       final frameLimit = math.min(
         codec.frameCount,
-        math.min(_maxDecodedAnimationFrames, memoryFrameLimit),
+        math.min(
+          maxFrames ?? _maxDecodedAnimationFrames,
+          math.min(_maxDecodedAnimationFrames, memoryFrameLimit),
+        ),
       );
       final frames = <TerminalImageFrame>[];
       try {
