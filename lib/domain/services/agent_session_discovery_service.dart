@@ -3821,14 +3821,24 @@ print(json.dumps(sessions))
       }
 
       final sessionsById = <String, ToolSessionInfo>{};
+      var hadError = false;
       for (final listWorkingDirectory in listWorkingDirectories) {
         String? cursor;
         do {
-          final listResult = await client.listSessions(
-            cwd: listWorkingDirectory,
-            cursor: cursor,
-            timeout: _acpResponseTimeout,
-          );
+          late final AcpSessionListResult listResult;
+          try {
+            listResult = await client.listSessions(
+              cwd: listWorkingDirectory,
+              cursor: cursor,
+              timeout: _acpResponseTimeout,
+            );
+          } on AcpProtocolException {
+            hadError = true;
+            break;
+          } on AcpRemoteException {
+            hadError = true;
+            break;
+          }
           for (final sessionInfo in listResult.sessions) {
             final info = ToolSessionInfo(
               toolName: toolName,
@@ -3849,7 +3859,7 @@ print(json.dumps(sessions))
 
       return _AcpSessionListResult(
         sessions: sortAndLimitDiscoveredSessions(sessionsById.values, max),
-        hadError: false,
+        hadError: hadError,
       );
     } finally {
       await client.close();

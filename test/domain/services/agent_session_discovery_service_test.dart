@@ -89,10 +89,12 @@ SSHSession _buildOpenMarkerExecSession({String stdout = ''}) {
 SSHSession _buildAcpSessionListExecSession({
   required List<Map<String, Object?>> sessions,
   bool supportsList = true,
+  bool malformedSecondPage = false,
 }) {
   final session = _MockExecSession();
   final stdoutController = StreamController<Uint8List>();
   final stderrController = StreamController<Uint8List>();
+  var listRequestCount = 0;
 
   void send(Map<String, Object?> payload) {
     stdoutController.add(
@@ -123,10 +125,17 @@ SSHSession _buildAcpSessionListExecSession({
         });
         return;
       case 'session/list':
+        listRequestCount += 1;
         send({
           'jsonrpc': '2.0',
           'id': id,
-          'result': {'sessions': sessions},
+          'result': malformedSecondPage && listRequestCount == 2
+              ? 'malformed'
+              : <String, Object?>{
+                  'sessions': sessions,
+                  if (malformedSecondPage && listRequestCount == 1)
+                    'nextCursor': 'page-2',
+                },
         });
         return;
     }
@@ -1414,6 +1423,59 @@ branch refs/heads/main
         isEmpty,
       );
     });
+
+    test(
+      'ACP discovery preserves earlier pages when a later page is malformed',
+      () async {
+        final client = _MockSshClient();
+        final commands = <String>[];
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          commands.add(command);
+          if (command.contains('worktree list --porcelain')) {
+            return _buildExecSession(
+              stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+            );
+          }
+          if (command.contains('copilot --acp')) {
+            return _buildAcpSessionListExecSession(
+              sessions: const [
+                {
+                  'sessionId': '12345678-1234-1234-1234-1234567890ab',
+                  'cwd': '/Users/depoll/Code/flutty',
+                  'title': 'Preserve partial ACP discovery',
+                  'updatedAt': '2026-05-04T05:48:19.955Z',
+                },
+              ],
+              malformedSecondPage: true,
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final result = await discovery.discoverSessions(
+          _buildDiscoverySession(client),
+          workingDirectory: '/Users/depoll/Code/flutty',
+          toolName: 'Copilot CLI',
+        );
+
+        expect(result.sessions, hasLength(1));
+        expect(
+          result.sessions.single.summary,
+          'Preserve partial ACP discovery',
+        );
+        expect(
+          commands.where((command) => command.contains('workspace.yaml')),
+          isEmpty,
+        );
+      },
+    );
 
     test('OpenCode discovery uses ACP session/list when available', () async {
       final client = _MockSshClient();
