@@ -244,6 +244,37 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     if (existingRequest != null) {
       return existingRequest;
     }
+    return _startWindowListRequest(session, sessionName, key);
+  }
+
+  /// Fetches a new window snapshot without reusing an older in-flight request.
+  ///
+  /// If another list request is running, this waits for it to finish and then
+  /// starts a second query so callers receive state captured after they asked
+  /// for a refresh.
+  Future<List<TmuxWindow>> refreshWindows(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
+    if (isAppReviewDemoSession(session)) {
+      return listWindows(session, sessionName, extraFlags: extraFlags);
+    }
+    final existingRequest = _windowListRequests[key];
+    if (existingRequest != null) {
+      final requestSettled = Completer<void>();
+      existingRequest.whenComplete(requestSettled.complete).ignore();
+      await requestSettled.future;
+    }
+    return _startWindowListRequest(session, sessionName, key);
+  }
+
+  Future<List<TmuxWindow>> _startWindowListRequest(
+    SshSession session,
+    String sessionName,
+    _MonkeyMuxWatchKey key,
+  ) {
     final request = _listWindows(session, sessionName, key);
     _windowListRequests[key] = request;
     request.whenComplete(() {
