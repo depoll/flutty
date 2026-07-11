@@ -327,7 +327,12 @@ bool _portForwardBrowserLaunchIsValid(PortForwardBrowserLaunch launch) =>
     launch.tabs.isNotEmpty &&
     launch.selectedIndex >= 0 &&
     launch.selectedIndex < launch.tabs.length &&
-    launch.tabs.every((tab) => isPortForwardBrowserEntryUri(tab.uri));
+    launch.tabs.every(
+      (tab) =>
+          isPortForwardBrowserEntryUri(tab.uri) &&
+          (tab.sourceUri == null ||
+              isPortForwardBrowserEntryUri(tab.sourceUri!)),
+    );
 
 HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
   'connections' => HomeScreenTab.connections,

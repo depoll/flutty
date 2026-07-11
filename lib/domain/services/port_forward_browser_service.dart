@@ -53,6 +53,32 @@ Uri buildPortForwardBrowserUriForBind({
   port: localPort,
 );
 
+/// Returns a stable localhost origin dedicated to [portForwardId].
+///
+/// Distinct hosts keep WebView cookies scoped to one forwarded service.
+String portForwardBrowserHostForPortForwardId(int portForwardId) =>
+    'monkeyssh-${portForwardId.abs().toRadixString(36)}.localhost';
+
+/// Rewrites a loopback [uri] for one forwarded service's browser-only relay.
+///
+/// Returns null when [uri] does not target [sourceUri].
+Uri? rewriteUriForPortForwardBrowser(
+  Uri uri, {
+  required Uri sourceUri,
+  required Uri browserUri,
+}) {
+  if ((uri.scheme != 'http' && uri.scheme != 'https') ||
+      !isPortForwardBrowserHost(uri.host) ||
+      !_samePortForwardBrowserSourceHost(uri.host, sourceUri.host) ||
+      portForwardBrowserUriPort(uri) != portForwardBrowserUriPort(sourceUri)) {
+    return null;
+  }
+  return uri.replace(
+    host: browserUri.host,
+    port: portForwardBrowserUriPort(browserUri),
+  );
+}
+
 /// Returns whether [uri] should stay inside the embedded browser.
 ///
 /// Only loopback web links whose port is owned by an active local forward are
@@ -85,19 +111,36 @@ bool isPortForwardBrowserHost(String host) {
       normalized == '::1' ||
       normalized == '[::]' ||
       normalized == '[::1]' ||
+      normalized.endsWith('.localhost') ||
       _isLoopbackIpv4Address(normalized);
 }
 
 String _browserHostForBindAddress(String localHost) {
   final host = localHost.trim().toLowerCase();
-  if (host.isEmpty || host == '0.0.0.0' || _isLoopbackIpv4Address(host)) {
+  if (host.isEmpty || host == '0.0.0.0') {
     return '127.0.0.1';
+  }
+  if (_isLoopbackIpv4Address(host)) {
+    return host;
   }
   if (host == '::' || host == '[::]' || host == '::1' || host == '[::1]') {
     return 'localhost';
   }
   return localHost.trim();
 }
+
+bool _samePortForwardBrowserSourceHost(String left, String right) {
+  final normalizedLeft = _browserHostForBindAddress(left);
+  final normalizedRight = _browserHostForBindAddress(right);
+  if (normalizedLeft == normalizedRight) {
+    return true;
+  }
+  return _isDefaultLoopbackBrowserHost(normalizedLeft) &&
+      _isDefaultLoopbackBrowserHost(normalizedRight);
+}
+
+bool _isDefaultLoopbackBrowserHost(String host) =>
+    host == '127.0.0.1' || host == 'localhost';
 
 bool _isLoopbackIpv4Address(String host) {
   final parts = host.split('.');
