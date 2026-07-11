@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.95"
+	monkeyMuxVersion                  = "0.1.96"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -204,21 +204,25 @@ var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
 		return
 	}
-	ptyFile := window.pty
+	generation := window.resizeGeneration.Add(1)
 	temporaryWidth, temporaryHeight, ok := foregroundRedrawTemporarySize(
 		width,
 		height,
 	)
 	if ok {
-		applyPtySize(ptyFile, temporaryWidth, temporaryHeight)
+		window.resizePtyIfCurrent(
+			generation,
+			temporaryWidth,
+			temporaryHeight,
+		)
 		// Leave the PTY at a temporary size long enough for TUIs that ignore
 		// same-size SIGWINCH events to observe a real resize before restoring.
 		time.AfterFunc(foregroundRedrawResizeDelay, func() {
-			applyPtySize(ptyFile, width, height)
+			window.resizePtyIfCurrent(generation, width, height)
 		})
 		return
 	}
-	applyPtySize(ptyFile, width, height)
+	window.resizePtyIfCurrent(generation, width, height)
 }
 
 func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
@@ -234,11 +238,40 @@ func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
 	return width, height, false
 }
 
-func applyPtySize(ptyFile muxPty, width int, height int) {
-	if ptyFile == nil || width <= 0 || height <= 0 {
+func (w *muxWindow) resizePty(width int, height int) {
+	if w == nil || w.pty == nil || width <= 0 || height <= 0 {
 		return
 	}
-	_ = ptyFile.Resize(width, height)
+	w.resizeGeneration.Add(1)
+	w.ptyResizeMu.Lock()
+	_ = w.pty.Resize(width, height)
+	w.ptyResizeMu.Unlock()
+}
+
+func (w *muxWindow) resizePtyIfCurrent(
+	generation uint64,
+	width int,
+	height int,
+) {
+	if w == nil || w.pty == nil || width <= 0 || height <= 0 {
+		return
+	}
+	w.ptyResizeMu.Lock()
+	defer w.ptyResizeMu.Unlock()
+	if w.resizeGeneration.Load() != generation {
+		return
+	}
+	_ = w.pty.Resize(width, height)
+}
+
+func (w *muxWindow) closePty(ptyFile muxPty) error {
+	if w == nil || ptyFile == nil {
+		return nil
+	}
+	w.resizeGeneration.Add(1)
+	w.ptyResizeMu.Lock()
+	defer w.ptyResizeMu.Unlock()
+	return ptyFile.Close()
 }
 
 // restoreRedrawFollowUpDelays are the delays after a restored foreground-redraw
@@ -346,6 +379,7 @@ type controlResponse struct {
 	AttachCount        int              `json:"foregroundClientCount,omitempty"`
 	ImageIDs           []string         `json:"imageIds,omitempty"`
 	ImagesAcknowledged bool             `json:"imagesAcknowledged,omitempty"`
+	FocusChanged       bool             `json:"focusChanged,omitempty"`
 	Restore            *serverRestore   `json:"restore,omitempty"`
 }
 
@@ -399,21 +433,22 @@ type muxServer struct {
 	width   int
 	height  int
 
-	mu                 sync.Mutex
-	resizeMu           sync.Mutex
-	windows            []*muxWindow
-	activeID           string
-	lastActiveID       string
-	nextID             int
-	listener           net.Listener
-	attachConn         net.Conn
-	attachMu           sync.Mutex
-	attachClients      map[net.Conn]*attachClient
-	nextAttachSequence uint64
-	nextFocusSequence  uint64
-	controls           map[*controlClient]struct{}
-	themeHint          []byte
-	closed             bool
+	mu                      sync.Mutex
+	resizeMu                sync.Mutex
+	windows                 []*muxWindow
+	activeID                string
+	lastActiveID            string
+	nextID                  int
+	listener                net.Listener
+	attachConn              net.Conn
+	attachMu                sync.Mutex
+	attachClients           map[net.Conn]*attachClient
+	nextAttachSequence      uint64
+	nextFocusSequence       uint64
+	pendingFocusRefreshConn net.Conn
+	controls                map[*controlClient]struct{}
+	themeHint               []byte
+	closed                  bool
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -426,28 +461,34 @@ type muxServer struct {
 }
 
 type muxWindow struct {
-	id                         string
-	index                      int
-	name                       string
-	cwd                        string
-	command                    string
-	agentTool                  string
-	foregroundPid              int
-	foregroundCommand          string
-	paneTitle                  string
-	pty                        muxPty
-	proc                       muxProcess
-	history                    []byte
-	oscBuffer                  []byte
-	attachOscBuffer            []byte
-	csiBuffer                  []byte
-	terminalBellState          terminalBellParserState
-	terminalBellBytes          int
-	lastActivity               time.Time
-	lastProcessMetadataRefresh time.Time
-	lastBroadcast              time.Time
-	cursorVisible              bool
-	cursorVisibilityKnown      bool
+	id                          string
+	index                       int
+	name                        string
+	cwd                         string
+	command                     string
+	agentTool                   string
+	foregroundPid               int
+	foregroundCommand           string
+	paneTitle                   string
+	pty                         muxPty
+	ptyResizeMu                 sync.Mutex
+	resizeGeneration            atomic.Uint64
+	proc                        muxProcess
+	history                     []byte
+	oscBuffer                   []byte
+	attachOscBuffer             []byte
+	csiBuffer                   []byte
+	terminalBellState           terminalBellParserState
+	terminalBellBytes           int
+	terminalOutputState         terminalOutputParserState
+	terminalOutputBytes         int
+	terminalOutputUtf8Remaining int
+	lastActivity                time.Time
+	outputGeneration            uint64
+	lastProcessMetadataRefresh  time.Time
+	lastBroadcast               time.Time
+	cursorVisible               bool
+	cursorVisibilityKnown       bool
 	// win32InputMode mirrors DEC private mode 9001, which ConPTY (conhost)
 	// enables at startup on Windows to request that terminal input — including
 	// escape-sequence replies — be delivered as win32-input-mode key events.
@@ -523,6 +564,19 @@ const (
 	terminalBellParserStringEscape
 )
 
+type terminalOutputParserState int
+
+const (
+	terminalOutputParserGround terminalOutputParserState = iota
+	terminalOutputParserEscape
+	terminalOutputParserEscapeIntermediate
+	terminalOutputParserCsi
+	terminalOutputParserOsc
+	terminalOutputParserOscEscape
+	terminalOutputParserString
+	terminalOutputParserStringEscape
+)
+
 type windowBroadcastIdentity struct {
 	name      string
 	cwd       string
@@ -542,6 +596,11 @@ type controlClient struct {
 	commandsMu sync.Mutex
 	commands   map[string]context.CancelFunc
 	closed     bool
+}
+
+type attachFocusResult struct {
+	focused        bool
+	primaryChanged bool
 }
 
 type attachWrite struct {
@@ -570,6 +629,9 @@ type attachClient struct {
 	focusInputGeneration               uint64
 	focusSequenceSnapshot              func() uint64
 	focusClaim                         func(uint64)
+	replayMu                           sync.Mutex
+	replayedWindowID                   string
+	replayedOutputGeneration           uint64
 
 	queue       chan attachWrite
 	done        chan struct{}
@@ -3548,6 +3610,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		s.lastActiveID = s.activeID
 	}
 	s.activeID = window.id
+	s.pendingFocusRefreshConn = nil
 	// Seed the Kitty image cache from any restored history so an image shown
 	// before a server restart can still be replayed on the next reattach.
 	if window.observeKittyGraphicsLocked(window.history) {
@@ -3612,8 +3675,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var themeHint []byte
 	var themeHintData []byte
 	var shouldWrite bool
+	var refreshPendingFocus bool
 	var snapshot *windowSnapshot
 	var maxAttachSequence uint64
+	var outputGeneration uint64
 	now := time.Now()
 
 	s.mu.Lock()
@@ -3632,11 +3697,14 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.observeTerminalModesLocked(chunk)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
 	terminalBell := window.observeTerminalBellLocked(chunk)
+	window.observeTerminalOutputStateLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
 		themeHint = append([]byte(nil), s.themeHint...)
 		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
 	}
 	window.appendHistoryLocked(chunk)
+	window.outputGeneration++
+	outputGeneration = window.outputGeneration
 	if window.observeKittyGraphicsLocked(chunk) {
 		s.enforceGlobalKittyImageBudgetLocked()
 	}
@@ -3715,6 +3783,13 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		} else {
 			window.secondaryQueryPrimary = nil
 		}
+		refreshPendingFocus =
+			s.pendingFocusRefreshConn != nil &&
+				s.pendingFocusRefreshConn == s.attachConn &&
+				len(window.secondaryQueryCarry) == 0 &&
+				window.queryUtf8Remaining == 0 &&
+				window.terminalOutputIsGroundLocked() &&
+				!window.redrawForwardingPaused
 		if len(forwarded) > 0 && window.redrawForwardingPaused {
 			window.redrawForwardingBuffer = append(
 				window.redrawForwardingBuffer,
@@ -3754,6 +3829,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 				secondaryForwarded,
 				terminalQueries,
 				maxAttachSequence,
+				outputGeneration,
 			)
 		}
 	}
@@ -3764,6 +3840,9 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 			Session: s.session,
 			Window:  snapshot,
 		})
+	}
+	if refreshPendingFocus {
+		s.refreshPendingFocusedClient()
 	}
 }
 
@@ -3797,6 +3876,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	s.reindexWindowsLocked()
 	if s.activeID == windowID {
 		s.activeID = ""
+		s.pendingFocusRefreshConn = nil
 		for _, candidate := range s.windows {
 			if !candidate.closed {
 				s.activeID = candidate.id
@@ -3822,7 +3902,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	// blocks until readWindow drains the final ConPTY output (which needs s.mu),
 	// so it must happen after unlocking.
 	if windowPty != nil {
-		_ = windowPty.Close()
+		_ = window.closePty(windowPty)
 	}
 
 	s.broadcast(controlResponse{
@@ -4003,6 +4083,40 @@ func (c *attachClient) close() {
 		close(c.done)
 		_ = c.conn.Close()
 	})
+}
+
+func (c *attachClient) markOutputReplay(windowID string, generation uint64) {
+	c.replayMu.Lock()
+	c.replayedWindowID = windowID
+	c.replayedOutputGeneration = generation
+	c.replayMu.Unlock()
+}
+
+func (c *attachClient) clearOutputReplay() {
+	c.replayMu.Lock()
+	c.replayedWindowID = ""
+	c.replayedOutputGeneration = 0
+	c.replayMu.Unlock()
+}
+
+func (c *attachClient) suppressesReplayedOutput(
+	windowID string,
+	generation uint64,
+) bool {
+	if generation == 0 {
+		return false
+	}
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	if c.replayedWindowID != windowID {
+		return false
+	}
+	if generation <= c.replayedOutputGeneration {
+		return true
+	}
+	c.replayedWindowID = ""
+	c.replayedOutputGeneration = 0
+	return false
 }
 
 func (c *attachClient) expectTerminalResponse() {
@@ -4200,7 +4314,7 @@ func (s *muxServer) attachCountLocked() int {
 }
 
 func (s *muxServer) promoteAttachClient(client *attachClient) {
-	s.focusAttachClient(client, 0, 0, false)
+	s.focusAttachClient(client, 0, 0, true)
 }
 
 func (s *muxServer) focusSequenceSnapshot() uint64 {
@@ -4228,15 +4342,23 @@ func (s *muxServer) focusAttachClientIfUnchanged(
 		s.mu.Unlock()
 		return false
 	}
+	primaryChanged := s.attachConn != registered.conn
+	if primaryChanged {
+		s.pendingFocusRefreshConn = nil
+	}
 	s.nextFocusSequence++
 	registered.focusSequence.Store(s.nextFocusSequence)
 	s.attachConn = registered.conn
 	targetWidth, targetHeight := s.primaryAttachSizeLocked()
 	sizeChanged := targetWidth != s.width || targetHeight != s.height
 	s.mu.Unlock()
-	if sizeChanged {
-		s.resizeWithRedraw(targetWidth, targetHeight, false)
-	}
+	s.applyFocusedClientViewport(
+		registered,
+		targetWidth,
+		targetHeight,
+		sizeChanged,
+		primaryChanged,
+	)
 	return true
 }
 
@@ -4246,6 +4368,20 @@ func (s *muxServer) focusAttachClientByID(
 	height int,
 	forceRedraw bool,
 ) bool {
+	return s.focusAttachClientByIDWithResult(
+		clientID,
+		width,
+		height,
+		forceRedraw,
+	).focused
+}
+
+func (s *muxServer) focusAttachClientByIDWithResult(
+	clientID string,
+	width int,
+	height int,
+	forceRedraw bool,
+) attachFocusResult {
 	s.resizeMu.Lock()
 	defer s.resizeMu.Unlock()
 	s.mu.Lock()
@@ -4262,7 +4398,12 @@ func (s *muxServer) focusAttachClient(
 ) bool {
 	s.resizeMu.Lock()
 	defer s.resizeMu.Unlock()
-	return s.focusAttachClientLocked(client, width, height, forceRedraw)
+	return s.focusAttachClientLocked(
+		client,
+		width,
+		height,
+		forceRedraw,
+	).focused
 }
 
 func (s *muxServer) focusAttachClientLocked(
@@ -4270,15 +4411,15 @@ func (s *muxServer) focusAttachClientLocked(
 	width int,
 	height int,
 	forceRedraw bool,
-) bool {
+) attachFocusResult {
 	if client == nil {
-		return false
+		return attachFocusResult{}
 	}
 	s.mu.Lock()
 	registered := s.attachClients[client.conn]
 	if registered == nil {
 		s.mu.Unlock()
-		return false
+		return attachFocusResult{}
 	}
 	if width > 0 {
 		registered.width = width
@@ -4286,16 +4427,63 @@ func (s *muxServer) focusAttachClientLocked(
 	if height > 0 {
 		registered.height = height
 	}
+	primaryChanged := s.attachConn != registered.conn
+	if primaryChanged {
+		s.pendingFocusRefreshConn = nil
+	}
 	s.nextFocusSequence++
 	registered.focusSequence.Store(s.nextFocusSequence)
 	s.attachConn = registered.conn
 	targetWidth, targetHeight := s.primaryAttachSizeLocked()
 	sizeChanged := targetWidth != s.width || targetHeight != s.height
 	s.mu.Unlock()
-	if sizeChanged || forceRedraw {
-		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw)
+	s.applyFocusedClientViewport(
+		registered,
+		targetWidth,
+		targetHeight,
+		sizeChanged,
+		primaryChanged && forceRedraw,
+	)
+	return attachFocusResult{
+		focused:        true,
+		primaryChanged: primaryChanged,
 	}
-	return true
+}
+
+func (s *muxServer) applyFocusedClientViewport(
+	client *attachClient,
+	width int,
+	height int,
+	sizeChanged bool,
+	refreshOnHandoff bool,
+) {
+	if refreshOnHandoff {
+		s.replayFocusedWindowToClient(client, width, height)
+		return
+	}
+	if sizeChanged {
+		s.resizeWithRedraw(width, height, false)
+	}
+}
+
+func (s *muxServer) refreshPendingFocusedClient() {
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
+	s.mu.Lock()
+	conn := s.pendingFocusRefreshConn
+	if conn == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.pendingFocusRefreshConn = nil
+	client := s.attachClients[conn]
+	if client == nil || s.attachConn != conn {
+		s.mu.Unlock()
+		return
+	}
+	width, height := s.primaryAttachSizeLocked()
+	s.mu.Unlock()
+	s.replayFocusedWindowToClient(client, width, height)
 }
 
 func (s *muxServer) removeAttachClient(client *attachClient) {
@@ -4314,6 +4502,9 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 		return
 	}
 	delete(s.attachClients, client.conn)
+	if s.pendingFocusRefreshConn == client.conn {
+		s.pendingFocusRefreshConn = nil
+	}
 	if s.attachConn == client.conn {
 		s.attachConn = nil
 		var replacement *attachClient
@@ -4366,6 +4557,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	client.focusSequence.Store(s.nextFocusSequence)
 	s.attachClients[conn] = client
 	s.attachConn = conn
+	s.pendingFocusRefreshConn = nil
 	if themeHint := themeHintDataFromString(hello.Data); len(themeHint) > 0 {
 		s.themeHint = append(s.themeHint[:0], themeHint...)
 	}
@@ -4584,19 +4776,21 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("invalid terminal size"))
 			return
 		}
-		if !s.focusAttachClientByID(
+		result := s.focusAttachClientByIDWithResult(
 			request.ClientID,
 			request.Width,
 			request.Height,
 			request.Redraw,
-		) {
+		)
+		if !result.focused {
 			client.sendError(request, errors.New("foreground client is not attached"))
 			return
 		}
 		client.send(controlResponse{
-			ID:     request.ID,
-			Type:   "client_focused",
-			Status: "ok",
+			ID:           request.ID,
+			Type:         "client_focused",
+			Status:       "ok",
+			FocusChanged: result.primaryChanged,
 		})
 	case "query_active_context":
 		s.mu.Lock()
@@ -5104,6 +5298,7 @@ func (s *muxServer) selectWindowWithSkip(
 	if s.activeID != windowID {
 		s.lastActiveID = s.activeID
 		s.activeID = windowID
+		s.pendingFocusRefreshConn = nil
 	}
 	window.alert = false
 	s.resizeActiveLocked(s.width, s.height)
@@ -5155,6 +5350,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 		replacement := s.replacementWindowForClosedLocked(window)
 		if replacement != nil {
 			s.activeID = replacement.id
+			s.pendingFocusRefreshConn = nil
 			replacement.alert = false
 			s.resizeActiveLocked(s.width, s.height)
 			replay = s.replayBytesLocked(replacement)
@@ -5163,6 +5359,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			activeChanged = true
 		} else {
 			s.activeID = ""
+			s.pendingFocusRefreshConn = nil
 		}
 	}
 	window.closed = true
@@ -5205,7 +5402,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 		process.Hangup()
 	}
 	if windowPty != nil {
-		_ = windowPty.Close()
+		_ = window.closePty(windowPty)
 	}
 	return shouldShutdown, nil
 }
@@ -5301,7 +5498,7 @@ func (s *muxServer) resizeWindowLocked(window *muxWindow, width int, height int)
 	if window == nil || window.closed || window.pty == nil {
 		return
 	}
-	_ = window.pty.Resize(width, height)
+	window.resizePty(width, height)
 }
 
 func (s *muxServer) writeAttachReplayAndResizeLocked(
@@ -5439,6 +5636,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 	var primaryNeedsFailover bool
 	var clients []*attachClient
 	var legacy net.Conn
+	var refreshPendingFocus bool
 	s.attachMu.Lock()
 	defer s.attachMu.Unlock()
 	s.mu.Lock()
@@ -5476,6 +5674,12 @@ func (s *muxServer) resumePausedAttachForwarding(
 	window.redrawForwardingPrimaryConn = nil
 	window.redrawForwardingPrimaryNeedsFailover = false
 	window.redrawForwardingPaused = false
+	refreshPendingFocus =
+		s.pendingFocusRefreshConn != nil &&
+			s.pendingFocusRefreshConn == s.attachConn &&
+			len(window.secondaryQueryCarry) == 0 &&
+			window.queryUtf8Remaining == 0 &&
+			window.terminalOutputIsGroundLocked()
 	if s.activeID == windowID {
 		clients = make([]*attachClient, 0, len(s.attachClients))
 		for _, client := range s.attachClients {
@@ -5546,6 +5750,9 @@ func (s *muxServer) resumePausedAttachForwarding(
 		} else {
 			deliveredPrimary.expectTerminalResponse()
 		}
+		if refreshPendingFocus {
+			go s.refreshPendingFocusedClient()
+		}
 		return
 	}
 	if primaryClient != nil {
@@ -5575,6 +5782,9 @@ func (s *muxServer) resumePausedAttachForwarding(
 			continue
 		}
 		_, _ = client.enqueue(secondaryOutput, false)
+	}
+	if refreshPendingFocus {
+		go s.refreshPendingFocusedClient()
 	}
 }
 
@@ -5948,6 +6158,7 @@ func (s *muxServer) writeAttachOutputIfActive(
 	secondaryData []byte,
 	queryData []byte,
 	maxAttachSequence uint64,
+	outputGeneration uint64,
 ) {
 	if len(primaryData) == 0 {
 		return
@@ -5989,6 +6200,9 @@ func (s *muxServer) writeAttachOutputIfActive(
 			if client == nil {
 				return false
 			}
+			if client.suppressesReplayedOutput(windowID, outputGeneration) {
+				data = queryData
+			}
 			completion, queued := client.enqueueTerminalQuery(data, true)
 			return queued && client.waitForWrite(completion)
 		}
@@ -6022,7 +6236,9 @@ func (s *muxServer) writeAttachOutputIfActive(
 			}
 		}
 		for _, client := range clients {
-			if client == deliveredPrimary || len(secondaryData) == 0 {
+			if client == deliveredPrimary ||
+				len(secondaryData) == 0 ||
+				client.suppressesReplayedOutput(windowID, outputGeneration) {
 				continue
 			}
 			_, _ = client.enqueue(secondaryData, false)
@@ -6040,9 +6256,13 @@ func (s *muxServer) writeAttachOutputIfActive(
 		return
 	}
 	if primaryClient != nil {
-		_, queued := primaryClient.enqueue(primaryData, false)
-		if queued {
+		if primaryClient.suppressesReplayedOutput(windowID, outputGeneration) {
 			deliveredPrimary = primaryClient
+		} else {
+			_, queued := primaryClient.enqueue(primaryData, false)
+			if queued {
+				deliveredPrimary = primaryClient
+			}
 		}
 	}
 	if deliveredPrimary == nil {
@@ -6058,6 +6278,10 @@ func (s *muxServer) writeAttachOutputIfActive(
 			if client == primaryClient {
 				continue
 			}
+			if client.suppressesReplayedOutput(windowID, outputGeneration) {
+				deliveredPrimary = client
+				break
+			}
 			_, queued := client.enqueue(failoverPrimaryData, false)
 			if queued {
 				deliveredPrimary = client
@@ -6066,7 +6290,9 @@ func (s *muxServer) writeAttachOutputIfActive(
 		}
 	}
 	for _, client := range clients {
-		if client == deliveredPrimary || len(secondaryData) == 0 {
+		if client == deliveredPrimary ||
+			len(secondaryData) == 0 ||
+			client.suppressesReplayedOutput(windowID, outputGeneration) {
 			continue
 		}
 		_, _ = client.enqueue(secondaryData, false)
@@ -6082,6 +6308,7 @@ func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []b
 		data,
 		nil,
 		^uint64(0),
+		0,
 	)
 }
 
@@ -6539,6 +6766,70 @@ func (s *muxServer) replayActiveWindowToClient(client *attachClient) {
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
+}
+
+func (s *muxServer) replayFocusedWindowToClient(
+	client *attachClient,
+	width int,
+	height int,
+) bool {
+	if client == nil {
+		return false
+	}
+	var foregroundProcessGroup int
+	var windowID string
+	var window *muxWindow
+	var replay []byte
+	s.attachMu.Lock()
+	s.mu.Lock()
+	if s.attachConn != client.conn ||
+		s.attachClients[client.conn] != client {
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return false
+	}
+	window = s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		s.pendingFocusRefreshConn = nil
+		s.width = width
+		s.height = height
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return false
+	}
+	if window.redrawForwardingPaused ||
+		len(window.secondaryQueryCarry) > 0 ||
+		window.queryUtf8Remaining != 0 ||
+		!window.terminalOutputIsGroundLocked() {
+		s.pendingFocusRefreshConn = client.conn
+		s.width = width
+		s.height = height
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return false
+	}
+	s.pendingFocusRefreshConn = nil
+	s.width = width
+	s.height = height
+	s.resizeActiveLocked(width, height)
+	windowID = window.id
+	replay = s.replayBytesLocked(window)
+	foregroundProcessGroup = window.foregroundProcessGroupLocked()
+	client.markOutputReplay(windowID, window.outputGeneration)
+	_, queued := client.enqueue(replay, false)
+	s.mu.Unlock()
+	if !queued {
+		client.clearOutputReplay()
+		s.attachMu.Unlock()
+		return false
+	}
+	redrew := s.simulateForegroundResizeIfAttached(client.conn, window)
+	s.flushPendingTerminalQueriesLocked(client.conn, windowID)
+	s.attachMu.Unlock()
+	if redrew {
+		signalForegroundResize(foregroundProcessGroup)
+	}
+	return true
 }
 
 func (s *muxServer) ringAttachBell(client *attachClient) {
@@ -7013,6 +7304,115 @@ func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
 func (w *muxWindow) resetTerminalBellParserLocked() {
 	w.terminalBellState = terminalBellParserGround
 	w.terminalBellBytes = 0
+}
+
+func (w *muxWindow) observeTerminalOutputStateLocked(data []byte) {
+	for _, value := range data {
+		if w.terminalOutputUtf8Remaining > 0 {
+			if value&0xc0 == 0x80 {
+				w.terminalOutputUtf8Remaining--
+				continue
+			}
+			w.terminalOutputUtf8Remaining = 0
+		}
+		if remaining := utf8ContinuationCount(value); remaining > 0 {
+			w.terminalOutputUtf8Remaining = remaining
+			continue
+		}
+		switch w.terminalOutputState {
+		case terminalOutputParserGround:
+			switch value {
+			case '\x1b':
+				w.terminalOutputState = terminalOutputParserEscape
+			case 0x90, 0x98, 0x9e, 0x9f:
+				w.terminalOutputState = terminalOutputParserString
+			case 0x9b:
+				w.terminalOutputState = terminalOutputParserCsi
+			case 0x9d:
+				w.terminalOutputState = terminalOutputParserOsc
+			}
+		case terminalOutputParserEscape:
+			switch {
+			case value == '\x1b':
+				w.terminalOutputState = terminalOutputParserEscape
+			case value == '[':
+				w.terminalOutputState = terminalOutputParserCsi
+			case value == ']':
+				w.terminalOutputState = terminalOutputParserOsc
+			case value == 'P' || value == 'X' || value == '^' || value == '_':
+				w.terminalOutputState = terminalOutputParserString
+			case value >= 0x20 && value <= 0x2f:
+				w.terminalOutputState = terminalOutputParserEscapeIntermediate
+			default:
+				w.resetTerminalOutputParserLocked()
+			}
+		case terminalOutputParserEscapeIntermediate:
+			switch {
+			case value == '\x1b':
+				w.terminalOutputState = terminalOutputParserEscape
+			case value >= 0x20 && value <= 0x2f:
+			case value >= 0x30 && value <= 0x7e:
+				w.resetTerminalOutputParserLocked()
+			default:
+				w.resetTerminalOutputParserLocked()
+			}
+		case terminalOutputParserCsi:
+			switch {
+			case value == '\x1b':
+				w.terminalOutputState = terminalOutputParserEscape
+			case value >= 0x40 && value <= 0x7e:
+				w.resetTerminalOutputParserLocked()
+			}
+		case terminalOutputParserOsc:
+			switch value {
+			case '\a', 0x9c:
+				w.resetTerminalOutputParserLocked()
+			case '\x1b':
+				w.terminalOutputState = terminalOutputParserOscEscape
+			}
+		case terminalOutputParserOscEscape:
+			switch value {
+			case '\\', '\a', 0x9c:
+				w.resetTerminalOutputParserLocked()
+			case '\x1b':
+				w.terminalOutputState = terminalOutputParserOscEscape
+			default:
+				w.terminalOutputState = terminalOutputParserOsc
+			}
+		case terminalOutputParserString:
+			switch value {
+			case 0x9c:
+				w.resetTerminalOutputParserLocked()
+			case '\x1b':
+				w.terminalOutputState = terminalOutputParserStringEscape
+			}
+		case terminalOutputParserStringEscape:
+			switch value {
+			case '\\', 0x9c:
+				w.resetTerminalOutputParserLocked()
+			case '\x1b':
+				w.terminalOutputState = terminalOutputParserStringEscape
+			default:
+				w.terminalOutputState = terminalOutputParserString
+			}
+		}
+		if w.terminalOutputState != terminalOutputParserGround {
+			w.terminalOutputBytes++
+			if w.terminalOutputBytes > maxKittyGraphicsPendingBytes {
+				w.resetTerminalOutputParserLocked()
+			}
+		}
+	}
+}
+
+func (w *muxWindow) resetTerminalOutputParserLocked() {
+	w.terminalOutputState = terminalOutputParserGround
+	w.terminalOutputBytes = 0
+}
+
+func (w *muxWindow) terminalOutputIsGroundLocked() bool {
+	return w.terminalOutputState == terminalOutputParserGround &&
+		w.terminalOutputUtf8Remaining == 0
 }
 
 // stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
@@ -9558,7 +9958,7 @@ func (s *muxServer) close() {
 			window.proc.Hangup()
 		}
 		if window.pty != nil {
-			_ = window.pty.Close()
+			_ = window.closePty(window.pty)
 		}
 	}
 }

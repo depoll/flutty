@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/creack/pty"
@@ -20,21 +21,44 @@ import (
 
 // unixPty wraps a POSIX pseudo-terminal master file.
 type unixPty struct {
-	file *os.File
+	file   *os.File
+	mu     sync.Mutex
+	closed bool
 }
 
 func (p *unixPty) Read(b []byte) (int, error)  { return p.file.Read(b) }
 func (p *unixPty) Write(b []byte) (int, error) { return p.file.Write(b) }
-func (p *unixPty) Close() error                { return p.file.Close() }
+
+func (p *unixPty) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	p.closed = true
+	return p.file.Close()
+}
 
 func (p *unixPty) Resize(cols int, rows int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return os.ErrClosed
+	}
 	return pty.Setsize(p.file, &pty.Winsize{
 		Rows: uint16(rows),
 		Cols: uint16(cols),
 	})
 }
 
-func (p *unixPty) Fd() uintptr { return p.file.Fd() }
+func (p *unixPty) Fd() uintptr {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return 0
+	}
+	return p.file.Fd()
+}
 
 // unixProcess wraps the child process attached to a pty master.
 type unixProcess struct {

@@ -39,11 +39,12 @@ func openTestPty(t *testing.T) muxPty {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wrapped := &unixPty{file: ptmx}
 	t.Cleanup(func() {
-		_ = ptmx.Close()
+		_ = wrapped.Close()
 		_ = tty.Close()
 	})
-	return &unixPty{file: ptmx}
+	return wrapped
 }
 
 // wrapPty adapts a raw *os.File (typically an os.Pipe writer) to the muxPty
@@ -672,11 +673,20 @@ func TestSecondaryAttachQueryFilterCarriesSplitQueries(t *testing.T) {
 	registerTestAttachClient(t, server, primaryConn, "primary", 80, 24)
 
 	server.handleWindowOutput("@1", []byte("left\x1b[>"))
+	waitForRecordedOutput(t, primaryConn, "left\x1b[>")
+	waitForRecordedOutput(t, secondaryConn, "left")
+	secondaryConn.Reset()
 	server.promoteAttachClient(secondary)
 	server.handleWindowOutput("@1", []byte("qright"))
 
 	waitForRecordedOutput(t, primaryConn, "left\x1b[>qright")
-	waitForRecordedOutput(t, secondaryConn, "leftright")
+	waitForRecordedContains(t, secondaryConn, activeWindowReplayPrefix)
+	if strings.Contains(secondaryConn.String(), "\x1b[>q") {
+		t.Fatalf(
+			"secondary client received split terminal query: %q",
+			secondaryConn.String(),
+		)
+	}
 }
 
 func TestTerminalQueryDeliveryFailsOverFromClosedPrimary(t *testing.T) {
@@ -851,6 +861,7 @@ func TestWindowOutputSkipsClientsThatJoinedAfterObservation(t *testing.T) {
 		[]byte("once"),
 		nil,
 		observedSequence,
+		0,
 	)
 
 	waitForRecordedOutput(t, firstConn, "once")
@@ -886,6 +897,7 @@ func TestTerminalQueryRetryCanUseClientThatJoinedAfterObservation(t *testing.T) 
 		nil,
 		[]byte("\x1b[c"),
 		observedSequence,
+		0,
 	)
 
 	waitForRecordedOutput(t, joiningConn, "\x1b[c")
@@ -1186,6 +1198,526 @@ func TestFocusClientControlPromotesAndResizesClient(t *testing.T) {
 			width,
 			height,
 		)
+	}
+}
+
+func TestFocusClientResultReportsOnlyPrimaryChange(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"first",
+		132,
+		43,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"second",
+		80,
+		24,
+	)
+
+	first := server.focusAttachClientByIDWithResult("first", 132, 43, true)
+	second := server.focusAttachClientByIDWithResult("first", 132, 43, true)
+
+	if !first.focused || !first.primaryChanged {
+		t.Fatalf("first focus result = %#v, want changed focus", first)
+	}
+	if !second.focused || second.primaryChanged {
+		t.Fatalf("second focus result = %#v, want unchanged focus", second)
+	}
+}
+
+func TestClientFocusHandoffImmediatelyReplaysAndRedrawsWindow(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("stale desktop layout"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	focusedConn := &recordingConn{}
+	focused := registerTestAttachClient(
+		t,
+		server,
+		focusedConn,
+		"phone",
+		72,
+		28,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"desktop",
+		160,
+		50,
+	)
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+	) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+
+	server.promoteAttachClient(focused)
+
+	waitForRecordedOutput(
+		t,
+		focusedConn,
+		replayPrefixForTest(window)+replayPostHistorySuffixForTest(true),
+	)
+	if strings.Contains(focusedConn.String(), "stale desktop layout") {
+		t.Fatalf(
+			"focus replay retained stale TUI layout: %q",
+			focusedConn.String(),
+		)
+	}
+	if !reflect.DeepEqual(simulated, []string{"@1:72x28"}) {
+		t.Fatalf("focus redraws = %#v, want [@1:72x28]", simulated)
+	}
+	server.mu.Lock()
+	width, height := server.width, server.height
+	server.mu.Unlock()
+	if width != 72 || height != 28 {
+		t.Fatalf("focused PTY size = %dx%d, want 72x28", width, height)
+	}
+
+	focusedConn.Reset()
+	simulated = nil
+	server.promoteAttachClient(focused)
+	time.Sleep(10 * time.Millisecond)
+	if got := focusedConn.String(); got != "" {
+		t.Fatalf("already-focused client replayed again: %q", got)
+	}
+	if len(simulated) != 0 {
+		t.Fatalf("already-focused client redrew again: %#v", simulated)
+	}
+}
+
+func TestClientFocusReplaySuppressesAlreadyReplayedShellOutput(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	window := &muxWindow{
+		id:               "@1",
+		index:            0,
+		history:          []byte("prompt\nnew output"),
+		outputGeneration: 1,
+		lastActivity:     time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	secondaryConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		secondaryConn,
+		"desktop",
+		120,
+		40,
+	)
+	focusedConn := &recordingConn{}
+	focused := registerTestAttachClient(
+		t,
+		server,
+		focusedConn,
+		"phone",
+		72,
+		28,
+	)
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.replayFocusedWindowToClient(focused, 72, 28)
+	wantReplay := replayPrefixForTest(window) +
+		"prompt\nnew output" +
+		replayPostHistorySuffixForTest(true)
+	waitForRecordedOutput(t, focusedConn, wantReplay)
+
+	server.writeAttachOutputIfActive(
+		"@1",
+		focused.conn,
+		[]byte("new output"),
+		[]byte("new output"),
+		[]byte("new output"),
+		nil,
+		^uint64(0),
+		1,
+	)
+
+	time.Sleep(10 * time.Millisecond)
+	if got := focusedConn.String(); got != wantReplay {
+		t.Fatalf("focused client duplicated replayed output: %q", got)
+	}
+	waitForRecordedOutput(t, secondaryConn, "new output")
+
+	server.writeAttachOutputIfActive(
+		"@1",
+		focused.conn,
+		[]byte("next"),
+		[]byte("next"),
+		[]byte("next"),
+		nil,
+		^uint64(0),
+		2,
+	)
+	waitForRecordedOutput(t, focusedConn, wantReplay+"next")
+	waitForRecordedOutput(t, secondaryConn, "new outputnext")
+}
+
+func TestClientFocusReplayStillDeliversReplayedTerminalQuery(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	query := []byte("\x1b[c")
+	window := &muxWindow{
+		id:               "@1",
+		index:            0,
+		history:          append([]byte("prompt"), query...),
+		outputGeneration: 1,
+		lastActivity:     time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	focusedConn := &recordingConn{}
+	focused := registerTestAttachClient(
+		t,
+		server,
+		focusedConn,
+		"phone",
+		72,
+		28,
+	)
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.replayFocusedWindowToClient(focused, 72, 28)
+	wantReplay := replayPrefixForTest(window) +
+		"prompt" +
+		replayPostHistorySuffixForTest(true)
+	waitForRecordedOutput(t, focusedConn, wantReplay)
+
+	server.writeAttachOutputIfActive(
+		"@1",
+		focused.conn,
+		query,
+		query,
+		nil,
+		query,
+		^uint64(0),
+		1,
+	)
+
+	waitForRecordedOutput(t, focusedConn, wantReplay+string(query))
+}
+
+func TestClientFocusHandoffDefersReplayUntilSplitQueryCompletes(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	focusedConn := &recordingConn{}
+	focused := registerTestAttachClient(
+		t,
+		server,
+		focusedConn,
+		"phone",
+		72,
+		28,
+	)
+	primaryConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		primaryConn,
+		"desktop",
+		120,
+		40,
+	)
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.handleWindowOutput("@1", []byte("left\x1b[>"))
+	waitForRecordedOutput(t, focusedConn, "left")
+	focusedConn.Reset()
+	server.promoteAttachClient(focused)
+	time.Sleep(10 * time.Millisecond)
+	if got := focusedConn.String(); got != "" {
+		t.Fatalf("focus replay ran during split query: %q", got)
+	}
+	server.mu.Lock()
+	pending := server.pendingFocusRefreshConn
+	server.mu.Unlock()
+	if pending != focused.conn {
+		t.Fatal("focused refresh was not deferred to the phone client")
+	}
+
+	server.handleWindowOutput("@1", []byte("qright"))
+
+	waitForRecordedContains(t, focusedConn, activeWindowReplayPrefix)
+	if strings.Contains(focusedConn.String(), "\x1b[>q") {
+		t.Fatalf(
+			"deferred focus replay leaked terminal query: %q",
+			focusedConn.String(),
+		)
+	}
+	if !strings.Contains(primaryConn.String(), "\x1b[>q") {
+		t.Fatalf(
+			"original query recipient did not receive complete query: %q",
+			primaryConn.String(),
+		)
+	}
+}
+
+func TestDeferredFocusUsesPrimarySizeForWindowSwitch(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	nextPty := openTestPty(t)
+	setPtySize(t, nextPty, 120, 40)
+	first := &muxWindow{
+		id:                  "@1",
+		index:               0,
+		secondaryQueryCarry: []byte("\x1b[>"),
+		lastActivity:        time.Now(),
+	}
+	next := &muxWindow{
+		id:           "@2",
+		index:        1,
+		pty:          nextPty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{first, next}
+	server.activeID = "@1"
+	phone := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"phone",
+		72,
+		28,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"desktop",
+		120,
+		40,
+	)
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.promoteAttachClient(phone)
+	server.mu.Lock()
+	width, height := server.width, server.height
+	pending := server.pendingFocusRefreshConn
+	server.mu.Unlock()
+	if width != 72 || height != 28 || pending != phone.conn {
+		t.Fatalf(
+			"deferred viewport = %dx%d pending %v, want 72x28 pending phone",
+			width,
+			height,
+			pending,
+		)
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertPtySizeEventually(t, nextPty, 72, 28)
+	server.mu.Lock()
+	pending = server.pendingFocusRefreshConn
+	server.mu.Unlock()
+	if pending != nil {
+		t.Fatal("window switch did not consume deferred focused refresh")
+	}
+}
+
+func TestClientFocusHandoffDefersReplayUntilUtf8Completes(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	window := &muxWindow{
+		id:                 "@1",
+		index:              0,
+		agentTool:          "copilot",
+		queryUtf8Remaining: 1,
+		lastActivity:       time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	focusedConn := &recordingConn{}
+	focused := registerTestAttachClient(
+		t,
+		server,
+		focusedConn,
+		"phone",
+		72,
+		28,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"desktop",
+		120,
+		40,
+	)
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.promoteAttachClient(focused)
+	time.Sleep(10 * time.Millisecond)
+	if got := focusedConn.String(); got != "" {
+		t.Fatalf("focus replay split UTF-8 output: %q", got)
+	}
+
+	server.handleWindowOutput("@1", []byte{0x9b, 'x'})
+
+	waitForRecordedContains(t, focusedConn, activeWindowReplayPrefix)
+}
+
+func TestClientFocusHandoffDefersReplayUntilEscapeSequenceCompletes(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	focusedConn := &recordingConn{}
+	focused := registerTestAttachClient(
+		t,
+		server,
+		focusedConn,
+		"phone",
+		72,
+		28,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"desktop",
+		120,
+		40,
+	)
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.handleWindowOutput("@1", []byte("\x1b("))
+	waitForRecordedOutput(t, focusedConn, "\x1b(")
+	focusedConn.Reset()
+	server.promoteAttachClient(focused)
+	time.Sleep(10 * time.Millisecond)
+	if got := focusedConn.String(); got != "" {
+		t.Fatalf("focus replay split ESC intermediate sequence: %q", got)
+	}
+
+	server.handleWindowOutput("@1", []byte("B"))
+
+	waitForRecordedContains(t, focusedConn, activeWindowReplayPrefix)
+}
+
+func TestTerminalOutputGroundStateTracksSplitSequences(t *testing.T) {
+	window := &muxWindow{}
+	window.observeTerminalOutputStateLocked([]byte("\x1b("))
+	if window.terminalOutputIsGroundLocked() {
+		t.Fatal("ESC intermediate sequence incorrectly reported ground")
+	}
+	window.observeTerminalOutputStateLocked([]byte("B"))
+	if !window.terminalOutputIsGroundLocked() {
+		t.Fatal("completed ESC intermediate sequence did not return to ground")
+	}
+
+	window.observeTerminalOutputStateLocked([]byte("\x1b[31"))
+	if window.terminalOutputIsGroundLocked() {
+		t.Fatal("split CSI sequence incorrectly reported ground")
+	}
+	window.observeTerminalOutputStateLocked([]byte("m"))
+	if !window.terminalOutputIsGroundLocked() {
+		t.Fatal("completed CSI sequence did not return to ground")
+	}
+
+	window.observeTerminalOutputStateLocked([]byte("\x1bPpayload\a"))
+	if window.terminalOutputIsGroundLocked() {
+		t.Fatal("BEL incorrectly terminated DCS output")
+	}
+	window.observeTerminalOutputStateLocked([]byte("\x1b\\"))
+	if !window.terminalOutputIsGroundLocked() {
+		t.Fatal("ST did not terminate DCS output")
+	}
+
+	window.observeTerminalOutputStateLocked([]byte{0xf0, 0x9f})
+	if window.terminalOutputIsGroundLocked() {
+		t.Fatal("split UTF-8 output incorrectly reported ground")
+	}
+	window.observeTerminalOutputStateLocked([]byte{0x98, 0x80})
+	if !window.terminalOutputIsGroundLocked() {
+		t.Fatal("completed UTF-8 output did not return to ground")
 	}
 }
 
@@ -2309,6 +2841,38 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 			t.Fatalf("mode replay %q does not contain %q", modeReplay, sequence)
 		}
 	}
+}
+
+func TestForegroundRedrawDoesNotRestoreStalePtySize(t *testing.T) {
+	windowPty := openTestPty(t)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		pty:          windowPty,
+		lastActivity: time.Now(),
+	}
+
+	simulateForegroundResize(window, 120, 40)
+	window.resizePty(80, 24)
+	time.Sleep(foregroundRedrawResizeDelay + 20*time.Millisecond)
+
+	assertPtySize(t, windowPty, 80, 24)
+}
+
+func TestForegroundRedrawDoesNotResizeClosedPty(t *testing.T) {
+	windowPty := openTestPty(t)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		pty:          windowPty,
+		lastActivity: time.Now(),
+	}
+
+	simulateForegroundResize(window, 120, 40)
+	if err := window.closePty(windowPty); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(foregroundRedrawResizeDelay + 20*time.Millisecond)
 }
 
 func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
@@ -7139,6 +7703,12 @@ func (c *recordingConn) String() string {
 	return c.buf.String()
 }
 
+func (c *recordingConn) Reset() {
+	c.mu.Lock()
+	c.buf.Reset()
+	c.mu.Unlock()
+}
+
 func registerTestAttachClient(
 	t *testing.T,
 	server *muxServer,
@@ -7188,6 +7758,22 @@ func waitForRecordedOutput(t *testing.T, conn *recordingConn, want string) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("recorded output = %q, want %q", conn.String(), want)
+}
+
+func waitForRecordedContains(
+	t *testing.T,
+	conn *recordingConn,
+	want string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(conn.String(), want) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("recorded output = %q, want it to contain %q", conn.String(), want)
 }
 
 func waitForPrimaryClient(

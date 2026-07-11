@@ -82,6 +82,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
   bool hasLiveControlChannelValue = false;
+  bool focusClientChangedValue = true;
   final controlOperations = <String>[];
   final resizeTerminalCalls =
       <({String sessionName, int columns, int rows, bool redraw})>[];
@@ -134,7 +135,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   }
 
   @override
-  Future<void> focusClient(
+  Future<bool> focusClient(
     SshSession session,
     String sessionName, {
     required int columns,
@@ -146,6 +147,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
       columns: columns,
       rows: rows,
     ));
+    return focusClientChangedValue;
   }
 }
 

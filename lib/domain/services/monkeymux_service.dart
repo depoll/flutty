@@ -538,22 +538,24 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           false);
 
   /// Makes this app terminal the active MonkeyMux client and applies its size.
-  Future<void> focusClient(
+  Future<bool> focusClient(
     SshSession session,
     String sessionName, {
     required int columns,
     required int rows,
   }) async {
     if (isAppReviewDemoSession(session)) {
-      return;
+      return false;
     }
     try {
-      await _runControlCommand(session, sessionName, {
+      final response = await _runControlCommand(session, sessionName, {
         'type': 'focus_client',
         'clientId': session.monkeyMuxClientId,
         'width': columns,
         'height': rows,
+        'redraw': true,
       });
+      return response.focusChanged;
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'monkeymux.focus',
@@ -565,6 +567,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           'errorType': error.runtimeType.toString(),
         },
       );
+      return false;
     }
   }
 
@@ -1560,6 +1563,7 @@ class _MonkeyMuxControlResponse {
     this.hasForegroundClient = false,
     this.imageIds = const [],
     this.imagesAcknowledged = false,
+    this.focusChanged = false,
   });
 
   factory _MonkeyMuxControlResponse.fromJson(Map<String, Object?> json) =>
@@ -1595,6 +1599,7 @@ class _MonkeyMuxControlResponse {
           _ => const <String>[],
         },
         imagesAcknowledged: json['imagesAcknowledged'] == true,
+        focusChanged: json['focusChanged'] == true,
       );
 
   static _MonkeyMuxControlResponse? tryParse(String line) {
@@ -1624,6 +1629,7 @@ class _MonkeyMuxControlResponse {
   final bool hasForegroundClient;
   final List<String> imageIds;
   final bool imagesAcknowledged;
+  final bool focusChanged;
 
   bool get isError => status == 'error' || type == 'error';
 }
@@ -2103,6 +2109,11 @@ parseMonkeyMuxImageReplayAckForTesting(String line) {
     imageIds: response.imageIds,
   );
 }
+
+/// Parses whether a MonkeyMux focus response changed the primary client.
+@visibleForTesting
+bool? parseMonkeyMuxFocusChangedForTesting(String line) =>
+    _MonkeyMuxControlResponse.tryParse(line)?.focusChanged;
 
 /// Returns the one-shot control response timeout for protocol regression tests.
 @visibleForTesting
