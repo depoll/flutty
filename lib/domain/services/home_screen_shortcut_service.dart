@@ -16,13 +16,14 @@ const homeScreenShortcutHostTypePrefix = 'host:';
 /// Maximum number of hosts surfaced in the app icon's quick actions.
 const maxHomeScreenShortcutItems = 4;
 
-/// Android drawable/mipmap resource name used as the icon for host
-/// home-screen shortcuts.
+/// Native icon name used for host home-screen shortcuts on Android and iOS.
 ///
 /// The `quick_actions` Android plugin resolves this via
-/// `Resources.getIdentifier(name, "drawable"|"mipmap", ...)`. The resource is
-/// a MonkeySSH-teal server glyph; launchers badge pinned shortcuts with the
-/// app icon automatically.
+/// `Resources.getIdentifier(name, "drawable"|"mipmap", ...)`, while the iOS
+/// plugin resolves it as a template image
+/// (`UIApplicationShortcutIcon(templateImageName:)`) from the app asset
+/// catalog. Both platforms bundle a MonkeySSH host ("dns") server glyph;
+/// launchers badge pinned shortcuts with the app icon automatically.
 const homeScreenShortcutHostIconResourceName = 'ic_shortcut_host';
 
 /// Whether the current platform supports app-icon home-screen shortcuts.
@@ -34,11 +35,14 @@ bool get supportsHomeScreenShortcutActions =>
 /// The native shortcut icon name for host shortcuts, or `null` when the
 /// current platform bundles no themed host icon.
 ///
-/// Only Android ships a themed host icon
-/// ([homeScreenShortcutHostIconResourceName]). iOS resolves the icon from the
-/// asset catalog, where none is bundled, so it keeps the system default.
+/// Android and iOS both bundle a themed host icon
+/// ([homeScreenShortcutHostIconResourceName]): Android resolves it as a
+/// drawable/mipmap resource and iOS resolves it as a template image in the app
+/// asset catalog. Other platforms keep the system default.
 String? get homeScreenShortcutHostIconName =>
-    !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+    !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS)
     ? homeScreenShortcutHostIconResourceName
     : null;
 

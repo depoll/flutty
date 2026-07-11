@@ -138,6 +138,57 @@ platform :ios do
     end
   end
 
+  private_lane :patch_app_store_ready_for_review_lookup do
+    begin
+      require 'spaceship/connect_api/models/app'
+    rescue LoadError => e
+      UI.user_error!("Could not load App Store version lookup patch: #{e.message}")
+    end
+
+    app_class = Spaceship::ConnectAPI::App
+    unless app_class.method_defined?(:get_edit_app_store_version)
+      UI.user_error!(
+        'Fastlane App#get_edit_app_store_version was not found.',
+      )
+    end
+
+    next if app_class.method_defined?(
+      :monkeyssh_original_get_edit_app_store_version,
+    )
+
+    app_class.class_eval do
+      alias_method :monkeyssh_original_get_edit_app_store_version,
+                   :get_edit_app_store_version
+
+      def get_edit_app_store_version(
+        client: nil,
+        platform: nil,
+        includes: Spaceship::ConnectAPI::AppStoreVersion::ESSENTIAL_INCLUDES
+      )
+        client ||= Spaceship::ConnectAPI
+        platform ||= Spaceship::ConnectAPI::Platform::IOS
+        current = monkeyssh_original_get_edit_app_store_version(
+          client: client,
+          platform: platform,
+          includes: includes,
+        )
+        ready = get_app_store_versions(
+          client: client,
+          filter: {
+            appVersionState:
+              Spaceship::ConnectAPI::AppStoreVersion::AppVersionState::READY_FOR_REVIEW,
+            platform: platform,
+          },
+          includes: includes,
+        ).max_by { |version| Gem::Version.new(version.version_string) }
+
+        [current, ready]
+          .compact
+          .max_by { |version| Gem::Version.new(version.version_string) }
+      end
+    end
+  end
+
   desc 'Sync certificates and profiles for a given type and app identifier'
   private_lane :sync_certs do |options|
     app_id = options[:app_identifier]
@@ -499,7 +550,10 @@ platform :ios do
       localized_build_info: localized_build_info,
     )
 
-    sync_metadata(app_identifier: app_id) unless skip_meta
+    sync_metadata(
+      app_identifier: app_id,
+      app_version: ENV['FLUTTY_BUILD_NAME'],
+    ) unless skip_meta
   end
 
   desc 'Build, sign, and upload to App Store'
@@ -510,25 +564,44 @@ platform :ios do
     provided_ipa_path = options[:ipa_path].to_s
 
     build_and_sign(scheme: scheme) if provided_ipa_path.empty?
+    ipa_path = resolved_ipa_path(ipa_path: provided_ipa_path)
 
-    deliver(
-      api_key: get_api_key,
-      app_identifier: app_id,
-      ipa: resolved_ipa_path(ipa_path: provided_ipa_path),
-      skip_metadata: true,
-      skip_screenshots: true,
-      submit_for_review: false,
-      automatic_release: false,
-    )
-
-    sync_metadata(app_identifier: app_id) unless skip_meta
+    if skip_meta
+      deliver(
+        api_key: get_api_key,
+        app_identifier: app_id,
+        app_version: ENV['FLUTTY_BUILD_NAME'],
+        ipa: ipa_path,
+        skip_metadata: true,
+        skip_screenshots: true,
+        submit_for_review: true,
+        run_precheck_before_submit: false,
+        automatic_release: true,
+        submission_information: {
+          export_compliance_uses_encryption: false,
+        },
+      )
+    else
+      sync_metadata(
+        app_identifier: app_id,
+        app_version: ENV['FLUTTY_BUILD_NAME'],
+        ipa_path: ipa_path,
+        submit_for_review: true,
+        automatic_release: true,
+      )
+    end
   end
 
-  desc 'Sync metadata and screenshots to App Store Connect (no build required)'
+  desc 'Upload metadata, screenshots, previews, and an optional build'
   lane :sync_metadata do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh'
+    app_version = options[:app_version].to_s
+    ipa_path = options[:ipa_path].to_s
+    submit_for_review = options[:submit_for_review].to_s == 'true'
+    automatic_release = options[:automatic_release].to_s == 'true'
     meta_path = METADATA_DIRS[app_id] || './fastlane/metadata-production'
 
+    patch_app_store_ready_for_review_lookup
     patch_deliver_review_attachment_fetch
     patch_deliver_review_information_sync
 
@@ -544,7 +617,7 @@ platform :ios do
       app_identifier: app_id,
       metadata_path: meta_path,
       screenshots_path: SCREENSHOTS_PATH,
-      skip_binary_upload: true,
+      skip_binary_upload: ipa_path.empty?,
       skip_screenshots: false,
       # Clear previously uploaded screenshots and app previews before
       # uploading the current set. Without this, deliver *appends* the new
@@ -552,16 +625,22 @@ platform :ios do
       # leaves stale screenshots from older versions behind and the listing
       # ends up with duplicates from different versions.
       overwrite_screenshots: true,
-      submit_for_review: false,
+      submit_for_review: submit_for_review,
       run_precheck_before_submit: false,
-      automatic_release: false,
+      automatic_release: automatic_release,
+      submission_information: {
+        export_compliance_uses_encryption: false,
+      },
       force: true,
     }
+    deliver_options[:app_version] = app_version unless app_version.empty?
+    deliver_options[:ipa] = ipa_path unless ipa_path.empty?
     unless review_contact_information.empty?
       deliver_options[:app_review_information] = review_contact_information
     end
     if Dir.glob(File.join(APP_PREVIEWS_PATH, '**', '*.{mov,mp4,m4v}')).any?
       deliver_options[:app_previews_path] = APP_PREVIEWS_PATH
+      deliver_options[:overwrite_preview_videos] = true
     end
 
     deliver(**deliver_options)

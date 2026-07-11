@@ -428,18 +428,40 @@ RemoteMuxBackend resolveRemoteMuxStartupBackend(
 @visibleForTesting
 String? resolveTmuxWindowWorkingDirectory({
   String? explicitWorkingDirectory,
+  String? configuredWorkingDirectory,
+  String? launchWorkingDirectory,
   String? currentPaneWorkingDirectory,
   String? observedWorkingDirectory,
-  String? launchWorkingDirectory,
+}) => _firstNonEmptyWorkingDirectory([
+  explicitWorkingDirectory,
+  configuredWorkingDirectory,
+  launchWorkingDirectory,
+  currentPaneWorkingDirectory,
+  observedWorkingDirectory,
+]);
+
+/// Resolves the host-configured directory for the active multiplexer session.
+@visibleForTesting
+String? resolveConfiguredMuxWorkingDirectory({
+  required AgentLaunchPreset? agentPreset,
+  required RemoteMuxBackend backend,
+  required String sessionName,
   String? hostWorkingDirectory,
 }) {
-  for (final candidate in <String?>[
-    explicitWorkingDirectory,
-    currentPaneWorkingDirectory,
-    observedWorkingDirectory,
-    launchWorkingDirectory,
+  final presetSessionName = agentPreset?.tmuxSessionName?.trim();
+  final presetMatchesSession =
+      agentPreset != null &&
+      agentPreset.usesMuxSession &&
+      agentPreset.effectiveRemoteMuxBackend == backend &&
+      presetSessionName == sessionName;
+  return _firstNonEmptyWorkingDirectory([
+    if (presetMatchesSession) agentPreset.workingDirectory,
     hostWorkingDirectory,
-  ]) {
+  ]);
+}
+
+String? _firstNonEmptyWorkingDirectory(Iterable<String?> candidates) {
+  for (final candidate in candidates) {
     final trimmed = candidate?.trim();
     if (trimmed != null && trimmed.isNotEmpty) {
       return trimmed;
@@ -8253,8 +8275,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _tmuxSessionName = command.sessionName;
       _tmuxStateConnectionId = session.connectionId;
       _showTmuxBar = true;
-      _tmuxLaunchWorkingDirectory = _host?.tmuxWorkingDirectory;
-      _tmuxWorkingDirectory = _host?.tmuxWorkingDirectory;
+      final configuredWorkingDirectory = _configuredRemoteMuxWorkingDirectory(
+        backend: command.backend,
+        sessionName: command.sessionName,
+      );
+      _tmuxLaunchWorkingDirectory = configuredWorkingDirectory;
+      _tmuxWorkingDirectory = configuredWorkingDirectory;
       _tmuxCurrentCommand = null;
       _shellCompletionTmuxContextRefreshedAt = null;
       _shellCompletionTmuxContextConnectionId = null;
@@ -8313,6 +8339,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       tmuxExtraFlags: host?.tmuxExtraFlags,
     );
   }
+
+  String? _configuredRemoteMuxWorkingDirectory({
+    required RemoteMuxBackend backend,
+    required String sessionName,
+  }) => resolveConfiguredMuxWorkingDirectory(
+    agentPreset: _autoConnectAgentPreset,
+    backend: backend,
+    sessionName: sessionName,
+    hostWorkingDirectory: _host?.tmuxWorkingDirectory,
+  );
 
   void _clearTmuxState() {
     _stopTmuxForegroundVerification();
@@ -8505,7 +8541,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
     final hadVisibleOrPrimedTmuxState =
         hasExistingVisibleTmuxState || shouldPrimeTmuxStateWhileDetecting;
-    final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
+    final preferredWorkingDirectory = candidateSessionName == null
+        ? null
+        : _configuredRemoteMuxWorkingDirectory(
+            backend: muxBackend,
+            sessionName: candidateSessionName,
+          );
     var confirmedTmuxActive = false;
     var hadDetectionFailure = false;
 
@@ -9538,9 +9579,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// Creates a new tmux window via exec channel, then reattaches the visible
   /// terminal if tmux is no longer in the foreground there.
   ///
-  /// Prefers the tmux session's current pane directory so "new window" starts
-  /// where the user is actually working, while still preserving explicit
-  /// working-directory overrides (e.g. resuming an AI session).
+  /// Uses explicit session-resume directories first, then the host's configured
+  /// directory. The session launch directory and active pane are fallbacks for
+  /// hosts without a configured directory.
   Future<void> _createTmuxWindow(
     SshSession session, {
     String? command,
@@ -9551,17 +9592,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (sessionName == null) return;
 
     final backend = _activeTerminalConnectionBackend(session);
+    final configuredWorkingDirectory = _configuredRemoteMuxWorkingDirectory(
+      backend: backend.remoteMuxBackend ?? _activeMuxBackend,
+      sessionName: sessionName,
+    );
+    var resolvedWorkingDirectory = resolveTmuxWindowWorkingDirectory(
+      explicitWorkingDirectory: workingDirectory,
+      configuredWorkingDirectory: configuredWorkingDirectory,
+      launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
+    );
     String? currentPaneWorkingDirectory;
-    if (!(workingDirectory?.trim().isNotEmpty ?? false)) {
+    if (resolvedWorkingDirectory == null) {
       currentPaneWorkingDirectory = await backend.currentPanePath();
     }
     if (!mounted) return;
-    final resolvedWorkingDirectory = resolveTmuxWindowWorkingDirectory(
-      explicitWorkingDirectory: workingDirectory,
+    resolvedWorkingDirectory ??= resolveTmuxWindowWorkingDirectory(
       currentPaneWorkingDirectory: currentPaneWorkingDirectory,
       observedWorkingDirectory: _tmuxWorkingDirectory ?? _workingDirectoryPath,
-      launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
-      hostWorkingDirectory: _host?.tmuxWorkingDirectory,
     );
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       await _syncActiveMonkeyMuxTerminalSize(
