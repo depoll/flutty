@@ -34,24 +34,46 @@ jobs:
              const requestKey = `comment-${requestCommentId}`;
              const requestCommentUrl = context.payload.comment.html_url;
              const requestCreatedAt = context.payload.comment.created_at;
-             const authorAssociation = context.payload.comment.author_association;
              const previewMarker = '<!-- Sticky Pull Request Commentpreview-build -->';
              const statusMarker = '<!-- preview-deploy-status -->';
             const workflowId = 'preview-deploy.yml';
             const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
             const activeLockTimeoutMs = 4 * 60 * 60 * 1000;
-             const allowedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+             const allowedRepositoryPermissions = new Set(['admin', 'maintain', 'write']);
              const managedReactionContents = new Set(['eyes', 'rocket', '-1']);
              const activeWorkflowStatuses = new Set(['queued', 'in_progress', 'requested', 'waiting']);
+             const buildNamePattern =
+               /^[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/;
+             const buildNumberPattern = /^[1-9][0-9]{0,9}$/;
 
             if (commandBody !== '/deploy') {
               core.info(`Ignoring PR comment without exact /deploy command: ${commandBody}`);
               return;
             }
 
-            if (!allowedAssociations.has(authorAssociation)) {
+            let requesterPermission;
+            try {
+              const {data} = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner,
+                repo,
+                username: requester,
+              });
+              requesterPermission = data;
+            } catch (error) {
+              const status = error.status ?? error.response?.status;
+              if (status === 404) {
+                core.info(`Ignoring /deploy from ${requester}, who is not a collaborator.`);
+                return;
+              }
+              throw error;
+            }
+
+            const canDeploy =
+              allowedRepositoryPermissions.has(requesterPermission.permission) ||
+              requesterPermission.user?.permissions?.push === true;
+            if (!canDeploy) {
               core.info(
-                `Ignoring /deploy from ${requester} with association ${authorAssociation}.`,
+                `Ignoring /deploy from ${requester} with ${requesterPermission.permission} permission.`,
               );
               return;
             }
@@ -61,9 +83,13 @@ jobs:
                return body.match(pattern)?.[1] ?? '';
              };
 
+              const isTrustedWorkflowComment = (comment) =>
+                comment.user?.login === 'github-actions[bot]' && comment.user?.type === 'Bot';
+
               const findStatusComment = (comments, targetRequestKey) =>
                 [...comments].reverse().find(
                   (comment) =>
+                    isTrustedWorkflowComment(comment) &&
                     comment.body?.includes(statusMarker) &&
                     readMeta(comment.body, 'preview-deploy-request-key') === targetRequestKey,
                 );
@@ -308,16 +334,21 @@ jobs:
                return;
              }
 
-             const previewComment = [...comments].reverse().find((comment) =>
-               comment.body?.includes(previewMarker),
-            );
+             const previewComment = [...comments].reverse().find(
+               (comment) =>
+                 isTrustedWorkflowComment(comment) &&
+                 comment.body?.includes(previewMarker),
+             );
             const previewSha = pr.head.sha;
              const previewCommentUrl = previewComment?.html_url ?? '';
              const previewCommentBody = previewComment?.body ?? '';
              const previewCommentSha = readMeta(previewCommentBody, 'preview-build-source-sha');
              const previousDeploySha = readMeta(statusBody, 'preview-deploy-source-sha');
               const activeStatusComments = [...comments].filter((comment) => {
-                if (!comment.body?.includes(statusMarker)) {
+                if (
+                  !isTrustedWorkflowComment(comment) ||
+                  !comment.body?.includes(statusMarker)
+                ) {
                   return false;
                 }
 
@@ -369,6 +400,26 @@ jobs:
 
                buildName = versionLine.replace(/^version:\s*/, '').split('+')[0].trim();
                buildNumber = String(Math.floor(Date.now() / 1000 / 10));
+             }
+
+             const validBuildName = buildNamePattern.test(buildName);
+             const validBuildNumber =
+               buildNumberPattern.test(buildNumber) &&
+               Number(buildNumber) <= 2147483647;
+             if (!validBuildName || !validBuildNumber) {
+               const body = renderStatusComment({
+                 status: '❌ Invalid preview build metadata',
+                 workflow: 'Dispatch skipped',
+                 previewSha,
+                 previewCommentUrl,
+                 state: 'failed',
+                 note:
+                   '> The preview version metadata was malformed. Re-run the preview build before deploying.',
+                 requestKey,
+               });
+               await upsertStatusComment(comments, body, requestKey);
+               core.setFailed(`Invalid preview build metadata for ${previewSha}.`);
+               return;
              }
 
               const supersedeActiveRequest = async (comment) => {

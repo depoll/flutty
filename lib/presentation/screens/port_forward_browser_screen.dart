@@ -3,20 +3,29 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../app/theme.dart';
 import '../../domain/services/port_forward_browser_service.dart';
+import '../../domain/services/settings_service.dart';
 
 /// Initial tab configuration for the embedded browser.
 class PortForwardBrowserInitialTab {
   /// Creates an initial browser tab.
-  const PortForwardBrowserInitialTab({required this.uri, this.title});
+  const PortForwardBrowserInitialTab({
+    required this.uri,
+    this.sourceUri,
+    this.title,
+  });
 
   /// URL loaded by the tab.
   final Uri uri;
+
+  /// Original local-forward URL represented by [uri].
+  final Uri? sourceUri;
 
   /// Optional label shown until the page title is available.
   final String? title;
@@ -38,7 +47,7 @@ class PortForwardBrowserLaunch {
 }
 
 /// Embedded browser for pages exposed through local port forwards.
-class PortForwardBrowserScreen extends StatefulWidget {
+class PortForwardBrowserScreen extends ConsumerStatefulWidget {
   /// Creates a port-forward browser screen.
   const PortForwardBrowserScreen({
     required this.initialTabs,
@@ -55,11 +64,12 @@ class PortForwardBrowserScreen extends StatefulWidget {
   final int initialTabIndex;
 
   @override
-  State<PortForwardBrowserScreen> createState() =>
+  ConsumerState<PortForwardBrowserScreen> createState() =>
       _PortForwardBrowserScreenState();
 }
 
-class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
+class _PortForwardBrowserScreenState
+    extends ConsumerState<PortForwardBrowserScreen> {
   TextEditingController? _addressController;
   List<_PortForwardBrowserTabState> _tabs = [];
   final _addressFocusNode = FocusNode();
@@ -161,12 +171,18 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     return tab = _PortForwardBrowserTabState(
       id: _nextTabId++,
       controller: controller,
+      browserUri: initialUri,
+      sourceUri: normalizePortForwardBrowserUri(seed.sourceUri ?? seed.uri),
       currentUri: initialUri,
       initialTitle: seed.title,
     );
   }
 
   Future<void> _initializeBrowser() async {
+    await _clearLegacySharedCookiesOnce();
+    if (!mounted) {
+      return;
+    }
     final tabs = widget.initialTabs.map(_createTab).toList(growable: true);
     final selectedTabIndex = widget.initialTabIndex;
     final addressController = TextEditingController(
@@ -178,6 +194,22 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       _addressController = addressController;
     });
     _scheduleSelectedTabLoad();
+  }
+
+  Future<void> _clearLegacySharedCookiesOnce() async {
+    final settings = ref.read(settingsServiceProvider);
+    final alreadyMigrated = await settings.getBool(
+      SettingKeys.portForwardBrowserCookieIsolationMigration,
+    );
+    if (alreadyMigrated) {
+      return;
+    }
+
+    await WebViewCookieManager().clearCookies();
+    await settings.setBool(
+      SettingKeys.portForwardBrowserCookieIsolationMigration,
+      value: true,
+    );
   }
 
   void _scheduleSelectedTabLoad() {
@@ -567,7 +599,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       return NavigationDecision.prevent;
     }
     if (uri.scheme == 'http' || uri.scheme == 'https') {
-      final normalizedUri = normalizePortForwardBrowserUri(uri);
+      final normalizedUri = _normalizeBrowserUri(uri);
       if (normalizedUri.toString() != uri.toString()) {
         unawaited(tab.controller.loadRequest(normalizedUri));
         return NavigationDecision.prevent;
@@ -609,13 +641,37 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     if (uri.scheme != 'http' && uri.scheme != 'https') {
       return null;
     }
-    return normalizePortForwardBrowserUri(uri);
+    return _normalizeBrowserUri(uri);
   }
 
   Uri _normalizeLoadedBrowserUri(Uri uri) =>
       uri.scheme == 'http' || uri.scheme == 'https'
-      ? normalizePortForwardBrowserUri(uri)
+      ? _normalizeBrowserUri(uri)
       : uri;
+
+  Uri _normalizeBrowserUri(Uri uri) {
+    final normalizedUri = normalizePortForwardBrowserUri(uri);
+    for (final tab in _tabs) {
+      if (_sameBrowserEndpoint(normalizedUri, tab.browserUri)) {
+        return normalizedUri;
+      }
+    }
+    for (final tab in _tabs) {
+      final rewritten = rewriteUriForPortForwardBrowser(
+        normalizedUri,
+        sourceUri: tab.sourceUri,
+        browserUri: tab.browserUri,
+      );
+      if (rewritten != null) {
+        return rewritten;
+      }
+    }
+    return normalizedUri;
+  }
+
+  bool _sameBrowserEndpoint(Uri left, Uri right) =>
+      left.host.toLowerCase() == right.host.toLowerCase() &&
+      portForwardBrowserUriPort(left) == portForwardBrowserUriPort(right);
 
   String _defaultSchemeForAddress(String address) {
     final candidate = Uri.tryParse('//$address');
@@ -639,12 +695,16 @@ class _PortForwardBrowserTabState {
   _PortForwardBrowserTabState({
     required this.id,
     required this.controller,
+    required this.browserUri,
+    required this.sourceUri,
     required this.currentUri,
     this.initialTitle,
   });
 
   final int id;
   final WebViewController controller;
+  final Uri browserUri;
+  final Uri sourceUri;
   final String? initialTitle;
   int progress = 0;
   bool canGoBack = false;

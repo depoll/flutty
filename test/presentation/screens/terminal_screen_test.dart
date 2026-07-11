@@ -1770,6 +1770,8 @@ void main() {
               portForwardId: 42,
               localHost: '127.0.0.1',
               localPort: 49152,
+              browserHost: 'monkeyssh-16.localhost',
+              browserPort: 60142,
               remoteHost: 'example.com',
               remotePort: 80,
               isLocal: true,
@@ -1778,6 +1780,8 @@ void main() {
               portForwardId: 43,
               localHost: '0.0.0.0',
               localPort: 3000,
+              browserHost: 'monkeyssh-17.localhost',
+              browserPort: 60143,
               remoteHost: 'localhost',
               remotePort: 3000,
               isLocal: true,
@@ -1855,6 +1859,10 @@ void main() {
         final launch = openedLaunches.last;
         expect(launch.selectedIndex, 0);
         expect(launch.tabs.map((tab) => tab.uri.toString()).toList(), [
+          'http://monkeyssh-16.localhost:60142',
+          'http://monkeyssh-17.localhost:60143',
+        ]);
+        expect(launch.tabs.map((tab) => tab.sourceUri.toString()).toList(), [
           'http://127.0.0.1:49152',
           'http://127.0.0.1:3000',
         ]);
