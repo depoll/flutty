@@ -116,12 +116,75 @@ void main() {
       );
     });
 
-    test('maps all IPv4 loopback bind addresses to 127.0.0.1', () {
+    test('preserves distinct IPv4 loopback bind addresses', () {
       expect(
         buildPortForwardBrowserUri(
           _buildPortForward(localHost: '127.0.0.5'),
         ).toString(),
-        'http://127.0.0.1:8080',
+        'http://127.0.0.5:8080',
+      );
+    });
+  });
+
+  group('portForwardBrowserHostForPortForwardId', () {
+    test('assigns stable distinct localhost hosts', () {
+      expect(
+        portForwardBrowserHostForPortForwardId(1),
+        'monkeyssh-1.localhost',
+      );
+      expect(
+        portForwardBrowserHostForPortForwardId(2),
+        'monkeyssh-2.localhost',
+      );
+      expect(
+        portForwardBrowserHostForPortForwardId(42),
+        portForwardBrowserHostForPortForwardId(42),
+      );
+    });
+  });
+
+  group('rewriteUriForPortForwardBrowser', () {
+    test('preserves the request while replacing the forwarded endpoint', () {
+      expect(
+        rewriteUriForPortForwardBrowser(
+          Uri.parse('https://localhost:8080/login?next=%2F'),
+          sourceUri: Uri.parse('http://127.0.0.1:8080'),
+          browserUri: Uri.parse('http://monkeyssh-42.localhost:49152'),
+        ),
+        Uri.parse('https://monkeyssh-42.localhost:49152/login?next=%2F'),
+      );
+    });
+
+    test('does not rewrite a different local port', () {
+      expect(
+        rewriteUriForPortForwardBrowser(
+          Uri.parse('http://localhost:3000'),
+          sourceUri: Uri.parse('http://127.0.0.1:8080'),
+          browserUri: Uri.parse('http://monkeyssh-42.localhost:49152'),
+        ),
+        isNull,
+      );
+    });
+
+    test('does not rewrite the same port on a different loopback host', () {
+      expect(
+        rewriteUriForPortForwardBrowser(
+          Uri.parse('http://127.0.0.2:8080'),
+          sourceUri: Uri.parse('http://127.0.0.1:8080'),
+          browserUri: Uri.parse('http://monkeyssh-1.localhost:49152'),
+        ),
+        isNull,
+      );
+    });
+
+    test('treats default loopback host spellings as equivalent', () {
+      expect(
+        rewriteUriForPortForwardBrowser(
+          Uri.parse('http://localhost:8080'),
+          sourceUri: Uri.parse('http://0.0.0.0:8080'),
+          browserUri: Uri.parse('http://monkeyssh-1.localhost:49152'),
+        ),
+        Uri.parse('http://monkeyssh-1.localhost:49152'),
       );
     });
   });
@@ -210,12 +273,12 @@ void main() {
       );
     });
 
-    test('maps IPv4 loopback URL hosts to 127.0.0.1', () {
+    test('preserves IPv4 loopback URL hosts', () {
       expect(
         normalizePortForwardBrowserUri(
           Uri.parse('http://127.0.0.5:3000/path'),
         ).toString(),
-        'http://127.0.0.1:3000/path',
+        'http://127.0.0.5:3000/path',
       );
     });
   });
