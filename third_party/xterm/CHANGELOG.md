@@ -172,6 +172,15 @@ out of scope.
   (`a=T`) images keep the eager path. Keep `storePendingImage`, the pending
   fallback in `imageByPlaceholderColorId`, `imageForPlacement` and the
   `_finalizeGraphics` deferral on re-sync.
+* Fix: pending virtual images now reach the Unicode-placeholder compositor even
+  while `GraphicsManager.imageCount` is zero. The compositor's existing
+  viewport-bounded pass starts lazy decoding only for coherent placeholders in
+  visible rows; off-screen images remain encoded. Previously the outer graphics
+  guard returned before that pass, so a newly pasted Copilot image stayed blank
+  until its eager full-screen viewer decoded the same id. MonkeyMux replayed
+  image caches remain store-only with no placeholders, so they are still not
+  decoded until the post-replay foreground redraw references the images actually
+  on screen.
 * Window-switch image dedup across the client/server boundary:
   `terminalGraphicsSourceSignature` is now an FNV-1a-32 (was a 64-bit hash with
   a signed-shift fold) computed over the base64-decoded transmission payload

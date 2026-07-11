@@ -217,6 +217,78 @@ Future<void> _pumpUntilImagesDecoded(
 }
 
 void main() {
+  testWidgets('only visible pending Kitty placeholders start lazy decoding', (
+    tester,
+  ) async {
+    const offscreenImageId = 0x010203;
+    const visibleImageId = 0xA5E30B;
+    final terminal = Terminal(maxLines: 200)..resize(80, 10);
+    // Invalid raw dimensions complete synchronously under widget-test fake
+    // async, letting the observer record which pending image paint requested.
+    final invalidRawImage = base64.decode('AAAA');
+
+    terminal.graphics.storePendingImage(
+      visibleImageId,
+      payload: invalidRawImage,
+      format: 32,
+    );
+    terminal.write(_placeholderGrid(visibleImageId, cols: 1, rows: 1));
+    for (var row = 0; row < 30; row++) {
+      terminal.write('\r\nline $row');
+    }
+
+    terminal.graphics.storePendingImage(
+      offscreenImageId,
+      payload: invalidRawImage,
+      format: 32,
+    );
+    terminal.write(
+      '\r\n${_placeholderGrid(offscreenImageId, cols: 1, rows: 1)}',
+    );
+
+    final decodeAttempts = <String?>[];
+    final previousObserver = terminalGraphicsDecodeObserver;
+    terminalGraphicsDecodeObserver =
+        ({
+          required int payloadBytes,
+          required int inflateMicros,
+          required int decodeMicros,
+          required bool compressed,
+          required bool success,
+          String? imageId,
+          String? action,
+          bool? reused,
+        }) {
+          if (action == 'lazy') {
+            decodeAttempts.add(imageId);
+          }
+        };
+    addTearDown(() => terminalGraphicsDecodeObserver = previousObserver);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 800,
+          height: 180,
+          child: MonkeyTerminalView(
+            terminal,
+            autoResize: false,
+            hardwareKeyboardOnly: true,
+            liveOutputAutoScroll: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(decodeAttempts, [visibleImageId.toString()]);
+    expect(
+      terminal.graphics.hasPendingImage(offscreenImageId),
+      isTrue,
+      reason: 'an image outside the viewport must remain lazily encoded',
+    );
+  });
+
   testWidgets('Kitty graphics image is composited into the terminal', (
     tester,
   ) async {
