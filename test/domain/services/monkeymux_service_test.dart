@@ -56,6 +56,7 @@ void main() {
         executablePath: '/home/me/.monkeyssh/bin/monkey mux',
         sessionName: "work'space",
         clientId: 'app 7',
+        clipViewport: true,
         workingDirectory: "~/src/it's app",
         windowName: 'Codex agent',
         launchCommand: "codex --model 'gpt-5.4'",
@@ -66,7 +67,7 @@ void main() {
       expect(
         command,
         "'/home/me/.monkeyssh/bin/monkey mux' attach --quiet "
-        "--client-id 'app 7' --update-policy never "
+        "--client-id 'app 7' --clip-viewport --update-policy never "
         "--restore-yolo --cwd '~/src/it'\"'\"'s app' --name 'Codex agent' --command "
         "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
       );
@@ -145,10 +146,11 @@ void main() {
     test('detects version mismatches and shutdown capability', () {
       const status = MonkeyMuxServerStatus(
         version: '0.1.13',
-        capabilities: {'window-list', 'shutdown'},
+        capabilities: {'window-list', 'shutdown', 'client-viewport-clipping'},
       );
 
       expect(status.supportsShutdown, isTrue);
+      expect(status.supportsViewportClipping, isTrue);
       expect(status.needsUpdate('0.1.13'), isFalse);
       expect(status.needsUpdate('0.1.14'), isTrue);
     });

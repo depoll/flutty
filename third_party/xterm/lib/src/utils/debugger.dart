@@ -357,6 +357,11 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void resizeFromHost(int cols, int rows) {
+    onCommand('resizeFromHost($cols, $rows)');
+  }
+
+  @override
   void sendSize() {
     onCommand('sendSize');
   }

@@ -14,6 +14,12 @@ void main() {
       verify(parser.handler.resize(80, 24));
     });
 
+    test('can parse private host window manipulation', () {
+      final parser = EscapeParser(MockEscapeHandler());
+      parser.write('\x1b[?8;24;80t');
+      verify(parser.handler.resizeFromHost(80, 24));
+    });
+
     group('SGR extended color', () {
       test('legacy semicolon truecolor foreground', () {
         final parser = EscapeParser(MockEscapeHandler());

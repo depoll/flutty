@@ -3308,6 +3308,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Terminal? _terminalWithOwnedCallbacks;
   void Function(String)? _terminalOutputHandler;
   void Function(int, int, int, int)? _terminalResizeHandler;
+  void Function(int, int)? _terminalHostResizeHandler;
   bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
   bool _suppressTerminalAutoScrollFromTerminalRefresh = false;
   bool _isConnecting = true;
@@ -3343,6 +3344,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
   int? _tmuxStateConnectionId;
+  Size? _terminalViewportLayoutSize;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
@@ -6708,11 +6710,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final handledInitialAutoConnect =
           initialAutoConnect.handled ||
           _suppressRemoteMuxDetectionConnectionId == session.connectionId;
+      final viewportCellSize = _localTerminalViewportCellSize();
 
       _shell = await session.getShell(
         pty: SSHPtyConfig(
-          width: _terminal.viewWidth,
-          height: _terminal.viewHeight,
+          width: viewportCellSize.columns,
+          height: viewportCellSize.rows,
         ),
         command: startupCommand?.command,
       );
@@ -6906,6 +6909,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _terminalResizeHandler = handleTerminalResize;
     _terminal.onResize = handleTerminalResize;
+
+    void handleTerminalHostResize(int width, int height) {
+      final isMonkeyMuxSession =
+          _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+          session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+      if (!isMonkeyMuxSession || session.monkeyMuxViewportClippingEnabled) {
+        return;
+      }
+      session.monkeyMuxViewportClippingEnabled = true;
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.viewport',
+        'clipping_enabled',
+        fields: {
+          'connectionId': session.connectionId,
+          'columns': width,
+          'rows': height,
+        },
+      );
+      if (mounted) {
+        setState(() {});
+      }
+    }
+
+    _terminalHostResizeHandler = handleTerminalHostResize;
+    _terminal.onHostResize = handleTerminalHostResize;
+    if (_terminal.hostResizeGeneration > 0) {
+      handleTerminalHostResize(_terminal.viewWidth, _terminal.viewHeight);
+    }
     _terminalWithOwnedCallbacks = _terminal;
   }
 
@@ -6926,6 +6957,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminal.onResize = null;
     }
     _terminalResizeHandler = null;
+
+    final hostResizeHandler = _terminalHostResizeHandler;
+    if (terminal != null &&
+        hostResizeHandler != null &&
+        identical(terminal.onHostResize, hostResizeHandler)) {
+      terminal.onHostResize = null;
+    }
+    _terminalHostResizeHandler = null;
     _terminalWithOwnedCallbacks = null;
   }
 
@@ -7387,8 +7426,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     final sessionName = _activeMonkeyMuxSessionName(session);
-    final columns = _terminal.viewWidth;
-    final rows = _terminal.viewHeight;
+    final viewportCellSize = _localTerminalViewportCellSize();
+    final columns = viewportCellSize.columns;
+    final rows = viewportCellSize.rows;
     if (sessionName == null || columns <= 0 || rows <= 0) {
       return;
     }
@@ -7406,6 +7446,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             _refreshTerminalAfterMonkeyMuxWindowChange(session);
           }),
     );
+  }
+
+  ({int columns, int rows}) _localTerminalViewportCellSize() {
+    final viewportCellSize = _terminalViewKey.currentState?.viewportCellSize;
+    if (viewportCellSize != null &&
+        viewportCellSize.columns > 0 &&
+        viewportCellSize.rows > 0) {
+      return viewportCellSize;
+    }
+    final layoutSize = _terminalViewportLayoutSize;
+    if (layoutSize != null && mounted) {
+      final mediaQuery = MediaQuery.of(context);
+      final viewportPadding = resolveTerminalViewportPadding(mediaQuery);
+      final globalFontSize = ref.read(fontSizeNotifierProvider);
+      final fontSize = resolveTerminalFontSize(
+        globalFontSize: globalFontSize,
+        sessionFontSize: _sessionFontSizeOverride,
+        pinchFontSize: _pinchFontSize,
+      );
+      final fontFamily =
+          _host?.terminalFontFamily ??
+          ref.read(fontFamilyNotifierProvider) ??
+          'monospace';
+      final painter = MonkeyTerminalPainter(
+        theme: _resolveEffectiveTerminalTheme().toXtermTheme(),
+        textStyle: TerminalStyle.fromTextStyle(
+          _getTerminalFlutterTextStyle(fontFamily, fontSize),
+        ),
+        textScaler: mediaQuery.textScaler,
+      );
+      final availableWidth = layoutSize.width - viewportPadding.horizontal;
+      final availableHeight = layoutSize.height - viewportPadding.vertical;
+      final columns = availableWidth ~/ painter.cellSize.width;
+      final rows = availableHeight ~/ painter.cellSize.height;
+      if (columns > 0 && rows > 0) {
+        return (columns: columns, rows: rows);
+      }
+    }
+    return (columns: _terminal.viewWidth, rows: _terminal.viewHeight);
   }
 
   Future<void> _syncActiveMonkeyMuxTerminalSize(
@@ -7439,8 +7518,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
-    final terminalColumns = columns ?? _terminal.viewWidth;
-    final terminalRows = rows ?? _terminal.viewHeight;
+    final viewportCellSize = _localTerminalViewportCellSize();
+    final terminalColumns = columns ?? viewportCellSize.columns;
+    final terminalRows = rows ?? viewportCellSize.rows;
     if (terminalColumns <= 0 || terminalRows <= 0) {
       return;
     }
@@ -7936,6 +8016,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               executablePath: installation.executablePath,
               sessionName: sessionName,
               clientId: session.monkeyMuxClientId,
+              clipViewport: true,
               workingDirectory: host.tmuxWorkingDirectory,
               terminalThemeReports: terminalThemeReports,
               serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
@@ -7950,6 +8031,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             executablePath: installation.executablePath,
             sessionName: sessionName,
             clientId: session.monkeyMuxClientId,
+            clipViewport: true,
             workingDirectory: host.tmuxWorkingDirectory,
             terminalThemeReports: terminalThemeReports,
             serverUpdatePolicy: updatePolicy,
@@ -8019,12 +8101,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     MonkeyMuxInstallation installation,
     String sessionName,
   ) async {
+    session.monkeyMuxViewportClippingEnabled = false;
+    session.terminal?.resetHostResizeState();
     final status = await _monkeyMuxService.runningServerStatus(
       session,
       installation,
       sessionName,
     );
-    if (status == null || !status.needsUpdate(installation.version)) {
+    if (status == null) {
+      return MonkeyMuxServerUpdatePolicy.never;
+    }
+    if (!status.needsUpdate(installation.version)) {
       return MonkeyMuxServerUpdatePolicy.never;
     }
     if (installation.installedDuringCall) {
@@ -8234,6 +8321,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         executablePath: installation.executablePath,
         sessionName: sessionName,
         clientId: session.monkeyMuxClientId,
+        clipViewport: true,
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,
@@ -8379,6 +8467,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   void _clearTmuxState() {
+    final session = _observedSession ?? _activeSession();
+    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session?.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _terminal.resetHostResizeState();
+      if (session != null) {
+        session
+          ..monkeyMuxViewportClippingEnabled = false
+          ..remoteMuxBackend = null
+          ..remoteMuxSessionName = null;
+      }
+    }
     _stopTmuxForegroundVerification();
     _cancelMonkeyMuxRefreshAndResizeState();
     _cancelPendingTmuxWindowThemeRefresh();
@@ -8944,6 +9043,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     return LayoutBuilder(
       builder: (context, constraints) {
+        _terminalViewportLayoutSize = Size(
+          constraints.maxWidth,
+          constraints.maxHeight,
+        );
         final tmuxBarSafeInsets = resolveTmuxBarSafeInsets(
           MediaQuery.of(context),
         );
@@ -9985,9 +10088,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _promptOutputImeResetTimer?.cancel();
     _promptOutputImeResetTimer = null;
 
+    final viewportCellSize = _localTerminalViewportCellSize();
     final pty = SSHPtyConfig(
-      width: _terminal.viewWidth,
-      height: _terminal.viewHeight,
+      width: viewportCellSize.columns,
+      height: viewportCellSize.rows,
     );
 
     final SSHSession shell;
@@ -11478,6 +11582,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       inlineUnderlines: inlineUnderlines,
       keyboardAppearance: keyboardAppearance,
       padding: terminalViewportPadding,
+      resizeTerminalToViewport:
+          _activeMuxBackend != RemoteMuxBackend.monkeyMux ||
+          !((_observedSession ?? _activeSession())
+                  ?.monkeyMuxViewportClippingEnabled ??
+              false),
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,

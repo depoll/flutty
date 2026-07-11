@@ -468,6 +468,42 @@ func TestHasAttachClientReportsAttachConnection(t *testing.T) {
 	}
 }
 
+func TestHasAttachClientByIDScopesForegroundState(t *testing.T) {
+	server := newMuxServer("test")
+	first := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"first",
+		120,
+		40,
+	)
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"second",
+		80,
+		24,
+	)
+
+	if !server.hasAttachClientByID("first") {
+		t.Fatal("server did not report first client")
+	}
+	if server.hasAttachClientByID("missing") {
+		t.Fatal("server reported a missing client")
+	}
+
+	server.removeAttachClient(first)
+
+	if server.hasAttachClientByID("first") {
+		t.Fatal("server retained detached first client")
+	}
+	if !server.hasAttachClientByID("second") {
+		t.Fatal("server lost remaining second client")
+	}
+}
+
 func TestMultipleAttachClientsReceiveActiveOutput(t *testing.T) {
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{
@@ -729,6 +765,53 @@ func TestTerminalQueryDeliveryFailsOverFromClosedPrimary(t *testing.T) {
 			gotPrimary,
 			width,
 			height,
+		)
+	}
+}
+
+func TestPrimaryDetachDropsItsDeferredViewport(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 50)
+	replacement := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"replacement",
+		160,
+		50,
+	)
+	primary := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"primary",
+		80,
+		24,
+	)
+	replacement.focusSequence.Store(primary.focusSequence.Load() - 1)
+	server.width = 80
+	server.height = 24
+	server.pendingResizeWidth = 80
+	server.pendingResizeHeight = 24
+
+	server.removeAttachClient(primary)
+
+	server.mu.Lock()
+	width, height := server.width, server.height
+	pendingWidth, pendingHeight :=
+		server.pendingResizeWidth, server.pendingResizeHeight
+	active := server.attachConn
+	server.mu.Unlock()
+	if active != replacement.conn {
+		t.Fatal("replacement client did not become primary")
+	}
+	if width != 160 || height != 50 {
+		t.Fatalf("replacement viewport = %dx%d, want 160x50", width, height)
+	}
+	if pendingWidth != 0 || pendingHeight != 0 {
+		t.Fatalf(
+			"detached viewport remained pending at %dx%d",
+			pendingWidth,
+			pendingHeight,
 		)
 	}
 }
@@ -1125,6 +1208,31 @@ func TestAttachSizeFollowsPrimaryClient(t *testing.T) {
 	}
 }
 
+func TestClippingClientReceivesInitialCanonicalViewport(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	conn := &recordingConn{}
+	client := newAttachClient(
+		conn,
+		controlMessage{
+			ClientID:     "phone",
+			Width:        80,
+			Height:       24,
+			ClipViewport: true,
+		},
+	)
+	t.Cleanup(client.close)
+
+	server.attachMu.Lock()
+	server.mu.Lock()
+	server.attachClients[conn] = client
+	server.attachConn = conn
+	server.enqueueAttachViewportResizeLocked(80, 24)
+	server.mu.Unlock()
+	server.attachMu.Unlock()
+
+	waitForRecordedOutput(t, conn, "\x1b[?8;24;80t")
+}
+
 func TestConcurrentClientResizesLeavePrimarySize(t *testing.T) {
 	server := newMuxServerWithSize("test", 160, 60)
 	registerTestAttachClient(t, server, &recordingConn{}, "first", 120, 40)
@@ -1157,6 +1265,117 @@ func TestConcurrentClientResizesLeavePrimarySize(t *testing.T) {
 			wantHeight,
 		)
 	}
+}
+
+func TestClippingResizeWaitsForTerminalSequenceBoundary(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	window := &muxWindow{id: "@1", index: 0, lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := registerTestAttachClient(
+		t,
+		server,
+		conn,
+		"primary",
+		80,
+		24,
+	)
+	client.clipViewport = true
+
+	server.handleWindowOutput("@1", []byte("\x1b["))
+	waitForRecordedOutput(t, conn, "\x1b[")
+
+	server.resizeForClient("primary", 100, 30, false)
+	server.mu.Lock()
+	width, height := server.width, server.height
+	server.mu.Unlock()
+	if width != 100 || height != 30 {
+		t.Fatalf("desired size = %dx%d, want pending 100x30", width, height)
+	}
+	if got := conn.String(); got != "\x1b[" {
+		t.Fatalf("mid-sequence output = %q, want no injected viewport CSI", got)
+	}
+
+	server.handleWindowOutput("@1", []byte("0mX"))
+
+	waitForRecordedOutput(t, conn, "\x1b[0mX\x1b[?8;30;100t")
+	server.mu.Lock()
+	width, height = server.width, server.height
+	server.mu.Unlock()
+	if width != 100 || height != 30 {
+		t.Fatalf("settled size = %dx%d, want 100x30", width, height)
+	}
+}
+
+func TestClippingResizeWaitsForBoundaryChunkToBeForwarded(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	window := &muxWindow{
+		id:                       "@1",
+		index:                    0,
+		terminalOutputForwarding: true,
+		lastActivity:             time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := registerTestAttachClient(
+		t,
+		server,
+		conn,
+		"primary",
+		80,
+		24,
+	)
+	client.clipViewport = true
+
+	server.resizeForClient("primary", 100, 30, false)
+
+	if got := conn.String(); got != "" {
+		t.Fatalf("forwarding resize output = %q, want deferred viewport", got)
+	}
+	server.mu.Lock()
+	window.terminalOutputForwarding = false
+	server.mu.Unlock()
+
+	server.refreshPendingViewportResize()
+
+	waitForRecordedOutput(t, conn, "\x1b[?8;30;100t")
+}
+
+func TestWindowSwitchResetsParserBeforePendingViewport(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	first := &muxWindow{
+		id:                  "@1",
+		index:               0,
+		terminalOutputState: terminalOutputParserOsc,
+		lastActivity:        time.Now(),
+	}
+	second := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{first, second}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := registerTestAttachClient(
+		t,
+		server,
+		conn,
+		"primary",
+		80,
+		24,
+	)
+	client.clipViewport = true
+	server.width = 100
+	server.height = 30
+	server.pendingResizeWidth = 100
+	server.pendingResizeHeight = 30
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	wantPrefix := terminalParserResetSequence + "\x1b[?8;30;100t" +
+		activeWindowReplayPrefix
+	waitForRecordedContains(t, conn, wantPrefix)
 }
 
 func TestFocusClientControlPromotesAndResizesClient(t *testing.T) {
@@ -1311,6 +1530,49 @@ func TestClientFocusHandoffImmediatelyReplaysAndRedrawsWindow(t *testing.T) {
 	}
 	if len(simulated) != 0 {
 		t.Fatalf("already-focused client redrew again: %#v", simulated)
+	}
+}
+
+func TestClientFocusBroadcastsSharedViewportToClippingClients(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 50)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      []byte("shared layout"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	phoneConn := &recordingConn{}
+	phone := registerTestAttachClient(
+		t,
+		server,
+		phoneConn,
+		"phone",
+		72,
+		28,
+	)
+	desktopConn := &recordingConn{}
+	desktop := registerTestAttachClient(
+		t,
+		server,
+		desktopConn,
+		"desktop",
+		160,
+		50,
+	)
+	phone.clipViewport = true
+	phone.terminalWidth = 160
+	phone.terminalHeight = 50
+	desktop.clipViewport = true
+
+	server.promoteAttachClient(phone)
+
+	const viewportResize = "\x1b[?8;28;72t"
+	waitForRecordedOutput(t, desktopConn, viewportResize)
+	waitForRecordedContains(t, phoneConn, viewportResize+activeWindowReplayPrefix)
+	if got := phoneConn.String(); !strings.HasPrefix(got, viewportResize) {
+		t.Fatalf("focused client output = %q, want viewport resize first", got)
 	}
 }
 
