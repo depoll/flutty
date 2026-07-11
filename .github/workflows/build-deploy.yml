@@ -958,7 +958,7 @@ jobs:
             bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
           fi
 
-      - name: Build iOS
+      - name: Build or configure iOS
         if: inputs.ios-reuse-ipa-artifact-name == ''
         env:
           DEPLOY_IOS_TO: ${{ inputs.deploy-ios-to }}
@@ -966,6 +966,10 @@ jobs:
           EXTRA_FLAGS=()
           if [ "$DEPLOY_IOS_TO" = "none" ]; then
             EXTRA_FLAGS+=(--no-tree-shake-icons)
+          else
+            # Fastlane archives deploy builds below. Generate its Xcode
+            # configuration without compiling the application a second time.
+            EXTRA_FLAGS+=(--config-only)
           fi
           flutter build ios \
             --flavor "$BUILD_FLAVOR" \
@@ -981,6 +985,8 @@ jobs:
 
       - name: Package unsigned IPA
         if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        env:
+          SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
         run: |
           APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' -type d -print -quit)
           if [ -z "$APP_PATH" ]; then
@@ -1036,7 +1042,7 @@ jobs:
             if [ -d SwiftSupport ]; then
               ZIP_INPUTS+=(SwiftSupport)
             fi
-            zip -qry "../ipa/ios-unsigned-${BUILD_FLAVOR}-${BUILD_NAME}-${BUILD_NUMBER}.ipa" "${ZIP_INPUTS[@]}"
+            zip -qry "../ipa/ios-unsigned-${BUILD_FLAVOR}-${BUILD_NAME}-${BUILD_NUMBER}-${SOURCE_SHA}.ipa" "${ZIP_INPUTS[@]}"
           )
 
       - name: Download reusable IPA artifact
@@ -1251,7 +1257,7 @@ jobs:
         if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          path: build/ios/ipa/ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa
+          path: build/ios/ipa/ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}-${{ steps.resolved-source-sha.outputs.value }}.ipa
           archive: false
 
   deploy-status-summary:
