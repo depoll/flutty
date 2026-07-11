@@ -78,6 +78,7 @@ class _MockTmuxService extends Mock implements TmuxService {
 
 class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   MonkeyMuxServerStatus? runningStatus;
+  Future<MonkeyMuxServerStatus?>? runningStatusFuture;
   MonkeyMuxServerStatus? installedHelpersStatus;
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
@@ -101,6 +102,10 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
     runningServerStatusCalls++;
+    final statusFuture = runningStatusFuture;
+    if (statusFuture != null) {
+      return statusFuture;
+    }
     return runningStatus;
   }
 
@@ -6191,30 +6196,9 @@ void main() {
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
 
-    for (final testCase in const [
-      (
-        name: 'restarts an idle MonkeyMux server after helper update approval',
-        hasForegroundClient: false,
-        supportsIdleUpgrade: false,
-        expectedPolicy: 'always',
-        expectsDeferredNotice: false,
-      ),
-      (
-        name: 'defers a MonkeyMux server update while a terminal is attached',
-        hasForegroundClient: true,
-        supportsIdleUpgrade: false,
-        expectedPolicy: 'never',
-        expectsDeferredNotice: true,
-      ),
-      (
-        name: 'defers an atomic-capable server that remains mismatched',
-        hasForegroundClient: true,
-        supportsIdleUpgrade: true,
-        expectedPolicy: 'never',
-        expectsDeferredNotice: true,
-      ),
-    ]) {
-      testWidgets(testCase.name, (tester) async {
+    testWidgets(
+      'installs helper without restarting a mismatched MonkeyMux server',
+      (tester) async {
         final monkeyMuxInstallerService = _PromptingMonkeyMuxInstallerService(
           request: const MonkeyMuxInstallRequest(
             platform: 'darwin-arm64',
@@ -6227,12 +6211,9 @@ void main() {
             version: '0.1.13',
             capabilities: {'shutdown'},
           )
-          ..runningStatus = MonkeyMuxServerStatus(
+          ..runningStatus = const MonkeyMuxServerStatus(
             version: '0.1.13',
-            capabilities: {
-              'shutdown',
-              if (testCase.supportsIdleUpgrade) 'idle-upgrade-v1',
-            },
+            capabilities: {'shutdown'},
           );
         final tmuxService = _MockTmuxService();
         const sessionName = 'work';
@@ -6258,14 +6239,10 @@ void main() {
           executedCommands.add(invocation.positionalArguments.single as String);
           return shellChannel;
         });
-        var hasForegroundClientCalls = 0;
         when(
           () =>
               monkeyMuxService.hasForegroundClientOrThrow(session, sessionName),
-        ).thenAnswer((_) async {
-          hasForegroundClientCalls++;
-          return hasForegroundClientCalls != 1 || testCase.hasForegroundClient;
-        });
+        ).thenAnswer((_) async => true);
         when(
           () => monkeyMuxService.listWindows(session, sessionName),
         ).thenAnswer(
@@ -6316,6 +6293,12 @@ void main() {
         expect(find.text('Update MonkeyMux helper?'), findsOneWidget);
         expect(find.text('Running version: 0.1.13'), findsOneWidget);
         expect(find.text('Update MonkeyMux?'), findsNothing);
+        expect(
+          find.textContaining(
+            'MonkeySSH will upload helper 0.1.14 without interrupting its windows.',
+          ),
+          findsOneWidget,
+        );
         expect(executedCommands, isEmpty);
 
         await tester.tap(find.widgetWithText(FilledButton, 'Update'));
@@ -6327,10 +6310,7 @@ void main() {
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
         expect(startupCommand, contains("'/tmp/monkeymux' attach"));
-        expect(
-          startupCommand,
-          contains('--update-policy ${testCase.expectedPolicy}'),
-        );
+        expect(startupCommand, contains('--update-policy never'));
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[true]);
         expect(
@@ -6340,15 +6320,118 @@ void main() {
         expect(monkeyMuxService.runningServerStatusCalls, 1);
         expect(
           find.text(
-            'MonkeyMux was updated, but this workspace is still using the '
-            'previous server. Restart the workspace to finish updating.',
+            'MonkeyMux 0.1.14 is installed, but this workspace is still running '
+            '0.1.13. Close all MonkeyMux windows, then reconnect to finish '
+            'updating.',
           ),
-          testCase.expectsDeferredNotice ? findsOneWidget : findsNothing,
+          findsOneWidget,
         );
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
-      }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
-    }
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'does not use the update UI after disposal during the status probe',
+      (tester) async {
+        final statusCompleter = Completer<MonkeyMuxServerStatus?>();
+        final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final monkeyMuxService = _MockMonkeyMuxService()
+          ..runningStatusFuture = statusCompleter.future;
+        final tmuxService = _MockTmuxService();
+        const sessionName = 'work';
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => monkeyMuxInstallerService.ensureInstalled(
+            session,
+            priority: any(named: 'priority'),
+            confirmInstall: any(named: 'confirmInstall'),
+          ),
+        ).thenAnswer(
+          (_) async => const MonkeyMuxInstallation(
+            executablePath: '/tmp/monkeymux',
+            platform: 'darwin-arm64',
+            version: '0.1.14',
+          ),
+        );
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => shellChannel);
+        when(
+          () =>
+              monkeyMuxService.hasForegroundClientOrThrow(session, sessionName),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, sessionName),
+        ).thenAnswer((_) async => const <TmuxWindow>[]);
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, sessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monkeyMuxInstallerServiceProvider.overrideWithValue(
+                monkeyMuxInstallerService,
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(monkeyMuxService.runningServerStatusCalls, 1);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        statusCompleter.complete(
+          const MonkeyMuxServerStatus(
+            version: '0.1.13',
+            capabilities: {'shutdown'},
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(tester.takeException(), isNull);
+        expect(find.byType(SnackBar), findsNothing);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
 
     testWidgets(
       'opens a regular terminal when MonkeyMux install prompt is declined',

@@ -7961,119 +7961,51 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       installation,
       sessionName,
     );
+    if (!mounted) {
+      return MonkeyMuxServerUpdatePolicy.never;
+    }
     if (status == null || !status.needsUpdate(installation.version)) {
       return MonkeyMuxServerUpdatePolicy.never;
     }
-    var shouldUpdate = installation.installedDuringCall;
-    if (installation.installedDuringCall) {
-      DiagnosticsLogService.instance.info(
-        'monkeymux.install',
-        'upgrade_confirmed_by_install',
-        fields: {
-          'connectionId': session.connectionId,
-          'supportsShutdown': status.supportsShutdown,
-        },
-      );
-    } else {
-      DiagnosticsLogService.instance.info(
-        'monkeymux.install',
-        'upgrade_prompt',
-        fields: {
-          'connectionId': session.connectionId,
-          'supportsShutdown': status.supportsShutdown,
-        },
-      );
-      shouldUpdate = await _confirmMonkeyMuxServerUpdate(
-        runningVersion: status.version,
-        bundledVersion: installation.version,
-        supportsShutdown: status.supportsShutdown,
-      );
-    }
-    if (!mounted || !shouldUpdate) {
-      DiagnosticsLogService.instance.info(
-        'monkeymux.install',
-        'upgrade_skipped',
-        fields: {'connectionId': session.connectionId},
-      );
-      return MonkeyMuxServerUpdatePolicy.never;
-    }
-
     DiagnosticsLogService.instance.info(
       'monkeymux.install',
-      'upgrade_confirmed',
-      fields: {'connectionId': session.connectionId},
+      'upgrade_deferred_running_server',
+      fields: {
+        'connectionId': session.connectionId,
+        'supportsShutdown': status.supportsShutdown,
+        'installedDuringCall': installation.installedDuringCall,
+      },
     );
-    if (status.supportsIdleUpgrade) {
-      DiagnosticsLogService.instance.info(
-        'monkeymux.install',
-        'upgrade_deferred_active_client',
-        fields: {'connectionId': session.connectionId},
-      );
-      _showMonkeyMuxUpgradeDeferredNotice(
-        connectionId: session.connectionId,
-        sessionName: sessionName,
-        bundledVersion: installation.version,
-      );
-      return MonkeyMuxServerUpdatePolicy.never;
-    }
-    try {
-      final hasForegroundClient = await _monkeyMuxService
-          .hasForegroundClientOrThrow(session, sessionName);
-      if (!mounted) {
-        return MonkeyMuxServerUpdatePolicy.never;
-      }
-      if (hasForegroundClient) {
-        DiagnosticsLogService.instance.info(
-          'monkeymux.install',
-          'upgrade_deferred_active_client',
-          fields: {'connectionId': session.connectionId},
-        );
-        _showMonkeyMuxUpgradeDeferredNotice(
-          connectionId: session.connectionId,
-          sessionName: sessionName,
-          bundledVersion: installation.version,
-        );
-        return MonkeyMuxServerUpdatePolicy.never;
-      }
-    } on Object catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'monkeymux.install',
-        'upgrade_deferred_attach_state_unavailable',
-        fields: {
-          'connectionId': session.connectionId,
-          'errorType': error.runtimeType,
-        },
-      );
-      _showMonkeyMuxUpgradeDeferredNotice(
-        connectionId: session.connectionId,
-        sessionName: sessionName,
-        bundledVersion: installation.version,
-      );
-      return MonkeyMuxServerUpdatePolicy.never;
-    }
-    DiagnosticsLogService.instance.info(
-      'monkeymux.install',
-      'upgrade_idle_restart',
-      fields: {'connectionId': session.connectionId},
+    _showMonkeyMuxUpgradeDeferredNotice(
+      connectionId: session.connectionId,
+      sessionName: sessionName,
+      runningVersion: status.version,
+      bundledVersion: installation.version,
     );
-    return MonkeyMuxServerUpdatePolicy.always;
+    return MonkeyMuxServerUpdatePolicy.never;
   }
 
   void _showMonkeyMuxUpgradeDeferredNotice({
     required int connectionId,
     required String sessionName,
+    required String? runningVersion,
     required String bundledVersion,
   }) {
     if (!mounted) return;
     final noticeKey = '$connectionId:$sessionName:$bundledVersion';
     if (_lastMonkeyMuxUpgradeDeferredNotice == noticeKey) return;
     _lastMonkeyMuxUpgradeDeferredNotice = noticeKey;
+    final runningLabel = runningVersion?.trim();
+    final versionDetail = runningLabel == null || runningLabel.isEmpty
+        ? ''
+        : ' $runningLabel';
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        duration: Duration(seconds: 8),
+      SnackBar(
+        duration: const Duration(seconds: 8),
         content: Text(
-          'MonkeyMux was updated, but this workspace is still using the '
-          'previous server. Restart the workspace to finish updating.',
+          'MonkeyMux $bundledVersion is installed, but this workspace is still '
+          'running$versionDetail. Close all MonkeyMux windows, then reconnect '
+          'to finish updating.',
         ),
       ),
     );
@@ -8114,7 +8046,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               Text(
                 updateStatus == null
                     ? 'MonkeySSH needs to upload its bundled MonkeyMux helper before using MonkeyMux on this connected host.'
-                    : 'This MonkeyMux session is running helper ${updateStatus.version ?? 'unknown'}. MonkeySSH needs to upload helper ${request.version}. Idle workspaces can restart automatically and try to restore their windows; active workspaces keep running on the current server until restarted.',
+                    : 'This MonkeyMux workspace is running helper ${updateStatus.version ?? 'unknown'}. MonkeySSH will upload helper ${request.version} without interrupting its windows. Close all MonkeyMux windows, then reconnect to start the new helper.',
               ),
               const SizedBox(height: 12),
               if (updateStatus != null)
@@ -15442,44 +15374,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     );
     return decision ?? _AutoConnectReviewDecision.skip;
-  }
-
-  Future<bool> _confirmMonkeyMuxServerUpdate({
-    required String? runningVersion,
-    required String bundledVersion,
-    required bool supportsShutdown,
-  }) async {
-    final runningLabel = runningVersion == null || runningVersion.trim().isEmpty
-        ? 'unknown'
-        : runningVersion.trim();
-    final message = supportsShutdown
-        ? 'This MonkeyMux session is running helper $runningLabel. '
-              'This app includes helper $bundledVersion. An idle workspace will '
-              'restart now and try to restore its windows. An active workspace '
-              'keeps running on the current server until restarted.'
-        : 'This MonkeyMux session is running helper $runningLabel. '
-              'This app includes helper $bundledVersion. This older helper '
-              'cannot close itself cleanly, so it will only be replaced when no '
-              'terminal is attached and some windows may not be restorable.';
-    final confirmed = await showDialog<bool>(
-      context: context,
-      requestFocus: terminalOverlayRouteRequestFocus(context),
-      builder: (context) => AlertDialog(
-        title: const Text('Update MonkeyMux?'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Keep current'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Update'),
-          ),
-        ],
-      ),
-    );
-    return confirmed ?? false;
   }
 
   Future<bool> _confirmCommandInsertion({

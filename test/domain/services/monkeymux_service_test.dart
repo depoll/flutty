@@ -122,11 +122,10 @@ void main() {
     test('detects version mismatches and shutdown capability', () {
       const status = MonkeyMuxServerStatus(
         version: '0.1.13',
-        capabilities: {'window-list', 'shutdown', 'idle-upgrade-v1'},
+        capabilities: {'window-list', 'shutdown'},
       );
 
       expect(status.supportsShutdown, isTrue);
-      expect(status.supportsIdleUpgrade, isTrue);
       expect(status.needsUpdate('0.1.13'), isFalse);
       expect(status.needsUpdate('0.1.14'), isTrue);
     });
