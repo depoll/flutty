@@ -1,0 +1,650 @@
+// ignore_for_file: public_member_api_docs
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/acp_provider.dart';
+
+void main() {
+  group('AcpLaunchCommand', () {
+    test('argv includes executable first', () {
+      const command = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: ['--acp', '--no-color'],
+      );
+      expect(command.argv, ['copilot', '--acp', '--no-color']);
+    });
+
+    test('round-trips through JSON', () {
+      const command = AcpLaunchCommand(
+        executable: 'opencode',
+        arguments: ['acp', '--log-level', 'ERROR'],
+      );
+      final decoded = AcpLaunchCommand.fromJson(command.toJson());
+      expect(decoded, command);
+    });
+
+    test('equality and hashCode are value-based', () {
+      const a = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
+      const b = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
+      const c = AcpLaunchCommand(executable: 'copilot', arguments: ['--yolo']);
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+      expect(a == c, isFalse);
+    });
+
+    group('tryFromJson', () {
+      test('returns null for non-map input', () {
+        expect(AcpLaunchCommand.tryFromJson('not a map'), isNull);
+        expect(AcpLaunchCommand.tryFromJson([1, 2, 3]), isNull);
+        expect(AcpLaunchCommand.tryFromJson(null), isNull);
+      });
+
+      test('returns null when a map key is not a string', () {
+        expect(AcpLaunchCommand.tryFromJson({1: 'copilot'}), isNull);
+      });
+
+      test('returns null when executable is missing or blank', () {
+        expect(AcpLaunchCommand.tryFromJson({'arguments': []}), isNull);
+        expect(
+          AcpLaunchCommand.tryFromJson({'executable': '   ', 'arguments': []}),
+          isNull,
+        );
+      });
+
+      test('returns null when arguments is not a list', () {
+        expect(
+          AcpLaunchCommand.tryFromJson({
+            'executable': 'copilot',
+            'arguments': 'oops',
+          }),
+          isNull,
+        );
+      });
+
+      test('returns null when an argument is not a string', () {
+        expect(
+          AcpLaunchCommand.tryFromJson({
+            'executable': 'copilot',
+            'arguments': ['--acp', 5],
+          }),
+          isNull,
+        );
+      });
+
+      test('returns null when the executable contains a NUL byte', () {
+        expect(
+          AcpLaunchCommand.tryFromJson({
+            'executable': 'copi\u0000lot',
+            'arguments': [],
+          }),
+          isNull,
+        );
+      });
+
+      test('returns null when an argument exceeds the length limit', () {
+        expect(
+          AcpLaunchCommand.tryFromJson({
+            'executable': 'copilot',
+            'arguments': ['a' * (acpLaunchCommandArgumentMaxLength + 1)],
+          }),
+          isNull,
+        );
+      });
+
+      test('returns a valid command for well-formed input', () {
+        final command = AcpLaunchCommand.tryFromJson({
+          'executable': 'copilot',
+          'arguments': ['--acp'],
+        });
+        expect(
+          command,
+          const AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']),
+        );
+      });
+
+      test('accepts input without an arguments key', () {
+        final command = AcpLaunchCommand.tryFromJson({'executable': 'copilot'});
+        expect(command, const AcpLaunchCommand(executable: 'copilot'));
+      });
+    });
+  });
+
+  group('validateAcpLaunchCommand', () {
+    test('throws for a blank executable', () {
+      expect(
+        () =>
+            validateAcpLaunchCommand(const AcpLaunchCommand(executable: '  ')),
+        throwsFormatException,
+      );
+    });
+
+    test('throws for a NUL byte in an argument', () {
+      expect(
+        () => validateAcpLaunchCommand(
+          const AcpLaunchCommand(
+            executable: 'copilot',
+            arguments: ['--acp\u0000'],
+          ),
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('throws when too many arguments are supplied', () {
+      final tooMany = List.generate(
+        acpLaunchCommandMaxArgumentCount + 1,
+        (i) => 'arg$i',
+      );
+      expect(
+        () => validateAcpLaunchCommand(
+          AcpLaunchCommand(executable: 'copilot', arguments: tooMany),
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('accepts a well-formed command', () {
+      expect(
+        () => validateAcpLaunchCommand(
+          const AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']),
+        ),
+        returnsNormally,
+      );
+    });
+  });
+
+  group('validateAcpCustomProviderId', () {
+    test('throws for blank IDs', () {
+      expect(() => validateAcpCustomProviderId(''), throwsFormatException);
+      expect(() => validateAcpCustomProviderId('   '), throwsFormatException);
+    });
+
+    test('throws for IDs with control characters', () {
+      expect(
+        () => validateAcpCustomProviderId('my\u0000id'),
+        throwsFormatException,
+      );
+    });
+
+    test('throws for IDs longer than the max length', () {
+      expect(
+        () => validateAcpCustomProviderId('a' * (acpProviderIdMaxLength + 1)),
+        throwsFormatException,
+      );
+    });
+
+    test('throws for IDs using the reserved built-in prefix', () {
+      expect(
+        () => validateAcpCustomProviderId('builtin:my-provider'),
+        throwsFormatException,
+      );
+    });
+
+    test('trims and returns a valid ID', () {
+      expect(validateAcpCustomProviderId('  my-id  '), 'my-id');
+    });
+  });
+
+  group('validateAcpProviderLabel', () {
+    test('throws for blank labels', () {
+      expect(() => validateAcpProviderLabel(''), throwsFormatException);
+    });
+
+    test('throws for labels longer than the max length', () {
+      expect(
+        () => validateAcpProviderLabel('a' * (acpProviderLabelMaxLength + 1)),
+        throwsFormatException,
+      );
+    });
+
+    test('throws for labels with control characters', () {
+      expect(
+        () => validateAcpProviderLabel('My\u0000Label'),
+        throwsFormatException,
+      );
+    });
+
+    test('trims and returns a valid label', () {
+      expect(validateAcpProviderLabel('  My Label  '), 'My Label');
+    });
+  });
+
+  group('computeAcpLaunchCommandFingerprint', () {
+    test('is deterministic for identical commands', () {
+      const a = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
+      const b = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
+      expect(
+        computeAcpLaunchCommandFingerprint(a),
+        computeAcpLaunchCommandFingerprint(b),
+      );
+    });
+
+    test('changes when the executable changes', () {
+      const a = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
+      const b = AcpLaunchCommand(executable: 'opencode', arguments: ['--acp']);
+      expect(
+        computeAcpLaunchCommandFingerprint(a),
+        isNot(computeAcpLaunchCommandFingerprint(b)),
+      );
+    });
+
+    test('changes when an argument changes', () {
+      const a = AcpLaunchCommand(executable: 'copilot', arguments: ['--acp']);
+      const b = AcpLaunchCommand(executable: 'copilot', arguments: ['--yolo']);
+      expect(
+        computeAcpLaunchCommandFingerprint(a),
+        isNot(computeAcpLaunchCommandFingerprint(b)),
+      );
+    });
+
+    test('changes when argument order changes', () {
+      const a = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: ['--a', '--b'],
+      );
+      const b = AcpLaunchCommand(
+        executable: 'copilot',
+        arguments: ['--b', '--a'],
+      );
+      expect(
+        computeAcpLaunchCommandFingerprint(a),
+        isNot(computeAcpLaunchCommandFingerprint(b)),
+      );
+    });
+
+    test('is a lowercase hex SHA-256 digest', () {
+      const command = AcpLaunchCommand(executable: 'copilot');
+      final fingerprint = computeAcpLaunchCommandFingerprint(command);
+      expect(fingerprint, matches(RegExp(r'^[0-9a-f]{64}$')));
+    });
+  });
+
+  group('built-in providers', () {
+    test('acpBuiltinProviders contains Copilot CLI and OpenCode', () {
+      expect(acpBuiltinProviders, hasLength(2));
+      expect(acpBuiltinProviders, contains(acpCopilotCliProvider));
+      expect(acpBuiltinProviders, contains(acpOpenCodeProvider));
+    });
+
+    test('built-in provider IDs are stable and reserved', () {
+      expect(acpCopilotCliProvider.id, 'builtin:copilot-cli');
+      expect(acpOpenCodeProvider.id, 'builtin:opencode');
+      for (final provider in acpBuiltinProviders) {
+        expect(
+          provider.id.startsWith(acpCustomProviderReservedIdPrefix),
+          isTrue,
+        );
+      }
+    });
+
+    test('built-in launch commands are valid and exclude a cwd concept', () {
+      for (final provider in acpBuiltinProviders) {
+        expect(
+          () => validateAcpLaunchCommand(provider.launchCommand),
+          returnsNormally,
+        );
+      }
+    });
+
+    test('built-in providers expose executable probes', () {
+      expect(
+        acpCopilotCliProvider.executableProbe.candidateExecutableNames,
+        contains('copilot'),
+      );
+      expect(
+        acpOpenCodeProvider.executableProbe.candidateExecutableNames,
+        contains('opencode'),
+      );
+    });
+
+    test('built-in providers expose terminal-auth command metadata', () {
+      expect(acpCopilotCliProvider.terminalAuthCommand, isNotNull);
+      expect(acpOpenCodeProvider.terminalAuthCommand, isNotNull);
+    });
+
+    test('AcpBuiltinProviderView exposes the wrapped provider', () {
+      const view = AcpBuiltinProviderView(acpCopilotCliProvider);
+      expect(view.id, acpCopilotCliProvider.id);
+      expect(view.label, acpCopilotCliProvider.label);
+      expect(view.launchCommand, acpCopilotCliProvider.launchCommand);
+      expect(view.isCustom, isFalse);
+    });
+  });
+
+  group('AcpCommandApproval', () {
+    test('approve computes a matching fingerprint', () {
+      const command = AcpLaunchCommand(executable: 'copilot');
+      final approval = AcpCommandApproval.approve(
+        command,
+        now: DateTime.utc(2026),
+      );
+      expect(
+        approval.commandFingerprint,
+        computeAcpLaunchCommandFingerprint(command),
+      );
+      expect(approval.approvedAt, DateTime.utc(2026));
+    });
+
+    test('round-trips through JSON', () {
+      const command = AcpLaunchCommand(executable: 'copilot');
+      final approval = AcpCommandApproval.approve(
+        command,
+        now: DateTime.utc(2026),
+      );
+      final decoded = AcpCommandApproval.tryFromJson(approval.toJson());
+      expect(decoded, approval);
+    });
+
+    group('tryFromJson', () {
+      test('returns null for non-map input', () {
+        expect(AcpCommandApproval.tryFromJson('nope'), isNull);
+      });
+
+      test('returns null when commandFingerprint is missing or blank', () {
+        expect(
+          AcpCommandApproval.tryFromJson({
+            'approvedAt': '2026-01-01T00:00:00Z',
+          }),
+          isNull,
+        );
+        expect(
+          AcpCommandApproval.tryFromJson({
+            'commandFingerprint': '',
+            'approvedAt': '2026-01-01T00:00:00Z',
+          }),
+          isNull,
+        );
+      });
+
+      test('returns null when approvedAt is missing or unparseable', () {
+        expect(
+          AcpCommandApproval.tryFromJson({'commandFingerprint': 'abc'}),
+          isNull,
+        );
+        expect(
+          AcpCommandApproval.tryFromJson({
+            'commandFingerprint': 'abc',
+            'approvedAt': 'not-a-date',
+          }),
+          isNull,
+        );
+      });
+    });
+  });
+
+  group('AcpCustomProviderDefinition', () {
+    const command = AcpLaunchCommand(
+      executable: 'my-agent',
+      arguments: ['--acp'],
+    );
+
+    test('create validates id, label, and command', () {
+      expect(
+        () => AcpCustomProviderDefinition.create(
+          id: '',
+          label: 'My Agent',
+          launchCommand: command,
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => AcpCustomProviderDefinition.create(
+          id: 'my-agent',
+          label: '',
+          launchCommand: command,
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => AcpCustomProviderDefinition.create(
+          id: 'my-agent',
+          label: 'My Agent',
+          launchCommand: const AcpLaunchCommand(executable: ''),
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('create rejects the reserved built-in ID prefix', () {
+      expect(
+        () => AcpCustomProviderDefinition.create(
+          id: 'builtin:my-agent',
+          label: 'My Agent',
+          launchCommand: command,
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('create trims id and label and approves the command', () {
+      final definition = AcpCustomProviderDefinition.create(
+        id: '  my-agent  ',
+        label: '  My Agent  ',
+        launchCommand: command,
+        now: DateTime.utc(2026),
+      );
+      expect(definition.id, 'my-agent');
+      expect(definition.label, 'My Agent');
+      expect(definition.createdAt, DateTime.utc(2026));
+      expect(definition.updatedAt, DateTime.utc(2026));
+      expect(definition.isCommandApproved, isTrue);
+    });
+
+    test('isCommandApproved is false after the command changes', () {
+      final definition = AcpCustomProviderDefinition.create(
+        id: 'my-agent',
+        label: 'My Agent',
+        launchCommand: command,
+        now: DateTime.utc(2026),
+      );
+      const changedCommand = AcpLaunchCommand(
+        executable: 'my-agent',
+        arguments: ['--acp', '--extra'],
+      );
+      // Simulate storage drift by round-tripping with a mismatched command,
+      // as would happen if the approval were stale relative to the command.
+      final stale = AcpCustomProviderDefinition.tryFromJson({
+        ...definition.toJson(),
+        'launchCommand': changedCommand.toJson(),
+      });
+      expect(stale, isNotNull);
+      expect(stale!.isCommandApproved, isFalse);
+    });
+
+    group('update', () {
+      test('re-approves when the launch command changes', () {
+        final definition = AcpCustomProviderDefinition.create(
+          id: 'my-agent',
+          label: 'My Agent',
+          launchCommand: command,
+          now: DateTime.utc(2026),
+        );
+        const newCommand = AcpLaunchCommand(
+          executable: 'my-agent',
+          arguments: ['--acp', '--extra'],
+        );
+        final updated = definition.update(
+          launchCommand: newCommand,
+          now: DateTime.utc(2026, 2),
+        );
+        expect(updated.launchCommand, newCommand);
+        expect(updated.isCommandApproved, isTrue);
+        expect(
+          updated.approval.commandFingerprint,
+          isNot(definition.approval.commandFingerprint),
+        );
+        expect(updated.approval.approvedAt, DateTime.utc(2026, 2));
+        expect(updated.createdAt, definition.createdAt);
+        expect(updated.updatedAt, DateTime.utc(2026, 2));
+      });
+
+      test('keeps the existing approval when the command is unchanged', () {
+        final definition = AcpCustomProviderDefinition.create(
+          id: 'my-agent',
+          label: 'My Agent',
+          launchCommand: command,
+          now: DateTime.utc(2026),
+        );
+        final updated = definition.update(
+          label: 'Renamed Agent',
+          now: DateTime.utc(2026, 2),
+        );
+        expect(updated.label, 'Renamed Agent');
+        expect(updated.approval, definition.approval);
+        expect(updated.updatedAt, DateTime.utc(2026, 2));
+      });
+
+      test(
+        'keeps the existing approval when the command is set to the same value',
+        () {
+          final definition = AcpCustomProviderDefinition.create(
+            id: 'my-agent',
+            label: 'My Agent',
+            launchCommand: command,
+            now: DateTime.utc(2026),
+          );
+          final updated = definition.update(
+            launchCommand: const AcpLaunchCommand(
+              executable: 'my-agent',
+              arguments: ['--acp'],
+            ),
+            now: DateTime.utc(2026, 2),
+          );
+          expect(updated.approval, definition.approval);
+        },
+      );
+
+      test('throws for an invalid new label without mutating the original', () {
+        final definition = AcpCustomProviderDefinition.create(
+          id: 'my-agent',
+          label: 'My Agent',
+          launchCommand: command,
+        );
+        expect(() => definition.update(label: ''), throwsFormatException);
+        expect(definition.label, 'My Agent');
+      });
+    });
+
+    test('round-trips through JSON', () {
+      final definition = AcpCustomProviderDefinition.create(
+        id: 'my-agent',
+        label: 'My Agent',
+        launchCommand: command,
+        now: DateTime.utc(2026),
+      );
+      final decoded = AcpCustomProviderDefinition.tryFromJson(
+        definition.toJson(),
+      );
+      expect(decoded, definition);
+    });
+
+    test('toJson includes a schemaVersion for forward compatibility', () {
+      final definition = AcpCustomProviderDefinition.create(
+        id: 'my-agent',
+        label: 'My Agent',
+        launchCommand: command,
+      );
+      expect(definition.toJson()['schemaVersion'], 1);
+    });
+
+    group('tryFromJson defensive parsing', () {
+      test('returns null for non-map input', () {
+        expect(AcpCustomProviderDefinition.tryFromJson('nope'), isNull);
+        expect(AcpCustomProviderDefinition.tryFromJson(42), isNull);
+      });
+
+      test('returns null when required fields are missing', () {
+        expect(AcpCustomProviderDefinition.tryFromJson({}), isNull);
+      });
+
+      test('returns null when the launch command is malformed', () {
+        expect(
+          AcpCustomProviderDefinition.tryFromJson({
+            'id': 'my-agent',
+            'label': 'My Agent',
+            'launchCommand': {'executable': ''},
+            'approval': {
+              'commandFingerprint': 'abc',
+              'approvedAt': '2026-01-01T00:00:00Z',
+            },
+            'createdAt': '2026-01-01T00:00:00Z',
+            'updatedAt': '2026-01-01T00:00:00Z',
+          }),
+          isNull,
+        );
+      });
+
+      test('returns null when the id uses the reserved built-in prefix', () {
+        expect(
+          AcpCustomProviderDefinition.tryFromJson({
+            'id': 'builtin:something',
+            'label': 'My Agent',
+            'launchCommand': command.toJson(),
+            'approval': AcpCommandApproval.approve(command).toJson(),
+            'createdAt': '2026-01-01T00:00:00Z',
+            'updatedAt': '2026-01-01T00:00:00Z',
+          }),
+          isNull,
+        );
+      });
+
+      test('ignores unknown fields for forward compatibility', () {
+        final definition = AcpCustomProviderDefinition.create(
+          id: 'my-agent',
+          label: 'My Agent',
+          launchCommand: command,
+        );
+        final withExtra = {...definition.toJson(), 'futureField': 'value'};
+        final decoded = AcpCustomProviderDefinition.tryFromJson(withExtra);
+        expect(decoded, definition);
+      });
+
+      test('returns null when createdAt or updatedAt is unparseable', () {
+        expect(
+          AcpCustomProviderDefinition.tryFromJson({
+            'id': 'my-agent',
+            'label': 'My Agent',
+            'launchCommand': command.toJson(),
+            'approval': AcpCommandApproval.approve(command).toJson(),
+            'createdAt': 'not-a-date',
+            'updatedAt': '2026-01-01T00:00:00Z',
+          }),
+          isNull,
+        );
+      });
+    });
+
+    test('equality and hashCode are value-based', () {
+      final a = AcpCustomProviderDefinition.create(
+        id: 'my-agent',
+        label: 'My Agent',
+        launchCommand: command,
+        now: DateTime.utc(2026),
+      );
+      final b = AcpCustomProviderDefinition.create(
+        id: 'my-agent',
+        label: 'My Agent',
+        launchCommand: command,
+        now: DateTime.utc(2026),
+      );
+      final c = a.update(label: 'Different', now: DateTime.utc(2026, 1, 2));
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+      expect(a == c, isFalse);
+    });
+  });
+
+  group('AcpProvider views', () {
+    test('AcpCustomProviderView exposes the wrapped definition', () {
+      final definition = AcpCustomProviderDefinition.create(
+        id: 'my-agent',
+        label: 'My Agent',
+        launchCommand: const AcpLaunchCommand(executable: 'my-agent'),
+      );
+      final view = AcpCustomProviderView(definition);
+      expect(view.id, definition.id);
+      expect(view.label, definition.label);
+      expect(view.launchCommand, definition.launchCommand);
+      expect(view.isCustom, isTrue);
+    });
+  });
+}

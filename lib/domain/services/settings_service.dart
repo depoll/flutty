@@ -107,6 +107,9 @@ abstract final class SettingKeys {
   /// Saved host-scoped coding CLI launch preferences.
   static const hostCliLaunchPreferences = 'host_cli_launch_preferences';
 
+  /// Saved user-defined ACP provider definitions (JSON array).
+  static const acpCustomProviders = 'acp_custom_providers';
+
   /// Enable shared clipboard between device and remote session.
   ///
   /// The remote host can update the local clipboard through OSC 52 and remote
