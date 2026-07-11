@@ -173,22 +173,23 @@ func TestRestoreRedrawFollowUpSkipsInactiveOrDetachedWindow(t *testing.T) {
 
 	// Not the active window anymore.
 	server.activeID = "@other"
-	server.redrawRestoredWindow(attach, "@1")
+	server.redrawRestoredWindow("@1")
 	if len(simulated) != 0 {
 		t.Fatalf("redraw fired for non-active window: %#v", simulated)
 	}
 
-	// Active again but a different client is attached.
+	// Any attached client can keep the restored redraw alive.
 	server.activeID = "@1"
-	server.redrawRestoredWindow(&recordingConn{}, "@1")
-	if len(simulated) != 0 {
-		t.Fatalf("redraw fired for detached client: %#v", simulated)
-	}
-
-	// Active and attached: the redraw runs.
-	server.redrawRestoredWindow(attach, "@1")
+	server.redrawRestoredWindow("@1")
 	if !reflect.DeepEqual(simulated, []string{"@1"}) {
 		t.Fatalf("redraw did not run for active attached window: %#v", simulated)
+	}
+
+	// No attached clients: skip.
+	server.attachConn = nil
+	server.redrawRestoredWindow("@1")
+	if !reflect.DeepEqual(simulated, []string{"@1"}) {
+		t.Fatalf("redraw fired without an attached client: %#v", simulated)
 	}
 }
 
@@ -197,7 +198,7 @@ func TestScheduleRestoreRedrawFollowUpsIgnoresNilConn(t *testing.T) {
 	server := newMuxServer("restore-redraw-nil")
 	server.markRestoreRedrawPending([]string{"@1"})
 
-	server.scheduleRestoreRedrawFollowUps(nil, "@1")
+	server.scheduleRestoreRedrawFollowUps("@1")
 	if len(*actions) != 0 {
 		t.Fatalf("scheduled follow-ups without an attached client: %d", len(*actions))
 	}
