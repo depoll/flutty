@@ -397,6 +397,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     await _runControlCommand(session, sessionName, {
       'type': 'create_window',
+      'clientId': session.monkeyMuxClientId,
       if (command != null && command.trim().isNotEmpty)
         'command': command.trim(),
       if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
@@ -515,6 +516,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     await _runControlCommand(session, sessionName, {
       'type': 'close_window',
+      'clientId': session.monkeyMuxClientId,
       'windowIndex': windowIndex,
     });
   }
@@ -534,6 +536,37 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       (_observers[_MonkeyMuxWatchKey(session.connectionId, sessionName)]
               ?.isControlChannelReady ??
           false);
+
+  /// Makes this app terminal the active MonkeyMux client and applies its size.
+  Future<void> focusClient(
+    SshSession session,
+    String sessionName, {
+    required int columns,
+    required int rows,
+  }) async {
+    if (isAppReviewDemoSession(session)) {
+      return;
+    }
+    try {
+      await _runControlCommand(session, sessionName, {
+        'type': 'focus_client',
+        'clientId': session.monkeyMuxClientId,
+        'width': columns,
+        'height': rows,
+      });
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.focus',
+        'claim_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'columns': columns,
+          'rows': rows,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+    }
+  }
 
   @override
   Future<bool> hasForegroundClientOrThrow(

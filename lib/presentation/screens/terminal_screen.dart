@@ -6277,6 +6277,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TapDownDetails tapDetails,
     CellOffset cellOffset,
   ) {
+    _claimActiveMonkeyMuxClientFocus();
     _terminalTextInputController.suppressNextTouchKeyboardRequest();
   }
 
@@ -7356,6 +7357,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       suppressAutoScroll: true,
     );
     WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _claimActiveMonkeyMuxClientFocus() {
+    final session = _activeSession();
+    if (session == null || _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    final sessionName = _activeMonkeyMuxSessionName(session);
+    final columns = _terminal.viewWidth;
+    final rows = _terminal.viewHeight;
+    if (sessionName == null || columns <= 0 || rows <= 0) {
+      return;
+    }
+    unawaited(
+      _monkeyMuxService.focusClient(
+        session,
+        sessionName,
+        columns: columns,
+        rows: rows,
+      ),
+    );
   }
 
   Future<void> _syncActiveMonkeyMuxTerminalSize(
@@ -11418,6 +11440,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       forceSgrTouchScroll: _forceSgrTouchScroll,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
       onPasteText: isMobile ? null : _pasteClipboard,
+      onTapDown: (_, _) => _claimActiveMonkeyMuxClientFocus(),
     );
 
     if (_lastShowsTerminalPathUnderlines != showsTerminalPathUnderlines) {

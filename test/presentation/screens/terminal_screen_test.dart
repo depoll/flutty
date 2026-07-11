@@ -85,6 +85,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   final controlOperations = <String>[];
   final resizeTerminalCalls =
       <({String sessionName, int columns, int rows, bool redraw})>[];
+  final focusClientCalls = <({String sessionName, int columns, int rows})>[];
 
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
@@ -129,6 +130,21 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
       columns: columns,
       rows: rows,
       redraw: redraw,
+    ));
+  }
+
+  @override
+  Future<void> focusClient(
+    SshSession session,
+    String sessionName, {
+    required int columns,
+    required int rows,
+  }) async {
+    controlOperations.add('focus');
+    focusClientCalls.add((
+      sessionName: sessionName,
+      columns: columns,
+      rows: rows,
     ));
   }
 }

@@ -24,9 +24,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -56,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.94"
+	monkeyMuxVersion                  = "0.1.95"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -67,6 +69,8 @@ const (
 	runCommandTimeout                 = 20 * time.Second
 	socketTimeout                     = 2 * time.Second
 	attachWriteTimeout                = time.Second
+	terminalResponseFocusGrace        = 2 * time.Second
+	focusInputCarryDelay              = 75 * time.Millisecond
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
 	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
 	windowUpdateMinInterval           = 750 * time.Millisecond
@@ -75,6 +79,7 @@ const (
 	windowReplayLimitBytes            = 32 * 1024
 	csiBufferLimitBytes               = 64
 	pendingTerminalQueryLimitBytes    = 512
+	terminalResponseCarryLimitBytes   = 64 * 1024
 	themeHintLimitBytes               = 1024
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
@@ -183,6 +188,7 @@ var capabilities = []string{
 	"multi-client-attach",
 	"tmux-prefix-keys",
 	"client-scoped-resize",
+	"client-focus",
 	"image-replay-ack",
 	"upgrade-restore-v1",
 }
@@ -404,6 +410,7 @@ type muxServer struct {
 	attachMu           sync.Mutex
 	attachClients      map[net.Conn]*attachClient
 	nextAttachSequence uint64
+	nextFocusSequence  uint64
 	controls           map[*controlClient]struct{}
 	themeHint          []byte
 	closed             bool
@@ -466,6 +473,7 @@ type muxWindow struct {
 	redrawForwardingBuffer               []byte
 	redrawForwardingFailoverBuffer       []byte
 	redrawForwardingSecondaryBuffer      []byte
+	redrawForwardingQueryBuffer          []byte
 	redrawForwardingPrimaryConn          net.Conn
 	redrawForwardingPrimaryNeedsFailover bool
 	// pendingTerminalQueries holds capability/status queries (device attributes,
@@ -481,6 +489,8 @@ type muxWindow struct {
 	pendingTerminalQueryCarry      []byte
 	secondaryQueryCarry            []byte
 	secondaryQueryPrimary          net.Conn
+	queryUtf8Remaining             int
+	lastForwardedTerminalQueries   []byte
 	// Kitty graphics image transmissions retained for replay on reattach.
 	// Placeholder-protocol clients (e.g. Copilot CLI) transmit an image once
 	// and thereafter only re-emit placeholder cells, so the one-time image
@@ -535,19 +545,31 @@ type controlClient struct {
 }
 
 type attachWrite struct {
-	data     []byte
-	complete chan error
+	data           []byte
+	complete       chan error
+	expectResponse bool
 }
 
 type attachClient struct {
-	conn           net.Conn
-	id             string
-	width          int
-	height         int
-	sequence       uint64
-	prefixEnabled  bool
-	prefixPending  bool
-	confirmCloseID string
+	conn                               net.Conn
+	id                                 string
+	width                              int
+	height                             int
+	sequence                           uint64
+	focusSequence                      atomic.Uint64
+	prefixEnabled                      bool
+	prefixPending                      bool
+	confirmCloseID                     string
+	activityMu                         sync.Mutex
+	terminalResponseUntil              time.Time
+	terminalResponseCarry              []byte
+	terminalResponseContinuation       byte
+	terminalResponseContinuationEscape bool
+	terminalResponseContinuationUtf8   int
+	focusInputCarry                    []byte
+	focusInputGeneration               uint64
+	focusSequenceSnapshot              func() uint64
+	focusClaim                         func(uint64)
 
 	queue       chan attachWrite
 	done        chan struct{}
@@ -3337,6 +3359,8 @@ func (s *muxServer) scheduleRestoreRedrawFollowUps(windowID string) {
 }
 
 func (s *muxServer) redrawRestoredWindow(windowID string) {
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
 	s.mu.Lock()
 	if s.attachCountLocked() == 0 || s.activeID != windowID {
 		s.mu.Unlock()
@@ -3347,7 +3371,7 @@ func (s *muxServer) redrawRestoredWindow(windowID string) {
 		s.mu.Unlock()
 		return
 	}
-	width, height := s.width, s.height
+	width, height := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
 	s.resizeWithRedraw(width, height, true)
 }
@@ -3584,6 +3608,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var forwarded []byte
 	var failoverForwarded []byte
 	var secondaryForwarded []byte
+	var terminalQueries []byte
 	var themeHint []byte
 	var themeHintData []byte
 	var shouldWrite bool
@@ -3664,6 +3689,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 			}
 		}
 		secondaryForwarded = window.secondaryAttachOutputLocked(forwarded)
+		terminalQueries = append(
+			terminalQueries,
+			window.lastForwardedTerminalQueries...,
+		)
 		failoverForwarded = forwarded
 		if hadQueryCarry {
 			failoverForwarded = append(queryCarry, forwarded...)
@@ -3674,6 +3703,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 			attach = s.attachConn
 			window.redrawForwardingPrimaryConn = attach
 			window.redrawForwardingPrimaryNeedsFailover = true
+		} else if window.redrawForwardingPaused &&
+			hadQueryCarry &&
+			window.redrawForwardingPrimaryConn != attach {
+			window.redrawForwardingPrimaryConn = attach
 		}
 		if len(window.secondaryQueryCarry) > 0 {
 			if !hadQueryCarry || queryPrimaryMissing {
@@ -3695,9 +3728,14 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 				window.redrawForwardingSecondaryBuffer,
 				secondaryForwarded...,
 			)
+			window.redrawForwardingQueryBuffer = append(
+				window.redrawForwardingQueryBuffer,
+				terminalQueries...,
+			)
 			shouldWrite = false
 			forwarded = nil
 			secondaryForwarded = nil
+			terminalQueries = nil
 		}
 	}
 	s.mu.Unlock()
@@ -3714,6 +3752,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 				forwarded,
 				failoverForwarded,
 				secondaryForwarded,
+				terminalQueries,
 				maxAttachSequence,
 			)
 		}
@@ -3855,6 +3894,9 @@ func (c *attachClient) writeLoop() {
 	for {
 		select {
 		case write := <-c.queue:
+			if write.expectResponse {
+				c.expectTerminalResponse()
+			}
 			_ = c.conn.SetWriteDeadline(time.Now().Add(attachWriteTimeout))
 			err := writeConnection(c.conn, write.data)
 			_ = c.conn.SetWriteDeadline(time.Time{})
@@ -3890,6 +3932,21 @@ func writeConnection(conn net.Conn, data []byte) error {
 }
 
 func (c *attachClient) enqueue(data []byte, wait bool) (<-chan error, bool) {
+	return c.enqueueWrite(data, wait, false)
+}
+
+func (c *attachClient) enqueueTerminalQuery(
+	data []byte,
+	wait bool,
+) (<-chan error, bool) {
+	return c.enqueueWrite(data, wait, true)
+}
+
+func (c *attachClient) enqueueWrite(
+	data []byte,
+	wait bool,
+	expectResponse bool,
+) (<-chan error, bool) {
 	if len(data) == 0 {
 		return nil, true
 	}
@@ -3897,7 +3954,10 @@ func (c *attachClient) enqueue(data []byte, wait bool) (<-chan error, bool) {
 		c.close()
 		return nil, false
 	}
-	write := attachWrite{data: append([]byte(nil), data...)}
+	write := attachWrite{
+		data:           append([]byte(nil), data...),
+		expectResponse: expectResponse,
+	}
 	if wait {
 		write.complete = make(chan error, 1)
 	}
@@ -3945,28 +4005,177 @@ func (c *attachClient) close() {
 	})
 }
 
-func (s *muxServer) minimumAttachSizeLocked() (int, int) {
-	width := 0
-	height := 0
-	for _, client := range s.attachClients {
-		if client.width > 0 && (width == 0 || client.width < width) {
-			width = client.width
-		}
-		if client.height > 0 && (height == 0 || client.height < height) {
-			height = client.height
-		}
+func (c *attachClient) expectTerminalResponse() {
+	if c == nil {
+		return
 	}
-	if width == 0 {
-		width = s.width
+	c.activityMu.Lock()
+	c.terminalResponseUntil = time.Now().Add(terminalResponseFocusGrace)
+	c.activityMu.Unlock()
+}
+
+func (c *attachClient) inputClaimsFocus(data []byte) bool {
+	if c == nil || len(data) == 0 {
+		return false
 	}
-	if height == 0 {
-		height = s.height
+	c.activityMu.Lock()
+	defer c.activityMu.Unlock()
+	c.focusInputGeneration++
+	focusGeneration := c.focusInputGeneration
+	combinedFocusInput := data
+	if len(c.focusInputCarry) > 0 {
+		combinedFocusInput = make(
+			[]byte,
+			0,
+			len(c.focusInputCarry)+len(data),
+		)
+		combinedFocusInput = append(combinedFocusInput, c.focusInputCarry...)
+		combinedFocusInput = append(combinedFocusInput, data...)
+		c.focusInputCarry = nil
+	}
+	filteredInput, focusCarry := stripFocusOutInput(combinedFocusInput)
+	c.focusInputCarry = append(c.focusInputCarry[:0], focusCarry...)
+	if len(c.focusInputCarry) > 0 {
+		focusSequence := uint64(0)
+		if c.focusSequenceSnapshot != nil {
+			focusSequence = c.focusSequenceSnapshot()
+		}
+		time.AfterFunc(focusInputCarryDelay, func() {
+			c.resolveAmbiguousFocusInput(focusGeneration, focusSequence)
+		})
+	}
+	if len(filteredInput) == 0 {
+		return false
+	}
+	data = filteredInput
+	if time.Now().After(c.terminalResponseUntil) {
+		c.terminalResponseCarry = nil
+		c.terminalResponseContinuation = 0
+		c.terminalResponseContinuationEscape = false
+		c.terminalResponseContinuationUtf8 = 0
+		return true
+	}
+	combined := data
+	if c.terminalResponseContinuation != 0 {
+		remaining, complete, trailingEscape, utf8Remaining :=
+			consumeTerminalResponseContinuation(
+				data,
+				c.terminalResponseContinuation,
+				c.terminalResponseContinuationEscape,
+				c.terminalResponseContinuationUtf8,
+			)
+		c.terminalResponseContinuationEscape = trailingEscape
+		c.terminalResponseContinuationUtf8 = utf8Remaining
+		if !complete {
+			return false
+		}
+		c.terminalResponseContinuation = 0
+		c.terminalResponseContinuationEscape = false
+		c.terminalResponseContinuationUtf8 = 0
+		if len(remaining) == 0 {
+			return false
+		}
+		combined = remaining
+	}
+	if len(c.terminalResponseCarry) > 0 {
+		combined = make([]byte, 0, len(c.terminalResponseCarry)+len(data))
+		combined = append(combined, c.terminalResponseCarry...)
+		combined = append(combined, data...)
+		c.terminalResponseCarry = nil
+	}
+	isResponse, incomplete, continuation := classifyTerminalResponseInput(
+		combined,
+	)
+	if incomplete {
+		if len(combined) <= terminalResponseCarryLimitBytes {
+			c.terminalResponseCarry = append(
+				c.terminalResponseCarry[:0],
+				combined...,
+			)
+		} else if continuation != 0 {
+			c.terminalResponseContinuation = continuation
+			c.terminalResponseContinuationEscape =
+				combined[len(combined)-1] == '\x1b'
+			c.terminalResponseContinuationUtf8 =
+				trailingUtf8ContinuationCount(combined)
+		}
+		return false
+	}
+	return !isResponse
+}
+
+func (c *attachClient) resolveAmbiguousFocusInput(
+	generation uint64,
+	focusSequence uint64,
+) {
+	c.activityMu.Lock()
+	if c.focusInputGeneration != generation || len(c.focusInputCarry) == 0 {
+		c.activityMu.Unlock()
+		return
+	}
+	if remaining := time.Until(c.terminalResponseUntil); remaining > 0 {
+		c.activityMu.Unlock()
+		time.AfterFunc(remaining, func() {
+			c.resolveAmbiguousFocusInput(generation, focusSequence)
+		})
+		return
+	}
+	c.focusInputCarry = nil
+	c.focusInputGeneration++
+	claim := c.focusClaim
+	c.activityMu.Unlock()
+	if claim != nil {
+		claim(focusSequence)
+	}
+}
+
+func (s *muxServer) primaryAttachSizeLocked() (int, int) {
+	width := s.width
+	height := s.height
+	client := s.primaryAttachClientLocked()
+	if client == nil {
+		return width, height
+	}
+	if client.width > 0 {
+		width = client.width
+	}
+	if client.height > 0 {
+		height = client.height
 	}
 	return width, height
 }
 
 func (s *muxServer) primaryAttachClientLocked() *attachClient {
 	return s.attachClients[s.attachConn]
+}
+
+func (s *muxServer) attachClientByIDLocked(clientID string) *attachClient {
+	normalizedID := strings.TrimSpace(clientID)
+	if normalizedID == "" {
+		return s.primaryAttachClientLocked()
+	}
+	var matched *attachClient
+	for _, client := range s.attachClients {
+		if client.id != normalizedID {
+			continue
+		}
+		if matched == nil || client.sequence > matched.sequence {
+			matched = client
+		}
+	}
+	return matched
+}
+
+func moreRecentlyFocusedAttachClient(
+	first *attachClient,
+	second *attachClient,
+) bool {
+	firstFocus := first.focusSequence.Load()
+	secondFocus := second.focusSequence.Load()
+	if firstFocus != secondFocus {
+		return firstFocus > secondFocus
+	}
+	return first.sequence > second.sequence
 }
 
 func (s *muxServer) isAttachConnectionLocked(conn net.Conn) bool {
@@ -3991,19 +4200,102 @@ func (s *muxServer) attachCountLocked() int {
 }
 
 func (s *muxServer) promoteAttachClient(client *attachClient) {
+	s.focusAttachClient(client, 0, 0, false)
+}
+
+func (s *muxServer) focusSequenceSnapshot() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nextFocusSequence
+}
+
+func (s *muxServer) focusAttachClientIfUnchanged(
+	client *attachClient,
+	expectedFocusSequence uint64,
+) bool {
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
 	if client == nil {
-		return
+		return false
 	}
 	s.mu.Lock()
-	if _, ok := s.attachClients[client.conn]; ok {
-		window := s.windowByIDLocked(s.activeID)
-		if window == nil ||
-			(!window.redrawForwardingPaused &&
-				len(window.secondaryQueryCarry) == 0) {
-			s.attachConn = client.conn
-		}
+	if s.nextFocusSequence != expectedFocusSequence {
+		s.mu.Unlock()
+		return false
 	}
+	registered := s.attachClients[client.conn]
+	if registered == nil {
+		s.mu.Unlock()
+		return false
+	}
+	s.nextFocusSequence++
+	registered.focusSequence.Store(s.nextFocusSequence)
+	s.attachConn = registered.conn
+	targetWidth, targetHeight := s.primaryAttachSizeLocked()
+	sizeChanged := targetWidth != s.width || targetHeight != s.height
 	s.mu.Unlock()
+	if sizeChanged {
+		s.resizeWithRedraw(targetWidth, targetHeight, false)
+	}
+	return true
+}
+
+func (s *muxServer) focusAttachClientByID(
+	clientID string,
+	width int,
+	height int,
+	forceRedraw bool,
+) bool {
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
+	s.mu.Lock()
+	client := s.attachClientByIDLocked(clientID)
+	s.mu.Unlock()
+	return s.focusAttachClientLocked(client, width, height, forceRedraw)
+}
+
+func (s *muxServer) focusAttachClient(
+	client *attachClient,
+	width int,
+	height int,
+	forceRedraw bool,
+) bool {
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
+	return s.focusAttachClientLocked(client, width, height, forceRedraw)
+}
+
+func (s *muxServer) focusAttachClientLocked(
+	client *attachClient,
+	width int,
+	height int,
+	forceRedraw bool,
+) bool {
+	if client == nil {
+		return false
+	}
+	s.mu.Lock()
+	registered := s.attachClients[client.conn]
+	if registered == nil {
+		s.mu.Unlock()
+		return false
+	}
+	if width > 0 {
+		registered.width = width
+	}
+	if height > 0 {
+		registered.height = height
+	}
+	s.nextFocusSequence++
+	registered.focusSequence.Store(s.nextFocusSequence)
+	s.attachConn = registered.conn
+	targetWidth, targetHeight := s.primaryAttachSizeLocked()
+	sizeChanged := targetWidth != s.width || targetHeight != s.height
+	s.mu.Unlock()
+	if sizeChanged || forceRedraw {
+		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw)
+	}
+	return true
 }
 
 func (s *muxServer) removeAttachClient(client *attachClient) {
@@ -4026,7 +4318,12 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 		s.attachConn = nil
 		var replacement *attachClient
 		for _, candidate := range s.attachClients {
-			if replacement == nil || candidate.sequence > replacement.sequence {
+			if replacement == nil ||
+				candidate.focusSequence.Load() >
+					replacement.focusSequence.Load() ||
+				(candidate.focusSequence.Load() ==
+					replacement.focusSequence.Load() &&
+					candidate.sequence > replacement.sequence) {
 				replacement = candidate
 			}
 		}
@@ -4034,7 +4331,7 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 			s.attachConn = replacement.conn
 		}
 	}
-	width, height = s.minimumAttachSizeLocked()
+	width, height = s.primaryAttachSizeLocked()
 	sizeChanged = width != s.width || height != s.height
 	s.mu.Unlock()
 	client.close()
@@ -4053,6 +4350,10 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	var sendFocusTransition bool
 	var sendFocusRefresh bool
 	client := newAttachClient(conn, hello)
+	client.focusSequenceSnapshot = s.focusSequenceSnapshot
+	client.focusClaim = func(expectedFocusSequence uint64) {
+		s.focusAttachClientIfUnchanged(client, expectedFocusSequence)
+	}
 	s.resizeMu.Lock()
 	s.attachMu.Lock()
 	s.mu.Lock()
@@ -4061,12 +4362,14 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	}
 	s.nextAttachSequence++
 	client.sequence = s.nextAttachSequence
+	s.nextFocusSequence++
+	client.focusSequence.Store(s.nextFocusSequence)
 	s.attachClients[conn] = client
 	s.attachConn = conn
 	if themeHint := themeHintDataFromString(hello.Data); len(themeHint) > 0 {
 		s.themeHint = append(s.themeHint[:0], themeHint...)
 	}
-	width, height := s.minimumAttachSizeLocked()
+	width, height := s.primaryAttachSizeLocked()
 	if width > 0 && height > 0 {
 		s.width = width
 		s.height = height
@@ -4121,7 +4424,9 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
-			s.promoteAttachClient(client)
+			if client.inputClaimsFocus(buf[:n]) {
+				s.promoteAttachClient(client)
+			}
 			if s.handleAttachInput(client, buf[:n]) {
 				return
 			}
@@ -4193,6 +4498,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			Restore: s.restoreSnapshot(),
 		})
 	case "create_window":
+		s.focusAttachClientByID(request.ClientID, 0, 0, false)
 		window, err := s.createWindow(createWindowOptions{
 			name:    request.Name,
 			cwd:     request.Cwd,
@@ -4211,6 +4517,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			Window:  ptrWindowSnapshot(s.snapshot(window)),
 		})
 	case "select_window":
+		s.focusAttachClientByID(request.ClientID, 0, 0, false)
 		id := request.WindowID
 		if id == "" && request.WindowIndex != nil {
 			id = s.windowIDForIndex(*request.WindowIndex)
@@ -4238,6 +4545,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			ImagesAcknowledged: true,
 		})
 	case "close_window", "kill_window":
+		s.focusAttachClientByID(request.ClientID, 0, 0, false)
 		id := request.WindowID
 		if id == "" && request.WindowIndex != nil {
 			id = s.windowIDForIndex(*request.WindowIndex)
@@ -4267,6 +4575,29 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			request.Redraw,
 		)
 		client.send(controlResponse{ID: request.ID, Type: "resized", Status: "ok"})
+	case "focus_client":
+		if strings.TrimSpace(request.ClientID) == "" {
+			client.sendError(request, errors.New("missing client id"))
+			return
+		}
+		if request.Width <= 0 || request.Height <= 0 {
+			client.sendError(request, errors.New("invalid terminal size"))
+			return
+		}
+		if !s.focusAttachClientByID(
+			request.ClientID,
+			request.Width,
+			request.Height,
+			request.Redraw,
+		) {
+			client.sendError(request, errors.New("foreground client is not attached"))
+			return
+		}
+		client.send(controlResponse{
+			ID:     request.ID,
+			Type:   "client_focused",
+			Status: "ok",
+		})
 	case "query_active_context":
 		s.mu.Lock()
 		window := s.windowByIDLocked(s.activeID)
@@ -4303,6 +4634,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		}
 		client.runShellCommandAsync(s, request)
 	case "inject_input":
+		s.focusAttachClientByID(request.ClientID, 0, 0, false)
 		id := request.WindowID
 		if id == "" {
 			id = s.activeWindowID()
@@ -4313,6 +4645,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		}
 		client.send(controlResponse{ID: request.ID, Type: "input_injected", Status: "ok"})
 	case "focus_changed":
+		s.focusAttachClientByID(request.ClientID, request.Width, request.Height, false)
 		s.sendThemeHint(request.Data)
 		client.send(controlResponse{ID: request.ID, Type: "focus_hint_sent", Status: "ok"})
 	case "theme_changed":
@@ -4915,23 +5248,19 @@ func (s *muxServer) resizeForClient(
 		return
 	}
 
-	matched := false
-	normalizedID := strings.TrimSpace(clientID)
-	for _, client := range s.attachClients {
-		if normalizedID != "" && client.id != normalizedID {
-			continue
-		}
-		client.width = width
-		client.height = height
-		matched = true
-	}
-	if !matched {
+	client := s.attachClientByIDLocked(clientID)
+	if client == nil {
 		s.mu.Unlock()
 		return
 	}
-	targetWidth, targetHeight := s.minimumAttachSizeLocked()
+	client.width = width
+	client.height = height
+	isPrimary := s.attachConn == client.conn
+	targetWidth, targetHeight := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
-	s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw)
+	if isPrimary {
+		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw)
+	}
 }
 
 func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
@@ -5061,11 +5390,33 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 	if _, _, ok := foregroundRedrawTemporarySize(width, height); !ok {
 		return
 	}
-	window.redrawForwardingBuffer = nil
-	window.redrawForwardingFailoverBuffer = nil
+	preservedQueries := append(
+		[]byte(nil),
+		window.redrawForwardingQueryBuffer...,
+	)
+	preservedPrimary := window.redrawForwardingPrimaryConn
+	window.redrawForwardingBuffer = append(
+		window.redrawForwardingBuffer[:0],
+		preservedQueries...,
+	)
+	window.redrawForwardingFailoverBuffer = append(
+		window.redrawForwardingFailoverBuffer[:0],
+		preservedQueries...,
+	)
 	window.redrawForwardingSecondaryBuffer = nil
-	window.redrawForwardingPrimaryConn = s.attachConn
-	window.redrawForwardingPrimaryNeedsFailover = false
+	window.redrawForwardingQueryBuffer = append(
+		window.redrawForwardingQueryBuffer[:0],
+		preservedQueries...,
+	)
+	if len(preservedQueries) > 0 &&
+		s.isAttachConnectionLocked(preservedPrimary) {
+		window.redrawForwardingPrimaryConn = preservedPrimary
+	} else {
+		window.redrawForwardingPrimaryConn = s.attachConn
+	}
+	window.redrawForwardingPrimaryNeedsFailover =
+		len(preservedQueries) > 0 &&
+			!s.isAttachConnectionLocked(preservedPrimary)
 	window.redrawForwardingPaused = true
 	window.redrawForwardingGeneration += 1
 	windowID := window.id
@@ -5083,6 +5434,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 	var buffered []byte
 	var failoverBuffered []byte
 	var secondaryBuffered []byte
+	var queryData []byte
 	var primary net.Conn
 	var primaryNeedsFailover bool
 	var clients []*attachClient
@@ -5108,6 +5460,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 		[]byte(nil),
 		window.redrawForwardingSecondaryBuffer...,
 	)
+	queryData = append([]byte(nil), window.redrawForwardingQueryBuffer...)
 	primary = window.redrawForwardingPrimaryConn
 	if !s.isAttachConnectionLocked(primary) {
 		primary = s.attachConn
@@ -5119,6 +5472,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 	window.redrawForwardingBuffer = nil
 	window.redrawForwardingFailoverBuffer = nil
 	window.redrawForwardingSecondaryBuffer = nil
+	window.redrawForwardingQueryBuffer = nil
 	window.redrawForwardingPrimaryConn = nil
 	window.redrawForwardingPrimaryNeedsFailover = false
 	window.redrawForwardingPaused = false
@@ -5142,7 +5496,6 @@ func (s *muxServer) resumePausedAttachForwarding(
 		s.writeAttachLocked(legacy, primaryOutput)
 		return
 	}
-	queryData := terminalQueriesFromData(failoverOutput)
 	var primaryClient *attachClient
 	for _, client := range clients {
 		if client.conn == primary {
@@ -5156,7 +5509,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 			if client == nil {
 				return false
 			}
-			completion, queued := client.enqueue(data, true)
+			completion, queued := client.enqueueTerminalQuery(data, true)
 			return queued && client.waitForWrite(completion)
 		}
 		initialOutput := primaryOutput
@@ -5167,18 +5520,13 @@ func (s *muxServer) resumePausedAttachForwarding(
 			deliveredPrimary = primaryClient
 		} else {
 			sort.Slice(clients, func(i int, j int) bool {
-				return clients[i].sequence > clients[j].sequence
+				return moreRecentlyFocusedAttachClient(clients[i], clients[j])
 			})
 			for _, client := range clients {
 				if client == primaryClient || !tryWrite(client, failoverOutput) {
 					continue
 				}
 				deliveredPrimary = client
-				s.mu.Lock()
-				if _, ok := s.attachClients[client.conn]; ok {
-					s.attachConn = client.conn
-				}
-				s.mu.Unlock()
 				break
 			}
 		}
@@ -5195,6 +5543,8 @@ func (s *muxServer) resumePausedAttachForwarding(
 				s.storePendingTerminalQueriesLocked(window, queryData)
 			}
 			s.mu.Unlock()
+		} else {
+			deliveredPrimary.expectTerminalResponse()
 		}
 		return
 	}
@@ -5206,7 +5556,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 	}
 	if deliveredPrimary == nil {
 		sort.Slice(clients, func(i int, j int) bool {
-			return clients[i].sequence > clients[j].sequence
+			return moreRecentlyFocusedAttachClient(clients[i], clients[j])
 		})
 		for _, client := range clients {
 			if client == primaryClient {
@@ -5217,11 +5567,6 @@ func (s *muxServer) resumePausedAttachForwarding(
 				continue
 			}
 			deliveredPrimary = client
-			s.mu.Lock()
-			if _, ok := s.attachClients[client.conn]; ok {
-				s.attachConn = client.conn
-			}
-			s.mu.Unlock()
 			break
 		}
 	}
@@ -5601,6 +5946,7 @@ func (s *muxServer) writeAttachOutputIfActive(
 	primaryData []byte,
 	failoverPrimaryData []byte,
 	secondaryData []byte,
+	queryData []byte,
 	maxAttachSequence uint64,
 ) {
 	if len(primaryData) == 0 {
@@ -5638,13 +5984,12 @@ func (s *muxServer) writeAttachOutputIfActive(
 		}
 	}
 	var deliveredPrimary *attachClient
-	queryData := terminalQueriesFromData(failoverPrimaryData)
 	if len(queryData) > 0 {
 		tryWrite := func(client *attachClient, data []byte) bool {
 			if client == nil {
 				return false
 			}
-			completion, queued := client.enqueue(data, true)
+			completion, queued := client.enqueueTerminalQuery(data, true)
 			return queued && client.waitForWrite(completion)
 		}
 		if tryWrite(primaryClient, primaryData) {
@@ -5656,7 +6001,10 @@ func (s *muxServer) writeAttachOutputIfActive(
 				if iCurrent != jCurrent {
 					return iCurrent
 				}
-				return allClients[i].sequence > allClients[j].sequence
+				return moreRecentlyFocusedAttachClient(
+					allClients[i],
+					allClients[j],
+				)
 			})
 			for _, client := range allClients {
 				if client == primaryClient {
@@ -5670,11 +6018,6 @@ func (s *muxServer) writeAttachOutputIfActive(
 					continue
 				}
 				deliveredPrimary = client
-				s.mu.Lock()
-				if _, ok := s.attachClients[client.conn]; ok {
-					s.attachConn = client.conn
-				}
-				s.mu.Unlock()
 				break
 			}
 		}
@@ -5691,6 +6034,8 @@ func (s *muxServer) writeAttachOutputIfActive(
 				s.storePendingTerminalQueriesLocked(window, queryData)
 			}
 			s.mu.Unlock()
+		} else {
+			deliveredPrimary.expectTerminalResponse()
 		}
 		return
 	}
@@ -5707,7 +6052,7 @@ func (s *muxServer) writeAttachOutputIfActive(
 			if iCurrent != jCurrent {
 				return iCurrent
 			}
-			return clients[i].sequence > clients[j].sequence
+			return moreRecentlyFocusedAttachClient(clients[i], clients[j])
 		})
 		for _, client := range clients {
 			if client == primaryClient {
@@ -5716,11 +6061,6 @@ func (s *muxServer) writeAttachOutputIfActive(
 			_, queued := client.enqueue(failoverPrimaryData, false)
 			if queued {
 				deliveredPrimary = client
-				s.mu.Lock()
-				if _, ok := s.attachClients[client.conn]; ok {
-					s.attachConn = client.conn
-				}
-				s.mu.Unlock()
 				break
 			}
 		}
@@ -5734,7 +6074,15 @@ func (s *muxServer) writeAttachOutputIfActive(
 }
 
 func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []byte) {
-	s.writeAttachOutputIfActive(windowID, conn, data, data, data, ^uint64(0))
+	s.writeAttachOutputIfActive(
+		windowID,
+		conn,
+		data,
+		data,
+		data,
+		nil,
+		^uint64(0),
+	)
 }
 
 func (s *muxServer) enqueuePrimaryAttachLocked(
@@ -5767,19 +6115,12 @@ func (s *muxServer) enqueuePrimaryAttachLocked(
 		if iCurrent != jCurrent {
 			return iCurrent
 		}
-		return clients[i].sequence > clients[j].sequence
+		return moreRecentlyFocusedAttachClient(clients[i], clients[j])
 	})
 	for _, client := range clients {
-		completion, queued := client.enqueue(data, tracked)
+		completion, queued := client.enqueueTerminalQuery(data, tracked)
 		if !queued {
 			continue
-		}
-		if client.conn != preferred {
-			s.mu.Lock()
-			if _, ok := s.attachClients[client.conn]; ok {
-				s.attachConn = client.conn
-			}
-			s.mu.Unlock()
 		}
 		return client, completion, true
 	}
@@ -5812,6 +6153,7 @@ func (s *muxServer) watchTerminalQueryWrite(
 			}
 		}
 		if writeErr == nil {
+			client.expectTerminalResponse()
 			if onSuccess != nil {
 				onSuccess()
 			}
@@ -6795,58 +7137,27 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 	var output []byte
 	copyStart := 0
 	for i := 0; i < len(data); {
-		if data[i] != '\x1b' || i+1 >= len(data) {
+		sequenceEnd, isQuery, incomplete, recognized :=
+			terminalQuerySequenceAt(data, i)
+		if incomplete {
+			break
+		}
+		if !recognized {
 			i++
 			continue
 		}
-		next := data[i+1]
-		stripEnd := -1
-		if next == '[' {
-			end := csiSequenceEnd(data, i+2)
-			if end < 0 {
-				break
-			}
-			sequence := data[i : end+1]
-			if isReplayUnsafeCsiQuery(sequence) {
-				stripEnd = end + 1
-			}
-		} else if next == ']' {
-			end, terminatorLength, ok := findOscTerminator(data[i+2:])
-			if !ok {
-				break
-			}
-			payload := data[i+2 : i+2+end]
-			if isReplayUnsafeOscQuery(payload) ||
-				isReplayUnsafeOscNotification(payload) {
-				stripEnd = i + 2 + end + terminatorLength
-			}
-		} else if next == 'P' {
-			end, ok := findStringTerminator(data[i+2:])
-			if !ok {
-				break
-			}
-			if isReplayUnsafeDcsQuery(data[i+2 : i+2+end]) {
-				stripEnd = i + 2 + end + 2
-			}
-		} else if next == '_' {
-			end, ok := findStringTerminator(data[i+2:])
-			if !ok {
-				break
-			}
-			if isReplayUnsafeKittyQuery(data[i+2 : i+2+end]) {
-				stripEnd = i + 2 + end + 2
-			}
-		}
-		if stripEnd < 0 {
-			i++
+		shouldStrip := isQuery ||
+			isReplayUnsafeOscNotificationSequence(data[i:sequenceEnd])
+		if !shouldStrip {
+			i = sequenceEnd
 			continue
 		}
 		if output == nil {
-			output = make([]byte, 0, len(data)-(stripEnd-i))
+			output = make([]byte, 0, len(data)-(sequenceEnd-i))
 		}
 		output = append(output, data[copyStart:i]...)
-		copyStart = stripEnd
-		i = stripEnd
+		copyStart = sequenceEnd
+		i = sequenceEnd
 	}
 	if output == nil {
 		return data
@@ -6857,54 +7168,15 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 
 func terminalQueriesFromData(data []byte) []byte {
 	var queries []byte
-	for index := 0; index+1 < len(data); {
-		escapeOffset := bytes.IndexByte(data[index:], '\x1b')
-		if escapeOffset < 0 {
+	for index := 0; index < len(data); {
+		sequenceEnd, isQuery, incomplete, recognized :=
+			terminalQuerySequenceAt(data, index)
+		if incomplete {
 			break
 		}
-		index += escapeOffset
-		if index+1 >= len(data) {
-			break
-		}
-		sequenceEnd := -1
-		isQuery := false
-		switch data[index+1] {
-		case '[':
-			end := csiSequenceEnd(data, index+2)
-			if end >= 0 {
-				sequenceEnd = end + 1
-				isQuery = isReplayUnsafeCsiQuery(data[index:sequenceEnd])
-			}
-		case ']':
-			end, terminatorLength, ok := findOscTerminator(data[index+2:])
-			if ok {
-				sequenceEnd = index + 2 + end + terminatorLength
-				isQuery = isReplayUnsafeOscQuery(
-					data[index+2 : index+2+end],
-				)
-			}
-		case 'P':
-			end, ok := findStringTerminator(data[index+2:])
-			if ok {
-				sequenceEnd = index + 2 + end + 2
-				isQuery = isReplayUnsafeDcsQuery(
-					data[index+2 : index+2+end],
-				)
-			}
-		case '_':
-			end, ok := findStringTerminator(data[index+2:])
-			if ok {
-				sequenceEnd = index + 2 + end + 2
-				isQuery = isReplayUnsafeKittyQuery(
-					data[index+2 : index+2+end],
-				)
-			}
-		default:
-			index += 2
+		if !recognized {
+			index++
 			continue
-		}
-		if sequenceEnd < 0 {
-			break
 		}
 		if isQuery &&
 			len(queries)+(sequenceEnd-index) <= pendingTerminalQueryLimitBytes {
@@ -6916,93 +7188,66 @@ func terminalQueriesFromData(data []byte) []byte {
 }
 
 func (w *muxWindow) secondaryAttachOutputLocked(chunk []byte) []byte {
+	w.lastForwardedTerminalQueries = nil
 	if len(chunk) == 0 && len(w.secondaryQueryCarry) == 0 {
 		return chunk
 	}
 	data := chunk
+	previousUtf8Remaining := w.queryUtf8Remaining
+	leadingUtf8Prefix := leadingUtf8ContinuationPrefix(
+		data,
+		previousUtf8Remaining,
+	)
+	w.queryUtf8Remaining = 0
 	if len(w.secondaryQueryCarry) > 0 {
 		combined := make([]byte, 0, len(w.secondaryQueryCarry)+len(chunk))
 		combined = append(combined, w.secondaryQueryCarry...)
 		combined = append(combined, chunk...)
 		data = combined
 		w.secondaryQueryCarry = nil
+		leadingUtf8Prefix = 0
 	}
 
 	output := make([]byte, 0, len(data))
 	copyStart := 0
 	for i := 0; i < len(data); {
-		if data[i] != '\x1b' || i+1 >= len(data) {
-			if data[i] == '\x1b' && i+1 >= len(data) {
-				output = append(output, data[copyStart:i]...)
-				if !w.storeSecondaryQueryCarryLocked(data[i:]) {
-					output = append(output, data[i:]...)
-				}
-				return output
+		sequenceEnd, isQuery, incomplete, recognized :=
+			terminalQuerySequenceAtWithUtf8Prefix(
+				data,
+				i,
+				leadingUtf8Prefix,
+			)
+		if incomplete {
+			w.queryUtf8Remaining = 0
+			output = append(output, data[copyStart:i]...)
+			if !w.storeSecondaryQueryCarryLocked(data[i:]) {
+				output = append(output, data[i:]...)
 			}
+			return output
+		}
+		if !recognized {
 			i++
 			continue
 		}
-
-		sequenceEnd := -1
-		isQuery := false
-		switch data[i+1] {
-		case '[':
-			end := csiSequenceEnd(data, i+2)
-			if end < 0 {
-				output = append(output, data[copyStart:i]...)
-				if !w.storeSecondaryQueryCarryLocked(data[i:]) {
-					output = append(output, data[i:]...)
-				}
-				return output
-			}
-			sequenceEnd = end + 1
-			isQuery = isReplayUnsafeCsiQuery(data[i:sequenceEnd])
-		case ']':
-			end, terminatorLength, ok := findOscTerminator(data[i+2:])
-			if !ok {
-				output = append(output, data[copyStart:i]...)
-				if !w.storeSecondaryQueryCarryLocked(data[i:]) {
-					output = append(output, data[i:]...)
-				}
-				return output
-			}
-			sequenceEnd = i + 2 + end + terminatorLength
-			payload := data[i+2 : i+2+end]
-			isQuery = isReplayUnsafeOscQuery(payload)
-		case 'P':
-			end, ok := findStringTerminator(data[i+2:])
-			if !ok {
-				output = append(output, data[copyStart:i]...)
-				if !w.storeSecondaryQueryCarryLocked(data[i:]) {
-					output = append(output, data[i:]...)
-				}
-				return output
-			}
-			sequenceEnd = i + 2 + end + 2
-			isQuery = isReplayUnsafeDcsQuery(data[i+2 : i+2+end])
-		case '_':
-			end, ok := findStringTerminator(data[i+2:])
-			if !ok {
-				output = append(output, data[copyStart:i]...)
-				if !w.storeSecondaryQueryCarryLocked(data[i:]) {
-					output = append(output, data[i:]...)
-				}
-				return output
-			}
-			sequenceEnd = i + 2 + end + 2
-			isQuery = isReplayUnsafeKittyQuery(data[i+2 : i+2+end])
-		default:
-			i += 2
-			continue
-		}
-
 		if isQuery {
+			if len(w.lastForwardedTerminalQueries)+sequenceEnd-i <=
+				pendingTerminalQueryLimitBytes {
+				w.lastForwardedTerminalQueries = append(
+					w.lastForwardedTerminalQueries,
+					data[i:sequenceEnd]...,
+				)
+			}
 			output = append(output, data[copyStart:i]...)
 			copyStart = sequenceEnd
 		}
 		i = sequenceEnd
 	}
 	output = append(output, data[copyStart:]...)
+	w.queryUtf8Remaining = nextQueryUtf8Remaining(
+		data,
+		previousUtf8Remaining,
+		leadingUtf8Prefix,
+	)
 	return output
 }
 
@@ -7573,12 +7818,178 @@ func csiSequenceEnd(data []byte, start int) int {
 	return -1
 }
 
+func terminalQuerySequenceAt(
+	data []byte,
+	index int,
+) (int, bool, bool, bool) {
+	return terminalQuerySequenceAtWithUtf8Prefix(data, index, 0)
+}
+
+func terminalQuerySequenceAtWithUtf8Prefix(
+	data []byte,
+	index int,
+	leadingUtf8Prefix int,
+) (int, bool, bool, bool) {
+	if index < 0 || index >= len(data) {
+		return -1, false, false, false
+	}
+	if index < leadingUtf8Prefix && data[index]&0xc0 == 0x80 {
+		return -1, false, false, false
+	}
+	introducer := data[index]
+	payloadStart := index + 1
+	escaped := false
+	if introducer == '\x1b' {
+		if index+1 >= len(data) {
+			return -1, false, true, true
+		}
+		escaped = true
+		introducer = data[index+1]
+		payloadStart = index + 2
+	} else if isUtf8ContinuationAt(data, index) {
+		return -1, false, false, false
+	}
+	switch introducer {
+	case '[':
+		if !escaped {
+			return -1, false, false, false
+		}
+		end := csiSequenceEnd(data, payloadStart)
+		if end < 0 {
+			return -1, false, true, true
+		}
+		sequenceEnd := end + 1
+		return sequenceEnd,
+			isReplayUnsafeCsiQuery(data[index:sequenceEnd]),
+			false,
+			true
+	case 0x9b:
+		end := csiSequenceEnd(data, payloadStart)
+		if end < 0 {
+			return -1, false, true, true
+		}
+		sequenceEnd := end + 1
+		return sequenceEnd,
+			isReplayUnsafeCsiQuery(data[index:sequenceEnd]),
+			false,
+			true
+	case ']':
+		if !escaped {
+			return -1, false, false, false
+		}
+		end, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+		if !ok {
+			return -1, false, true, true
+		}
+		return payloadStart + end + terminatorLength,
+			isReplayUnsafeOscQuery(data[payloadStart : payloadStart+end]),
+			false,
+			true
+	case 0x9d:
+		end, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+		if !ok {
+			return -1, false, true, true
+		}
+		return payloadStart + end + terminatorLength,
+			isReplayUnsafeOscQuery(data[payloadStart : payloadStart+end]),
+			false,
+			true
+	case 'P':
+		if !escaped {
+			return -1, false, false, false
+		}
+		end, terminatorLength, ok := findStringTerminator(data[payloadStart:])
+		if !ok {
+			return -1, false, true, true
+		}
+		return payloadStart + end + terminatorLength,
+			isReplayUnsafeDcsQuery(data[payloadStart : payloadStart+end]),
+			false,
+			true
+	case 0x90:
+		end, terminatorLength, ok := findStringTerminator(data[payloadStart:])
+		if !ok {
+			return -1, false, true, true
+		}
+		return payloadStart + end + terminatorLength,
+			isReplayUnsafeDcsQuery(data[payloadStart : payloadStart+end]),
+			false,
+			true
+	case '_':
+		if !escaped {
+			return -1, false, false, false
+		}
+		end, terminatorLength, ok := findStringTerminator(data[payloadStart:])
+		if !ok {
+			return -1, false, true, true
+		}
+		return payloadStart + end + terminatorLength,
+			isReplayUnsafeKittyQuery(data[payloadStart : payloadStart+end]),
+			false,
+			true
+	case 0x9f:
+		end, terminatorLength, ok := findStringTerminator(data[payloadStart:])
+		if !ok {
+			return -1, false, true, true
+		}
+		return payloadStart + end + terminatorLength,
+			isReplayUnsafeKittyQuery(data[payloadStart : payloadStart+end]),
+			false,
+			true
+	default:
+		return -1, false, false, false
+	}
+}
+
+func leadingUtf8ContinuationPrefix(data []byte, remaining int) int {
+	count := 0
+	for count < len(data) &&
+		count < remaining &&
+		data[count]&0xc0 == 0x80 {
+		count++
+	}
+	return count
+}
+
+func nextQueryUtf8Remaining(
+	data []byte,
+	previousRemaining int,
+	leadingPrefix int,
+) int {
+	if leadingPrefix == len(data) && leadingPrefix < previousRemaining {
+		return previousRemaining - leadingPrefix
+	}
+	return trailingUtf8ContinuationCount(data)
+}
+
+func isReplayUnsafeOscNotificationSequence(sequence []byte) bool {
+	payloadStart := 0
+	switch {
+	case len(sequence) >= 2 && sequence[0] == '\x1b' && sequence[1] == ']':
+		payloadStart = 2
+	case len(sequence) >= 1 && sequence[0] == 0x9d:
+		payloadStart = 1
+	default:
+		return false
+	}
+	end, _, ok := findOscTerminator(sequence[payloadStart:])
+	return ok && isReplayUnsafeOscNotification(
+		sequence[payloadStart:payloadStart+end],
+	)
+}
+
 func isReplayUnsafeCsiQuery(sequence []byte) bool {
-	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
+	bodyStart := 0
+	switch {
+	case len(sequence) >= 3 && sequence[0] == '\x1b' && sequence[1] == '[':
+		bodyStart = 2
+	case len(sequence) >= 2 && sequence[0] == 0x9b:
+		bodyStart = 1
+	default:
 		return false
 	}
 	final := sequence[len(sequence)-1]
-	params := string(sequence[2 : len(sequence)-1])
+	params := string(sequence[bodyStart : len(sequence)-1])
 	switch final {
 	case 'c':
 		return params == "" ||
@@ -7617,6 +8028,321 @@ func isReplayUnsafeCsiQuery(sequence []byte) bool {
 	default:
 		return false
 	}
+}
+
+func classifyTerminalResponseInput(data []byte) (bool, bool, byte) {
+	if len(data) == 0 {
+		return false, false, 0
+	}
+	sawResponse := false
+	for index := 0; index < len(data); {
+		sequenceEnd := -1
+		isResponse := false
+		introducer := data[index]
+		payloadStart := index + 1
+		escaped := false
+		if introducer == '\x1b' {
+			if index+1 >= len(data) {
+				return false, true, 0
+			}
+			escaped = true
+			introducer = data[index+1]
+			payloadStart = index + 2
+		}
+		switch introducer {
+		case '[':
+			if !escaped {
+				return false, false, 0
+			}
+			end := csiSequenceEnd(data, payloadStart)
+			if end < 0 {
+				return false, true, 0
+			}
+			sequenceEnd = end + 1
+			isResponse = isTerminalResponseCsi(data[index:sequenceEnd])
+		case 0x9b:
+			end := csiSequenceEnd(data, payloadStart)
+			if end < 0 {
+				return false, true, 0
+			}
+			sequenceEnd = end + 1
+			isResponse = isTerminalResponseCsi(data[index:sequenceEnd])
+		case ']':
+			if !escaped {
+				return false, false, 0
+			}
+			end, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+			if !ok {
+				return false, true, ']'
+			}
+			sequenceEnd = payloadStart + end + terminatorLength
+			isResponse = isTerminalResponseOsc(
+				data[payloadStart : payloadStart+end],
+			)
+		case 0x9d:
+			end, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+			if !ok {
+				return false, true, ']'
+			}
+			sequenceEnd = payloadStart + end + terminatorLength
+			isResponse = isTerminalResponseOsc(
+				data[payloadStart : payloadStart+end],
+			)
+		case 'P':
+			if !escaped {
+				return false, false, 0
+			}
+			end, terminatorLength, ok := findStringTerminator(
+				data[payloadStart:],
+			)
+			if !ok {
+				return false, true, 'P'
+			}
+			sequenceEnd = payloadStart + end + terminatorLength
+			isResponse = isTerminalResponseDcs(
+				data[payloadStart : payloadStart+end],
+			)
+		case 0x90:
+			end, terminatorLength, ok := findStringTerminator(
+				data[payloadStart:],
+			)
+			if !ok {
+				return false, true, 'P'
+			}
+			sequenceEnd = payloadStart + end + terminatorLength
+			isResponse = isTerminalResponseDcs(
+				data[payloadStart : payloadStart+end],
+			)
+		case '_':
+			if !escaped {
+				return false, false, 0
+			}
+			end, terminatorLength, ok := findStringTerminator(
+				data[payloadStart:],
+			)
+			if !ok {
+				return false, true, '_'
+			}
+			sequenceEnd = payloadStart + end + terminatorLength
+			isResponse = isTerminalResponseKitty(
+				data[payloadStart : payloadStart+end],
+			)
+		case 0x9f:
+			end, terminatorLength, ok := findStringTerminator(
+				data[payloadStart:],
+			)
+			if !ok {
+				return false, true, '_'
+			}
+			sequenceEnd = payloadStart + end + terminatorLength
+			isResponse = isTerminalResponseKitty(
+				data[payloadStart : payloadStart+end],
+			)
+		default:
+			return false, false, 0
+		}
+		if !isResponse {
+			return false, false, 0
+		}
+		sawResponse = true
+		index = sequenceEnd
+	}
+	return sawResponse, false, 0
+}
+
+func stripFocusOutInput(data []byte) ([]byte, []byte) {
+	var output []byte
+	copyStart := 0
+	for index := 0; index < len(data); {
+		sequenceLength := 0
+		switch {
+		case bytes.HasPrefix(data[index:], []byte("\x1b[O")):
+			sequenceLength = 3
+		case bytes.HasPrefix(data[index:], []byte{0x9b, 'O'}):
+			sequenceLength = 2
+		case bytes.Equal(data[index:], []byte{'\x1b'}) ||
+			bytes.Equal(data[index:], []byte("\x1b[")) ||
+			bytes.Equal(data[index:], []byte{0x9b}):
+			if output == nil {
+				output = append([]byte(nil), data[:index]...)
+			} else {
+				output = append(output, data[copyStart:index]...)
+			}
+			return output, append([]byte(nil), data[index:]...)
+		default:
+			index++
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)-sequenceLength)
+		}
+		output = append(output, data[copyStart:index]...)
+		index += sequenceLength
+		copyStart = index
+	}
+	if output == nil {
+		return data, nil
+	}
+	output = append(output, data[copyStart:]...)
+	return output, nil
+}
+
+func consumeTerminalResponseContinuation(
+	data []byte,
+	kind byte,
+	leadingEscape bool,
+	utf8Remaining int,
+) ([]byte, bool, bool, int) {
+	if leadingEscape && len(data) > 0 && data[0] == '\\' {
+		return data[1:], true, false, 0
+	}
+	for index := 0; index < len(data); index++ {
+		if utf8Remaining > 0 {
+			if data[index]&0xc0 == 0x80 {
+				utf8Remaining--
+				continue
+			}
+			utf8Remaining = 0
+		}
+		if remaining := utf8ContinuationCount(data[index]); remaining > 0 {
+			utf8Remaining = remaining
+			continue
+		}
+		if data[index] == 0x9c ||
+			(kind == ']' && data[index] == '\a') {
+			return data[index+1:], true, false, 0
+		}
+		if data[index] == '\x1b' &&
+			index+1 < len(data) &&
+			data[index+1] == '\\' {
+			return data[index+2:], true, false, 0
+		}
+	}
+	return nil,
+		false,
+		len(data) > 0 && data[len(data)-1] == '\x1b',
+		utf8Remaining
+}
+
+func utf8ContinuationCount(lead byte) int {
+	switch {
+	case lead >= 0xc2 && lead <= 0xdf:
+		return 1
+	case lead >= 0xe0 && lead <= 0xef:
+		return 2
+	case lead >= 0xf0 && lead <= 0xf4:
+		return 3
+	default:
+		return 0
+	}
+}
+
+func trailingUtf8ContinuationCount(data []byte) int {
+	if len(data) == 0 {
+		return 0
+	}
+	_, size := utf8.DecodeLastRune(data)
+	if size > 1 {
+		return 0
+	}
+	for index := len(data) - 1; index >= 0 && len(data)-index <= 4; index-- {
+		remaining := utf8ContinuationCount(data[index])
+		if remaining == 0 {
+			continue
+		}
+		available := len(data) - index - 1
+		if available < remaining {
+			return remaining - available
+		}
+		return 0
+	}
+	return 0
+}
+
+func isTerminalResponseCsi(sequence []byte) bool {
+	bodyStart := 0
+	switch {
+	case len(sequence) >= 3 && sequence[0] == '\x1b' && sequence[1] == '[':
+		bodyStart = 2
+	case len(sequence) >= 2 && sequence[0] == 0x9b:
+		bodyStart = 1
+	default:
+		return false
+	}
+	final := sequence[len(sequence)-1]
+	params := string(sequence[bodyStart : len(sequence)-1])
+	switch final {
+	case 'c':
+		return strings.HasPrefix(params, "?") ||
+			strings.HasPrefix(params, ">") ||
+			strings.HasPrefix(params, "=")
+	case 'n':
+		return params == "0" || strings.HasPrefix(params, "?")
+	case 'R':
+		return terminalResponseNumericParams(
+			strings.TrimPrefix(params, "?"),
+		)
+	case 't':
+		first, _, ok := strings.Cut(params, ";")
+		return ok && containsString([]string{"4", "5", "6", "8", "9"}, first)
+	case 'y':
+		return strings.HasSuffix(params, "$")
+	case 'u':
+		return strings.HasPrefix(params, "?")
+	default:
+		return false
+	}
+}
+
+func terminalResponseNumericParams(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && character != ';' {
+			return false
+		}
+	}
+	return true
+}
+
+func isTerminalResponseOsc(payload []byte) bool {
+	if len(payload) > 0 && (payload[0] == 'L' || payload[0] == 'l') {
+		return true
+	}
+	code, value, ok := strings.Cut(string(payload), ";")
+	if !ok || value == "?" {
+		return false
+	}
+	switch code {
+	case "4", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "52":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTerminalResponseDcs(payload []byte) bool {
+	return bytes.HasPrefix(payload, []byte(">|")) ||
+		bytes.HasPrefix(payload, []byte("!|")) ||
+		bytes.HasPrefix(payload, []byte("0+r")) ||
+		bytes.HasPrefix(payload, []byte("1+r")) ||
+		bytes.HasPrefix(payload, []byte("0$r")) ||
+		bytes.HasPrefix(payload, []byte("1$r"))
+}
+
+func isTerminalResponseKitty(payload []byte) bool {
+	if len(payload) < 2 || payload[0] != 'G' {
+		return false
+	}
+	separator := bytes.IndexByte(payload, ';')
+	if separator < 0 || separator+1 >= len(payload) {
+		return false
+	}
+	response := payload[separator+1:]
+	return bytes.HasPrefix(response, []byte("OK")) ||
+		bytes.HasPrefix(response, []byte("ERROR")) ||
+		bytes.HasPrefix(response, []byte("ENOTSUP"))
 }
 
 func isReplayUnsafeOscQuery(payload []byte) bool {
@@ -8314,70 +9040,48 @@ func (w *muxWindow) appendPendingTerminalQueriesLocked(chunk []byte) {
 		return
 	}
 	data := chunk
+	previousUtf8Remaining := w.queryUtf8Remaining
+	leadingUtf8Prefix := leadingUtf8ContinuationPrefix(
+		data,
+		previousUtf8Remaining,
+	)
+	w.queryUtf8Remaining = 0
 	if len(w.pendingTerminalQueryCarry) > 0 {
 		combined := make([]byte, 0, len(w.pendingTerminalQueryCarry)+len(chunk))
 		combined = append(combined, w.pendingTerminalQueryCarry...)
 		combined = append(combined, chunk...)
 		data = combined
 		w.pendingTerminalQueryCarry = nil
+		leadingUtf8Prefix = 0
 	}
-	for len(data) > 0 {
-		escapeIndex := bytes.IndexByte(data, '\x1b')
-		if escapeIndex < 0 {
+	for index := 0; index < len(data); {
+		sequenceEnd, isQuery, incomplete, recognized :=
+			terminalQuerySequenceAtWithUtf8Prefix(
+				data,
+				index,
+				leadingUtf8Prefix,
+			)
+		if incomplete {
+			w.queryUtf8Remaining = 0
+			w.storePartialPendingTerminalQueryLocked(data[index:])
 			return
 		}
-		if escapeIndex+1 >= len(data) {
-			w.storePartialPendingTerminalQueryLocked(data[escapeIndex:])
-			return
-		}
-		sequenceEnd := -1
-		isQuery := false
-		switch data[escapeIndex+1] {
-		case '[':
-			end := csiSequenceEnd(data, escapeIndex+2)
-			if end >= 0 {
-				sequenceEnd = end + 1
-				isQuery = isReplayUnsafeCsiQuery(data[escapeIndex:sequenceEnd])
-			}
-		case ']':
-			end, terminatorLength, ok := findOscTerminator(data[escapeIndex+2:])
-			if ok {
-				sequenceEnd = escapeIndex + 2 + end + terminatorLength
-				isQuery = isReplayUnsafeOscQuery(
-					data[escapeIndex+2 : escapeIndex+2+end],
-				)
-			}
-		case 'P':
-			end, ok := findStringTerminator(data[escapeIndex+2:])
-			if ok {
-				sequenceEnd = escapeIndex + 2 + end + 2
-				isQuery = isReplayUnsafeDcsQuery(
-					data[escapeIndex+2 : escapeIndex+2+end],
-				)
-			}
-		case '_':
-			end, ok := findStringTerminator(data[escapeIndex+2:])
-			if ok {
-				sequenceEnd = escapeIndex + 2 + end + 2
-				isQuery = isReplayUnsafeKittyQuery(
-					data[escapeIndex+2 : escapeIndex+2+end],
-				)
-			}
-		default:
-			data = data[escapeIndex+2:]
+		if !recognized {
+			index++
 			continue
 		}
-		if sequenceEnd < 0 {
-			w.storePartialPendingTerminalQueryLocked(data[escapeIndex:])
-			return
-		}
-		sequence := data[escapeIndex:sequenceEnd]
+		sequence := data[index:sequenceEnd]
 		if isQuery &&
 			len(w.pendingTerminalQueries)+len(sequence) <= pendingTerminalQueryLimitBytes {
 			w.pendingTerminalQueries = append(w.pendingTerminalQueries, sequence...)
 		}
-		data = data[sequenceEnd:]
+		index = sequenceEnd
 	}
+	w.queryUtf8Remaining = nextQueryUtf8Remaining(
+		data,
+		previousUtf8Remaining,
+		leadingUtf8Prefix,
+	)
 }
 
 func (w *muxWindow) storePartialPendingTerminalQueryLocked(data []byte) {
@@ -8513,6 +9217,10 @@ func findOscTerminator(data []byte) (payloadEnd int, terminatorLength int, ok bo
 		switch data[i] {
 		case '\a':
 			return i, 1, true
+		case 0x9c:
+			if !isUtf8ContinuationAt(data, i) {
+				return i, 1, true
+			}
 		case '\x1b':
 			if i+1 >= len(data) {
 				return 0, 0, false
@@ -8525,13 +9233,34 @@ func findOscTerminator(data []byte) (payloadEnd int, terminatorLength int, ok bo
 	return 0, 0, false
 }
 
-func findStringTerminator(data []byte) (payloadEnd int, ok bool) {
-	for index := 0; index+1 < len(data); index++ {
-		if data[index] == '\x1b' && data[index+1] == '\\' {
-			return index, true
+func findStringTerminator(
+	data []byte,
+) (payloadEnd int, terminatorLength int, ok bool) {
+	for index := 0; index < len(data); index++ {
+		if data[index] == 0x9c && !isUtf8ContinuationAt(data, index) {
+			return index, 1, true
+		}
+		if data[index] == '\x1b' &&
+			index+1 < len(data) &&
+			data[index+1] == '\\' {
+			return index, 2, true
 		}
 	}
-	return 0, false
+	return 0, 0, false
+}
+
+func isUtf8ContinuationAt(data []byte, index int) bool {
+	if index <= 0 || index >= len(data) || data[index]&0xc0 != 0x80 {
+		return false
+	}
+	for start := index - 1; start >= 0 && index-start <= 3; start-- {
+		if data[start]&0xc0 == 0x80 {
+			continue
+		}
+		expected := utf8ContinuationCount(data[start])
+		return expected > 0 && index-start <= expected
+	}
+	return false
 }
 
 func (w *muxWindow) storePartialOscLocked(data []byte) {
