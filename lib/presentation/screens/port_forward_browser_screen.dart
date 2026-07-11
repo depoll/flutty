@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -98,7 +97,9 @@ class _PortForwardBrowserScreenState
   @override
   Widget build(BuildContext context) {
     if (_addressController == null || _tabs.isEmpty) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+        body: SafeArea(child: Center(child: CircularProgressIndicator())),
+      );
     }
     final selectedTab = _selectedTab;
     return PopScope(
@@ -112,11 +113,12 @@ class _PortForwardBrowserScreenState
         unawaited(_handleRouteBack());
       },
       child: Scaffold(
-        body: Column(
-          children: [
-            Expanded(
-              child: _buildBrowserViewport(
-                Stack(
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              Expanded(
+                child: Stack(
                   children: [
                     Positioned.fill(
                       child: WebViewWidget(
@@ -136,20 +138,12 @@ class _PortForwardBrowserScreenState
                   ],
                 ),
               ),
-            ),
-            _buildBottomChrome(context, selectedTab),
-          ],
+              _buildBottomChrome(context, selectedTab),
+            ],
+          ),
         ),
       ),
     );
-  }
-
-  Widget _buildBrowserViewport(Widget child) {
-    if (defaultTargetPlatform != TargetPlatform.iOS) {
-      return child;
-    }
-
-    return SafeArea(left: false, right: false, bottom: false, child: child);
   }
 
   _PortForwardBrowserTabState _createTab(PortForwardBrowserInitialTab seed) {
@@ -238,8 +232,11 @@ class _PortForwardBrowserScreenState
     if (platformController is AndroidWebViewController) {
       await platformController.setUseWideViewPort(true);
       await platformController.setTextZoom(100);
+      // Flutter owns the safe viewport, so don't let Android WebView apply the
+      // same system-bar and cutout insets again to the page's web content.
       await platformController.setInsetsForWebContentToIgnore([
-        AndroidWebViewInsets.navigationBars,
+        AndroidWebViewInsets.systemBars,
+        AndroidWebViewInsets.displayCutout,
         AndroidWebViewInsets.mandatorySystemGestures,
         AndroidWebViewInsets.systemGestures,
         AndroidWebViewInsets.tappableElement,
