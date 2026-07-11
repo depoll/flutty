@@ -185,13 +185,12 @@ String _placeholderGrid(int imageId, {required int cols, required int rows}) {
   return buffer.toString();
 }
 
-/// Store-only (`a=t`) and virtual (`a=T,U=1`) images decode lazily, on the
-/// first paint that references them. In a real app that paint runs in the real
-/// async zone so the decode completes; a widget-test `pump()` runs in the
-/// fake-async zone where `dart:ui` decodes never finish. So reference each image
-/// inside [WidgetTester.runAsync] (exactly what the painter does — it triggers
-/// the deferred decode), wait for it, then pump so the decoded image composites
-/// before pixel assertions run.
+/// Store-only (`a=t`) images decode lazily, on the first paint that references
+/// them. In a real app that paint runs in the real async zone so the decode
+/// completes; a widget-test `pump()` runs in the fake-async zone where `dart:ui`
+/// decodes never finish. So reference each image inside [WidgetTester.runAsync]
+/// (exactly what the painter does — it triggers the deferred decode), wait for
+/// it, then pump so the decoded image composites before pixel assertions run.
 Future<void> _pumpUntilImagesDecoded(
   WidgetTester tester,
   Terminal terminal,
@@ -375,12 +374,24 @@ void main() {
         terminal
           ..write('\x1b_Ga=T,U=1,i=$imageId,f=100,c=8,r=4,q=2;$png\x1b\\')
           ..write(_placeholderGrid(imageId, cols: 8, rows: 4));
+
+        var waited = 0;
+        while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
       });
-      // Painting the placeholder cells starts the deferred decode.
-      await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
+      await tester.pump();
 
       // U=1 must not create a physical placement; the placeholders display it.
       expect(terminal.graphics.hasPlacements, isFalse);
+      expect(
+        terminal.graphics.imageById(imageId),
+        isNotNull,
+        reason:
+            'a visible virtual transmit must decode before an unrelated '
+            'full-screen redraw',
+      );
       expect(
         await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
         isTrue,

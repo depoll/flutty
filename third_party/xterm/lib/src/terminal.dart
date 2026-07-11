@@ -1400,6 +1400,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     GraphicsManager manager,
     int? generation,
   ) async {
+    final action = args['a'] ?? 't';
     final format = _graphicsFormat(args);
     final width = int.tryParse(args['s'] ?? '') ?? 0;
     final height = int.tryParse(args['v'] ?? '') ?? 0;
@@ -1465,16 +1466,17 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
-    // Defer decoding of images that are not being placed right now (store-only
-    // `a=t`, or a virtual `a=T,U=1` placeholder backing). A MonkeyMux window
-    // switch replays every retained image up front, but the foreground app only
-    // re-displays the few currently on screen, so decoding them all eagerly
-    // burns CPU, memory and raster bandwidth on images the user never sees.
-    // Keep the encoded payload and decode on first paint reference instead.
-    // Compressed (`o=z`) and immediately-placed (`a=T`) images keep the eager
-    // path: the former to avoid deferring the inflate/signature handling, the
-    // latter because they must appear at the anchored cell straight away.
-    if (anchor == null && imageId != null && !compressed) {
+    // Defer only store-only (`a=t`) images. A MonkeyMux window switch replays
+    // every retained image up front, but the foreground app only re-displays the
+    // few currently on screen, so decoding all of them eagerly burns CPU, memory
+    // and raster bandwidth on images the user never sees.
+    //
+    // Every transmit-and-display (`a=T`) image keeps the eager path, including a
+    // virtual `U=1` image displayed through Unicode placeholders. Copilot emits
+    // that form for an inline pasted-image preview; deferring it leaves the first
+    // frame blank until its physical full-screen viewer happens to decode the
+    // same image id.
+    if (action == 't' && imageId != null && !compressed) {
       if (!manager.hasPendingWithSignature(imageId, signature)) {
         manager.storePendingImage(
           imageId,

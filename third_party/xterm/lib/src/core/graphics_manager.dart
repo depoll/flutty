@@ -188,9 +188,9 @@ class TerminalImageVirtualPlacement {
 /// A MonkeyMux window switch replays every retained Kitty image up front
 /// (store-only, `a=t`), but a foreground app such as the Copilot CLI only
 /// re-emits placeholder cells for the few images currently on screen. Decoding
-/// all of them eagerly wastes CPU, memory and raster bandwidth on images the
-/// user never sees; keeping the encoded payload and decoding on first reference
-/// bounds the work to the visible set.
+/// all store-only images eagerly wastes CPU, memory and raster bandwidth on
+/// images the user never sees; keeping the encoded payload and decoding on first
+/// reference bounds the work to the visible set.
 class _PendingGraphicsImage {
   _PendingGraphicsImage({
     required this.payload,
