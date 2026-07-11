@@ -3169,18 +3169,17 @@ class _FileListTile extends StatelessWidget {
         : isDisabled
         ? theme.colorScheme.onSurfaceVariant
         : theme.colorScheme.onSurfaceVariant;
-    final sizeText = file.attr.size == null
-        ? null
-        : formatRemoteFileSize(file.attr.size!);
+    final sizeText = formatRemoteFileSize(file.attr.size ?? 0);
+    final knownSizeText = file.attr.size == null ? null : sizeText;
 
     Widget? subtitle;
     if (!isDirectory) {
       if (isDisabled) {
         final subtitleChildren = <Widget>[];
-        if (sizeText != null) {
+        if (knownSizeText != null) {
           subtitleChildren.add(
             Text(
-              sizeText,
+              knownSizeText,
               style: FluttyTheme.monoStyle.copyWith(
                 fontSize: 12,
                 color: isHighlighted
@@ -3210,7 +3209,7 @@ class _FileListTile extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: subtitleChildren,
         );
-      } else if (sizeText != null) {
+      } else {
         subtitle = Text(
           sizeText,
           style: FluttyTheme.monoStyle.copyWith(

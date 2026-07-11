@@ -952,6 +952,46 @@ void main() {
       verify(() => sftp.open('/home/demo/picture.png')).called(1);
     });
 
+    testWidgets('normal mode shows 0 B for files with unknown size', (
+      tester,
+    ) async {
+      final sshClient = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final monetizationService = _MockMonetizationService();
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'demo.example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      addTearDown(session.close);
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(sshClient.sftp).thenAnswer((_) async => sftp);
+      when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+      when(
+        () => sftp.listdir('/home/demo'),
+      ).thenAnswer((_) async => [_fileEntry('notes.txt')]);
+
+      await tester.pumpWidget(
+        _buildSftpTestApp(
+          session: session,
+          monetizationService: monetizationService,
+          child: const SftpScreen(hostId: 1, connectionId: 7),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('notes.txt'), findsOneWidget);
+      expect(find.text('0 B'), findsOneWidget);
+    });
+
     testWidgets('handles stale SSH errors while opening the browser', (
       tester,
     ) async {
