@@ -391,12 +391,8 @@ jobs:
             const buildNumber = '${{ needs.finalize-version.outputs.build-number }}';
             const rebuildRequired =
               '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
-            const iosArtifactName = `ios-unsigned-private-${buildName}-${buildNumber}.ipa`;
-            const iosSourceArtifactName =
-              `ios-preview-source-${deploySha}-${buildName}-${buildNumber}`;
-            // Android and iOS unsigned intermediates are produced by two separate
-            // preview workflows (PR Preview / PR Preview iOS), so resolve each by
-            // artifact name across the repo rather than assuming one shared run.
+            const iosArtifactName =
+              `ios-unsigned-private-${buildName}-${buildNumber}-${deploySha}.ipa`;
             const maxWaitAttempts = 40;
             const waitDelayMs = 30_000;
 
@@ -420,68 +416,47 @@ jobs:
             }
 
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const {data: previewIosWorkflow} = await github.rest.actions.getWorkflow({
+              owner,
+              repo,
+              workflow_id: 'preview-ios.yml',
+            });
 
-            // Returns every non-expired artifact with the exact name, optionally
-            // requiring its workflow run to use the deploy SHA.
-            const findArtifacts = async (name, {requireHeadSha = true} = {}) => {
+            // Returns the run id of a non-expired artifact with the exact name that
+            // was produced by the trusted iOS preview workflow.
+            const findIosArtifact = async () => {
               const artifacts = await github.paginate(
                 github.rest.actions.listArtifactsForRepo,
-                {owner, repo, name, per_page: 100},
+                {owner, repo, name: iosArtifactName, per_page: 100},
               );
-              return artifacts
-                .filter(
-                  (artifact) =>
+              const candidates = artifacts.filter(
+                (artifact) =>
                   !artifact.expired &&
-                  artifact.name === name &&
-                  (!requireHeadSha || artifact.workflow_run?.head_sha === deploySha),
-                )
-                .map((artifact) => ({
-                  name: artifact.name,
-                  runId: String(artifact.workflow_run.id),
-                }));
-            };
+                  artifact.name === iosArtifactName,
+              );
 
-            const workflowRunCache = new Map();
-            const isTrustedWorkflowRun = async (
-              runId,
-              {event, path, headSha = ''},
-            ) => {
-              let workflowRun = workflowRunCache.get(runId);
-              if (!workflowRun) {
-                const {data} = await github.rest.actions.getWorkflowRun({
+              for (const artifact of candidates) {
+                const workflowRun = artifact.workflow_run;
+                if (!workflowRun?.id) {
+                  continue;
+                }
+                const {data: run} = await github.rest.actions.getWorkflowRun({
                   owner,
                   repo,
-                  run_id: Number(runId),
+                  run_id: workflowRun.id,
                 });
-                workflowRun = data;
-                workflowRunCache.set(runId, workflowRun);
-              }
-              return (
-                workflowRun.event === event &&
-                workflowRun.path === path &&
-                (!headSha || workflowRun.head_sha === headSha)
-              );
-            };
-
-            const findIosArtifact = async () => {
-              const [ipaCandidates, sourceMarkers] = await Promise.all([
-                findArtifacts(iosArtifactName, {requireHeadSha: false}),
-                findArtifacts(iosSourceArtifactName, {requireHeadSha: false}),
-              ]);
-              const markerRunIds = new Set(
-                sourceMarkers.map((artifact) => artifact.runId),
-              );
-              for (const candidate of ipaCandidates) {
                 if (
-                  markerRunIds.has(candidate.runId) &&
-                  (await isTrustedWorkflowRun(candidate.runId, {
-                    event: 'workflow_run',
-                    path: '.github/workflows/preview-ios.yml',
-                  }))
+                  run.workflow_id !== previewIosWorkflow.id ||
+                  run.event !== 'workflow_run'
                 ) {
-                  return candidate;
+                  continue;
                 }
+                return {
+                  name: artifact.name,
+                  runId: String(workflowRun.id),
+                };
               }
+
               return null;
             };
 
@@ -489,8 +464,8 @@ jobs:
             for (let attempt = 0; attempt < maxWaitAttempts; attempt += 1) {
               // PR Preview iOS is triggered by workflow_run, so its run head SHA
               // is the default-branch workflow definition rather than the PR SHA.
-              // Require a source-SHA marker from the same workflow run as the IPA
-              // before trusting it for reuse.
+              // The source-qualified artifact name binds it to the PR commit,
+              // while the workflow id verifies the trusted producer.
               if (!iosArtifact) {
                 iosArtifact = await findIosArtifact();
               }
