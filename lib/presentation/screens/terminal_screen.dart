@@ -3158,11 +3158,13 @@ enum _TerminalExclusiveAction { sftpBrowser, tmuxNavigator }
 class _PortForwardBrowserOption {
   const _PortForwardBrowserOption({
     required this.uri,
+    required this.sourceUri,
     required this.port,
     required this.title,
   });
 
   final Uri uri;
+  final Uri sourceUri;
   final int port;
   final String title;
 }
@@ -13388,20 +13390,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     if (isPortForwardBrowserSupported() &&
-        ref.read(portForwardBrowserLinksNotifierProvider) &&
-        shouldOpenUriInPortForwardBrowser(
+        ref.read(portForwardBrowserLinksNotifierProvider)) {
+      final options = _activePortForwardBrowserOptions();
+      _PortForwardBrowserOption? targetOption;
+      Uri? browserUri;
+      for (final option in options) {
+        final rewritten = rewriteUriForPortForwardBrowser(
           uri,
-          activeLocalPorts: _activeLocalForwardPorts(),
-        )) {
-      final browserUri = normalizePortForwardBrowserUri(uri);
-      await _openPortForwardBrowserOption(
-        _PortForwardBrowserOption(
-          uri: browserUri,
-          port: browserUri.port,
-          title: browserUri.authority,
-        ),
-      );
-      return;
+          sourceUri: option.sourceUri,
+          browserUri: option.uri,
+        );
+        if (rewritten != null) {
+          targetOption = option;
+          browserUri = rewritten;
+          break;
+        }
+      }
+      if (targetOption != null && browserUri != null) {
+        await _openPortForwardBrowserOption(
+          _PortForwardBrowserOption(
+            uri: browserUri,
+            sourceUri: targetOption.sourceUri,
+            port: targetOption.port,
+            title: targetOption.title,
+          ),
+        );
+        return;
+      }
     }
 
     var launched = false;
@@ -13417,9 +13432,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _showTerminalLinkMessage('Could not open $link');
   }
 
-  Iterable<int> _activeLocalForwardPorts() =>
-      _activePortForwardBrowserOptions().map((option) => option.port);
-
   List<_PortForwardBrowserOption> _activePortForwardBrowserOptions() {
     final connectionId = _connectionId;
     final session = connectionId == null
@@ -13431,17 +13443,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   tunnel.isLocal &&
                   isPortForwardBrowserHost(tunnel.localHost) &&
                   tunnel.localPort >= 1 &&
-                  tunnel.localPort <= 65535,
+                  tunnel.localPort <= 65535 &&
+                  tunnel.browserHost != null &&
+                  tunnel.browserPort != null &&
+                  tunnel.browserPort! >= 1 &&
+                  tunnel.browserPort! <= 65535,
             )
             .map((tunnel) {
-              final uri = buildPortForwardBrowserUriForBind(
+              final sourceUri = buildPortForwardBrowserUriForBind(
                 localHost: tunnel.localHost,
                 localPort: tunnel.localPort,
               );
+              final uri = buildPortForwardBrowserUriForBind(
+                localHost: tunnel.browserHost!,
+                localPort: tunnel.browserPort!,
+              );
               return _PortForwardBrowserOption(
                 uri: uri,
+                sourceUri: sourceUri,
                 port: tunnel.localPort,
-                title: uri.authority,
+                title: sourceUri.authority,
               );
             })
             .toList(growable: false) ??
@@ -13470,7 +13491,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       extra: PortForwardBrowserLaunch(
         tabs: [
           for (final option in options)
-            PortForwardBrowserInitialTab(uri: option.uri, title: option.title),
+            PortForwardBrowserInitialTab(
+              uri: option.uri,
+              sourceUri: option.sourceUri,
+              title: option.title,
+            ),
         ],
       ),
     );

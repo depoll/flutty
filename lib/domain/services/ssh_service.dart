@@ -25,6 +25,7 @@ import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
 import 'interactive_auth_prompt.dart';
 import 'local_notification_service.dart';
+import 'port_forward_browser_service.dart';
 import 'settings_service.dart';
 import 'ssh_exec_queue.dart';
 import 'telemetry_service.dart';
@@ -3213,6 +3214,8 @@ class SshSession {
           portForwardId: e.key,
           localHost: e.value.localHost,
           localPort: e.value.localPort,
+          browserHost: e.value.browserHost,
+          browserPort: e.value.browserPort,
           remoteHost: e.value.remoteHost,
           remotePort: e.value.remotePort,
           isLocal: e.value.isLocal,
@@ -3816,10 +3819,33 @@ class SshSession {
       return true; // Already running
     }
 
+    ServerSocket? serverSocket;
+    ServerSocket? browserServerSocket;
     try {
-      final serverSocket = await ServerSocket.bind(localHost, localPort);
+      serverSocket = await ServerSocket.bind(localHost, localPort);
+      final browserHost = portForwardBrowserHostForPortForwardId(portForwardId);
+      try {
+        browserServerSocket = await ServerSocket.bind(
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+      } on Exception catch (error) {
+        DiagnosticsLogService.instance.warning(
+          'ssh.forward',
+          'browser_listener_failed',
+          fields: {
+            'connectionId': connectionId,
+            'hostId': hostId,
+            'portForwardId': portForwardId,
+            'errorType': error.runtimeType,
+          },
+        );
+      }
       final tunnel = _ActiveTunnel.local(
         serverSocket: serverSocket,
+        browserServerSocket: browserServerSocket,
+        browserHost: browserServerSocket == null ? null : browserHost,
+        browserPort: browserServerSocket?.port,
         localHost: localHost,
         localPort: serverSocket.port,
         remoteHost: remoteHost,
@@ -3828,55 +3854,24 @@ class SshSession {
 
       _activeTunnels[portForwardId] = tunnel;
 
-      // Handle incoming connections
-      tunnel.subscription = serverSocket.listen((socket) async {
-        SSHForwardChannel? forward;
-        try {
-          forward = await client.forwardLocal(remoteHost, remotePort);
-          // Pipe data bidirectionally and wait until either side finishes.
-          final forwardToSocket = forward.stream.cast<List<int>>().pipe(socket);
-          final socketToForward = socket.cast<List<int>>().pipe(forward.sink);
-
-          await Future.any<void>([forwardToSocket, socketToForward]);
-        } on SSHError catch (e) {
-          DiagnosticsLogService.instance.warning(
-            'ssh.forward',
-            'local_connection_failed',
-            fields: {
-              'connectionId': connectionId,
-              'hostId': hostId,
-              ..._diagnosticSshExecErrorFields(e),
-            },
-          );
-          _reportConnectionHealthFailureIfClosed(e, operation: 'forward_local');
-          if (kDebugMode) {
-            debugPrint('Port forward connection error: $e');
-          }
-        } on Exception catch (e) {
-          DiagnosticsLogService.instance.warning(
-            'ssh.forward',
-            'local_connection_failed',
-            fields: {'errorType': e.runtimeType},
-          );
-          if (kDebugMode) {
-            debugPrint('Port forward connection error: $e');
-          }
-        } finally {
-          try {
-            await forward?.sink.close();
-          } on Exception catch (_) {
-            // Ignore errors during cleanup.
-          }
-          try {
-            socket.destroy();
-          } on Exception catch (_) {
-            // Ignore errors during cleanup.
-          }
-        }
-      });
+      tunnel.subscription = _listenToLocalForwardConnections(
+        serverSocket,
+        remoteHost: remoteHost,
+        remotePort: remotePort,
+      );
+      if (browserServerSocket != null) {
+        tunnel.browserSubscription = _listenToLocalForwardConnections(
+          browserServerSocket,
+          remoteHost: remoteHost,
+          remotePort: remotePort,
+        );
+      }
 
       return true;
     } on Exception catch (e) {
+      _activeTunnels.remove(portForwardId);
+      await browserServerSocket?.close();
+      await serverSocket?.close();
       DiagnosticsLogService.instance.warning(
         'ssh.forward',
         'local_start_failed',
@@ -3888,6 +3883,55 @@ class SshSession {
       return false;
     }
   }
+
+  StreamSubscription<Socket> _listenToLocalForwardConnections(
+    ServerSocket serverSocket, {
+    required String remoteHost,
+    required int remotePort,
+  }) => serverSocket.listen((socket) async {
+    SSHForwardChannel? forward;
+    try {
+      forward = await client.forwardLocal(remoteHost, remotePort);
+      final forwardToSocket = forward.stream.cast<List<int>>().pipe(socket);
+      final socketToForward = socket.cast<List<int>>().pipe(forward.sink);
+
+      await Future.any<void>([forwardToSocket, socketToForward]);
+    } on SSHError catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'local_connection_failed',
+        fields: {
+          'connectionId': connectionId,
+          'hostId': hostId,
+          ..._diagnosticSshExecErrorFields(e),
+        },
+      );
+      _reportConnectionHealthFailureIfClosed(e, operation: 'forward_local');
+      if (kDebugMode) {
+        debugPrint('Port forward connection error: $e');
+      }
+    } on Exception catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'local_connection_failed',
+        fields: {'errorType': e.runtimeType},
+      );
+      if (kDebugMode) {
+        debugPrint('Port forward connection error: $e');
+      }
+    } finally {
+      try {
+        await forward?.sink.close();
+      } on Exception catch (_) {
+        // Ignore errors during cleanup.
+      }
+      try {
+        socket.destroy();
+      } on Exception catch (_) {
+        // Ignore errors during cleanup.
+      }
+    }
+  });
 
   /// Start a remote port forward tunnel.
   ///
@@ -3986,7 +4030,9 @@ class SshSession {
     final tunnel = _activeTunnels.remove(portForwardId);
     if (tunnel != null) {
       await tunnel.subscription?.cancel();
+      await tunnel.browserSubscription?.cancel();
       await tunnel.serverSocket?.close();
+      await tunnel.browserServerSocket?.close();
       tunnel.remoteForward?.close();
     }
   }
@@ -4180,6 +4226,8 @@ class ActiveTunnelInfo {
     required this.remoteHost,
     required this.remotePort,
     required this.isLocal,
+    this.browserHost,
+    this.browserPort,
   });
 
   /// The port forward database ID.
@@ -4190,6 +4238,12 @@ class ActiveTunnelInfo {
 
   /// The local port being listened on.
   final int localPort;
+
+  /// Browser-only loopback host that isolates this tunnel's cookies.
+  final String? browserHost;
+
+  /// Browser-only relay port for this tunnel.
+  final int? browserPort;
 
   /// The remote host being forwarded to.
   final String remoteHost;
@@ -4204,6 +4258,9 @@ class ActiveTunnelInfo {
 class _ActiveTunnel {
   _ActiveTunnel.local({
     required this.serverSocket,
+    required this.browserServerSocket,
+    required this.browserHost,
+    required this.browserPort,
     required this.localHost,
     required this.localPort,
     required this.remoteHost,
@@ -4218,18 +4275,27 @@ class _ActiveTunnel {
     required this.remoteHost,
     required this.remotePort,
   }) : serverSocket = null,
+       browserServerSocket = null,
+       browserHost = null,
+       browserPort = null,
        isLocal = false;
 
   final ServerSocket? serverSocket;
+  final ServerSocket? browserServerSocket;
   final SSHRemoteForward? remoteForward;
   final String localHost;
   final int localPort;
+  final String? browserHost;
+  final int? browserPort;
   final String remoteHost;
   final int remotePort;
   final bool isLocal;
   // Cancelled in SshSession.stopForward().
   // ignore: cancel_subscriptions
   StreamSubscription<dynamic>? subscription;
+  // Cancelled in SshSession.stopForward().
+  // ignore: cancel_subscriptions
+  StreamSubscription<dynamic>? browserSubscription;
 }
 
 class _AppReviewDemoSshClient implements SSHClient {
