@@ -392,7 +392,8 @@ jobs:
             const rebuildRequired =
               '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
             const androidArtifactName = `android-unsigned-private-${buildName}-${buildNumber}`;
-            const iosArtifactName = `ios-unsigned-private-${buildName}-${buildNumber}.ipa`;
+            const iosArtifactName =
+              `ios-unsigned-private-${buildName}-${buildNumber}-${deploySha}.ipa`;
             // Android and iOS unsigned intermediates are produced by two separate
             // preview workflows (PR Preview / PR Preview iOS), so resolve each by
             // artifact name across the repo rather than assuming one shared run.
@@ -419,28 +420,72 @@ jobs:
             }
 
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const {data: previewIosWorkflow} = await github.rest.actions.getWorkflow({
+              owner,
+              repo,
+              workflow_id: 'preview-ios.yml',
+            });
 
             // Returns the run id of a non-expired artifact with the exact name that
-            // was produced by a run for the deploy SHA, or null if not present yet.
-            const findArtifactRunId = async (name) => {
+            // was produced by the expected workflow/source, or null if not present yet.
+            const findArtifactRunId = async ({
+              name,
+              expectedHeadSha = '',
+              expectedWorkflowId = null,
+            }) => {
               const artifacts = await github.paginate(
                 github.rest.actions.listArtifactsForRepo,
                 {owner, repo, name, per_page: 100},
               );
-              const match = artifacts.find(
-                (artifact) =>
-                  !artifact.expired &&
-                  artifact.name === name &&
-                  artifact.workflow_run?.head_sha === deploySha,
+              const candidates = artifacts.filter(
+                (artifact) => !artifact.expired && artifact.name === name,
               );
-              return match ? String(match.workflow_run.id) : null;
+
+              for (const artifact of candidates) {
+                const workflowRun = artifact.workflow_run;
+                if (!workflowRun?.id) {
+                  continue;
+                }
+                if (expectedHeadSha && workflowRun.head_sha !== expectedHeadSha) {
+                  continue;
+                }
+                if (expectedWorkflowId !== null) {
+                  const {data: run} = await github.rest.actions.getWorkflowRun({
+                    owner,
+                    repo,
+                    run_id: workflowRun.id,
+                  });
+                  if (
+                    run.workflow_id !== expectedWorkflowId ||
+                    run.event !== 'workflow_run'
+                  ) {
+                    continue;
+                  }
+                }
+                return String(workflowRun.id);
+              }
+
+              return null;
             };
 
             let androidRunId = null;
             let iosRunId = null;
             for (let attempt = 0; attempt < maxWaitAttempts; attempt += 1) {
-              androidRunId = androidRunId ?? (await findArtifactRunId(androidArtifactName));
-              iosRunId = iosRunId ?? (await findArtifactRunId(iosArtifactName));
+              androidRunId =
+                androidRunId ??
+                (await findArtifactRunId({
+                  name: androidArtifactName,
+                  expectedHeadSha: deploySha,
+                }));
+              // workflow_run-triggered iOS runs report main's SHA in artifact
+              // metadata. The source-qualified artifact name binds it to the PR
+              // commit, while the workflow id verifies the trusted producer.
+              iosRunId =
+                iosRunId ??
+                (await findArtifactRunId({
+                  name: iosArtifactName,
+                  expectedWorkflowId: previewIosWorkflow.id,
+                }));
               if (androidRunId && iosRunId) {
                 break;
               }
@@ -655,7 +700,7 @@ jobs:
       android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.ios-run-id || '' }}
-      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}.ipa', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
+      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}-{3}.ipa', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number, needs.validate-pr.outputs.deploy-sha) || '' }}
       ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       update-pr-deploy-comment: true
