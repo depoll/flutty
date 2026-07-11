@@ -4061,7 +4061,14 @@ class MonkeyRenderTerminal extends RenderBox
     bool belowText = false,
   }) {
     final graphics = _terminal.graphics;
-    if (!graphics.hasPlacements && graphics.imageCount == 0) {
+    // A pending virtual image has neither a physical placement nor a decoded
+    // image yet. Its foreground placeholder pass must run so visible cells can
+    // trigger the deferred decode; the below-text pass has nothing to do.
+    final hasPlaceholderGraphics =
+        !belowText && graphics.placeholders.isNotEmpty;
+    if (!graphics.hasPlacements &&
+        graphics.imageCount == 0 &&
+        !hasPlaceholderGraphics) {
       return;
     }
 
