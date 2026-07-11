@@ -5,8 +5,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_DIR="$ROOT_DIR/remote/monkeymux"
 ASSET_DIR="$ROOT_DIR/assets/monkeymux"
 VERSION="$(sh "$REMOTE_DIR/monkeymux-version.sh" 2>/dev/null || echo "0.1.0")"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+BUILD_DIR="$ROOT_DIR/.monkeymux-build"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+trap 'rm -rf "$BUILD_DIR"' EXIT
 
 targets=(
   "darwin amd64 darwin-amd64"
@@ -37,7 +39,7 @@ manifest_entries=()
 for target in "${targets[@]}"; do
   read -r goos goarch platform <<<"$target"
   output_dir="$ASSET_DIR/bin/$platform"
-  raw_output="$TMP_DIR/$platform/monkeymux"
+  raw_output="$BUILD_DIR/$platform/monkeymux"
   output="$output_dir/monkeymux.gz"
   mkdir -p "$output_dir"
   mkdir -p "$(dirname "$raw_output")"

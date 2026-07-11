@@ -56,7 +56,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.94"
+	monkeyMuxVersion                  = "0.1.95"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -178,6 +178,8 @@ var capabilities = []string{
 	"attach-update-policy",
 	"attach-state",
 	"upgrade-restore-v1",
+	"acp-bridge-v1",
+	"acp-bridge-replay-v1",
 }
 
 var (
@@ -525,6 +527,8 @@ func main() {
 		serveCommand(os.Args[2:])
 	case "gc":
 		gcCommand()
+	case "acp":
+		acpCommand(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(monkeyMuxVersion)
 	default:
@@ -533,7 +537,7 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--theme-hint-base64 DATA] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--theme-hint-base64 DATA] [--update-policy prompt|never|always] <session> | control <session> --json | acp start|attach|connect|list|status|stop|gc | gc | version")
 	os.Exit(2)
 }
 
@@ -730,6 +734,7 @@ func gcCommand() {
 		}
 		_ = os.Remove(path)
 	}
+	gcAcpArtifacts(runDir)
 }
 
 func ensureServer(
