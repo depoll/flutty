@@ -173,6 +173,21 @@ void main() {
       expect(response?.imageIds, ['17', '23']);
     });
 
+    test('parses whether focus changed the primary client', () {
+      expect(
+        parseMonkeyMuxFocusChangedForTesting(
+          '{"type":"client_focused","status":"ok","focusChanged":true}',
+        ),
+        isTrue,
+      );
+      expect(
+        parseMonkeyMuxFocusChangedForTesting(
+          '{"type":"client_focused","status":"ok"}',
+        ),
+        isFalse,
+      );
+    });
+
     test('allows one-shot run_command responses to reach server timeout', () {
       expect(
         monkeyMuxOneShotResponseTimeoutForTesting(const <String, Object?>{

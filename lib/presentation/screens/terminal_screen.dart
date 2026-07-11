@@ -7392,13 +7392,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (sessionName == null || columns <= 0 || rows <= 0) {
       return;
     }
+    final connectionId = session.connectionId;
     unawaited(
-      _monkeyMuxService.focusClient(
-        session,
-        sessionName,
-        columns: columns,
-        rows: rows,
-      ),
+      _monkeyMuxService
+          .focusClient(session, sessionName, columns: columns, rows: rows)
+          .then((focusChanged) {
+            if (!mounted ||
+                !focusChanged ||
+                _connectionId != connectionId ||
+                _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+              return;
+            }
+            _refreshTerminalAfterMonkeyMuxWindowChange(session);
+          }),
     );
   }
 
