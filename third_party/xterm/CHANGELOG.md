@@ -24,8 +24,9 @@ out of scope.
   neovim diagnostics can draw a red undercurl. Supports both the colon
   (`58:2::r:g:b`, `58:5:n`) and legacy semicolon forms.
 * Kitty graphics protocol (`APC _G … ST`). Transmitted images are parsed and
-  consumed (so payloads never leak as text), decoded (PNG/JPEG/GIF via Flutter's
-  codecs, or raw RGBA/RGB), and composited over the cell grid. Each placement is
+  consumed (so payloads never leak as text), decoded (PNG/JPEG/GIF/APNG via
+  Flutter's codecs, or raw RGBA/RGB), and composited over the cell grid. Each
+  placement is
   anchored to its cursor cell with a `CellAnchor` so it tracks scrollback and
   reflow. Chunked transmissions and a 16 MiB cap are handled.
 * Robustness: CSI parameter/sub-parameter cap (256) to avoid OOM on malformed
@@ -96,6 +97,14 @@ out of scope.
   do not need.
 
 ### MonkeySSH-local additions (preserve across kterm syncs)
+* Kitty graphics animation (#586): protocol frames (`a=f`), animation control
+  (`a=a`) and frame composition (`a=c`) now retain fully composed frame
+  sequences with Kitty-compatible gaps, loading/loop/stop state and bounded
+  decoded memory. Encoded GIF/APNG transmissions preserve all decoded frames,
+  durations and repetition metadata instead of freezing on frame one. The host
+  renderer advances only displayed, active animations and paints the current
+  frame; keep the frame model and animation APIs in `graphics_manager.dart`
+  when re-syncing.
 * XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
   implements the kitty graphics + keyboard protocols, so it reports a
   kitty-family identity. CLIs such as the GitHub Copilot CLI gate their richer

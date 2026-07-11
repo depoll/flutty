@@ -93,6 +93,11 @@ bool _isBlue(int r, int g, int b) => b > 150 && r < 90 && g < 90;
 
 bool _isLight(int r, int g, int b) => r > 150 && g > 150 && b > 150;
 
+const _animatedGifBase64 =
+    'R0lGODlhAwADAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQE'
+    'BwAAACwAAAAAAwADAAAIBwABCBw4MCAAIfkEBA0AAAAsAAAAAAMAAwCBAAD/AAAA'
+    'AAAAAAAACAcAAQgcODAgADs=';
+
 /// Builds a PNG whose left half is [left] and right half is [right], used to
 /// verify source-rectangle cropping selects the requested region.
 Future<String> _buildSplitPngBase64(Color left, Color right, int size) async {
@@ -276,6 +281,108 @@ void main() {
       isTrue,
       reason: 'the placed red image should be composited into the terminal',
     );
+  });
+
+  testWidgets(
+    'animated GIF advances, stops, restarts and disposes its ticker',
+    (tester) async {
+      final boundaryKey = GlobalKey();
+      final viewKey = GlobalKey<MonkeyTerminalViewState>();
+      final terminal = Terminal();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RepaintBoundary(
+              key: boundaryKey,
+              child: MonkeyTerminalView(
+                terminal,
+                key: viewKey,
+                hardwareKeyboardOnly: true,
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+      await tester.runAsync(() async {
+        terminal.write(
+          '\x1b_Ga=T,i=51,f=100,c=4,r=2;$_animatedGifBase64\x1b\\',
+        );
+        var waited = 0;
+        while ((terminal.graphics.imageById(51)?.frameCount ?? 0) != 2 &&
+            waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+      });
+      await tester.pump();
+
+      final image = terminal.graphics.imageById(51)!;
+      expect(image.currentFrame, 1);
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+      expect(await tester.runAsync(() => _boundaryHasRed(boundaryKey)), isTrue);
+
+      await tester.pump(const Duration(milliseconds: 69));
+      expect(image.currentFrame, 1);
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(image.currentFrame, 2);
+      expect(
+        await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+        greaterThan(0),
+      );
+
+      terminal.write('\x1b_Ga=a,i=51,s=1\x1b\\');
+      await tester.pump();
+      await tester.pump();
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+      terminal.write('\x1b_Ga=a,i=51,s=3\x1b\\');
+      await tester.pump();
+      await tester.pump();
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('reduced motion keeps animated terminal images static', (
+    tester,
+  ) async {
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=52,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(52)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(disableAnimations: true),
+          child: MonkeyTerminalView(
+            terminal,
+            key: viewKey,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    final image = terminal.graphics.imageById(52)!;
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+    expect(image.currentFrame, 1);
+
+    await tester.pump(const Duration(seconds: 1));
+    expect(image.currentFrame, 1);
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
   });
 
   testWidgets(

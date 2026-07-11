@@ -23,6 +23,27 @@ Future<ui.Image> _buildImage(int width, int height) async {
   return recorder.endRecording().toImage(width, height);
 }
 
+Future<Color> _pixelColor(ui.Image image, int x, int y) async {
+  final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+  final offset = (y * image.width + x) * 4;
+  return Color.fromARGB(
+    data!.getUint8(offset + 3),
+    data.getUint8(offset),
+    data.getUint8(offset + 1),
+    data.getUint8(offset + 2),
+  );
+}
+
+const _animatedGifBase64 =
+    'R0lGODlhAwADAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQE'
+    'BwAAACwAAAAAAwADAAAIBwABCBw4MCAAIfkEBA0AAAAsAAAAAAMAAwCBAAD/AAAA'
+    'AAAAAAAACAcAAQgcODAgADs=';
+
+const _zeroDelayGifBase64 =
+    'R0lGODlhAwADAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQE'
+    'AAAAACwAAAAAAwADAAAIBwABCBw4MCAAIfkEBAAAAAAsAAAAAAMAAwCBAAD/AAAA'
+    'AAAAAAAACAcAAQgcODAgADs=';
+
 /// Waits until image [id] has finished its (deferred) decode and is stored.
 Future<void> _awaitImage(Terminal terminal, int id) async {
   var waited = 0;
@@ -495,6 +516,283 @@ void main() {
       expect(image, isNotNull);
       expect(image!.width, 320);
       expect(image.height, 200);
+    });
+  });
+
+  testWidgets('animated GIF decode preserves every frame and duration', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final decoded = await decodeTerminalImageSequence(
+        base64.decode(_animatedGifBase64),
+        format: 100,
+      );
+
+      expect(decoded, isNotNull);
+      expect(decoded!.frames, hasLength(2));
+      expect(decoded.frames[0].duration, const Duration(milliseconds: 70));
+      expect(decoded.frames[1].duration, const Duration(milliseconds: 130));
+      expect(decoded.repetitionCount, -1);
+      expect(
+        await _pixelColor(decoded.frames[0].image, 0, 0),
+        const Color(0xFFFF0000),
+      );
+      expect(
+        await _pixelColor(decoded.frames[1].image, 0, 0),
+        const Color(0xFF0000FF),
+      );
+    });
+  });
+
+  testWidgets('zero-delay GIF frames use a finite playback floor', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      terminal.write(
+        '\x1b_Ga=T,i=6,f=100,c=2,r=2;$_zeroDelayGifBase64\x1b\\',
+      );
+
+      var waited = 0;
+      while ((terminal.graphics.imageById(6)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final image = terminal.graphics.imageById(6)!;
+      expect(image.frameDuration(1), const Duration(milliseconds: 10));
+      expect(terminal.graphics.hasActiveAnimations, isTrue);
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 10),
+        ),
+        isTrue,
+      );
+      expect(image.currentFrame, 2);
+    });
+  });
+
+  testWidgets('Kitty a=f and a=a advance, stop and honor loop limits', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      final red = base64.encode(<int>[255, 0, 0, 255]);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+
+      terminal
+        ..write('\x1b_Ga=T,i=7,f=32,s=1,v=1,c=1,r=1;$red\x1b\\')
+        ..write('\x1b_Ga=f,i=7,f=32,s=1,v=1,z=50;$blue\x1b\\')
+        ..write('\x1b_Ga=a,i=7,r=1,z=30,s=3,v=2\x1b\\');
+
+      var waited = 0;
+      while (waited < 2000) {
+        final image = terminal.graphics.imageById(7);
+        if (image?.frameCount == 2 &&
+            image?.animationState == TerminalAnimationState.running) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final image = terminal.graphics.imageById(7);
+      expect(image, isNotNull);
+      expect(image!.frameCount, 2);
+      expect(image.currentFrame, 1);
+      expect(image.frameDuration(1), const Duration(milliseconds: 30));
+      expect(image.frameDuration(2), const Duration(milliseconds: 50));
+      expect(image.animationState, TerminalAnimationState.running);
+      expect(terminal.graphics.hasActiveAnimations, isTrue);
+
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 29),
+        ),
+        isFalse,
+      );
+      expect(image.currentFrame, 1);
+      expect(
+        terminal.graphics.advanceAnimations(const Duration(milliseconds: 1)),
+        isTrue,
+      );
+      expect(image.currentFrame, 2);
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 50),
+        ),
+        isFalse,
+        reason: 'v=2 stops at the end of the first pass',
+      );
+      expect(image.currentFrame, 2);
+      expect(terminal.graphics.hasActiveAnimations, isFalse);
+
+      terminal.write('\x1b_Ga=a,i=7,c=1,s=1\x1b\\');
+      waited = 0;
+      while (image.animationState != TerminalAnimationState.stopped &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(image.currentFrame, 1);
+      expect(image.animationState, TerminalAnimationState.stopped);
+      expect(
+        terminal.graphics.advanceAnimations(const Duration(seconds: 1)),
+        isFalse,
+      );
+      expect(image.currentFrame, 1);
+    });
+  });
+
+  testWidgets('Kitty loading mode resumes when another frame arrives', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      final red = base64.encode(<int>[255, 0, 0, 255]);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+      final green = base64.encode(<int>[0, 255, 0, 255]);
+
+      terminal
+        ..write('\x1b_Ga=T,i=17,f=32,s=1,v=1,c=1,r=1;$red\x1b\\')
+        ..write('\x1b_Ga=f,i=17,f=32,s=1,v=1,z=50;$blue\x1b\\')
+        ..write('\x1b_Ga=a,i=17,r=1,z=20,s=2\x1b\\');
+
+      var waited = 0;
+      while (waited < 2000) {
+        final image = terminal.graphics.imageById(17);
+        if (image?.frameCount == 2 &&
+            image?.animationState == TerminalAnimationState.loading) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final image = terminal.graphics.imageById(17)!;
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 20),
+        ),
+        isTrue,
+      );
+      expect(image.currentFrame, 2);
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 50),
+        ),
+        isFalse,
+      );
+      expect(terminal.graphics.hasActiveAnimations, isFalse);
+
+      terminal.write('\x1b_Ga=f,i=17,f=32,s=1,v=1,z=40;$green\x1b\\');
+      waited = 0;
+      while (image.frameCount != 3 && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.hasActiveAnimations, isTrue);
+      expect(terminal.graphics.advanceAnimations(Duration.zero), isTrue);
+      expect(image.currentFrame, 3);
+      expect(
+        await _pixelColor(image.image, 0, 0),
+        const Color(0xFF00FF00),
+      );
+    });
+  });
+
+  testWidgets('Kitty a=f composes partial frames and a=c copies regions', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      final redGreen = base64.encode(<int>[
+        255,
+        0,
+        0,
+        255,
+        0,
+        255,
+        0,
+        255,
+      ]);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+
+      terminal
+        ..write('\x1b_Ga=t,i=8,f=32,s=2,v=1;$redGreen\x1b\\')
+        ..write(
+          '\x1b_Ga=f,i=8,f=32,s=1,v=1,x=1,c=1,X=1,z=60;'
+          '$blue\x1b\\',
+        );
+
+      var waited = 0;
+      while ((terminal.graphics.imageById(8)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final image = terminal.graphics.imageById(8)!;
+      final second = image.imageAtFrame(2)!;
+      expect(await _pixelColor(second, 0, 0), const Color(0xFFFF0000));
+      expect(await _pixelColor(second, 1, 0), const Color(0xFF0000FF));
+
+      terminal.write(
+        '\x1b_Ga=c,i=8,r=2,c=1,x=0,y=0,X=1,Y=0,w=1,h=1,C=1\x1b\\',
+      );
+      waited = 0;
+      while (await _pixelColor(image.imageAtFrame(1)!, 0, 0) !=
+              const Color(0xFF0000FF) &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final root = image.imageAtFrame(1)!;
+      expect(await _pixelColor(root, 0, 0), const Color(0xFF0000FF));
+      expect(await _pixelColor(root, 1, 0), const Color(0xFF00FF00));
+    });
+  });
+
+  testWidgets('protocol animation frames respect the decoded memory cap', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager(maxMemoryBytes: 8);
+      final root = await _buildImage(1, 1);
+      final frame = await _buildImage(1, 1);
+      manager.storeImageWithId(1, root);
+
+      expect(
+        await manager.addAnimationFrame(
+          1,
+          DecodedTerminalImage.single(frame),
+        ),
+        isTrue,
+      );
+      expect(manager.currentMemoryBytes, 8);
+      expect(
+        await manager.addAnimationFrame(
+          1,
+          DecodedTerminalImage.single(frame),
+        ),
+        isFalse,
+      );
+      expect(manager.imageById(1)!.frameCount, 2);
+      expect(manager.currentMemoryBytes, 8);
+    });
+  });
+
+  testWidgets('targeted delete waits for an in-flight transmit', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(512, 512);
+      final terminal = Terminal();
+
+      terminal
+        ..write('\x1b_Ga=T,i=73,f=100,c=8,r=4;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=d,d=I,i=73\x1b\\');
+
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(terminal.graphics.imageById(73), isNull);
+      expect(terminal.graphics.hasPlacements, isFalse);
     });
   });
 
