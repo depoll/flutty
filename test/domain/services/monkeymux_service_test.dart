@@ -55,6 +55,8 @@ void main() {
       final command = buildMonkeyMuxAttachCommand(
         executablePath: '/home/me/.monkeyssh/bin/monkey mux',
         sessionName: "work'space",
+        clientId: 'app 7',
+        clipViewport: true,
         workingDirectory: "~/src/it's app",
         windowName: 'Codex agent',
         launchCommand: "codex --model 'gpt-5.4'",
@@ -64,7 +66,8 @@ void main() {
 
       expect(
         command,
-        "'/home/me/.monkeyssh/bin/monkey mux' attach --update-policy never "
+        "'/home/me/.monkeyssh/bin/monkey mux' attach --quiet "
+        "--client-id 'app 7' --clip-viewport --update-policy never "
         "--restore-yolo --cwd '~/src/it'\"'\"'s app' --name 'Codex agent' --command "
         "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
       );
@@ -79,7 +82,8 @@ void main() {
 
       expect(
         command,
-        "'/home/me/.monkeyssh/bin/monkeymux' attach --theme-hint-base64 "
+        "'/home/me/.monkeyssh/bin/monkeymux' attach --quiet "
+        '--theme-hint-base64 '
         'G10xMTtyZ2I6MDAwMC8xMTExLzIyMjIbXA== '
         "'work'",
       );
@@ -101,7 +105,8 @@ void main() {
       // backslash-escaped so CommandLineToArgvW recovers the exact argument.
       expect(
         command,
-        r'"C:\Program Files\mm\monkeymux.exe" attach --update-policy never '
+        r'"C:\Program Files\mm\monkeymux.exe" attach --quiet '
+        '--update-policy never '
         r'--cwd "C:\src\my app\\" --name "Codex agent" '
         r'--command "python -c \"print(1)\"" workspace',
       );
@@ -114,7 +119,26 @@ void main() {
         windows: true,
       );
 
-      expect(command, r'C:\mm\monkeymux.exe attach work');
+      expect(command, r'C:\mm\monkeymux.exe attach --quiet work');
+    });
+
+    test('uses a unique app client id for each SSH session', () {
+      SshSession createSession() => SshSession(
+        connectionId: 42,
+        hostId: 1,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+
+      final first = createSession();
+      final second = createSession();
+
+      expect(first.monkeyMuxClientId, startsWith('monkeyssh-42-'));
+      expect(second.monkeyMuxClientId, isNot(first.monkeyMuxClientId));
     });
   });
 
@@ -122,12 +146,33 @@ void main() {
     test('detects version mismatches and shutdown capability', () {
       const status = MonkeyMuxServerStatus(
         version: '0.1.13',
-        capabilities: {'window-list', 'shutdown'},
+        capabilities: {'window-list', 'shutdown', 'client-viewport-clipping'},
       );
 
       expect(status.supportsShutdown, isTrue);
+      expect(status.supportsViewportClipping, isTrue);
       expect(status.needsUpdate('0.1.13'), isFalse);
       expect(status.needsUpdate('0.1.14'), isTrue);
+    });
+  });
+
+  group('MonkeyMuxImageReplayResult', () {
+    test('retries only unserved ids after a transport failure', () {
+      final result = MonkeyMuxImageReplayResult(
+        served: const {7},
+        retryableFailure: true,
+      );
+
+      expect(result.retryableUnserved(const {7, 8, 9}), {8, 9});
+    });
+
+    test('keeps acknowledged missing ids suppressed', () {
+      final result = MonkeyMuxImageReplayResult(
+        served: const {7},
+        retryableFailure: false,
+      );
+
+      expect(result.retryableUnserved(const {7, 8, 9}), isEmpty);
     });
   });
 
@@ -138,6 +183,31 @@ void main() {
       );
 
       expect(hasForegroundClient, isTrue);
+    });
+
+    test('parses served image ids from replay acknowledgement', () {
+      final response = parseMonkeyMuxImageReplayAckForTesting(
+        '{"type":"images_replayed","status":"ok",'
+        '"imagesAcknowledged":true,"imageIds":["17","23"]}',
+      );
+
+      expect(response?.acknowledged, isTrue);
+      expect(response?.imageIds, ['17', '23']);
+    });
+
+    test('parses whether focus changed the primary client', () {
+      expect(
+        parseMonkeyMuxFocusChangedForTesting(
+          '{"type":"client_focused","status":"ok","focusChanged":true}',
+        ),
+        isTrue,
+      );
+      expect(
+        parseMonkeyMuxFocusChangedForTesting(
+          '{"type":"client_focused","status":"ok"}',
+        ),
+        isFalse,
+      );
     });
 
     test('allows one-shot run_command responses to reach server timeout', () {

@@ -56,6 +56,22 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   void Function(int width, int height, int pixelWidth, int pixelHeight)?
       onResize;
 
+  /// Function called after a MonkeySSH-private host resize updates the grid.
+  void Function(int width, int height)? onHostResize;
+
+  /// Whether MonkeySSH-private host resize sequences may update this terminal.
+  bool Function()? canResizeFromHost;
+
+  int _hostResizeGeneration = 0;
+
+  /// Number of MonkeySSH-private host resizes parsed by this terminal.
+  int get hostResizeGeneration => _hostResizeGeneration;
+
+  /// Resets private host-resize negotiation before opening a new transport.
+  void resetHostResizeState() {
+    _hostResizeGeneration = 0;
+  }
+
   /// The [TerminalInputHandler] used by this terminal. [defaultInputHandler] is
   /// used when not specified. User of this class can provide their own
   /// implementation of [TerminalInputHandler] or extend [defaultInputHandler]
@@ -482,10 +498,38 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     int? pixelWidth,
     int? pixelHeight,
   ]) {
+    _resize(
+      newWidth,
+      newHeight,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      notify: true,
+    );
+  }
+
+  @override
+  void resizeFromHost(int newWidth, int newHeight) {
+    if (!(canResizeFromHost?.call() ?? false)) {
+      return;
+    }
+    _resize(newWidth, newHeight, notify: false);
+    _hostResizeGeneration++;
+    onHostResize?.call(viewWidth, viewHeight);
+  }
+
+  void _resize(
+    int newWidth,
+    int newHeight, {
+    int? pixelWidth,
+    int? pixelHeight,
+    required bool notify,
+  }) {
     newWidth = max(newWidth, 1);
     newHeight = max(newHeight, 1);
 
-    onResize?.call(newWidth, newHeight, pixelWidth ?? 0, pixelHeight ?? 0);
+    if (notify) {
+      onResize?.call(newWidth, newHeight, pixelWidth ?? 0, pixelHeight ?? 0);
+    }
 
     //we need to resize both buffers so that they are ready when we switch between them
     _altBuffer.resize(_viewWidth, _viewHeight, newWidth, newHeight);

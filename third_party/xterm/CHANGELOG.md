@@ -96,6 +96,11 @@ out of scope.
   do not need.
 
 ### MonkeySSH-local additions (preserve across kterm syncs)
+* MonkeyMux private character-grid resizes (`CSI ? 8 ; rows ; cols t`) update
+  the terminal buffer without echoing `onResize` back to the host. Standard
+  `CSI 8 ; rows ; cols t` keeps its normal resize callback. This lets every
+  attached client use the focused device's shared PTY grid while smaller
+  viewports clip extra rows or columns locally.
 * XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
   implements the kitty graphics + keyboard protocols, so it reports a
   kitty-family identity. CLIs such as the GitHub Copilot CLI gate their richer

@@ -171,6 +171,8 @@ abstract class EscapeHandler {
 
   void resize(int cols, int rows);
 
+  void resizeFromHost(int cols, int rows);
+
   void sendSize();
 
   /* Select Graphic Rendition (SGR) */

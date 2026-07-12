@@ -152,6 +152,52 @@ void main() {
       expect(find.text('bash'), findsOneWidget);
     });
 
+    testWidgets('shows MonkeyMux terminal shortcuts', (tester) async {
+      final tmuxService = _MockTmuxService();
+      final presetService = _MockAgentLaunchPresetService();
+      final discoveryService = _MockAgentSessionDiscoveryService();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 1,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      const sessionName = 'main';
+      when(
+        () => presetService.getPresetForHost(session.hostId),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.watchWindowChanges(session, sessionName),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(
+        () => tmuxService.listWindows(session, sessionName),
+      ).thenAnswer((_) async => windows);
+
+      await _pumpNavigatorHost(
+        tester,
+        tmuxService: tmuxService,
+        presetService: presetService,
+        discoveryService: discoveryService,
+        session: session,
+        tmuxSessionName: sessionName,
+        remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+      );
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('monkeymux-shortcut-hint')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Ctrl-B: c new'), findsOneWidget);
+      expect(find.textContaining('& then y close'), findsOneWidget);
+      expect(find.textContaining('d detach'), findsOneWidget);
+    });
+
     testWidgets('recent session tile shows time ago', (tester) async {
       final session = ToolSessionInfo(
         toolName: 'Claude Code',
@@ -618,6 +664,7 @@ Future<void> _pumpNavigatorHost(
   required AgentSessionDiscoveryService discoveryService,
   required SshSession session,
   required String tmuxSessionName,
+  RemoteMuxBackend remoteMuxBackend = RemoteMuxBackend.tmux,
   bool startClisInYoloMode = false,
   ValueChanged<TmuxNavigatorAction?>? onActionSelected,
 }) async {
@@ -641,7 +688,7 @@ Future<void> _pumpNavigatorHost(
                     ref: ref,
                     session: session,
                     tmuxSessionName: tmuxSessionName,
-                    remoteMuxBackend: RemoteMuxBackend.tmux,
+                    remoteMuxBackend: remoteMuxBackend,
                     remoteMultiplexerService: TmuxRemoteMultiplexerService(
                       tmuxService,
                     ),
