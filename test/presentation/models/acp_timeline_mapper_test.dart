@@ -204,6 +204,24 @@ void main() {
     expect(status.message, contains('history'));
   });
 
+  test('replay overflow does not hide later stop reasons', () {
+    final entries = mapAcpSessionTimeline(
+      _state(
+        timeline: const AcpTimeline.empty(),
+        warning: const AcpSessionError(
+          kind: AcpSessionErrorKind.replayOverflow,
+          message: 'Some detached history could not be replayed.',
+        ),
+        lastStopReason: AcpStopReason.maxTokens,
+      ),
+    );
+
+    final statuses = entries.whereType<p.AcpStatusEntry>().toList();
+    expect(statuses, hasLength(2));
+    expect(statuses.first.message, contains('history'));
+    expect(statuses.last.message, contains('token limit'));
+  });
+
   test('reports a stop reason when the turn is idle', () {
     final entries = mapAcpSessionTimeline(
       _state(timeline: AcpTimeline(), lastStopReason: AcpStopReason.maxTokens),

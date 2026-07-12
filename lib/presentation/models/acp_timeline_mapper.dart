@@ -69,10 +69,7 @@ List<AcpTimelineEntry> mapAcpSessionTimeline(d.AcpSessionState state) {
     entries.add(AcpUsageEntry(id: 'usage', usage: usage));
   }
 
-  final status = _mapStatus(state);
-  if (status != null) {
-    entries.add(status);
-  }
+  entries.addAll(_mapStatuses(state));
 
   return List<AcpTimelineEntry>.unmodifiable(entries);
 }
@@ -435,7 +432,7 @@ AcpUsage? _mapUsage(d.AcpUsageUpdate? usage) {
   return AcpUsage(contextWindow: window, contextUsedTokens: used);
 }
 
-AcpStatusEntry? _mapStatus(d.AcpSessionState state) {
+AcpStatusEntry? _mapFatalStatus(d.AcpSessionState state) {
   final error = state.error;
   if (error != null) {
     return AcpStatusEntry(
@@ -444,36 +441,47 @@ AcpStatusEntry? _mapStatus(d.AcpSessionState state) {
       severity: _severityForError(error.kind),
     );
   }
+  return null;
+}
 
+List<AcpStatusEntry> _mapStatuses(d.AcpSessionState state) {
+  final fatal = _mapFatalStatus(state);
+  if (fatal != null) {
+    return <AcpStatusEntry>[fatal];
+  }
+
+  final statuses = <AcpStatusEntry>[];
   final warning = state.warning;
   if (warning != null) {
-    return AcpStatusEntry(
-      id: 'status-warning',
-      message: warning.message,
-      severity: AcpStatusSeverity.warning,
+    statuses.add(
+      AcpStatusEntry(
+        id: 'status-warning',
+        message: warning.message,
+        severity: AcpStatusSeverity.warning,
+      ),
     );
   }
 
   final connectionStatus = _connectionStatusMessage(state.status);
   if (connectionStatus != null) {
-    return AcpStatusEntry(
-      id: 'status-connection',
-      message: connectionStatus.$1,
-      severity: connectionStatus.$2,
+    statuses.add(
+      AcpStatusEntry(
+        id: 'status-connection',
+        message: connectionStatus.$1,
+        severity: connectionStatus.$2,
+      ),
     );
   }
 
   if (state.promptStatus == d.AcpPromptStatus.idle) {
     final stop = _stopReasonMessage(state.lastStopReason);
     if (stop != null) {
-      return AcpStatusEntry(
-        id: 'status-stop',
-        message: stop.$1,
-        severity: stop.$2,
+      statuses.add(
+        AcpStatusEntry(id: 'status-stop', message: stop.$1, severity: stop.$2),
       );
     }
   }
-  return null;
+  return statuses;
 }
 
 AcpStatusSeverity _severityForError(d.AcpSessionErrorKind kind) =>
