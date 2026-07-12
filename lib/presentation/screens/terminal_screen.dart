@@ -3574,6 +3574,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   DateTime? _missingImageRecoveryRetryNotBefore;
   int _missingImageRecoveryRetryCount = 0;
   int _missingImageRecoveryGeneration = 0;
+  bool _missingImageRecoveryInFlight = false;
+  bool _missingImageRecoveryRescanPending = false;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
       <_MonkeyMuxResizeSyncKey>{};
@@ -7367,6 +7369,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
       return;
     }
+    if (_missingImageRecoveryInFlight) {
+      _missingImageRecoveryRescanPending = true;
+      return;
+    }
     var delay = _missingImageRecoveryDebounce;
     final retryNotBefore = _missingImageRecoveryRetryNotBefore;
     if (retryNotBefore != null) {
@@ -7384,6 +7390,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _requestMissingImagesNow() {
     _missingImageRequestTimer = null;
     if (!mounted || _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    if (_missingImageRecoveryInFlight) {
+      _missingImageRecoveryRescanPending = true;
       return;
     }
     final unresolved = _terminal.unresolvedPlaceholderImageIds();
@@ -7409,6 +7419,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _requestedMissingImageIds.addAll(toRequest);
     final recoveryGeneration = _missingImageRecoveryGeneration;
+    _missingImageRecoveryInFlight = true;
+    _missingImageRecoveryRescanPending = false;
     DiagnosticsLogService.instance.debug(
       'terminal.graphics',
       'request_missing_images',
@@ -7434,49 +7446,57 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Set<int> requestedIds,
     int recoveryGeneration,
   ) async {
-    final result = await _monkeyMuxService.requestImages(
-      session,
-      sessionName,
-      requestedIds,
-    );
-    if (!mounted ||
-        recoveryGeneration != _missingImageRecoveryGeneration ||
-        _connectionId != session.connectionId ||
-        _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
-      return;
-    }
-    final retryIds = result.retryableUnserved(requestedIds);
-    if (!result.retryableFailure || retryIds.isEmpty) {
-      _missingImageRecoveryRetryCount = 0;
-      _missingImageRecoveryRetryNotBefore = null;
-      return;
-    }
-    if (_missingImageRecoveryRetryCount >= _missingImageRecoveryRetryLimit) {
-      DiagnosticsLogService.instance.warning(
+    try {
+      final result = await _monkeyMuxService.requestImages(
+        session,
+        sessionName,
+        requestedIds,
+      );
+      if (!mounted ||
+          recoveryGeneration != _missingImageRecoveryGeneration ||
+          _connectionId != session.connectionId ||
+          _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+        return;
+      }
+      final retryIds = result.retryableUnserved(requestedIds);
+      if (!result.retryableFailure || retryIds.isEmpty) {
+        _missingImageRecoveryRetryCount = 0;
+        _missingImageRecoveryRetryNotBefore = null;
+        return;
+      }
+      if (_missingImageRecoveryRetryCount >= _missingImageRecoveryRetryLimit) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.graphics',
+          'request_missing_images_retry_exhausted',
+          fields: {
+            'connectionId': session.connectionId,
+            'count': retryIds.length,
+          },
+        );
+        return;
+      }
+      _missingImageRecoveryRetryCount++;
+      _requestedMissingImageIds.removeAll(retryIds);
+      _missingImageRecoveryRetryNotBefore = DateTime.now().add(
+        _missingImageRecoveryRetryDelay * _missingImageRecoveryRetryCount,
+      );
+      DiagnosticsLogService.instance.debug(
         'terminal.graphics',
-        'request_missing_images_retry_exhausted',
+        'request_missing_images_retry_scheduled',
         fields: {
           'connectionId': session.connectionId,
           'count': retryIds.length,
+          'attempt': _missingImageRecoveryRetryCount,
         },
       );
-      return;
+      _missingImageRecoveryRescanPending = true;
+    } finally {
+      _missingImageRecoveryInFlight = false;
+      if (mounted && _missingImageRecoveryRescanPending) {
+        _missingImageRecoveryRescanPending = false;
+        _scheduleMissingImageRecoveryRequest();
+      }
     }
-    _missingImageRecoveryRetryCount++;
-    _requestedMissingImageIds.removeAll(retryIds);
-    _missingImageRecoveryRetryNotBefore = DateTime.now().add(
-      _missingImageRecoveryRetryDelay * _missingImageRecoveryRetryCount,
-    );
-    DiagnosticsLogService.instance.debug(
-      'terminal.graphics',
-      'request_missing_images_retry_scheduled',
-      fields: {
-        'connectionId': session.connectionId,
-        'count': retryIds.length,
-        'attempt': _missingImageRecoveryRetryCount,
-      },
-    );
-    _scheduleMissingImageRecoveryRequest();
   }
 
   void _resetMissingImageRecoveryState() {
@@ -7485,6 +7505,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _requestedMissingImageIds.clear();
     _missingImageRecoveryRetryNotBefore = null;
     _missingImageRecoveryRetryCount = 0;
+    _missingImageRecoveryRescanPending = _missingImageRecoveryInFlight;
     _missingImageRecoveryGeneration++;
   }
 

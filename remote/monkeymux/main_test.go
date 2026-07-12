@@ -4010,6 +4010,9 @@ func TestClosedUnixPtyUsesInvalidFileDescriptorSentinel(t *testing.T) {
 	if got := windowPty.Fd(); got != ^uintptr(0) {
 		t.Fatalf("closed pty fd = %d, want invalid sentinel", got)
 	}
+	if got := foregroundProcessGroupForWindow(&muxWindow{pty: windowPty}); got != 0 {
+		t.Fatalf("closed pty foreground process group = %d, want 0", got)
+	}
 }
 
 func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {

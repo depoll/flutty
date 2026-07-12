@@ -60,6 +60,19 @@ func (p *unixPty) Fd() uintptr {
 	return p.file.Fd()
 }
 
+func (p *unixPty) foregroundProcessGroup() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return 0
+	}
+	pgrp, err := unix.IoctlGetInt(int(p.file.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgrp <= 0 {
+		return 0
+	}
+	return pgrp
+}
+
 // unixProcess wraps the child process attached to a pty master.
 type unixProcess struct {
 	cmd *exec.Cmd
@@ -155,11 +168,11 @@ var foregroundProcessGroupForWindow = func(window *muxWindow) int {
 	if window == nil || window.pty == nil {
 		return 0
 	}
-	pgrp, err := unix.IoctlGetInt(int(window.pty.Fd()), unix.TIOCGPGRP)
-	if err != nil || pgrp <= 0 {
+	pty, ok := window.pty.(interface{ foregroundProcessGroup() int })
+	if !ok {
 		return 0
 	}
-	return pgrp
+	return pty.foregroundProcessGroup()
 }
 
 func defaultShellPath() string {
