@@ -581,6 +581,7 @@ class GraphicsManager {
   // was transmitted with, so later commands can address the image by number.
   final Map<int, int> _imageNumberToId = {};
   final Map<int, int> _imageNumberLastAccess = {};
+  final Map<int, int> _pendingAnimationMutations = {};
   final Map<int, Map<int, int?>> _failedImageNumberReservations = {};
   final Map<
       int,
@@ -644,6 +645,7 @@ class GraphicsManager {
     final result = <int, int>{};
     for (final entry in _images.entries) {
       if (!_retainedImageIds.contains(entry.key) ||
+          _pendingAnimationMutations.containsKey(entry.key) ||
           entry.value._protocolAnimationModified) {
         continue;
       }
@@ -653,6 +655,9 @@ class GraphicsManager {
       }
     }
     for (final entry in _pendingImages.entries) {
+      if (_pendingAnimationMutations.containsKey(entry.key)) {
+        continue;
+      }
       final signature = entry.value.sourceSignature;
       if (signature != 0) {
         result[entry.key] = signature;
@@ -985,6 +990,30 @@ class GraphicsManager {
       _imageNumberLastAccess[number] = ++_accessClock;
     }
     return imageId;
+  }
+
+  /// Marks [imageId] as having queued or applied animation state changes.
+  void markImageAnimationDirty(int imageId) {
+    if (imageId > 0) {
+      _pendingAnimationMutations.update(
+        imageId,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+  }
+
+  /// Settles one queued animation mutation for [imageId].
+  void settleImageAnimationMutation(int imageId) {
+    final count = _pendingAnimationMutations[imageId];
+    if (count == null) {
+      return;
+    }
+    if (count <= 1) {
+      _pendingAnimationMutations.remove(imageId);
+    } else {
+      _pendingAnimationMutations[imageId] = count - 1;
+    }
   }
 
   /// Looks up an image referenced by a Kitty Unicode placeholder color.
@@ -2213,6 +2242,7 @@ class GraphicsManager {
       _rollbackPendingImageNumber(pending);
     }
     _retainedImageIds.remove(imageId);
+    _pendingAnimationMutations.remove(imageId);
     _virtualPlacements.remove(imageId);
     final removedNumbers = _imageNumberToId.entries
         .where((entry) => entry.value == imageId)

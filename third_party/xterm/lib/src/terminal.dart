@@ -1469,6 +1469,18 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
     final commandImageId = imageNumberReservation?.imageId ??
         _resolveGraphicsImageId(manager, args);
+    final mutatesAnimation = action == 'f' ||
+        action == 'c' ||
+        (action == 'a' &&
+            (args.containsKey('c') ||
+                args.containsKey('s') ||
+                args.containsKey('v') ||
+                args.containsKey('r') ||
+                args.containsKey('z')));
+    final animationMutationImageId = mutatesAnimation ? commandImageId : null;
+    if (animationMutationImageId != null) {
+      manager.markImageAnimationDirty(animationMutationImageId);
+    }
     if (action == 'd') {
       final selector = args['d'] ?? 'a';
       final buffer = _buffer;
@@ -1509,12 +1521,22 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       _scheduleGraphicsOperation(
         manager,
         args,
-        () => _finalizeAnimationFrame(
-          args,
-          data,
-          manager,
-          commandImageId: commandImageId,
-        ),
+        () async {
+          try {
+            await _finalizeAnimationFrame(
+              args,
+              data,
+              manager,
+              commandImageId: commandImageId,
+            );
+          } finally {
+            if (animationMutationImageId != null) {
+              manager.settleImageAnimationMutation(
+                animationMutationImageId,
+              );
+            }
+          }
+        },
       );
       return;
     }
@@ -1522,11 +1544,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       _scheduleGraphicsOperation(
         manager,
         args,
-        () => _controlGraphicsAnimation(
-          args,
-          manager,
-          commandImageId: commandImageId,
-        ),
+        () async {
+          try {
+            await _controlGraphicsAnimation(
+              args,
+              manager,
+              commandImageId: commandImageId,
+            );
+          } finally {
+            if (animationMutationImageId != null) {
+              manager.settleImageAnimationMutation(
+                animationMutationImageId,
+              );
+            }
+          }
+        },
       );
       return;
     }
@@ -1534,11 +1566,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       _scheduleGraphicsOperation(
         manager,
         args,
-        () => _composeGraphicsAnimationFrames(
-          args,
-          manager,
-          commandImageId: commandImageId,
-        ),
+        () async {
+          try {
+            await _composeGraphicsAnimationFrames(
+              args,
+              manager,
+              commandImageId: commandImageId,
+            );
+          } finally {
+            if (animationMutationImageId != null) {
+              manager.settleImageAnimationMutation(
+                animationMutationImageId,
+              );
+            }
+          }
+        },
       );
       return;
     }
