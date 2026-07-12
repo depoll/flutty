@@ -25,15 +25,17 @@ import (
 )
 
 const (
-	acpBridgeProtocolVersion = 1
-	acpMaxFrameBytes         = 1024 * 1024
-	acpReplayMaxEvents       = 1024
-	acpReplayMaxBytes        = 4 * 1024 * 1024
-	acpIdleTimeout           = 24 * time.Hour
-	// The usual queue holds a complete bounded replay plus control frames. A
-	// replay consisting entirely of pending requests is intentionally retained
-	// past that bound, so attaching such a bridge allocates enough space to
-	// prime every retained frame before live publishing is enabled.
+	acpBridgeProtocolVersion  = 1
+	acpMaxFrameBytes          = 1024 * 1024
+	acpReplayMaxEvents        = 1024
+	acpReplayMaxBytes         = 4 * 1024 * 1024
+	acpPendingReplayMaxEvents = 256
+	acpPendingReplayMaxBytes  = acpReplayMaxBytes
+	acpIdleTimeout            = 24 * time.Hour
+	acpProviderDrainTimeout   = 2 * time.Second
+	// The queue holds a complete bounded replay plus control frames. Attach also
+	// sizes it dynamically so priming can never block while the bridge lock is
+	// held if those bounds change independently.
 	acpClientLiveQueueCapacity = acpReplayMaxEvents + 4
 	acpAttachQueueSafetyMargin = 4
 )
@@ -119,24 +121,29 @@ type acpBridge struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 
-	mu                  sync.Mutex
-	stdinMu             sync.Mutex
-	state               string
-	startedAt           time.Time
-	lastActivity        time.Time
-	nextSequence        uint64
-	replay              []acpReplayEvent
-	replayBytes         int
-	clients             map[string]*acpBridgeClient
-	writerClientID      string
-	pendingRequests     map[string]struct{}
-	inFlightTurns       map[string]struct{}
-	exitCode            *int
-	providerDone        chan struct{}
-	providerDoneOnce    sync.Once
-	beforeClientVisible func()
-	stopOnce            sync.Once
-	done                chan struct{}
+	mu                   sync.Mutex
+	stdinMu              sync.Mutex
+	state                string
+	startedAt            time.Time
+	lastActivity         time.Time
+	nextSequence         uint64
+	replay               []acpReplayEvent
+	replayBytes          int
+	pendingReplayEvents  int
+	pendingReplayBytes   int
+	clients              map[string]*acpBridgeClient
+	writerClientID       string
+	pendingRequests      map[string]struct{}
+	inFlightTurns        map[string]struct{}
+	exitCode             *int
+	providerDone         chan struct{}
+	providerDoneOnce     sync.Once
+	providerOutput       io.ReadCloser
+	providerOutputDone   chan struct{}
+	beforeClientVisible  func()
+	beforePublishVisible func(acpWireMessage)
+	stopOnce             sync.Once
+	done                 chan struct{}
 }
 
 func acpCommand(args []string) {
@@ -400,40 +407,58 @@ func newAcpBridge(id string, provider string, command string, cwd string) (*acpB
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
+		_ = stdin.Close()
 		return nil, err
 	}
-	stderr, err := cmd.StderrPipe()
+	stderrSink, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return nil, err
 	}
+	cmd.Stdout = stdoutWriter
+	// Provider stderr can contain prompts, paths, or tool data and must never
+	// enter diagnostics or the ACP protocol stream.
+	cmd.Stderr = stderrSink
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderrSink.Close()
 		return nil, err
 	}
+	// Cmd.Wait closes descriptors created by StdoutPipe, which can discard
+	// unread tail frames. Keep ownership of the read end and close only the
+	// parent's writer copy so the reader drains to a real child-process EOF.
+	_ = stdoutWriter.Close()
+	_ = stderrSink.Close()
 	now := time.Now()
 	hash := sha256.Sum256([]byte(command))
 	bridge := &acpBridge{
-		id:              id,
-		provider:        provider,
-		commandHash:     hex.EncodeToString(hash[:]),
-		cwd:             expandedCwd,
-		cmd:             cmd,
-		stdin:           stdin,
-		state:           "running",
-		startedAt:       now,
-		lastActivity:    now,
-		clients:         map[string]*acpBridgeClient{},
-		pendingRequests: map[string]struct{}{},
-		inFlightTurns:   map[string]struct{}{},
-		providerDone:    make(chan struct{}),
-		done:            make(chan struct{}),
+		id:                 id,
+		provider:           provider,
+		commandHash:        hex.EncodeToString(hash[:]),
+		cwd:                expandedCwd,
+		cmd:                cmd,
+		stdin:              stdin,
+		state:              "running",
+		startedAt:          now,
+		lastActivity:       now,
+		clients:            map[string]*acpBridgeClient{},
+		pendingRequests:    map[string]struct{}{},
+		inFlightTurns:      map[string]struct{}{},
+		providerDone:       make(chan struct{}),
+		providerOutput:     stdout,
+		providerOutputDone: make(chan struct{}),
+		done:               make(chan struct{}),
 	}
-	go bridge.readProviderOutput(stdout)
 	go func() {
-		// Stderr is deliberately discarded. It is neither protocol data nor safe
-		// diagnostics because providers may include prompts, paths, or tool data.
-		_, _ = io.Copy(io.Discard, stderr)
+		defer stdout.Close()
+		defer close(bridge.providerOutputDone)
+		bridge.readProviderOutput(stdout)
 	}()
 	go bridge.waitForProvider()
 	return bridge, nil
@@ -491,8 +516,10 @@ func (b *acpBridge) readProviderOutput(stdout io.Reader) {
 		raw, err := readBoundedAcpLine(reader)
 		if len(raw) > 0 {
 			if json.Valid(raw) {
-				b.observeProviderMessage(raw)
-				b.publish("output", raw, "", nil)
+				if !b.publish("output", raw, "", nil) {
+					b.failProviderProtocol()
+					return
+				}
 			} else {
 				b.publish("state", nil, "protocol_error", nil)
 			}
@@ -526,6 +553,7 @@ func readBoundedAcpLine(reader *bufio.Reader) ([]byte, error) {
 func (b *acpBridge) waitForProvider() {
 	err := b.cmd.Wait()
 	b.providerDoneOnce.Do(func() { close(b.providerDone) })
+	b.waitForProviderOutput()
 	exitCode := 0
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		exitCode = exitErr.ExitCode()
@@ -536,23 +564,28 @@ func (b *acpBridge) waitForProvider() {
 		b.exitCode = &exitCode
 		b.lastActivity = time.Now()
 	}
+	b.pendingRequests = map[string]struct{}{}
+	b.inFlightTurns = map[string]struct{}{}
+	b.releaseAllPendingReplayLocked()
 	b.mu.Unlock()
 	b.publish("state", nil, "exited", &exitCode)
 }
 
-func (b *acpBridge) observeProviderMessage(raw json.RawMessage) {
-	id, hasID, hasMethod := acpJSONRPCIdentity(raw)
-	if !hasID {
+func (b *acpBridge) waitForProviderOutput() {
+	if b.providerOutputDone == nil {
 		return
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if hasMethod {
-		b.pendingRequests[id] = struct{}{}
-	} else {
-		delete(b.inFlightTurns, id)
+	timer := time.NewTimer(acpProviderDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-b.providerOutputDone:
+		return
+	case <-timer.C:
 	}
-	b.lastActivity = time.Now()
+	if b.providerOutput != nil {
+		_ = b.providerOutput.Close()
+	}
+	<-b.providerOutputDone
 }
 
 func (b *acpBridge) observeClientMessage(raw json.RawMessage) {
@@ -588,8 +621,32 @@ func (b *acpBridge) publish(
 	data json.RawMessage,
 	state string,
 	exitCode *int,
-) {
+) bool {
+	pendingID := ""
+	providerResponseID := ""
+	if eventType == "output" {
+		if id, hasID, hasMethod := acpJSONRPCIdentity(data); hasID {
+			if hasMethod {
+				pendingID = id
+			} else {
+				providerResponseID = id
+			}
+		}
+	}
+	messageBytes := len(data) + 128
 	b.mu.Lock()
+	if pendingID != "" &&
+		(b.pendingReplayEvents >= acpPendingReplayMaxEvents ||
+			b.pendingReplayBytes+messageBytes > acpPendingReplayMaxBytes) {
+		b.mu.Unlock()
+		return false
+	}
+	if pendingID != "" {
+		b.pendingRequests[pendingID] = struct{}{}
+	}
+	if providerResponseID != "" {
+		delete(b.inFlightTurns, providerResponseID)
+	}
 	b.nextSequence++
 	message := acpWireMessage{
 		Version:  acpBridgeProtocolVersion,
@@ -600,22 +657,55 @@ func (b *acpBridge) publish(
 		State:    state,
 		ExitCode: exitCode,
 	}
-	pendingID := ""
-	if eventType == "output" {
-		if id, hasID, hasMethod := acpJSONRPCIdentity(data); hasID && hasMethod {
-			pendingID = id
-		}
-	}
 	b.appendReplayLocked(message, pendingID)
 	b.lastActivity = time.Now()
-	clients := make([]*acpBridgeClient, 0, len(b.clients))
-	for _, client := range b.clients {
-		clients = append(clients, client)
+	if b.beforePublishVisible != nil {
+		b.beforePublishVisible(message)
+	}
+	detached := make([]*acpBridgeClient, 0)
+	for clientID, client := range b.clients {
+		if tryEnqueueAcpClient(client, message) {
+			continue
+		}
+		delete(b.clients, clientID)
+		if b.writerClientID == clientID {
+			b.writerClientID = ""
+		}
+		detached = append(detached, client)
 	}
 	b.mu.Unlock()
-	for _, client := range clients {
-		b.enqueue(client, message)
+	for _, client := range detached {
+		client.cancel()
 	}
+	return true
+}
+
+func tryEnqueueAcpClient(client *acpBridgeClient, message acpWireMessage) bool {
+	select {
+	case <-client.done:
+		return false
+	default:
+	}
+	select {
+	case <-client.done:
+		return false
+	case client.send <- message:
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *acpBridge) failProviderProtocol() {
+	b.mu.Lock()
+	if b.state == "running" {
+		b.state = "protocol_error"
+		b.lastActivity = time.Now()
+	}
+	b.mu.Unlock()
+	b.publish("state", nil, "protocol_error", nil)
+	b.closeProviderInput()
+	stopAcpProvider(b.cmd, b.providerDone)
 }
 
 func (b *acpBridge) appendReplayLocked(message acpWireMessage, pendingID string) {
@@ -626,6 +716,10 @@ func (b *acpBridge) appendReplayLocked(message acpWireMessage, pendingID string)
 		pendingID: pendingID,
 	})
 	b.replayBytes += size
+	if pendingID != "" {
+		b.pendingReplayEvents++
+		b.pendingReplayBytes += size
+	}
 	b.trimReplayLocked()
 }
 
@@ -653,9 +747,23 @@ func (b *acpBridge) trimReplayLocked() {
 func (b *acpBridge) releasePendingReplayLocked(id string) {
 	for index := range b.replay {
 		if b.replay[index].pendingID == id {
+			b.pendingReplayEvents--
+			b.pendingReplayBytes -= b.replay[index].bytes
 			b.replay[index].pendingID = ""
 		}
 	}
+	b.trimReplayLocked()
+}
+
+func (b *acpBridge) releaseAllPendingReplayLocked() {
+	for index := range b.replay {
+		if b.replay[index].pendingID == "" {
+			continue
+		}
+		b.replay[index].pendingID = ""
+	}
+	b.pendingReplayEvents = 0
+	b.pendingReplayBytes = 0
 	b.trimReplayLocked()
 }
 
@@ -921,6 +1029,9 @@ func (b *acpBridge) detachClient(clientID string) {
 func (b *acpBridge) clientCanSend(clientID string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if _, attached := b.clients[clientID]; !attached {
+		return false
+	}
 	if b.writerClientID == "" {
 		b.writerClientID = clientID
 	}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,16 +111,17 @@ func TestAcpAttachQueuesReplayBeforeConcurrentLiveEvent(t *testing.T) {
 	}
 }
 
-func TestAcpAttachPrimesPinnedReplayBeyondDefaultQueue(t *testing.T) {
+func TestAcpAttachPrimesMaximumPinnedReplay(t *testing.T) {
 	bridge := newOrderingTestBridge()
-	pinnedCount := acpClientLiveQueueCapacity + 1
+	pinnedCount := acpPendingReplayMaxEvents
 	for index := range pinnedCount {
 		request := json.RawMessage(fmt.Sprintf(
 			`{"jsonrpc":"2.0","id":"permission-%d","method":"session/request_permission"}`,
 			index,
 		))
-		bridge.observeProviderMessage(request)
-		bridge.publish("output", request, "", nil)
+		if !bridge.publish("output", request, "", nil) {
+			t.Fatalf("pending request %d was rejected below the limit", index)
+		}
 	}
 	peer, primed, release, attachDone := startPrimedTestAttach(t, bridge)
 	defer finishPrimedTestAttach(t, peer, release, attachDone)
@@ -156,6 +158,259 @@ func TestAcpAttachPrimesPinnedReplayBeyondDefaultQueue(t *testing.T) {
 				frame,
 			)
 		}
+	}
+}
+
+func TestAcpPublishSerializesSequenceAndClientVisibility(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	client := &acpBridgeClient{
+		id:         "client",
+		send:       make(chan acpWireMessage, 2),
+		done:       make(chan struct{}),
+		writerDone: make(chan struct{}),
+	}
+	bridge.clients[client.id] = client
+
+	firstVisible := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	bridge.beforePublishVisible = func(message acpWireMessage) {
+		if message.Sequence == 1 {
+			close(firstVisible)
+			<-releaseFirst
+		}
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		bridge.publish(
+			"output",
+			json.RawMessage(`{"jsonrpc":"2.0","method":"first"}`),
+			"",
+			nil,
+		)
+		close(firstDone)
+	}()
+	<-firstVisible
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		bridge.publish("state", nil, "exited", nil)
+		close(secondDone)
+	}()
+	<-secondStarted
+	select {
+	case <-secondDone:
+		t.Fatal("later publish became visible before the first publish")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+	<-firstDone
+	<-secondDone
+	first := <-client.send
+	second := <-client.send
+	if first.Sequence != 1 || second.Sequence != 2 {
+		t.Fatalf(
+			"client sequence order = %d, %d, want 1, 2",
+			first.Sequence,
+			second.Sequence,
+		)
+	}
+}
+
+func TestAcpDetachedClientCannotReclaimWriter(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	if bridge.clientCanSend("detached") {
+		t.Fatal("detached client was allowed to send")
+	}
+	if bridge.writerClientID != "" {
+		t.Fatalf("detached client claimed writer role: %q", bridge.writerClientID)
+	}
+}
+
+func TestAcpProviderExitWaitsForFinalOutputDrain(t *testing.T) {
+	cmd := newAcpProviderCommand("exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	bridge := newOrderingTestBridge()
+	bridge.cmd = cmd
+	bridge.providerDone = make(chan struct{})
+	bridge.providerOutputDone = make(chan struct{})
+
+	waitDone := make(chan struct{})
+	go func() {
+		bridge.waitForProvider()
+		close(waitDone)
+	}()
+	select {
+	case <-bridge.providerDone:
+	case <-time.After(time.Second):
+		t.Fatal("provider process did not exit")
+	}
+
+	bridge.mu.Lock()
+	replayBeforeDrain := len(bridge.replay)
+	bridge.mu.Unlock()
+	if replayBeforeDrain != 0 {
+		t.Fatal("provider exit was published before stdout finished draining")
+	}
+
+	bridge.publish(
+		"output",
+		json.RawMessage(`{"jsonrpc":"2.0","method":"final"}`),
+		"",
+		nil,
+	)
+	close(bridge.providerOutputDone)
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("provider exit was not published after stdout drained")
+	}
+
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if len(bridge.replay) != 2 {
+		t.Fatalf("replay length = %d, want final output and exit", len(bridge.replay))
+	}
+	if bridge.replay[0].message.Type != "output" ||
+		bridge.replay[0].message.Sequence != 1 ||
+		bridge.replay[1].message.State != "exited" ||
+		bridge.replay[1].message.Sequence != 2 {
+		t.Fatalf("provider replay order = %#v", bridge.replay)
+	}
+}
+
+func TestAcpProviderExitDrainsRealPipeBeforePublishingExit(t *testing.T) {
+	const outputCount = 300
+	bridge, err := newAcpBridge(
+		"0123456789abcdef0123456789abcdef",
+		"test",
+		`sleep 0.2; i=0; while [ "$i" -lt 300 ]; do printf '{"jsonrpc":"2.0","method":"final/%s"}\n' "$i"; i=$((i+1)); done`,
+		".",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.stop()
+	bridge.mu.Lock()
+	bridge.beforePublishVisible = func(message acpWireMessage) {
+		if message.Type == "output" {
+			time.Sleep(100 * time.Microsecond)
+		}
+	}
+	bridge.mu.Unlock()
+
+	select {
+	case <-bridge.providerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider process did not exit")
+	}
+	select {
+	case <-bridge.providerOutputDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider output did not finish draining")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		bridge.mu.Lock()
+		outputs := 0
+		for _, event := range bridge.replay {
+			if event.message.Type == "output" {
+				outputs++
+			}
+		}
+		replay := append([]acpReplayEvent(nil), bridge.replay...)
+		bridge.mu.Unlock()
+		exitPublished :=
+			len(replay) > 0 && replay[len(replay)-1].message.State == "exited"
+		if exitPublished {
+			if outputs != outputCount {
+				t.Fatalf(
+					"retained output frames = %d, want %d before exit",
+					outputs,
+					outputCount,
+				)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("provider exit state was not published")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestAcpPendingProviderRequestsAreBoundedByCount(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	for index := range acpPendingReplayMaxEvents {
+		request := json.RawMessage(fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":"permission-%d","method":"session/request_permission"}`,
+			index,
+		))
+		if !bridge.publish("output", request, "", nil) {
+			t.Fatalf("pending request %d was rejected below the limit", index)
+		}
+	}
+	overflow := json.RawMessage(
+		`{"jsonrpc":"2.0","id":"overflow","method":"session/request_permission"}`,
+	)
+	if bridge.publish("output", overflow, "", nil) {
+		t.Fatal("pending request above the count limit was retained")
+	}
+
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if len(bridge.pendingRequests) != acpPendingReplayMaxEvents {
+		t.Fatalf(
+			"pending request count = %d, want %d",
+			len(bridge.pendingRequests),
+			acpPendingReplayMaxEvents,
+		)
+	}
+	if bridge.pendingReplayEvents != acpPendingReplayMaxEvents {
+		t.Fatalf(
+			"pending replay event count = %d, want %d",
+			bridge.pendingReplayEvents,
+			acpPendingReplayMaxEvents,
+		)
+	}
+}
+
+func TestAcpPendingProviderRequestsAreBoundedByBytes(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	value := strings.Repeat("x", acpMaxFrameBytes/2)
+	rejected := false
+	for index := range acpPendingReplayMaxEvents {
+		request := json.RawMessage(fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":"permission-%d","method":"session/request_permission","params":{"value":"%s"}}`,
+			index,
+			value,
+		))
+		if !bridge.publish("output", request, "", nil) {
+			rejected = true
+			break
+		}
+	}
+	if !rejected {
+		t.Fatal("pending request bytes were not bounded")
+	}
+
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if bridge.pendingReplayBytes > acpPendingReplayMaxBytes {
+		t.Fatalf(
+			"pending replay bytes = %d, limit %d",
+			bridge.pendingReplayBytes,
+			acpPendingReplayMaxBytes,
+		)
+	}
+	if bridge.pendingReplayEvents >= acpPendingReplayMaxEvents {
+		t.Fatal("byte limit did not trigger before the event limit")
 	}
 }
 
@@ -461,9 +716,9 @@ func TestAcpReplayOverflowSignalsRetainedSequence(t *testing.T) {
 func TestAcpPendingProviderRequestSurvivesDetachAndBlocksIdleCleanup(t *testing.T) {
 	bridge, cleanup := startTestAcpBridge(t, "cat")
 	defer cleanup()
-	bridge.observeProviderMessage(json.RawMessage(
+	bridge.publish("output", json.RawMessage(
 		`{"jsonrpc":"2.0","id":"permission-1","method":"session/request_permission"}`,
-	))
+	), "", nil)
 	bridge.mu.Lock()
 	bridge.lastActivity = time.Now().Add(-acpIdleTimeout - time.Second)
 	pending := len(bridge.pendingRequests)
@@ -482,7 +737,6 @@ func TestAcpReplayRetainsPendingProviderRequest(t *testing.T) {
 	permission := json.RawMessage(
 		`{"jsonrpc":"2.0","id":"permission-1","method":"session/request_permission"}`,
 	)
-	bridge.observeProviderMessage(permission)
 	bridge.publish("output", permission, "", nil)
 	for range acpReplayMaxEvents + 1 {
 		bridge.publish("output", json.RawMessage(`{"jsonrpc":"2.0","method":"update"}`), "", nil)

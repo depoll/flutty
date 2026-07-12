@@ -376,17 +376,262 @@ String _buildUnifiedDiff({
   final newSource = _bound(newText, kAcpMapperMaxDiffSourceChars);
   final oldLines = oldSource.isEmpty ? const <String>[] : oldSource.split('\n');
   final newLines = newSource.isEmpty ? const <String>[] : newSource.split('\n');
+  final lines = _buildDiffLines(oldLines, newLines);
   final buffer = StringBuffer()
     ..writeln('--- a/$path')
-    ..writeln('+++ b/$path')
-    ..writeln('@@ -1,${oldLines.length} +1,${newLines.length} @@');
-  for (final line in oldLines) {
-    buffer.writeln('-$line');
-  }
-  for (final line in newLines) {
-    buffer.writeln('+$line');
+    ..writeln('+++ b/$path');
+  for (final hunk in _buildDiffHunks(lines)) {
+    buffer.writeln(
+      '@@ -${hunk.oldStart},${hunk.oldCount} '
+      '+${hunk.newStart},${hunk.newCount} @@',
+    );
+    for (final line in hunk.lines) {
+      buffer
+        ..write(line.kind.prefix)
+        ..writeln(line.text);
+    }
   }
   return buffer.toString().trimRight();
+}
+
+const int _diffContextLines = 3;
+const int _maxMyersEditDistance = 256;
+
+enum _DiffLineKind {
+  context(' '),
+  deletion('-'),
+  addition('+');
+
+  const _DiffLineKind(this.prefix);
+
+  final String prefix;
+}
+
+final class _DiffLine {
+  const _DiffLine(this.kind, this.text);
+
+  final _DiffLineKind kind;
+  final String text;
+}
+
+final class _DiffHunk {
+  const _DiffHunk({
+    required this.oldStart,
+    required this.oldCount,
+    required this.newStart,
+    required this.newCount,
+    required this.lines,
+  });
+
+  final int oldStart;
+  final int oldCount;
+  final int newStart;
+  final int newCount;
+  final List<_DiffLine> lines;
+}
+
+List<_DiffLine> _buildDiffLines(List<String> oldLines, List<String> newLines) {
+  var prefixLength = 0;
+  while (prefixLength < oldLines.length &&
+      prefixLength < newLines.length &&
+      oldLines[prefixLength] == newLines[prefixLength]) {
+    prefixLength++;
+  }
+
+  var suffixLength = 0;
+  while (suffixLength < oldLines.length - prefixLength &&
+      suffixLength < newLines.length - prefixLength &&
+      oldLines[oldLines.length - suffixLength - 1] ==
+          newLines[newLines.length - suffixLength - 1]) {
+    suffixLength++;
+  }
+
+  final oldMiddle = oldLines.sublist(
+    prefixLength,
+    oldLines.length - suffixLength,
+  );
+  final newMiddle = newLines.sublist(
+    prefixLength,
+    newLines.length - suffixLength,
+  );
+  final middle =
+      _buildMyersDiff(oldMiddle, newMiddle) ??
+      <_DiffLine>[
+        for (final line in oldMiddle) _DiffLine(_DiffLineKind.deletion, line),
+        for (final line in newMiddle) _DiffLine(_DiffLineKind.addition, line),
+      ];
+
+  return [
+    for (var index = 0; index < prefixLength; index++)
+      _DiffLine(_DiffLineKind.context, oldLines[index]),
+    ...middle,
+    for (
+      var index = oldLines.length - suffixLength;
+      index < oldLines.length;
+      index++
+    )
+      _DiffLine(_DiffLineKind.context, oldLines[index]),
+  ];
+}
+
+List<_DiffLine>? _buildMyersDiff(List<String> oldLines, List<String> newLines) {
+  if (oldLines.isEmpty) {
+    return [
+      for (final line in newLines) _DiffLine(_DiffLineKind.addition, line),
+    ];
+  }
+  if (newLines.isEmpty) {
+    return [
+      for (final line in oldLines) _DiffLine(_DiffLineKind.deletion, line),
+    ];
+  }
+
+  final maximumDistance = oldLines.length + newLines.length;
+  final distanceLimit = maximumDistance < _maxMyersEditDistance
+      ? maximumDistance
+      : _maxMyersEditDistance;
+  final frontier = <int, int>{1: 0};
+  final trace = <Map<int, int>>[];
+
+  for (var distance = 0; distance <= distanceLimit; distance++) {
+    trace.add(Map<int, int>.of(frontier));
+    for (var diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      final fromDeletion = frontier[diagonal - 1] ?? -1;
+      final fromAddition = frontier[diagonal + 1] ?? -1;
+      var oldIndex =
+          diagonal == -distance ||
+              (diagonal != distance && fromDeletion < fromAddition)
+          ? fromAddition
+          : fromDeletion + 1;
+      if (oldIndex < 0) {
+        oldIndex = 0;
+      }
+      var newIndex = oldIndex - diagonal;
+      while (oldIndex < oldLines.length &&
+          newIndex < newLines.length &&
+          oldLines[oldIndex] == newLines[newIndex]) {
+        oldIndex++;
+        newIndex++;
+      }
+      frontier[diagonal] = oldIndex;
+      if (oldIndex >= oldLines.length && newIndex >= newLines.length) {
+        return _backtrackMyersDiff(trace, oldLines, newLines);
+      }
+    }
+  }
+  return null;
+}
+
+List<_DiffLine> _backtrackMyersDiff(
+  List<Map<int, int>> trace,
+  List<String> oldLines,
+  List<String> newLines,
+) {
+  var oldIndex = oldLines.length;
+  var newIndex = newLines.length;
+  final reversed = <_DiffLine>[];
+
+  for (var distance = trace.length - 1; distance >= 0; distance--) {
+    final frontier = trace[distance];
+    final diagonal = oldIndex - newIndex;
+    final fromDeletion = frontier[diagonal - 1] ?? -1;
+    final fromAddition = frontier[diagonal + 1] ?? -1;
+    final previousDiagonal =
+        diagonal == -distance ||
+            (diagonal != distance && fromDeletion < fromAddition)
+        ? diagonal + 1
+        : diagonal - 1;
+    final previousOldIndex = frontier[previousDiagonal] ?? 0;
+    final previousNewIndex = previousOldIndex - previousDiagonal;
+
+    while (oldIndex > previousOldIndex && newIndex > previousNewIndex) {
+      reversed.add(_DiffLine(_DiffLineKind.context, oldLines[oldIndex - 1]));
+      oldIndex--;
+      newIndex--;
+    }
+    if (distance == 0) {
+      break;
+    }
+    if (oldIndex == previousOldIndex) {
+      reversed.add(_DiffLine(_DiffLineKind.addition, newLines[newIndex - 1]));
+      newIndex--;
+    } else {
+      reversed.add(_DiffLine(_DiffLineKind.deletion, oldLines[oldIndex - 1]));
+      oldIndex--;
+    }
+  }
+
+  return reversed.reversed.toList(growable: false);
+}
+
+List<_DiffHunk> _buildDiffHunks(List<_DiffLine> lines) {
+  final changedIndices = <int>[
+    for (var index = 0; index < lines.length; index++)
+      if (lines[index].kind != _DiffLineKind.context) index,
+  ];
+  if (changedIndices.isEmpty) {
+    return const [];
+  }
+
+  final oldPositions = List<int>.filled(lines.length + 1, 1);
+  final newPositions = List<int>.filled(lines.length + 1, 1);
+  final oldConsumed = List<int>.filled(lines.length + 1, 0);
+  final newConsumed = List<int>.filled(lines.length + 1, 0);
+  for (var index = 0; index < lines.length; index++) {
+    final kind = lines[index].kind;
+    oldPositions[index + 1] =
+        oldPositions[index] + (kind == _DiffLineKind.addition ? 0 : 1);
+    newPositions[index + 1] =
+        newPositions[index] + (kind == _DiffLineKind.deletion ? 0 : 1);
+    oldConsumed[index + 1] =
+        oldConsumed[index] + (kind == _DiffLineKind.addition ? 0 : 1);
+    newConsumed[index + 1] =
+        newConsumed[index] + (kind == _DiffLineKind.deletion ? 0 : 1);
+  }
+
+  final hunks = <_DiffHunk>[];
+  var groupStart = 0;
+  while (groupStart < changedIndices.length) {
+    var groupEnd = groupStart;
+    while (groupEnd + 1 < changedIndices.length &&
+        changedIndices[groupEnd + 1] - changedIndices[groupEnd] - 1 <=
+            _diffContextLines * 2) {
+      groupEnd++;
+    }
+
+    var start = changedIndices[groupStart];
+    var leadingContext = 0;
+    while (start > 0 &&
+        leadingContext < _diffContextLines &&
+        lines[start - 1].kind == _DiffLineKind.context) {
+      start--;
+      leadingContext++;
+    }
+    var end = changedIndices[groupEnd] + 1;
+    var trailingContext = 0;
+    while (end < lines.length &&
+        trailingContext < _diffContextLines &&
+        lines[end].kind == _DiffLineKind.context) {
+      end++;
+      trailingContext++;
+    }
+
+    final oldCount = oldConsumed[end] - oldConsumed[start];
+    final newCount = newConsumed[end] - newConsumed[start];
+    final oldPosition = oldPositions[start];
+    final newPosition = newPositions[start];
+    hunks.add(
+      _DiffHunk(
+        oldStart: oldCount == 0 ? oldPosition - 1 : oldPosition,
+        oldCount: oldCount,
+        newStart: newCount == 0 ? newPosition - 1 : newPosition,
+        newCount: newCount,
+        lines: lines.sublist(start, end),
+      ),
+    );
+    groupStart = groupEnd + 1;
+  }
+  return hunks;
 }
 
 AcpPlan? _mapPlan(List<d.AcpPlanEntry> plan) {

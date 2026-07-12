@@ -120,6 +120,74 @@ void main() {
     expect(usage.contextWindow, 100);
   });
 
+  test('renders a small unified hunk for a one-line edit', () {
+    final oldLines = [
+      for (var index = 1; index <= 1000; index++) 'line $index',
+    ];
+    final newLines = [...oldLines]..[500] = 'line 501 changed';
+    final timeline = AcpTimeline(
+      entries: [
+        AcpToolCallEntry(
+          toolCallId: 't1',
+          order: 0,
+          content: [
+            AcpToolDiff(
+              path: 'lib/large.dart',
+              oldText: oldLines.join('\n'),
+              newText: newLines.join('\n'),
+            ),
+          ],
+        ),
+      ],
+    );
+
+    final tool =
+        mapAcpSessionTimeline(_state(timeline: timeline)).single
+            as p.AcpToolCallEntry;
+    final diff = tool.toolCall.diffs.single.unifiedDiff;
+
+    expect(diff, contains('@@ -498,7 +498,7 @@'));
+    expect(diff, contains('-line 501'));
+    expect(diff, contains('+line 501 changed'));
+    expect(diff, contains(' line 498'));
+    expect(diff, contains(' line 504'));
+    expect(diff, isNot(contains(' line 497')));
+    expect(diff, isNot(contains(' line 505')));
+    expect(diff.split('\n'), hasLength(11));
+  });
+
+  test('separates distant edits into minimal unified hunks', () {
+    final oldLines = [for (var index = 1; index <= 30; index++) 'line $index'];
+    final newLines = [...oldLines]
+      ..[4] = 'line 5 changed'
+      ..[24] = 'line 25 changed';
+    final timeline = AcpTimeline(
+      entries: [
+        AcpToolCallEntry(
+          toolCallId: 't1',
+          order: 0,
+          content: [
+            AcpToolDiff(
+              path: 'lib/two_edits.dart',
+              oldText: oldLines.join('\n'),
+              newText: newLines.join('\n'),
+            ),
+          ],
+        ),
+      ],
+    );
+
+    final tool =
+        mapAcpSessionTimeline(_state(timeline: timeline)).single
+            as p.AcpToolCallEntry;
+    final diff = tool.toolCall.diffs.single.unifiedDiff;
+
+    expect(RegExp('^@@ ', multiLine: true).allMatches(diff), hasLength(2));
+    expect(diff, contains('@@ -2,7 +2,7 @@'));
+    expect(diff, contains('@@ -22,7 +22,7 @@'));
+    expect(diff, isNot(contains(' line 15')));
+  });
+
   test('assistant message is complete when the turn is idle', () {
     final timeline = AcpTimeline(
       entries: [
