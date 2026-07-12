@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.110"
+	monkeyMuxVersion                  = "0.1.111"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -8788,12 +8788,14 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 		id := event.id
 		if event.imageNumber != "" {
 			if id == "" {
-				id = w.kittyImageNumberToID[event.imageNumber]
-				if id == "" && !event.animation {
-					id = "I:" + event.imageNumber
-					if w.kittyImageNumberToID == nil {
-						w.kittyImageNumberToID = map[string]string{}
-					}
+				if event.animation {
+					id = w.kittyImageNumberToID[event.imageNumber]
+				} else {
+					id = fmt.Sprintf(
+						"I:%s:%d",
+						event.imageNumber,
+						kittyImageStoreSeq+1,
+					)
 					w.recordKittyImageNumberMappingLocked(event.imageNumber, id)
 				}
 			} else {
@@ -8807,10 +8809,6 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 				if _, exists := w.kittyImageNumberToID[event.imageNumber]; !exists &&
 					len(w.kittyImageNumberToID) >= maxRetainedKittyImageNumbers {
 					w.evictOldestKittyImageNumberMappingLocked()
-				}
-				if previous := w.kittyImageNumberToID[event.imageNumber]; previous != "" &&
-					previous != id && strings.HasPrefix(previous, "I:") {
-					w.removeKittyImageLocked(previous)
 				}
 				w.recordKittyImageNumberMappingLocked(event.imageNumber, id)
 			}
@@ -9120,6 +9118,9 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 }
 
 func (w *muxWindow) kittyImageNumberReplayLocked(id string) []byte {
+	if _, err := strconv.ParseUint(id, 10, 32); err != nil {
+		return nil
+	}
 	var numbers []string
 	for number, mappedID := range w.kittyImageNumberToID {
 		if mappedID == id {
