@@ -623,6 +623,75 @@ func TestRequestedImagesUseNewestMatchingClientID(t *testing.T) {
 	}
 }
 
+func TestRequestedImagesWaitForAttachWriteCompletion(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:           "@1",
+			index:        0,
+			lastActivity: time.Now(),
+			kittyImages: map[string][]byte{
+				"7": []byte("retained-image"),
+			},
+		},
+	}
+	server.activeID = "@1"
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	conn := &gatedConn{
+		recordingConn: &recordingConn{},
+		gate:          gate,
+		started:       started,
+	}
+	registerTestAttachClient(
+		t,
+		server,
+		conn,
+		"image-client",
+		80,
+		24,
+	)
+
+	served := make(chan []string, 1)
+	go func() {
+		served <- server.replayRequestedImages(
+			"image-client",
+			[]string{"7"},
+		)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("image replay write did not start")
+	}
+	select {
+	case ids := <-served:
+		t.Fatalf("image replay acknowledged before write completed: %#v", ids)
+	case <-time.After(50 * time.Millisecond):
+	}
+	lockAcquired := make(chan struct{})
+	go func() {
+		server.attachMu.Lock()
+		server.attachMu.Unlock()
+		close(lockAcquired)
+	}()
+	select {
+	case <-lockAcquired:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("image replay wait held the server-wide attach lock")
+	}
+
+	close(gate)
+	select {
+	case ids := <-served:
+		if !reflect.DeepEqual(ids, []string{"7"}) {
+			t.Fatalf("served image ids = %#v, want [7]", ids)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("image replay did not finish after attach write completed")
+	}
+}
+
 func TestC1QueryScannerPreservesUtf8ContinuationBytes(t *testing.T) {
 	window := &muxWindow{}
 	input := []byte{'a', 0xc5, 0x9b, 0xf0, 0x9f, 0x98, 0x80, 'b'}
@@ -2212,6 +2281,42 @@ func TestTerminalOutputGroundStateTracksSplitSequences(t *testing.T) {
 	window.observeTerminalOutputStateLocked([]byte{0x98, 0x80})
 	if !window.terminalOutputIsGroundLocked() {
 		t.Fatal("completed UTF-8 output did not return to ground")
+	}
+
+	for _, cancel := range []byte{0x18, 0x1a} {
+		for _, prefix := range [][]byte{
+			[]byte("\x1b[31"),
+			[]byte("\x1b]title"),
+			[]byte("\x1bPpayload"),
+		} {
+			window.observeTerminalOutputStateLocked(prefix)
+			if window.terminalOutputIsGroundLocked() {
+				t.Fatalf("prefix %q did not enter parser state", prefix)
+			}
+			window.observeTerminalOutputStateLocked([]byte{cancel})
+			if !window.terminalOutputIsGroundLocked() {
+				t.Fatalf(
+					"cancel byte 0x%x did not reset prefix %q",
+					cancel,
+					prefix,
+				)
+			}
+		}
+	}
+}
+
+func TestTerminalBellParserHonorsControlSequenceCancellation(t *testing.T) {
+	for _, cancel := range []byte{0x18, 0x1a} {
+		window := &muxWindow{}
+		observed := window.observeTerminalBellLocked(
+			append([]byte("\x1b]title"), cancel, '\a'),
+		)
+		if !observed {
+			t.Fatalf(
+				"BEL after cancel byte 0x%x was treated as an OSC terminator",
+				cancel,
+			)
+		}
 	}
 }
 
