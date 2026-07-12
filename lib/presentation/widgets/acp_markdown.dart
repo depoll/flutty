@@ -77,31 +77,51 @@ class AcpMarkdown extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final base = MarkdownStyleSheet.fromTheme(theme);
+    TextStyle mono({
+      double fontSize = 14,
+      FontWeight fontWeight = FontWeight.w400,
+      Color? color,
+      FontStyle? fontStyle,
+      TextDecoration? decoration,
+    }) => FluttyTheme.monoStyle.copyWith(
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      color: color ?? scheme.onSurface,
+      fontStyle: fontStyle,
+      decoration: decoration,
+      height: 1.5,
+    );
     final styleSheet = base.copyWith(
-      p: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurface),
-      a: TextStyle(
+      p: mono(),
+      a: mono(
         color: scheme.primary,
         decoration: TextDecoration.underline,
-        decorationColor: scheme.primary,
-      ),
-      code: FluttyTheme.monoStyle.copyWith(
+      ).copyWith(decorationColor: scheme.primary),
+      code: mono(fontSize: 13).copyWith(
         color: scheme.onSurface,
         backgroundColor: scheme.surfaceContainerHighest,
       ),
-      blockquote: theme.textTheme.bodyMedium?.copyWith(
-        color: scheme.onSurfaceVariant,
-      ),
+      h1: mono(fontSize: 20, fontWeight: FontWeight.w700),
+      h2: mono(fontSize: 18, fontWeight: FontWeight.w700),
+      h3: mono(fontSize: 16, fontWeight: FontWeight.w600),
+      h4: mono(fontWeight: FontWeight.w600),
+      h5: mono(fontWeight: FontWeight.w600),
+      h6: mono(fontWeight: FontWeight.w600),
+      em: mono(fontStyle: FontStyle.italic),
+      strong: mono(fontWeight: FontWeight.w700),
+      del: mono(decoration: TextDecoration.lineThrough),
+      blockquote: mono(color: scheme.onSurfaceVariant),
+      img: mono(),
+      checkbox: mono(color: scheme.primary),
       blockquoteDecoration: BoxDecoration(
         color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
       ),
       blockquotePadding: const EdgeInsets.all(FluttyTheme.spacingSm),
+      listBullet: mono(),
       tableBorder: TableBorder.all(color: scheme.outline),
-      tableHead: theme.textTheme.bodyMedium?.copyWith(
-        fontWeight: FontWeight.w600,
-        color: scheme.onSurface,
-      ),
-      tableBody: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurface),
+      tableHead: mono(fontSize: 13, fontWeight: FontWeight.w600),
+      tableBody: mono(fontSize: 13),
       horizontalRuleDecoration: BoxDecoration(
         border: Border(top: BorderSide(color: scheme.outline)),
       ),

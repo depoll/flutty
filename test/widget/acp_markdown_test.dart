@@ -50,10 +50,18 @@ void main() {
   });
 
   testWidgets('renders selectable markdown text', (tester) async {
-    await tester.pumpWidget(wrap(const AcpMarkdown(data: 'hello world')));
+    await tester.pumpWidget(
+      wrap(const AcpMarkdown(data: '# Heading\n\nhello world')),
+    );
     await tester.pump();
     final body = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
     expect(body.selectable, isTrue);
+    expect(body.styleSheet?.p?.fontFamily, FluttyTheme.monoStyle.fontFamily);
+    expect(body.styleSheet?.h1?.fontFamily, FluttyTheme.monoStyle.fontFamily);
+    expect(
+      body.styleSheet?.tableBody?.fontFamily,
+      FluttyTheme.monoStyle.fontFamily,
+    );
   });
 
   testWidgets('renders a syntax-highlighted code block from markdown', (
