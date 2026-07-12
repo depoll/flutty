@@ -445,6 +445,15 @@ AcpStatusEntry? _mapStatus(d.AcpSessionState state) {
     );
   }
 
+  final warning = state.warning;
+  if (warning != null) {
+    return AcpStatusEntry(
+      id: 'status-warning',
+      message: warning.message,
+      severity: AcpStatusSeverity.warning,
+    );
+  }
+
   final connectionStatus = _connectionStatusMessage(state.status);
   if (connectionStatus != null) {
     return AcpStatusEntry(

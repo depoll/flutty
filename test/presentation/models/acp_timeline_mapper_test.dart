@@ -25,6 +25,7 @@ AcpSessionState _state({
   List<AcpPlanEntry> plan = const <AcpPlanEntry>[],
   AcpUsageUpdate? usage,
   AcpSessionError? error,
+  AcpSessionError? warning,
   AcpConnectionStatus status = AcpConnectionStatus.ready,
   AcpStopReason? lastStopReason,
 }) {
@@ -40,6 +41,7 @@ AcpSessionState _state({
     plan: plan,
     usage: usage,
     error: error,
+    warning: warning,
     lastStopReason: lastStopReason,
     timeline: timeline,
   );
@@ -184,6 +186,22 @@ void main() {
     final status = entries.whereType<p.AcpStatusEntry>().single;
     expect(status.severity, p.AcpStatusSeverity.error);
     expect(status.message, 'Connection lost');
+  });
+
+  test('surfaces replay overflow as a non-fatal warning', () {
+    final entries = mapAcpSessionTimeline(
+      _state(
+        timeline: const AcpTimeline.empty(),
+        warning: const AcpSessionError(
+          kind: AcpSessionErrorKind.replayOverflow,
+          message: 'Some detached history could not be replayed.',
+        ),
+      ),
+    );
+
+    final status = entries.whereType<p.AcpStatusEntry>().single;
+    expect(status.severity, p.AcpStatusSeverity.warning);
+    expect(status.message, contains('history'));
   });
 
   test('reports a stop reason when the turn is idle', () {
