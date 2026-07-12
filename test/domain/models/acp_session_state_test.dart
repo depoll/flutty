@@ -73,6 +73,27 @@ void main() {
       expect(next.createdAt, base().createdAt);
       expect(next.status, AcpConnectionStatus.failed);
     });
+
+    test('tracks warning independently of error', () {
+      const warning = AcpSessionError(
+        kind: AcpSessionErrorKind.replayOverflow,
+        message: 'History was truncated.',
+      );
+      const error = AcpSessionError(
+        kind: AcpSessionErrorKind.transport,
+        message: 'Connection failed.',
+      );
+      final state = base().copyWith(warning: warning, error: error);
+      expect(state.warning, warning);
+      expect(state.error, error);
+      // Clearing the error leaves the warning intact.
+      final cleared = state.copyWith(clearError: true);
+      expect(cleared.error, isNull);
+      expect(cleared.warning, warning);
+      // And vice versa.
+      expect(state.copyWith(clearWarning: true).warning, isNull);
+      expect(state.copyWith(clearWarning: true).error, error);
+    });
   });
 
   group('key rebuild', () {
@@ -99,6 +120,10 @@ void main() {
               permission('r3', 't3'),
             ],
             promptStatus: AcpPromptStatus.streaming,
+            warning: const AcpSessionError(
+              kind: AcpSessionErrorKind.replayOverflow,
+              message: 'History truncated.',
+            ),
           );
 
       final rebuilt = provisional.copyWith(
@@ -121,6 +146,8 @@ void main() {
       ]);
       expect(rebuilt.availableCommands, provisional.availableCommands);
       expect(rebuilt.promptStatus, AcpPromptStatus.streaming);
+      // The non-fatal warning also survives the identity rebuild.
+      expect(rebuilt.warning?.kind, AcpSessionErrorKind.replayOverflow);
     });
 
     test('key defaults to the current key when omitted', () {

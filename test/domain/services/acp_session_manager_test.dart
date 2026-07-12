@@ -354,6 +354,9 @@ class _FakeConnector implements AcpBridgeConnector {
   StreamController<MonkeyMuxAcpTransportState> statesFor(String bridgeId) =>
       transportStateControllers[bridgeId]!;
 
+  StreamController<MonkeyMuxAcpBridgeException> errorsFor(String bridgeId) =>
+      transportErrorControllers[bridgeId]!;
+
   @override
   AcpBridgeSession connect({
     required int hostId,
@@ -1017,6 +1020,63 @@ void main() {
       expect(manager.state.byKeyValue(key.value)!.isLive, isTrue);
       expect(manager.state.byKeyValue(forkKey.value)!.isLive, isTrue);
     });
+  });
+
+  group('replay overflow', () {
+    test('surfaces a non-fatal warning without failing the session', () async {
+      final key = await startCopilot();
+      connector
+          .errorsFor(key.bridgeId)
+          .add(
+            const MonkeyMuxAcpBridgeException(
+              MonkeyMuxAcpBridgeErrorKind.replayOverflow,
+              'overflow',
+            ),
+          );
+      await _pump();
+      final state = manager.state.byKeyValue(key.value)!;
+      // Surfaced as a distinct warning, not a fatal error.
+      expect(state.warning, isNotNull);
+      expect(state.warning!.kind, AcpSessionErrorKind.replayOverflow);
+      expect(state.error, isNull);
+      // The session keeps running and stays live.
+      expect(state.status, AcpConnectionStatus.ready);
+      expect(state.isLive, isTrue);
+      // The message is content-free.
+      expect(state.warning!.message, isNot(contains('overflow')));
+    });
+
+    test(
+      'is preserved separately from a later fatal transport failure',
+      () async {
+        final key = await startCopilot();
+        connector
+            .errorsFor(key.bridgeId)
+            .add(
+              const MonkeyMuxAcpBridgeException(
+                MonkeyMuxAcpBridgeErrorKind.replayOverflow,
+                'overflow',
+              ),
+            );
+        await _pump();
+        connector
+            .statesFor(key.bridgeId)
+            .add(
+              MonkeyMuxAcpTransportState(
+                status: MonkeyMuxAcpTransportStatus.failed,
+                bridgeId: key.bridgeId,
+                lastDeliveredSequence: 0,
+              ),
+            );
+        await _pump();
+        final state = manager.state.byKeyValue(key.value)!;
+        // The fatal failure is recorded in `error`; the replay-overflow warning
+        // is retained separately rather than being clobbered.
+        expect(state.status, AcpConnectionStatus.failed);
+        expect(state.error!.kind, AcpSessionErrorKind.transport);
+        expect(state.warning!.kind, AcpSessionErrorKind.replayOverflow);
+      },
+    );
   });
 
   group('capability adaptation', () {

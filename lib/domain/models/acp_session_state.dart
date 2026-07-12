@@ -82,6 +82,14 @@ enum AcpSessionErrorKind {
   /// The SSH transport failed or could not reconnect.
   transport,
 
+  /// The bridge's bounded replay buffer overflowed, so some history emitted
+  /// while the client was detached could not be replayed.
+  ///
+  /// This is a non-fatal warning: the session remains usable and can continue
+  /// or be reloaded to fetch full history from the agent. It is never a fatal
+  /// transport failure.
+  replayOverflow,
+
   /// The ACP protocol was violated by the peer.
   protocol,
 
@@ -265,6 +273,7 @@ final class AcpSessionState {
     List<AcpPendingWrite> pendingWrites = const <AcpPendingWrite>[],
     this.transportState,
     this.error,
+    this.warning,
     this.timeline = const AcpTimeline.empty(),
   }) : authMethods = List<AcpAuthMethod>.unmodifiable(authMethods),
        configOptions = List<AcpSessionConfigOption>.unmodifiable(configOptions),
@@ -346,8 +355,15 @@ final class AcpSessionState {
   /// Latest transport state, when connected through a MonkeyMux bridge.
   final MonkeyMuxAcpTransportState? transportState;
 
-  /// Latest safe error surfaced for this session, if any.
+  /// Latest fatal, safe error surfaced for this session, if any.
   final AcpSessionError? error;
+
+  /// Latest non-fatal warning surfaced for this session, if any.
+  ///
+  /// Kept separate from [error] so a recoverable condition — such as a bridge
+  /// replay-buffer overflow — is never conflated with a fatal transport
+  /// failure. The session remains usable while a warning is present.
+  final AcpSessionError? warning;
 
   /// In-memory normalized conversation timeline.
   final AcpTimeline timeline;
@@ -416,6 +432,8 @@ final class AcpSessionState {
     bool clearTransportState = false,
     AcpSessionError? error,
     bool clearError = false,
+    AcpSessionError? warning,
+    bool clearWarning = false,
     AcpTimeline? timeline,
   }) => AcpSessionState(
     key: key ?? this.key,
@@ -446,6 +464,7 @@ final class AcpSessionState {
         ? null
         : (transportState ?? this.transportState),
     error: clearError ? null : (error ?? this.error),
+    warning: clearWarning ? null : (warning ?? this.warning),
     timeline: timeline ?? this.timeline,
   );
 
@@ -471,6 +490,7 @@ final class AcpSessionState {
           promptStatus == other.promptStatus &&
           transportState == other.transportState &&
           error == other.error &&
+          warning == other.warning &&
           timeline == other.timeline &&
           const ListEquality<AcpAuthMethod>().equals(
             authMethods,
@@ -511,6 +531,7 @@ final class AcpSessionState {
     lastStopReason,
     transportState,
     error,
+    warning,
     timeline,
     Object.hash(
       const ListEquality<AcpAuthMethod>().hash(authMethods),
