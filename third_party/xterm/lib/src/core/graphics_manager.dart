@@ -522,6 +522,8 @@ class _PendingGraphicsImage {
     required this.format,
     required this.width,
     required this.height,
+    required this.sourceWidth,
+    required this.sourceHeight,
     required this.sourceSignature,
   });
 
@@ -529,6 +531,8 @@ class _PendingGraphicsImage {
   final int format;
   final int width;
   final int height;
+  final int sourceWidth;
+  final int sourceHeight;
   final int sourceSignature;
 }
 
@@ -841,6 +845,17 @@ class GraphicsManager {
   /// Whether image [id] has been transmitted but not yet decoded.
   bool hasPendingImage(int id) => _pendingImages.containsKey(id);
 
+  /// Intrinsic dimensions retained for a pending encoded image, if known.
+  ({int width, int height})? pendingImageDimensions(int id) {
+    final pending = _pendingImages[id];
+    if (pending == null ||
+        pending.sourceWidth <= 0 ||
+        pending.sourceHeight <= 0) {
+      return null;
+    }
+    return (width: pending.sourceWidth, height: pending.sourceHeight);
+  }
+
   /// Whether a pending (undecoded) image [id] carries a matching
   /// [sourceSignature], so a replay can skip re-storing identical bytes. A zero
   /// signature never matches.
@@ -860,6 +875,8 @@ class GraphicsManager {
     required int format,
     int width = 0,
     int height = 0,
+    int sourceWidth = 0,
+    int sourceHeight = 0,
     int sourceSignature = 0,
   }) {
     if (id <= 0) {
@@ -885,6 +902,8 @@ class GraphicsManager {
       format: format,
       width: width,
       height: height,
+      sourceWidth: sourceWidth > 0 ? sourceWidth : width,
+      sourceHeight: sourceHeight > 0 ? sourceHeight : height,
       sourceSignature: sourceSignature,
     );
     _pendingBytes += payload.length;

@@ -1548,7 +1548,7 @@ void main() {
     });
   });
 
-  testWidgets('a=p computes cursor rows when only c is specified', (
+  testWidgets('pending a=p computes cursor rows when only c is specified', (
     tester,
   ) async {
     await tester.runAsync(() async {
@@ -1556,7 +1556,7 @@ void main() {
       final terminal = Terminal();
       terminal.graphics.setCellPixelSize(10, 20);
       terminal.write('\x1b_Ga=t,f=100,i=42;$pngBase64\x1b\\');
-      await _decodeDeferredImage(terminal, 42);
+      expect(terminal.graphics.hasPendingImage(42), isTrue);
 
       terminal.write('\x1b_Ga=p,i=42,c=30\x1b\\X');
 
