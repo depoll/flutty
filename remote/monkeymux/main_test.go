@@ -2540,6 +2540,124 @@ func TestCoalescedTerminalResponsesRouteToEachOriginWindow(t *testing.T) {
 	}
 }
 
+func TestSeparateTermcapResponsesStayWithOriginWindow(t *testing.T) {
+	client := newAttachClient(
+		&recordingConn{},
+		controlMessage{ClientID: "termcap-responses"},
+	)
+	t.Cleanup(client.close)
+	termcapQuery := []byte("\x1bP+q544e;436f\x1b\\")
+	responseCount := terminalQueryResponseCount(termcapQuery)
+	if responseCount != 2 {
+		t.Fatalf("termcap response count = %d, want 2", responseCount)
+	}
+	completion, queued := client.enqueueTerminalQuery(
+		termcapQuery,
+		true,
+		"@1",
+		responseCount,
+	)
+	if emptyCount := terminalQueryResponseCount(
+		[]byte("\x1bP+q;;\x1b\\"),
+	); emptyCount != 0 {
+		t.Fatalf("empty termcap response count = %d, want 0", emptyCount)
+	}
+	if !queued || !client.waitForWrite(completion) {
+		t.Fatal("termcap query was not written")
+	}
+	completion, queued = client.enqueueTerminalQuery(
+		[]byte("\x1b[c"),
+		true,
+		"@2",
+		1,
+	)
+	if !queued || !client.waitForWrite(completion) {
+		t.Fatal("second window query was not written")
+	}
+
+	responses := []struct {
+		windowID string
+		data     []byte
+	}{
+		{
+			windowID: "@1",
+			data:     []byte("\x1bP1+r544e=787465726d\x1b\\"),
+		},
+		{
+			windowID: "@1",
+			data:     []byte("\x1bP0+r436f\x1b\\"),
+		},
+		{
+			windowID: "@2",
+			data:     []byte("\x1b[?62;4c"),
+		},
+	}
+	for index, response := range responses {
+		routing := client.routeInput(response.data)
+		if routing.claimsFocus ||
+			len(routing.passthrough) != 0 ||
+			len(routing.responses) != 1 {
+			t.Fatalf("response %d routing = %#v", index, routing)
+		}
+		routed := routing.responses[0]
+		if routed.windowID != response.windowID ||
+			!bytes.Equal(routed.data, response.data) {
+			t.Fatalf(
+				"response %d = %#v, want %s %q",
+				index,
+				routed,
+				response.windowID,
+				response.data,
+			)
+		}
+	}
+}
+
+func TestCombinedTermcapResponseConsumesOriginExpectations(t *testing.T) {
+	client := newAttachClient(
+		&recordingConn{},
+		controlMessage{ClientID: "combined-termcap-response"},
+	)
+	t.Cleanup(client.close)
+	termcapQuery := []byte("\x1bP+q544e;436f\x1b\\")
+	completion, queued := client.enqueueTerminalQuery(
+		termcapQuery,
+		true,
+		"@1",
+		terminalQueryResponseCount(termcapQuery),
+	)
+	if !queued || !client.waitForWrite(completion) {
+		t.Fatal("termcap query was not written")
+	}
+	completion, queued = client.enqueueTerminalQuery(
+		[]byte("\x1b[c"),
+		true,
+		"@2",
+		1,
+	)
+	if !queued || !client.waitForWrite(completion) {
+		t.Fatal("second window query was not written")
+	}
+
+	combined := []byte(
+		"\x1bP1+r544e=787465726d;436f=323536\x1b\\",
+	)
+	routing := client.routeInput(combined)
+	if routing.claimsFocus ||
+		len(routing.passthrough) != 0 ||
+		len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" {
+		t.Fatalf("combined termcap response routing = %#v", routing)
+	}
+	next := client.routeInput([]byte("\x1b[?62;4c"))
+	if len(next.responses) != 1 ||
+		next.responses[0].windowID != "@2" ||
+		next.claimsFocus ||
+		len(next.passthrough) != 0 {
+		t.Fatalf("next-window response routing = %#v", next)
+	}
+}
+
 func TestExpiredTerminalResponseWindowsAreNotRevived(t *testing.T) {
 	client := &attachClient{}
 	client.expectTerminalResponse("@1")
