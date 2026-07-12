@@ -499,6 +499,39 @@ void main() {
     });
   });
 
+  testWidgets('collapsed pending reservations settle one active outcome', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager();
+      final payload = base64.decode('AAAA');
+      final firstPrevious = manager.reserveExplicitImageIdForNumber(5, 7);
+      manager.storePendingImage(
+        7,
+        payload: payload,
+        format: 100,
+        sourceSignature: 1,
+        imageNumber: 5,
+        mappedImageId: 7,
+        previousImageId: firstPrevious,
+      );
+      final secondPrevious = manager.reserveExplicitImageIdForNumber(5, 7);
+      manager.storePendingImage(
+        7,
+        payload: payload,
+        format: 100,
+        sourceSignature: 1,
+        imageNumber: 5,
+        mappedImageId: 7,
+        previousImageId: secondPrevious,
+      );
+
+      expect(await manager.resolveImage(7), isNull);
+      expect(manager.imageIdForNumber(5), isNull);
+      expect(manager.hasPendingImage(7), isFalse);
+    });
+  });
+
   test('terminalGraphicsSourceSignature distinguishes content and is stable',
       () {
     final a = Uint8List.fromList(List<int>.generate(5000, (i) => i % 251));

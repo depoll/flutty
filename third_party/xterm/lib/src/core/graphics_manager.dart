@@ -924,6 +924,20 @@ class GraphicsManager {
     }
   }
 
+  /// Settles one duplicate reservation collapsed into an existing pending decode.
+  void collapseImageIdReservation(int number, int imageId) {
+    final active = _activeImageNumberReservations[number];
+    final reservation = active?[imageId];
+    if (reservation == null || reservation.count <= 1) {
+      return;
+    }
+    active![imageId] = (
+      count: reservation.count - 1,
+      previousImageId: reservation.previousImageId,
+      hasSuccessfulReservation: reservation.hasSuccessfulReservation,
+    );
+  }
+
   /// Resolves a client image number (`I=`) to its current image id, if known.
   int? imageIdForNumber(int number) => _imageNumberToId[number];
 
@@ -1102,9 +1116,11 @@ class GraphicsManager {
       var rollbackImageId = previousImageId;
       for (final reservation in reservations) {
         if (reservation.number == imageNumber &&
-            reservation.mappedImageId == mappedImageId &&
-            previousImageId == mappedImageId) {
-          rollbackImageId = reservation.previousImageId;
+            reservation.mappedImageId == mappedImageId) {
+          collapseImageIdReservation(imageNumber, mappedImageId);
+          if (previousImageId == mappedImageId) {
+            rollbackImageId = reservation.previousImageId;
+          }
           break;
         }
       }
@@ -1293,6 +1309,12 @@ class GraphicsManager {
     final pending = _pendingImages.remove(id);
     if (pending != null) {
       _pendingBytes -= pending.payload.length;
+      for (final reservation in pending.imageNumberReservations) {
+        commitImageIdReservation(
+          reservation.number,
+          reservation.mappedImageId,
+        );
+      }
     }
     final existing = _images.remove(id);
     if (existing != null) {
