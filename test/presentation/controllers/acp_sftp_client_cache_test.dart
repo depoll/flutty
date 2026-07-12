@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/controllers/acp_sftp_client_cache.dart';
@@ -121,5 +123,74 @@ void main() {
       expect(opens, 1);
       expect(identical(results[0], results[1]), isTrue);
     });
+
+    test('a stale open (A) finishing after a newer open (B) never overwrites '
+        'the cache', () async {
+      final cache = AcpSftpClientCache();
+      final completerA = Completer<SftpClient>();
+      final completerB = Completer<SftpClient>();
+      final clientA = _FakeSftpClient(1);
+      final clientB = _FakeSftpClient(2);
+
+      // Connection A starts opening, then connection B (a reconnect) supersedes
+      // it before A resolves.
+      final futureA = cache.ensure(
+        connectionId: 1,
+        open: () => completerA.future,
+      );
+      final futureB = cache.ensure(
+        connectionId: 2,
+        open: () => completerB.future,
+      );
+
+      // B resolves first and populates the cache.
+      completerB.complete(clientB);
+      final resultB = await futureB;
+      expect(resultB, same(clientB));
+      expect(cache.connectionId, 2);
+      expect(cache.clientForConnection(2), same(clientB));
+
+      // A resolves later; being stale, it must resolve to null and leave the
+      // cache pointing at the newer connection B.
+      completerA.complete(clientA);
+      final resultA = await futureA;
+      expect(resultA, isNull);
+      expect(cache.connectionId, 2);
+      expect(cache.clientForConnection(2), same(clientB));
+      expect(cache.clientForConnection(1), isNull);
+    });
+
+    test(
+      'a stale open (A) finishing before the newer open (B) still yields B',
+      () async {
+        final cache = AcpSftpClientCache();
+        final completerA = Completer<SftpClient>();
+        final completerB = Completer<SftpClient>();
+        final clientA = _FakeSftpClient(1);
+        final clientB = _FakeSftpClient(2);
+
+        final futureA = cache.ensure(
+          connectionId: 1,
+          open: () => completerA.future,
+        );
+        final futureB = cache.ensure(
+          connectionId: 2,
+          open: () => completerB.future,
+        );
+
+        // A resolves first but is already superseded by B's request.
+        completerA.complete(clientA);
+        final resultA = await futureA;
+        expect(resultA, isNull);
+        expect(cache.clientForConnection(1), isNull);
+
+        // B resolves and becomes the cached client.
+        completerB.complete(clientB);
+        final resultB = await futureB;
+        expect(resultB, same(clientB));
+        expect(cache.connectionId, 2);
+        expect(cache.clientForConnection(2), same(clientB));
+      },
+    );
   });
 }

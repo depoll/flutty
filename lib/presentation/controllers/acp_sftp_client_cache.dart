@@ -19,6 +19,13 @@ class AcpSftpClientCache {
   Future<SftpClient?>? _opening;
   int? _openingConnectionId;
 
+  // Monotonic id of the latest open request. Each newly started open captures
+  // the value bumped here; only the request whose generation still matches
+  // [_generation] when it completes may populate the cache. This guards
+  // against an older, slower open (e.g. connection A) resolving *after* a newer
+  // one (connection B) and overwriting the cache with a stale client.
+  int _generation = 0;
+
   /// The connectionId that currently owns the cached client, if any.
   int? get connectionId => _connectionId;
 
@@ -44,12 +51,15 @@ class AcpSftpClientCache {
   ///
   /// Concurrent calls for the same connection share one in-flight open. A
   /// `null` [connectionId] (no live SSH session) clears the cache and resolves
-  /// to `null`.
+  /// to `null`. If a newer open (for a different connection) supersedes this
+  /// one before it completes, this call resolves to `null` and never replaces
+  /// the current cache.
   Future<SftpClient?> ensure({
     required int? connectionId,
     required AcpSftpClientOpener open,
   }) async {
     if (connectionId == null) {
+      _generation++;
       _client = null;
       _connectionId = null;
       return null;
@@ -64,7 +74,8 @@ class AcpSftpClientCache {
     if (pending != null && _openingConnectionId == connectionId) {
       return pending;
     }
-    final future = _open(connectionId, open);
+    final generation = ++_generation;
+    final future = _open(connectionId, generation, open);
     _opening = future;
     _openingConnectionId = connectionId;
     try {
@@ -77,9 +88,18 @@ class AcpSftpClientCache {
     }
   }
 
-  Future<SftpClient?> _open(int connectionId, AcpSftpClientOpener open) async {
+  Future<SftpClient?> _open(
+    int connectionId,
+    int generation,
+    AcpSftpClientOpener open,
+  ) async {
     try {
       final client = await open();
+      // A newer open request superseded this one while it was in flight; do
+      // not let this stale connection's client overwrite the current cache.
+      if (generation != _generation) {
+        return null;
+      }
       _client = client;
       _connectionId = connectionId;
       return client;
