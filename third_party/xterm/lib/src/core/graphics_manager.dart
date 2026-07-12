@@ -844,7 +844,7 @@ class GraphicsManager {
     }
     final inFlight = _decodingImages[id];
     if (inFlight != null) {
-      return inFlight;
+      return _resolvePendingReplacementAfter(id, inFlight);
     }
     final pending = _pendingImages[id];
     if (pending == null) {
@@ -858,7 +858,22 @@ class GraphicsManager {
       }
     });
     _decodingImages[id] = future;
-    return future;
+    return _resolvePendingReplacementAfter(id, future);
+  }
+
+  Future<TerminalImage?> _resolvePendingReplacementAfter(
+    int id,
+    Future<TerminalImage?> decoding,
+  ) {
+    return decoding.then((image) {
+      if (image != null || !_pendingImages.containsKey(id)) {
+        return image;
+      }
+      // The completed decode belonged to bytes that were replaced while it was
+      // in flight. Resolve the replacement rather than reporting a transient
+      // miss to an animation command queued behind the root.
+      return resolveImage(id);
+    });
   }
 
   /// Whether image [id] has been transmitted but not yet decoded.
@@ -1048,6 +1063,10 @@ class GraphicsManager {
     }
 
     final sizeBytes = image.sizeBytes;
+    final pending = _pendingImages.remove(id);
+    if (pending != null) {
+      _pendingBytes -= pending.payload.length;
+    }
     final existing = _images.remove(id);
     if (existing != null) {
       _currentMemoryBytes -= existing.sizeBytes;

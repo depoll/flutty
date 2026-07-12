@@ -426,6 +426,58 @@ void main() {
     });
   });
 
+  testWidgets('resolveImage retries a pending replacement after a stale decode',
+      (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager();
+      const imageId = 89;
+      manager.storePendingImage(
+        imageId,
+        payload: base64.decode(await _buildPngBase64(3, 2)),
+        format: 100,
+      );
+
+      final resolving = manager.resolveImage(imageId);
+      manager.storePendingImage(
+        imageId,
+        payload: base64.decode(await _buildPngBase64(5, 4)),
+        format: 100,
+      );
+
+      final resolved = await resolving;
+      expect(resolved, isNotNull);
+      expect(resolved!.image.width, 5);
+      expect(resolved.image.height, 4);
+      expect(manager.hasPendingImage(imageId), isFalse);
+    });
+  });
+
+  testWidgets('an eager replacement invalidates an older pending decode', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager();
+      const imageId = 90;
+      final replacement = await _buildImage(5, 4);
+      manager.storePendingImage(
+        imageId,
+        payload: base64.decode(await _buildPngBase64(3, 2)),
+        format: 100,
+      );
+
+      final staleDecode = manager.resolveImage(imageId);
+      manager.storeImageWithId(imageId, replacement);
+      await staleDecode;
+
+      final stored = manager.imageById(imageId);
+      expect(stored, isNotNull);
+      expect(identical(stored!.image, replacement), isTrue);
+      expect(manager.hasPendingImage(imageId), isFalse);
+    });
+  });
+
   test('terminalGraphicsSourceSignature distinguishes content and is stable',
       () {
     final a = Uint8List.fromList(List<int>.generate(5000, (i) => i % 251));
@@ -1164,6 +1216,22 @@ void main() {
 
       await Future<void>.delayed(const Duration(milliseconds: 300));
       expect(terminal.graphics.imageById(73), isNull);
+      expect(terminal.graphics.hasPlacements, isFalse);
+    });
+  });
+
+  testWidgets('unkeyed delete waits for an in-flight unkeyed transmit', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(512, 512);
+      final terminal = Terminal();
+
+      terminal
+        ..write('\x1b_Ga=T,f=100,c=8,r=4;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=d,d=a\x1b\\');
+
+      await Future<void>.delayed(const Duration(milliseconds: 300));
       expect(terminal.graphics.hasPlacements, isFalse);
     });
   });

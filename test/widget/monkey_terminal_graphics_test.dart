@@ -100,20 +100,26 @@ const _animatedGifBase64 =
 
 /// Builds a PNG whose left half is [left] and right half is [right], used to
 /// verify source-rectangle cropping selects the requested region.
-Future<String> _buildSplitPngBase64(Color left, Color right, int size) async {
+Future<String> _buildSplitPngBase64(
+  Color left,
+  Color right,
+  int width, [
+  int? height,
+]) async {
   final recorder = ui.PictureRecorder();
   final canvas = ui.Canvas(recorder);
-  final half = size / 2;
+  final imageHeight = height ?? width;
+  final half = width / 2;
   canvas
     ..drawRect(
-      Rect.fromLTWH(0, 0, half, size.toDouble()),
+      Rect.fromLTWH(0, 0, half, imageHeight.toDouble()),
       Paint()..color = left,
     )
     ..drawRect(
-      Rect.fromLTWH(half, 0, half, size.toDouble()),
+      Rect.fromLTWH(half, 0, half, imageHeight.toDouble()),
       Paint()..color = right,
     );
-  final image = await recorder.endRecording().toImage(size, size);
+  final image = await recorder.endRecording().toImage(width, imageHeight);
   final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
   return base64.encode(bytes!.buffer.asUint8List());
 }
@@ -1506,6 +1512,49 @@ void main() {
       await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
       0,
       reason: 'cropping to the left half must exclude the blue right half',
+    );
+  });
+
+  testWidgets('Kitty source crop scales into a downsampled decoded image', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+    await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
+    await tester.pump();
+
+    await tester.runAsync(() async {
+      // The decoder bounds this 2560px source to 1280px. Crop coordinates
+      // remain in the original 2560px Kitty coordinate space.
+      final png = await _buildSplitPngBase64(
+        const Color(0xFFFF0000),
+        const Color(0xFF0000FF),
+        2560,
+        20,
+      );
+      terminal.write(
+        '\x1b_Ga=T,i=2,f=100,c=6,r=3,x=1280,y=0,w=1280,h=20;$png\x1b\\',
+      );
+      var waited = 0;
+      while (terminal.graphics.imageById(2) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+
+    final stored = terminal.graphics.imageById(2)!;
+    expect(stored.sourceWidth, 2560);
+    expect(stored.image.width, 1280);
+    expect(
+      await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+      greaterThan(0),
+      reason: 'the logical right-half crop must render from the decoded image',
+    );
+    expect(
+      await tester.runAsync(() => _boundaryRedPixelCount(boundaryKey)),
+      0,
+      reason: 'the logical crop must exclude the source image left half',
     );
   });
 

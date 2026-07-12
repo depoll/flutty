@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.104"
+	monkeyMuxVersion                  = "0.1.105"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -545,14 +545,15 @@ type muxWindow struct {
 	// and thereafter only re-emit placeholder cells, so the one-time image
 	// bytes must survive independently of the rolling visible history (which
 	// evicts them once enough newer output arrives) or reattached placeholders
-	// render blank. Keyed by protocol image id; kittyImageOrder tracks recency.
+	// render blank. Keyed by protocol image id; kittyImageOrder preserves root
+	// transmission order so replay reproduces image-number mapping semantics.
 	kittyImages          map[string][]byte
 	kittyImageAnimations map[string][]byte
 	kittyImageNumberToID map[string]string
 	kittyImageOrder      []string
-	// kittyImageSeq records a global monotonic store sequence per image id so a
-	// machine-wide budget can evict the globally-oldest image across all
-	// windows. Protected by the server lock, like the maps above.
+	// kittyImageSeq records mutation recency independently of root order so local
+	// replay selection and the machine-wide budget favor recently animated
+	// images. Protected by the server lock, like the maps above.
 	kittyImageSeq map[string]uint64
 	// kittyImageToken holds the FNV-1a-32 signature of each retained image's
 	// base64-decoded transmission payload, keyed by protocol image id. A client
@@ -8699,14 +8700,14 @@ func assembleKittyTransmission(
 			freeImageData, false, true
 	case "t", "T":
 		// An image transmission; assemble continuation chunks below.
-		buf = append(buf, rewriteKittyTransmitAction(data[start:apcEnd])...)
+		buf = append(buf, rewriteKittyReplayCommand(data[start:apcEnd], true)...)
 	case "f":
 		// Animation frame payloads use the same continuation rules as roots.
-		buf = append(buf, data[start:apcEnd]...)
+		buf = append(buf, rewriteKittyReplayCommand(data[start:apcEnd], false)...)
 		isAnimation = true
 	case "a", "c":
 		// Control/composition commands have no chunked payload.
-		return apcEnd, append([]byte(nil), data[start:apcEnd]...),
+		return apcEnd, rewriteKittyReplayCommand(data[start:apcEnd], false),
 			args["i"], args["I"], false, true, true
 	default:
 		// Queries (a=q), placements (a=p) etc. are complete but not retained.
@@ -8763,9 +8764,20 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 		if tx.imageNumber != "" {
 			if id == "" {
 				id = w.kittyImageNumberToID[tx.imageNumber]
+				if id == "" && !tx.animation {
+					id = "I:" + tx.imageNumber
+					if w.kittyImageNumberToID == nil {
+						w.kittyImageNumberToID = map[string]string{}
+					}
+					w.kittyImageNumberToID[tx.imageNumber] = id
+				}
 			} else if !tx.animation {
 				if w.kittyImageNumberToID == nil {
 					w.kittyImageNumberToID = map[string]string{}
+				}
+				if previous := w.kittyImageNumberToID[tx.imageNumber]; previous != "" &&
+					previous != id && strings.HasPrefix(previous, "I:") {
+					w.removeKittyImageLocked(previous)
 				}
 				w.kittyImageNumberToID[tx.imageNumber] = id
 			}
@@ -8774,7 +8786,8 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 			continue // cannot dedupe or replay without an id
 		}
 		if tx.animation {
-			changed = w.appendKittyImageAnimationLocked(id, tx.buf) || changed
+			animation := rewriteKittyImageReferenceToID(tx.buf, id)
+			changed = w.appendKittyImageAnimationLocked(id, animation) || changed
 		} else {
 			w.storeKittyImageLocked(id, tx.buf)
 			changed = true
@@ -8833,8 +8846,6 @@ func (w *muxWindow) appendKittyImageAnimationLocked(id string, buf []byte) bool 
 		return w.removeKittyImageLocked(id)
 	}
 	w.kittyImageAnimations[id] = append(w.kittyImageAnimations[id], buf...)
-	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
-	w.kittyImageOrder = append(w.kittyImageOrder, id)
 	kittyImageStoreSeq++
 	w.kittyImageSeq[id] = kittyImageStoreSeq
 	w.enforceKittyImageCapsLocked()
@@ -8867,14 +8878,19 @@ func (w *muxWindow) enforceKittyImageCapsLocked() {
 		(len(w.kittyImageOrder) > maxRetainedKittyImages ||
 			(total > maxRetainedKittyImageBytes && len(w.kittyImageOrder) > 1)) {
 		oldest := w.kittyImageOrder[0]
+		for _, id := range w.kittyImageOrder[1:] {
+			if w.kittyImageSeq[id] < w.kittyImageSeq[oldest] {
+				oldest = id
+			}
+		}
 		total -= len(w.kittyImages[oldest]) + len(w.kittyImageAnimations[oldest])
 		w.removeKittyImageLocked(oldest)
 	}
 }
 
-// kittyImageStoreSeq is a global monotonic counter assigning each stored image
-// a store order, used to evict the globally-oldest image under the machine-wide
-// budget. Mutated only while the server lock is held.
+// kittyImageStoreSeq is a global monotonic counter assigning each image mutation
+// an order, used to evict the least recently changed image under the local and
+// machine-wide budgets. Mutated only while the server lock is held.
 var kittyImageStoreSeq uint64
 
 // kittyImagePerIDBudgetBytes prevents one long-running animation from bypassing
@@ -8973,11 +8989,15 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 	if len(w.kittyImageOrder) == 0 {
 		return nil
 	}
-	// Walk newest-first, keeping images until a cap is hit.
+	// Select by mutation recency so an actively changing older root is retained.
+	// Emission below still follows root order to preserve I= mapping semantics.
+	candidates := append([]string(nil), w.kittyImageOrder...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return w.kittyImageSeq[candidates[i]] > w.kittyImageSeq[candidates[j]]
+	})
 	selected := make([]string, 0, maxReplayedKittyImages)
 	total := 0
-	for i := len(w.kittyImageOrder) - 1; i >= 0; i-- {
-		id := w.kittyImageOrder[i]
+	for _, id := range candidates {
 		imageBytes := len(w.kittyImages[id]) + len(w.kittyImageAnimations[id])
 		if len(selected) >= maxReplayedKittyImages {
 			break
@@ -8988,17 +9008,23 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 		selected = append(selected, id)
 		total += imageBytes
 	}
-	// Emit oldest-kept first so ids are established in chronological order,
-	// skipping any the client already holds with identical content.
+	selectedSet := make(map[string]struct{}, len(selected))
+	for _, id := range selected {
+		selectedSet[id] = struct{}{}
+	}
+	// Emit selected roots in original transmission order so repeated I= mappings
+	// end in the same state as the live stream.
 	var out []byte
-	for i := len(selected) - 1; i >= 0; i-- {
-		id := selected[i]
+	for _, id := range w.kittyImageOrder {
+		if _, ok := selectedSet[id]; !ok {
+			continue
+		}
 		if len(clientHas) > 0 {
 			if token, ok := clientHas[id]; ok && token == w.kittyImageToken[id] {
 				continue
 			}
 		}
-		out = append(out, w.kittyImages[id]...)
+		out = append(out, w.kittyImageRootReplayLocked(id)...)
 		out = append(out, w.kittyImageAnimations[id]...)
 	}
 	return out
@@ -9031,6 +9057,7 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 		if !ok {
 			continue
 		}
+		buf = w.kittyImageRootReplayLocked(id)
 		animation := w.kittyImageAnimations[id]
 		imageBytes := len(buf) + len(animation)
 		if imageBytes > maxReplayedKittyImageBytes ||
@@ -9046,6 +9073,22 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 		served = append(served, id)
 	}
 	return out, served
+}
+
+func (w *muxWindow) kittyImageRootReplayLocked(id string) []byte {
+	buf := w.kittyImages[id]
+	if len(buf) == 0 {
+		return buf
+	}
+	apcEnd := kittyApcEnd(buf, 0)
+	if apcEnd < 0 {
+		return buf
+	}
+	number := parseKittyControl(kittyControl(buf, 0, apcEnd))["I"]
+	if number == "" || w.kittyImageNumberToID[number] == id {
+		return buf
+	}
+	return rewriteKittyImageReferenceToID(buf, id)
 }
 
 func removeStringOnce(items []string, target string) []string {
@@ -9212,22 +9255,78 @@ func parseKittyControl(control string) map[string]string {
 	return args
 }
 
-// rewriteKittyTransmitAction returns a copy of a single Kitty APC sequence with
-// a display transmit (a=T) downgraded to a store-only transmit (a=t) so replay
-// never draws or moves the cursor. Other sequences are returned unchanged.
-func rewriteKittyTransmitAction(seq []byte) []byte {
-	from := 3 // past ESC _ G
-	to := len(seq)
-	if semi := bytes.IndexByte(seq, ';'); semi >= 0 && semi < to {
-		to = semi
+// rewriteKittyReplayCommand suppresses protocol responses during replay and,
+// for roots, downgrades a=T to store-only a=t so replay never draws or moves
+// the cursor before the foreground app redraws its placements.
+func rewriteKittyReplayCommand(seq []byte, storeOnly bool) []byte {
+	if len(seq) < 5 {
+		return append([]byte(nil), seq...)
 	}
-	idx := bytes.Index(seq[from:to], []byte("a=T"))
-	if idx < 0 {
+	controlEnd := len(seq) - 2 // before ST
+	if semi := bytes.IndexByte(seq, ';'); semi >= 0 && semi < controlEnd {
+		controlEnd = semi
+	}
+	parts := strings.Split(string(seq[3:controlEnd]), ",")
+	foundQuiet := false
+	for index, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		switch key {
+		case "a":
+			if storeOnly && part == "a=T" {
+				parts[index] = "a=t"
+			}
+		case "q":
+			parts[index] = "q=2"
+			foundQuiet = true
+		}
+	}
+	if !foundQuiet {
+		parts = append(parts, "q=2")
+	}
+	out := make([]byte, 0, len(seq)+4)
+	out = append(out, seq[:3]...)
+	out = append(out, strings.Join(parts, ",")...)
+	out = append(out, seq[controlEnd:]...)
+	return out
+}
+
+// rewriteKittyImageReferenceToID makes a retained command independent of an
+// image-number mapping that may change later. Synthetic I=-only roots have no
+// numeric id yet and are intentionally left unchanged.
+func rewriteKittyImageReferenceToID(seq []byte, imageID string) []byte {
+	if _, err := strconv.ParseUint(imageID, 10, 32); err != nil || len(seq) < 5 {
 		return seq
 	}
-	out := make([]byte, len(seq))
-	copy(out, seq)
-	out[from+idx+2] = 't'
+	apcEnd := kittyApcEnd(seq, 0)
+	if apcEnd < 0 {
+		return seq
+	}
+	controlEnd := apcEnd - 2 // before ST
+	if semi := bytes.IndexByte(seq[:apcEnd], ';'); semi >= 0 {
+		controlEnd = semi
+	}
+	parts := strings.Split(string(seq[3:controlEnd]), ",")
+	rewritten := make([]string, 0, len(parts)+1)
+	foundID := false
+	for _, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		switch key {
+		case "I":
+			continue
+		case "i":
+			rewritten = append(rewritten, "i="+imageID)
+			foundID = true
+		default:
+			rewritten = append(rewritten, part)
+		}
+	}
+	if !foundID {
+		rewritten = append(rewritten, "i="+imageID)
+	}
+	out := make([]byte, 0, len(seq)+len(imageID)+3)
+	out = append(out, seq[:3]...)
+	out = append(out, strings.Join(rewritten, ",")...)
+	out = append(out, seq[controlEnd:]...)
 	return out
 }
 

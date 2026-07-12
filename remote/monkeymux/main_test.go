@@ -5120,10 +5120,94 @@ func TestObserveKittyGraphicsResolvesImageNumberAnimations(t *testing.T) {
 			"\x1b_Ga=a,I=5,s=3,v=1\x1b\\"))
 
 	replay := string(window.kittyImageReplayLocked(nil))
-	for _, want := range []string{"i=7,I=5", "a=f,I=5", "a=a,I=5"} {
+	for _, want := range []string{"i=7,I=5", "a=f,f=100", "a=a,s=3", "i=7"} {
 		if !strings.Contains(replay, want) {
 			t.Fatalf("image-number animation missing %q: %q", want, replay)
 		}
+	}
+	if strings.Count(replay, "I=5") != 1 {
+		t.Fatalf("animation commands were not canonicalized to id 7: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsRetainsImageNumberOnlyRoot(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME\x1b\\" +
+			"\x1b_Ga=a,I=5,s=3,v=1\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	for _, want := range []string{"a=t,I=5", "a=f,I=5", "a=a,I=5"} {
+		if !strings.Contains(replay, want) {
+			t.Fatalf("image-number-only replay missing %q: %q", want, replay)
+		}
+	}
+}
+
+func TestKittyAnimationReplaySuppressesProtocolResponses(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=T,i=7,I=5,f=100,q=0;ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100,q=0;FRAME\x1b\\" +
+			"\x1b_Ga=a,i=7,s=3,v=1,q=0\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "q=0") {
+		t.Fatalf("replay retained response-producing quiet mode: %q", replay)
+	}
+	if got := strings.Count(replay, "q=2"); got != 3 {
+		t.Fatalf("replay q=2 count = %d, want 3: %q", got, replay)
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("root replay was not downgraded to store-only: %q", replay)
+	}
+}
+
+func TestKittyAnimationDoesNotReorderImageNumberRoots(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=5,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100;FRAME7\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	root8 := strings.Index(replay, "ROOT8")
+	frame7 := strings.Index(replay, "FRAME7")
+	if root8 < 0 || frame7 < 0 || frame7 > root8 {
+		t.Fatalf("animation mutation reordered root mapping: %q", replay)
+	}
+	if got := window.kittyImageNumberToID["5"]; got != "8" {
+		t.Fatalf("image number 5 maps to %q, want 8", got)
+	}
+}
+
+func TestKittyReplayDoesNotRestoreStaleImageNumberMapping(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=5,f=100;ROOT8\x1b\\"))
+	for i := 0; i < maxReplayedKittyImages; i++ {
+		window.observeKittyGraphicsLocked([]byte(fmt.Sprintf(
+			"\x1b_Ga=t,i=%d,f=100;OTHER%d\x1b\\",
+			100+i,
+			i,
+		)))
+	}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=7,f=100;FRAME7\x1b\\"),
+	)
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "ROOT7") || strings.Contains(replay, "ROOT8") {
+		t.Fatalf("test precondition did not select only the older mapped root: %q", replay)
+	}
+	if strings.Contains(replay, "i=7,I=5") {
+		t.Fatalf("older root restored stale image-number mapping: %q", replay)
+	}
+	if !strings.Contains(replay, "a=f,i=7") ||
+		strings.Contains(replay, "a=f,I=5") {
+		t.Fatalf("older animation was not canonicalized to image id 7: %q", replay)
 	}
 }
 
@@ -5261,6 +5345,17 @@ func TestKittyImageReplayCapsCount(t *testing.T) {
 	tooOld := fmt.Sprintf("i=%d,", oldestKept-1)
 	if strings.Contains(replay, tooOld) {
 		t.Fatalf("image %q older than the replay cap should be omitted", tooOld)
+	}
+
+	// Mutating that older root makes it recent for selection without changing
+	// the root transmission order used to preserve image-number mappings.
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=0,f=100;RECENT_FRAME\x1b\\"),
+	)
+	replay = string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "i=0,") ||
+		!strings.Contains(replay, "RECENT_FRAME") {
+		t.Fatalf("recently animated older root missing from replay: %q", replay)
 	}
 }
 
