@@ -12,6 +12,7 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
@@ -33,12 +34,14 @@ import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../controllers/acp_composer_controller.dart';
+import '../controllers/acp_sftp_client_cache.dart';
 import '../models/acp_attachment_picker_adapters.dart';
 import '../models/acp_timeline.dart' as ui;
 import '../models/acp_timeline_mapper.dart';
 import '../widgets/acp_composer.dart';
 import '../widgets/acp_concurrency_choice.dart';
 import '../widgets/acp_config_option_controls.dart';
+import '../widgets/acp_inline_image.dart';
 import '../widgets/acp_message_thread.dart';
 import '../widgets/acp_new_session_sheet.dart';
 import '../widgets/acp_permission_surface.dart';
@@ -95,8 +98,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   var _showJumpToLatest = false;
   var _connecting = true;
   AcpSessionError? _connectError;
-  SftpClient? _sftpClient;
-  var _openingSftp = false;
+  final AcpSftpClientCache _sftpCache = AcpSftpClientCache();
 
   @override
   void initState() {
@@ -128,19 +130,31 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   }
 
   AcpAttachmentUploader? _buildUploader() {
-    final client = _sftpClient;
+    final connectionId = _currentConnectionId();
+    final client = _sftpCache.clientForConnection(connectionId);
+    // Never upload through a client owned by a stale SSH connection: if the
+    // host reconnected under a new connectionId, the cache returns null here
+    // and we kick off a reopen so the next attempt uses the live connection.
     if (client == null) {
+      _sftpCache.invalidateIfStale(connectionId);
+      unawaited(_ensureSftpClient());
       return null;
     }
     return SftpAcpAttachmentUploader(sftp: client);
   }
+
+  int? _currentConnectionId() => ref
+      .read(sshServiceProvider)
+      .getSessionsForHost(widget.hostId)
+      .firstOrNull
+      ?.connectionId;
 
   Future<void> _ensureConnected() async {
     final manager = ref.read(acpSessionManagerProvider);
     final existing = manager.state.byKeyValue(_key.value);
     if (existing != null && existing.isLive) {
       unawaited(manager.selectSession(_key));
-      unawaited(_openSftp());
+      unawaited(_ensureSftpClient());
       return;
     }
     setState(() {
@@ -157,7 +171,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       switch (result) {
         case AcpSessionLaunchStarted():
           unawaited(manager.selectSession(_key));
-          unawaited(_openSftp());
+          unawaited(_ensureSftpClient());
           setState(() => _connecting = false);
         case AcpSessionLaunchFailed(:final error):
           setState(() {
@@ -235,29 +249,25 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     }
   }
 
-  Future<void> _openSftp() async {
-    if (_sftpClient != null || _openingSftp) {
-      return;
-    }
+  /// Returns a live SFTP client owned by the host's current SSH connection,
+  /// reopening it when the cached client belongs to a stale connectionId (for
+  /// example after a host reconnect) or has not been opened yet.
+  Future<SftpClient?> _ensureSftpClient() async {
     final session = ref
         .read(sshServiceProvider)
         .getSessionsForHost(widget.hostId)
         .firstOrNull;
     if (session == null) {
-      return;
+      return _sftpCache.ensure(connectionId: null, open: _throwNoSession);
     }
-    _openingSftp = true;
-    try {
-      final client = await session.sftp();
-      if (mounted) {
-        _sftpClient = client;
-      }
-    } on Object {
-      // Remote-upload fallback simply stays unavailable until retried.
-    } finally {
-      _openingSftp = false;
-    }
+    return _sftpCache.ensure(
+      connectionId: session.connectionId,
+      open: session.sftp,
+    );
   }
+
+  static Future<SftpClient> _throwNoSession() =>
+      throw StateError('No SSH session');
 
   void _onScroll() {
     if (!_scroll.hasClients) {
@@ -318,13 +328,18 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   }
 
   Future<List<AcpAttachmentCandidate>> _pickPhotos(BuildContext context) async {
-    final files = await ImagePicker().pickMultiImage();
+    // Pick images and videos together, preserving the existing XFile adapter
+    // and the composer's size/count limits.
+    final files = await ImagePicker().pickMultipleMedia();
     return [
       for (final file in files) await acpAttachmentCandidateFromXFile(file),
     ];
   }
 
   Future<List<AcpAttachmentCandidate>> _pickFiles(BuildContext context) async {
+    // pickFiles selects multiple files by default in the current file_picker
+    // (the explicit allowMultiple flag is deprecated); adapters/limits are
+    // preserved by the shared PlatformFile adapter below.
     final result = await FilePicker.pickFiles();
     if (result == null) {
       return const [];
@@ -390,9 +405,70 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     ];
   }
 
-  void _openImageViewer(ui.AcpImageContent image) {
-    final bytes = image.bytes;
+  /// Resolves a chat image to bounded bytes without ever implicitly fetching
+  /// over the network.
+  ///
+  /// In-memory and `data:` images are handled by [AcpInlineImage] itself and
+  /// never reach here. Same-host `file:` (or absolute-path) URIs are read via
+  /// SFTP up to the shared inline image byte cap; `http(s)`/unknown URIs are
+  /// never fetched and resolve to `null`.
+  Future<Uint8List?> _resolveChatImage(ui.AcpImageContent image) async {
+    final inline = image.bytes;
+    if (inline != null) {
+      return inline;
+    }
     final uri = image.uri;
+    if (uri == null || uri.isEmpty || uri.startsWith('data:')) {
+      return null;
+    }
+    if (uri.startsWith('file:')) {
+      final parsed = Uri.tryParse(uri);
+      final path = parsed?.path;
+      return (path != null && path.isNotEmpty)
+          ? _readRemoteImageBytes(path)
+          : null;
+    }
+    if (uri.startsWith('/')) {
+      return _readRemoteImageBytes(uri);
+    }
+    // http(s) and unknown schemes are never fetched implicitly.
+    return null;
+  }
+
+  /// Reads a same-host remote file over SFTP, bounded to the shared inline
+  /// image byte cap. Oversized files (declared or streamed) resolve to `null`
+  /// so a hostile path can never force an unbounded read into memory.
+  Future<Uint8List?> _readRemoteImageBytes(String path) async {
+    final sftp = await _ensureSftpClient();
+    if (sftp == null) {
+      return null;
+    }
+    try {
+      final stat = await sftp.stat(path);
+      final size = stat.size;
+      if (size != null && size > kAcpMaxInlineImageBytes) {
+        return null;
+      }
+      final file = await sftp.open(path);
+      final builder = BytesBuilder(copy: false);
+      try {
+        await for (final chunk in file.read()) {
+          builder.add(chunk);
+          if (builder.length > kAcpMaxInlineImageBytes) {
+            return null;
+          }
+        }
+      } finally {
+        await file.close();
+      }
+      return builder.takeBytes();
+    } on Object {
+      return null;
+    }
+  }
+
+  void _openImageViewer(ui.AcpImageContent image) {
+    final size = MediaQuery.sizeOf(context);
     showDialog<void>(
       context: context,
       builder: (context) => Dialog(
@@ -404,11 +480,12 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
               child: InteractiveViewer(
                 maxScale: 5,
                 child: Center(
-                  child: bytes != null
-                      ? Image.memory(bytes, fit: BoxFit.contain)
-                      : (uri != null
-                            ? Image.network(uri, fit: BoxFit.contain)
-                            : const SizedBox.shrink()),
+                  child: AcpInlineImage(
+                    image: image,
+                    resolver: _resolveChatImage,
+                    maxWidth: size.width,
+                    maxHeight: size.height,
+                  ),
                 ),
               ),
             ),
@@ -472,7 +549,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         _composer.updateSession(session);
         _scheduleAutoScroll();
         if (session != null && session.status == AcpConnectionStatus.ready) {
-          unawaited(_openSftp());
+          unawaited(_ensureSftpClient());
         }
       },
     );
@@ -586,6 +663,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                   AcpMessageThread(
                     entries: entries,
                     controller: _scroll,
+                    imageResolver: _resolveChatImage,
                     onTapImage: _openImageViewer,
                     onOpenResource: _openResource,
                     onCopyResource: (resource) =>
@@ -743,23 +821,93 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
           context.go(buildAgentsOverviewLocation());
         }
       case _ChatAction.fork:
-        final result = await manager.forkSession(_key);
-        if (result is AcpSessionLaunchStarted && mounted) {
-          context.replace(
-            buildAgentChatLocation(
-              hostId: result.key.hostId,
-              providerId: result.key.providerId,
-              bridgeId: result.key.bridgeId,
-              acpSessionId: result.key.acpSessionId,
-            ),
-          );
-        }
+        await _fork();
       case _ChatAction.delete:
         await manager.deleteSession(_key);
         if (mounted) {
           context.go(buildAgentsOverviewLocation());
         }
     }
+  }
+
+  /// Forks the current session, resolving a free-tier concurrency block with
+  /// the same stop-and-continue vs. Pro-upgrade choice used elsewhere, then
+  /// opening the new session or surfacing a safe error.
+  Future<void> _fork() async {
+    final manager = ref.read(acpSessionManagerProvider);
+    var result = await manager.forkSession(_key);
+
+    if (result is AcpSessionLaunchBlocked) {
+      if (!mounted) {
+        return;
+      }
+      final decision = result.decision;
+      final choice = await showAcpConcurrencyChoice(
+        context,
+        decision: decision,
+        managerState: manager.state,
+      );
+      if (choice == null || !mounted) {
+        return;
+      }
+      switch (choice) {
+        case AcpConcurrencyChoice.stopAndContinue:
+          // forkSession has no replace parameter, so free capacity first by
+          // stopping the blocking live session(s), then retry the fork.
+          for (final value in decision.blockingSessionKeys) {
+            final blockingKey = manager.state.byKeyValue(value)?.key;
+            if (blockingKey != null) {
+              await manager.stopSession(blockingKey);
+            }
+          }
+          if (!mounted) {
+            return;
+          }
+          result = await manager.forkSession(_key);
+        case AcpConcurrencyChoice.upgrade:
+          await context.push<void>('/upgrade?feature=concurrentAcpSessions');
+          if (!mounted) {
+            return;
+          }
+          final unlocked = ref
+              .read(monetizationServiceProvider)
+              .currentState
+              .isProUnlocked;
+          if (!unlocked) {
+            return;
+          }
+          result = await manager.forkSession(_key);
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+    switch (result) {
+      case AcpSessionLaunchStarted(:final key):
+        context.replace(
+          buildAgentChatLocation(
+            hostId: key.hostId,
+            providerId: key.providerId,
+            bridgeId: key.bridgeId,
+            acpSessionId: key.acpSessionId,
+          ),
+        );
+      case AcpSessionLaunchFailed(:final error):
+        _showSnack(error.message);
+      case AcpSessionLaunchBlocked():
+        // Still blocked after the resolution attempt: leave the session as-is.
+        break;
+    }
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   String _basename(String path) {

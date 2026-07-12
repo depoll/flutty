@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
+import 'package:monkeyssh/domain/services/acp_concurrency_policy.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/agent_chat_screen.dart';
@@ -109,5 +110,78 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(manager.permissionResponses, [('req-1', 'allow-1')]);
+  });
+
+  testWidgets('a failed fork surfaces a safe error snackbar', (tester) async {
+    final manager =
+        FakeAcpSessionManager(
+            sessions: [fakeAcpSession(capabilities: fakeAcpForkCapabilities())],
+          )
+          ..forkResults.add(
+            const AcpSessionLaunchFailed(
+              null,
+              AcpSessionError(
+                kind: AcpSessionErrorKind.unknown,
+                message: 'Fork could not start.',
+              ),
+            ),
+          );
+    await tester.pumpWidget(_wrap(manager));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Fork session'));
+    await tester.pumpAndSettle();
+
+    expect(manager.forkCount, 1);
+    expect(find.text('Fork could not start.'), findsOneWidget);
+  });
+
+  testWidgets('a blocked fork stops the blocking session and retries after '
+      'stop-and-continue', (tester) async {
+    final currentKey = fakeAcpKey();
+    final blockingKey = fakeAcpKey(acpSessionId: 'blocking');
+    final manager =
+        FakeAcpSessionManager(
+            sessions: [
+              fakeAcpSession(
+                key: currentKey,
+                capabilities: fakeAcpForkCapabilities(),
+              ),
+              fakeAcpSession(key: blockingKey, title: 'Busy session'),
+            ],
+          )
+          ..forkResults.addAll([
+            AcpSessionLaunchBlocked(
+              AcpConcurrencyRequiresChoice(
+                blockingSessionKeys: [blockingKey.value],
+              ),
+            ),
+            const AcpSessionLaunchFailed(
+              null,
+              AcpSessionError(
+                kind: AcpSessionErrorKind.unknown,
+                message: 'Retry failed.',
+              ),
+            ),
+          ]);
+    await tester.pumpWidget(_wrap(manager));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Fork session'));
+    await tester.pumpAndSettle();
+
+    // The shared concurrency choice is presented.
+    expect(find.text('Stop and continue free'), findsOneWidget);
+    await tester.tap(find.text('Stop and continue free'));
+    await tester.pumpAndSettle();
+
+    // The blocking session was stopped and the fork was retried.
+    expect(manager.stopped, contains(blockingKey.value));
+    expect(manager.forkCount, 2);
+    expect(find.text('Retry failed.'), findsOneWidget);
   });
 }

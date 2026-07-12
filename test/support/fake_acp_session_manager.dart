@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
+import 'package:monkeyssh/domain/models/acp_protocol.dart';
 import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
@@ -46,6 +47,11 @@ class FakeAcpSessionManager extends AcpSessionManager {
   final List<String> cancelledPermissions = <String>[];
   final List<String> approvedWrites = <String>[];
   final List<String> rejectedWrites = <String>[];
+
+  /// Results returned by successive [forkSession] calls, consumed FIFO. When
+  /// exhausted, a safe failure is returned.
+  final List<AcpSessionLaunchResult> forkResults = <AcpSessionLaunchResult>[];
+  int forkCount = 0;
 
   void emit(AcpSessionManagerState state) {
     _current = state;
@@ -107,6 +113,21 @@ class FakeAcpSessionManager extends AcpSessionManager {
   }
 
   @override
+  Future<AcpSessionLaunchResult> forkSession(AcpSessionKey key) async {
+    forkCount++;
+    if (forkResults.isNotEmpty) {
+      return forkResults.removeAt(0);
+    }
+    return const AcpSessionLaunchFailed(
+      null,
+      AcpSessionError(
+        kind: AcpSessionErrorKind.unknown,
+        message: 'Fork failed.',
+      ),
+    );
+  }
+
+  @override
   Future<void> dispose() async {
     await _emitter.close();
   }
@@ -133,6 +154,7 @@ AcpSessionState fakeAcpSession({
   AcpConnectionStatus status = AcpConnectionStatus.ready,
   String? title,
   DateTime? lastActivityAt,
+  AcpAgentCapabilities? capabilities,
   List<AcpPendingPermission> pendingPermissions =
       const <AcpPendingPermission>[],
   List<AcpPendingWrite> pendingWrites = const <AcpPendingWrite>[],
@@ -147,11 +169,22 @@ AcpSessionState fakeAcpSession({
     createdAt: DateTime(2025),
     lastActivityAt: now,
     title: title,
+    initialization: capabilities == null
+        ? null
+        : AcpInitializeResult(
+            protocolVersion: 1,
+            agentCapabilities: capabilities,
+          ),
     pendingPermissions: pendingPermissions,
     pendingWrites: pendingWrites,
     timeline: timeline,
   );
 }
+
+/// Agent capabilities advertising session fork/delete support.
+AcpAgentCapabilities fakeAcpForkCapabilities() => const AcpAgentCapabilities(
+  session: AcpSessionCapabilities(fork: true, delete: true),
+);
 
 /// Builds an agent message timeline entry.
 AcpTimeline fakeAcpTimeline(String agentText) => AcpTimeline(

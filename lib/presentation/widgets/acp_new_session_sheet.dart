@@ -104,6 +104,9 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
   }
 
   Future<bool> _confirmInstall(MonkeyMuxInstallRequest request) async {
+    if (!mounted) {
+      return false;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -165,6 +168,9 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     final connection = await ref
         .read(activeSessionsProvider.notifier)
         .connect(hostId);
+    if (!mounted) {
+      return null;
+    }
     if (!connection.success) {
       setState(() => _error = 'Could not connect to the host.');
       return null;
@@ -342,123 +348,138 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     final hostsAsync = ref.watch(allHostsProvider);
     final providersAsync = ref.watch(acpProvidersProvider);
 
-    return Padding(
-      padding: EdgeInsets.only(
-        left: FluttyTheme.spacingLg,
-        right: FluttyTheme.spacingLg,
-        bottom: MediaQuery.viewInsetsOf(context).bottom + FluttyTheme.spacingLg,
-      ),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'new agent session',
-              style: FluttyTheme.displayMono(
-                fontSize: 18,
-                color: colorScheme.onSurface,
+    return PopScope(
+      // Block dismissal (back gesture / predictive pop) while a launch is in
+      // flight so an in-progress connect/start can't be interrupted or leave
+      // the sheet updating state after it is gone.
+      canPop: !_busy,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: FluttyTheme.spacingLg,
+          right: FluttyTheme.spacingLg,
+          bottom:
+              MediaQuery.viewInsetsOf(context).bottom + FluttyTheme.spacingLg,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'new agent session',
+                style: FluttyTheme.displayMono(
+                  fontSize: 18,
+                  color: colorScheme.onSurface,
+                ),
               ),
-            ),
-            const SizedBox(height: FluttyTheme.spacingMd),
-            _sectionLabel(context, 'Host'),
-            hostsAsync.when(
-              data: (hosts) {
-                _applyDefaultCwd(hosts);
-                if (hosts.isEmpty) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(
-                      vertical: FluttyTheme.spacingSm,
+              const SizedBox(height: FluttyTheme.spacingMd),
+              _sectionLabel(context, 'Host'),
+              hostsAsync.when(
+                data: (hosts) {
+                  _applyDefaultCwd(hosts);
+                  if (hosts.isEmpty) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(
+                        vertical: FluttyTheme.spacingSm,
+                      ),
+                      child: Text('Add a host first to launch an agent.'),
+                    );
+                  }
+                  return DropdownButtonFormField<int>(
+                    initialValue: _hostId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      hintText: 'Choose a host',
                     ),
-                    child: Text('Add a host first to launch an agent.'),
+                    items: [
+                      for (final host in hosts)
+                        DropdownMenuItem<int>(
+                          value: host.id,
+                          child: Text(
+                            host.label,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: _busy
+                        ? null
+                        : (value) => setState(() {
+                            _hostId = value;
+                            _cwdEdited = false;
+                            _selectedRecent = null;
+                            _applyDefaultCwd(hosts);
+                          }),
                   );
-                }
-                return DropdownButtonFormField<int>(
-                  initialValue: _hostId,
-                  isExpanded: true,
-                  decoration: const InputDecoration(hintText: 'Choose a host'),
-                  items: [
-                    for (final host in hosts)
-                      DropdownMenuItem<int>(
-                        value: host.id,
-                        child: Text(
-                          host.label,
-                          overflow: TextOverflow.ellipsis,
+                },
+                loading: () => const Padding(
+                  padding: EdgeInsets.all(FluttyTheme.spacingMd),
+                  child: LinearProgressIndicator(),
+                ),
+                error: (_, _) => const Text('Could not load hosts.'),
+              ),
+              const SizedBox(height: FluttyTheme.spacingMd),
+              _sectionLabel(context, 'Provider'),
+              providersAsync.when(
+                data: _buildProviderPicker,
+                loading: () => const Padding(
+                  padding: EdgeInsets.all(FluttyTheme.spacingMd),
+                  child: LinearProgressIndicator(),
+                ),
+                error: (_, _) => const Text('Could not load providers.'),
+              ),
+              const SizedBox(height: FluttyTheme.spacingMd),
+              _sectionLabel(context, 'Working directory'),
+              TextField(
+                controller: _cwd,
+                enabled: !_busy,
+                autocorrect: false,
+                enableSuggestions: false,
+                style: FluttyTheme.monoStyle,
+                onChanged: (_) => _cwdEdited = true,
+                decoration: const InputDecoration(hintText: '~'),
+              ),
+              _buildRecentSessions(),
+              if (_error != null) ...[
+                const SizedBox(height: FluttyTheme.spacingMd),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.error_outline,
+                      size: 18,
+                      color: colorScheme.error,
+                    ),
+                    const SizedBox(width: FluttyTheme.spacingSm),
+                    Expanded(
+                      child: Text(
+                        _error!,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colorScheme.error,
                         ),
                       ),
-                  ],
-                  onChanged: _busy
-                      ? null
-                      : (value) => setState(() {
-                          _hostId = value;
-                          _cwdEdited = false;
-                          _selectedRecent = null;
-                          _applyDefaultCwd(hosts);
-                        }),
-                );
-              },
-              loading: () => const Padding(
-                padding: EdgeInsets.all(FluttyTheme.spacingMd),
-                child: LinearProgressIndicator(),
-              ),
-              error: (_, _) => const Text('Could not load hosts.'),
-            ),
-            const SizedBox(height: FluttyTheme.spacingMd),
-            _sectionLabel(context, 'Provider'),
-            providersAsync.when(
-              data: _buildProviderPicker,
-              loading: () => const Padding(
-                padding: EdgeInsets.all(FluttyTheme.spacingMd),
-                child: LinearProgressIndicator(),
-              ),
-              error: (_, _) => const Text('Could not load providers.'),
-            ),
-            const SizedBox(height: FluttyTheme.spacingMd),
-            _sectionLabel(context, 'Working directory'),
-            TextField(
-              controller: _cwd,
-              enabled: !_busy,
-              autocorrect: false,
-              enableSuggestions: false,
-              style: FluttyTheme.monoStyle,
-              onChanged: (_) => _cwdEdited = true,
-              decoration: const InputDecoration(hintText: '~'),
-            ),
-            _buildRecentSessions(),
-            if (_error != null) ...[
-              const SizedBox(height: FluttyTheme.spacingMd),
-              Row(
-                children: [
-                  Icon(Icons.error_outline, size: 18, color: colorScheme.error),
-                  const SizedBox(width: FluttyTheme.spacingSm),
-                  Expanded(
-                    child: Text(
-                      _error!,
-                      style: Theme.of(
-                        context,
-                      ).textTheme.bodySmall?.copyWith(color: colorScheme.error),
                     ),
-                  ),
-                ],
+                  ],
+                ),
+              ],
+              const SizedBox(height: FluttyTheme.spacingLg),
+              FilledButton.icon(
+                onPressed: (_busy || _hostId == null || _providerId == null)
+                    ? null
+                    : _start,
+                icon: _busy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.play_arrow_rounded),
+                label: Text(
+                  _selectedRecent != null
+                      ? 'Reconnect session'
+                      : 'Start session',
+                ),
               ),
             ],
-            const SizedBox(height: FluttyTheme.spacingLg),
-            FilledButton.icon(
-              onPressed: (_busy || _hostId == null || _providerId == null)
-                  ? null
-                  : _start,
-              icon: _busy
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.play_arrow_rounded),
-              label: Text(
-                _selectedRecent != null ? 'Reconnect session' : 'Start session',
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
