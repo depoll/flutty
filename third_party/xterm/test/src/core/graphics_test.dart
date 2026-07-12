@@ -1294,7 +1294,7 @@ void main() {
       expect(terminal.graphics.imageById(44), isNotNull);
       expect(terminal.graphics.hasPlacements, isTrue);
 
-      terminal.write('\x1b[2J');
+      terminal.write('\x1b_Ga=d,d=i,i=44\x1b\\\x1b[2J');
 
       expect(terminal.graphics.hasPlacements, isFalse);
       expect(
@@ -1632,7 +1632,7 @@ void main() {
     });
   });
 
-  testWidgets('clearing the screen (CSI 2 J) removes placed images', (
+  testWidgets('terminal erases preserve physical image placements', (
     tester,
   ) async {
     await tester.runAsync(() async {
@@ -1649,45 +1649,91 @@ void main() {
       expect(terminal.graphics.hasPlacements, isTrue);
 
       terminal.write('\x1b[2J');
-      expect(terminal.graphics.hasPlacements, isFalse);
-    });
-  });
-
-  testWidgets('partial erases remove intersecting placed images', (
-    tester,
-  ) async {
-    await tester.runAsync(() async {
-      final terminal = Terminal()..resize(40, 10);
-
-      Future<void> placeImage() async {
-        terminal
-          ..write('\x1b[H')
-          ..write(
-            '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\',
-          );
-        var waited = 0;
-        while (!terminal.graphics.hasPlacements && waited < 2000) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-          waited += 20;
-        }
-        expect(terminal.graphics.hasPlacements, isTrue);
-      }
-
-      await placeImage();
+      expect(
+        terminal.graphics.hasPlacements,
+        isTrue,
+        reason: 'ED clears text/cell images, not physical Kitty placements',
+      );
       terminal.write('\x1b[H\x1b[2K');
       expect(
         terminal.graphics.hasPlacements,
-        isFalse,
-        reason: 'CSI K clears the image row and must drop the placement',
+        isTrue,
+        reason: 'EL must not delete physical Kitty placements',
       );
-
-      await placeImage();
       terminal.write('\x1b[H\x1b[4X');
       expect(
         terminal.graphics.hasPlacements,
-        isFalse,
-        reason: 'CSI X clears the image cells and must drop the placement',
+        isTrue,
+        reason: 'ECH must not delete physical Kitty placements',
       );
+    });
+  });
+
+  testWidgets('terminal erases remove Unicode cell-image references', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      final placeholder = String.fromCharCode(
+        kittyGraphicsPlaceholderCodePoint,
+      );
+      terminal
+        ..write(
+          '\x1b_Ga=T,U=1,i=42,f=100,c=1,r=1;'
+          '${await _buildPngBase64(2, 2)}\x1b\\',
+        )
+        ..write('\x1b[38;5;42m$placeholder\u0305\u0305\x1b[39m');
+      expect(terminal.graphics.placeholders, hasLength(1));
+
+      terminal.write('\x1b[H\x1b[2K');
+
+      expect(terminal.graphics.placeholders, isEmpty);
+      expect(
+        terminal.graphics.hasPendingImage(42) ||
+            terminal.graphics.imageById(42) != null,
+        isTrue,
+        reason: 'erasing a cell image must not free its retained image data',
+      );
+    });
+  });
+
+  testWidgets('Copilot C=1 animation survives a TUI screen redraw', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final red = base64.encode(<int>[255, 0, 0, 255]);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+      final terminal = Terminal();
+      terminal
+        ..write(
+          '\x1b_Ga=T,i=91,f=32,s=1,v=1,c=1,r=1,C=1;'
+          '$red\x1b\\',
+        )
+        ..write('\x1b_Ga=f,i=91,f=32,s=1,v=1,z=40,X=1;$blue\x1b\\')
+        ..write('\x1b_Ga=a,i=91,r=1,z=40,s=3,v=1\x1b\\');
+
+      var waited = 0;
+      while ((terminal.graphics.imageById(91)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements, hasLength(1));
+      expect(terminal.graphics.hasActiveAnimations, isTrue);
+
+      // Copilot redraws its alternate-screen TUI immediately after the helper
+      // returns. Standard text erases must not delete the physical animation.
+      terminal.write('\x1b[2J\x1b[H\x1b[2Kprompt');
+
+      expect(terminal.graphics.placements, hasLength(1));
+      expect(terminal.graphics.hasActiveAnimations, isTrue);
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 40),
+        ),
+        isTrue,
+      );
+      expect(terminal.graphics.imageById(91)!.currentFrame, 2);
     });
   });
 
@@ -1709,11 +1755,10 @@ void main() {
         final image = terminal.graphics.imageById(placement.imageId)!.image;
         expect(image.debugDisposed, isFalse);
 
-        // Clearing the screen drops the placement, but the underlying image must
-        // NOT be disposed: a frame already in flight may still draw it, and
-        // drawing a disposed image crashes the engine.
+        // Terminal erases preserve physical placements and must never dispose an
+        // image that a frame may already reference.
         terminal.write('\x1b[2J');
-        expect(terminal.graphics.hasPlacements, isFalse);
+        expect(terminal.graphics.hasPlacements, isTrue);
         expect(
           image.debugDisposed,
           isFalse,
@@ -1723,13 +1768,13 @@ void main() {
     },
   );
 
-  testWidgets('a clear that races an in-flight decode places no stale image', (
+  testWidgets('an erase racing a physical decode preserves its placement', (
     tester,
   ) async {
     await tester.runAsync(() async {
       final terminal = Terminal()..resize(40, 10);
-      // Start the (asynchronous) decode, then clear the screen before it can
-      // finish — as a MonkeyMux replay clear would. The image must not appear.
+      // Physical placements are independent of text erases, even when decode
+      // finishes after the erase.
       terminal
         ..write('\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\')
         ..write('\x1b[H\x1b[2J\x1b[3J');
@@ -1742,20 +1787,9 @@ void main() {
       }
       expect(
         terminal.graphics.hasPlacements,
-        isFalse,
-        reason: 'an image decoded after a clear must be discarded',
+        isTrue,
+        reason: 'ED/ECH must not invalidate a physical image placement',
       );
-
-      // A subsequent (replay) image still places exactly one.
-      terminal.write(
-        '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\',
-      );
-      waited = 0;
-      while (!terminal.graphics.hasPlacements && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
-      expect(terminal.graphics.placements, hasLength(1));
     });
   });
 

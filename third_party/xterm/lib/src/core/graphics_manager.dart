@@ -559,6 +559,7 @@ class GraphicsManager {
   // and [storePendingImage]). Insertion-ordered so the oldest can be evicted.
   final Map<int, _PendingGraphicsImage> _pendingImages = {};
   final Map<int, Future<TerminalImage?>> _decodingImages = {};
+  final Set<CellAnchor> _pendingPlacementAnchors = <CellAnchor>{};
   // Maps a client-assigned image number (`I=`) to the most recent image id it
   // was transmitted with, so later commands can address the image by number.
   final Map<int, int> _imageNumberToId = {};
@@ -717,6 +718,24 @@ class GraphicsManager {
 
   /// Whether any images are currently placed.
   bool get hasPlacements => _placements.isNotEmpty;
+
+  /// Keeps an in-flight physical placement anchor attached through text erases.
+  void retainPendingPlacementAnchor(CellAnchor anchor) {
+    _pendingPlacementAnchors.add(anchor);
+  }
+
+  /// Releases an in-flight physical placement anchor after decode/placement.
+  void releasePendingPlacementAnchor(CellAnchor anchor) {
+    _pendingPlacementAnchors.remove(anchor);
+  }
+
+  /// Physical placement anchors on [row], including in-flight decodes.
+  Set<CellAnchor> physicalPlacementAnchorsInRow(int row) => <CellAnchor>{
+        for (final placement in _placements)
+          if (placement.attached && placement.row == row) placement.anchor,
+        for (final anchor in _pendingPlacementAnchors)
+          if (anchor.attached && anchor.y == row) anchor,
+      };
 
   /// Bumped whenever placements are cleared. An asynchronous image decode
   /// captures this before it starts and skips placing if it changed, so a clear
@@ -1476,8 +1495,45 @@ class GraphicsManager {
     return _placeholders.length != before;
   }
 
+  /// Removes Unicode-placeholder cells in rows `[firstRow, lastRow]`.
+  ///
+  /// Standard terminal erases affect Kitty cell images, but physical placements
+  /// remain until a graphics delete command or buffer reset.
+  void removePlaceholdersInRows(int firstRow, int lastRow) {
+    _placeholders.removeWhere((placeholder) {
+      final remove = !placeholder.attached ||
+          (placeholder.cellRow >= firstRow && placeholder.cellRow <= lastRow);
+      if (remove) {
+        placeholder.dispose();
+      }
+      return remove;
+    });
+    _dropUnreferencedImages();
+  }
+
+  /// Removes Unicode-placeholder cells intersecting an inclusive cell region.
+  void removePlaceholdersInRegion(
+    int firstRow,
+    int lastRow,
+    int firstCol,
+    int lastCol,
+  ) {
+    _placeholders.removeWhere((placeholder) {
+      final remove = !placeholder.attached ||
+          (placeholder.cellRow >= firstRow &&
+              placeholder.cellRow <= lastRow &&
+              placeholder.cellCol >= firstCol &&
+              placeholder.cellCol <= lastCol);
+      if (remove) {
+        placeholder.dispose();
+      }
+      return remove;
+    });
+    _dropUnreferencedImages();
+  }
+
   /// Removes placements anchored within rows `[firstRow, lastRow]` (inclusive),
-  /// or whose anchor has detached. Used when the screen or scrollback is erased.
+  /// or whose anchor has detached. Used when scrollback rows are evicted.
   ///
   /// The decoded [ui.Image]s are intentionally *not* disposed here. A placement
   /// that was painted in a still-in-flight frame would otherwise have its image
@@ -1628,6 +1684,7 @@ class GraphicsManager {
   /// them after a clear.
   void clear() {
     _generation++;
+    _pendingPlacementAnchors.clear();
     for (final placement in _placements) {
       placement.dispose();
     }

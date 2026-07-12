@@ -1468,6 +1468,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final anchor =
         shouldPlace ? buffer.currentLine.createAnchor(buffer.cursorX) : null;
     final generation = shouldPlace ? buffer.graphics.generation : null;
+    if (anchor != null) {
+      buffer.graphics.retainPendingPlacementAnchor(anchor);
+    }
 
     // Move the cursor below the image so following output does not overlap it,
     // unless the client set the no-cursor-movement policy (C=1) — e.g. a client
@@ -1484,13 +1487,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     _scheduleGraphicsOperation(
       buffer.graphics,
       args,
-      () => _finalizeGraphics(
-        args,
-        data,
-        anchor,
-        buffer.graphics,
-        generation,
-      ),
+      () async {
+        try {
+          await _finalizeGraphics(
+            args,
+            data,
+            anchor,
+            buffer.graphics,
+            generation,
+          );
+        } finally {
+          if (anchor != null) {
+            buffer.graphics.releasePendingPlacementAnchor(anchor);
+          }
+        }
+      },
     );
   }
 

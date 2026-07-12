@@ -114,8 +114,11 @@ out of scope.
   still keeps animated images static. Width-only/height-only placements preserve
   aspect ratio and compute the missing cursor row span (including JPEG sources),
   so Copilot CLI's `a=T,c=...` animation is not erased by its next prompt redraw.
-  Keep the frame model and animation APIs in `graphics_manager.dart` when
-  re-syncing.
+  Standard terminal ED/EL/ECH erases only Unicode cell-image references, matching
+  Kitty; physical placements (including in-flight decodes) remain until a
+  graphics delete or buffer reset, so Copilot's full-screen TUI redraw no longer
+  removes a running `C=1` animation. Keep the frame model and animation APIs in
+  `graphics_manager.dart` when re-syncing.
 * MonkeyMux private character-grid resizes (`CSI ? 8 ; rows ; cols t`) update
   the terminal buffer without echoing `onResize` back to the host. Standard
   `CSI 8 ; rows ; cols t` keeps its normal resize callback. This lets every
