@@ -886,7 +886,11 @@ class EscapeParser {
         }
         final rows = _csi.params[1];
         final cols = _csi.params[2];
-        handler.resize(cols, rows);
+        if (_csi.prefix == Ascii.questionMark) {
+          handler.resizeFromHost(cols, rows);
+        } else {
+          handler.resize(cols, rows);
+        }
         return;
       // Window handling is currently no in the scope of the package.
       case 9: // Maximize Terminal Window

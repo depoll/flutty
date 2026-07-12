@@ -21,6 +21,7 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
@@ -286,6 +287,36 @@ void main() {
       expect(SshConnectionState.error, isNotNull);
       expect(SshConnectionState.reconnecting, isNotNull);
     });
+  });
+
+  test('session keeps MonkeyMux host resize gating for terminal lifetime', () {
+    final session = SshSession(
+      connectionId: 1,
+      hostId: 1,
+      client: _MockSshClient(),
+      config: const SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'tester',
+      ),
+    );
+    final terminal = session.getOrCreateTerminal()
+      ..resize(80, 24)
+      ..write('\x1b[?8;30;100t');
+    expect(terminal.viewWidth, 80);
+    expect(terminal.hostResizeGeneration, 0);
+
+    session.remoteMuxBackend = RemoteMuxBackend.monkeyMux;
+    terminal.write('\x1b[?8;30;100t');
+    expect(terminal.viewWidth, 100);
+    expect(terminal.viewHeight, 30);
+    expect(terminal.hostResizeGeneration, 1);
+
+    session.remoteMuxBackend = RemoteMuxBackend.tmux;
+    terminal.write('\x1b[?8;40;120t');
+    expect(terminal.viewWidth, 100);
+    expect(terminal.viewHeight, 30);
+    expect(terminal.hostResizeGeneration, 1);
   });
 
   group('remoteVersionIndicatesWindows', () {

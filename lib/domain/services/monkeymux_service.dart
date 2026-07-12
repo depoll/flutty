@@ -70,6 +70,10 @@ class MonkeyMuxServerStatus {
   /// Whether the server can be shut down through the control channel.
   bool get supportsShutdown => capabilities.contains('shutdown');
 
+  /// Whether attached clients can clip a focused client's shared PTY grid.
+  bool get supportsViewportClipping =>
+      capabilities.contains('client-viewport-clipping');
+
   /// Whether this server differs from the app-bundled helper version.
   bool needsUpdate(String bundledVersion) {
     final runningVersion = version?.trim();
@@ -83,18 +87,26 @@ class MonkeyMuxServerStatus {
 String buildMonkeyMuxAttachCommand({
   required String executablePath,
   required String sessionName,
+  String? clientId,
   String? workingDirectory,
   String? launchCommand,
   String? windowName,
   String? terminalThemeReports,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
+  bool clipViewport = false,
   bool windows = false,
 }) {
   final themeHint = terminalThemeReports?.trim();
   final parts = <String>[
     _monkeyMuxQuoteArg(executablePath, windows: windows),
     'attach',
+    '--quiet',
+    if (clientId != null && clientId.trim().isNotEmpty) ...[
+      '--client-id',
+      _monkeyMuxQuoteArg(clientId.trim(), windows: windows),
+    ],
+    if (clipViewport) '--clip-viewport',
     if (serverUpdatePolicy != null) ...[
       '--update-policy',
       serverUpdatePolicy.cliValue,
@@ -119,6 +131,30 @@ String buildMonkeyMuxAttachCommand({
     _monkeyMuxQuoteArg(sessionName, windows: windows),
   ];
   return parts.join(' ');
+}
+
+/// Outcome of a retained-image recovery request.
+@immutable
+class MonkeyMuxImageReplayResult {
+  /// Creates an image recovery outcome.
+  MonkeyMuxImageReplayResult({
+    required Set<int> served,
+    required this.retryableFailure,
+  }) : served = Set<int>.unmodifiable(served);
+
+  /// Image IDs whose retained transmissions reached the attach client.
+  final Set<int> served;
+
+  /// Whether unserved IDs may be retried after a transport-level failure.
+  final bool retryableFailure;
+
+  /// Returns requested IDs that remain eligible for a bounded retry.
+  Set<int> retryableUnserved(Iterable<int> requested) {
+    if (!retryableFailure) {
+      return const <int>{};
+    }
+    return requested.where((id) => !served.contains(id)).toSet();
+  }
 }
 
 /// Controls a remote MonkeyMux session through its JSON backchannel.
@@ -422,6 +458,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     await _runControlCommand(session, sessionName, {
       'type': 'create_window',
+      'clientId': session.monkeyMuxClientId,
       if (command != null && command.trim().isNotEmpty)
         'command': command.trim(),
       if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
@@ -449,6 +486,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     await _runControlCommand(session, sessionName, {
       'type': 'select_window',
+      'clientId': session.monkeyMuxClientId,
       if (windowId != null && windowId.trim().isNotEmpty)
         'windowId': windowId.trim()
       else
@@ -471,37 +509,78 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   /// per-window retained cache. Best-effort: a failure (e.g. an older server
   /// without this command) is logged and swallowed so image gaps never break
   /// the session.
-  Future<void> requestImages(
+  Future<MonkeyMuxImageReplayResult> requestImages(
     SshSession session,
     String sessionName,
     Iterable<int> imageIds,
   ) async {
-    if (isAppReviewDemoSession(session)) {
-      return;
-    }
-    final ids = <String>[
+    final requestedIds = {
       for (final id in imageIds)
-        if (id > 0) id.toString(),
-    ];
-    if (ids.isEmpty) {
-      return;
+        if (id > 0) id,
+    };
+    if (isAppReviewDemoSession(session)) {
+      return MonkeyMuxImageReplayResult(
+        served: requestedIds,
+        retryableFailure: false,
+      );
     }
+    if (requestedIds.isEmpty) {
+      return MonkeyMuxImageReplayResult(
+        served: const <int>{},
+        retryableFailure: false,
+      );
+    }
+    final pending = {for (final id in requestedIds) id.toString()};
+    final served = <int>{};
     try {
-      await _runControlCommand(session, sessionName, {
-        'type': 'request_images',
-        'imageIds': ids,
-      }, priority: SshExecPriority.low);
+      while (pending.isNotEmpty) {
+        final response = await _runControlCommand(session, sessionName, {
+          'type': 'request_images',
+          'clientId': session.monkeyMuxClientId,
+          'imageIds': pending.toList(growable: false),
+        }, priority: SshExecPriority.low);
+        if (!response.imagesAcknowledged) {
+          return MonkeyMuxImageReplayResult(
+            served: served,
+            retryableFailure: false,
+          );
+        }
+        final batch = response.imageIds.where(pending.contains).toSet();
+        if (batch.isEmpty) {
+          break;
+        }
+        pending.removeAll(batch);
+        served.addAll(batch.map(int.parse));
+      }
+    } on _MonkeyMuxControlCommandException catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.graphics',
+        'request_images_unsupported',
+        fields: {
+          'connectionId': session.connectionId,
+          'count': requestedIds.length,
+          'served': served.length,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+      return MonkeyMuxImageReplayResult(
+        served: served,
+        retryableFailure: false,
+      );
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'monkeymux.graphics',
         'request_images_failed',
         fields: {
           'connectionId': session.connectionId,
-          'count': ids.length,
+          'count': requestedIds.length,
+          'served': served.length,
           'errorType': error.runtimeType.toString(),
         },
       );
+      return MonkeyMuxImageReplayResult(served: served, retryableFailure: true);
     }
+    return MonkeyMuxImageReplayResult(served: served, retryableFailure: false);
   }
 
   @override
@@ -523,6 +602,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     await _runControlCommand(session, sessionName, {
       'type': 'close_window',
+      'clientId': session.monkeyMuxClientId,
       'windowIndex': windowIndex,
     });
   }
@@ -543,6 +623,40 @@ class MonkeyMuxService implements RemoteMultiplexerService {
               ?.isControlChannelReady ??
           false);
 
+  /// Makes this app terminal the active MonkeyMux client and applies its size.
+  Future<bool> focusClient(
+    SshSession session,
+    String sessionName, {
+    required int columns,
+    required int rows,
+  }) async {
+    if (isAppReviewDemoSession(session)) {
+      return false;
+    }
+    try {
+      final response = await _runControlCommand(session, sessionName, {
+        'type': 'focus_client',
+        'clientId': session.monkeyMuxClientId,
+        'width': columns,
+        'height': rows,
+        'redraw': true,
+      });
+      return response.focusChanged;
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.focus',
+        'claim_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'columns': columns,
+          'rows': rows,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+      return false;
+    }
+  }
+
   @override
   Future<bool> hasForegroundClientOrThrow(
     SshSession session,
@@ -554,6 +668,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     final response = await _runControlCommand(session, sessionName, {
       'type': 'query_attach_state',
+      'clientId': session.monkeyMuxClientId,
     });
     return response.hasForegroundClient;
   }
@@ -594,6 +709,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     await _runControlCommand(session, sessionName, {
       'type': 'resize',
+      'clientId': session.monkeyMuxClientId,
       'width': columns,
       'height': rows,
       if (redraw) 'redraw': true,
@@ -1031,7 +1147,9 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
         continue;
       }
       if (response.isError) {
-        throw MonkeyMuxInstallException(response.error ?? 'MonkeyMux failed.');
+        throw _MonkeyMuxControlCommandException(
+          response.error ?? 'MonkeyMux failed.',
+        );
       }
       return response;
     }
@@ -1129,6 +1247,10 @@ Future<void> _closeMonkeyMuxSession(
     category: category,
     operation: operation,
   );
+}
+
+class _MonkeyMuxControlCommandException extends MonkeyMuxInstallException {
+  const _MonkeyMuxControlCommandException(super.message);
 }
 
 void _closeSshSessionBestEffort(
@@ -1337,7 +1459,9 @@ class _MonkeyMuxWindowChangeObserver {
     if (pendingCommand != null) {
       if (response.isError) {
         pendingCommand.completeError(
-          MonkeyMuxInstallException(response.error ?? 'MonkeyMux failed.'),
+          _MonkeyMuxControlCommandException(
+            response.error ?? 'MonkeyMux failed.',
+          ),
           StackTrace.current,
         );
       } else {
@@ -1532,6 +1656,9 @@ class _MonkeyMuxControlResponse {
     this.version,
     this.capabilities = const [],
     this.hasForegroundClient = false,
+    this.imageIds = const [],
+    this.imagesAcknowledged = false,
+    this.focusChanged = false,
   });
 
   factory _MonkeyMuxControlResponse.fromJson(Map<String, Object?> json) =>
@@ -1560,6 +1687,14 @@ class _MonkeyMuxControlResponse {
           _ => const <String>[],
         },
         hasForegroundClient: json['hasForegroundClient'] == true,
+        imageIds: switch (json['imageIds']) {
+          final List<Object?> ids => ids.whereType<String>().toList(
+            growable: false,
+          ),
+          _ => const <String>[],
+        },
+        imagesAcknowledged: json['imagesAcknowledged'] == true,
+        focusChanged: json['focusChanged'] == true,
       );
 
   static _MonkeyMuxControlResponse? tryParse(String line) {
@@ -1587,6 +1722,9 @@ class _MonkeyMuxControlResponse {
   final String? version;
   final List<String> capabilities;
   final bool hasForegroundClient;
+  final List<String> imageIds;
+  final bool imagesAcknowledged;
+  final bool focusChanged;
 
   bool get isError => status == 'error' || type == 'error';
 }
@@ -2052,6 +2190,25 @@ List<TmuxWindow> applyMonkeyMuxAgentMetadataForTesting(
 @visibleForTesting
 bool? parseMonkeyMuxHasForegroundClientForTesting(String line) =>
     _MonkeyMuxControlResponse.tryParse(line)?.hasForegroundClient;
+
+/// Parses a MonkeyMux image-replay acknowledgement for protocol tests.
+@visibleForTesting
+({bool acknowledged, List<String> imageIds})?
+parseMonkeyMuxImageReplayAckForTesting(String line) {
+  final response = _MonkeyMuxControlResponse.tryParse(line);
+  if (response == null) {
+    return null;
+  }
+  return (
+    acknowledged: response.imagesAcknowledged,
+    imageIds: response.imageIds,
+  );
+}
+
+/// Parses whether a MonkeyMux focus response changed the primary client.
+@visibleForTesting
+bool? parseMonkeyMuxFocusChangedForTesting(String line) =>
+    _MonkeyMuxControlResponse.tryParse(line)?.focusChanged;
 
 /// Returns the one-shot control response timeout for protocol regression tests.
 @visibleForTesting

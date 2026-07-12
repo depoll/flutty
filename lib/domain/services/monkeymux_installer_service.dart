@@ -334,6 +334,15 @@ class MonkeyMuxInstallerService {
           'reuse_existing',
           fields: {'connectionId': session.connectionId, 'platform': platform},
         );
+        await _ensureDirectCommandLauncherBestEffort(
+          session,
+          homeDirectory: homeDirectory,
+          executablePath: executablePath,
+          version: manifest.version,
+          platform: platform,
+          isWindows: isWindows,
+          priority: priority,
+        );
         return MonkeyMuxInstallation(
           executablePath: executablePath,
           platform: platform,
@@ -475,6 +484,15 @@ class MonkeyMuxInstallerService {
         'upload_complete',
         fields: {'connectionId': session.connectionId, 'platform': platform},
       );
+      await _ensureDirectCommandLauncherBestEffort(
+        session,
+        homeDirectory: homeDirectory,
+        executablePath: executablePath,
+        version: manifest.version,
+        platform: platform,
+        isWindows: isWindows,
+        priority: priority,
+      );
       return MonkeyMuxInstallation(
         executablePath: executablePath,
         platform: platform,
@@ -484,6 +502,150 @@ class MonkeyMuxInstallerService {
     } finally {
       sftp.close();
     }
+  }
+
+  Future<void> _ensureDirectCommandLauncherBestEffort(
+    SshSession session, {
+    required String homeDirectory,
+    required String executablePath,
+    required String version,
+    required String platform,
+    required bool isWindows,
+    required SshExecPriority priority,
+  }) async {
+    try {
+      await _ensureDirectCommandLauncher(
+        session,
+        homeDirectory: homeDirectory,
+        executablePath: executablePath,
+        version: version,
+        platform: platform,
+        isWindows: isWindows,
+        priority: priority,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'monkeymux.install',
+        'launcher_unavailable',
+        fields: {
+          'connectionId': session.connectionId,
+          'platform': platform,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+    }
+  }
+
+  Future<void> _ensureDirectCommandLauncher(
+    SshSession session, {
+    required String homeDirectory,
+    required String executablePath,
+    required String version,
+    required String platform,
+    required bool isWindows,
+    required SshExecPriority priority,
+  }) async {
+    final launcherDirectory = joinRemotePath(homeDirectory, '.local/bin');
+    final launcherSftpPath = joinRemotePath(
+      launcherDirectory,
+      isWindows ? 'monkeymux.cmd' : 'monkeymux',
+    );
+    if (isWindows) {
+      final launcherPath = sftpPathToWindowsShellPath(launcherSftpPath);
+      final pointerSftpPath = joinRemotePath(
+        launcherDirectory,
+        '.monkeymux-current',
+      );
+      final pointerPath = sftpPathToWindowsShellPath(pointerSftpPath);
+      final relativeTarget = '$version\\$platform\\monkeymux.exe';
+      const managedMarker = '@REM Managed by MonkeySSH launcher v1';
+      final script = <String>[
+        r"$ErrorActionPreference = 'Stop'",
+        '\$path = ${_powerShellSingleQuote(launcherPath)}',
+        '\$pointer = ${_powerShellSingleQuote(pointerPath)}',
+        '\$managedMarker = ${_powerShellSingleQuote(managedMarker)}',
+        '\$target = ${_powerShellSingleQuote(relativeTarget)}',
+        'function Set-AtomicAsciiFile {',
+        r'  param([string]$Destination, [string[]]$Lines)',
+        r'  for ($attempt = 0; $attempt -lt 3; $attempt++) {',
+        r'    $temp = "$Destination.$PID.$attempt.tmp"',
+        '    try {',
+        r'      $Lines | Set-Content -LiteralPath $temp -Encoding Ascii',
+        r'      if (Test-Path -LiteralPath $Destination) {',
+        r'        [System.IO.File]::Replace($temp, $Destination, $null)',
+        '      } else {',
+        r'        [System.IO.File]::Move($temp, $Destination)',
+        '      }',
+        '      return',
+        '    } catch {',
+        r'      Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue',
+        r'      if ($attempt -eq 2) { throw }',
+        '      Start-Sleep -Milliseconds 50',
+        '    }',
+        '  }',
+        '}',
+        r'$exists = Test-Path -LiteralPath $path',
+        r'$first = if ($exists -and (Test-Path -LiteralPath $path -PathType Leaf)) {',
+        r'  Get-Content -LiteralPath $path -TotalCount 1',
+        r'} else { $null }',
+        r'if ($exists -and $first -ne $managedMarker) {',
+        "  Write-Output 'MONKEYMUX_LAUNCHER_PRESERVED'",
+        '  exit 0',
+        '}',
+        r'New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null',
+        r'Set-AtomicAsciiFile -Destination $pointer -Lines @($target)',
+        r'Set-AtomicAsciiFile -Destination $path -Lines @(',
+        '  ${_powerShellSingleQuote(managedMarker)},',
+        "  '@echo off',",
+        '''  'set /p "MONKEYMUX_TARGET="<"%~dp0.monkeymux-current"',''',
+        r'''  '"%~dp0..\..\.monkeyssh\bin\monkeymux\%MONKEYMUX_TARGET%" %*',''',
+        "  'exit /b %errorlevel%'",
+        ')',
+        "Write-Output 'MONKEYMUX_LAUNCHER_MANAGED'",
+      ].join('\n');
+      final output = await _runRawRemoteCommand(
+        session,
+        'powershell -NoProfile -NonInteractive -EncodedCommand '
+        '${_encodePowerShellCommand(script)}',
+        priority: priority,
+      );
+      if (!output.contains('MONKEYMUX_LAUNCHER_MANAGED') &&
+          !output.contains('MONKEYMUX_LAUNCHER_PRESERVED')) {
+        throw const MonkeyMuxInstallException(
+          'Could not install the MonkeyMux command launcher.',
+        );
+      }
+    } else {
+      final managedPrefix = joinRemotePath(
+        homeDirectory,
+        '.monkeyssh/bin/monkeymux/',
+      );
+      await _runRemoteCommand(
+        session,
+        'mkdir -p ${_shellQuote(launcherDirectory)} && '
+        'if [ ! -e ${_shellQuote(launcherSftpPath)} ] && '
+        '[ ! -L ${_shellQuote(launcherSftpPath)} ]; then '
+        'ln -s ${_shellQuote(executablePath)} '
+        '${_shellQuote(launcherSftpPath)}; '
+        'elif [ -L ${_shellQuote(launcherSftpPath)} ]; then '
+        r'__monkeymux_link="$(readlink '
+        '${_shellQuote(launcherSftpPath)} 2>/dev/null || true)"; '
+        r'case "$__monkeymux_link" in '
+        '${_shellQuote(managedPrefix)}*) '
+        'ln -sfn ${_shellQuote(executablePath)} '
+        '${_shellQuote(launcherSftpPath)} ;; '
+        'esac; fi',
+        priority: priority,
+      );
+    }
+    DiagnosticsLogService.instance.info(
+      'monkeymux.install',
+      'launcher_checked',
+      fields: {
+        'connectionId': session.connectionId,
+        'platform': isWindows ? 'windows' : 'posix',
+      },
+    );
   }
 
   /// Probes the remote host and returns a manifest platform key.
@@ -829,3 +991,17 @@ Future<String> _readStdoutUntilMarker(SSHSession execSession) async {
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
+
+String _powerShellSingleQuote(String value) =>
+    "'${value.replaceAll("'", "''")}'";
+
+String _encodePowerShellCommand(String script) {
+  final codeUnits = script.codeUnits;
+  final bytes = Uint8List(codeUnits.length * 2);
+  for (var index = 0; index < codeUnits.length; index++) {
+    final codeUnit = codeUnits[index];
+    bytes[index * 2] = codeUnit & 0xff;
+    bytes[index * 2 + 1] = codeUnit >> 8;
+  }
+  return base64Encode(bytes);
+}
