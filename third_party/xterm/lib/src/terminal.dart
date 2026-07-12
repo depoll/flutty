@@ -26,6 +26,11 @@ import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 
 typedef _GraphicsPreinflation = ({Uint8List? payload, int micros});
+typedef _GraphicsImageNumberReservation = ({
+  int number,
+  int imageId,
+  int? previousImageId,
+});
 typedef _GraphicsDeletePosition = ({
   Buffer buffer,
   int cursorCol,
@@ -1393,6 +1398,17 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
     final action = args['a'] ?? 't';
     final virtualPlacement = args['U'] == '1';
+    final manager = _buffer.graphics;
+    final explicitImageId = int.tryParse(args['i'] ?? '');
+    final imageNumber = int.tryParse(args['I'] ?? '');
+    if (explicitImageId != null &&
+        explicitImageId > 0 &&
+        imageNumber != null &&
+        imageNumber > 0) {
+      // Establish explicit id/number mappings before placement or async image
+      // commands so every action in the stream observes the same association.
+      manager.registerImageNumber(imageNumber, explicitImageId);
+    }
     if (action == 'p') {
       if (virtualPlacement) {
         _setVirtualGraphicsPlacement(args);
@@ -1402,18 +1418,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
-    final manager = _buffer.graphics;
-    final explicitImageId = int.tryParse(args['i'] ?? '');
-    final imageNumber = int.tryParse(args['I'] ?? '');
-    if (explicitImageId != null &&
-        explicitImageId > 0 &&
+    _GraphicsImageNumberReservation? imageNumberReservation;
+    if ((action == 't' || action == 'T') &&
+        data.isNotEmpty &&
+        (explicitImageId == null || explicitImageId <= 0) &&
         imageNumber != null &&
         imageNumber > 0) {
-      // Keep commands that switch from the explicit id to its image number on
-      // the same async queue, even before the root image finishes decoding.
-      manager.registerImageNumber(imageNumber, explicitImageId);
+      final reserved = manager.reserveImageIdForNumber(imageNumber);
+      imageNumberReservation = (
+        number: imageNumber,
+        imageId: reserved.imageId,
+        previousImageId: reserved.previousImageId,
+      );
     }
-    final commandImageId = _resolveGraphicsImageId(manager, args);
+    final commandImageId = imageNumberReservation?.imageId ??
+        _resolveGraphicsImageId(manager, args);
     if (action == 'd') {
       final selector = args['d'] ?? 'a';
       final buffer = _buffer;
@@ -1557,6 +1576,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
             buffer.graphics,
             generation,
             preinflation: preinflation,
+            commandImageId: commandImageId,
+            imageNumberReservation: imageNumberReservation,
           );
         } finally {
           if (anchor != null) {
@@ -1875,6 +1896,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     GraphicsManager manager,
     int? generation, {
     _GraphicsPreinflation? preinflation,
+    int? commandImageId,
+    _GraphicsImageNumberReservation? imageNumberReservation,
   }) async {
     final format = _graphicsFormat(args);
     final width = int.tryParse(args['s'] ?? '') ?? 0;
@@ -1912,13 +1935,17 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           imageId: args['i'],
           action: args['a'],
         );
+        _rollbackGraphicsImageNumberReservation(
+          manager,
+          imageNumberReservation,
+        );
         anchor?.dispose();
         return;
       }
       payload = inflated;
     }
 
-    final imageId = int.tryParse(args['i'] ?? '');
+    final imageId = int.tryParse(args['i'] ?? '') ?? commandImageId;
     // Signature over the base64-decoded payload *before* inflation. The
     // MonkeyMux server computes the same hash over the base64-decoded
     // transmission bytes (which it stores compressed for o=z), so hashing
@@ -1957,7 +1984,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // Compressed (`o=z`) and immediately-placed (`a=T`) images keep the eager
     // path: the former to avoid deferring the inflate/signature handling, the
     // latter because they must appear at the anchored cell straight away.
-    if (anchor == null && imageId != null && !compressed) {
+    if (anchor == null &&
+        imageId != null &&
+        !compressed &&
+        imageNumberReservation == null) {
       if (!manager.hasPendingWithSignature(imageId, signature)) {
         final sourceDimensions = _graphicsPayloadDimensions(args, payload);
         manager.storePendingImage(
@@ -2005,6 +2035,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // screen was cleared while we were decoding (e.g. a MonkeyMux replay clear
     // racing this decode — placing now would leave a duplicate/stale image).
     if (decoded == null) {
+      _rollbackGraphicsImageNumberReservation(
+        manager,
+        imageNumberReservation,
+      );
       anchor?.dispose();
       return;
     }
@@ -2017,6 +2051,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
             sourceSignature: signature,
           );
     if (storedImageId <= 0) {
+      _rollbackGraphicsImageNumberReservation(
+        manager,
+        imageNumberReservation,
+      );
       anchor?.dispose();
       _respondToGraphicsFailure(
         args,
@@ -2025,6 +2063,20 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
     _placeStoredImageId(manager, storedImageId, anchor, args, generation);
+  }
+
+  void _rollbackGraphicsImageNumberReservation(
+    GraphicsManager manager,
+    _GraphicsImageNumberReservation? reservation,
+  ) {
+    if (reservation == null) {
+      return;
+    }
+    manager.rollbackImageIdReservation(
+      reservation.number,
+      reservation.imageId,
+      reservation.previousImageId,
+    );
   }
 
   /// Registers the image number, virtual placement and cell placement for an
@@ -2186,7 +2238,13 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   void _setVirtualGraphicsPlacement(Map<String, String> args) {
-    final imageId = int.tryParse(args['i'] ?? '');
+    var imageId = int.tryParse(args['i'] ?? '');
+    if (imageId == null) {
+      final imageNumber = int.tryParse(args['I'] ?? '');
+      if (imageNumber != null) {
+        imageId = _buffer.graphics.imageIdForNumber(imageNumber);
+      }
+    }
     if (imageId == null) {
       return;
     }

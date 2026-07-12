@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.107"
+	monkeyMuxVersion                  = "0.1.108"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -9046,15 +9046,33 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 		if _, ok := selectedSet[id]; !ok {
 			continue
 		}
+		clientHasRoot := false
 		if len(clientHas) > 0 {
-			if token, ok := clientHas[id]; ok && token == w.kittyImageToken[id] {
-				continue
+			if token, ok := clientHas[id]; ok &&
+				token == w.kittyImageToken[id] &&
+				!w.kittyImageRootHasActiveNumberMappingLocked(id) {
+				clientHasRoot = true
 			}
 		}
-		out = append(out, w.kittyImageRootReplayLocked(id)...)
+		if !clientHasRoot {
+			out = append(out, w.kittyImageRootReplayLocked(id)...)
+		}
 		out = append(out, w.kittyImageAnimations[id]...)
 	}
 	return out
+}
+
+func (w *muxWindow) kittyImageRootHasActiveNumberMappingLocked(id string) bool {
+	buf := w.kittyImages[id]
+	if len(buf) == 0 {
+		return false
+	}
+	apcEnd := kittyApcEnd(buf, 0)
+	if apcEnd < 0 {
+		return false
+	}
+	number := parseKittyControl(kittyControl(buf, 0, apcEnd))["I"]
+	return number != "" && w.kittyImageNumberToID[number] == id
 }
 
 // kittyImageTransmissionsForLocked returns the concatenated store-only

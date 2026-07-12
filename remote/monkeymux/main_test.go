@@ -5510,25 +5510,41 @@ func TestKittyImageReplaySkipsImagesClientAlreadyHolds(t *testing.T) {
 	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=101,f=100;AAAABBBBCCCC\x1b\\"))
 	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=101,f=100;FRAME101\x1b\\"))
+	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=202,f=100;DDDDEEEEFFFF\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=303,I=5,f=100;ROOT303\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=303,f=100;FRAME303\x1b\\"))
 
 	// The client reports holding image 101 with its true signature and image
 	// 202 with a stale signature (different content). Only 101 may be skipped.
 	clientHas := map[string]uint32{
 		"101": window.kittyImageToken["101"],
 		"202": window.kittyImageToken["202"] ^ 0x1,
+		"303": window.kittyImageToken["303"],
 	}
 	replay := string(window.kittyImageReplayLocked(clientHas))
-	if strings.Contains(replay, "i=101") {
-		t.Fatalf("image 101 should be skipped; client holds it: %q", replay)
+	if strings.Contains(replay, "AAAABBBBCCCC") {
+		t.Fatalf("image 101 root should be skipped; client holds it: %q", replay)
+	}
+	if !strings.Contains(replay, "FRAME101") {
+		t.Fatalf("image 101 animation updates must still be replayed: %q", replay)
 	}
 	if !strings.Contains(replay, "i=202") {
 		t.Fatalf("image 202 has a stale client signature and must be re-sent: %q",
 			replay)
 	}
+	if !strings.Contains(replay, "ROOT303") ||
+		!strings.Contains(replay, "FRAME303") {
+		t.Fatalf("active I= mapping and animation must both be replayed: %q", replay)
+	}
 	// A nil skip-set (fresh attach) still replays everything.
 	full := string(window.kittyImageReplayLocked(nil))
-	if !strings.Contains(full, "i=101") || !strings.Contains(full, "i=202") {
+	if !strings.Contains(full, "AAAABBBBCCCC") ||
+		!strings.Contains(full, "DDDDEEEEFFFF") ||
+		!strings.Contains(full, "ROOT303") {
 		t.Fatalf("nil skip-set must replay every image: %q", full)
 	}
 }
