@@ -76,6 +76,7 @@ void main() {
         <({int width, int height, int pixelWidth, int pixelHeight})>[];
     final hostResizeEvents = <({int width, int height})>[];
     final terminal = Terminal()
+      ..canResizeFromHost = (() => true)
       ..onResize = (width, height, pixelWidth, pixelHeight) {
         resizeEvents.add((
           width: width,

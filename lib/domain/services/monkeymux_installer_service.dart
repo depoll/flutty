@@ -334,7 +334,7 @@ class MonkeyMuxInstallerService {
           'reuse_existing',
           fields: {'connectionId': session.connectionId, 'platform': platform},
         );
-        await _ensureDirectCommandLauncher(
+        await _ensureDirectCommandLauncherBestEffort(
           session,
           homeDirectory: homeDirectory,
           executablePath: executablePath,
@@ -484,7 +484,7 @@ class MonkeyMuxInstallerService {
         'upload_complete',
         fields: {'connectionId': session.connectionId, 'platform': platform},
       );
-      await _ensureDirectCommandLauncher(
+      await _ensureDirectCommandLauncherBestEffort(
         session,
         homeDirectory: homeDirectory,
         executablePath: executablePath,
@@ -501,6 +501,38 @@ class MonkeyMuxInstallerService {
       );
     } finally {
       sftp.close();
+    }
+  }
+
+  Future<void> _ensureDirectCommandLauncherBestEffort(
+    SshSession session, {
+    required String homeDirectory,
+    required String executablePath,
+    required String version,
+    required String platform,
+    required bool isWindows,
+    required SshExecPriority priority,
+  }) async {
+    try {
+      await _ensureDirectCommandLauncher(
+        session,
+        homeDirectory: homeDirectory,
+        executablePath: executablePath,
+        version: version,
+        platform: platform,
+        isWindows: isWindows,
+        priority: priority,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'monkeymux.install',
+        'launcher_unavailable',
+        fields: {
+          'connectionId': session.connectionId,
+          'platform': platform,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
     }
   }
 
@@ -552,24 +584,23 @@ class MonkeyMuxInstallerService {
         '    }',
         '  }',
         '}',
-        r'$first = if (Test-Path -LiteralPath $path) {',
+        r'$exists = Test-Path -LiteralPath $path',
+        r'$first = if ($exists -and (Test-Path -LiteralPath $path -PathType Leaf)) {',
         r'  Get-Content -LiteralPath $path -TotalCount 1',
         r'} else { $null }',
-        r'if ($null -ne $first -and $first -ne $managedMarker) {',
+        r'if ($exists -and $first -ne $managedMarker) {',
         "  Write-Output 'MONKEYMUX_LAUNCHER_PRESERVED'",
         '  exit 0',
         '}',
         r'New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null',
         r'Set-AtomicAsciiFile -Destination $pointer -Lines @($target)',
-        r'if ($null -eq $first) {',
-        r'  Set-AtomicAsciiFile -Destination $path -Lines @(',
-        '    ${_powerShellSingleQuote(managedMarker)},',
-        "    '@echo off',",
-        r'''    'set /p "MONKEYMUX_TARGET="<"%USERPROFILE%\.local\bin\.monkeymux-current"',''',
-        r'''    '"%USERPROFILE%\.monkeyssh\bin\monkeymux\%MONKEYMUX_TARGET%" %*',''',
-        "    'exit /b %errorlevel%'",
-        '  )',
-        '}',
+        r'Set-AtomicAsciiFile -Destination $path -Lines @(',
+        '  ${_powerShellSingleQuote(managedMarker)},',
+        "  '@echo off',",
+        '''  'set /p "MONKEYMUX_TARGET="<"%~dp0.monkeymux-current"',''',
+        r'''  '"%~dp0..\..\.monkeyssh\bin\monkeymux\%MONKEYMUX_TARGET%" %*',''',
+        "  'exit /b %errorlevel%'",
+        ')',
         "Write-Output 'MONKEYMUX_LAUNCHER_MANAGED'",
       ].join('\n');
       final output = await _runRawRemoteCommand(

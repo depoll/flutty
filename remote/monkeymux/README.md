@@ -57,9 +57,10 @@ The default prefix is `Ctrl-B`:
 Use `monkeymux attach --no-prefix <session>` when an application must receive
 every `Ctrl-B` unchanged.
 
-The foreground path is intentionally a direct byte relay. MonkeyMux does not
-parse, cache, wrap, or rewrite terminal control sequences in the hot path. All
-structured state and commands belong on the control backchannel.
+Ordinary foreground output is relayed directly without terminal emulation.
+MonkeyMux observes metadata and routes response-producing terminal queries only
+to the primary client so simultaneous terminals cannot send duplicate replies.
+All structured state and commands belong on the control backchannel.
 
 `attach` and `new-session` can start a session server. Optional `--cwd`,
 `--name`, and `--command` flags seed the initial window only when a new server

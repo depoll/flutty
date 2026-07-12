@@ -59,6 +59,30 @@ void main() {
     });
   });
 
+  group('Terminal.resizeFromHost', () {
+    test('ignores private host resizes unless explicitly enabled', () {
+      final terminal = Terminal(maxLines: 10)..resize(80, 24);
+
+      terminal.write('\x1b[?8;30;100t');
+
+      expect(terminal.viewWidth, 80);
+      expect(terminal.viewHeight, 24);
+      expect(terminal.hostResizeGeneration, 0);
+    });
+
+    test('applies private host resizes when enabled by MonkeyMux', () {
+      final terminal = Terminal(maxLines: 10)
+        ..resize(80, 24)
+        ..canResizeFromHost = () => true;
+
+      terminal.write('\x1b[?8;30;100t');
+
+      expect(terminal.viewWidth, 100);
+      expect(terminal.viewHeight, 30);
+      expect(terminal.hostResizeGeneration, 1);
+    });
+  });
+
   group('Terminal.mouseInput', () {
     test('can handle mouse events', () {
       final output = <String>[];

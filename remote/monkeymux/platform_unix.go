@@ -55,7 +55,7 @@ func (p *unixPty) Fd() uintptr {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
-		return 0
+		return ^uintptr(0)
 	}
 	return p.file.Fd()
 }

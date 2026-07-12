@@ -59,6 +59,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// Function called after a MonkeySSH-private host resize updates the grid.
   void Function(int width, int height)? onHostResize;
 
+  /// Whether MonkeySSH-private host resize sequences may update this terminal.
+  bool Function()? canResizeFromHost;
+
   int _hostResizeGeneration = 0;
 
   /// Number of MonkeySSH-private host resizes parsed by this terminal.
@@ -506,6 +509,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void resizeFromHost(int newWidth, int newHeight) {
+    if (!(canResizeFromHost?.call() ?? false)) {
+      return;
+    }
     _resize(newWidth, newHeight, notify: false);
     _hostResizeGeneration++;
     onHostResize?.call(viewWidth, viewHeight);

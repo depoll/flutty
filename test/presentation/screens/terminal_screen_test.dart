@@ -3633,19 +3633,45 @@ void main() {
         final terminalViewState = tester.state<MonkeyTerminalViewState>(
           find.byType(MonkeyTerminalView),
         );
-        final paintCountBeforeWindowEvent =
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        monkeyMuxService.focusClientChangedValue = false;
+        final paintCountBeforeLinkTap =
             terminalViewState.terminalPaintCount ?? 0;
+        terminalView.onLinkTapDown?.call(
+          TapDownDetails(),
+          const CellOffset(0, 0),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 120));
+        expect(monkeyMuxService.focusClientCalls, hasLength(1));
+        expect(monkeyMuxService.focusClientCalls.single, (
+          sessionName: sessionName,
+          columns: session.terminal!.viewWidth,
+          rows: session.terminal!.viewHeight,
+        ));
+        expect(terminalViewState.terminalPaintCount, paintCountBeforeLinkTap);
 
+        monkeyMuxService.focusClientChangedValue = true;
         final gesture = await tester.startGesture(
           tester.getCenter(find.byType(MonkeyTerminalView)),
         );
         await tester.pump();
+        await tester.pump(const Duration(milliseconds: 120));
+        expect(monkeyMuxService.focusClientCalls, hasLength(2));
+        expect(
+          terminalViewState.terminalPaintCount,
+          greaterThan(paintCountBeforeLinkTap),
+        );
         expect(
           tester
               .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
               .liveOutputAutoScroll,
           isFalse,
         );
+        final paintCountBeforeWindowEvent =
+            terminalViewState.terminalPaintCount ?? 0;
 
         windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
         await tester.pump();
