@@ -5275,6 +5275,21 @@ func TestObserveKittyGraphicsHardDeleteRemovesRetainedImage(t *testing.T) {
 	}
 }
 
+func TestObserveKittyGraphicsPreservesSameChunkHardDeleteOrder(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=T,U=1,i=7,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100;FRAME\x1b\\" +
+			"\x1b_Ga=d,d=I,i=7\x1b\\"))
+
+	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
+		t.Fatalf("same-chunk hard delete resurrected retained image: %q", got)
+	}
+	if _, ok := window.kittyImageNumberToID["5"]; ok {
+		t.Fatalf("same-chunk hard delete retained image-number mapping")
+	}
+}
+
 func TestObserveKittyGraphicsDeleteByNumberRemovesRetainedImage(t *testing.T) {
 	window := &muxWindow{}
 	window.observeKittyGraphicsLocked(

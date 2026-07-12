@@ -8593,32 +8593,27 @@ func (w *muxWindow) storeSecondaryQueryCarryLocked(data []byte) bool {
 	return true
 }
 
-// kittyTransmission is a complete Kitty graphics root-image or animation
-// command, keyed by its protocol image id. Root display transmissions are
-// downgraded to store-only form; animation commands retain their original action.
-type kittyTransmission struct {
+// kittyGraphicsEvent is a complete retained Kitty root, animation command, or
+// hard image-data delete in its original stream order.
+type kittyGraphicsEvent struct {
 	id          string
 	imageNumber string
 	buf         []byte
 	animation   bool
+	delete      bool
 }
 
-type kittyImageReference struct {
-	id          string
-	imageNumber string
-}
-
-// scanKittyTransmissions parses complete Kitty graphics image transmissions from
-// the front of data. It returns the store-only transmissions found (a=T rewritten
-// to a=t), any image ids deleted via a=d, and the number of leading bytes fully
-// consumed. data[consumed:] is the trailing remainder, which either is empty or
-// begins an incomplete transmission and must be prepended to the next chunk.
+// scanKittyTransmissions parses complete Kitty graphics events from the front of
+// data. It returns retained roots (a=T rewritten to a=t), animation commands and
+// hard deletes in stream order, plus the number of leading bytes fully consumed.
+// data[consumed:] is the trailing remainder, which either is empty or begins an
+// incomplete transmission and must be prepended to the next chunk.
 //
 // Non-graphics bytes are consumed and discarded; the remainder therefore never
 // accumulates ordinary terminal output.
 func scanKittyTransmissions(
 	data []byte,
-) (txs []kittyTransmission, deletes []kittyImageReference, consumed int) {
+) (events []kittyGraphicsEvent, consumed int) {
 	i := 0
 	for i < len(data) {
 		if data[i] != '\x1b' {
@@ -8635,7 +8630,7 @@ func scanKittyTransmissions(
 				consumed = i
 				continue
 			}
-			return txs, deletes, i
+			return events, i
 		}
 		if data[i+1] != '_' || data[i+2] != 'G' {
 			i++
@@ -8646,23 +8641,23 @@ func scanKittyTransmissions(
 			assembleKittyTransmission(data, i)
 		if !ok {
 			// Incomplete transmission: carry everything from here forward.
-			return txs, deletes, i
+			return events, i
 		}
 		if isDelete {
 			if id != "" || imageNumber != "" {
-				deletes = append(deletes, kittyImageReference{
-					id: id, imageNumber: imageNumber,
+				events = append(events, kittyGraphicsEvent{
+					id: id, imageNumber: imageNumber, delete: true,
 				})
 			}
 		} else if buf != nil {
-			txs = append(txs, kittyTransmission{
+			events = append(events, kittyGraphicsEvent{
 				id: id, imageNumber: imageNumber, buf: buf, animation: isAnimation,
 			})
 		}
 		i = end
 		consumed = end
 	}
-	return txs, deletes, consumed
+	return events, consumed
 }
 
 // assembleKittyTransmission parses a (possibly multi-chunk) Kitty graphics
@@ -8749,47 +8744,48 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	}
 
 	changed := false
-	txs, deletes, consumed := scanKittyTransmissions(data)
-	for _, deletion := range deletes {
-		id := deletion.id
-		if id == "" && deletion.imageNumber != "" {
-			id = w.kittyImageNumberToID[deletion.imageNumber]
+	events, consumed := scanKittyTransmissions(data)
+	for _, event := range events {
+		if event.delete {
+			id := event.id
+			if id == "" && event.imageNumber != "" {
+				id = w.kittyImageNumberToID[event.imageNumber]
+			}
+			if w.removeKittyImageLocked(id) {
+				changed = true
+			}
+			continue
 		}
-		if w.removeKittyImageLocked(id) {
-			changed = true
-		}
-	}
-	for _, tx := range txs {
-		id := tx.id
-		if tx.imageNumber != "" {
+		id := event.id
+		if event.imageNumber != "" {
 			if id == "" {
-				id = w.kittyImageNumberToID[tx.imageNumber]
-				if id == "" && !tx.animation {
-					id = "I:" + tx.imageNumber
+				id = w.kittyImageNumberToID[event.imageNumber]
+				if id == "" && !event.animation {
+					id = "I:" + event.imageNumber
 					if w.kittyImageNumberToID == nil {
 						w.kittyImageNumberToID = map[string]string{}
 					}
-					w.kittyImageNumberToID[tx.imageNumber] = id
+					w.kittyImageNumberToID[event.imageNumber] = id
 				}
-			} else if !tx.animation {
+			} else if !event.animation {
 				if w.kittyImageNumberToID == nil {
 					w.kittyImageNumberToID = map[string]string{}
 				}
-				if previous := w.kittyImageNumberToID[tx.imageNumber]; previous != "" &&
+				if previous := w.kittyImageNumberToID[event.imageNumber]; previous != "" &&
 					previous != id && strings.HasPrefix(previous, "I:") {
 					w.removeKittyImageLocked(previous)
 				}
-				w.kittyImageNumberToID[tx.imageNumber] = id
+				w.kittyImageNumberToID[event.imageNumber] = id
 			}
 		}
 		if id == "" {
 			continue // cannot dedupe or replay without an id
 		}
-		if tx.animation {
-			animation := rewriteKittyImageReferenceToID(tx.buf, id)
+		if event.animation {
+			animation := rewriteKittyImageReferenceToID(event.buf, id)
 			changed = w.appendKittyImageAnimationLocked(id, animation) || changed
 		} else {
-			w.storeKittyImageLocked(id, tx.buf)
+			w.storeKittyImageLocked(id, event.buf)
 			changed = true
 		}
 	}
