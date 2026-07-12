@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -925,13 +926,15 @@ final class _ManagedAcpTerminal {
 
   final AcpTerminalProcess _process;
   final int _limit;
-  final BytesBuilder _output = BytesBuilder(copy: false);
+  final Queue<Uint8List> _outputChunks = Queue<Uint8List>();
   late final StreamSubscription<List<int>> _stdoutSubscription;
   late final StreamSubscription<List<int>> _stderrSubscription;
   Completer<AcpTerminalExitStatus>? _exit;
   AcpTerminalExitStatus? _exitStatus;
   Timer? lifetimeTimer;
   var _truncated = false;
+  var _outputLength = 0;
+  var _headOffset = 0;
   var _started = false;
   var _released = false;
 
@@ -956,36 +959,81 @@ final class _ManagedAcpTerminal {
   }
 
   void _append(List<int> bytes) {
-    final combined = <int>[..._output.toBytes(), ...bytes];
-    if (combined.length <= _limit) {
-      _output
-        ..clear()
-        ..add(combined);
-      return;
-    }
+    if (bytes.isEmpty) return;
+    final chunk = Uint8List.fromList(bytes);
+    _outputChunks.addLast(chunk);
+    _outputLength += chunk.length;
+    if (_outputLength <= _limit) return;
+
     _truncated = true;
-    var start = combined.length - _limit;
-    // Retain only a valid UTF-8 suffix so ACP output remains valid text.
-    while (start < combined.length) {
-      try {
-        utf8.decode(combined.sublist(start), allowMalformed: false);
-        break;
-      } on FormatException {
-        start += 1;
+    var bytesToDiscard = _outputLength - _limit;
+    while (bytesToDiscard > 0 && _outputChunks.isNotEmpty) {
+      final first = _outputChunks.first;
+      final available = first.length - _headOffset;
+      if (bytesToDiscard < available) {
+        _headOffset += bytesToDiscard;
+        _outputLength -= bytesToDiscard;
+        return;
       }
+      _outputChunks.removeFirst();
+      _outputLength -= available;
+      bytesToDiscard -= available;
+      _headOffset = 0;
     }
-    _output
-      ..clear()
-      ..add(combined.sublist(start));
   }
 
   AcpJsonMap output() => <String, Object?>{
-    'output': utf8.decode(_output.toBytes(), allowMalformed: true),
+    'output': _outputText(),
     'truncated': _truncated,
     if (_exit?.isCompleted ?? false) 'exitStatus': _exitStatusJson(),
   };
 
   AcpJsonMap _exitStatusJson() => _exitStatus!.toJson();
+
+  String _outputText() {
+    if (_outputLength == 0) return '';
+    final bytes = BytesBuilder(copy: false);
+    var isFirst = true;
+    for (final chunk in _outputChunks) {
+      bytes.add(
+        isFirst && _headOffset > 0 ? chunk.sublist(_headOffset) : chunk,
+      );
+      isFirst = false;
+    }
+    final flattened = bytes.takeBytes();
+    final start = _utf8SuffixStart(flattened);
+    final end = _utf8SuffixEnd(flattened, start);
+    return utf8.decode(
+      Uint8List.sublistView(flattened, start, end),
+      allowMalformed: true,
+    );
+  }
+
+  int _utf8SuffixStart(Uint8List bytes) {
+    var start = 0;
+    while (start < bytes.length && (bytes[start] & 0xc0) == 0x80) {
+      start += 1;
+    }
+    return start;
+  }
+
+  int _utf8SuffixEnd(Uint8List bytes, int start) {
+    var leadingIndex = bytes.length - 1;
+    while (leadingIndex >= start && (bytes[leadingIndex] & 0xc0) == 0x80) {
+      leadingIndex -= 1;
+    }
+    if (leadingIndex < start) return start;
+    final leadingByte = bytes[leadingIndex];
+    final expectedLength = switch (leadingByte) {
+      >= 0xf0 && <= 0xf4 => 4,
+      >= 0xe0 && <= 0xef => 3,
+      >= 0xc2 && <= 0xdf => 2,
+      _ => 1,
+    };
+    return bytes.length - leadingIndex < expectedLength
+        ? leadingIndex
+        : bytes.length;
+  }
 
   Future<AcpTerminalExitStatus> wait() => _exit!.future;
 

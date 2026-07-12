@@ -34,7 +34,7 @@ void main() {
         limits: const AcpClientCapabilityLimits(
           maxFileBytes: 16,
           maxWriteBytes: 16,
-          maxTerminalOutputBytes: 8,
+          maxTerminalOutputBytes: 2048,
           maxTerminals: 2,
         ),
       )..attach(client);
@@ -376,6 +376,100 @@ void main() {
     );
 
     test(
+      'retains a valid UTF-8 suffix across truncation and split chunks',
+      () async {
+        transport.sendRequest('create-utf8', 'terminal/create', {
+          'sessionId': 'session-1',
+          'command': 'echo',
+          'outputByteLimit': 4,
+        });
+        await _settle();
+        final terminalId =
+            (transport.responseFor('create-utf8')['result']!
+                    as Map)['terminalId']
+                as String;
+        terminals.processes.single
+          ..addStdout(utf8.encode('x€'))
+          ..addStdout(utf8.encode('yz'));
+        await _settle();
+
+        transport.sendRequest('output-utf8', 'terminal/output', {
+          'sessionId': 'session-1',
+          'terminalId': terminalId,
+        });
+        await _settle();
+        expect(
+          (transport.responseFor('output-utf8')['result']! as Map)['output'],
+          'yz',
+        );
+
+        transport.sendRequest('create-split', 'terminal/create', {
+          'sessionId': 'session-1',
+          'command': 'echo',
+          'outputByteLimit': 4,
+        });
+        await _settle();
+        final splitTerminalId =
+            (transport.responseFor('create-split')['result']!
+                    as Map)['terminalId']
+                as String;
+        terminals.processes.last
+          ..addStdout(<int>[0x61, 0x62, 0x63, 0xe2])
+          ..addStdout(<int>[0x82])
+          ..addStdout(<int>[0xac]);
+        await _settle();
+
+        transport.sendRequest('output-split', 'terminal/output', {
+          'sessionId': 'session-1',
+          'terminalId': splitTerminalId,
+        });
+        await _settle();
+        expect(
+          (transport.responseFor('output-split')['result']! as Map)['output'],
+          'c€',
+        );
+      },
+    );
+
+    test(
+      'buffers many small chunks without retaining more than its cap',
+      () async {
+        const outputByteLimit = 1024;
+        const chunkCount = 50000;
+        transport.sendRequest('create-stress', 'terminal/create', {
+          'sessionId': 'session-1',
+          'command': 'echo',
+          'outputByteLimit': outputByteLimit,
+        });
+        await _settle();
+        final terminalId =
+            (transport.responseFor('create-stress')['result']!
+                    as Map)['terminalId']
+                as String;
+        final expected = StringBuffer();
+        final process = terminals.processes.single;
+        for (var index = 0; index < chunkCount; index += 1) {
+          final codeUnit = 65 + index % 26;
+          process.addStdout(<int>[codeUnit]);
+          expected.writeCharCode(codeUnit);
+        }
+        await _settle();
+
+        transport.sendRequest('output-stress', 'terminal/output', {
+          'sessionId': 'session-1',
+          'terminalId': terminalId,
+        });
+        await _settle();
+        final result = transport.responseFor('output-stress')['result']! as Map;
+        expect(result['truncated'], isTrue);
+        expect(
+          result['output'],
+          expected.toString().substring(chunkCount - outputByteLimit),
+        );
+      },
+    );
+
+    test(
       'kills a live terminal and explicit cleanup cancels unresolved requests',
       () async {
         transport.sendRequest('create-1', 'terminal/create', {
@@ -557,8 +651,8 @@ final class _FakeTerminalExecutor implements AcpTerminalExecutor {
 }
 
 final class _FakeTerminalProcess implements AcpTerminalProcess {
-  final _stdout = StreamController<List<int>>.broadcast();
-  final _stderr = StreamController<List<int>>.broadcast();
+  final _stdout = StreamController<List<int>>.broadcast(sync: true);
+  final _stderr = StreamController<List<int>>.broadcast(sync: true);
   final _exit = Completer<AcpTerminalExitStatus>();
   bool killed = false;
 
