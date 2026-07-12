@@ -501,7 +501,6 @@ class AcpSessionManager {
       await controller.disposeLocal();
       await _maybeStopOrphanBridge(
         startedBridge: startedBridge,
-        error: error.error,
         hostId: hostId,
         bridgeId: bridgeId,
       );
@@ -511,7 +510,6 @@ class AcpSessionManager {
       final mapped = _mapBridgeError(error);
       await _maybeStopOrphanBridge(
         startedBridge: startedBridge,
-        error: mapped,
         hostId: hostId,
         bridgeId: bridgeId,
       );
@@ -520,19 +518,20 @@ class AcpSessionManager {
   }
 
   /// Best-effort stops a freshly started bridge that never produced a usable
-  /// session, so a failed initialization does not orphan the remote process.
+  /// session, so a failed launch does not orphan the remote process.
   ///
-  /// The bridge is intentionally retained when the failure is a modeled
-  /// authentication retry (the user completes auth out of band and retries),
-  /// and when any other session still uses the bridge.
+  /// This includes authentication-required failures: there is no
+  /// authenticate/retry-on-existing-bridge path in this release, so a retained
+  /// auth-blocked bridge would be unreachable and each retry would spawn
+  /// another. The UI instead offers the provider's terminal-auth command and
+  /// the user retries cleanly, starting a fresh bridge. The bridge is still
+  /// retained when another session already uses it.
   Future<void> _maybeStopOrphanBridge({
     required bool startedBridge,
-    required AcpSessionError error,
     required int hostId,
     required String bridgeId,
   }) async {
     if (!startedBridge) return;
-    if (error.kind == AcpSessionErrorKind.authenticationRequired) return;
     final bridgeKey = AcpBridgeKey(
       host: AcpHostKey(hostId),
       bridgeId: bridgeId,

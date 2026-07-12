@@ -635,7 +635,7 @@ void main() {
         buildManagerWith(custom);
 
     test(
-      'surfaces authentication-required and retains the bridge for retry',
+      'authentication-required stops the fresh bridge and leaves no session',
       () async {
         final authConnector = _FakeConnector(
           serverFactory: (_, _) => _FakeAcpServer(
@@ -655,10 +655,15 @@ void main() {
           (result as AcpSessionLaunchFailed).error.kind,
           AcpSessionErrorKind.authenticationRequired,
         );
-        // The bridge is intentionally kept so the user can authenticate and
-        // retry rather than being torn down.
+        // There is no authenticate/retry-on-existing-bridge path, so the
+        // orphaned bridge is stopped just like any other failed creation. The
+        // UI offers the provider's terminal-auth command and the user retries
+        // cleanly.
         expect(authConnector.startedBridges, hasLength(1));
-        expect(authConnector.stoppedBridges, isEmpty);
+        expect(authConnector.stoppedBridges, authConnector.startedBridges);
+        // No session or attachment is left tracked.
+        expect(authManager.state.sessions, isEmpty);
+        expect(authManager.liveSessionKeyValues, isEmpty);
       },
     );
 
