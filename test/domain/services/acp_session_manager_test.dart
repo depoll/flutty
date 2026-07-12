@@ -36,6 +36,7 @@ class _FakeAcpServer implements AcpTransport {
     this.failNewSession = false,
     this.failEstablish = false,
     this.rejectInitialize = false,
+    this.newSessionErrorCode = -32000,
     this.replayTextOnLoad,
     this.permissionIdOnLoad,
   });
@@ -53,6 +54,9 @@ class _FakeAcpServer implements AcpTransport {
   /// When true, `initialize` rejects the client metadata.
   final bool rejectInitialize;
 
+  /// JSON-RPC error code returned when session creation is rejected.
+  final int newSessionErrorCode;
+
   /// When set, a `session/load` pushes an agent message chunk with this text
   /// BEFORE replying, simulating synchronous history replay during the load.
   final String? replayTextOnLoad;
@@ -63,6 +67,7 @@ class _FakeAcpServer implements AcpTransport {
 
   final _incoming = StreamController<List<int>>();
   final List<String> methods = <String>[];
+  final List<String> newSessionCwds = <String>[];
   final List<String> cancelledSessions = <String>[];
   final Map<Object, Object?> permissionResponses = <Object, Object?>{};
   int _sessionCounter = 0;
@@ -114,8 +119,10 @@ class _FakeAcpServer implements AcpTransport {
           if (authMethods.isNotEmpty) 'authMethods': authMethods,
         });
       case 'session/new':
+        final params = (message['params']! as Map).cast<String, Object?>();
+        newSessionCwds.add(params['cwd']! as String);
         if (authMethods.isNotEmpty || failNewSession) {
-          _replyError(id, -32000, 'Authentication required');
+          _replyError(id, newSessionErrorCode, 'Session creation failed');
         } else {
           _reply(id, {'sessionId': 'session-${++_sessionCounter}'});
         }
@@ -360,6 +367,21 @@ class _FakeConnector implements AcpBridgeConnector {
   }
 
   @override
+  Future<String> resolveWorkingDirectory(
+    int hostId,
+    String cwd, {
+    bool trustAbsolute = false,
+  }) async {
+    if (cwd == '~') {
+      return '/home/test';
+    }
+    if (cwd.startsWith('~/')) {
+      return '/home/test/${cwd.substring(2)}';
+    }
+    return cwd.startsWith('/') ? cwd : '/home/test/$cwd';
+  }
+
+  @override
   Future<MonkeyMuxAcpBridgeMetadata> bridgeStatus(
     int hostId,
     String bridgeId,
@@ -488,6 +510,27 @@ void main() {
   });
 
   test(
+    'resolves a tilde cwd before launching the bridge and ACP session',
+    () async {
+      final result = await manager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '~/Code/project',
+      );
+
+      expect(result, isA<AcpSessionLaunchStarted>());
+      final key = (result as AcpSessionLaunchStarted).key;
+      expect(
+        manager.state.byKeyValue(key.value)!.cwd,
+        '/home/test/Code/project',
+      );
+      expect(connector.servers[key.bridgeId]!.newSessionCwds, [
+        '/home/test/Code/project',
+      ]);
+    },
+  );
+
+  test(
     'maps an initialize rejection to an actionable protocol error',
     () async {
       final rejectingConnector = _FakeConnector(
@@ -505,6 +548,32 @@ void main() {
       final failure = result as AcpSessionLaunchFailed;
       expect(failure.error.kind, AcpSessionErrorKind.protocol);
       expect(failure.error.message, contains('-32602'));
+    },
+  );
+
+  test(
+    'does not mistake a non-auth session error for required login',
+    () async {
+      final connector = _FakeConnector(
+        serverFactory: (_, _) => _FakeAcpServer(
+          authMethods: const [
+            {'id': 'copilot-login', 'name': 'Sign in'},
+          ],
+          newSessionErrorCode: -32603,
+        ),
+      );
+      final localManager = buildManagerWith(connector);
+
+      final result = await localManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+
+      expect(result, isA<AcpSessionLaunchFailed>());
+      final failure = result as AcpSessionLaunchFailed;
+      expect(failure.error.kind, AcpSessionErrorKind.protocol);
+      expect(failure.error.message, contains('-32603'));
     },
   );
 

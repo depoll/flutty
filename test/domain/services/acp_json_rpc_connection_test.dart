@@ -129,6 +129,30 @@ void main() {
   });
 
   test(
+    'rejects an error response without an integer code as protocol data',
+    () async {
+      final transport = _MemoryTransport();
+      final connection = AcpJsonRpcConnection(
+        transport: transport,
+        requestIdFactory: () => 'request-id',
+      );
+      final result = connection.request('example');
+      await Future<void>.delayed(Duration.zero);
+
+      transport.add(
+        _encodeMessage({
+          'jsonrpc': '2.0',
+          'id': 'request-id',
+          'error': {'message': 'Missing code'},
+        }),
+      );
+
+      await expectLater(result, throwsA(isA<AcpProtocolException>()));
+      expect(connection.isClosed, isTrue);
+    },
+  );
+
+  test(
     'times out, cancels, and closes pending requests deterministically',
     () async {
       final transport = _MemoryTransport();

@@ -176,6 +176,8 @@ void main() {
       'space value',
     ], isWindows: false);
     expect(posix, contains('. ~/.zprofile'));
+    expect(posix, contains(r'$HOME/.opencode/bin'));
+    expect(posix, contains(r'$HOME/.local/bin'));
     expect(
       posix,
       endsWith("'copilot' '--acp' 'quote'\"'\"'value' 'space value'"),

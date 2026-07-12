@@ -205,6 +205,10 @@ class AcpSessionManager {
       return AcpSessionLaunchFailed(null, launch.error);
     }
     final resolved = launch as _ResolvedLaunch;
+    final workingDirectory = await _resolveWorkingDirectory(hostId, cwd);
+    if (workingDirectory.error case final error?) {
+      return AcpSessionLaunchFailed(null, error);
+    }
 
     await _stopAll(replace);
 
@@ -216,7 +220,7 @@ class AcpSessionManager {
     return _startBridgeAndSession(
       hostId: hostId,
       launch: resolved,
-      cwd: cwd,
+      cwd: workingDirectory.value!,
       confirmInstall: confirmInstall,
       existingSessionId: null,
     );
@@ -253,6 +257,15 @@ class AcpSessionManager {
       return AcpSessionLaunchFailed(key, launch.error);
     }
     final resolved = launch as _ResolvedLaunch;
+    final workingDirectory = await _resolveWorkingDirectory(
+      hostId,
+      cwd,
+      trustAbsolute: true,
+    );
+    if (workingDirectory.error case final error?) {
+      return AcpSessionLaunchFailed(key, error);
+    }
+    final resolvedCwd = workingDirectory.value!;
 
     await _stopAll(replace);
 
@@ -292,7 +305,7 @@ class AcpSessionManager {
       final restarted = await _startBridgeAndSession(
         hostId: hostId,
         launch: resolved,
-        cwd: cwd,
+        cwd: resolvedCwd,
         confirmInstall: confirmInstall,
         existingSessionId: acpSessionId,
       );
@@ -304,6 +317,7 @@ class AcpSessionManager {
 
     // Re-attach an existing (detached) controller in place when possible.
     if (existing != null) {
+      existing.updateWorkingDirectory(resolvedCwd);
       try {
         await existing.reconnect();
       } on _LaunchException catch (error) {
@@ -311,6 +325,7 @@ class AcpSessionManager {
         return AcpSessionLaunchFailed(error.key ?? key, error.error);
       }
       _select(key.value);
+      await _recordRecent(existing.state);
       return AcpSessionLaunchStarted(key);
     }
 
@@ -318,7 +333,7 @@ class AcpSessionManager {
       hostId: hostId,
       launch: resolved,
       bridgeId: bridgeId,
-      cwd: cwd,
+      cwd: resolvedCwd,
       existingSessionId: acpSessionId,
       confirmInstall: null,
     );
@@ -762,6 +777,37 @@ class AcpSessionManager {
         isProUnlocked: _isProUnlocked(),
       );
 
+  Future<({AcpSessionError? error, String? value})> _resolveWorkingDirectory(
+    int hostId,
+    String cwd, {
+    bool trustAbsolute = false,
+  }) async {
+    try {
+      final resolved = await _connector.resolveWorkingDirectory(
+        hostId,
+        cwd,
+        trustAbsolute: trustAbsolute,
+      );
+      if (resolved.trim().isEmpty) {
+        throw const AcpWorkingDirectoryException();
+      }
+      return (error: null, value: resolved);
+    } on Object catch (error) {
+      _diagnostics.warning(
+        'acp.manager',
+        'cwd_resolution_failed',
+        fields: {'hostId': hostId, 'errorType': error.runtimeType},
+      );
+      return (
+        error: const AcpSessionError(
+          kind: AcpSessionErrorKind.bridgeUnavailable,
+          message: 'The working directory is unavailable on this host.',
+        ),
+        value: null,
+      );
+    }
+  }
+
   Future<_LaunchOutcome> _resolveLaunch(String providerId) async {
     final builtin = acpBuiltinProviders.firstWhereOrNull(
       (provider) => provider.id == providerId,
@@ -1022,7 +1068,7 @@ class _SessionController {
 
   final String _providerLabel;
   final bool _isCustomProvider;
-  final String _cwd;
+  String _cwd;
   final DateTime Function() _clock;
   final DiagnosticsLogger _diagnostics;
 
@@ -1043,6 +1089,14 @@ class _SessionController {
 
   /// Bridge key of the attachment currently backing this session.
   AcpBridgeKey get bridgeKey => _key.bridge;
+
+  void updateWorkingDirectory(String cwd) {
+    if (_cwd == cwd) {
+      return;
+    }
+    _cwd = cwd;
+    _update((state) => state.copyWith(cwd: cwd));
+  }
 
   /// Acquires a lease on [target], making it this controller's attachment.
   void _acquireLease(_BridgeAttachment target) {
@@ -1177,7 +1231,7 @@ class _SessionController {
     } on _LaunchException {
       rethrow;
     } on AcpRemoteException catch (error) {
-      if (init.authMethods.isNotEmpty) {
+      if (init.authMethods.isNotEmpty && error.code == -32000) {
         _update(
           (s) => s.copyWith(
             status: AcpConnectionStatus.authenticationRequired,

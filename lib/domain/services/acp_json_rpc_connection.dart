@@ -415,9 +415,18 @@ final class AcpJsonRpcConnection {
     pending.timer.cancel();
     final error = AcpJson.objectField(message, 'error');
     if (error != null) {
+      final code = AcpJson.integer(error, 'code');
+      if (code == null) {
+        const protocolError = AcpProtocolException(
+          'JSON-RPC error response has an invalid code',
+        );
+        pending.completer.completeError(protocolError);
+        _protocolFailure(protocolError);
+        return;
+      }
       pending.completer.completeError(
         AcpRemoteException(
-          code: AcpJson.integer(error, 'code') ?? -32000,
+          code: code,
           message: AcpJson.string(error, 'message') ?? 'Remote error',
           data: error['data'],
         ),

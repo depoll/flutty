@@ -153,6 +153,13 @@ class _FakeConnector implements AcpBridgeConnector {
   ];
 
   @override
+  Future<String> resolveWorkingDirectory(
+    int hostId,
+    String cwd, {
+    bool trustAbsolute = false,
+  }) async => cwd;
+
+  @override
   Future<MonkeyMuxAcpBridgeMetadata> bridgeStatus(
     int hostId,
     String bridgeId,

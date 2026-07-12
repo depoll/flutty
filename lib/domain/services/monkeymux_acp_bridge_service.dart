@@ -19,9 +19,9 @@ const _metadataMaxBytes = 64 * 1024;
 const _maxBridgeListEntries = 1024;
 const _helperTimeout = Duration(seconds: 15);
 const _profileSourcingPrefix =
-    r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
+    r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
     '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } >/dev/null 2>&1; '
-    r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
+    r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 final _bridgeIdPattern = RegExp(r'^[a-f0-9]{32}$');
 final _commandHashPattern = RegExp(r'^[a-f0-9]{64}$');
 
@@ -726,6 +726,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
           'The remote ACP provider exited.',
         ),
         emitFailedState: false,
+        exitCode: exitCode,
       );
       return;
     }
@@ -1001,6 +1002,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   void _failTerminal(
     MonkeyMuxAcpBridgeException error, {
     bool emitFailedState = true,
+    int? exitCode,
   }) {
     if (_closed || _terminalFailure) return;
     _terminalFailure = true;
@@ -1017,6 +1019,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
         'bridgeId': _bridgeId,
         'sequence': _lastDeliveredSequence,
         'errorType': error.kind,
+        'exitCode': ?exitCode,
       },
     );
     scheduleMicrotask(() => unawaited(_releaseResources(closeStreams: true)));

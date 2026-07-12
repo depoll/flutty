@@ -6,7 +6,14 @@ import 'acp_client_capability_service.dart';
 import 'acp_json_rpc_connection.dart';
 import 'monkeymux_acp_bridge_service.dart';
 import 'monkeymux_installer_service.dart';
+import 'remote_file_service.dart';
 import 'ssh_service.dart';
+
+/// The requested ACP working directory could not be resolved on the host.
+final class AcpWorkingDirectoryException implements Exception {
+  /// Creates a content-free working-directory error.
+  const AcpWorkingDirectoryException();
+}
 
 /// Bundles the same-host filesystem and terminal implementations used to
 /// answer ACP client-capability requests (`fs/*`, `terminal/*`).
@@ -82,6 +89,14 @@ abstract interface class AcpBridgeConnector {
     MonkeyMuxInstallConfirmation? confirmInstall,
   });
 
+  /// Resolves [cwd] to the canonical absolute path syntax expected by the
+  /// provider running on [hostId].
+  Future<String> resolveWorkingDirectory(
+    int hostId,
+    String cwd, {
+    bool trustAbsolute = false,
+  });
+
   /// Reads safe metadata for [bridgeId] on [hostId].
   Future<MonkeyMuxAcpBridgeMetadata> bridgeStatus(int hostId, String bridgeId);
 
@@ -150,6 +165,42 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
   }) async {
     final session = await _sessionResolver(hostId);
     return _bridgeService.list(session, confirmInstall: confirmInstall);
+  }
+
+  @override
+  Future<String> resolveWorkingDirectory(
+    int hostId,
+    String cwd, {
+    bool trustAbsolute = false,
+  }) async {
+    final knownAbsolute = normalizeSftpAbsolutePath(cwd);
+    if (trustAbsolute && knownAbsolute != null) {
+      final root = sftpPathRoot(knownAbsolute);
+      return remoteShellPathForSftpPath(
+        knownAbsolute,
+        windows: root != null && root != '/',
+      );
+    }
+    final session = await _sessionResolver(hostId);
+    final sftp = await session.sftp();
+    final homeDirectory = normalizeSftpAbsolutePath(await sftp.absolute('.'));
+    final candidate = resolveRequestedSftpPath(
+      cwd,
+      workingDirectory: homeDirectory,
+      homeDirectory: homeDirectory,
+    );
+    if (candidate == null) {
+      throw const AcpWorkingDirectoryException();
+    }
+    final canonical = normalizeSftpAbsolutePath(await sftp.absolute(candidate));
+    if (canonical == null) {
+      throw const AcpWorkingDirectoryException();
+    }
+    final root = sftpPathRoot(canonical);
+    return remoteShellPathForSftpPath(
+      canonical,
+      windows: session.remoteIsWindows || (root != null && root != '/'),
+    );
   }
 
   @override
