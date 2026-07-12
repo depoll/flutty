@@ -88,6 +88,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
     served: const <int>{},
     retryableFailure: false,
   );
+  final imageReplayFutures = <Future<MonkeyMuxImageReplayResult>>[];
   final controlOperations = <String>[];
   final resizeTerminalCalls =
       <({String sessionName, int columns, int rows, bool redraw})>[];
@@ -170,6 +171,9 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
       sessionName: sessionName,
       imageIds: imageIds.toSet(),
     ));
+    if (imageReplayFutures.isNotEmpty) {
+      return imageReplayFutures.removeAt(0);
+    }
     return imageReplayResult;
   }
 }
@@ -3732,6 +3736,140 @@ void main() {
           resizeCountAfterWindowRefresh,
         );
         await gesture.up();
+
+        final placeholder = String.fromCharCode(
+          kittyGraphicsPlaceholderCodePoint,
+        );
+        monkeyMuxService.imageReplayFutures
+          ..add(
+            Future.value(
+              MonkeyMuxImageReplayResult(
+                served: const {55},
+                retryableFailure: true,
+              ),
+            ),
+          )
+          ..add(
+            Future.value(
+              MonkeyMuxImageReplayResult(
+                served: const <int>{},
+                retryableFailure: false,
+              ),
+            ),
+          );
+        session.terminal!.write(
+          '\x1b[2J\x1b[H'
+          '\x1b[38;5;55m$placeholder'
+          '\x1b[38;5;56m$placeholder'
+          '\x1b[39m',
+        );
+        await tester.pump(const Duration(milliseconds: 351));
+        await tester.pump();
+
+        expect(monkeyMuxService.imageReplayCalls, hasLength(1));
+        expect(
+          monkeyMuxService.imageReplayCalls.first.sessionName,
+          sessionName,
+        );
+        expect(
+          monkeyMuxService.imageReplayCalls.first.imageIds,
+          unorderedEquals(<int>{55, 56}),
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(monkeyMuxService.imageReplayCalls, hasLength(1));
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump();
+        expect(monkeyMuxService.imageReplayCalls, hasLength(2));
+        expect(
+          monkeyMuxService.imageReplayCalls.last.imageIds,
+          unorderedEquals(<int>{56}),
+        );
+
+        session.terminal!.write('ordinary output');
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(
+          monkeyMuxService.imageReplayCalls,
+          hasLength(2),
+          reason: 'acknowledged misses stay suppressed for this window visit',
+        );
+
+        monkeyMuxService.imageReplayFutures.addAll(
+          List<Future<MonkeyMuxImageReplayResult>>.generate(
+            4,
+            (_) => Future.value(
+              MonkeyMuxImageReplayResult(
+                served: const <int>{},
+                retryableFailure: true,
+              ),
+            ),
+          ),
+        );
+        session.terminal!.write(
+          '\x1b[2J\x1b[H\x1b[38;5;57m$placeholder\x1b[39m',
+        );
+        await tester.pump(const Duration(milliseconds: 351));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 751));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1501));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 2251));
+        await tester.pump();
+        expect(
+          monkeyMuxService.imageReplayCalls.where(
+            (call) => call.imageIds.contains(57),
+          ),
+          hasLength(4),
+        );
+        await tester.pump(const Duration(seconds: 5));
+        expect(
+          monkeyMuxService.imageReplayCalls.where(
+            (call) => call.imageIds.contains(57),
+          ),
+          hasLength(4),
+          reason: 'transient image retries stop after the bounded budget',
+        );
+
+        windowEvents.add(const TmuxWindowListEvent(initialWindows));
+        await tester.pump();
+        final staleResult = Completer<MonkeyMuxImageReplayResult>();
+        monkeyMuxService.imageReplayFutures
+          ..add(staleResult.future)
+          ..add(
+            Future.value(
+              MonkeyMuxImageReplayResult(
+                served: const <int>{},
+                retryableFailure: false,
+              ),
+            ),
+          );
+        session.terminal!.write(
+          '\x1b[2J\x1b[H\x1b[38;5;58m$placeholder\x1b[39m',
+        );
+        expect(session.terminal!.unresolvedPlaceholderImageIds(), contains(58));
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump();
+        expect(monkeyMuxService.imageReplayCalls.last.imageIds, <int>{58});
+
+        windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
+        await tester.pump();
+        session.terminal!.write(
+          '\x1b[2J\x1b[H\x1b[38;5;59m$placeholder\x1b[39m',
+        );
+        staleResult.complete(
+          MonkeyMuxImageReplayResult(
+            served: const <int>{},
+            retryableFailure: true,
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 351));
+        await tester.pump();
+        expect(
+          monkeyMuxService.imageReplayCalls.last.imageIds,
+          <int>{59},
+          reason: 'a stale window result cannot mutate the new visit',
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
