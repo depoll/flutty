@@ -1454,11 +1454,14 @@ class _SessionController {
 
   Future<AcpPromptResult> prompt(List<AcpContentBlock> content) async {
     final snapshot = List<AcpContentBlock>.unmodifiable(content);
+    final localMessageId = _timelineBuilder.appendLocalUserPrompt(snapshot);
+    final optimisticTimeline = _timelineBuilder.snapshot();
     _update(
       (s) => s.copyWith(
         promptStatus: AcpPromptStatus.streaming,
         clearLastStopReason: true,
         lastActivityAt: _clock(),
+        timeline: optimisticTimeline,
       ),
     );
     try {
@@ -1475,10 +1478,14 @@ class _SessionController {
       );
       return result;
     } on Object catch (error) {
+      final rolledBackTimeline = _timelineBuilder.removeLocalUserPrompt(
+        localMessageId,
+      );
       _update(
         (s) => s.copyWith(
           promptStatus: AcpPromptStatus.idle,
           error: _mapClientError(error),
+          timeline: rolledBackTimeline,
         ),
       );
       rethrow;

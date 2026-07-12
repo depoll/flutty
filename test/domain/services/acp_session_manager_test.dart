@@ -1056,6 +1056,10 @@ void main() {
       final state = manager.state.byKeyValue(key.value)!;
       expect(state.promptStatus, AcpPromptStatus.idle);
       expect(state.lastStopReason?.value, 'end_turn');
+      final userMessage = state.timeline.entries
+          .whereType<AcpMessageEntry>()
+          .singleWhere((entry) => entry.role == AcpMessageRole.user);
+      expect((userMessage.content.single as AcpTextContent).text, 'Hi there');
     });
 
     test('cancel notifies the agent', () async {

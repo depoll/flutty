@@ -41,8 +41,10 @@ class AcpUserPromptView extends StatelessWidget {
       case AcpTextPart(:final text):
         return SelectableText(
           text,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          style: FluttyTheme.monoStyle.copyWith(
             color: Theme.of(context).colorScheme.onSurface,
+            fontSize: 14,
+            height: 1.45,
           ),
         );
       case AcpImagePart(:final image):

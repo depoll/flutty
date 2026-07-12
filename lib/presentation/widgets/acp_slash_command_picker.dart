@@ -60,6 +60,7 @@ class AcpSlashCommandPicker extends StatelessWidget {
             ),
             child: ListView.builder(
               shrinkWrap: true,
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
               padding: const EdgeInsets.symmetric(
                 vertical: FluttyTheme.spacingXs,
               ),

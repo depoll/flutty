@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/app/theme.dart';
 import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
@@ -182,8 +183,24 @@ void main() {
     addTearDown(controller.dispose);
     await _pump(tester, controller);
 
-    await tester.enterText(find.byType(TextField), '/dep');
+    final fieldFinder = find.byType(TextField);
+    await tester.tap(fieldFinder);
+    await tester.showKeyboard(fieldFinder);
+    await tester.enterText(fieldFinder, '/');
     await tester.pump();
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isTrue,
+    );
+
+    FocusManager.instance.primaryFocus?.unfocus();
+    controller.setText('/dep');
+    await tester.pump();
+    await tester.pump();
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isTrue,
+    );
     expect(find.text('/deploy'), findsOneWidget);
     expect(find.text('Deploy the build'), findsOneWidget);
 
@@ -191,6 +208,15 @@ void main() {
     await tester.pump();
     expect(controller.text, '/deploy ');
     expect(find.text('Deploy the build'), findsNothing);
+  });
+
+  testWidgets('uses the app monospace style for prompt input', (tester) async {
+    final controller = _makeController(_RecordingManager());
+    addTearDown(controller.dispose);
+    await _pump(tester, controller);
+
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.style?.fontFamily, FluttyTheme.monoStyle.fontFamily);
   });
 
   testWidgets('keyboard arrow + enter selects a slash command', (tester) async {

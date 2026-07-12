@@ -77,6 +77,10 @@ void main() {
     expect(image, lessThan(secondText));
     expect(secondText, lessThan(chip));
     expect(find.text('main.dart'), findsOneWidget);
+    final promptText = tester.widget<SelectableText>(
+      find.widgetWithText(SelectableText, 'first'),
+    );
+    expect(promptText.style?.fontFamily, FluttyTheme.monoStyle.fontFamily);
   });
 
   testWidgets('dispatches each entry type', (tester) async {

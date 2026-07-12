@@ -77,6 +77,43 @@ void main() {
     });
   });
 
+  group('AcpTimelineBuilder local user prompts', () {
+    test('shows a local prompt and suppresses the provider echo', () {
+      final builder = AcpTimelineBuilder()
+        ..appendLocalUserPrompt(const [AcpTextContent('hello')])
+        ..apply(_chunk('user_message_chunk', 'hello', messageId: 'remote-user'))
+        ..apply(_chunk('agent_message_chunk', 'hi', messageId: 'remote-agent'));
+
+      final timeline = builder.snapshot();
+      expect(timeline.entries, hasLength(2));
+      final user = timeline.entries.first as AcpMessageEntry;
+      expect(user.role, AcpMessageRole.user);
+      expect((user.content.single as AcpTextContent).text, 'hello');
+      expect(
+        (timeline.entries.last as AcpMessageEntry).role,
+        AcpMessageRole.agent,
+      );
+    });
+
+    test('rolls back only the failed optimistic prompt', () {
+      final builder = AcpTimelineBuilder()
+        ..apply(_chunk('agent_message_chunk', 'earlier', messageId: 'agent-1'));
+      final localId = builder.appendLocalUserPrompt(const [
+        AcpTextContent('retry me'),
+      ]);
+
+      final timeline = builder.removeLocalUserPrompt(localId);
+
+      expect(timeline.entries, hasLength(1));
+      expect(
+        ((timeline.entries.single as AcpMessageEntry).content.single
+                as AcpTextContent)
+            .text,
+        'earlier',
+      );
+    });
+  });
+
   group('AcpTimelineBuilder tool merging', () {
     test('merges tool_call and tool_call_update by id', () {
       final timeline = _run(AcpTimelineBuilder(), [

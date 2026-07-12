@@ -350,6 +350,54 @@ class AcpTimelineBuilder {
   int _totalBytes = 0;
   bool _overflowed = false;
   int _droppedEntryCount = 0;
+  int _nextLocalUserMessageId = 0;
+  String? _pendingLocalUserMessageId;
+  bool _suppressingUserEcho = false;
+  String? _suppressedUserEchoMessageId;
+
+  /// Appends a locally submitted user prompt so it is visible immediately even
+  /// when the ACP provider does not echo user messages.
+  ///
+  /// Returns the local message identifier used by [removeLocalUserPrompt] if
+  /// submission fails.
+  String appendLocalUserPrompt(List<AcpContentBlock> content) {
+    final messageId = 'monkeyssh-user-${_nextLocalUserMessageId++}';
+    final entry = _boundedMessageEntry(
+      AcpMessageEntry(
+        role: AcpMessageRole.user,
+        order: _nextOrder++,
+        messageId: messageId,
+        content: content,
+      ),
+    );
+    _totalBytes += approximateTimelineEntryBytes(entry);
+    _entries.add(entry);
+    _openMessageIndex = null;
+    _pendingLocalUserMessageId = messageId;
+    _suppressingUserEcho = false;
+    _suppressedUserEchoMessageId = null;
+    _enforceLimits();
+    return messageId;
+  }
+
+  /// Removes the optimistic prompt identified by [messageId] after submission
+  /// fails, preserving any unrelated streamed entries.
+  AcpTimeline removeLocalUserPrompt(String messageId) {
+    final index = _entries.indexWhere(
+      (entry) =>
+          entry is AcpMessageEntry &&
+          entry.role == AcpMessageRole.user &&
+          entry.messageId == messageId,
+    );
+    if (index >= 0) {
+      _totalBytes -= approximateTimelineEntryBytes(_entries.removeAt(index));
+      _rebuildIndexes();
+    }
+    if (_pendingLocalUserMessageId == messageId) {
+      _clearPendingUserEcho();
+    }
+    return snapshot();
+  }
 
   /// Applies [update], returning an immutable snapshot when the timeline
   /// changed, or `null` when [update] does not affect the timeline.
@@ -388,6 +436,19 @@ class AcpTimelineBuilder {
     if (role == null) return;
     final messageId = update.messageId;
     final block = update.content;
+    if (role == AcpMessageRole.user && _pendingLocalUserMessageId != null) {
+      if (!_suppressingUserEcho) {
+        _suppressingUserEcho = true;
+        _suppressedUserEchoMessageId = messageId;
+        return;
+      }
+      if (_suppressedUserEchoMessageId == messageId) {
+        return;
+      }
+      _clearPendingUserEcho();
+    } else if (role != AcpMessageRole.user) {
+      _clearPendingUserEcho();
+    }
 
     // Append to the currently open message when the role matches and either
     // both message IDs are absent (a single unlabeled streaming message) or
@@ -433,6 +494,7 @@ class AcpTimelineBuilder {
 
   void _applyToolCall(AcpToolCallUpdate update) {
     if (update.toolCallId.isEmpty) return;
+    _clearPendingUserEcho();
     final existingIndex = _toolCallIndex[update.toolCallId];
     if (existingIndex != null && existingIndex < _entries.length) {
       final existing = _entries[existingIndex];
@@ -555,6 +617,19 @@ class AcpTimelineBuilder {
     _openMessageIndex = _entries.isEmpty || _entries.last is! AcpMessageEntry
         ? null
         : _entries.length - 1;
+    final pendingId = _pendingLocalUserMessageId;
+    if (pendingId != null &&
+        !_entries.whereType<AcpMessageEntry>().any(
+          (entry) => entry.messageId == pendingId,
+        )) {
+      _clearPendingUserEcho();
+    }
+  }
+
+  void _clearPendingUserEcho() {
+    _pendingLocalUserMessageId = null;
+    _suppressingUserEcho = false;
+    _suppressedUserEchoMessageId = null;
   }
 
   static AcpMessageRole? _roleFor(String kind) => switch (kind) {

@@ -716,9 +716,6 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             AcpComposer(
               controller: _composer,
               attachmentActions: _attachmentActions(session),
-              onOpenConfig: session.status == AcpConnectionStatus.ready
-                  ? () => _openConfig(session)
-                  : null,
             ),
           ],
         ),

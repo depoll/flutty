@@ -74,6 +74,7 @@ void main() {
     expect(find.byType(AcpMessageThread), findsOneWidget);
     expect(find.textContaining('Hello from the agent'), findsOneWidget);
     expect(find.byType(AcpComposer), findsOneWidget);
+    expect(find.byTooltip('Session settings'), findsOneWidget);
   });
 
   testWidgets('renders a persistent session rail on wide layouts', (

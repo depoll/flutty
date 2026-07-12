@@ -125,6 +125,13 @@ class _AcpComposerState extends State<AcpComposer> {
   void _onControllerChanged() {
     _syncFieldFromController();
     _clampHighlight();
+    if (_controller.isSlashActive) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _controller.isSlashActive && !_focusNode.hasFocus) {
+          _focusNode.requestFocus();
+        }
+      });
+    }
   }
 
   void _syncFieldFromController() {
@@ -362,10 +369,18 @@ class _AcpComposerState extends State<AcpComposer> {
                             keyboardType: TextInputType.multiline,
                             textInputAction: TextInputAction.newline,
                             textCapitalization: TextCapitalization.sentences,
+                            style: FluttyTheme.monoStyle.copyWith(
+                              color: scheme.onSurface,
+                              fontSize: 14,
+                            ),
                             decoration: InputDecoration(
                               isDense: true,
                               border: InputBorder.none,
                               hintText: widget.hintText,
+                              hintStyle: FluttyTheme.monoStyle.copyWith(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 14,
+                              ),
                             ),
                           ),
                         ),
