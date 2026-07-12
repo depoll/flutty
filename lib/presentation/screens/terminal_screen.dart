@@ -247,6 +247,8 @@ const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
 // received. Debounced so an agent redrawing or scrolling many image cells sends
 // at most one request per settle rather than one per output frame.
 const _missingImageRecoveryDebounce = Duration(milliseconds: 350);
+const _missingImageRecoveryRetryDelay = Duration(milliseconds: 750);
+const _missingImageRecoveryRetryLimit = 3;
 // After a multiplexer window switch, sample the live render object's paint/
 // change counters once the redraw has had time to arrive, then force a repaint.
 // A second, later force catches a redraw that lands after the first sample.
@@ -3395,6 +3397,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Terminal? _terminalWithOwnedCallbacks;
   void Function(String)? _terminalOutputHandler;
   void Function(int, int, int, int)? _terminalResizeHandler;
+  void Function(int, int)? _terminalHostResizeHandler;
   bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
   bool _suppressTerminalAutoScrollFromTerminalRefresh = false;
   bool _isConnecting = true;
@@ -3430,6 +3433,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
   int? _tmuxStateConnectionId;
+  Size? _terminalViewportLayoutSize;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
@@ -3567,6 +3571,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // requested on every output frame; the set resets on each window change.
   Timer? _missingImageRequestTimer;
   final Set<int> _requestedMissingImageIds = <int>{};
+  DateTime? _missingImageRecoveryRetryNotBefore;
+  int _missingImageRecoveryRetryCount = 0;
+  int _missingImageRecoveryGeneration = 0;
+  bool _missingImageRecoveryInFlight = false;
+  bool _missingImageRecoveryRescanPending = false;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
       <_MonkeyMuxResizeSyncKey>{};
@@ -6569,6 +6578,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TapDownDetails tapDetails,
     CellOffset cellOffset,
   ) {
+    _claimActiveMonkeyMuxClientFocus();
     _terminalTextInputController.suppressNextTouchKeyboardRequest();
   }
 
@@ -6977,11 +6987,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final handledInitialAutoConnect =
           initialAutoConnect.handled ||
           _suppressRemoteMuxDetectionConnectionId == session.connectionId;
+      final viewportCellSize = _localTerminalViewportCellSize();
 
       _shell = await session.getShell(
         pty: SSHPtyConfig(
-          width: _terminal.viewWidth,
-          height: _terminal.viewHeight,
+          width: viewportCellSize.columns,
+          height: viewportCellSize.rows,
         ),
         command: startupCommand?.command,
       );
@@ -7175,6 +7186,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _terminalResizeHandler = handleTerminalResize;
     _terminal.onResize = handleTerminalResize;
+
+    void handleTerminalHostResize(int width, int height) {
+      if (session.remoteMuxBackend != RemoteMuxBackend.monkeyMux ||
+          session.monkeyMuxViewportClippingEnabled) {
+        return;
+      }
+      session.monkeyMuxViewportClippingEnabled = true;
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.viewport',
+        'clipping_enabled',
+        fields: {
+          'connectionId': session.connectionId,
+          'columns': width,
+          'rows': height,
+        },
+      );
+      if (mounted) {
+        setState(() {});
+      }
+    }
+
+    _terminalHostResizeHandler = handleTerminalHostResize;
+    _terminal.onHostResize = handleTerminalHostResize;
+    if (_terminal.hostResizeGeneration > 0) {
+      handleTerminalHostResize(_terminal.viewWidth, _terminal.viewHeight);
+    }
     _terminalWithOwnedCallbacks = _terminal;
   }
 
@@ -7195,6 +7232,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminal.onResize = null;
     }
     _terminalResizeHandler = null;
+
+    final hostResizeHandler = _terminalHostResizeHandler;
+    if (terminal != null &&
+        hostResizeHandler != null &&
+        identical(terminal.onHostResize, hostResizeHandler)) {
+      terminal.onHostResize = null;
+    }
+    _terminalHostResizeHandler = null;
     _terminalWithOwnedCallbacks = null;
   }
 
@@ -7324,11 +7369,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
       return;
     }
+    if (_missingImageRecoveryInFlight) {
+      _missingImageRecoveryRescanPending = true;
+      return;
+    }
+    var delay = _missingImageRecoveryDebounce;
+    final retryNotBefore = _missingImageRecoveryRetryNotBefore;
+    if (retryNotBefore != null) {
+      final remaining = retryNotBefore.difference(DateTime.now());
+      if (remaining > delay) {
+        delay = remaining;
+      } else {
+        _missingImageRecoveryRetryNotBefore = null;
+      }
+    }
     _missingImageRequestTimer?.cancel();
-    _missingImageRequestTimer = Timer(
-      _missingImageRecoveryDebounce,
-      _requestMissingImagesNow,
-    );
+    _missingImageRequestTimer = Timer(delay, _requestMissingImagesNow);
   }
 
   void _requestMissingImagesNow() {
@@ -7336,13 +7392,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted || _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
       return;
     }
+    if (_missingImageRecoveryInFlight) {
+      _missingImageRecoveryRescanPending = true;
+      return;
+    }
     final unresolved = _terminal.unresolvedPlaceholderImageIds();
     if (unresolved.isEmpty) {
+      _missingImageRecoveryRetryCount = 0;
+      _missingImageRecoveryRetryNotBefore = null;
       return;
     }
     final toRequest = <int>[
       for (final id in unresolved)
-        if (_requestedMissingImageIds.add(id)) id,
+        if (!_requestedMissingImageIds.contains(id)) id,
     ];
     if (toRequest.isEmpty) {
       return;
@@ -7355,6 +7417,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (sessionName == null) {
       return;
     }
+    _requestedMissingImageIds.addAll(toRequest);
+    final recoveryGeneration = _missingImageRecoveryGeneration;
+    _missingImageRecoveryInFlight = true;
+    _missingImageRecoveryRescanPending = false;
     DiagnosticsLogService.instance.debug(
       'terminal.graphics',
       'request_missing_images',
@@ -7364,13 +7430,83 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'unresolved': unresolved.length,
       },
     );
-    unawaited(_monkeyMuxService.requestImages(session, sessionName, toRequest));
+    unawaited(
+      _recoverMissingImages(
+        session,
+        sessionName,
+        toRequest.toSet(),
+        recoveryGeneration,
+      ),
+    );
+  }
+
+  Future<void> _recoverMissingImages(
+    SshSession session,
+    String sessionName,
+    Set<int> requestedIds,
+    int recoveryGeneration,
+  ) async {
+    try {
+      final result = await _monkeyMuxService.requestImages(
+        session,
+        sessionName,
+        requestedIds,
+      );
+      if (!mounted ||
+          recoveryGeneration != _missingImageRecoveryGeneration ||
+          _connectionId != session.connectionId ||
+          _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+        return;
+      }
+      final retryIds = result.retryableUnserved(requestedIds);
+      if (!result.retryableFailure || retryIds.isEmpty) {
+        _missingImageRecoveryRetryCount = 0;
+        _missingImageRecoveryRetryNotBefore = null;
+        return;
+      }
+      if (_missingImageRecoveryRetryCount >= _missingImageRecoveryRetryLimit) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.graphics',
+          'request_missing_images_retry_exhausted',
+          fields: {
+            'connectionId': session.connectionId,
+            'count': retryIds.length,
+          },
+        );
+        return;
+      }
+      _missingImageRecoveryRetryCount++;
+      _requestedMissingImageIds.removeAll(retryIds);
+      _missingImageRecoveryRetryNotBefore = DateTime.now().add(
+        _missingImageRecoveryRetryDelay * _missingImageRecoveryRetryCount,
+      );
+      DiagnosticsLogService.instance.debug(
+        'terminal.graphics',
+        'request_missing_images_retry_scheduled',
+        fields: {
+          'connectionId': session.connectionId,
+          'count': retryIds.length,
+          'attempt': _missingImageRecoveryRetryCount,
+        },
+      );
+      _missingImageRecoveryRescanPending = true;
+    } finally {
+      _missingImageRecoveryInFlight = false;
+      if (mounted && _missingImageRecoveryRescanPending) {
+        _missingImageRecoveryRescanPending = false;
+        _scheduleMissingImageRecoveryRequest();
+      }
+    }
   }
 
   void _resetMissingImageRecoveryState() {
     _missingImageRequestTimer?.cancel();
     _missingImageRequestTimer = null;
     _requestedMissingImageIds.clear();
+    _missingImageRecoveryRetryNotBefore = null;
+    _missingImageRecoveryRetryCount = 0;
+    _missingImageRecoveryRescanPending = _missingImageRecoveryInFlight;
+    _missingImageRecoveryGeneration++;
   }
 
   /// Throttles the remote MonkeyMux resize so pinch-zoom follows in real time
@@ -7638,6 +7774,73 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
+  void _claimActiveMonkeyMuxClientFocus() {
+    final session = _activeSession();
+    if (session == null || _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    final sessionName = _activeMonkeyMuxSessionName(session);
+    final viewportCellSize = _localTerminalViewportCellSize();
+    final columns = viewportCellSize.columns;
+    final rows = viewportCellSize.rows;
+    if (sessionName == null || columns <= 0 || rows <= 0) {
+      return;
+    }
+    final connectionId = session.connectionId;
+    unawaited(
+      _monkeyMuxService
+          .focusClient(session, sessionName, columns: columns, rows: rows)
+          .then((focusChanged) {
+            if (!mounted ||
+                !focusChanged ||
+                _connectionId != connectionId ||
+                _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+              return;
+            }
+            _refreshTerminalAfterMonkeyMuxWindowChange(session);
+          }),
+    );
+  }
+
+  ({int columns, int rows}) _localTerminalViewportCellSize() {
+    final viewportCellSize = _terminalViewKey.currentState?.viewportCellSize;
+    if (viewportCellSize != null &&
+        viewportCellSize.columns > 0 &&
+        viewportCellSize.rows > 0) {
+      return viewportCellSize;
+    }
+    final layoutSize = _terminalViewportLayoutSize;
+    if (layoutSize != null && mounted) {
+      final mediaQuery = MediaQuery.of(context);
+      final viewportPadding = resolveTerminalViewportPadding(mediaQuery);
+      final globalFontSize = ref.read(fontSizeNotifierProvider);
+      final fontSize = resolveTerminalFontSize(
+        globalFontSize: globalFontSize,
+        sessionFontSize: _sessionFontSizeOverride,
+        pinchFontSize: _pinchFontSize,
+      );
+      final fontFamily =
+          _host?.terminalFontFamily ??
+          ref.read(fontFamilyNotifierProvider) ??
+          'monospace';
+      final painter = MonkeyTerminalPainter(
+        theme: _resolveEffectiveTerminalTheme().toXtermTheme(),
+        textStyle: TerminalStyle.fromTextStyle(
+          _getTerminalFlutterTextStyle(fontFamily, fontSize),
+        ),
+        textScaler: mediaQuery.textScaler,
+      );
+      final availableWidth = layoutSize.width - viewportPadding.horizontal;
+      final availableHeight = layoutSize.height - viewportPadding.vertical;
+      final columns = availableWidth ~/ painter.cellSize.width;
+      final rows = availableHeight ~/ painter.cellSize.height;
+      if (columns > 0 && rows > 0) {
+        return (columns: columns, rows: rows);
+      }
+    }
+    return (columns: _terminal.viewWidth, rows: _terminal.viewHeight);
+  }
+
   Future<void> _syncActiveMonkeyMuxTerminalSize(
     SshSession session, {
     int? columns,
@@ -7669,8 +7872,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
-    final terminalColumns = columns ?? _terminal.viewWidth;
-    final terminalRows = rows ?? _terminal.viewHeight;
+    final viewportCellSize = _localTerminalViewportCellSize();
+    final terminalColumns = columns ?? viewportCellSize.columns;
+    final terminalRows = rows ?? viewportCellSize.rows;
     if (terminalColumns <= 0 || terminalRows <= 0) {
       return;
     }
@@ -8167,6 +8371,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           command: buildMonkeyMuxAttachCommand(
             executablePath: installation.executablePath,
             sessionName: sessionName,
+            clientId: session.monkeyMuxClientId,
+            clipViewport: true,
             workingDirectory: host.tmuxWorkingDirectory,
             terminalThemeReports: terminalThemeReports,
             serverUpdatePolicy: updatePolicy,
@@ -8236,6 +8442,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     MonkeyMuxInstallation installation,
     String sessionName,
   ) async {
+    session.monkeyMuxViewportClippingEnabled = false;
+    session.terminal?.resetHostResizeState();
     final status = await _monkeyMuxService.runningServerStatus(
       session,
       installation,
@@ -8380,8 +8588,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               Text('Size: ${_formatMonkeyMuxInstallSize(request.size)}'),
               const SizedBox(height: 12),
               const Text(
-                'It will be installed under ~/.monkeyssh/bin/monkeymux on the '
-                'connected host.',
+                'The versioned helper is stored under '
+                '~/.monkeyssh/bin/monkeymux. A managed launcher is added to '
+                '~/.local/bin so it can also be used from the host terminal.',
               ),
             ],
           ),
@@ -8500,6 +8709,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       attachCommand = buildMonkeyMuxAttachCommand(
         executablePath: installation.executablePath,
         sessionName: sessionName,
+        clientId: session.monkeyMuxClientId,
+        clipViewport: true,
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,
@@ -8648,6 +8859,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   void _clearTmuxState() {
+    final session = _observedSession ?? _activeSession();
+    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session?.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _terminal.resetHostResizeState();
+      if (session != null) {
+        session
+          ..monkeyMuxViewportClippingEnabled = false
+          ..remoteMuxBackend = null
+          ..remoteMuxSessionName = null;
+      }
+    }
     _stopTmuxForegroundVerification();
     _cancelMonkeyMuxRefreshAndResizeState();
     _cancelPendingTmuxWindowThemeRefresh();
@@ -9213,6 +9435,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     return LayoutBuilder(
       builder: (context, constraints) {
+        _terminalViewportLayoutSize = Size(
+          constraints.maxWidth,
+          constraints.maxHeight,
+        );
         final tmuxBarSafeInsets = resolveTmuxBarSafeInsets(
           MediaQuery.of(context),
         );
@@ -10254,9 +10480,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _promptOutputImeResetTimer?.cancel();
     _promptOutputImeResetTimer = null;
 
+    final viewportCellSize = _localTerminalViewportCellSize();
     final pty = SSHPtyConfig(
-      width: _terminal.viewWidth,
-      height: _terminal.viewHeight,
+      width: viewportCellSize.columns,
+      height: viewportCellSize.rows,
     );
 
     final SSHSession shell;
@@ -11747,6 +11974,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       inlineUnderlines: inlineUnderlines,
       keyboardAppearance: keyboardAppearance,
       padding: terminalViewportPadding,
+      resizeTerminalToViewport:
+          _activeMuxBackend != RemoteMuxBackend.monkeyMux ||
+          !((_observedSession ?? _activeSession())
+                  ?.monkeyMuxViewportClippingEnabled ??
+              false),
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
@@ -11762,6 +11994,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       forceSgrTouchScroll: _forceSgrTouchScroll,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
       onPasteText: isMobile ? null : _pasteClipboard,
+      onTapDown: (_, _) => _claimActiveMonkeyMuxClientFocus(),
     );
 
     if (_lastShowsTerminalPathUnderlines != showsTerminalPathUnderlines) {

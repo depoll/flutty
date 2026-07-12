@@ -103,7 +103,7 @@ out of scope.
   decoded memory. Encoded GIF/APNG transmissions preserve all decoded frames,
   durations and repetition metadata instead of freezing on frame one. The host
   renderer advances only visible, active animations and paints the current
-  frame. MonkeyMux 0.1.95 retains and replays each image's ordered frame,
+  frame. MonkeyMux 0.1.104 retains and replays each image's ordered frame,
   composition and control commands so reconnects/window switches do not restore
   only a static root image, resolves `I=` image-number commands, and drops
   over-budget per-image replay histories while preserving lowercase soft-deleted
@@ -116,6 +116,11 @@ out of scope.
   so Copilot CLI's `a=T,c=...` animation is not erased by its next prompt redraw.
   Keep the frame model and animation APIs in `graphics_manager.dart` when
   re-syncing.
+* MonkeyMux private character-grid resizes (`CSI ? 8 ; rows ; cols t`) update
+  the terminal buffer without echoing `onResize` back to the host. Standard
+  `CSI 8 ; rows ; cols t` keeps its normal resize callback. This lets every
+  attached client use the focused device's shared PTY grid while smaller
+  viewports clip extra rows or columns locally.
 * XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
   implements the kitty graphics + keyboard protocols, so it reports a
   kitty-family identity. CLIs such as the GitHub Copilot CLI gate their richer

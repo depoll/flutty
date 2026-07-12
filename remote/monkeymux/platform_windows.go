@@ -578,11 +578,11 @@ func terminalSize() (int, int) {
 // forwardResizeSignals sends the initial terminal size and then polls for
 // changes. Windows has no SIGWINCH; interactive resizes primarily arrive over
 // the MonkeyMux control channel, and this poller covers local console resizes.
-func forwardResizeSignals(session string) func() {
+func forwardResizeSignals(session string, clientID string) func() {
 	done := make(chan struct{})
 	go func() {
 		lastWidth, lastHeight := terminalSize()
-		sendResize(session, lastWidth, lastHeight)
+		sendResize(session, clientID, lastWidth, lastHeight)
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -591,7 +591,7 @@ func forwardResizeSignals(session string) func() {
 				width, height := terminalSize()
 				if width != lastWidth || height != lastHeight {
 					lastWidth, lastHeight = width, height
-					sendResize(session, width, height)
+					sendResize(session, clientID, width, height)
 				}
 			case <-done:
 				return

@@ -200,12 +200,14 @@ void main() {
     const connectionId = 246810;
     final client = _MockSshClient();
     final sftp = _MockSftpClient();
+    final commands = <String>[];
     when(sftp.close).thenReturn(null);
     when(client.sftp).thenAnswer((_) async => sftp);
     when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
       invocation,
     ) async {
       final command = invocation.positionalArguments.single as String;
+      commands.add(command);
       final output = _outputForCommand(
         command,
         expectedSha: expectedSha,
@@ -230,6 +232,16 @@ void main() {
     expect(installation.version, '9.9.9');
     expect(installation.installedDuringCall, isFalse);
     expect(remoteFileService.uploadCount, 0);
+    expect(
+      commands,
+      contains(
+        allOf(
+          contains('.local/bin/monkeymux'),
+          contains('ln -s'),
+          contains('.monkeyssh/bin/monkeymux/'),
+        ),
+      ),
+    );
   });
 
   test('installs the Windows helper via SFTP and native paths', () async {
@@ -266,6 +278,7 @@ void main() {
     ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
     when(client.sftp).thenAnswer((_) async => sftp);
     final renames = <(String, String)>[];
+    final commands = <String>[];
     when(() => sftp.remove(any())).thenAnswer((_) async {});
     when(() => sftp.rename(any(), any())).thenAnswer((invocation) async {
       renames.add((
@@ -277,6 +290,7 @@ void main() {
       invocation,
     ) async {
       final command = invocation.positionalArguments.single as String;
+      commands.add(command);
       return _execSession(
         _windowsOutputForCommand(
           command,
@@ -317,6 +331,86 @@ void main() {
       '/C:/Users/proof/.monkeyssh/bin/monkeymux/9.9.9/windows-amd64/'
       'monkeymux.exe',
     );
+    final launcherCommand = commands.singleWhere(
+      (command) => command.contains('powershell -NoProfile -NonInteractive'),
+    );
+    final launcherScript = _decodePowerShellCommand(launcherCommand);
+    expect(launcherScript, contains(r'.local\bin\monkeymux.cmd'));
+    expect(launcherScript, contains('%~dp0.monkeymux-current'));
+    expect(launcherScript, contains(r'%~dp0..\..\.monkeyssh\bin\monkeymux'));
+    expect(launcherScript, isNot(contains('%USERPROFILE%')));
+    expect(launcherScript, contains(r'9.9.9\windows-amd64\monkeymux.exe'));
+    expect(launcherScript, contains('[System.IO.File]::Replace'));
+    expect(launcherScript, contains(r'$exists = Test-Path -LiteralPath $path'));
+    expect(
+      launcherScript,
+      contains(r'if ($exists -and $first -ne $managedMarker)'),
+    );
+    expect(launcherScript, isNot(contains(r'if ($null -eq $first)')));
+    expect(
+      launcherScript.indexOf(r'-Destination $pointer'),
+      lessThan(launcherScript.indexOf(r'-Destination $path')),
+    );
+    expect(launcherScript, isNot(contains('Copy-Item')));
+  });
+
+  test('launcher failure does not block a verified helper', () async {
+    final assetBytes = Uint8List.fromList(utf8.encode('monkeymux-binary'));
+    final expectedSha = sha256.convert(assetBytes).toString();
+    final remoteFileService = _FakeRemoteFileService()..uploaded = true;
+    final installer = MonkeyMuxInstallerService(
+      manifestFuture: Future.value(
+        MonkeyMuxManifest(
+          version: '9.9.9',
+          entries: [
+            MonkeyMuxManifestEntry(
+              platform: 'darwin-arm64',
+              asset: 'assets/test/monkeymux',
+              sha256: expectedSha,
+              size: assetBytes.length,
+            ),
+          ],
+        ),
+      ),
+      remoteFileService: remoteFileService,
+      assetBundle: _FakeAssetBundle({'assets/test/monkeymux': assetBytes}),
+    );
+    const connectionId = 975310;
+    final client = _MockSshClient();
+    final sftp = _MockSftpClient();
+    when(sftp.close).thenReturn(null);
+    when(client.sftp).thenAnswer((_) async => sftp);
+    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+      invocation,
+    ) async {
+      final command = invocation.positionalArguments.single as String;
+      if (command.contains('.local/bin/monkeymux')) {
+        throw StateError('launcher directory is read-only');
+      }
+      return _execSession(
+        _outputForCommand(
+          command,
+          expectedSha: expectedSha,
+          remoteFileService: remoteFileService,
+        ),
+      );
+    });
+    final session = SshSession(
+      connectionId: connectionId,
+      hostId: 1,
+      client: client,
+      config: const SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'proof',
+      ),
+    );
+    addTearDown(() => installer.clearCache(connectionId));
+
+    final installation = await installer.ensureInstalled(session);
+
+    expect(installation.version, '9.9.9');
+    expect(installation.installedDuringCall, isFalse);
   });
 }
 
@@ -334,6 +428,9 @@ String _windowsOutputForCommand(
     final digest = remoteFileService.uploaded ? expectedSha : '';
     return 'SHA256 hash of file:\r\n$digest\r\n'
         'CertUtil: -hashfile command completed successfully.\r\n';
+  }
+  if (command.contains('powershell -NoProfile -NonInteractive')) {
+    return 'MONKEYMUX_LAUNCHER_MANAGED\r\n';
   }
   return '';
 }
@@ -353,6 +450,16 @@ String _outputForCommand(
 }
 
 String _markedOutput(String output) => '$output\n__monkeymux_exec_done__:0\n';
+
+String _decodePowerShellCommand(String command) {
+  final encoded = command.split(' ').last;
+  final bytes = base64Decode(encoded);
+  final codeUnits = <int>[
+    for (var index = 0; index < bytes.length; index += 2)
+      bytes[index] | (bytes[index + 1] << 8),
+  ];
+  return String.fromCharCodes(codeUnits);
+}
 
 SSHSession _execSession(String stdoutText) {
   final session = _MockSshSession();
