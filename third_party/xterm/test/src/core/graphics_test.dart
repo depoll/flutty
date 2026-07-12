@@ -601,6 +601,20 @@ void main() {
     });
   });
 
+  testWidgets('static encoded root keeps a gapless zero duration', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final decoded = await decodeTerminalImageSequence(
+        base64.decode(await _buildPngBase64(3, 2)),
+      );
+
+      expect(decoded, isNotNull);
+      expect(decoded!.frames, hasLength(1));
+      expect(decoded.frames.single.duration, Duration.zero);
+    });
+  });
+
   testWidgets('animated GIF decode preserves every frame and duration', (
     tester,
   ) async {
@@ -1205,6 +1219,36 @@ void main() {
     });
   });
 
+  testWidgets('queued I= frame keeps its command-time image mapping', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final slowPng = await _buildPngBase64(1200, 800);
+      final fastPng = await _buildPngBase64(2, 2);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+      final terminal = Terminal();
+
+      terminal
+        ..write(
+          '\x1b_Ga=T,i=100,I=5,f=100,c=4,r=2,C=1;$slowPng\x1b\\',
+        )
+        ..write('\x1b_Ga=f,I=5,f=32,s=1,v=1,q=2;$blue\x1b\\')
+        ..write('\x1b_Ga=t,i=200,I=5,f=100;$fastPng\x1b\\');
+
+      var waited = 0;
+      while ((terminal.graphics.imageById(100)?.frameCount ?? 0) < 2 &&
+          waited < 5000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageById(100)?.frameCount, 2);
+      expect(terminal.graphics.imageIdForNumber(5), 200);
+      expect(terminal.graphics.imageById(200), isNull);
+      expect(terminal.graphics.hasPendingImage(200), isTrue);
+    });
+  });
+
   testWidgets('invalid a=c reports a protocol error unless silenced', (
     tester,
   ) async {
@@ -1667,6 +1711,27 @@ void main() {
       // 240x160 at 30 ten-pixel columns is 200 pixels high, or ten rows.
       expect(terminal.buffer.lines[10].getText().trimRight(), 'X');
       expect(terminal.buffer.lines[0].getText().trimRight(), isEmpty);
+    });
+  });
+
+  testWidgets('inferred cursor rows are bounded by the viewport', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final bytes = Uint8List(24);
+      bytes.setRange(0, 8, const <int>[0x89, 0x50, 0x4E, 0x47, 13, 10, 26, 10]);
+      final header = ByteData.view(bytes.buffer)
+        ..setUint32(16, 1)
+        ..setUint32(20, 0xFFFFFFFF);
+      expect(header.getUint32(20), 0xFFFFFFFF);
+      final terminal = Terminal()..resize(80, 24);
+
+      terminal.write(
+        '\x1b_Ga=T,f=100,c=2147483647;'
+        '${base64.encode(bytes)}\x1b\\',
+      );
+
+      expect(terminal.buffer.cursorY, 23);
     });
   });
 

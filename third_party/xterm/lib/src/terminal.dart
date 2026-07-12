@@ -1413,6 +1413,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       // the same async queue, even before the root image finishes decoding.
       manager.registerImageNumber(imageNumber, explicitImageId);
     }
+    final commandImageId = _resolveGraphicsImageId(manager, args);
     if (action == 'd') {
       final selector = args['d'] ?? 'a';
       final buffer = _buffer;
@@ -1430,12 +1431,20 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         _scheduleGraphicsOperation(
           manager,
           args,
-          () async => _deleteGraphics(args, position),
+          () async => _deleteGraphics(
+            args,
+            position,
+            commandImageId: commandImageId,
+          ),
         );
       } else {
         _scheduleGraphicsBarrier(
           manager,
-          () async => _deleteGraphics(args, position),
+          () async => _deleteGraphics(
+            args,
+            position,
+            commandImageId: commandImageId,
+          ),
         );
       }
       return;
@@ -1445,7 +1454,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       _scheduleGraphicsOperation(
         manager,
         args,
-        () => _finalizeAnimationFrame(args, data, manager),
+        () => _finalizeAnimationFrame(
+          args,
+          data,
+          manager,
+          commandImageId: commandImageId,
+        ),
       );
       return;
     }
@@ -1453,7 +1467,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       _scheduleGraphicsOperation(
         manager,
         args,
-        () => _controlGraphicsAnimation(args, manager),
+        () => _controlGraphicsAnimation(
+          args,
+          manager,
+          commandImageId: commandImageId,
+        ),
       );
       return;
     }
@@ -1461,7 +1479,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       _scheduleGraphicsOperation(
         manager,
         args,
-        () => _composeGraphicsAnimationFrames(args, manager),
+        () => _composeGraphicsAnimationFrames(
+          args,
+          manager,
+          commandImageId: commandImageId,
+        ),
       );
       return;
     }
@@ -1514,6 +1536,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
             data,
             buffer.graphics,
             preinflation: preinflation,
+            maxRows: buffer.viewHeight,
           )
         : 0;
     if (shouldPlace && !keepCursor) {
@@ -1633,14 +1656,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   Future<void> _finalizeAnimationFrame(
     Map<String, String> args,
     Uint8List data,
-    GraphicsManager manager,
-  ) async {
+    GraphicsManager manager, {
+    int? commandImageId,
+  }) async {
     if (data.isEmpty) {
       _respondToGraphicsFailure(args, 'EINVAL: missing frame data');
       return;
     }
     manager.onChanged ??= notifyListeners;
-    final imageId = _resolveGraphicsImageId(manager, args);
+    final imageId = commandImageId ?? _resolveGraphicsImageId(manager, args);
     if (imageId == null) {
       _respondToGraphicsFailure(args, 'ENOENT: image not found');
       return;
@@ -1741,10 +1765,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   Future<void> _controlGraphicsAnimation(
     Map<String, String> args,
-    GraphicsManager manager,
-  ) async {
+    GraphicsManager manager, {
+    int? commandImageId,
+  }) async {
     manager.onChanged ??= notifyListeners;
-    final imageId = _resolveGraphicsImageId(manager, args);
+    final imageId = commandImageId ?? _resolveGraphicsImageId(manager, args);
     if (imageId == null || await manager.resolveImage(imageId) == null) {
       return;
     }
@@ -1767,10 +1792,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   Future<void> _composeGraphicsAnimationFrames(
     Map<String, String> args,
-    GraphicsManager manager,
-  ) async {
+    GraphicsManager manager, {
+    int? commandImageId,
+  }) async {
     manager.onChanged ??= notifyListeners;
-    final imageId = _resolveGraphicsImageId(manager, args);
+    final imageId = commandImageId ?? _resolveGraphicsImageId(manager, args);
     if (imageId == null) {
       _respondToGraphicsFailure(args, 'ENOENT: image not found');
       return;
@@ -2089,11 +2115,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         ? manager.pendingImageDimensions(imageId)
         : (width: image.sourceWidth, height: image.sourceHeight);
     final rows = dimensions == null
-        ? (int.tryParse(args['r'] ?? '') ?? 0)
+        ? min(
+            int.tryParse(args['r'] ?? '') ?? 0,
+            _buffer.viewHeight,
+          )
         : _graphicsDisplayRowsForDimensions(
             args,
             manager,
             dimensions,
+            maxRows: _buffer.viewHeight,
           );
     if (!keepCursor) {
       for (var i = 0; i < rows; i++) {
@@ -2109,8 +2139,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// output.
   void _deleteGraphics(
     Map<String, String> args,
-    _GraphicsDeletePosition position,
-  ) {
+    _GraphicsDeletePosition position, {
+    int? commandImageId,
+  }) {
     final buffer = position.buffer;
     // Kitty `x`/`y` are 1-based cell coordinates in the cursor's (viewport)
     // space; translate the row into the absolute buffer coordinates placements
@@ -2119,12 +2150,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final y = int.tryParse(args['y'] ?? '');
 
     var what = args['d'] ?? 'a';
-    var imageId = int.tryParse(args['i'] ?? '');
+    var imageId = commandImageId ?? int.tryParse(args['i'] ?? '');
     // Delete-by-number (d=n/N): resolve the image number to its id and delete by
     // id, preserving the lower/upper free-data semantics.
     if (what == 'n' || what == 'N') {
       final number = int.tryParse(args['I'] ?? '');
-      imageId =
+      imageId ??=
           number == null ? null : buffer.graphics.imageIdForNumber(number);
       if (imageId == null) {
         return;
@@ -2227,10 +2258,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     Uint8List data,
     GraphicsManager manager, {
     _GraphicsPreinflation? preinflation,
+    required int maxRows,
   }) {
+    if (maxRows <= 0) {
+      return 0;
+    }
     final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
     if (explicitRows > 0) {
-      return explicitRows;
+      return min(explicitRows, maxRows);
     }
     final columns = int.tryParse(args['c'] ?? '') ?? 0;
     if (columns <= 0) {
@@ -2252,6 +2287,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       args,
       manager,
       dimensions,
+      maxRows: maxRows,
     );
   }
 
@@ -2268,11 +2304,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   int _graphicsDisplayRowsForDimensions(
     Map<String, String> args,
     GraphicsManager manager,
-    ({int width, int height}) dimensions,
-  ) {
+    ({int width, int height}) dimensions, {
+    required int maxRows,
+  }) {
     final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
     if (explicitRows > 0) {
-      return explicitRows;
+      return min(explicitRows, maxRows);
     }
     final columns = int.tryParse(args['c'] ?? '') ?? 0;
     if (columns <= 0) {
@@ -2299,10 +2336,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     if (width <= 0 || height <= 0) {
       return 1;
     }
-    return max(
-      1,
-      (height / width * columns * manager.cellPixelAspectRatio).ceil(),
-    );
+    final rowsPerColumn = height / width * manager.cellPixelAspectRatio;
+    if (!rowsPerColumn.isFinite || rowsPerColumn <= 0) {
+      return 1;
+    }
+    if (columns >= maxRows / rowsPerColumn) {
+      return maxRows;
+    }
+    return min(maxRows, max(1, (rowsPerColumn * columns).ceil()));
   }
 
   ({int width, int height})? _graphicsPayloadDimensions(

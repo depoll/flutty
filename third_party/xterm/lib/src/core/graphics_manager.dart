@@ -2344,7 +2344,7 @@ Future<DecodedTerminalImage?> _decodeEncodedImageSequenceBounded(
           frames.add(
             TerminalImageFrame(
               frame.image,
-              duration: frame.duration == Duration.zero
+              duration: codec.frameCount > 1 && frame.duration == Duration.zero
                   ? _minimumEncodedFrameDuration
                   : frame.duration,
             ),
