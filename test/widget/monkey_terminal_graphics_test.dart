@@ -552,6 +552,44 @@ void main() {
     expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
   });
 
+  testWidgets('live Reduce Motion changes resynchronize terminal playback', (
+    tester,
+  ) async {
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=60,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(60)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          hardwareKeyboardOnly: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(reduceMotion: true);
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures();
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+  });
+
   testWidgets('disabled UI transitions do not pause terminal GIFs', (
     tester,
   ) async {

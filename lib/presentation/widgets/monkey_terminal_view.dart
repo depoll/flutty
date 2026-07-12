@@ -761,7 +761,7 @@ class MonkeyTerminalView extends StatefulWidget {
 }
 
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   static const _touchScrollReportedWheelLinesPerEvent = 3.0;
 
   late FocusNode _focusNode;
@@ -851,6 +851,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       ),
     };
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _touchScrollInertiaTicker = createTicker(_onTouchScrollInertiaTick);
     _graphicsAnimationTicker = createTicker(_onGraphicsAnimationTick);
   }
@@ -862,11 +863,21 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     // reports disableAnimations when developer/emulator animation scales are
     // zero, which must not freeze GIFs in the terminal. iOS exposes its actual
     // Reduce Motion preference separately, so honor that signal here.
-    final accessibilityFeatures = View.maybeOf(
-      context,
-    )?.platformDispatcher.accessibilityFeatures;
-    _graphicsAnimationsEnabled =
-        !(accessibilityFeatures?.reduceMotion ?? false);
+    _updateGraphicsAnimationsEnabled();
+  }
+
+  @override
+  void didChangeAccessibilityFeatures() {
+    _updateGraphicsAnimationsEnabled();
+    _scheduleGraphicsAnimationSync();
+  }
+
+  void _updateGraphicsAnimationsEnabled() {
+    _graphicsAnimationsEnabled = !WidgetsBinding
+        .instance
+        .platformDispatcher
+        .accessibilityFeatures
+        .reduceMotion;
     _syncGraphicsAnimationTicker();
   }
 
@@ -940,6 +951,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   @override
   void dispose() {
     _logAndroidBackLifecycle('dispose');
+    WidgetsBinding.instance.removeObserver(this);
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
     _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
