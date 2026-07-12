@@ -5290,6 +5290,27 @@ func TestObserveKittyGraphicsPreservesSameChunkHardDeleteOrder(t *testing.T) {
 	}
 }
 
+func TestObserveKittyGraphicsAppliesDeleteAllInStreamOrder(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=6,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=d,d=A\x1b\\" +
+			"\x1b_Ga=t,i=9,I=7,f=100;ROOT9\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "ROOT7") || strings.Contains(replay, "ROOT8") {
+		t.Fatalf("d=A retained image data transmitted before it: %q", replay)
+	}
+	if !strings.Contains(replay, "ROOT9") {
+		t.Fatalf("d=A removed image data transmitted after it: %q", replay)
+	}
+	if len(window.kittyImageNumberToID) != 1 ||
+		window.kittyImageNumberToID["7"] != "9" {
+		t.Fatalf("d=A left stale image-number mappings: %#v", window.kittyImageNumberToID)
+	}
+}
+
 func TestObserveKittyGraphicsDeleteByNumberRemovesRetainedImage(t *testing.T) {
 	window := &muxWindow{}
 	window.observeKittyGraphicsLocked(

@@ -1585,6 +1585,23 @@ void main() {
     });
   });
 
+  testWidgets('compressed c-only placement computes rows and decodes', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBytes = base64.decode(await _buildPngBase64(240, 160));
+      final compressed = base64.encode(ZLibEncoder().encode(pngBytes));
+      final terminal = Terminal();
+      terminal.graphics.setCellPixelSize(10, 20);
+
+      terminal.write('\x1b_Ga=T,i=92,f=100,o=z,c=30;$compressed\x1b\\X');
+
+      expect(terminal.buffer.lines[10].getText().trimRight(), 'X');
+      await _awaitImage(terminal, 92);
+      expect(terminal.graphics.imageById(92), isNotNull);
+    });
+  });
+
   testWidgets('c-only cursor rows use the effective source crop', (
     tester,
   ) async {

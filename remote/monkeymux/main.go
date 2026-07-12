@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.105"
+	monkeyMuxVersion                  = "0.1.106"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -8601,6 +8601,7 @@ type kittyGraphicsEvent struct {
 	buf         []byte
 	animation   bool
 	delete      bool
+	deleteAll   bool
 }
 
 // scanKittyTransmissions parses complete Kitty graphics events from the front of
@@ -8644,9 +8645,10 @@ func scanKittyTransmissions(
 			return events, i
 		}
 		if isDelete {
-			if id != "" || imageNumber != "" {
+			deleteAll := parseKittyControl(kittyControl(data, i, end))["d"] == "A"
+			if id != "" || imageNumber != "" || deleteAll {
 				events = append(events, kittyGraphicsEvent{
-					id: id, imageNumber: imageNumber, delete: true,
+					id: id, imageNumber: imageNumber, delete: true, deleteAll: deleteAll,
 				})
 			}
 		} else if buf != nil {
@@ -8690,7 +8692,7 @@ func assembleKittyTransmission(
 	switch action {
 	case "d":
 		selector := args["d"]
-		freeImageData := selector == "I" || selector == "N"
+		freeImageData := selector == "A" || selector == "I" || selector == "N"
 		return apcEnd, nil, args["i"], args["I"],
 			freeImageData, false, true
 	case "t", "T":
@@ -8747,6 +8749,12 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	events, consumed := scanKittyTransmissions(data)
 	for _, event := range events {
 		if event.delete {
+			if event.deleteAll {
+				if w.clearKittyImagesLocked() {
+					changed = true
+				}
+				continue
+			}
 			id := event.id
 			if id == "" && event.imageNumber != "" {
 				id = w.kittyImageNumberToID[event.imageNumber]
@@ -8863,6 +8871,17 @@ func (w *muxWindow) removeKittyImageLocked(id string) bool {
 	}
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
 	return true
+}
+
+func (w *muxWindow) clearKittyImagesLocked() bool {
+	changed := len(w.kittyImages) > 0
+	w.kittyImages = nil
+	w.kittyImageAnimations = nil
+	w.kittyImageNumberToID = nil
+	w.kittyImageOrder = nil
+	w.kittyImageSeq = nil
+	w.kittyImageToken = nil
+	return changed
 }
 
 func (w *muxWindow) enforceKittyImageCapsLocked() {
