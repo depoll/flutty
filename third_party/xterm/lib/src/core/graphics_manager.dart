@@ -322,7 +322,7 @@ class TerminalImage {
     if (loopCount <= 0) {
       return;
     }
-    _maxLoops = loopCount - 1;
+    _maxLoops = loopCount == 1 ? 0 : loopCount;
     _protocolAnimationModified = true;
   }
 
@@ -1910,6 +1910,10 @@ class GraphicsManager {
   }) {
     if (requiredBytes <= 0) {
       return true;
+    }
+    final protectedBytes = _images[protectedImageId]?.sizeBytes ?? 0;
+    if (protectedBytes + requiredBytes > maxMemoryBytes) {
+      return false;
     }
     final highWaterMemory = (maxMemoryBytes * 0.7).toInt();
     if (_currentMemoryBytes + requiredBytes <= highWaterMemory) {
