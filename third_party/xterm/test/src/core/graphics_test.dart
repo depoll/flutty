@@ -1463,6 +1463,80 @@ void main() {
     });
   });
 
+  testWidgets('I= root with i=0 stores under its reserved command id', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final red = base64.encode(<int>[255, 0, 0, 255]);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+      final terminal = Terminal();
+
+      terminal
+        ..write('\x1b_Ga=T,i=0,I=7,f=32,s=1,v=1,C=1,q=2;$red\x1b\\')
+        ..write('\x1b_Ga=f,I=7,f=32,s=1,v=1,q=2;$blue\x1b\\');
+      final reservedId = terminal.graphics.imageIdForNumber(7)!;
+      var waited = 0;
+      while ((terminal.graphics.imageById(reservedId)?.frameCount ?? 0) < 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(reservedId, greaterThan(0));
+      expect(terminal.graphics.imageById(reservedId)?.frameCount, 2);
+    });
+  });
+
+  testWidgets('failed remap chains skip failed predecessor reservations', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pixel = base64.encode(<int>[255, 0, 0, 255]);
+      final terminal = Terminal();
+
+      terminal
+        ..write('\x1b_Ga=t,i=1,I=5,f=32,s=1,v=1,q=2;$pixel\x1b\\')
+        ..write('\x1b_Ga=T,i=100,I=5,f=32,s=0,v=0,C=1,q=2;$pixel\x1b\\')
+        ..write('\x1b_Ga=T,i=200,I=5,f=32,s=0,v=0,C=1,q=2;$pixel\x1b\\');
+
+      var waited = 0;
+      while (terminal.graphics.imageIdForNumber(5) != 1 && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageIdForNumber(5), 1);
+      expect(terminal.graphics.imageById(100), isNull);
+      expect(terminal.graphics.imageById(200), isNull);
+    });
+  });
+
+  testWidgets('synchronous remap survives completion of older reservations', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pixel = base64.encode(<int>[255, 0, 0, 255]);
+      final pngBase64 = await _buildPngBase64(1200, 800);
+      final terminal = Terminal();
+
+      terminal
+        ..write('\x1b_Ga=T,i=100,I=5,f=32,s=0,v=0,C=1,q=2;$pixel\x1b\\')
+        ..write('\x1b_Ga=T,i=200,I=5,f=100,C=1,q=2;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=a,i=300,I=5,q=2\x1b\\');
+      expect(terminal.graphics.imageIdForNumber(5), 300);
+
+      var waited = 0;
+      while (terminal.graphics.imageById(200) == null && waited < 5000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageById(100), isNull);
+      expect(terminal.graphics.imageById(200), isNotNull);
+      expect(terminal.graphics.imageIdForNumber(5), 300);
+    });
+  });
+
   testWidgets('invalid a=c reports a protocol error unless silenced', (
     tester,
   ) async {
@@ -1524,6 +1598,24 @@ void main() {
       terminal.write('\x1b_Ga=a,i=999,s=3,q=2\x1b\\');
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(responses, isEmpty);
+    });
+  });
+
+  testWidgets('mapping-only a=a keeps a retained root lazily encoded', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      terminal
+        ..write('\x1b_Ga=t,i=42,f=100,q=2;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=a,i=42,I=9,q=2\x1b\\');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(terminal.graphics.imageIdForNumber(9), 42);
+      expect(terminal.graphics.hasPendingImage(42), isTrue);
+      expect(terminal.graphics.imageById(42), isNull);
     });
   });
 
@@ -2538,6 +2630,34 @@ void main() {
         isNull,
         reason: 'an uppercase d=I must also free the image data',
       );
+    });
+  });
+
+  testWidgets('unknown targeted hard delete leaves all placements intact', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 3);
+      final terminal = Terminal();
+      terminal
+        ..write('\x1b_Ga=T,i=1,I=5,f=100,c=4,r=2;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=T,i=2,I=6,f=100,c=4,r=2;$pngBase64\x1b\\');
+      var waited = 0;
+      while (terminal.graphics.placements.length < 2 && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      terminal.write('\x1b_Ga=d,d=I,I=999,q=2\x1b\\');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(terminal.graphics.placements, hasLength(2));
+      expect(terminal.graphics.imageById(1), isNotNull);
+      expect(terminal.graphics.imageById(2), isNotNull);
+
+      terminal.write('\x1b_Ga=d,d=i,q=2\x1b\\');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(terminal.graphics.placements, hasLength(2));
     });
   });
 

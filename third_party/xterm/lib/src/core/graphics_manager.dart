@@ -580,6 +580,8 @@ class GraphicsManager {
   // Maps a client-assigned image number (`I=`) to the most recent image id it
   // was transmitted with, so later commands can address the image by number.
   final Map<int, int> _imageNumberToId = {};
+  final Map<int, Map<int, int?>> _failedImageNumberReservations = {};
+  final Map<int, Set<int>> _activeImageNumberReservations = {};
 
   /// Invoked after a deferred image finishes decoding so the host can repaint.
   /// The [Terminal] wires this to `notifyListeners`; it stays null in tests and
@@ -800,7 +802,19 @@ class GraphicsManager {
     final previousImageId = _imageNumberToId[number];
     final imageId = _nextImageId++;
     _imageNumberToId[number] = imageId;
+    _activeImageNumberReservations.putIfAbsent(number, () => {}).add(imageId);
     return (imageId: imageId, previousImageId: previousImageId);
+  }
+
+  /// Maps [number] to an explicit [imageId] while its root is being validated.
+  int? reserveExplicitImageIdForNumber(int number, int imageId) {
+    if (number <= 0 || imageId <= 0) {
+      return null;
+    }
+    final previousImageId = _imageNumberToId[number];
+    _imageNumberToId[number] = imageId;
+    _activeImageNumberReservations.putIfAbsent(number, () => {}).add(imageId);
+    return previousImageId;
   }
 
   /// Rolls back a failed reservation unless a later command remapped [number].
@@ -809,13 +823,53 @@ class GraphicsManager {
     int reservedImageId,
     int? previousImageId,
   ) {
+    final active = _activeImageNumberReservations[number];
+    active?.remove(reservedImageId);
+    final noActiveReservations = active?.isEmpty ?? true;
+    if (noActiveReservations) {
+      _activeImageNumberReservations.remove(number);
+    }
     if (_imageNumberToId[number] != reservedImageId) {
+      if (_activeImageNumberReservations[number]?.contains(
+            _imageNumberToId[number],
+          ) ??
+          false) {
+        _failedImageNumberReservations.putIfAbsent(
+            number, () => {})[reservedImageId] = previousImageId;
+      }
+      if (noActiveReservations) {
+        _failedImageNumberReservations.remove(number);
+      }
       return;
     }
-    if (previousImageId == null) {
+    final failed = _failedImageNumberReservations.putIfAbsent(number, () => {})
+      ..[reservedImageId] = previousImageId;
+    var restoredImageId = previousImageId;
+    while (restoredImageId != null && failed.containsKey(restoredImageId)) {
+      final failedImageId = restoredImageId;
+      restoredImageId = failed.remove(failedImageId);
+    }
+    failed.remove(reservedImageId);
+    if (failed.isEmpty) {
+      _failedImageNumberReservations.remove(number);
+    }
+    if (restoredImageId == null) {
       _imageNumberToId.remove(number);
     } else {
-      _imageNumberToId[number] = previousImageId;
+      _imageNumberToId[number] = restoredImageId;
+    }
+  }
+
+  /// Marks a reserved mapping as valid and discards failed predecessor history.
+  void commitImageIdReservation(int number, int imageId) {
+    final active = _activeImageNumberReservations[number];
+    active?.remove(imageId);
+    if (active?.isEmpty ?? true) {
+      _activeImageNumberReservations.remove(number);
+      _failedImageNumberReservations.remove(number);
+    }
+    if (_imageNumberToId[number] == imageId) {
+      _failedImageNumberReservations.remove(number);
     }
   }
 
@@ -1099,6 +1153,12 @@ class GraphicsManager {
     if (storedImageId <= 0) {
       _rollbackPendingImageNumber(pending);
       return null;
+    }
+    for (final reservation in pending.imageNumberReservations) {
+      commitImageIdReservation(
+        reservation.number,
+        reservation.mappedImageId,
+      );
     }
     onChanged?.call();
     return imageById(id);
