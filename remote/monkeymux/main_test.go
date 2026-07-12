@@ -2539,6 +2539,100 @@ func TestRenewedTerminalResponseDeadlineReschedulesHeldPrefix(t *testing.T) {
 	close(client.done)
 }
 
+func TestResponseCarryFragmentRenewsInactivityDeadline(t *testing.T) {
+	passthrough := make(chan []byte, 1)
+	client := &attachClient{
+		done: make(chan struct{}),
+		inputPassthrough: func(data []byte) {
+			passthrough <- append([]byte(nil), data...)
+		},
+	}
+	client.expectTerminalResponse("@1")
+	client.activityMu.Lock()
+	client.terminalResponseUntil = time.Now().Add(20 * time.Millisecond)
+	client.activityMu.Unlock()
+
+	routing := client.routeInput([]byte("\x1b]52;c;AAAA"))
+
+	if len(routing.passthrough) != 0 ||
+		len(routing.responses) != 0 ||
+		routing.claimsFocus {
+		t.Fatalf("partial response routing = %#v, want held input", routing)
+	}
+	client.activityMu.Lock()
+	renewedUntil := client.terminalResponseUntil
+	client.activityMu.Unlock()
+	if time.Until(renewedUntil) < time.Second {
+		t.Fatalf("response deadline was not renewed: %v", renewedUntil)
+	}
+	select {
+	case data := <-passthrough:
+		t.Fatalf("response carry expired at the original deadline: %q", data)
+	case <-time.After(50 * time.Millisecond):
+	}
+	routing = client.routeInput([]byte{'\a'})
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		string(routing.responses[0].data) != "\x1b]52;c;AAAA\a" {
+		t.Fatalf("completed response routing = %#v", routing)
+	}
+	close(client.done)
+}
+
+func TestStreamingResponseFragmentsRenewInactivityDeadline(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	client.activityMu.Lock()
+	client.terminalResponseUntil = time.Now().Add(20 * time.Millisecond)
+	client.activityMu.Unlock()
+	largePrefix := append(
+		[]byte("\x1b]52;c;"),
+		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes+1)...,
+	)
+
+	first := client.routeInput(largePrefix)
+
+	if len(first.responses) != 1 ||
+		first.responses[0].windowID != "@1" ||
+		first.claimsFocus ||
+		len(first.passthrough) != 0 {
+		t.Fatalf("large response prefix routing = %#v", first)
+	}
+	client.activityMu.Lock()
+	firstDeadline := client.terminalResponseUntil
+	client.activityMu.Unlock()
+	if time.Until(firstDeadline) < time.Second {
+		t.Fatalf("streaming response deadline was not renewed: %v", firstDeadline)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	second := client.routeInput([]byte("BBBB"))
+
+	if len(second.responses) != 1 ||
+		second.responses[0].windowID != "@1" ||
+		second.claimsFocus ||
+		len(second.passthrough) != 0 {
+		t.Fatalf("streaming response continuation routing = %#v", second)
+	}
+	client.activityMu.Lock()
+	secondDeadline := client.terminalResponseUntil
+	client.activityMu.Unlock()
+	if !secondDeadline.After(firstDeadline) {
+		t.Fatalf(
+			"continuation deadline %v did not advance past %v",
+			secondDeadline,
+			firstDeadline,
+		)
+	}
+	final := client.routeInput([]byte{'\a'})
+	if len(final.responses) != 1 ||
+		final.responses[0].windowID != "@1" ||
+		final.claimsFocus ||
+		len(final.passthrough) != 0 {
+		t.Fatalf("streaming response terminator routing = %#v", final)
+	}
+}
+
 func TestExpiredHeldResponsePrefixIsPassedThroughBeforeRenewal(t *testing.T) {
 	passthrough := make(chan []byte, 1)
 	client := &attachClient{

@@ -247,6 +247,8 @@ const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
 // received. Debounced so an agent redrawing or scrolling many image cells sends
 // at most one request per settle rather than one per output frame.
 const _missingImageRecoveryDebounce = Duration(milliseconds: 350);
+const _missingImageRecoveryRetryDelay = Duration(milliseconds: 750);
+const _missingImageRecoveryRetryLimit = 3;
 // After a multiplexer window switch, sample the live render object's paint/
 // change counters once the redraw has had time to arrive, then force a repaint.
 // A second, later force catches a redraw that lands after the first sample.
@@ -3570,6 +3572,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // requested on every output frame; the set resets on each window change.
   Timer? _missingImageRequestTimer;
   final Set<int> _requestedMissingImageIds = <int>{};
+  DateTime? _missingImageRecoveryRetryNotBefore;
+  int _missingImageRecoveryRetryCount = 0;
+  int _missingImageRecoveryGeneration = 0;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
       <_MonkeyMuxResizeSyncKey>{};
@@ -7378,11 +7383,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
       return;
     }
+    var delay = _missingImageRecoveryDebounce;
+    final retryNotBefore = _missingImageRecoveryRetryNotBefore;
+    if (retryNotBefore != null) {
+      final remaining = retryNotBefore.difference(DateTime.now());
+      if (remaining > delay) {
+        delay = remaining;
+      } else {
+        _missingImageRecoveryRetryNotBefore = null;
+      }
+    }
     _missingImageRequestTimer?.cancel();
-    _missingImageRequestTimer = Timer(
-      _missingImageRecoveryDebounce,
-      _requestMissingImagesNow,
-    );
+    _missingImageRequestTimer = Timer(delay, _requestMissingImagesNow);
   }
 
   void _requestMissingImagesNow() {
@@ -7392,6 +7404,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final unresolved = _terminal.unresolvedPlaceholderImageIds();
     if (unresolved.isEmpty) {
+      _missingImageRecoveryRetryCount = 0;
+      _missingImageRecoveryRetryNotBefore = null;
       return;
     }
     final toRequest = <int>[
@@ -7410,6 +7424,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _requestedMissingImageIds.addAll(toRequest);
+    final recoveryGeneration = _missingImageRecoveryGeneration;
     DiagnosticsLogService.instance.debug(
       'terminal.graphics',
       'request_missing_images',
@@ -7419,13 +7434,74 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'unresolved': unresolved.length,
       },
     );
-    unawaited(_monkeyMuxService.requestImages(session, sessionName, toRequest));
+    unawaited(
+      _recoverMissingImages(
+        session,
+        sessionName,
+        toRequest.toSet(),
+        recoveryGeneration,
+      ),
+    );
+  }
+
+  Future<void> _recoverMissingImages(
+    SshSession session,
+    String sessionName,
+    Set<int> requestedIds,
+    int recoveryGeneration,
+  ) async {
+    final result = await _monkeyMuxService.requestImages(
+      session,
+      sessionName,
+      requestedIds,
+    );
+    if (!mounted ||
+        recoveryGeneration != _missingImageRecoveryGeneration ||
+        _connectionId != session.connectionId ||
+        _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    final retryIds = result.retryableUnserved(requestedIds);
+    if (!result.retryableFailure || retryIds.isEmpty) {
+      _missingImageRecoveryRetryCount = 0;
+      _missingImageRecoveryRetryNotBefore = null;
+      return;
+    }
+    if (_missingImageRecoveryRetryCount >= _missingImageRecoveryRetryLimit) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.graphics',
+        'request_missing_images_retry_exhausted',
+        fields: {
+          'connectionId': session.connectionId,
+          'count': retryIds.length,
+        },
+      );
+      return;
+    }
+    _missingImageRecoveryRetryCount++;
+    _requestedMissingImageIds.removeAll(retryIds);
+    _missingImageRecoveryRetryNotBefore = DateTime.now().add(
+      _missingImageRecoveryRetryDelay * _missingImageRecoveryRetryCount,
+    );
+    DiagnosticsLogService.instance.debug(
+      'terminal.graphics',
+      'request_missing_images_retry_scheduled',
+      fields: {
+        'connectionId': session.connectionId,
+        'count': retryIds.length,
+        'attempt': _missingImageRecoveryRetryCount,
+      },
+    );
+    _scheduleMissingImageRecoveryRequest();
   }
 
   void _resetMissingImageRecoveryState() {
     _missingImageRequestTimer?.cancel();
     _missingImageRequestTimer = null;
     _requestedMissingImageIds.clear();
+    _missingImageRecoveryRetryNotBefore = null;
+    _missingImageRecoveryRetryCount = 0;
+    _missingImageRecoveryGeneration++;
   }
 
   /// Throttles the remote MonkeyMux resize so pinch-zoom follows in real time
