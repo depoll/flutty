@@ -576,6 +576,54 @@ void main() {
     });
   });
 
+  testWidgets('first-frame sequence decode does not expand an animated GIF', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final decoded = await decodeTerminalImageFirstFrameSequence(
+        base64.decode(_animatedGifBase64),
+      );
+
+      expect(decoded, isNotNull);
+      expect(decoded!.frames, hasLength(1));
+      expect(decoded.sourceWidth, 3);
+      expect(decoded.sourceHeight, 3);
+    });
+  });
+
+  testWidgets('animation timing carries overshoot into the next frame', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      terminal.write(
+        '\x1b_Ga=T,i=61,f=100,c=2,r=2;$_animatedGifBase64\x1b\\',
+      );
+      var waited = 0;
+      while ((terminal.graphics.imageById(61)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final image = terminal.graphics.imageById(61)!;
+
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 80),
+        ),
+        isTrue,
+      );
+      expect(image.currentFrame, 2);
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 120),
+        ),
+        isTrue,
+      );
+      expect(image.currentFrame, 1);
+    });
+  });
+
   testWidgets('zero-delay GIF frames use a finite playback floor', (
     tester,
   ) async {

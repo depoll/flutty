@@ -5357,7 +5357,10 @@ func assembleKittyTransmission(
 	}
 	switch action {
 	case "d":
-		return apcEnd, nil, args["i"], args["I"], true, false, true
+		selector := args["d"]
+		freeImageData := selector == "I" || selector == "N"
+		return apcEnd, nil, args["i"], args["I"],
+			freeImageData, false, true
 	case "t", "T":
 		// An image transmission; assemble continuation chunks below.
 		buf = append(buf, rewriteKittyTransmitAction(data[start:apcEnd])...)

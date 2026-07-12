@@ -1557,7 +1557,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     await terminalGraphicsDecodeGate.acquire();
     final decoded = await () async {
       try {
-        return await decodeTerminalImageSequence(
+        return await decodeTerminalImageFirstFrameSequence(
           payload,
           format: format,
           width: blockWidth,
