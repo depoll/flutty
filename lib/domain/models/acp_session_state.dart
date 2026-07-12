@@ -180,6 +180,53 @@ final class AcpPendingPermission {
   );
 }
 
+/// A file write awaiting an explicit local approval.
+///
+/// Holds only enough information to prompt for approval. The full write
+/// content is retained by the capability service that owns the live
+/// responder, never duplicated here, and is never persisted or logged.
+@immutable
+final class AcpPendingWrite {
+  /// Creates a pending write reference.
+  const AcpPendingWrite({
+    required this.requestKey,
+    required this.sessionId,
+    required this.path,
+    required this.contentByteLength,
+    required this.requestedAt,
+  });
+
+  /// Local key that uniquely identifies this pending request within a session.
+  final String requestKey;
+
+  /// Remote ACP session identifier the request belongs to.
+  final String sessionId;
+
+  /// Target remote path. Shown so a user can approve/reject with context; it
+  /// is never persisted or written to diagnostics/telemetry.
+  final String path;
+
+  /// UTF-8 byte length of the pending write content (never the content).
+  final int contentByteLength;
+
+  /// When the request was first observed locally.
+  final DateTime requestedAt;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AcpPendingWrite &&
+          requestKey == other.requestKey &&
+          sessionId == other.sessionId &&
+          path == other.path &&
+          contentByteLength == other.contentByteLength &&
+          requestedAt == other.requestedAt;
+
+  @override
+  int get hashCode =>
+      Object.hash(requestKey, sessionId, path, contentByteLength, requestedAt);
+}
+
 /// Immutable snapshot of a single ACP session's normalized state.
 ///
 /// Everything here is either an identifier, a capability/config descriptor, a
@@ -215,6 +262,7 @@ final class AcpSessionState {
     this.promptStatus = AcpPromptStatus.idle,
     List<AcpPendingPermission> pendingPermissions =
         const <AcpPendingPermission>[],
+    List<AcpPendingWrite> pendingWrites = const <AcpPendingWrite>[],
     this.transportState,
     this.error,
     this.timeline = const AcpTimeline.empty(),
@@ -226,7 +274,8 @@ final class AcpSessionState {
        plan = List<AcpPlanEntry>.unmodifiable(plan),
        pendingPermissions = List<AcpPendingPermission>.unmodifiable(
          pendingPermissions,
-       );
+       ),
+       pendingWrites = List<AcpPendingWrite>.unmodifiable(pendingWrites);
 
   /// Stable composite identity of this session.
   final AcpSessionKey key;
@@ -291,6 +340,9 @@ final class AcpSessionState {
   /// Permission requests awaiting a user decision.
   final List<AcpPendingPermission> pendingPermissions;
 
+  /// File write requests awaiting a user decision.
+  final List<AcpPendingWrite> pendingWrites;
+
   /// Latest transport state, when connected through a MonkeyMux bridge.
   final MonkeyMuxAcpTransportState? transportState;
 
@@ -353,6 +405,7 @@ final class AcpSessionState {
     bool clearLastStopReason = false,
     AcpPromptStatus? promptStatus,
     List<AcpPendingPermission>? pendingPermissions,
+    List<AcpPendingWrite>? pendingWrites,
     MonkeyMuxAcpTransportState? transportState,
     bool clearTransportState = false,
     AcpSessionError? error,
@@ -382,6 +435,7 @@ final class AcpSessionState {
         : (lastStopReason ?? this.lastStopReason),
     promptStatus: promptStatus ?? this.promptStatus,
     pendingPermissions: pendingPermissions ?? this.pendingPermissions,
+    pendingWrites: pendingWrites ?? this.pendingWrites,
     transportState: clearTransportState
         ? null
         : (transportState ?? this.transportState),
@@ -428,6 +482,10 @@ final class AcpSessionState {
           const ListEquality<AcpPendingPermission>().equals(
             pendingPermissions,
             other.pendingPermissions,
+          ) &&
+          const ListEquality<AcpPendingWrite>().equals(
+            pendingWrites,
+            other.pendingWrites,
           );
 
   @override
@@ -454,6 +512,7 @@ final class AcpSessionState {
       const ListEquality<AcpAvailableCommand>().hash(availableCommands),
       const ListEquality<AcpPlanEntry>().hash(plan),
       const ListEquality<AcpPendingPermission>().hash(pendingPermissions),
+      const ListEquality<AcpPendingWrite>().hash(pendingWrites),
     ),
   );
 }

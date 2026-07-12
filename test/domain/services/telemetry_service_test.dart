@@ -296,6 +296,96 @@ void main() {
 
       expect(crashReporter.recordedFlutterErrors, isEmpty);
     });
+
+    group('ACP telemetry allowlist', () {
+      late _FakeAnalyticsClient analytics;
+      late TelemetryService service;
+
+      setUp(() {
+        analytics = _FakeAnalyticsClient();
+        service = TelemetryService(
+          status: TelemetryServiceStatus.ready,
+          collectionEnabled: true,
+          diagnosticsLogger: const NoopDiagnosticsLogger(),
+          analyticsClient: analytics,
+          crashReporter: _FakeCrashReporter(),
+        );
+      });
+
+      test('allowlists provider category and reconnect flags', () async {
+        await service.logAcpSessionOpened(
+          providerCategory: 'copilot_cli',
+          isReconnect: true,
+        );
+        await service.logAcpSessionOpened(
+          providerCategory: 'a-custom-user-typed-command',
+          isReconnect: false,
+        );
+
+        expect(analytics.events[0].parameters, {
+          'provider_category': 'copilot_cli',
+          'is_reconnect': 1,
+        });
+        // Anything outside the fixed provider vocabulary collapses to
+        // "unknown" rather than ever forwarding a user-authored value.
+        expect(analytics.events[1].parameters, {
+          'provider_category': 'unknown',
+          'is_reconnect': 0,
+        });
+      });
+
+      test('allowlists session-end reasons', () async {
+        await service.logAcpSessionEnded(reason: 'providerExited');
+        await service.logAcpSessionEnded(reason: 'some raw path/leak');
+
+        expect(analytics.events[0].parameters, {'reason': 'provider_exited'});
+        expect(analytics.events[1].parameters, {'reason': 'unknown'});
+      });
+
+      test(
+        'reports reconnect outcome with an optional failure category',
+        () async {
+          await service.logAcpReconnectOutcome(succeeded: true);
+          await service.logAcpReconnectOutcome(
+            succeeded: false,
+            failureCategory: 'transport',
+          );
+
+          expect(analytics.events[0].parameters, {'succeeded': 1});
+          expect(analytics.events[1].parameters, {
+            'succeeded': 0,
+            'failure_category': 'transport',
+          });
+        },
+      );
+
+      test('buckets attachment counts instead of exact numbers', () async {
+        await service.logAcpAttachmentSent(category: 'image', count: 37);
+
+        expect(analytics.events.single.parameters, {
+          'category': 'image',
+          'count_bucket': 'gt_20',
+        });
+      });
+
+      test('allowlists permission outcomes', () async {
+        await service.logAcpPermissionOutcome(outcome: 'selected');
+        await service.logAcpPermissionOutcome(outcome: 'approved-by-accident');
+
+        expect(analytics.events[0].parameters, {'outcome': 'selected'});
+        expect(analytics.events[1].parameters, {'outcome': 'unknown'});
+      });
+
+      test('allowlists failure categories', () async {
+        await service.logAcpFailure(category: 'bridgeUnavailable');
+        await service.logAcpFailure(category: '/etc/passwd');
+
+        expect(analytics.events[0].parameters, {
+          'category': 'bridge_unavailable',
+        });
+        expect(analytics.events[1].parameters, {'category': 'unknown'});
+      });
+    });
   });
 
   group('isFirebaseTelemetrySupportedPlatform', () {

@@ -271,7 +271,18 @@ final class AcpLimitExceededException extends AcpClientCapabilityException {
 }
 
 /// A state registry for user decisions that survives a transport detach.
+///
+/// Bounded so a misbehaving or malicious agent that floods requests cannot
+/// grow local memory without limit: once [maxPendingRequests] outstanding new
+/// requests are retained, [register] refuses further brand-new requests (a
+/// rebind of an already-tracked request id is always accepted).
 final class AcpPendingRequestRegistry {
+  /// Creates a pending-request registry.
+  AcpPendingRequestRegistry({this.maxPendingRequests = 200});
+
+  /// Maximum distinct outstanding requests retained at once.
+  final int maxPendingRequests;
+
   final _requests = <String, AcpPendingClientRequest>{};
   final _changes = StreamController<List<AcpPendingClientRequest>>.broadcast(
     sync: true,
@@ -285,12 +296,20 @@ final class AcpPendingRequestRegistry {
   Stream<List<AcpPendingClientRequest>> get changes => _changes.stream;
 
   /// Adds a new request or rebinds its response channel after reconnect.
-  T register<T extends AcpPendingClientRequest>(T pending) {
+  ///
+  /// Returns `null` instead of registering when the registry is already at
+  /// [maxPendingRequests] and [pending] is not a rebind of a tracked request;
+  /// the caller must then answer the request with a safe decline so it never
+  /// leaks unbounded state or leaves the agent's request unanswered.
+  T? register<T extends AcpPendingClientRequest>(T pending) {
     final existing = _requests[pending.id];
     if (existing != null && existing.runtimeType == pending.runtimeType) {
       existing.request = pending.request;
       _emit();
       return existing as T;
+    }
+    if (_requests.length >= maxPendingRequests) {
+      return null;
     }
     _requests[pending.id] = pending;
     _emit();
@@ -527,7 +546,20 @@ final class AcpClientCapabilityService {
     if (permission.sessionId.isEmpty || permission.options.isEmpty) {
       throw const AcpClientCapabilityException('Invalid permission request');
     }
-    registry.register(AcpPendingPermission(request, permission));
+    final registered = registry.register(
+      AcpPendingPermission(request, permission),
+    );
+    if (registered == null) {
+      _diagnostics.warning(
+        'acp.capability',
+        'pending_request_overflow',
+        fields: {'kind': 'permission'},
+      );
+      await request.respond(<String, Object?>{
+        'outcome': const AcpCancelledPermissionOutcome().toJson(),
+      });
+      return;
+    }
     _diagnostics.info(
       'acp.capability',
       'permission_pending',
@@ -575,7 +607,7 @@ final class AcpClientCapabilityService {
         'Write exceeds the configured limit',
       );
     }
-    registry.register(
+    final registered = registry.register(
       AcpPendingFileWrite(
         request: request,
         sessionId: sessionId,
@@ -583,6 +615,15 @@ final class AcpClientCapabilityService {
         content: content,
       ),
     );
+    if (registered == null) {
+      _diagnostics.warning(
+        'acp.capability',
+        'pending_request_overflow',
+        fields: {'kind': 'write'},
+      );
+      await request.respondError(-32000, 'Too many pending requests');
+      return;
+    }
     _diagnostics.info('acp.capability', 'write_pending');
   }
 

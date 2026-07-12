@@ -1,8 +1,40 @@
+import 'dart:convert';
+
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 
 import 'acp_content.dart';
 import 'acp_updates.dart';
+
+/// Bounds applied to a single session's in-memory [AcpTimeline].
+///
+/// These limits exist purely to cap memory: a long-running or replayed
+/// session must never grow its in-memory timeline without bound. When a limit
+/// is reached, the oldest entries are dropped and/or the largest payloads are
+/// truncated; [AcpTimeline.overflowed] is set so the UI can show a safe,
+/// content-free "earlier history was trimmed" state.
+@immutable
+final class AcpTimelineLimits {
+  /// Creates timeline limits.
+  const AcpTimelineLimits({
+    this.maxEntries = 500,
+    this.maxEntryBytes = 512 * 1024,
+    this.maxTotalBytes = 6 * 1024 * 1024,
+  });
+
+  /// Maximum retained timeline entries. Oldest entries are dropped first.
+  final int maxEntries;
+
+  /// Maximum approximate bytes retained for a single entry's content.
+  ///
+  /// Applies independently of [maxTotalBytes] so one oversized message or
+  /// tool payload cannot be retained in full even when the timeline overall
+  /// is otherwise small.
+  final int maxEntryBytes;
+
+  /// Maximum approximate total bytes retained across the whole timeline.
+  final int maxTotalBytes;
+}
 
 /// Role of a streamed ACP message in the domain timeline.
 enum AcpMessageRole {
@@ -185,14 +217,28 @@ final class AcpToolCallEntry extends AcpTimelineEntry {
 final class AcpTimeline {
   /// Creates a timeline from [entries], defensively copied into an
   /// unmodifiable list.
-  AcpTimeline({List<AcpTimelineEntry> entries = const <AcpTimelineEntry>[]})
-    : entries = List<AcpTimelineEntry>.unmodifiable(entries);
+  AcpTimeline({
+    List<AcpTimelineEntry> entries = const <AcpTimelineEntry>[],
+    this.overflowed = false,
+    this.droppedEntryCount = 0,
+  }) : entries = List<AcpTimelineEntry>.unmodifiable(entries);
 
   /// Creates the shared empty timeline.
-  const AcpTimeline.empty() : entries = const <AcpTimelineEntry>[];
+  const AcpTimeline.empty()
+    : entries = const <AcpTimelineEntry>[],
+      overflowed = false,
+      droppedEntryCount = 0;
 
   /// Ordered timeline entries.
   final List<AcpTimelineEntry> entries;
+
+  /// Whether bounded-memory limits ever dropped or truncated content for this
+  /// session. Once set, this stays `true` for the life of the session: the
+  /// dropped history can never be safely reconstructed.
+  final bool overflowed;
+
+  /// Cumulative number of oldest entries dropped to stay within limits.
+  final int droppedEntryCount;
 
   /// Whether the timeline currently holds no entries.
   bool get isEmpty => entries.isEmpty;
@@ -204,10 +250,83 @@ final class AcpTimeline {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is AcpTimeline &&
+          overflowed == other.overflowed &&
+          droppedEntryCount == other.droppedEntryCount &&
           const ListEquality<AcpTimelineEntry>().equals(entries, other.entries);
 
   @override
-  int get hashCode => const ListEquality<AcpTimelineEntry>().hash(entries);
+  int get hashCode => Object.hash(
+    overflowed,
+    droppedEntryCount,
+    const ListEquality<AcpTimelineEntry>().hash(entries),
+  );
+}
+
+/// A content block was too large to retain in full; a small marker replaces
+/// the truncated portion so the timeline stays within its byte budget.
+const _truncationMarkerText = '\n… (truncated to stay within memory limits)';
+
+/// Approximates the retained byte footprint of [block] using its JSON
+/// encoding. This is only used to bound memory, not for wire transfer.
+int approximateContentBlockBytes(AcpContentBlock block) {
+  try {
+    return utf8.encode(jsonEncode(block.toJson())).length;
+  } on Object {
+    return 256;
+  }
+}
+
+int _approximateToolContentBytes(AcpToolContent content) => switch (content) {
+  AcpToolContentBlock(:final content) => approximateContentBlockBytes(content),
+  AcpToolDiff(:final path, :final oldText, :final newText) =>
+    path.length + (oldText?.length ?? 0) + newText.length,
+  AcpToolTerminal(:final terminalId) => terminalId.length + 16,
+  AcpUnknownToolContent(:final raw) => _approximateJsonBytes(raw),
+};
+
+int _approximateJsonBytes(Object? value) {
+  try {
+    return utf8.encode(jsonEncode(value)).length;
+  } on Object {
+    return 256;
+  }
+}
+
+int _approximateMessageBytes(AcpMessageEntry entry) => entry.content.fold<int>(
+  0,
+  (total, block) => total + approximateContentBlockBytes(block),
+);
+
+int _approximateToolCallBytes(AcpToolCallEntry entry) =>
+    (entry.title?.length ?? 0) +
+    entry.content.fold<int>(
+      0,
+      (total, content) => total + _approximateToolContentBytes(content),
+    ) +
+    entry.locations.length * 32 +
+    _approximateJsonBytes(entry.rawInput) +
+    _approximateJsonBytes(entry.rawOutput);
+
+/// Approximates the retained byte footprint of one timeline entry.
+int approximateTimelineEntryBytes(AcpTimelineEntry entry) => switch (entry) {
+  AcpMessageEntry() => _approximateMessageBytes(entry),
+  AcpToolCallEntry() => _approximateToolCallBytes(entry),
+};
+
+/// Truncates the text of [block] to at most [maxBytes] UTF-8 bytes, appending
+/// a safe marker. Non-text blocks are replaced by a small placeholder because
+/// their binary payload cannot be partially truncated safely.
+AcpContentBlock _truncatedContentBlock(AcpContentBlock block, int maxBytes) {
+  if (block is AcpTextContent) {
+    final bytes = utf8.encode(block.text);
+    if (bytes.length <= maxBytes) return block;
+    final keep = maxBytes < 0 ? 0 : maxBytes;
+    final truncatedText =
+        utf8.decode(bytes.sublist(0, keep), allowMalformed: true) +
+        _truncationMarkerText;
+    return AcpTextContent(truncatedText, annotations: block.annotations);
+  }
+  return const AcpTextContent('[content omitted to stay within memory limits]');
 }
 
 /// Incrementally builds an [AcpTimeline] from streamed ACP session updates.
@@ -219,10 +338,18 @@ final class AcpTimeline {
 /// [AcpSessionState] instead. Unknown updates are ignored so forward-compatible
 /// protocol data never corrupts the timeline.
 class AcpTimelineBuilder {
+  /// Creates a timeline builder bounded by [limits].
+  AcpTimelineBuilder({AcpTimelineLimits limits = const AcpTimelineLimits()})
+    : _limits = limits;
+
+  final AcpTimelineLimits _limits;
   final List<AcpTimelineEntry> _entries = <AcpTimelineEntry>[];
   final Map<String, int> _toolCallIndex = <String, int>{};
   int _nextOrder = 0;
   int? _openMessageIndex;
+  int _totalBytes = 0;
+  bool _overflowed = false;
+  int _droppedEntryCount = 0;
 
   /// Applies [update], returning an immutable snapshot when the timeline
   /// changed, or `null` when [update] does not affect the timeline.
@@ -230,9 +357,11 @@ class AcpTimelineBuilder {
     switch (update) {
       case AcpContentChunkUpdate():
         _applyContentChunk(update);
+        _enforceLimits();
         return snapshot();
       case AcpToolCallUpdate():
         _applyToolCall(update);
+        _enforceLimits();
         return snapshot();
       // Session-scoped updates are normalized on the session state, not here.
       case AcpPlanUpdate():
@@ -248,12 +377,17 @@ class AcpTimelineBuilder {
   }
 
   /// Returns an immutable snapshot of the current timeline.
-  AcpTimeline snapshot() => AcpTimeline(entries: _entries);
+  AcpTimeline snapshot() => AcpTimeline(
+    entries: _entries,
+    overflowed: _overflowed,
+    droppedEntryCount: _droppedEntryCount,
+  );
 
   void _applyContentChunk(AcpContentChunkUpdate update) {
     final role = _roleFor(update.kind);
     if (role == null) return;
     final messageId = update.messageId;
+    final block = _boundedBlock(update.content);
 
     // Append to the currently open message when the role matches and either
     // both message IDs are absent (a single unlabeled streaming message) or
@@ -264,7 +398,7 @@ class AcpTimelineBuilder {
       if (open is AcpMessageEntry &&
           open.role == role &&
           open.messageId == messageId) {
-        _entries[openIndex] = open.appendContent(update.content);
+        _replaceEntry(openIndex, open.appendContent(block));
         return;
       }
     }
@@ -277,21 +411,21 @@ class AcpTimelineBuilder {
         if (entry is AcpMessageEntry &&
             entry.role == role &&
             entry.messageId == messageId) {
-          _entries[i] = entry.appendContent(update.content);
+          _replaceEntry(i, entry.appendContent(block));
           _openMessageIndex = i;
           return;
         }
       }
     }
 
-    _entries.add(
-      AcpMessageEntry(
-        role: role,
-        order: _nextOrder++,
-        messageId: messageId,
-        content: [update.content],
-      ),
+    final entry = AcpMessageEntry(
+      role: role,
+      order: _nextOrder++,
+      messageId: messageId,
+      content: [block],
     );
+    _totalBytes += approximateTimelineEntryBytes(entry);
+    _entries.add(entry);
     _openMessageIndex = _entries.length - 1;
   }
 
@@ -301,19 +435,92 @@ class AcpTimelineBuilder {
     if (existingIndex != null && existingIndex < _entries.length) {
       final existing = _entries[existingIndex];
       if (existing is AcpToolCallEntry) {
-        _entries[existingIndex] = existing.merge(update);
+        _replaceEntry(existingIndex, existing.merge(update));
         return;
       }
     }
     final order = _nextOrder++;
-    final entry = AcpToolCallEntry(
-      toolCallId: update.toolCallId,
-      order: order,
-    ).merge(update);
+    final entry = _boundedToolCall(
+      AcpToolCallEntry(
+        toolCallId: update.toolCallId,
+        order: order,
+      ).merge(update),
+    );
     _toolCallIndex[update.toolCallId] = _entries.length;
+    _totalBytes += approximateTimelineEntryBytes(entry);
     _entries.add(entry);
     // A tool call interrupts any open streaming message.
     _openMessageIndex = null;
+  }
+
+  void _replaceEntry(int index, AcpTimelineEntry updated) {
+    _totalBytes -= approximateTimelineEntryBytes(_entries[index]);
+    final bounded = updated is AcpToolCallEntry
+        ? _boundedToolCall(updated)
+        : updated;
+    _totalBytes += approximateTimelineEntryBytes(bounded);
+    _entries[index] = bounded;
+  }
+
+  /// Truncates an oversized standalone content block before it is stored.
+  AcpContentBlock _boundedBlock(AcpContentBlock block) {
+    final bytes = approximateContentBlockBytes(block);
+    if (bytes <= _limits.maxEntryBytes) return block;
+    _overflowed = true;
+    return _truncatedContentBlock(block, _limits.maxEntryBytes);
+  }
+
+  /// Truncates a merged tool-call entry so its retained payload stays under
+  /// [AcpTimelineLimits.maxEntryBytes].
+  AcpToolCallEntry _boundedToolCall(AcpToolCallEntry entry) {
+    if (_approximateToolCallBytes(entry) <= _limits.maxEntryBytes) {
+      return entry;
+    }
+    _overflowed = true;
+    return AcpToolCallEntry(
+      toolCallId: entry.toolCallId,
+      order: entry.order,
+      title: entry.title,
+      toolKind: entry.toolKind,
+      status: entry.status,
+      locations: entry.locations,
+      rawInput: entry.rawInput == null
+          ? null
+          : const <String, Object?>{'_truncated': true},
+      rawOutput: entry.rawOutput == null
+          ? null
+          : const <String, Object?>{'_truncated': true},
+    );
+  }
+
+  /// Drops the oldest entries so the timeline stays within its entry-count
+  /// and total-byte budgets, preserving the most recent context.
+  void _enforceLimits() {
+    var droppedThisCall = false;
+    while (_entries.length > _limits.maxEntries ||
+        (_totalBytes > _limits.maxTotalBytes && _entries.length > 1)) {
+      final dropped = _entries.removeAt(0);
+      _totalBytes -= approximateTimelineEntryBytes(dropped);
+      _droppedEntryCount++;
+      _overflowed = true;
+      droppedThisCall = true;
+    }
+    if (droppedThisCall) {
+      _rebuildIndexes();
+    }
+  }
+
+  void _rebuildIndexes() {
+    _toolCallIndex.clear();
+    for (var i = 0; i < _entries.length; i++) {
+      final entry = _entries[i];
+      if (entry is AcpToolCallEntry) {
+        _toolCallIndex[entry.toolCallId] = i;
+      }
+    }
+    _openMessageIndex = _entries.isEmpty || _entries.last is! AcpMessageEntry
+        ? null
+        : _entries.length - 1;
   }
 
   static AcpMessageRole? _roleFor(String kind) => switch (kind) {

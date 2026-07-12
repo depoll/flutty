@@ -4,7 +4,8 @@ import 'acp_updates.dart';
 /// A user-decision request retained until it is explicitly answered.
 sealed class AcpPendingClientRequest {
   /// Creates a retained client request.
-  AcpPendingClientRequest(this.request);
+  AcpPendingClientRequest(this.request, {DateTime? requestedAt})
+    : requestedAt = requestedAt ?? DateTime.now();
 
   /// Current transport-bound request responder.
   AcpJsonRpcServerRequest request;
@@ -14,12 +15,19 @@ sealed class AcpPendingClientRequest {
 
   /// ACP session that owns this request, if supplied by the agent.
   String get sessionId;
+
+  /// When this request was first observed locally.
+  ///
+  /// Stable across a reconnect rebind: [AcpPendingRequestRegistry.register]
+  /// only updates [request] on an existing entry, never replacing the object,
+  /// so this always reflects the original arrival time.
+  final DateTime requestedAt;
 }
 
 /// A pending `session/request_permission` request.
 final class AcpPendingPermission extends AcpPendingClientRequest {
   /// Creates a pending permission request.
-  AcpPendingPermission(super.request, this.permission);
+  AcpPendingPermission(super.request, this.permission, {super.requestedAt});
 
   /// Agent-provided permission details and exact selectable option IDs.
   final AcpPermissionRequest permission;
@@ -55,7 +63,8 @@ final class AcpPendingFileWrite extends AcpPendingClientRequest {
     required this.sessionId,
     required this.path,
     required this.content,
-  }) : super(request);
+    DateTime? requestedAt,
+  }) : super(request, requestedAt: requestedAt);
 
   @override
   final String sessionId;

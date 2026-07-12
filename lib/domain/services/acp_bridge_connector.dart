@@ -2,10 +2,31 @@ import 'dart:async';
 
 import '../models/monkeymux_acp_bridge.dart';
 import 'acp_client.dart';
+import 'acp_client_capability_service.dart';
 import 'acp_json_rpc_connection.dart';
 import 'monkeymux_acp_bridge_service.dart';
 import 'monkeymux_installer_service.dart';
 import 'ssh_service.dart';
+
+/// Bundles the same-host filesystem and terminal implementations used to
+/// answer ACP client-capability requests (`fs/*`, `terminal/*`).
+///
+/// Resolved once per bridge attachment against the SSH session active at
+/// attach/reconnect time, so a later SSH reconnect on the same host is picked
+/// up the next time the attachment (re)initializes.
+final class AcpHostCapabilityBinding {
+  /// Creates a capability binding.
+  const AcpHostCapabilityBinding({
+    required this.fileSystem,
+    required this.terminalExecutor,
+  });
+
+  /// Same-host SFTP-backed filesystem.
+  final AcpRemoteFileSystem fileSystem;
+
+  /// Same-host non-PTY terminal executor.
+  final AcpTerminalExecutor terminalExecutor;
+}
 
 /// A live bridge attachment: a typed ACP client plus the transport lifecycle
 /// and error signals needed to drive session state.
@@ -70,6 +91,11 @@ abstract interface class AcpBridgeConnector {
     required String bridgeId,
     required String providerId,
   });
+
+  /// Resolves the same-host filesystem/terminal binding used to answer ACP
+  /// client-capability requests, or `null` when no capability service should
+  /// be advertised (for example, no active SSH session for [hostId]).
+  Future<AcpHostCapabilityBinding?> resolveCapabilityBinding(int hostId);
 }
 
 /// Production [AcpBridgeConnector] backed by [MonkeyMuxAcpBridgeService] and
@@ -155,6 +181,20 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
       transportStates: transport.states,
       transportErrors: transport.errors,
       onClose: client.close,
+    );
+  }
+
+  @override
+  Future<AcpHostCapabilityBinding?> resolveCapabilityBinding(int hostId) async {
+    final SshSession session;
+    try {
+      session = await _sessionResolver(hostId);
+    } on Object {
+      return null;
+    }
+    return AcpHostCapabilityBinding(
+      fileSystem: AcpSftpRemoteFileSystem.fromSshSession(session),
+      terminalExecutor: AcpSshTerminalExecutor(session),
     );
   }
 }

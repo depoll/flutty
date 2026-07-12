@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/acp_client_capabilities.dart' as cap;
 import '../models/acp_content.dart';
 import '../models/acp_protocol.dart';
 import '../models/acp_provider.dart';
@@ -15,15 +17,19 @@ import '../models/acp_updates.dart';
 import '../models/monkeymux_acp_bridge.dart';
 import 'acp_bridge_connector.dart';
 import 'acp_client.dart';
+import 'acp_client_capability_service.dart';
 import 'acp_concurrency_policy.dart';
 import 'acp_json_rpc_connection.dart';
 import 'acp_provider_service.dart';
 import 'acp_recent_sessions_service.dart';
+import 'acp_telemetry.dart';
+import 'acp_telemetry_adapter.dart';
 import 'diagnostics_log_service.dart';
 import 'monetization_service.dart';
 import 'monkeymux_acp_bridge_service.dart';
 import 'monkeymux_installer_service.dart';
 import 'ssh_service.dart';
+import 'telemetry_service.dart';
 
 /// Result of a request to start or reconnect a live ACP session.
 @immutable
@@ -134,6 +140,7 @@ class AcpSessionManager {
     required bool Function() isProUnlocked,
     AcpConcurrencyPolicy concurrencyPolicy = const AcpConcurrencyPolicy(),
     DiagnosticsLogger? diagnostics,
+    AcpTelemetrySink telemetry = const NoopAcpTelemetrySink(),
     DateTime Function() clock = DateTime.now,
   }) : _connector = connector,
        _providerService = providerService,
@@ -141,6 +148,7 @@ class AcpSessionManager {
        _isProUnlocked = isProUnlocked,
        _policy = concurrencyPolicy,
        _diagnostics = diagnostics ?? DiagnosticsLogService.instance,
+       _telemetry = telemetry,
        _clock = clock;
 
   final AcpBridgeConnector _connector;
@@ -149,6 +157,7 @@ class AcpSessionManager {
   final bool Function() _isProUnlocked;
   final AcpConcurrencyPolicy _policy;
   final DiagnosticsLogger _diagnostics;
+  final AcpTelemetrySink _telemetry;
   final DateTime Function() _clock;
 
   final Map<String, _SessionController> _controllers =
@@ -190,6 +199,7 @@ class AcpSessionManager {
     MonkeyMuxInstallConfirmation? confirmInstall,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
+    _telemetry.featureOpened();
     final launch = await _resolveLaunch(providerId);
     if (launch is _LaunchError) {
       return AcpSessionLaunchFailed(null, launch.error);
@@ -224,6 +234,7 @@ class AcpSessionManager {
     required String cwd,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
+    _telemetry.featureOpened();
     final key = AcpSessionKey.of(
       hostId: hostId,
       providerId: providerId,
@@ -287,8 +298,31 @@ class AcpSessionManager {
     AcpSessionKey key,
     List<AcpContentBlock> content,
   ) {
+    _reportAttachmentTelemetry(content);
     final controller = _requireController(key);
     return controller.prompt(content);
+  }
+
+  /// Reports coarse, allowlisted attachment counts for one prompt turn.
+  ///
+  /// Only category and count are reported; content, file names, and paths
+  /// are never inspected beyond determining the ACP content-block type.
+  void _reportAttachmentTelemetry(List<AcpContentBlock> content) {
+    final counts = <String, int>{};
+    for (final block in content) {
+      final category = switch (block) {
+        AcpImageContent() => 'image',
+        AcpAudioContent() => 'audio',
+        AcpResourceContent() || AcpResourceLinkContent() => 'resource',
+        AcpTextContent() || AcpUnknownContent() => null,
+      };
+      if (category == null) continue;
+      counts[category] = (counts[category] ?? 0) + 1;
+    }
+    counts.forEach(
+      (category, count) =>
+          _telemetry.attachmentSent(category: category, count: count),
+    );
   }
 
   /// Cancels the active prompt turn for [key].
@@ -321,6 +355,14 @@ class AcpSessionManager {
   /// Cancels a pending permission request.
   Future<void> cancelPermission(AcpSessionKey key, String requestKey) =>
       _requireController(key).cancelPermission(requestKey);
+
+  /// Approves a pending file write after explicit user confirmation.
+  Future<void> approveWrite(AcpSessionKey key, String requestKey) =>
+      _requireController(key).approveWrite(requestKey);
+
+  /// Rejects a pending file write.
+  Future<void> rejectWrite(AcpSessionKey key, String requestKey) =>
+      _requireController(key).rejectWrite(requestKey);
 
   /// Detaches locally from [key] while leaving the remote bridge running.
   Future<void> detachSession(AcpSessionKey key) =>
@@ -461,6 +503,10 @@ class AcpSessionManager {
             bridgeId: bridgeId,
             providerId: launch.providerId,
           ),
+          capabilityServiceFactory: _capabilityServiceFactory(
+            hostId: hostId,
+            cwd: cwd,
+          ),
         );
     _attachments[bridgeKey.value] = attachment;
 
@@ -496,6 +542,10 @@ class AcpSessionManager {
             'startMs': _clock().difference(bridgeStartedAt).inMilliseconds,
         },
       );
+      _telemetry.sessionOpened(
+        providerCategory: launch.providerId,
+        isReconnect: existingSessionId != null,
+      );
       return AcpSessionLaunchStarted(key);
     } on _LaunchException catch (error) {
       await controller.disposeLocal();
@@ -504,6 +554,7 @@ class AcpSessionManager {
         hostId: hostId,
         bridgeId: bridgeId,
       );
+      _telemetry.failure(category: error.error.kind.name);
       return AcpSessionLaunchFailed(error.key, error.error);
     } on Object catch (error) {
       await controller.disposeLocal();
@@ -513,6 +564,7 @@ class AcpSessionManager {
         hostId: hostId,
         bridgeId: bridgeId,
       );
+      _telemetry.failure(category: mapped.kind.name);
       return AcpSessionLaunchFailed(null, mapped);
     }
   }
@@ -579,6 +631,7 @@ class AcpSessionManager {
       final bridgeId = key.bridgeId;
       // Release the local lease (idempotent) and cancel streams.
       await controller.disposeLocal();
+      _telemetry.sessionEnded(reason: 'stopped');
       // Explicit stop must terminate the remote bridge process even if this
       // session had detached locally, unless another live session still uses
       // that bridge (for example, a fork sharing the same provider process).
@@ -599,8 +652,44 @@ class AcpSessionManager {
     _emit();
   }
 
-  Future<bool> _releaseAttachment(_BridgeAttachment attachment) async {
-    final closed = await attachment.release();
+  /// Builds a lazy capability-service factory bound to [hostId] and [cwd].
+  ///
+  /// Resolved once per [_BridgeAttachment], immediately before its first
+  /// `initialize`, so it observes whichever SSH session is active for the
+  /// host at that moment (including after an SSH reconnect). The capability
+  /// service is always created so `session/request_permission` is always
+  /// routed and answered; when no same-host filesystem/terminal binding can
+  /// be resolved, `fs/*`/`terminal/*` requests are simply declined as
+  /// unavailable rather than left unanswered.
+  Future<AcpClientCapabilityService> Function() _capabilityServiceFactory({
+    required int hostId,
+    required String cwd,
+  }) => () async {
+    AcpHostCapabilityBinding? binding;
+    try {
+      binding = await _connector.resolveCapabilityBinding(hostId);
+    } on Object catch (error) {
+      _diagnostics.warning(
+        'acp.manager',
+        'capability_binding_failed',
+        fields: {'hostId': hostId, 'errorType': error.runtimeType},
+      );
+      binding = null;
+    }
+    return AcpClientCapabilityService(
+      fileSystem: binding?.fileSystem,
+      terminalExecutor: binding?.terminalExecutor,
+      allowedRoots: <String>[cwd],
+      registry: AcpPendingRequestRegistry(),
+      diagnostics: _diagnostics,
+    );
+  };
+
+  Future<bool> _releaseAttachment(
+    _BridgeAttachment attachment, {
+    bool permanent = false,
+  }) async {
+    final closed = await attachment.release(permanent: permanent);
     if (closed &&
         identical(_attachments[attachment.bridgeKey.value], attachment)) {
       _attachments.remove(attachment.bridgeKey.value);
@@ -735,25 +824,34 @@ class _BridgeAttachment {
     required this.bridgeKey,
     required this.providerId,
     required AcpBridgeSession session,
-  }) : _session = session;
+    required Future<AcpClientCapabilityService> Function()
+    capabilityServiceFactory,
+  }) : _session = session,
+       _capabilityServiceFactory = capabilityServiceFactory;
 
   final AcpBridgeKey bridgeKey;
   final String providerId;
   final AcpBridgeSession _session;
+  final Future<AcpClientCapabilityService> Function() _capabilityServiceFactory;
   int _refCount = 0;
   AcpInitializeResult? _initialization;
   Future<AcpInitializeResult>? _initializeFuture;
   Future<void>? _closeFuture;
+  AcpClientCapabilityService? _capabilityService;
   var _terminated = false;
 
   AcpClient get client => _session.client;
   Stream<AcpSessionNotification> get notifications => client.updates;
-  Stream<AcpServerRequest> get serverRequests => client.serverRequests;
   Stream<MonkeyMuxAcpTransportState> get transportStates =>
       _session.transportStates;
   Stream<MonkeyMuxAcpBridgeException> get transportErrors =>
       _session.transportErrors;
   AcpInitializeResult? get initialization => _initialization;
+
+  /// The capability service bound to this attachment's client, or `null` when
+  /// no same-host filesystem/terminal binding was available at initialize
+  /// time (the ACP session still works; fs/terminal requests are declined).
+  AcpClientCapabilityService? get capabilityService => _capabilityService;
 
   /// Whether the underlying transport has terminally failed or been closed and
   /// this attachment must be replaced rather than reused on reconnect.
@@ -771,30 +869,58 @@ class _BridgeAttachment {
   /// Releases one lease. Returns `true` only when this call dropped the last
   /// lease and closed the transport. Never decrements below zero and never
   /// closes the transport more than once.
-  Future<bool> release() async {
+  ///
+  /// [permanent] distinguishes a temporary local detach (the remote bridge
+  /// stays alive and pending permissions/writes must survive to be replayed
+  /// on the next reconnect) from a genuinely final teardown such as an
+  /// explicit stop or app disposal, where outstanding requests are cancelled
+  /// because no one will ever answer them.
+  Future<bool> release({bool permanent = false}) async {
     if (_refCount <= 0) return false;
     _refCount--;
     if (_refCount > 0) return false;
-    await _close();
+    await _close(permanent: permanent);
     return true;
   }
 
   Future<void> forceClose() async {
     _refCount = 0;
-    await _close();
+    await _close(permanent: true);
   }
 
-  Future<void> _close() => _closeFuture ??= _session.close();
+  Future<void> _close({required bool permanent}) =>
+      _closeFuture ??= _performClose(permanent: permanent);
+
+  Future<void> _performClose({required bool permanent}) async {
+    if (permanent) {
+      // Fully destroys session-owned terminals and pending requests: once
+      // the last session leasing this bridge attachment releases it for
+      // good, there is no one left to answer them.
+      await _capabilityService?.close();
+    } else {
+      // Only stops routing new server requests locally; the registry (and
+      // any pending permissions/writes) survives so the next reconnect can
+      // rebind and replay them without duplicating or auto-answering them.
+      await _capabilityService?.detach();
+    }
+    await _session.close();
+  }
 
   Future<AcpInitializeResult> ensureInitialized() =>
       _initializeFuture ??= _doInitialize();
 
   Future<AcpInitializeResult> _doInitialize() async {
-    final result = await client.initialize();
+    final service = _capabilityService ??= await _capabilityServiceFactory();
+    final result = await service.initialize(client);
     _initialization = result;
     return result;
   }
 }
+
+/// Maximum retained entries for session-scoped lists (plan steps, available
+/// commands, config options) that a misbehaving agent could otherwise grow
+/// without bound. Oldest entries are dropped, keeping the most recent state.
+const _maxSessionListEntries = 200;
 
 /// Owns the normalized state and streaming lifecycle for one ACP session.
 class _SessionController {
@@ -825,11 +951,9 @@ class _SessionController {
   final DiagnosticsLogger _diagnostics;
 
   final AcpTimelineBuilder _timelineBuilder = AcpTimelineBuilder();
-  final Map<String, AcpPermissionServerRequest> _pendingRequests =
-      <String, AcpPermissionServerRequest>{};
 
   StreamSubscription<AcpSessionNotification>? _updatesSub;
-  StreamSubscription<AcpServerRequest>? _serverRequestsSub;
+  StreamSubscription<List<cap.AcpPendingClientRequest>>? _capabilityRequestsSub;
   StreamSubscription<MonkeyMuxAcpTransportState>? _transportSub;
   StreamSubscription<MonkeyMuxAcpBridgeException>? _transportErrorSub;
 
@@ -855,11 +979,12 @@ class _SessionController {
   ///
   /// Returns whether releasing dropped the attachment's last lease (closing
   /// the local transport). A controller that already released (for example a
-  /// detached original) never decrements the count again.
-  Future<bool> _releaseLease() async {
+  /// detached original) never decrements the count again. See
+  /// [_BridgeAttachment.release] for the meaning of [permanent].
+  Future<bool> _releaseLease({bool permanent = false}) async {
     if (!_holdsAttachment) return false;
     _holdsAttachment = false;
-    return _manager._releaseAttachment(attachment);
+    return _manager._releaseAttachment(attachment, permanent: permanent);
   }
 
   /// Opens the session: initializes the connection and creates/loads/resumes
@@ -1014,7 +1139,7 @@ class _SessionController {
         modelState: result.models,
         configOptions: result.configOptions.isEmpty
             ? s.configOptions
-            : result.configOptions,
+            : _bounded(result.configOptions, _maxSessionListEntries),
       ),
     );
   }
@@ -1026,11 +1151,22 @@ class _SessionController {
 
   void _subscribeSessionStreams() {
     _updatesSub?.cancel();
-    _serverRequestsSub?.cancel();
+    _capabilityRequestsSub?.cancel();
     _updatesSub = attachment.notifications
         .where((notification) => notification.sessionId == _key.acpSessionId)
         .listen(_onSessionUpdate);
-    _serverRequestsSub = attachment.serverRequests.listen(_onServerRequest);
+    // The capability service (not this controller) is the sole subscriber of
+    // `serverRequests`: it is the only place that answers fs/terminal/
+    // permission requests, so there is exactly one responder per request.
+    // This controller only mirrors the shared registry's current pending
+    // requests for this session into UI-facing state.
+    final capabilityService = attachment.capabilityService;
+    if (capabilityService != null) {
+      _onCapabilityRequestsChanged(capabilityService.registry.requests);
+      _capabilityRequestsSub = capabilityService.registry.changes.listen(
+        _onCapabilityRequestsChanged,
+      );
+    }
   }
 
   void _onSessionUpdate(AcpSessionNotification notification) {
@@ -1041,11 +1177,15 @@ class _SessionController {
       if (timeline != null) next = next.copyWith(timeline: timeline);
       switch (update) {
         case AcpPlanUpdate(:final entries):
-          next = next.copyWith(plan: entries);
+          next = next.copyWith(plan: _bounded(entries, _maxSessionListEntries));
         case AcpAvailableCommandsUpdate(:final commands):
-          next = next.copyWith(availableCommands: commands);
+          next = next.copyWith(
+            availableCommands: _bounded(commands, _maxSessionListEntries),
+          );
         case AcpConfigOptionsUpdate(:final options):
-          next = next.copyWith(configOptions: options);
+          next = next.copyWith(
+            configOptions: _bounded(options, _maxSessionListEntries),
+          );
         case AcpUsageUpdate():
           next = next.copyWith(usage: update);
         case AcpCurrentModeUpdate(:final modeId):
@@ -1087,72 +1227,99 @@ class _SessionController {
     });
   }
 
-  void _onServerRequest(AcpServerRequest request) {
-    if (request is! AcpPermissionServerRequest) return;
-    if (request.permission.sessionId != _key.acpSessionId) return;
-    // Deduplicate by the stable JSON-RPC request id so a replayed permission
-    // request (for example after reconnect) rebinds the responder onto the
-    // current connection without appending a second pending UI entry.
-    final requestKey = 'perm:${request.raw.id}';
-    final isNew = !_pendingRequests.containsKey(requestKey);
-    _pendingRequests[requestKey] = request;
-    if (!isNew) {
-      _diagnostics.debug(
-        'acp.session',
-        'permission_rebound',
-        fields: {'pendingCount': _pendingRequests.length},
-      );
-      return;
+  static List<T> _bounded<T>(List<T> values, int maxLength) =>
+      values.length <= maxLength
+      ? values
+      : values.sublist(values.length - maxLength);
+
+  /// Mirrors the shared capability registry's pending requests that belong to
+  /// this ACP session into UI-facing [AcpSessionState] snapshots.
+  ///
+  /// This is the single place pending permissions/writes are derived: the
+  /// registry (owned by the bridge attachment's capability service) is the
+  /// only live responder, so there is nothing left to deduplicate here beyond
+  /// filtering by session id.
+  void _onCapabilityRequestsChanged(
+    List<cap.AcpPendingClientRequest> requests,
+  ) {
+    final permissions = <AcpPendingPermission>[];
+    final writes = <AcpPendingWrite>[];
+    for (final request in requests) {
+      if (request.sessionId != _key.acpSessionId) continue;
+      switch (request) {
+        case cap.AcpPendingPermission(:final permission):
+          permissions.add(
+            AcpPendingPermission(
+              requestKey: request.id,
+              sessionId: request.sessionId,
+              toolCallId: permission.toolCall.toolCallId,
+              options: permission.options,
+              requestedAt: request.requestedAt,
+            ),
+          );
+        case cap.AcpPendingFileWrite(:final path, :final content):
+          writes.add(
+            AcpPendingWrite(
+              requestKey: request.id,
+              sessionId: request.sessionId,
+              path: path,
+              contentByteLength: utf8.encode(content).length,
+              requestedAt: request.requestedAt,
+            ),
+          );
+      }
     }
-    final pending = AcpPendingPermission(
-      requestKey: requestKey,
-      sessionId: request.permission.sessionId,
-      toolCallId: request.permission.toolCall.toolCallId,
-      options: request.permission.options,
-      requestedAt: _clock(),
-    );
     _update(
-      (s) => s.copyWith(pendingPermissions: [...s.pendingPermissions, pending]),
-    );
-    _diagnostics.debug(
-      'acp.session',
-      'permission_requested',
-      fields: {'pendingCount': _pendingRequests.length},
+      (s) => s.copyWith(pendingPermissions: permissions, pendingWrites: writes),
     );
   }
 
   Future<void> respondToPermission(String requestKey, String optionId) async {
-    final request = _pendingRequests.remove(requestKey);
-    _removePending(requestKey);
-    if (request == null) return;
-    await request.select(optionId);
+    final service = attachment.capabilityService;
+    if (service == null) return;
+    await service.selectPermission(requestKey, optionId);
     _diagnostics.debug(
       'acp.session',
       'permission_resolved',
       fields: {'outcome': 'selected'},
     );
+    _manager._telemetry.permissionOutcome(outcome: 'selected');
   }
 
   Future<void> cancelPermission(String requestKey) async {
-    final request = _pendingRequests.remove(requestKey);
-    _removePending(requestKey);
-    if (request == null) return;
-    await request.cancel();
+    final service = attachment.capabilityService;
+    if (service == null) return;
+    await service.cancelPermission(requestKey);
     _diagnostics.debug(
       'acp.session',
       'permission_resolved',
       fields: {'outcome': 'cancelled'},
     );
+    _manager._telemetry.permissionOutcome(outcome: 'cancelled');
   }
 
-  void _removePending(String requestKey) {
-    _update(
-      (s) => s.copyWith(
-        pendingPermissions: s.pendingPermissions
-            .where((p) => p.requestKey != requestKey)
-            .toList(growable: false),
-      ),
+  Future<void> approveWrite(String requestKey) async {
+    final service = attachment.capabilityService;
+    if (service == null) return;
+    await service.approveWrite(requestKey);
+    _diagnostics.debug(
+      'acp.session',
+      'write_resolved',
+      fields: {'outcome': 'approved'},
     );
+    _manager._telemetry.permissionOutcome(outcome: 'write_approved');
+  }
+
+  Future<void> rejectWrite(String requestKey) async {
+    final service = attachment.capabilityService;
+    if (service == null) return;
+    await service.rejectWrite(requestKey);
+    _diagnostics.debug(
+      'acp.session',
+      'write_resolved',
+      fields: {'outcome': 'rejected'},
+    );
+    _manager._telemetry.permissionOutcome(outcome: 'write_rejected');
   }
 
   Future<AcpPromptResult> prompt(List<AcpContentBlock> content) async {
@@ -1402,6 +1569,10 @@ class _SessionController {
           bridgeId: bridgeId,
           providerId: providerId,
         ),
+        capabilityServiceFactory: _manager._capabilityServiceFactory(
+          hostId: hostId,
+          cwd: _cwd,
+        ),
       );
       _manager._attachments[bridgeKey.value] = target;
     }
@@ -1422,6 +1593,7 @@ class _SessionController {
       _subscribeSessionStreams();
       await _establishSession(sessionId, init);
       _update((s) => s.copyWith(status: AcpConnectionStatus.ready));
+      _manager._telemetry.reconnectOutcome(succeeded: true);
     } on Object catch (error) {
       final mapped = error is _LaunchException
           ? error.error
@@ -1435,6 +1607,10 @@ class _SessionController {
       );
       await _cancelSubscriptions();
       await _releaseLease();
+      _manager._telemetry.reconnectOutcome(
+        succeeded: false,
+        failureCategory: mapped.kind.name,
+      );
       throw _LaunchException(_key, mapped);
     }
   }
@@ -1463,6 +1639,7 @@ class _SessionController {
               message: 'The remote agent process exited.',
             ),
           );
+          _manager._telemetry.sessionEnded(reason: 'provider_exited');
         case MonkeyMuxAcpTransportStatus.failed:
           attachment.markTerminated();
           next = next.copyWith(
@@ -1472,6 +1649,7 @@ class _SessionController {
               message: 'The agent connection failed.',
             ),
           );
+          _manager._telemetry.sessionEnded(reason: 'transport_failed');
         case MonkeyMuxAcpTransportStatus.closed:
           if (s.status != AcpConnectionStatus.detached) {
             next = next.copyWith(status: AcpConnectionStatus.closed);
@@ -1479,6 +1657,26 @@ class _SessionController {
       }
       return next;
     });
+    switch (transportState.status) {
+      case MonkeyMuxAcpTransportStatus.providerExited:
+      case MonkeyMuxAcpTransportStatus.failed:
+      case MonkeyMuxAcpTransportStatus.closed:
+        // The transport is confirmed gone (not merely reconnecting): release
+        // local subscriptions and the attachment lease so terminals and
+        // stream listeners never leak. This never stops an unrelated bridge:
+        // it only releases this controller's own lease, and the shared
+        // attachment only closes once every session leasing it has done so.
+        unawaited(_cleanUpAfterTerminalTransport());
+      case MonkeyMuxAcpTransportStatus.connecting:
+      case MonkeyMuxAcpTransportStatus.connected:
+      case MonkeyMuxAcpTransportStatus.reconnecting:
+        break;
+    }
+  }
+
+  Future<void> _cleanUpAfterTerminalTransport() async {
+    await _cancelSubscriptions();
+    await _releaseLease();
   }
 
   void _onTransportError(MonkeyMuxAcpBridgeException error) {
@@ -1506,16 +1704,11 @@ class _SessionController {
     if (_disposed) return;
     _disposed = true;
     await _cancelSubscriptions();
-    for (final request in _pendingRequests.values) {
-      try {
-        await request.cancel();
-      } on Object {
-        // Best-effort cancellation on teardown.
-      }
-    }
-    _pendingRequests.clear();
     // Release the local lease exactly once (a no-op if already detached).
-    await _releaseLease();
+    // Permanent: this session is being explicitly stopped, deleted, or torn
+    // down with the app, so the capability service's registry is cancelled
+    // when this was the attachment's last lease rather than left pending.
+    await _releaseLease(permanent: true);
     if (_state.status != AcpConnectionStatus.detached) {
       _state = _state.copyWith(
         status: AcpConnectionStatus.closed,
@@ -1526,11 +1719,11 @@ class _SessionController {
 
   Future<void> _cancelSubscriptions() async {
     await _updatesSub?.cancel();
-    await _serverRequestsSub?.cancel();
+    await _capabilityRequestsSub?.cancel();
     await _transportSub?.cancel();
     await _transportErrorSub?.cancel();
     _updatesSub = null;
-    _serverRequestsSub = null;
+    _capabilityRequestsSub = null;
     _transportSub = null;
     _transportErrorSub = null;
   }
@@ -1650,6 +1843,7 @@ final acpSessionManagerProvider = Provider<AcpSessionManager>((ref) {
     recentSessions: ref.watch(acpRecentSessionsServiceProvider),
     isProUnlocked: () =>
         ref.read(monetizationServiceProvider).currentState.isProUnlocked,
+    telemetry: AcpTelemetryAdapter(ref.watch(telemetryServiceProvider)),
   );
   ref.onDispose(manager.dispose);
   return manager;

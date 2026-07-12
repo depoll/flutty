@@ -126,6 +126,104 @@ void main() {
     });
   });
 
+  group('AcpTimelineBuilder bounded memory', () {
+    test('drops the oldest entries once maxEntries is exceeded', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(maxEntries: 3),
+      );
+      AcpTimeline? last;
+      for (var i = 0; i < 5; i++) {
+        last = builder.apply(
+          _chunk('agent_message_chunk', 'msg$i', messageId: 'm$i'),
+        );
+      }
+      expect(last!.entries, hasLength(3));
+      expect(last.overflowed, isTrue);
+      expect(last.droppedEntryCount, 2);
+      // The most recent entries are preserved; oldest are gone.
+      final texts = last.entries
+          .map(
+            (e) =>
+                ((e as AcpMessageEntry).content.single as AcpTextContent).text,
+          )
+          .toList();
+      expect(texts, ['msg2', 'msg3', 'msg4']);
+    });
+
+    test('truncates a single oversized text chunk', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(maxEntryBytes: 16),
+      );
+      final timeline = _run(builder, [
+        _chunk('agent_message_chunk', 'x' * 1000, messageId: 'm1'),
+      ]);
+      expect(timeline.overflowed, isTrue);
+      final entry = timeline.entries.single as AcpMessageEntry;
+      final text = (entry.content.single as AcpTextContent).text;
+      expect(text.length, lessThan(1000));
+      expect(text, contains('truncated'));
+    });
+
+    test('drops oldest entries once the total byte budget is exceeded', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(
+          maxEntries: 1000,
+          maxTotalBytes: 200,
+          maxEntryBytes: 1000,
+        ),
+      );
+      AcpTimeline? last;
+      for (var i = 0; i < 20; i++) {
+        last = builder.apply(
+          _chunk('agent_message_chunk', 'x' * 40, messageId: 'm$i'),
+        );
+      }
+      expect(last!.overflowed, isTrue);
+      expect(last.entries.length, lessThan(20));
+      expect(last.droppedEntryCount, greaterThan(0));
+    });
+
+    test('truncates an oversized merged tool-call payload', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(maxEntryBytes: 32),
+      );
+      final timeline = _run(builder, [
+        AcpToolCallUpdate(
+          toolCallId: 't1',
+          isInitial: true,
+          title: 'Read',
+          rawOutput: 'y' * 1000,
+        ),
+      ]);
+      expect(timeline.overflowed, isTrue);
+      final entry = timeline.entries.single as AcpToolCallEntry;
+      expect(entry.title, 'Read');
+      expect(entry.rawOutput, isNot('y' * 1000));
+    });
+
+    test('never drops below one entry even when it alone exceeds the '
+        'total byte budget', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(
+          maxTotalBytes: 1,
+          maxEntryBytes: 1 << 30,
+        ),
+      );
+      final timeline = _run(builder, [
+        _chunk('agent_message_chunk', 'single entry', messageId: 'm1'),
+      ]);
+      expect(timeline.entries, hasLength(1));
+    });
+
+    test('keeps unaffected timelines free of overflow state', () {
+      final timeline = _run(AcpTimelineBuilder(), [
+        _chunk('agent_message_chunk', 'small', messageId: 'm1'),
+      ]);
+      expect(timeline.overflowed, isFalse);
+      expect(timeline.droppedEntryCount, 0);
+    });
+  });
+
   group('defensive lists', () {
     test('timeline entries are defensively copied and unmodifiable', () {
       final content = <AcpContentBlock>[const AcpTextContent('a')];

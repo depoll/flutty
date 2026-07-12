@@ -2,6 +2,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,10 +15,12 @@ import 'package:monkeyssh/domain/models/acp_timeline.dart';
 import 'package:monkeyssh/domain/models/monkeymux_acp_bridge.dart';
 import 'package:monkeyssh/domain/services/acp_bridge_connector.dart';
 import 'package:monkeyssh/domain/services/acp_client.dart';
+import 'package:monkeyssh/domain/services/acp_client_capability_service.dart';
 import 'package:monkeyssh/domain/services/acp_json_rpc_connection.dart';
 import 'package:monkeyssh/domain/services/acp_provider_service.dart';
 import 'package:monkeyssh/domain/services/acp_recent_sessions_service.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
+import 'package:monkeyssh/domain/services/acp_telemetry.dart';
 import 'package:monkeyssh/domain/services/acp_transport.dart';
 import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
@@ -188,6 +191,14 @@ class _FakeAcpServer implements AcpTransport {
     });
   }
 
+  /// Sends a server-to-client request with an auto-allocated id and returns
+  /// that id. The client's eventual response lands in [permissionResponses].
+  Object pushServerRequest(String method, Map<String, Object?> params) {
+    final id = 'srv-${++_serverRequestId}';
+    _push({'jsonrpc': '2.0', 'id': id, 'method': method, 'params': params});
+    return id;
+  }
+
   void _reply(Object? id, Object? result) =>
       _push({'jsonrpc': '2.0', 'id': id, 'result': result});
 
@@ -210,12 +221,84 @@ class _FakeAcpServer implements AcpTransport {
   }
 }
 
+/// Records every telemetry call for assertions without needing Firebase.
+class _RecordingTelemetrySink implements AcpTelemetrySink {
+  final events = <String>[];
+
+  @override
+  void featureOpened() => events.add('featureOpened');
+
+  @override
+  void sessionOpened({
+    required String providerCategory,
+    required bool isReconnect,
+  }) => events.add('sessionOpened:$providerCategory:$isReconnect');
+
+  @override
+  void sessionEnded({required String reason}) =>
+      events.add('sessionEnded:$reason');
+
+  @override
+  void reconnectOutcome({required bool succeeded, String? failureCategory}) =>
+      events.add('reconnectOutcome:$succeeded:${failureCategory ?? ''}');
+
+  @override
+  void attachmentSent({required String category, required int count}) =>
+      events.add('attachmentSent:$category:$count');
+
+  @override
+  void permissionOutcome({required String outcome}) =>
+      events.add('permissionOutcome:$outcome');
+
+  @override
+  void failure({required String category}) => events.add('failure:$category');
+}
+
+/// Minimal in-memory filesystem used to test capability-service wiring.
+class _FakeCapabilityFileSystem implements AcpRemoteFileSystem {
+  final files = <String, Uint8List>{};
+  final writes = <String, String>{};
+
+  @override
+  Future<String> canonicalizeExistingPath(String path) async => path;
+
+  @override
+  Future<String> canonicalizeWritePath(String path) async => path;
+
+  @override
+  Future<Uint8List> read(String path, {required int maxBytes}) async {
+    final bytes = files[path];
+    if (bytes == null) {
+      throw const AcpClientCapabilityException('Missing file');
+    }
+    return bytes;
+  }
+
+  @override
+  Future<void> write(String path, Uint8List bytes) async {
+    writes[path] = utf8.decode(bytes);
+  }
+}
+
+/// Minimal terminal executor used only to satisfy [AcpHostCapabilityBinding]
+/// in capability-wiring tests that do not exercise `terminal/*` methods.
+class _FakeCapabilityTerminalExecutor implements AcpTerminalExecutor {
+  @override
+  Future<AcpTerminalProcess> start(String command) =>
+      throw UnimplementedError();
+}
+
 /// Fake connector that records bridge lifecycle calls and wires each bridge to
 /// a controllable [_FakeAcpServer].
 class _FakeConnector implements AcpBridgeConnector {
-  _FakeConnector({this.serverFactory});
+  _FakeConnector({this.serverFactory, this.capabilityBinding});
 
   final _FakeAcpServer Function(int hostId, String bridgeId)? serverFactory;
+
+  /// When set, returned for every [resolveCapabilityBinding] call, mirroring
+  /// production wiring where the bridge attachment gets one same-host
+  /// filesystem/terminal binding.
+  final AcpHostCapabilityBinding? capabilityBinding;
 
   final List<String> startedBridges = <String>[];
   final List<String> stoppedBridges = <String>[];
@@ -296,6 +379,11 @@ class _FakeConnector implements AcpBridgeConnector {
       },
     );
   }
+
+  @override
+  Future<AcpHostCapabilityBinding?> resolveCapabilityBinding(
+    int hostId,
+  ) async => capabilityBinding;
 }
 
 void main() {
@@ -315,13 +403,17 @@ void main() {
     diagnostics: const NoopDiagnosticsLogger(),
   );
 
-  AcpSessionManager buildManagerWith(_FakeConnector custom) {
+  AcpSessionManager buildManagerWith(
+    _FakeConnector custom, {
+    AcpTelemetrySink telemetry = const NoopAcpTelemetrySink(),
+  }) {
     final built = AcpSessionManager(
       connector: custom,
       providerService: providerService,
       recentSessions: recentSessions,
       isProUnlocked: () => isPro,
       diagnostics: const NoopDiagnosticsLogger(),
+      telemetry: telemetry,
     );
     addTearDown(built.dispose);
     return built;
@@ -529,6 +621,170 @@ void main() {
       );
       await _pump();
       expect(manager.state.byKeyValue(key.value)!.pendingPermissions, isEmpty);
+      expect(server.permissionResponses[requestId], isNotNull);
+    });
+  });
+
+  group('capability wiring', () {
+    test('routes fs/read_text_file through the resolved binding instead of '
+        'leaving it unanswered', () async {
+      final fileSystem = _FakeCapabilityFileSystem()
+        ..files['/repo/a.txt'] = Uint8List.fromList(utf8.encode('hello'));
+      final capableConnector = _FakeConnector(
+        capabilityBinding: AcpHostCapabilityBinding(
+          fileSystem: fileSystem,
+          terminalExecutor: _FakeCapabilityTerminalExecutor(),
+        ),
+      );
+      final capableManager = buildManagerWith(capableConnector);
+      final result = await capableManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (result as AcpSessionLaunchStarted).key;
+      final server = capableConnector.servers[key.bridgeId]!;
+
+      final requestId = server.pushServerRequest('fs/read_text_file', {
+        'sessionId': key.acpSessionId,
+        'path': '/repo/a.txt',
+      });
+      await _pump();
+
+      final response = server.permissionResponses[requestId];
+      expect(response, isNotNull);
+      expect((response! as Map)['content'], 'hello');
+    });
+
+    test(
+      'declines fs/terminal requests safely when no binding is available',
+      () async {
+        final key = await startCopilot();
+        final server = connector.servers[key.bridgeId]!;
+        final requestId = server.pushServerRequest('fs/read_text_file', {
+          'sessionId': key.acpSessionId,
+          'path': '/repo/a.txt',
+        });
+        await _pump();
+        final response = server.permissionResponses[requestId];
+        expect(response, isNotNull);
+        expect((response! as Map).containsKey('code'), isTrue);
+      },
+    );
+
+    test('queues a pending write, surfaces it on session state, and '
+        'approveWrite completes it', () async {
+      final fileSystem = _FakeCapabilityFileSystem();
+      final capableConnector = _FakeConnector(
+        capabilityBinding: AcpHostCapabilityBinding(
+          fileSystem: fileSystem,
+          terminalExecutor: _FakeCapabilityTerminalExecutor(),
+        ),
+      );
+      final capableManager = buildManagerWith(capableConnector);
+      final result = await capableManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (result as AcpSessionLaunchStarted).key;
+      final server = capableConnector.servers[key.bridgeId]!;
+
+      final requestId = server.pushServerRequest('fs/write_text_file', {
+        'sessionId': key.acpSessionId,
+        'path': '/repo/new.txt',
+        'content': 'written content',
+      });
+      await _pump();
+
+      final pendingWrites = capableManager.state
+          .byKeyValue(key.value)!
+          .pendingWrites;
+      expect(pendingWrites, hasLength(1));
+      expect(pendingWrites.single.path, '/repo/new.txt');
+
+      await capableManager.approveWrite(key, pendingWrites.single.requestKey);
+      await _pump();
+
+      expect(fileSystem.writes['/repo/new.txt'], 'written content');
+      expect(
+        capableManager.state.byKeyValue(key.value)!.pendingWrites,
+        isEmpty,
+      );
+      // A successful write responds with a null JSON-RPC result, so check
+      // presence rather than non-null.
+      expect(server.permissionResponses.containsKey(requestId), isTrue);
+    });
+
+    test(
+      'rejectWrite declines without writing and clears the pending state',
+      () async {
+        final fileSystem = _FakeCapabilityFileSystem();
+        final capableConnector = _FakeConnector(
+          capabilityBinding: AcpHostCapabilityBinding(
+            fileSystem: fileSystem,
+            terminalExecutor: _FakeCapabilityTerminalExecutor(),
+          ),
+        );
+        final capableManager = buildManagerWith(capableConnector);
+        final result = await capableManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (result as AcpSessionLaunchStarted).key;
+
+        capableConnector.servers[key.bridgeId]!.pushServerRequest(
+          'fs/write_text_file',
+          {
+            'sessionId': key.acpSessionId,
+            'path': '/repo/new.txt',
+            'content': 'nope',
+          },
+        );
+        await _pump();
+        final requestKey = capableManager.state
+            .byKeyValue(key.value)!
+            .pendingWrites
+            .single
+            .requestKey;
+
+        await capableManager.rejectWrite(key, requestKey);
+        await _pump();
+
+        expect(fileSystem.writes, isEmpty);
+        expect(
+          capableManager.state.byKeyValue(key.value)!.pendingWrites,
+          isEmpty,
+        );
+      },
+    );
+
+    test('detaching locally leaves a pending permission unanswered so it can '
+        'be replayed and answered after reconnect', () async {
+      final key = await startCopilot();
+      final server = connector.servers[key.bridgeId]!;
+      final requestId = server.requestPermission(key.acpSessionId, 't1');
+      await _pump();
+
+      await manager.detachSession(key);
+      await _pump();
+
+      // A soft/local detach must never answer the request on the agent's
+      // behalf: the remote bridge keeps it pending until a real decision.
+      expect(server.permissionResponses[requestId], isNull);
+    });
+
+    test('explicit stop cancels an unanswered pending permission because no '
+        'one will ever answer it', () async {
+      final key = await startCopilot();
+      final server = connector.servers[key.bridgeId]!;
+      final requestId = server.requestPermission(key.acpSessionId, 't1');
+      await _pump();
+
+      await manager.stopSession(key);
+      await _pump();
+
       expect(server.permissionResponses[requestId], isNotNull);
     });
   });
@@ -896,6 +1152,71 @@ void main() {
       // The orphaned bridge was best-effort stopped.
       expect(failConnector.startedBridges, hasLength(1));
       expect(failConnector.stoppedBridges, failConnector.startedBridges);
+    });
+  });
+
+  group('telemetry allowlist', () {
+    test('reports open, permission, attachment, and stop events', () async {
+      final telemetry = _RecordingTelemetrySink();
+      final telemetryConnector = _FakeConnector();
+      final telemetryManager = buildManagerWith(
+        telemetryConnector,
+        telemetry: telemetry,
+      );
+      final result = await telemetryManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (result as AcpSessionLaunchStarted).key;
+      expect(
+        telemetry.events,
+        contains('sessionOpened:${AcpBuiltinProviderIds.copilotCli}:false'),
+      );
+
+      await telemetryManager.prompt(key, const [
+        AcpTextContent('hi'),
+        AcpImageContent(data: 'aGk=', mimeType: 'image/png'),
+      ]);
+      expect(telemetry.events, contains('attachmentSent:image:1'));
+      // Never a text/content count, and never anything content-bearing.
+      expect(telemetry.events.every((event) => !event.contains('hi')), isTrue);
+
+      telemetryConnector.servers[key.bridgeId]!.requestPermission(
+        key.acpSessionId,
+        't1',
+      );
+      await _pump();
+      final pending = telemetryManager.state
+          .byKeyValue(key.value)!
+          .pendingPermissions
+          .single;
+      await telemetryManager.respondToPermission(
+        key,
+        pending.requestKey,
+        'allow',
+      );
+      expect(telemetry.events, contains('permissionOutcome:selected'));
+
+      await telemetryManager.stopSession(key);
+      expect(telemetry.events, contains('sessionEnded:stopped'));
+    });
+
+    test('reports a failure category without any session content', () async {
+      final telemetry = _RecordingTelemetrySink();
+      final failConnector = _FakeConnector(
+        serverFactory: (_, _) => _FakeAcpServer(failNewSession: true),
+      );
+      final failManager = buildManagerWith(failConnector, telemetry: telemetry);
+      await failManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      expect(
+        telemetry.events.any((event) => event.startsWith('failure:')),
+        isTrue,
+      );
     });
   });
 }
