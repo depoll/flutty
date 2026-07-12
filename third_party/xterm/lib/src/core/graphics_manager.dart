@@ -580,6 +580,7 @@ class GraphicsManager {
   // Maps a client-assigned image number (`I=`) to the most recent image id it
   // was transmitted with, so later commands can address the image by number.
   final Map<int, int> _imageNumberToId = {};
+  final Map<int, int> _imageNumberLastAccess = {};
   final Map<int, Map<int, int?>> _failedImageNumberReservations = {};
   final Map<
       int,
@@ -792,10 +793,13 @@ class GraphicsManager {
 
   /// Associates a client image number (`I=`) with the [imageId] it was
   /// transmitted with. Later transmits of the same number overwrite the mapping.
-  void registerImageNumber(int number, int imageId) {
-    if (number > 0 && imageId > 0) {
-      _imageNumberToId[number] = imageId;
+  bool registerImageNumber(int number, int imageId) {
+    if (number <= 0 || imageId <= 0 || !_makeRoomForImageNumber(number)) {
+      return false;
     }
+    _imageNumberToId[number] = imageId;
+    _imageNumberLastAccess[number] = ++_accessClock;
+    return true;
   }
 
   /// Reserves a fresh protocol image id and maps [number] to it immediately.
@@ -807,22 +811,55 @@ class GraphicsManager {
     if (number <= 0) {
       return (imageId: 0, previousImageId: null);
     }
+    if (!_makeRoomForImageNumber(number)) {
+      return (imageId: 0, previousImageId: null);
+    }
     final previousImageId = _imageNumberToId[number];
     final imageId = _nextImageId++;
     _imageNumberToId[number] = imageId;
+    _imageNumberLastAccess[number] = ++_accessClock;
     _trackImageNumberReservation(number, imageId, previousImageId);
     return (imageId: imageId, previousImageId: previousImageId);
   }
 
   /// Maps [number] to an explicit [imageId] while its root is being validated.
-  int? reserveExplicitImageIdForNumber(int number, int imageId) {
-    if (number <= 0 || imageId <= 0) {
-      return null;
+  ({bool accepted, int? previousImageId}) reserveExplicitImageIdForNumber(
+    int number,
+    int imageId,
+  ) {
+    if (number <= 0 || imageId <= 0 || !_makeRoomForImageNumber(number)) {
+      return (accepted: false, previousImageId: null);
     }
     final previousImageId = _imageNumberToId[number];
     _imageNumberToId[number] = imageId;
+    _imageNumberLastAccess[number] = ++_accessClock;
     _trackImageNumberReservation(number, imageId, previousImageId);
-    return previousImageId;
+    return (accepted: true, previousImageId: previousImageId);
+  }
+
+  bool _makeRoomForImageNumber(int number) {
+    if (_imageNumberToId.containsKey(number) ||
+        _imageNumberToId.length < maxImageCount) {
+      return true;
+    }
+    int? oldestNumber;
+    var oldestAccess = 0;
+    for (final entry in _imageNumberLastAccess.entries) {
+      if (_activeImageNumberReservations[entry.key]?.isNotEmpty ?? false) {
+        continue;
+      }
+      if (oldestNumber == null || entry.value < oldestAccess) {
+        oldestNumber = entry.key;
+        oldestAccess = entry.value;
+      }
+    }
+    if (oldestNumber == null) {
+      return false;
+    }
+    _imageNumberToId.remove(oldestNumber);
+    _imageNumberLastAccess.remove(oldestNumber);
+    _failedImageNumberReservations.remove(oldestNumber);
+    return true;
   }
 
   void _trackImageNumberReservation(
@@ -895,8 +932,10 @@ class GraphicsManager {
     }
     if (restoredImageId == null) {
       _imageNumberToId.remove(number);
+      _imageNumberLastAccess.remove(number);
     } else {
       _imageNumberToId[number] = restoredImageId;
+      _imageNumberLastAccess[number] = ++_accessClock;
     }
   }
 
@@ -918,6 +957,7 @@ class GraphicsManager {
       _failedImageNumberReservations.remove(number);
     }
     if (_imageNumberToId[number] == imageId) {
+      _imageNumberLastAccess[number] = ++_accessClock;
       _failedImageNumberReservations.remove(number);
     } else {
       _failedImageNumberReservations[number]?.remove(imageId);
@@ -939,7 +979,13 @@ class GraphicsManager {
   }
 
   /// Resolves a client image number (`I=`) to its current image id, if known.
-  int? imageIdForNumber(int number) => _imageNumberToId[number];
+  int? imageIdForNumber(int number) {
+    final imageId = _imageNumberToId[number];
+    if (imageId != null) {
+      _imageNumberLastAccess[number] = ++_accessClock;
+    }
+    return imageId;
+  }
 
   /// Looks up an image referenced by a Kitty Unicode placeholder color.
   ///
@@ -2168,7 +2214,16 @@ class GraphicsManager {
     }
     _retainedImageIds.remove(imageId);
     _virtualPlacements.remove(imageId);
-    _imageNumberToId.removeWhere((_, id) => id == imageId);
+    final removedNumbers = _imageNumberToId.entries
+        .where((entry) => entry.value == imageId)
+        .map((entry) => entry.key)
+        .toList();
+    for (final number in removedNumbers) {
+      _imageNumberToId.remove(number);
+      _imageNumberLastAccess.remove(number);
+      _failedImageNumberReservations.remove(number);
+      _activeImageNumberReservations.remove(number);
+    }
     _placements.removeWhere((placement) {
       if (placement.imageId != imageId) return false;
       placement.dispose();

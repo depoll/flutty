@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.111"
+	monkeyMuxVersion                  = "0.1.112"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -8796,6 +8796,10 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 						event.imageNumber,
 						kittyImageStoreSeq+1,
 					)
+					if _, exists := w.kittyImageNumberToID[event.imageNumber]; !exists &&
+						len(w.kittyImageNumberToID) >= maxRetainedKittyImageNumbers {
+						w.evictOldestKittyImageNumberMappingLocked()
+					}
 					w.recordKittyImageNumberMappingLocked(event.imageNumber, id)
 				}
 			} else {
