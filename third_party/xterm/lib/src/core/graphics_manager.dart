@@ -305,8 +305,8 @@ class TerminalImage {
   void _setAnimationState(TerminalAnimationState state) {
     final previous = _animationState;
     _animationState = state;
+    _currentLoop = 0;
     if (state == TerminalAnimationState.stopped) {
-      _currentLoop = 0;
       _frameElapsed = Duration.zero;
       _waitingForFrames = false;
     } else if (previous == TerminalAnimationState.stopped) {
@@ -322,7 +322,7 @@ class TerminalImage {
     if (loopCount <= 0) {
       return;
     }
-    _maxLoops = loopCount == 1 ? 0 : loopCount;
+    _maxLoops = loopCount - 1;
     _protocolAnimationModified = true;
   }
 
@@ -1528,7 +1528,10 @@ class GraphicsManager {
       if (image == null || frameData.frames.isEmpty) {
         return TerminalAnimationFrameResult.imageNotFound;
       }
-      if (editFrame <= 0 && image.frameCount >= _maxDecodedAnimationFrames) {
+      final existingEditFrame =
+          editFrame > 0 && editFrame <= image.frameCount ? editFrame : 0;
+      if (existingEditFrame <= 0 &&
+          image.frameCount >= _maxDecodedAnimationFrames) {
         return TerminalAnimationFrameResult.noSpace;
       }
       final regionWidth = width > 0 ? width : frameData.sourceWidth;
@@ -1543,11 +1546,8 @@ class GraphicsManager {
       }
 
       ui.Image? background;
-      if (editFrame > 0) {
-        background = image.imageAtFrame(editFrame);
-        if (background == null) {
-          return TerminalAnimationFrameResult.frameNotFound;
-        }
+      if (existingEditFrame > 0) {
+        background = image.imageAtFrame(existingEditFrame);
       } else if (backgroundFrame > 0) {
         background = image.imageAtFrame(backgroundFrame);
         if (background == null) {
@@ -1560,7 +1560,7 @@ class GraphicsManager {
         return TerminalAnimationFrameResult.frameNotFound;
       }
       final newFrameBytes = root.width * root.height * 4;
-      if (editFrame <= 0 &&
+      if (existingEditFrame <= 0 &&
           !_evictAdditionalMemory(
             newFrameBytes,
             protectedImageId: imageId,
@@ -1573,7 +1573,7 @@ class GraphicsManager {
         logicalWidth: image.sourceWidth,
         logicalHeight: image.sourceHeight,
         background: background,
-        backgroundColor: editFrame > 0 ? null : backgroundColor,
+        backgroundColor: existingEditFrame > 0 ? null : backgroundColor,
         overlay: frameData.frames.first.image,
         overlayX: x,
         overlayY: y,
@@ -1591,8 +1591,8 @@ class GraphicsManager {
         return TerminalAnimationFrameResult.imageNotFound;
       }
 
-      if (editFrame > 0) {
-        final previous = image.imageAtFrame(editFrame)!;
+      if (existingEditFrame > 0) {
+        final previous = image.imageAtFrame(existingEditFrame)!;
         final delta = composed.width * composed.height * 4 -
             previous.width * previous.height * 4;
         if (!_evictAdditionalMemory(
@@ -1602,10 +1602,10 @@ class GraphicsManager {
           composed.dispose();
           return TerminalAnimationFrameResult.noSpace;
         }
-        image._replaceFrame(editFrame, composed);
+        image._replaceFrame(existingEditFrame, composed);
         _currentMemoryBytes += delta;
         if (gap != null) {
-          image._setFrameDuration(editFrame, gap);
+          image._setFrameDuration(existingEditFrame, gap);
         }
         image._lastAccess = ++_accessClock;
         onChanged?.call();

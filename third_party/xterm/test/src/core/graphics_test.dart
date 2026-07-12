@@ -888,24 +888,8 @@ void main() {
         terminal.graphics.advanceAnimations(
           const Duration(milliseconds: 50),
         ),
-        isTrue,
-        reason: 'v=2 repeats once after the initial pass',
-      );
-      expect(image.currentFrame, 1);
-      expect(terminal.graphics.hasActiveAnimations, isTrue);
-      expect(
-        terminal.graphics.advanceAnimations(
-          const Duration(milliseconds: 30),
-        ),
-        isTrue,
-      );
-      expect(image.currentFrame, 2);
-      expect(
-        terminal.graphics.advanceAnimations(
-          const Duration(milliseconds: 50),
-        ),
         isFalse,
-        reason: 'v=2 stops after two total passes',
+        reason: 'v=2 stops at the first completed-loop boundary',
       );
       expect(image.currentFrame, 2);
       expect(terminal.graphics.hasActiveAnimations, isFalse);
@@ -983,7 +967,7 @@ void main() {
     });
   });
 
-  testWidgets('repeated running control preserves the finite loop counter', (
+  testWidgets('repeated running control resets the finite loop counter', (
     tester,
   ) async {
     await tester.runAsync(() async {
@@ -1269,6 +1253,45 @@ void main() {
       );
       expect(manager.imageById(1)!.frameCount, 256);
       expect(rejectedFrame.debugDisposed, isTrue);
+    });
+  });
+
+  testWidgets('future r= frame numbers append and existing numbers edit', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager();
+      manager.storeImageWithId(1, await _buildImage(1, 1));
+
+      expect(
+        await manager.addAnimationFrame(
+          1,
+          DecodedTerminalImage.single(await _buildImage(1, 1)),
+          editFrame: 2,
+        ),
+        TerminalAnimationFrameResult.success,
+      );
+      expect(manager.imageById(1)!.frameCount, 2);
+
+      expect(
+        await manager.addAnimationFrame(
+          1,
+          DecodedTerminalImage.single(await _buildImage(1, 1)),
+          editFrame: 99,
+        ),
+        TerminalAnimationFrameResult.success,
+      );
+      expect(manager.imageById(1)!.frameCount, 3);
+
+      expect(
+        await manager.addAnimationFrame(
+          1,
+          DecodedTerminalImage.single(await _buildImage(1, 1)),
+          editFrame: 2,
+        ),
+        TerminalAnimationFrameResult.success,
+      );
+      expect(manager.imageById(1)!.frameCount, 3);
     });
   });
 
