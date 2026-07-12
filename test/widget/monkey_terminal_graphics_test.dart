@@ -531,6 +531,64 @@ void main() {
     );
   });
 
+  testWidgets('Copilot protocol animation survives a TUI redraw', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepaintBoundary(
+          key: boundaryKey,
+          child: MonkeyTerminalView(
+            terminal,
+            key: viewKey,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+
+    await tester.runAsync(() async {
+      final red = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+      final blue = await _buildSolidPngBase64(const Color(0xFF0000FF), 24);
+      terminal
+        ..write(
+          '\x1b_Ga=T,i=56,f=100,c=4,r=2,C=1;'
+          '$red\x1b\\',
+        )
+        ..write('\x1b_Ga=a,i=56,r=1,z=70,q=2\x1b\\')
+        ..write(
+          '\x1b_Ga=f,i=56,f=100,z=70,X=1,q=2;'
+          '$blue\x1b\\',
+        )
+        ..write('\x1b_Ga=a,i=56,s=3,v=1,q=2\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(56)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+    terminal.write('\x1b[2J\x1b[H\x1b[2Kprompt');
+    await tester.pump();
+    expect(terminal.graphics.placements, hasLength(1));
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+    expect(terminal.graphics.imageById(56)!.currentFrame, 2);
+    expect(
+      await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+      greaterThan(0),
+    );
+  });
+
   testWidgets('animation ticker stops off-screen and resumes when revealed', (
     tester,
   ) async {
@@ -615,7 +673,7 @@ void main() {
           waited += 20;
         }
       });
-      terminal.write('\x1b[H\x1b[2J');
+      terminal.write('\x1b_Ga=d,d=i,i=42\x1b\\\x1b[H\x1b[2J');
       expect(terminal.graphics.hasPlacements, isFalse);
       expect(terminal.graphics.imageById(42), isNotNull);
 
@@ -1255,7 +1313,7 @@ void main() {
     );
   });
 
-  testWidgets('zoom, clear and re-place an image without crashing', (
+  testWidgets('zoom, delete and re-place an image without crashing', (
     tester,
   ) async {
     final boundaryKey = GlobalKey();
@@ -1313,15 +1371,16 @@ void main() {
       expect(tester.takeException(), isNull, reason: 'zoom to $fs crashed');
     }
 
-    // Clearing must remove the image (it does not "come back") and must not
-    // dispose it out from under an in-flight frame.
-    terminal.write('\x1b[2J\x1b[H');
+    // A graphics delete removes the image without disposing it out from under
+    // an in-flight frame. ED only clears the surrounding text.
+    final imageId = terminal.graphics.placements.single.imageId;
+    terminal.write('\x1b_Ga=d,d=I,i=$imageId\x1b\\\x1b[2J\x1b[H');
     await tester.pump();
     expect(terminal.graphics.hasPlacements, isFalse);
     expect(
       await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
       isFalse,
-      reason: 'image should be gone after clear',
+      reason: 'image should be gone after the graphics delete',
     );
     for (final fs in [10.0, 24.0, 8.0, 14.0]) {
       fontSize = fs;
@@ -1331,22 +1390,22 @@ void main() {
       expect(
         tester.takeException(),
         isNull,
-        reason: 'zoom after clear at $fs crashed',
+        reason: 'zoom after delete at $fs crashed',
       );
     }
     expect(
       terminal.graphics.hasPlacements,
       isFalse,
-      reason: 'cleared image must not reappear after zoom',
+      reason: 'deleted image must not reappear after zoom',
     );
 
-    // A fresh image still renders after the clear.
+    // A fresh image still renders after the delete.
     await tester.runAsync(() => writeImage(const Color(0xFFFF0000)));
     await tester.pump();
     expect(
       await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
       isTrue,
-      reason: 'a new image should render after a clear',
+      reason: 'a new image should render after a delete',
     );
   });
 
