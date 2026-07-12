@@ -15,15 +15,15 @@ void main() {
 
     test('classifies data, file and network URIs', () {
       expect(
-        const AcpImageContent(uri: 'data:image/png;base64,AAAA').sourceKind,
+        AcpImageContent(uri: 'data:image/png;base64,AAAA').sourceKind,
         AcpImageSourceKind.dataUri,
       );
       expect(
-        const AcpImageContent(uri: 'file:///tmp/a.png').sourceKind,
+        AcpImageContent(uri: 'file:///tmp/a.png').sourceKind,
         AcpImageSourceKind.fileUri,
       );
       expect(
-        const AcpImageContent(uri: 'https://example.com/a.png').sourceKind,
+        AcpImageContent(uri: 'https://example.com/a.png').sourceKind,
         AcpImageSourceKind.networkUri,
       );
     });
@@ -48,8 +48,8 @@ void main() {
 
   group('AcpPlan', () {
     test('computes progress and counts', () {
-      const plan = AcpPlan(
-        items: [
+      final plan = AcpPlan(
+        items: const [
           AcpPlanItem(title: 'a', status: AcpPlanItemStatus.completed),
           AcpPlanItem(title: 'b', status: AcpPlanItemStatus.inProgress),
           AcpPlanItem(title: 'c'),
@@ -63,7 +63,7 @@ void main() {
     });
 
     test('empty plan has zero progress', () {
-      const plan = AcpPlan();
+      final plan = AcpPlan();
       expect(plan.progress, 0);
       expect(plan.totalCount, 0);
     });
@@ -91,10 +91,69 @@ void main() {
   group('equality', () {
     test('value equality holds for identical models', () {
       expect(
-        const AcpToolCall(id: '1', title: 'Read'),
-        const AcpToolCall(id: '1', title: 'Read'),
+        AcpToolCall(id: '1', title: 'Read'),
+        AcpToolCall(id: '1', title: 'Read'),
       );
       expect(const AcpTextPart('hi'), const AcpTextPart('hi'));
+    });
+
+    test('image content equality is by value even after cloning', () {
+      final a = AcpImageContent(bytes: Uint8List.fromList([1, 2, 3]));
+      final b = AcpImageContent(bytes: Uint8List.fromList([1, 2, 3]));
+      expect(a, b);
+    });
+  });
+
+  group('immutability', () {
+    test('prompt parts list is unmodifiable', () {
+      final entry = AcpUserPromptEntry(
+        id: 'u1',
+        parts: const [AcpTextPart('a')],
+      );
+      expect(
+        () => entry.parts.add(const AcpTextPart('b')),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('prompt parts are defensively copied from the input list', () {
+      final input = <AcpPromptPart>[const AcpTextPart('a')];
+      final entry = AcpUserPromptEntry(id: 'u1', parts: input);
+      input.add(const AcpTextPart('b'));
+      expect(entry.parts, hasLength(1));
+    });
+
+    test('tool call locations and diffs are unmodifiable', () {
+      final call = AcpToolCall(
+        id: '1',
+        title: 'Edit',
+        locations: const [AcpToolLocation(path: 'a')],
+        diffs: const [AcpDiff(path: 'a', unifiedDiff: '+x')],
+      );
+      expect(
+        () => call.locations.add(const AcpToolLocation(path: 'b')),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => call.diffs.add(const AcpDiff(path: 'b', unifiedDiff: '-y')),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('plan items list is unmodifiable', () {
+      final plan = AcpPlan(items: const [AcpPlanItem(title: 'a')]);
+      expect(
+        () => plan.items.add(const AcpPlanItem(title: 'b')),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('image bytes are cloned, not aliased', () {
+      final source = Uint8List.fromList([1, 2, 3]);
+      final image = AcpImageContent(bytes: source);
+      expect(identical(image.bytes, source), isFalse);
+      source[0] = 99;
+      expect(image.bytes, [1, 2, 3]);
     });
   });
 

@@ -1,21 +1,53 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
 
+/// Number of diff lines rendered before a show-more control is offered.
+///
+/// Bounds the number of line widgets built for very large diffs; each
+/// show-more reveals another page of the same size.
+const int kAcpDiffInitialLineCap = 200;
+
 enum _DiffLineKind { addition, deletion, hunk, meta, context }
+
+_DiffLineKind _classifyDiffLine(String line) {
+  if (line.startsWith('@@')) {
+    return _DiffLineKind.hunk;
+  }
+  if (line.startsWith('+++') ||
+      line.startsWith('---') ||
+      line.startsWith('diff ') ||
+      line.startsWith('index ')) {
+    return _DiffLineKind.meta;
+  }
+  if (line.startsWith('+')) {
+    return _DiffLineKind.addition;
+  }
+  if (line.startsWith('-')) {
+    return _DiffLineKind.deletion;
+  }
+  return _DiffLineKind.context;
+}
 
 /// Renders a unified diff as coloured, monospace lines.
 ///
 /// Additions and deletions are conveyed with both a `+`/`-` prefix and a
 /// background tint (never colour alone), avoiding nested cards and coloured
 /// side stripes per the design system. Long lines scroll horizontally.
-class AcpDiffView extends StatelessWidget {
+///
+/// Large diffs are bounded: only [initialLineCap] lines are built initially,
+/// with an accessible show-more/show-less control to reveal further pages, so
+/// a huge diff never eagerly builds an unbounded number of line widgets.
+class AcpDiffView extends StatefulWidget {
   /// Creates a diff view.
   const AcpDiffView({
     required this.diff,
     super.key,
     this.showPathHeader = true,
+    this.initialLineCap = kAcpDiffInitialLineCap,
   });
 
   /// The diff to render.
@@ -24,24 +56,43 @@ class AcpDiffView extends StatelessWidget {
   /// Whether to show the file path header above the diff body.
   final bool showPathHeader;
 
-  static _DiffLineKind _classify(String line) {
-    if (line.startsWith('@@')) {
-      return _DiffLineKind.hunk;
-    }
-    if (line.startsWith('+++') ||
-        line.startsWith('---') ||
-        line.startsWith('diff ') ||
-        line.startsWith('index ')) {
-      return _DiffLineKind.meta;
-    }
-    if (line.startsWith('+')) {
-      return _DiffLineKind.addition;
-    }
-    if (line.startsWith('-')) {
-      return _DiffLineKind.deletion;
-    }
-    return _DiffLineKind.context;
+  /// Number of lines shown before the show-more control appears.
+  final int initialLineCap;
+
+  @override
+  State<AcpDiffView> createState() => _AcpDiffViewState();
+}
+
+class _AcpDiffViewState extends State<AcpDiffView> {
+  late List<String> _lines;
+  late int _visibleCount;
+
+  @override
+  void initState() {
+    super.initState();
+    _lines = widget.diff.unifiedDiff.split('\n');
+    _visibleCount = _initialCount;
   }
+
+  @override
+  void didUpdateWidget(AcpDiffView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.diff != widget.diff ||
+        oldWidget.initialLineCap != widget.initialLineCap) {
+      _lines = widget.diff.unifiedDiff.split('\n');
+      _visibleCount = _initialCount;
+    }
+  }
+
+  int get _cap => math.max(1, widget.initialLineCap);
+
+  int get _initialCount => math.min(_cap, _lines.length);
+
+  void _showMore() => setState(
+    () => _visibleCount = math.min(_visibleCount + _cap, _lines.length),
+  );
+
+  void _showLess() => setState(() => _visibleCount = _initialCount);
 
   @override
   Widget build(BuildContext context) {
@@ -54,10 +105,11 @@ class AcpDiffView extends StatelessWidget {
     final deletionColor = scheme.error;
     final monoBase = FluttyTheme.monoStyle.copyWith(fontSize: 12, height: 1.4);
 
-    final lines = diff.unifiedDiff.split('\n');
     final rows = <Widget>[];
-    for (final line in lines) {
-      final kind = _classify(line);
+    final visible = math.min(_visibleCount, _lines.length);
+    for (var i = 0; i < visible; i++) {
+      final line = _lines[i];
+      final kind = _classifyDiffLine(line);
       final Color? background;
       final Color color;
       switch (kind) {
@@ -92,8 +144,11 @@ class AcpDiffView extends StatelessWidget {
       );
     }
 
+    final remaining = _lines.length - visible;
+    final truncated = _lines.length > _cap;
+
     return Semantics(
-      label: 'Diff for ${diff.path}',
+      label: 'Diff for ${widget.diff.path}, ${_lines.length} lines',
       container: true,
       child: DecoratedBox(
         decoration: BoxDecoration(
@@ -106,7 +161,7 @@ class AcpDiffView extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (showPathHeader)
+              if (widget.showPathHeader)
                 Container(
                   width: double.infinity,
                   color: scheme.surfaceContainerHighest,
@@ -115,7 +170,7 @@ class AcpDiffView extends StatelessWidget {
                     vertical: 6,
                   ),
                   child: Text(
-                    diff.path,
+                    widget.diff.path,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: FluttyTheme.monoStyle.copyWith(
@@ -135,9 +190,66 @@ class AcpDiffView extends StatelessWidget {
                   ),
                 ),
               ),
+              if (truncated)
+                _DiffPagingFooter(
+                  visible: visible,
+                  total: _lines.length,
+                  remaining: remaining,
+                  onShowMore: remaining > 0 ? _showMore : null,
+                  onShowLess: visible > _initialCount ? _showLess : null,
+                ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _DiffPagingFooter extends StatelessWidget {
+  const _DiffPagingFooter({
+    required this.visible,
+    required this.total,
+    required this.remaining,
+    required this.onShowMore,
+    required this.onShowLess,
+  });
+
+  final int visible;
+  final int total;
+  final int remaining;
+  final VoidCallback? onShowMore;
+  final VoidCallback? onShowLess;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      width: double.infinity,
+      color: scheme.surfaceContainerHighest,
+      padding: const EdgeInsets.symmetric(
+        horizontal: FluttyTheme.spacingSm,
+        vertical: FluttyTheme.spacingXs,
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Showing $visible of $total lines',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          if (onShowLess != null)
+            TextButton(onPressed: onShowLess, child: const Text('Show less')),
+          if (onShowMore != null)
+            TextButton(
+              onPressed: onShowMore,
+              child: Text('Show more lines ($remaining remaining)'),
+            ),
+        ],
       ),
     );
   }

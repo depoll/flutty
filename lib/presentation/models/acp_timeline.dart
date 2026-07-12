@@ -53,7 +53,10 @@ sealed class AcpTimelineEntry extends Equatable {
 /// interleave text, images, and file references in a specific sequence.
 final class AcpUserPromptEntry extends AcpTimelineEntry {
   /// Creates a user prompt entry from ordered [parts].
-  const AcpUserPromptEntry({required super.id, required this.parts});
+  ///
+  /// [parts] is defensively wrapped in an unmodifiable list.
+  AcpUserPromptEntry({required super.id, required List<AcpPromptPart> parts})
+    : parts = List.unmodifiable(parts);
 
   /// The ordered content parts of the prompt.
   final List<AcpPromptPart> parts;
@@ -230,14 +233,18 @@ enum AcpImageSourceKind {
 @immutable
 class AcpImageContent extends Equatable {
   /// Creates image content from in-memory [bytes] and/or a [uri].
-  const AcpImageContent({
-    this.bytes,
+  ///
+  /// [bytes], when provided, is defensively cloned so the model cannot be
+  /// mutated by the caller after construction.
+  AcpImageContent({
+    Uint8List? bytes,
     this.uri,
     this.mimeType,
     this.label,
     this.decodeWidth,
     this.decodeHeight,
-  }) : assert(
+  }) : bytes = bytes == null ? null : Uint8List.fromList(bytes),
+       assert(
          bytes != null || uri != null,
          'AcpImageContent requires bytes or a uri',
        );
@@ -420,16 +427,19 @@ class AcpDiff extends Equatable {
 @immutable
 class AcpToolCall extends Equatable {
   /// Creates a tool call.
-  const AcpToolCall({
+  ///
+  /// [locations] and [diffs] are defensively wrapped in unmodifiable lists.
+  AcpToolCall({
     required this.id,
     required this.title,
     this.kind = AcpToolKind.other,
     this.status = AcpToolStatus.pending,
     this.rawInput,
     this.rawOutput,
-    this.locations = const [],
-    this.diffs = const [],
-  });
+    List<AcpToolLocation> locations = const [],
+    List<AcpDiff> diffs = const [],
+  }) : locations = List.unmodifiable(locations),
+       diffs = List.unmodifiable(diffs);
 
   /// The tool-call identifier used to merge updates.
   final String id;
@@ -519,7 +529,10 @@ class AcpPlanItem extends Equatable {
 @immutable
 class AcpPlan extends Equatable {
   /// Creates a plan from ordered [items].
-  const AcpPlan({this.items = const []});
+  ///
+  /// [items] is defensively wrapped in an unmodifiable list.
+  AcpPlan({List<AcpPlanItem> items = const []})
+    : items = List.unmodifiable(items);
 
   /// The ordered plan items.
   final List<AcpPlanItem> items;

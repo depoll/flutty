@@ -1,9 +1,25 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
+
+/// Maximum number of decoded bytes [AcpInlineImage] will accept for inline
+/// display before rejecting the input.
+///
+/// Exposed so attachment/composer controllers can enforce the same ceiling
+/// when deciding whether to inline an image or fall back to a resource link.
+const int kAcpMaxInlineImageBytes = 10 * 1024 * 1024; // 10 MiB
+
+/// Default decode dimension (in pixels) applied to the longer image edge when
+/// no explicit decode hint is present, to bound decode memory.
+const int kAcpDefaultImageDecodeDimension = 1080;
+
+/// Upper bound applied to any caller-supplied decode hint, so an oversized
+/// hint cannot defeat the memory bound.
+const int kAcpMaxImageDecodeDimension = 4096;
 
 /// Resolves an [AcpImageContent] that is not already in memory (e.g. a
 /// `file:` or `http(s):` URI) to raw bytes.
@@ -17,8 +33,11 @@ typedef AcpImageResolver = Future<Uint8List?> Function(AcpImageContent image);
 /// caller-resolved `file:`/`http(s):` URI, inside a bounded, rounded frame.
 ///
 /// Network and file URIs are only fetched when a [resolver] is provided; there
-/// is no implicit network access. Loading and error states render accessible
-/// placeholders rather than throwing.
+/// is no implicit network access. Byte payloads larger than [maxBytes] are
+/// rejected before decoding, decode dimensions are bounded to limit memory,
+/// and stale asynchronous resolver completions can never overwrite a newer
+/// image. Loading and error states render accessible placeholders rather than
+/// throwing.
 class AcpInlineImage extends StatefulWidget {
   /// Creates an inline image.
   const AcpInlineImage({
@@ -28,6 +47,8 @@ class AcpInlineImage extends StatefulWidget {
     this.onTap,
     this.maxWidth = 360,
     this.maxHeight = 260,
+    this.maxBytes = kAcpMaxInlineImageBytes,
+    this.defaultDecodeDimension = kAcpDefaultImageDecodeDimension,
   });
 
   /// The image to render.
@@ -45,15 +66,25 @@ class AcpInlineImage extends StatefulWidget {
   /// Maximum rendered height.
   final double maxHeight;
 
+  /// Maximum accepted decoded byte length; larger payloads are rejected.
+  final int maxBytes;
+
+  /// Decode dimension applied when [AcpImageContent] carries no decode hint.
+  final int defaultDecodeDimension;
+
   @override
   State<AcpInlineImage> createState() => _AcpInlineImageState();
 }
 
-enum _ImageState { loading, ready, needsResolver, error }
+enum _ImageState { loading, ready, needsResolver, error, tooLarge }
 
 class _AcpInlineImageState extends State<AcpInlineImage> {
   _ImageState _state = _ImageState.loading;
   Uint8List? _bytes;
+
+  // Monotonic guard so stale async resolver completions from a previous image
+  // or resolver cannot overwrite the current one.
+  int _generation = 0;
 
   @override
   void initState() {
@@ -65,72 +96,116 @@ class _AcpInlineImageState extends State<AcpInlineImage> {
   void didUpdateWidget(AcpInlineImage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.image != widget.image ||
-        oldWidget.resolver != widget.resolver) {
+        oldWidget.resolver != widget.resolver ||
+        oldWidget.maxBytes != widget.maxBytes) {
       _resolve();
     }
   }
 
+  bool _withinLimit(int byteLength) => byteLength <= widget.maxBytes;
+
+  void _set(_ImageState state, {Uint8List? bytes}) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _state = state;
+      _bytes = bytes;
+    });
+  }
+
   Future<void> _resolve() async {
+    final generation = ++_generation;
     final image = widget.image;
     switch (image.sourceKind) {
       case AcpImageSourceKind.bytes:
-        setState(() {
-          _bytes = image.bytes;
-          _state = _ImageState.ready;
-        });
+        final bytes = image.bytes!;
+        if (!_withinLimit(bytes.length)) {
+          _set(_ImageState.tooLarge);
+          return;
+        }
+        _set(_ImageState.ready, bytes: bytes);
       case AcpImageSourceKind.dataUri:
         _decodeDataUri(image.uri!);
       case AcpImageSourceKind.fileUri:
       case AcpImageSourceKind.networkUri:
-        await _resolveViaResolver(image);
+        await _resolveViaResolver(image, generation);
     }
   }
 
   void _decodeDataUri(String uri) {
     try {
+      // Cheap pre-decode guard: a base64 data URI decodes to roughly 3/4 of
+      // its encoded length, so reject clearly oversized input before paying
+      // for the base64 decode.
+      if ((uri.length * 3) ~/ 4 > widget.maxBytes) {
+        _set(_ImageState.tooLarge);
+        return;
+      }
       final data = Uri.parse(uri).data;
       final bytes = data?.contentAsBytes();
       if (bytes == null || bytes.isEmpty) {
-        setState(() => _state = _ImageState.error);
+        _set(_ImageState.error);
         return;
       }
-      setState(() {
-        _bytes = bytes;
-        _state = _ImageState.ready;
-      });
+      if (!_withinLimit(bytes.length)) {
+        _set(_ImageState.tooLarge);
+        return;
+      }
+      _set(_ImageState.ready, bytes: bytes);
     } on Object {
-      setState(() => _state = _ImageState.error);
+      _set(_ImageState.error);
     }
   }
 
-  Future<void> _resolveViaResolver(AcpImageContent image) async {
+  Future<void> _resolveViaResolver(
+    AcpImageContent image,
+    int generation,
+  ) async {
     final resolver = widget.resolver;
     if (resolver == null) {
-      setState(() => _state = _ImageState.needsResolver);
+      _set(_ImageState.needsResolver);
       return;
     }
-    setState(() => _state = _ImageState.loading);
+    _set(_ImageState.loading);
     try {
       final bytes = await resolver(image);
-      if (!mounted) {
+      // Ignore completions superseded by a newer image/resolver.
+      if (!mounted || generation != _generation) {
         return;
       }
       if (bytes == null || bytes.isEmpty) {
-        setState(() => _state = _ImageState.error);
+        _set(_ImageState.error);
         return;
       }
-      setState(() {
-        _bytes = bytes;
-        _state = _ImageState.ready;
-      });
+      if (!_withinLimit(bytes.length)) {
+        _set(_ImageState.tooLarge);
+        return;
+      }
+      _set(_ImageState.ready, bytes: bytes);
     } on Object {
-      if (mounted) {
-        setState(() => _state = _ImageState.error);
+      if (mounted && generation == _generation) {
+        _set(_ImageState.error);
       }
     }
   }
 
   String get _label => widget.image.label ?? 'Image';
+
+  ({int? width, int? height}) get _decodeDimensions {
+    var width = widget.image.decodeWidth;
+    var height = widget.image.decodeHeight;
+    if (width == null && height == null) {
+      width = widget.defaultDecodeDimension;
+    }
+    if (width != null) {
+      width = math.min(width, kAcpMaxImageDecodeDimension);
+    }
+    if (height != null) {
+      height = math.min(height, kAcpMaxImageDecodeDimension);
+    }
+    return (width: width, height: height);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -151,6 +226,12 @@ class _AcpInlineImageState extends State<AcpInlineImage> {
         scheme,
         icon: Icons.broken_image_outlined,
         label: 'Image failed to load',
+        isError: true,
+      ),
+      _ImageState.tooLarge => _buildPlaceholder(
+        scheme,
+        icon: Icons.warning_amber_rounded,
+        label: 'Image too large to display',
         isError: true,
       ),
     };
@@ -187,18 +268,21 @@ class _AcpInlineImageState extends State<AcpInlineImage> {
     );
   }
 
-  Widget _buildImage(ColorScheme scheme) => Image.memory(
-    _bytes!,
-    fit: BoxFit.contain,
-    cacheWidth: widget.image.decodeWidth,
-    cacheHeight: widget.image.decodeHeight,
-    errorBuilder: (context, error, stack) => _buildPlaceholder(
-      scheme,
-      icon: Icons.broken_image_outlined,
-      label: 'Image failed to load',
-      isError: true,
-    ),
-  );
+  Widget _buildImage(ColorScheme scheme) {
+    final dimensions = _decodeDimensions;
+    return Image.memory(
+      _bytes!,
+      fit: BoxFit.contain,
+      cacheWidth: dimensions.width,
+      cacheHeight: dimensions.height,
+      errorBuilder: (context, error, stack) => _buildPlaceholder(
+        scheme,
+        icon: Icons.broken_image_outlined,
+        label: 'Image failed to load',
+        isError: true,
+      ),
+    );
+  }
 
   Widget _buildPlaceholder(
     ColorScheme scheme, {

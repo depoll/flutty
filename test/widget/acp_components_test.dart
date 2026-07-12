@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -65,7 +67,7 @@ void main() {
     testWidgets('expands to show input and output', (tester) async {
       await tester.pumpWidget(
         wrap(
-          const AcpToolCallView(
+          AcpToolCallView(
             toolCall: AcpToolCall(
               id: '1',
               title: 'Read file',
@@ -95,11 +97,13 @@ void main() {
           AcpToolCallView(
             initiallyExpanded: true,
             onOpenLocation: (loc) => opened = loc,
-            toolCall: const AcpToolCall(
+            toolCall: AcpToolCall(
               id: '1',
               title: 'Edit',
               status: AcpToolStatus.completed,
-              locations: [AcpToolLocation(path: 'lib/main.dart', line: 42)],
+              locations: const [
+                AcpToolLocation(path: 'lib/main.dart', line: 42),
+              ],
             ),
           ),
         ),
@@ -114,14 +118,14 @@ void main() {
     testWidgets('renders a unified diff inside a tool call', (tester) async {
       await tester.pumpWidget(
         wrap(
-          const AcpToolCallView(
+          AcpToolCallView(
             initiallyExpanded: true,
             toolCall: AcpToolCall(
               id: '1',
               title: 'Apply patch',
               kind: AcpToolKind.edit,
               status: AcpToolStatus.completed,
-              diffs: [
+              diffs: const [
                 AcpDiff(
                   path: 'lib/a.dart',
                   unifiedDiff:
@@ -211,7 +215,7 @@ void main() {
           'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
           'AAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
       await tester.pumpWidget(
-        wrap(const AcpInlineImage(image: AcpImageContent(uri: dataUri))),
+        wrap(AcpInlineImage(image: AcpImageContent(uri: dataUri))),
       );
       await tester.pump();
       expect(find.byType(Image), findsOneWidget);
@@ -222,7 +226,7 @@ void main() {
     ) async {
       await tester.pumpWidget(
         wrap(
-          const AcpInlineImage(
+          AcpInlineImage(
             image: AcpImageContent(
               uri: 'https://example.com/a.png',
               label: 'remote diagram',
@@ -240,7 +244,7 @@ void main() {
       await tester.pumpWidget(
         wrap(
           AcpInlineImage(
-            image: const AcpImageContent(uri: 'file:///tmp/a.png'),
+            image: AcpImageContent(uri: 'file:///tmp/a.png'),
             resolver: (image) async {
               called = true;
               return _pngBytes;
@@ -260,7 +264,7 @@ void main() {
       await tester.pumpWidget(
         wrap(
           AcpInlineImage(
-            image: const AcpImageContent(uri: 'file:///tmp/a.png'),
+            image: AcpImageContent(uri: 'file:///tmp/a.png'),
             resolver: (image) async => null,
           ),
         ),
@@ -272,13 +276,111 @@ void main() {
 
     testWidgets('fires tap callback', (tester) async {
       AcpImageContent? tapped;
-      final image = AcpImageContent(bytes: _pngBytes, label: 'diagram');
+      // A network image without a resolver renders a fixed-size placeholder,
+      // giving a stable, decode-independent tap target.
+      final image = AcpImageContent(
+        uri: 'https://example.com/a.png',
+        label: 'diagram',
+      );
       await tester.pumpWidget(
         wrap(AcpInlineImage(image: image, onTap: (i) => tapped = i)),
       );
       await tester.pump();
       await tester.tap(find.byType(AcpInlineImage));
       expect(tapped, image);
+    });
+
+    testWidgets('rejects oversized in-memory bytes before decode', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(
+          AcpInlineImage(
+            image: AcpImageContent(
+              bytes: Uint8List.fromList(List<int>.filled(64, 0)),
+            ),
+            maxBytes: 8,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.byType(Image), findsNothing);
+      expect(find.text('Image too large to display'), findsOneWidget);
+    });
+
+    testWidgets('rejects an oversized data URI', (tester) async {
+      const dataUri =
+          'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+          'AAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+      await tester.pumpWidget(
+        wrap(AcpInlineImage(image: AcpImageContent(uri: dataUri), maxBytes: 8)),
+      );
+      await tester.pump();
+      expect(find.byType(Image), findsNothing);
+      expect(find.text('Image too large to display'), findsOneWidget);
+    });
+
+    testWidgets('applies a bounded default decode dimension without hints', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(AcpInlineImage(image: AcpImageContent(bytes: _pngBytes))),
+      );
+      await tester.pump();
+      final image = tester.widget<Image>(find.byType(Image));
+      expect(image.image, isA<ResizeImage>());
+      expect(
+        (image.image as ResizeImage).width,
+        kAcpDefaultImageDecodeDimension,
+      );
+    });
+
+    testWidgets('caps an oversized decode hint', (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          AcpInlineImage(
+            image: AcpImageContent(bytes: _pngBytes, decodeWidth: 999999),
+          ),
+        ),
+      );
+      await tester.pump();
+      final image = tester.widget<Image>(find.byType(Image));
+      expect((image.image as ResizeImage).width, kAcpMaxImageDecodeDimension);
+    });
+
+    testWidgets('stale resolver completion cannot overwrite a newer image', (
+      tester,
+    ) async {
+      final slow = Completer<Uint8List?>();
+      await tester.pumpWidget(
+        wrap(
+          AcpInlineImage(
+            image: AcpImageContent(uri: 'file:///a.png'),
+            resolver: (image) => slow.future,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.byType(Image), findsNothing);
+
+      // A newer image/resolver supersedes the pending one and resolves fast.
+      await tester.pumpWidget(
+        wrap(
+          AcpInlineImage(
+            image: AcpImageContent(uri: 'file:///b.png'),
+            resolver: (image) async => _pngBytes,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(find.byType(Image), findsOneWidget);
+
+      // The stale completion arrives last and must be ignored.
+      slow.complete(null);
+      await tester.pump();
+      expect(find.byType(Image), findsOneWidget);
+      expect(find.text('Image failed to load'), findsNothing);
     });
   });
 
@@ -331,6 +433,81 @@ void main() {
         SystemChannels.platform,
         null,
       );
+    });
+  });
+
+  group('AcpDiffView paging', () {
+    String bigDiff(int lines) => List.generate(
+      lines,
+      (i) => 'ctx-${i.toString().padLeft(4, '0')}',
+    ).join('\n');
+
+    testWidgets('bounds huge diffs and pages with show more/less', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(
+          AcpDiffView(
+            diff: AcpDiff(path: 'big.txt', unifiedDiff: bigDiff(5000)),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Only the first page of lines is built.
+      expect(find.text('ctx-0000'), findsOneWidget);
+      expect(find.text('ctx-0199'), findsOneWidget);
+      expect(find.text('ctx-0200'), findsNothing);
+      expect(find.text('Showing 200 of 5000 lines'), findsOneWidget);
+      expect(find.textContaining('Show more lines'), findsOneWidget);
+      expect(find.text('Show less'), findsNothing);
+
+      // Reveal another page.
+      await tester.ensureVisible(find.textContaining('Show more lines'));
+      await tester.pump();
+      await tester.tap(find.textContaining('Show more lines'));
+      await tester.pump();
+      expect(find.text('ctx-0200'), findsOneWidget);
+      expect(find.text('ctx-0399'), findsOneWidget);
+      expect(find.text('ctx-0400'), findsNothing);
+      expect(find.text('Show less'), findsOneWidget);
+
+      // Collapse back to the initial cap.
+      await tester.ensureVisible(find.text('Show less'));
+      await tester.pump();
+      await tester.tap(find.text('Show less'));
+      await tester.pump();
+      expect(find.text('ctx-0200'), findsNothing);
+      expect(find.text('Showing 200 of 5000 lines'), findsOneWidget);
+    });
+
+    testWidgets('small diffs show no paging control', (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          AcpDiffView(
+            diff: AcpDiff(path: 'small.txt', unifiedDiff: bigDiff(10)),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.textContaining('Show more lines'), findsNothing);
+      expect(find.textContaining('Showing'), findsNothing);
+      expect(find.text('ctx-0009'), findsOneWidget);
+    });
+
+    testWidgets('respects a custom initial line cap', (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          AcpDiffView(
+            diff: AcpDiff(path: 'mid.txt', unifiedDiff: bigDiff(20)),
+            initialLineCap: 5,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('ctx-0004'), findsOneWidget);
+      expect(find.text('ctx-0005'), findsNothing);
+      expect(find.text('Showing 5 of 20 lines'), findsOneWidget);
     });
   });
 }

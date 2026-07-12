@@ -82,20 +82,20 @@ void main() {
   testWidgets('dispatches each entry type', (tester) async {
     await tester.pumpWidget(
       wrap(
-        const AcpMessageThread(
+        AcpMessageThread(
           entries: [
-            AcpUserPromptEntry(id: 'u1', parts: [AcpTextPart('hello')]),
-            AcpAssistantMessageEntry(id: 'a1', markdown: 'world'),
+            AcpUserPromptEntry(id: 'u1', parts: const [AcpTextPart('hello')]),
+            const AcpAssistantMessageEntry(id: 'a1', markdown: 'world'),
             AcpPlanEntry(
               id: 'p1',
-              plan: AcpPlan(items: [AcpPlanItem(title: 'task')]),
+              plan: AcpPlan(items: const [AcpPlanItem(title: 'task')]),
             ),
             AcpToolCallEntry(
               id: 't1',
               toolCall: AcpToolCall(id: 't1', title: 'Read file'),
             ),
-            AcpUsageEntry(id: 'us1', usage: AcpUsage(totalTokens: 1200)),
-            AcpStatusEntry(id: 's1', message: 'Done'),
+            const AcpUsageEntry(id: 'us1', usage: AcpUsage(totalTokens: 1200)),
+            const AcpStatusEntry(id: 's1', message: 'Done'),
           ],
         ),
       ),
@@ -138,11 +138,11 @@ void main() {
       await tester.pumpWidget(
         wrap(
           size: size,
-          const AcpMessageThread(
+          AcpMessageThread(
             entries: [
               AcpUserPromptEntry(
                 id: 'u1',
-                parts: [
+                parts: const [
                   AcpTextPart(
                     'A fairly long prompt that should wrap on narrow '
                     'screens without overflowing its constraints.',
@@ -170,9 +170,9 @@ void main() {
   testWidgets('plan shows progress fraction and items', (tester) async {
     await tester.pumpWidget(
       wrap(
-        const AcpPlanView(
+        AcpPlanView(
           plan: AcpPlan(
-            items: [
+            items: const [
               AcpPlanItem(title: 'Design', status: AcpPlanItemStatus.completed),
               AcpPlanItem(title: 'Build', status: AcpPlanItemStatus.inProgress),
               AcpPlanItem(title: 'Ship'),
@@ -220,10 +220,10 @@ void main() {
     final handle = tester.ensureSemantics();
     await tester.pumpWidget(
       wrap(
-        const AcpMessageThread(
+        AcpMessageThread(
           entries: [
-            AcpUserPromptEntry(id: 'u1', parts: [AcpTextPart('hi')]),
-            AcpStatusEntry(
+            AcpUserPromptEntry(id: 'u1', parts: const [AcpTextPart('hi')]),
+            const AcpStatusEntry(
               id: 's1',
               message: 'Failed',
               severity: AcpStatusSeverity.error,
