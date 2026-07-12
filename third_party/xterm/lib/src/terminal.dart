@@ -146,6 +146,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   /// Cap on the size of a single buffered graphics transmission (16 MiB).
   static const _maxGraphicsBytes = 16 * 1024 * 1024;
+  static const _graphicsBarrierOperationKey = 'barrier';
+  static const _graphicsUnkeyedOperationKey = 'unkeyed';
 
   bool _graphicsActive = false;
   Map<String, String> _graphicsArgs = const {};
@@ -1415,7 +1417,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           () async => _deleteGraphics(args, buffer),
         );
       } else {
-        _deleteGraphics(args, _buffer);
+        final buffer = _buffer;
+        _scheduleGraphicsBarrier(
+          manager,
+          () async => _deleteGraphics(args, buffer),
+        );
       }
       return;
     }
@@ -1510,21 +1516,48 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     Map<String, String> args,
     Future<void> Function() operation,
   ) {
-    final key = _graphicsOperationKey(manager, args);
-    if (key == null) {
-      unawaited(operation());
-      return;
-    }
-
+    final key =
+        _graphicsOperationKey(manager, args) ?? _graphicsUnkeyedOperationKey;
     final operations = _graphicsOperations.putIfAbsent(manager, () => {});
     final previous = operations[key];
-    final future =
-        previous == null ? operation() : previous.then((_) => operation());
+    final barrier = operations[_graphicsBarrierOperationKey];
+    final blockers = <Future<void>>{
+      if (previous != null) previous,
+      if (barrier != null) barrier,
+    };
+    final future = blockers.isEmpty
+        ? operation()
+        : Future.wait(blockers).then((_) => operation());
     operations[key] = future;
     unawaited(
       future.whenComplete(() {
         if (identical(operations[key], future)) {
           operations.remove(key);
+          if (operations.isEmpty) {
+            _graphicsOperations.remove(manager);
+          }
+        }
+      }),
+    );
+  }
+
+  /// Runs a graphics operation after every earlier image operation and makes
+  /// every later operation wait for it. Position/all-image deletes need this
+  /// barrier because they have no image id to share a per-image queue with.
+  void _scheduleGraphicsBarrier(
+    GraphicsManager manager,
+    Future<void> Function() operation,
+  ) {
+    final operations = _graphicsOperations.putIfAbsent(manager, () => {});
+    final blockers = operations.values.toSet();
+    final future = blockers.isEmpty
+        ? operation()
+        : Future.wait(blockers).then((_) => operation());
+    operations[_graphicsBarrierOperationKey] = future;
+    unawaited(
+      future.whenComplete(() {
+        if (identical(operations[_graphicsBarrierOperationKey], future)) {
+          operations.remove(_graphicsBarrierOperationKey);
           if (operations.isEmpty) {
             _graphicsOperations.remove(manager);
           }

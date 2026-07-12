@@ -103,11 +103,13 @@ out of scope.
   decoded memory. Encoded GIF/APNG transmissions preserve all decoded frames,
   durations and repetition metadata instead of freezing on frame one. The host
   renderer advances only visible, active animations and paints the current
-  frame. MonkeyMux 0.1.104 retains and replays each image's ordered frame,
+  frame. MonkeyMux 0.1.105 retains and replays each image's ordered frame,
   composition and control commands so reconnects/window switches do not restore
   only a static root image, resolves `I=` image-number commands, and drops
   over-budget per-image replay histories while preserving lowercase soft-deleted
-  image data. Protocol frame/composition failures now return Kitty errors unless
+  image data. Replay suppresses duplicate protocol responses, preserves root
+  order for `I=` remapping, and retains roots addressed only by image number.
+  Protocol frame/composition failures now return Kitty errors unless
   silenced; frame timing carries ticker overshoot and `a=f` decodes only its
   first logical payload frame. Android UI animation scales no longer pause
   terminal media (a common emulator/developer setting), while iOS Reduce Motion
@@ -117,8 +119,10 @@ out of scope.
   Standard terminal ED/EL/ECH erases only Unicode cell-image references, matching
   Kitty; physical placements (including in-flight decodes) remain until a
   graphics delete or buffer reset, so Copilot's full-screen TUI redraw no longer
-  removes a running `C=1` animation. Keep the frame model and animation APIs in
-  `graphics_manager.dart` when re-syncing.
+  removes a running `C=1` animation. Async deletes and replacement decodes stay
+  stream-ordered so stale pending payloads cannot resurrect or overwrite images.
+  Keep the frame model and animation APIs in `graphics_manager.dart` when
+  re-syncing.
 * MonkeyMux private character-grid resizes (`CSI ? 8 ; rows ; cols t`) update
   the terminal buffer without echoing `onResize` back to the host. Standard
   `CSI 8 ; rows ; cols t` keeps its normal resize callback. This lets every

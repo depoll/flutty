@@ -4269,19 +4269,33 @@ class MonkeyRenderTerminal extends RenderBox
       final imageWidth = image.width.toDouble();
       final imageHeight = image.height.toDouble();
 
-      // Source rectangle: the optional crop (x=,y=,w=,h=), clamped to the image.
-      final srcLeft = placement.srcX.toDouble().clamp(0.0, imageWidth);
-      final srcTop = placement.srcY.toDouble().clamp(0.0, imageHeight);
-      final srcWidth =
+      // Kitty crop coordinates use the original source dimensions. Encoded
+      // images may have been downscaled while decoding, so map the logical crop
+      // into the decoded image before painting it.
+      final sourceWidth = stored.sourceWidth > 0
+          ? stored.sourceWidth.toDouble()
+          : imageWidth;
+      final sourceHeight = stored.sourceHeight > 0
+          ? stored.sourceHeight.toDouble()
+          : imageHeight;
+      final logicalSrcLeft = placement.srcX.toDouble().clamp(0.0, sourceWidth);
+      final logicalSrcTop = placement.srcY.toDouble().clamp(0.0, sourceHeight);
+      final logicalSrcWidth =
           (placement.srcWidth > 0
                   ? placement.srcWidth.toDouble()
-                  : imageWidth - srcLeft)
-              .clamp(0.0, imageWidth - srcLeft);
-      final srcHeight =
+                  : sourceWidth - logicalSrcLeft)
+              .clamp(0.0, sourceWidth - logicalSrcLeft);
+      final logicalSrcHeight =
           (placement.srcHeight > 0
                   ? placement.srcHeight.toDouble()
-                  : imageHeight - srcTop)
-              .clamp(0.0, imageHeight - srcTop);
+                  : sourceHeight - logicalSrcTop)
+              .clamp(0.0, sourceHeight - logicalSrcTop);
+      final scaleX = imageWidth / sourceWidth;
+      final scaleY = imageHeight / sourceHeight;
+      final srcLeft = logicalSrcLeft * scaleX;
+      final srcTop = logicalSrcTop * scaleY;
+      final srcWidth = logicalSrcWidth * scaleX;
+      final srcHeight = logicalSrcHeight * scaleY;
       if (srcWidth <= 0 || srcHeight <= 0) {
         continue;
       }
@@ -4317,7 +4331,7 @@ class MonkeyRenderTerminal extends RenderBox
       }
 
       final rowSpan = (dstHeight / cellHeight).ceil();
-      if (placement.row + rowSpan < firstLine || placement.row > lastLine) {
+      if (placement.row + rowSpan <= firstLine || placement.row > lastLine) {
         continue;
       }
       _visibleGraphicsImageIds.add(stored.id);
