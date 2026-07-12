@@ -1408,20 +1408,33 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         imageNumber != null &&
         imageNumber > 0) {
       if ((action == 't' || action == 'T') && data.isNotEmpty) {
-        final previousImageId = manager.reserveExplicitImageIdForNumber(
+        final reservation = manager.reserveExplicitImageIdForNumber(
           imageNumber,
           explicitImageId,
         );
+        if (!reservation.accepted) {
+          _respondToGraphicsFailure(
+            args,
+            'ENOSPC: image-number limit exceeded',
+          );
+          return;
+        }
         imageNumberReservation = (
           number: imageNumber,
           imageId: explicitImageId,
-          previousImageId: previousImageId,
+          previousImageId: reservation.previousImageId,
           requiresEagerDecode: false,
         );
       } else {
         // Establish explicit id/number mappings before placement or async image
         // commands so every action in the stream observes the same association.
-        manager.registerImageNumber(imageNumber, explicitImageId);
+        if (!manager.registerImageNumber(imageNumber, explicitImageId)) {
+          _respondToGraphicsFailure(
+            args,
+            'ENOSPC: image-number limit exceeded',
+          );
+          return;
+        }
       }
     }
     if (action == 'p') {
@@ -1440,6 +1453,13 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         imageNumber != null &&
         imageNumber > 0) {
       final reserved = manager.reserveImageIdForNumber(imageNumber);
+      if (reserved.imageId <= 0) {
+        _respondToGraphicsFailure(
+          args,
+          'ENOSPC: image-number limit exceeded',
+        );
+        return;
+      }
       imageNumberReservation = (
         number: imageNumber,
         imageId: reserved.imageId,

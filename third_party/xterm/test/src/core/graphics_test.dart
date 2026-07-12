@@ -130,9 +130,11 @@ void main() {
     final manager = GraphicsManager();
     final firstPrevious = manager.reserveExplicitImageIdForNumber(5, 100);
     final secondPrevious = manager.reserveExplicitImageIdForNumber(5, 100);
+    expect(firstPrevious.accepted, isTrue);
+    expect(secondPrevious.accepted, isTrue);
     manager
-      ..rollbackImageIdReservation(5, 100, firstPrevious)
-      ..rollbackImageIdReservation(5, 100, secondPrevious);
+      ..rollbackImageIdReservation(5, 100, firstPrevious.previousImageId)
+      ..rollbackImageIdReservation(5, 100, secondPrevious.previousImageId);
     expect(manager.imageIdForNumber(5), isNull);
   });
 
@@ -513,7 +515,7 @@ void main() {
         sourceSignature: 1,
         imageNumber: 5,
         mappedImageId: 7,
-        previousImageId: firstPrevious,
+        previousImageId: firstPrevious.previousImageId,
       );
       final secondPrevious = manager.reserveExplicitImageIdForNumber(5, 7);
       manager.storePendingImage(
@@ -523,7 +525,7 @@ void main() {
         sourceSignature: 1,
         imageNumber: 5,
         mappedImageId: 7,
-        previousImageId: secondPrevious,
+        previousImageId: secondPrevious.previousImageId,
       );
 
       expect(await manager.resolveImage(7), isNull);
@@ -1714,6 +1716,22 @@ void main() {
       expect(terminal.graphics.imageIdForNumber(9), 42);
       expect(terminal.graphics.hasPendingImage(42), isTrue);
       expect(terminal.graphics.imageById(42), isNull);
+    });
+  });
+
+  testWidgets('mapping-only commands keep image-number aliases bounded', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      terminal.graphics.storeImageWithId(1, await _buildImage(1, 1));
+
+      for (var number = 1; number <= 300; number++) {
+        terminal.write('\x1b_Ga=a,i=1,I=$number,q=2\x1b\\');
+      }
+
+      expect(terminal.graphics.imageIdForNumber(1), isNull);
+      expect(terminal.graphics.imageIdForNumber(300), 1);
     });
   });
 
