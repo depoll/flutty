@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.108"
+	monkeyMuxVersion                  = "0.1.109"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -91,6 +91,7 @@ const (
 	// screenshots); the byte cap is the binding limit and is per window, so peak
 	// server memory is this times the number of image-heavy windows.
 	maxRetainedKittyImages       = 128
+	maxRetainedKittyImageNumbers = maxRetainedKittyImages
 	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
 	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
 	// Caps for how many retained images are *replayed* on a window switch.
@@ -550,6 +551,7 @@ type muxWindow struct {
 	kittyImages          map[string][]byte
 	kittyImageAnimations map[string][]byte
 	kittyImageNumberToID map[string]string
+	kittyImageNumberSeq  map[string]uint64
 	kittyImageOrder      []string
 	// kittyImageSeq records mutation recency independently of root order so local
 	// replay selection and the machine-wide budget favor recently animated
@@ -8602,6 +8604,7 @@ type kittyGraphicsEvent struct {
 	animation   bool
 	delete      bool
 	clearCache  bool
+	mappingOnly bool
 }
 
 // scanKittyTransmissions parses complete Kitty graphics events from the front of
@@ -8650,8 +8653,7 @@ func scanKittyTransmissions(
 				selector == "C" ||
 				selector == "P" ||
 				selector == "X" ||
-				selector == "Y" ||
-				(selector == "I" && id == "")
+				selector == "Y"
 			if id != "" || imageNumber != "" || clearCache {
 				events = append(events, kittyGraphicsEvent{
 					id: id, imageNumber: imageNumber, delete: true, clearCache: clearCache,
@@ -8661,6 +8663,13 @@ func scanKittyTransmissions(
 			events = append(events, kittyGraphicsEvent{
 				id: id, imageNumber: imageNumber, buf: buf, animation: isAnimation,
 			})
+		} else {
+			args := parseKittyControl(kittyControl(data, i, end))
+			if args["a"] == "p" && args["i"] != "" && args["I"] != "" {
+				events = append(events, kittyGraphicsEvent{
+					id: args["i"], imageNumber: args["I"], mappingOnly: true,
+				})
+			}
 		}
 		i = end
 		consumed = end
@@ -8785,18 +8794,33 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 					if w.kittyImageNumberToID == nil {
 						w.kittyImageNumberToID = map[string]string{}
 					}
-					w.kittyImageNumberToID[event.imageNumber] = id
+					w.recordKittyImageNumberMappingLocked(event.imageNumber, id)
 				}
-			} else if !event.animation {
+			} else {
+				if (event.mappingOnly || event.animation) &&
+					w.kittyImages[id] == nil {
+					continue
+				}
 				if w.kittyImageNumberToID == nil {
 					w.kittyImageNumberToID = map[string]string{}
+				}
+				if _, exists := w.kittyImageNumberToID[event.imageNumber]; !exists &&
+					len(w.kittyImageNumberToID) >= maxRetainedKittyImageNumbers {
+					w.evictOldestKittyImageNumberMappingLocked()
 				}
 				if previous := w.kittyImageNumberToID[event.imageNumber]; previous != "" &&
 					previous != id && strings.HasPrefix(previous, "I:") {
 					w.removeKittyImageLocked(previous)
 				}
-				w.kittyImageNumberToID[event.imageNumber] = id
+				w.recordKittyImageNumberMappingLocked(event.imageNumber, id)
 			}
+		}
+		if event.mappingOnly {
+			kittyImageStoreSeq++
+			w.kittyImageSeq[id] = kittyImageStoreSeq
+			w.enforceKittyImageCapsLocked()
+			changed = true
+			continue
 		}
 		if id == "" {
 			continue // cannot dedupe or replay without an id
@@ -8879,10 +8903,40 @@ func (w *muxWindow) removeKittyImageLocked(id string) bool {
 	for number, mappedID := range w.kittyImageNumberToID {
 		if mappedID == id {
 			delete(w.kittyImageNumberToID, number)
+			delete(w.kittyImageNumberSeq, number)
 		}
 	}
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
 	return true
+}
+
+func (w *muxWindow) evictOldestKittyImageNumberMappingLocked() {
+	var oldestNumber string
+	var oldestSeq uint64
+	for number := range w.kittyImageNumberToID {
+		seq := w.kittyImageNumberSeq[number]
+		if oldestNumber == "" || seq < oldestSeq ||
+			(seq == oldestSeq && number < oldestNumber) {
+			oldestNumber = number
+			oldestSeq = seq
+		}
+	}
+	if oldestNumber != "" {
+		delete(w.kittyImageNumberToID, oldestNumber)
+		delete(w.kittyImageNumberSeq, oldestNumber)
+	}
+}
+
+func (w *muxWindow) recordKittyImageNumberMappingLocked(number, id string) {
+	if w.kittyImageNumberToID == nil {
+		w.kittyImageNumberToID = map[string]string{}
+	}
+	if w.kittyImageNumberSeq == nil {
+		w.kittyImageNumberSeq = map[string]uint64{}
+	}
+	kittyImageStoreSeq++
+	w.kittyImageNumberToID[number] = id
+	w.kittyImageNumberSeq[number] = kittyImageStoreSeq
 }
 
 func (w *muxWindow) clearKittyImagesLocked() bool {
@@ -8890,6 +8944,7 @@ func (w *muxWindow) clearKittyImagesLocked() bool {
 	w.kittyImages = nil
 	w.kittyImageAnimations = nil
 	w.kittyImageNumberToID = nil
+	w.kittyImageNumberSeq = nil
 	w.kittyImageOrder = nil
 	w.kittyImageSeq = nil
 	w.kittyImageToken = nil
@@ -9025,7 +9080,9 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 	selected := make([]string, 0, maxReplayedKittyImages)
 	total := 0
 	for _, id := range candidates {
-		imageBytes := len(w.kittyImages[id]) + len(w.kittyImageAnimations[id])
+		imageBytes := len(w.kittyImages[id]) +
+			len(w.kittyImageNumberReplayLocked(id)) +
+			len(w.kittyImageAnimations[id])
 		if len(selected) >= maxReplayedKittyImages {
 			break
 		}
@@ -9049,30 +9106,36 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 		clientHasRoot := false
 		if len(clientHas) > 0 {
 			if token, ok := clientHas[id]; ok &&
-				token == w.kittyImageToken[id] &&
-				!w.kittyImageRootHasActiveNumberMappingLocked(id) {
+				token == w.kittyImageToken[id] {
 				clientHasRoot = true
 			}
 		}
 		if !clientHasRoot {
 			out = append(out, w.kittyImageRootReplayLocked(id)...)
 		}
+		out = append(out, w.kittyImageNumberReplayLocked(id)...)
 		out = append(out, w.kittyImageAnimations[id]...)
 	}
 	return out
 }
 
-func (w *muxWindow) kittyImageRootHasActiveNumberMappingLocked(id string) bool {
-	buf := w.kittyImages[id]
-	if len(buf) == 0 {
-		return false
+func (w *muxWindow) kittyImageNumberReplayLocked(id string) []byte {
+	var numbers []string
+	for number, mappedID := range w.kittyImageNumberToID {
+		if mappedID == id {
+			numbers = append(numbers, number)
+		}
 	}
-	apcEnd := kittyApcEnd(buf, 0)
-	if apcEnd < 0 {
-		return false
+	sort.Strings(numbers)
+	var out []byte
+	for _, number := range numbers {
+		out = append(out, "\x1b_Ga=a,i="...)
+		out = append(out, id...)
+		out = append(out, ",I="...)
+		out = append(out, number...)
+		out = append(out, ",q=2\x1b\\"...)
 	}
-	number := parseKittyControl(kittyControl(buf, 0, apcEnd))["I"]
-	return number != "" && w.kittyImageNumberToID[number] == id
+	return out
 }
 
 // kittyImageTransmissionsForLocked returns the concatenated store-only
@@ -9103,8 +9166,9 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 			continue
 		}
 		buf = w.kittyImageRootReplayLocked(id)
+		mappings := w.kittyImageNumberReplayLocked(id)
 		animation := w.kittyImageAnimations[id]
-		imageBytes := len(buf) + len(animation)
+		imageBytes := len(buf) + len(mappings) + len(animation)
 		if imageBytes > maxReplayedKittyImageBytes ||
 			len(out)+imageBytes > maxReplayedKittyImageBytes {
 			continue
@@ -9114,6 +9178,7 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 		}
 		seen[id] = struct{}{}
 		out = append(out, buf...)
+		out = append(out, mappings...)
 		out = append(out, animation...)
 		served = append(served, id)
 	}

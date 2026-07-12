@@ -1407,17 +1407,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         explicitImageId > 0 &&
         imageNumber != null &&
         imageNumber > 0) {
-      final previousImageId = manager.imageIdForNumber(imageNumber);
-      // Establish explicit id/number mappings before placement or async image
-      // commands so every action in the stream observes the same association.
-      manager.registerImageNumber(imageNumber, explicitImageId);
       if ((action == 't' || action == 'T') && data.isNotEmpty) {
+        final previousImageId = manager.reserveExplicitImageIdForNumber(
+          imageNumber,
+          explicitImageId,
+        );
         imageNumberReservation = (
           number: imageNumber,
           imageId: explicitImageId,
           previousImageId: previousImageId,
           requiresEagerDecode: false,
         );
+      } else {
+        // Establish explicit id/number mappings before placement or async image
+        // commands so every action in the stream observes the same association.
+        manager.registerImageNumber(imageNumber, explicitImageId);
       }
     }
     if (action == 'p') {
@@ -1803,6 +1807,19 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }) async {
     manager.onChanged ??= notifyListeners;
     final imageId = commandImageId ?? _resolveGraphicsImageId(manager, args);
+    final hasControl = args.containsKey('c') ||
+        args.containsKey('s') ||
+        args.containsKey('v') ||
+        args.containsKey('r') ||
+        args.containsKey('z');
+    if (!hasControl) {
+      if (imageId == null ||
+          (manager.imageById(imageId) == null &&
+              !manager.hasPendingImage(imageId))) {
+        _respondToGraphicsFailure(args, 'ENOENT: image not found');
+      }
+      return;
+    }
     if (imageId == null || await manager.resolveImage(imageId) == null) {
       _respondToGraphicsFailure(args, 'ENOENT: image not found');
       return;
@@ -1962,7 +1979,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       payload = inflated;
     }
 
-    final imageId = int.tryParse(args['i'] ?? '') ?? commandImageId;
+    final parsedImageId = int.tryParse(args['i'] ?? '');
+    final imageId = parsedImageId != null && parsedImageId > 0
+        ? parsedImageId
+        : commandImageId;
     // Signature over the base64-decoded payload *before* inflation. The
     // MonkeyMux server computes the same hash over the base64-decoded
     // transmission bytes (which it stores compressed for o=z), so hashing
@@ -1987,6 +2007,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         imageId: args['i'],
         action: args['a'],
         reused: true,
+      );
+      _commitGraphicsImageNumberReservation(
+        manager,
+        imageNumberReservation,
       );
       _placeStoredImageId(manager, imageId, anchor, args, generation);
       return;
@@ -2094,6 +2118,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       );
       return;
     }
+    _commitGraphicsImageNumberReservation(
+      manager,
+      imageNumberReservation,
+    );
     _placeStoredImageId(manager, storedImageId, anchor, args, generation);
   }
 
@@ -2108,6 +2136,19 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       reservation.number,
       reservation.imageId,
       reservation.previousImageId,
+    );
+  }
+
+  void _commitGraphicsImageNumberReservation(
+    GraphicsManager manager,
+    _GraphicsImageNumberReservation? reservation,
+  ) {
+    if (reservation == null) {
+      return;
+    }
+    manager.commitImageIdReservation(
+      reservation.number,
+      reservation.imageId,
     );
   }
 
@@ -2253,6 +2294,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         return;
       }
       what = what == 'n' ? 'i' : 'I';
+    }
+    if ((what == 'i' || what == 'I') && imageId == null) {
+      return;
     }
 
     final removed = buffer.graphics.deletePlacements(

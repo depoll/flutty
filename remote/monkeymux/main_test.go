@@ -5125,8 +5125,34 @@ func TestObserveKittyGraphicsResolvesImageNumberAnimations(t *testing.T) {
 			t.Fatalf("image-number animation missing %q: %q", want, replay)
 		}
 	}
-	if strings.Count(replay, "I=5") != 1 {
+	if strings.Count(replay, "I=5") != 2 {
 		t.Fatalf("animation commands were not canonicalized to id 7: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsRetainsPlacementAndAnimationMappings(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=p,i=7,I=9,c=1,r=1\x1b\\" +
+			"\x1b_Ga=f,i=8,I=9,f=100;FRAME8\x1b\\" +
+			"\x1b_Ga=a,I=9,s=3,v=1\x1b\\"))
+
+	if got := window.kittyImageNumberToID["9"]; got != "8" {
+		t.Fatalf("image number 9 maps to %q, want 8", got)
+	}
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "a=p") {
+		t.Fatalf("placement command must not be replayed: %q", replay)
+	}
+	if !strings.Contains(replay, "FRAME8") ||
+		!strings.Contains(replay, "a=a") ||
+		!strings.Contains(replay, "i=8") {
+		t.Fatalf("mapped animation history missing from image 8: %q", replay)
+	}
+	if !strings.Contains(replay, "i=8,I=9,q=2") {
+		t.Fatalf("current image-number mapping missing from replay: %q", replay)
 	}
 }
 
@@ -5156,8 +5182,8 @@ func TestKittyAnimationReplaySuppressesProtocolResponses(t *testing.T) {
 	if strings.Contains(replay, "q=0") {
 		t.Fatalf("replay retained response-producing quiet mode: %q", replay)
 	}
-	if got := strings.Count(replay, "q=2"); got != 3 {
-		t.Fatalf("replay q=2 count = %d, want 3: %q", got, replay)
+	if got := strings.Count(replay, "q=2"); got != 4 {
+		t.Fatalf("replay q=2 count = %d, want 4: %q", got, replay)
 	}
 	if strings.Contains(replay, "a=T") {
 		t.Fatalf("root replay was not downgraded to store-only: %q", replay)
@@ -5347,6 +5373,35 @@ func TestObserveKittyGraphicsDeleteByNumberRemovesRetainedImage(t *testing.T) {
 	}
 }
 
+func TestObserveKittyGraphicsHardDeleteByNumberKeepsUnrelatedImages(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=6,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=d,d=I,I=5\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "ROOT7") {
+		t.Fatalf("d=I,I=5 retained targeted image: %q", replay)
+	}
+	if !strings.Contains(replay, "ROOT8") {
+		t.Fatalf("d=I,I=5 removed unrelated image: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsUnaddressedIDDeleteKeepsAllImages(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=6,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=d,d=I\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "ROOT7") || !strings.Contains(replay, "ROOT8") {
+		t.Fatalf("unaddressed d=I removed retained images: %q", replay)
+	}
+}
+
 func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 	window := &muxWindow{}
 
@@ -5373,6 +5428,46 @@ func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 	newest := fmt.Sprintf("DATA%d", maxRetainedKittyImages+4)
 	if !strings.Contains(replay, newest) {
 		t.Fatalf("newest image %q missing: %q", newest, replay)
+	}
+}
+
+func TestObserveKittyGraphicsCapsMappingOnlyImageNumbers(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,f=100;ROOT\x1b\\"),
+	)
+	for i := 0; i < maxRetainedKittyImageNumbers+20; i++ {
+		window.observeKittyGraphicsLocked([]byte(fmt.Sprintf(
+			"\x1b_Ga=p,i=7,I=%d,c=1,r=1\x1b\\",
+			i+1,
+		)))
+	}
+
+	if got := len(window.kittyImageNumberToID); got > maxRetainedKittyImageNumbers {
+		t.Fatalf("retained %d image-number mappings, want <= %d",
+			got, maxRetainedKittyImageNumbers)
+	}
+	if _, ok := window.kittyImageNumberToID["1"]; ok {
+		t.Fatalf("oldest image-number mapping survived bounded insertion")
+	}
+	if got := window.kittyImageNumberToID[fmt.Sprintf("%d", maxRetainedKittyImageNumbers+20)]; got != "7" {
+		t.Fatalf("recent image-number mapping = %q, want 7", got)
+	}
+	if !strings.Contains(string(window.kittyImageReplayLocked(nil)), "i=7,I=") {
+		t.Fatalf("bounded image-number mappings were not replayed")
+	}
+
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=8,I=999,f=100;NEWROOT\x1b\\"),
+	)
+	if got := window.kittyImageNumberToID["999"]; got != "8" {
+		t.Fatalf("new root mapping at cap = %q, want 8", got)
+	}
+	if got := len(window.kittyImageNumberToID); got > maxRetainedKittyImageNumbers {
+		t.Fatalf("new root grew mapping table to %d", got)
+	}
+	if !strings.Contains(string(window.kittyImageReplayLocked(nil)), "NEWROOT") {
+		t.Fatalf("new root at mapping cap was not retained")
 	}
 }
 
@@ -5536,9 +5631,10 @@ func TestKittyImageReplaySkipsImagesClientAlreadyHolds(t *testing.T) {
 		t.Fatalf("image 202 has a stale client signature and must be re-sent: %q",
 			replay)
 	}
-	if !strings.Contains(replay, "ROOT303") ||
+	if strings.Contains(replay, "ROOT303") ||
+		!strings.Contains(replay, "i=303,I=5,q=2") ||
 		!strings.Contains(replay, "FRAME303") {
-		t.Fatalf("active I= mapping and animation must both be replayed: %q", replay)
+		t.Fatalf("held root should replay mapping and animation only: %q", replay)
 	}
 	// A nil skip-set (fresh attach) still replays everything.
 	full := string(window.kittyImageReplayLocked(nil))
