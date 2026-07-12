@@ -603,7 +603,11 @@ void main() {
       await tester.pump();
 
       expect(find.text('no agent sessions yet'), findsOneWidget);
-      expect(find.textContaining('keep the work moving'), findsOneWidget);
+      expect(
+        find.textContaining('resume one after it appears'),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(FilledButton, 'New session'), findsOneWidget);
     });
 
     testWidgets('repeated connection taps push one terminal route', (

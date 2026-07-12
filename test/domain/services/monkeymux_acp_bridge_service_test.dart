@@ -34,6 +34,8 @@ final class _FakeInstaller extends MonkeyMuxInstallerService {
 
   final MonkeyMuxInstallation installation;
   int ensureCount = 0;
+  MonkeyMuxInstallConfirmation? lastConfirmInstall;
+  SshExecPriority? lastPriority;
 
   @override
   Future<MonkeyMuxInstallation> ensureInstalled(
@@ -42,6 +44,8 @@ final class _FakeInstaller extends MonkeyMuxInstallerService {
     MonkeyMuxInstallConfirmation? confirmInstall,
   }) async {
     ensureCount += 1;
+    lastConfirmInstall = confirmInstall;
+    lastPriority = priority;
     return installation;
   }
 }
@@ -250,7 +254,10 @@ void main() {
       launchArgv: const ['copilot', '--acp'],
       cwd: '/home/demo/project with spaces',
     );
-    final bridges = await service.list(session);
+    Future<bool> confirmInstall(MonkeyMuxInstallRequest _) async => true;
+    final bridges = await service.list(session, confirmInstall: confirmInstall);
+    expect(installer.lastConfirmInstall, same(confirmInstall));
+    expect(installer.lastPriority, SshExecPriority.normal);
     final status = await service.status(session, _bridgeId);
     await service.stop(session, _bridgeId);
 

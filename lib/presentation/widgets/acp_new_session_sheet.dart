@@ -11,6 +11,7 @@ library;
 
 import 'dart:async';
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -22,16 +23,21 @@ import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_recent_session.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
+import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/services/acp_concurrency_policy.dart';
 import '../../domain/services/acp_provider_service.dart';
 import '../../domain/services/acp_session_manager.dart';
+import '../../domain/services/agent_launch_preset_service.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 import 'acp_concurrency_choice.dart';
 import 'acp_config_option_controls.dart';
+import 'acp_connection_support.dart';
 import 'acp_custom_provider_editor.dart';
 import 'acp_session_presentation.dart';
 
@@ -63,6 +69,131 @@ AcpLaunchCommand? acpTerminalAuthCommandFor(String providerId) {
   return null;
 }
 
+/// Defaults resolved for the ACP start-or-resume sheet.
+@immutable
+final class AcpSessionLaunchDefaults {
+  /// Creates resolved launch defaults.
+  const AcpSessionLaunchDefaults({
+    required this.hostId,
+    required this.providerId,
+    required this.cwd,
+  });
+
+  /// Initially selected saved host.
+  final int? hostId;
+
+  /// Initially selected ACP provider.
+  final String? providerId;
+
+  /// Initially selected remote working directory.
+  final String cwd;
+}
+
+/// Maps a saved terminal-agent tool to an available ACP provider.
+String? acpProviderIdForAgentLaunchTool(
+  AgentLaunchTool tool,
+  List<AcpProvider> providers,
+) {
+  for (final provider in providers) {
+    if (agentLaunchToolForCommandName(provider.launchCommand.executable) ==
+        tool) {
+      return provider.id;
+    }
+  }
+  return null;
+}
+
+/// Resolves launch defaults from explicit inputs, active/recent sessions, and
+/// the host's saved agent/MonkeyMux configuration.
+AcpSessionLaunchDefaults resolveAcpSessionLaunchDefaults({
+  required List<Host> hosts,
+  required List<AcpProvider> providers,
+  required List<AcpRecentSessionRef> recents,
+  required Set<int> activeHostIds,
+  required Map<int, AgentLaunchPreset> presets,
+  AcpSessionKey? lastSelected,
+  int? initialHostId,
+  String? initialProviderId,
+}) {
+  Host? hostForId(int? id) =>
+      id == null ? null : hosts.where((host) => host.id == id).firstOrNull;
+
+  final lastSelectedHost = hostForId(lastSelected?.hostId);
+  final activeHosts = hosts
+      .where((host) => activeHostIds.contains(host.id))
+      .toList(growable: false);
+  final configuredHost = hosts.firstWhereOrNull((host) {
+    if (presets.containsKey(host.id)) {
+      return true;
+    }
+    return RemoteMuxBackendPresentation.fromStorageValue(
+          host.remoteMuxBackend,
+        ) ==
+        RemoteMuxBackend.monkeyMux;
+  });
+  final recentHost = recents
+      .map((recent) => hostForId(recent.hostId))
+      .whereType<Host>()
+      .firstOrNull;
+  final host =
+      hostForId(initialHostId) ??
+      (lastSelectedHost != null && activeHostIds.contains(lastSelectedHost.id)
+          ? lastSelectedHost
+          : null) ??
+      (activeHosts.length == 1 ? activeHosts.single : null) ??
+      lastSelectedHost ??
+      activeHosts.firstOrNull ??
+      configuredHost ??
+      recentHost ??
+      hosts.firstOrNull;
+
+  final availableProviderIds = providers.map((provider) => provider.id).toSet();
+  final preset = host == null ? null : presets[host.id];
+  final matchingRecents = host == null
+      ? const <AcpRecentSessionRef>[]
+      : recents.where((recent) => recent.hostId == host.id).toList();
+  final recentProviderId = matchingRecents
+      .map((recent) => recent.providerId)
+      .firstWhereOrNull(availableProviderIds.contains);
+  final lastSelectedProviderId =
+      host != null &&
+          lastSelected?.hostId == host.id &&
+          availableProviderIds.contains(lastSelected?.providerId)
+      ? lastSelected!.providerId
+      : null;
+  final providerId =
+      (availableProviderIds.contains(initialProviderId)
+          ? initialProviderId
+          : null) ??
+      (preset == null
+          ? null
+          : acpProviderIdForAgentLaunchTool(preset.tool, providers)) ??
+      lastSelectedProviderId ??
+      recentProviderId ??
+      (availableProviderIds.contains(AcpBuiltinProviderIds.copilotCli)
+          ? AcpBuiltinProviderIds.copilotCli
+          : providers.firstOrNull?.id);
+
+  String? nonEmpty(String? value) {
+    final trimmed = value?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
+  }
+
+  final matchingRecent = matchingRecents.firstWhereOrNull(
+    (recent) => recent.providerId == providerId,
+  );
+  final cwd =
+      nonEmpty(preset?.workingDirectory) ??
+      nonEmpty(host?.tmuxWorkingDirectory) ??
+      nonEmpty(matchingRecent?.cwd) ??
+      '~';
+  return AcpSessionLaunchDefaults(
+    hostId: host?.id,
+    providerId: providerId,
+    cwd: cwd,
+  );
+}
+
 class _NewSessionSheet extends ConsumerStatefulWidget {
   const _NewSessionSheet({this.initialHostId, this.initialProviderId});
 
@@ -80,7 +211,11 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
   bool _cwdEdited = false;
   AcpRecentSessionRef? _selectedRecent;
   var _busy = false;
+  var _loadingDefaults = true;
+  var _defaultsScheduled = false;
+  var _hostDefaultsGeneration = 0;
   String? _error;
+  late final Future<List<AcpRecentSessionRef>> _recents;
 
   // Set once a session has started: the sheet stays open on an initial
   // configuration stage until the user explicitly opens the chat.
@@ -91,6 +226,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     super.initState();
     _hostId = widget.initialHostId;
     _providerId = widget.initialProviderId;
+    _recents = ref.read(acpSessionManagerProvider).loadRecentSessions();
   }
 
   @override
@@ -99,42 +235,157 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     super.dispose();
   }
 
-  void _applyDefaultCwd(List<Host> hosts) {
-    if (_cwdEdited || _hostId == null) {
+  void _scheduleDefaults(List<Host> hosts, List<AcpProvider> providers) {
+    if (_defaultsScheduled) {
       return;
     }
-    final host = hosts.where((h) => h.id == _hostId).firstOrNull;
-    final def = host?.tmuxWorkingDirectory?.trim();
-    _cwd.text = (def != null && def.isNotEmpty) ? def : '~';
+    _defaultsScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        unawaited(_loadDefaults(hosts, providers));
+      }
+    });
   }
 
-  Future<bool> _confirmInstall(MonkeyMuxInstallRequest request) async {
-    if (!mounted) {
-      return false;
-    }
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Install the MonkeyMux helper?'),
-        content: Text(
-          'Starting an agent session installs the MonkeyMux helper '
-          '(${request.platform}, v${request.version}) on this host so the '
-          'session can survive reconnects.',
+  Future<void> _loadDefaults(
+    List<Host> hosts,
+    List<AcpProvider> providers,
+  ) async {
+    try {
+      final manager = ref.read(acpSessionManagerProvider);
+      final presetService = ref.read(agentLaunchPresetServiceProvider);
+      final recents = await _recents;
+      final lastSelected = await manager.loadLastSelected();
+      final presetEntries = await Future.wait(
+        hosts.map(
+          (host) async =>
+              MapEntry(host.id, await presetService.getPresetForHost(host.id)),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Install'),
-          ),
-        ],
-      ),
-    );
-    return confirmed ?? false;
+      );
+      final presets = <int, AgentLaunchPreset>{
+        for (final entry in presetEntries)
+          if (entry.value != null) entry.key: entry.value!,
+      };
+      final activeHostIds = ref
+          .read(sshServiceProvider)
+          .allSessions
+          .map((session) => session.hostId)
+          .toSet();
+      final defaults = resolveAcpSessionLaunchDefaults(
+        hosts: hosts,
+        providers: providers,
+        recents: recents,
+        activeHostIds: activeHostIds,
+        presets: presets,
+        lastSelected: lastSelected,
+        initialHostId: widget.initialHostId,
+        initialProviderId: widget.initialProviderId,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _hostId = defaults.hostId;
+        _providerId = defaults.providerId;
+        if (!_cwdEdited) {
+          _cwd.text = defaults.cwd;
+        }
+        _loadingDefaults = false;
+      });
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'acp.launch',
+        'defaults_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      if (!mounted) {
+        return;
+      }
+      final defaults = resolveAcpSessionLaunchDefaults(
+        hosts: hosts,
+        providers: providers,
+        recents: const [],
+        activeHostIds: const {},
+        presets: const {},
+        initialHostId: widget.initialHostId,
+        initialProviderId: widget.initialProviderId,
+      );
+      setState(() {
+        _hostId = defaults.hostId;
+        _providerId = defaults.providerId;
+        if (!_cwdEdited) {
+          _cwd.text = defaults.cwd;
+        }
+        _loadingDefaults = false;
+      });
+    }
   }
+
+  Future<void> _selectHost(
+    int? hostId,
+    List<Host> hosts,
+    List<AcpProvider> providers,
+  ) async {
+    final generation = ++_hostDefaultsGeneration;
+    setState(() {
+      _hostId = hostId;
+      _cwdEdited = false;
+      _selectedRecent = null;
+      _loadingDefaults = hostId != null;
+    });
+    final host = hosts.where((candidate) => candidate.id == hostId).firstOrNull;
+    if (host == null) {
+      setState(() => _loadingDefaults = false);
+      return;
+    }
+    try {
+      final preset = await ref
+          .read(agentLaunchPresetServiceProvider)
+          .getPresetForHost(host.id);
+      final defaults = resolveAcpSessionLaunchDefaults(
+        hosts: [host],
+        providers: providers,
+        recents: await _recents,
+        activeHostIds: const {},
+        presets: preset == null ? const {} : {host.id: preset},
+        initialHostId: host.id,
+      );
+      if (!mounted ||
+          generation != _hostDefaultsGeneration ||
+          _hostId != host.id) {
+        return;
+      }
+      setState(() {
+        _providerId = defaults.providerId;
+        if (!_cwdEdited) {
+          _cwd.text = defaults.cwd;
+        }
+        _loadingDefaults = false;
+      });
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'acp.launch',
+        'host_defaults_failed',
+        fields: {'hostId': host.id, 'errorType': error.runtimeType},
+      );
+      if (mounted &&
+          generation == _hostDefaultsGeneration &&
+          _hostId == host.id) {
+        final configuredCwd = host.tmuxWorkingDirectory?.trim();
+        setState(() {
+          if (!_cwdEdited) {
+            _cwd.text = configuredCwd != null && configuredCwd.isNotEmpty
+                ? configuredCwd
+                : '~';
+          }
+          _loadingDefaults = false;
+        });
+      }
+    }
+  }
+
+  Future<bool> _confirmInstall(MonkeyMuxInstallRequest request) =>
+      confirmAcpMonkeyMuxInstall(context, request);
 
   Future<void> _openTerminalForAuth(String providerId) async {
     final hostId = _hostId;
@@ -169,15 +420,26 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     final manager = ref.read(acpSessionManagerProvider);
     final cwd = _cwd.text.trim().isEmpty ? '~' : _cwd.text.trim();
 
-    // Ensure an SSH session exists (reuse when possible).
-    final connection = await ref
-        .read(activeSessionsProvider.notifier)
-        .connect(hostId);
+    final knownHost = ref
+        .read(allHostsProvider)
+        .asData
+        ?.value
+        .where((host) => host.id == hostId)
+        .firstOrNull;
+    final connection = await ensureAcpHostConnection(
+      context,
+      ref,
+      hostId,
+      knownHost: knownHost,
+    );
     if (!mounted) {
       return null;
     }
     if (!connection.success) {
-      setState(() => _error = 'Could not connect to the host.');
+      setState(
+        () => _error =
+            connection.error ?? 'Could not establish the SSH connection.',
+      );
       return null;
     }
 
@@ -189,6 +451,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
         bridgeId: recent.bridgeId,
         acpSessionId: recent.acpSessionId,
         cwd: recent.cwd ?? cwd,
+        confirmInstall: _confirmInstall,
         replace: replace,
       );
     }
@@ -466,6 +729,19 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     final colorScheme = Theme.of(context).colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
     final providersAsync = ref.watch(acpProvidersProvider);
+    final hosts = hostsAsync.asData?.value;
+    final providers = providersAsync.asData?.value;
+    if (hosts != null && providers != null) {
+      _scheduleDefaults(hosts, providers);
+    } else if (!_defaultsScheduled &&
+        !hostsAsync.isLoading &&
+        !providersAsync.isLoading) {
+      _scheduleDefaults(
+        hosts ?? const <Host>[],
+        providers ?? const <AcpProvider>[],
+      );
+    }
+    final controlsDisabled = _busy || _loadingDefaults;
 
     return PopScope(
       // Block dismissal (back gesture / predictive pop) while a launch is in
@@ -491,11 +767,14 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
                   color: colorScheme.onSurface,
                 ),
               ),
+              if (_loadingDefaults) ...[
+                const SizedBox(height: FluttyTheme.spacingSm),
+                const LinearProgressIndicator(),
+              ],
               const SizedBox(height: FluttyTheme.spacingMd),
               _sectionLabel(context, 'Host'),
               hostsAsync.when(
                 data: (hosts) {
-                  _applyDefaultCwd(hosts);
                   if (hosts.isEmpty) {
                     return const Padding(
                       padding: EdgeInsets.symmetric(
@@ -520,14 +799,15 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
                           ),
                         ),
                     ],
-                    onChanged: _busy
+                    onChanged: controlsDisabled
                         ? null
-                        : (value) => setState(() {
-                            _hostId = value;
-                            _cwdEdited = false;
-                            _selectedRecent = null;
-                            _applyDefaultCwd(hosts);
-                          }),
+                        : (value) => unawaited(
+                            _selectHost(
+                              value,
+                              hosts,
+                              providers ?? const <AcpProvider>[],
+                            ),
+                          ),
                   );
                 },
                 loading: () => const Padding(
@@ -550,7 +830,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
               _sectionLabel(context, 'Working directory'),
               TextField(
                 controller: _cwd,
-                enabled: !_busy,
+                enabled: !controlsDisabled,
                 autocorrect: false,
                 enableSuggestions: false,
                 style: FluttyTheme.monoStyle,
@@ -581,7 +861,8 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
               ],
               const SizedBox(height: FluttyTheme.spacingLg),
               FilledButton.icon(
-                onPressed: (_busy || _hostId == null || _providerId == null)
+                onPressed:
+                    (controlsDisabled || _hostId == null || _providerId == null)
                     ? null
                     : _start,
                 icon: _busy
@@ -592,9 +873,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
                       )
                     : const Icon(Icons.play_arrow_rounded),
                 label: Text(
-                  _selectedRecent != null
-                      ? 'Reconnect session'
-                      : 'Start session',
+                  _selectedRecent != null ? 'Resume session' : 'Start session',
                 ),
               ),
             ],
@@ -616,13 +895,16 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
               key: ValueKey('provider-${provider.id}'),
               provider: provider,
               selected: provider.id == _providerId,
-              onSelected: _busy
+              onSelected: (_busy || _loadingDefaults)
                   ? null
                   : () => setState(() {
                       _providerId = provider.id;
                       _selectedRecent = null;
                     }),
-              onEdit: (provider is AcpCustomProviderView && !_busy)
+              onEdit:
+                  (provider is AcpCustomProviderView &&
+                      !_busy &&
+                      !_loadingDefaults)
                   ? () => _editCustomProvider(provider)
                   : null,
             ),
@@ -632,7 +914,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
       Align(
         alignment: Alignment.centerLeft,
         child: TextButton.icon(
-          onPressed: _busy ? null : _addCustomProvider,
+          onPressed: (_busy || _loadingDefaults) ? null : _addCustomProvider,
           icon: const Icon(Icons.add),
           label: const Text('Add custom provider'),
         ),
@@ -647,7 +929,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
       return const SizedBox.shrink();
     }
     return FutureBuilder<List<AcpRecentSessionRef>>(
-      future: ref.read(acpSessionManagerProvider).loadRecentSessions(),
+      future: _recents,
       builder: (context, snapshot) {
         final recents = (snapshot.data ?? const <AcpRecentSessionRef>[])
             .where((r) => r.hostId == hostId && r.providerId == providerId)
@@ -659,7 +941,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: FluttyTheme.spacingMd),
-            _sectionLabel(context, 'Reconnect a recent session'),
+            _sectionLabel(context, 'Resume a recent session'),
             RadioGroup<AcpRecentSessionRef?>(
               groupValue: _selectedRecent,
               onChanged: (value) {
@@ -682,7 +964,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
                       title: Text(
                         recent.title?.trim().isNotEmpty ?? false
                             ? recent.title!
-                            : 'Session ${acpCwdSummary(recent.cwd)}',
+                            : 'Resume ${acpCwdSummary(recent.cwd)}',
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(

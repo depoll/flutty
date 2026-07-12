@@ -41,6 +41,7 @@ import '../models/acp_timeline_mapper.dart';
 import '../widgets/acp_composer.dart';
 import '../widgets/acp_concurrency_choice.dart';
 import '../widgets/acp_config_option_controls.dart';
+import '../widgets/acp_connection_support.dart';
 import '../widgets/acp_inline_image.dart';
 import '../widgets/acp_message_thread.dart';
 import '../widgets/acp_new_session_sheet.dart';
@@ -90,7 +91,7 @@ class AgentChatScreen extends ConsumerStatefulWidget {
 }
 
 class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
-  late final AcpSessionKey _key;
+  late AcpSessionKey _key;
   late final AcpComposerController _composer;
   final ScrollController _scroll = ScrollController();
 
@@ -169,10 +170,20 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         return;
       }
       switch (result) {
-        case AcpSessionLaunchStarted():
-          unawaited(manager.selectSession(_key));
+        case AcpSessionLaunchStarted(:final key):
+          final keyChanged = key != _key;
+          setState(() {
+            _key = key;
+            _connecting = false;
+          });
+          if (keyChanged) {
+            _composer.rebindSession(
+              key,
+              session: manager.state.byKeyValue(key.value),
+            );
+          }
+          unawaited(manager.selectSession(key));
           unawaited(_ensureSftpClient());
-          setState(() => _connecting = false);
         case AcpSessionLaunchFailed(:final error):
           setState(() {
             _connecting = false;
@@ -199,14 +210,24 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {
     final manager = ref.read(acpSessionManagerProvider);
-    // Ensure the SSH connection is available before attaching the bridge.
-    await ref.read(activeSessionsProvider.notifier).connect(widget.hostId);
+    final connection = await ensureAcpHostConnection(context, ref, _key.hostId);
+    if (!connection.success) {
+      return AcpSessionLaunchFailed(
+        _key,
+        AcpSessionError(
+          kind: AcpSessionErrorKind.transport,
+          message:
+              connection.error ?? 'Could not establish the SSH connection.',
+        ),
+      );
+    }
     final result = await manager.reconnectSession(
-      hostId: widget.hostId,
-      providerId: widget.providerId,
-      bridgeId: widget.bridgeId,
-      acpSessionId: widget.acpSessionId,
+      hostId: _key.hostId,
+      providerId: _key.providerId,
+      bridgeId: _key.bridgeId,
+      acpSessionId: _key.acpSessionId,
       cwd: cwd,
+      confirmInstall: (request) => confirmAcpMonkeyMuxInstall(context, request),
       replace: replace,
     );
     if (result is AcpSessionLaunchBlocked && mounted) {

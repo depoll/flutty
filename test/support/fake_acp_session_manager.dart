@@ -27,6 +27,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
   FakeAcpSessionManager({
     List<AcpSessionState> sessions = const <AcpSessionState>[],
     this.recents = const <AcpRecentSessionRef>[],
+    this.lastSelected,
     bool isProUnlocked = false,
   }) : _current = AcpSessionManagerState(sessions: sessions),
        super(
@@ -38,6 +39,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
 
   AcpSessionManagerState _current;
   List<AcpRecentSessionRef> recents;
+  AcpSessionKey? lastSelected;
   final StreamController<AcpSessionManagerState> _emitter =
       StreamController<AcpSessionManagerState>.broadcast();
 
@@ -59,6 +61,27 @@ class FakeAcpSessionManager extends AcpSessionManager {
     null,
     AcpSessionError(kind: AcpSessionErrorKind.unknown, message: 'No launch.'),
   );
+
+  /// Result returned by [reconnectSession]; defaults to a safe failure.
+  AcpSessionLaunchResult reconnectSessionResult = const AcpSessionLaunchFailed(
+    null,
+    AcpSessionError(kind: AcpSessionErrorKind.unknown, message: 'No resume.'),
+  );
+
+  /// Optional manager state installed immediately before a successful resume
+  /// result is returned.
+  AcpSessionState? reconnectSessionState;
+
+  final List<
+    ({
+      int hostId,
+      String providerId,
+      String bridgeId,
+      String acpSessionId,
+      String cwd,
+    })
+  >
+  reconnects = [];
 
   final List<(String, Object)> configOptionSets = <(String, Object)>[];
   final List<String> modeSets = <String>[];
@@ -82,7 +105,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
   Future<List<AcpRecentSessionRef>> loadRecentSessions() async => recents;
 
   @override
-  Future<AcpSessionKey?> loadLastSelected() async => null;
+  Future<AcpSessionKey?> loadLastSelected() async => lastSelected;
 
   @override
   Future<void> selectSession(AcpSessionKey key) async {
@@ -146,6 +169,30 @@ class FakeAcpSessionManager extends AcpSessionManager {
     MonkeyMuxInstallConfirmation? confirmInstall,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async => startNewSessionResult;
+
+  @override
+  Future<AcpSessionLaunchResult> reconnectSession({
+    required int hostId,
+    required String providerId,
+    required String bridgeId,
+    required String acpSessionId,
+    required String cwd,
+    MonkeyMuxInstallConfirmation? confirmInstall,
+    List<AcpSessionKey> replace = const <AcpSessionKey>[],
+  }) async {
+    reconnects.add((
+      hostId: hostId,
+      providerId: providerId,
+      bridgeId: bridgeId,
+      acpSessionId: acpSessionId,
+      cwd: cwd,
+    ));
+    final resumedState = reconnectSessionState;
+    if (resumedState != null) {
+      emit(AcpSessionManagerState(sessions: [resumedState]));
+    }
+    return reconnectSessionResult;
+  }
 
   @override
   Future<void> setConfigOption(

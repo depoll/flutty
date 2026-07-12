@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
+import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/services/acp_provider_service.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
@@ -28,15 +29,14 @@ Widget _wrap(FakeAcpSessionManager manager) => ProviderScope(
 );
 
 void main() {
-  testWidgets('renders branded empty state and a New session action', (
+  testWidgets('renders one bottom-reachable New session action', (
     tester,
   ) async {
     await tester.pumpWidget(_wrap(FakeAcpSessionManager()));
     await tester.pumpAndSettle();
 
     expect(find.text('no agent sessions yet'), findsOneWidget);
-    // Bottom-reachable New session action plus the empty-state primary.
-    expect(find.widgetWithText(FilledButton, 'New session'), findsWidgets);
+    expect(find.widgetWithText(FilledButton, 'New session'), findsOneWidget);
   });
 
   testWidgets('lists a live session with provider, status and cwd summary', (
@@ -68,6 +68,27 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byIcon(Icons.pending_actions), findsWidgets);
+  });
+
+  testWidgets('shows an explicit Resume action for a recent session', (
+    tester,
+  ) async {
+    final now = DateTime(2026);
+    final recent = AcpRecentSessionRef(
+      hostId: 1,
+      providerId: AcpBuiltinProviderIds.copilotCli,
+      bridgeId: 'bridge-1',
+      acpSessionId: 'session-1',
+      title: 'Review changes',
+      cwd: '/repo',
+      createdAt: now,
+      lastActivityAt: now,
+    );
+    await tester.pumpWidget(_wrap(FakeAcpSessionManager(recents: [recent])));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(TextButton, 'Resume'), findsOneWidget);
+    expect(find.text('Reconnect'), findsNothing);
   });
 
   testWidgets('opens the new-session sheet from the bottom action', (

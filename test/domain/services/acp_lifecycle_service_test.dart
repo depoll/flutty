@@ -115,6 +115,7 @@ class _FakeConnector implements AcpBridgeConnector {
   final _FakeAcpServer Function(int hostId, String bridgeId)? serverFactory;
   final Map<String, _FakeAcpServer> servers = <String, _FakeAcpServer>{};
   final List<String> stoppedBridges = <String>[];
+  final Set<String> availableBridges = <String>{};
   int _bridgeCounter = 0;
 
   @override
@@ -127,12 +128,29 @@ class _FakeConnector implements AcpBridgeConnector {
     MonkeyMuxInstallConfirmation? confirmInstall,
   }) async {
     final bridgeId = 'bridge-${++_bridgeCounter}';
+    availableBridges.add(bridgeId);
     return MonkeyMuxAcpBridgeStartResult(bridgeId: bridgeId);
   }
 
   @override
-  Future<List<MonkeyMuxAcpBridgeMetadata>> listBridges(int hostId) async =>
-      const <MonkeyMuxAcpBridgeMetadata>[];
+  Future<List<MonkeyMuxAcpBridgeMetadata>> listBridges(
+    int hostId, {
+    MonkeyMuxInstallConfirmation? confirmInstall,
+  }) async => [
+    for (final bridgeId in availableBridges)
+      MonkeyMuxAcpBridgeMetadata(
+        id: bridgeId,
+        provider: 'Copilot CLI',
+        commandHash: 'hash',
+        state: MonkeyMuxAcpProviderState.running,
+        clientCount: 0,
+        pendingRequestCount: 0,
+        inFlightTurnCount: 0,
+        lastActivity: DateTime.now(),
+        startedAt: DateTime.now(),
+        nextSequence: 1,
+      ),
+  ];
 
   @override
   Future<MonkeyMuxAcpBridgeMetadata> bridgeStatus(
@@ -154,6 +172,7 @@ class _FakeConnector implements AcpBridgeConnector {
   @override
   Future<void> stopBridge(int hostId, String bridgeId) async {
     stoppedBridges.add(bridgeId);
+    availableBridges.remove(bridgeId);
   }
 
   @override

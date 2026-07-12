@@ -232,6 +232,7 @@ class AcpSessionManager {
     required String bridgeId,
     required String acpSessionId,
     required String cwd,
+    MonkeyMuxInstallConfirmation? confirmInstall,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
     _telemetry.featureOpened();
@@ -258,6 +259,47 @@ class AcpSessionManager {
     final decision = _evaluate(key.value);
     if (decision is AcpConcurrencyRequiresChoice) {
       return AcpSessionLaunchBlocked(decision);
+    }
+
+    final List<MonkeyMuxAcpBridgeMetadata> remoteBridges;
+    try {
+      remoteBridges = await _connector.listBridges(
+        hostId,
+        confirmInstall: confirmInstall,
+      );
+    } on Object catch (error) {
+      return AcpSessionLaunchFailed(key, _mapBridgeError(error));
+    }
+    final remoteBridge = remoteBridges.firstWhereOrNull(
+      (bridge) => bridge.id == bridgeId,
+    );
+    final bridgeCanResume =
+        remoteBridge != null &&
+        remoteBridge.state != MonkeyMuxAcpProviderState.exited &&
+        remoteBridge.state != MonkeyMuxAcpProviderState.stopped &&
+        remoteBridge.state != MonkeyMuxAcpProviderState.protocolError;
+    if (!bridgeCanResume) {
+      if (existing != null) {
+        _controllers.remove(key.value);
+        await existing.disposeLocal();
+        _emit();
+      }
+      _diagnostics.info(
+        'acp.manager',
+        'resume_bridge_recreated',
+        fields: {'hostId': hostId, 'bridgeId': bridgeId},
+      );
+      final restarted = await _startBridgeAndSession(
+        hostId: hostId,
+        launch: resolved,
+        cwd: cwd,
+        confirmInstall: confirmInstall,
+        existingSessionId: acpSessionId,
+      );
+      if (restarted is AcpSessionLaunchStarted) {
+        await _recentSessions.remove(key);
+      }
+      return restarted;
     }
 
     // Re-attach an existing (detached) controller in place when possible.
@@ -795,6 +837,24 @@ class AcpSessionManager {
   }
 
   AcpSessionError _mapBridgeError(Object error) {
+    if (error is MonkeyMuxInstallConfirmationRequiredException) {
+      return const AcpSessionError(
+        kind: AcpSessionErrorKind.bridgeUnavailable,
+        message: 'MonkeyMux needs to be installed or updated on this host.',
+      );
+    }
+    if (error is MonkeyMuxInstallDeclinedException) {
+      return const AcpSessionError(
+        kind: AcpSessionErrorKind.bridgeUnavailable,
+        message: 'MonkeyMux installation was canceled.',
+      );
+    }
+    if (error is MonkeyMuxInstallException) {
+      return const AcpSessionError(
+        kind: AcpSessionErrorKind.bridgeUnavailable,
+        message: 'MonkeyMux could not be prepared on this host.',
+      );
+    }
     if (error is MonkeyMuxAcpBridgeException) {
       return AcpSessionError(
         kind: switch (error.kind) {

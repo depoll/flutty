@@ -302,6 +302,7 @@ class _FakeConnector implements AcpBridgeConnector {
 
   final List<String> startedBridges = <String>[];
   final List<String> stoppedBridges = <String>[];
+  final Set<String> availableBridges = <String>{};
   final Map<String, _FakeAcpServer> servers = <String, _FakeAcpServer>{};
   final Map<String, StreamController<MonkeyMuxAcpTransportState>>
   transportStateControllers =
@@ -309,6 +310,7 @@ class _FakeConnector implements AcpBridgeConnector {
   final Map<String, StreamController<MonkeyMuxAcpBridgeException>>
   transportErrorControllers =
       <String, StreamController<MonkeyMuxAcpBridgeException>>{};
+  MonkeyMuxInstallConfirmation? lastListConfirmInstall;
   int _bridgeCounter = 0;
 
   @override
@@ -322,12 +324,32 @@ class _FakeConnector implements AcpBridgeConnector {
   }) async {
     final bridgeId = 'bridge-${++_bridgeCounter}';
     startedBridges.add(bridgeId);
+    availableBridges.add(bridgeId);
     return MonkeyMuxAcpBridgeStartResult(bridgeId: bridgeId);
   }
 
   @override
-  Future<List<MonkeyMuxAcpBridgeMetadata>> listBridges(int hostId) async =>
-      const <MonkeyMuxAcpBridgeMetadata>[];
+  Future<List<MonkeyMuxAcpBridgeMetadata>> listBridges(
+    int hostId, {
+    MonkeyMuxInstallConfirmation? confirmInstall,
+  }) async {
+    lastListConfirmInstall = confirmInstall;
+    return [
+      for (final bridgeId in availableBridges)
+        MonkeyMuxAcpBridgeMetadata(
+          id: bridgeId,
+          provider: 'Copilot CLI',
+          commandHash: 'hash',
+          state: MonkeyMuxAcpProviderState.running,
+          clientCount: 0,
+          pendingRequestCount: 0,
+          inFlightTurnCount: 0,
+          lastActivity: DateTime.now(),
+          startedAt: DateTime.now(),
+          nextSequence: 1,
+        ),
+    ];
+  }
 
   @override
   Future<MonkeyMuxAcpBridgeMetadata> bridgeStatus(
@@ -349,6 +371,7 @@ class _FakeConnector implements AcpBridgeConnector {
   @override
   Future<void> stopBridge(int hostId, String bridgeId) async {
     stoppedBridges.add(bridgeId);
+    availableBridges.remove(bridgeId);
   }
 
   StreamController<MonkeyMuxAcpTransportState> statesFor(String bridgeId) =>
@@ -1007,6 +1030,41 @@ void main() {
       expect(state.status, AcpConnectionStatus.ready);
       expect(state.isLive, isTrue);
     });
+
+    test(
+      'resume recreates an expired bridge and keeps the ACP session id',
+      () async {
+        final key = await startCopilot();
+        await manager.detachSession(key);
+        connector.availableBridges.remove(key.bridgeId);
+        Future<bool> confirmInstall(MonkeyMuxInstallRequest _) async => true;
+
+        final result = await manager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+          confirmInstall: confirmInstall,
+        );
+
+        expect(result, isA<AcpSessionLaunchStarted>());
+        final resumedKey = (result as AcpSessionLaunchStarted).key;
+        expect(resumedKey.bridgeId, isNot(key.bridgeId));
+        expect(resumedKey.acpSessionId, key.acpSessionId);
+        expect(connector.startedBridges, hasLength(2));
+        expect(connector.lastListConfirmInstall, same(confirmInstall));
+        expect(
+          connector.servers[resumedKey.bridgeId]!.methods,
+          contains('session/resume'),
+        );
+        expect(manager.state.byKeyValue(key.value), isNull);
+        expect(manager.state.byKeyValue(resumedKey.value)!.isLive, isTrue);
+        final recents = await manager.loadRecentSessions();
+        expect(recents.map((recent) => recent.key), contains(resumedKey));
+        expect(recents.map((recent) => recent.key), isNot(contains(key)));
+      },
+    );
 
     test('fork creates a sibling session on the same bridge', () async {
       isPro = true;

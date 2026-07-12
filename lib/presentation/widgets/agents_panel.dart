@@ -125,14 +125,13 @@ class _AgentsPanelState extends ConsumerState<AgentsPanel> {
     );
   }
 
-  Widget _buildEmpty() => Center(
+  Widget _buildEmpty() => const Center(
     child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: FluttyTheme.spacingLg),
+      padding: EdgeInsets.symmetric(horizontal: FluttyTheme.spacingLg),
       child: BrandEmptyState(
         title: 'no agent sessions yet',
-        message: 'Point an agent at a host and keep the work moving from here.',
-        primaryLabel: 'New session',
-        onPrimary: _newSession,
+        message:
+            'Start an agent on a saved host, or resume one after it appears.',
       ),
     ),
   );
@@ -232,6 +231,7 @@ class _AgentSessionRow extends StatelessWidget {
     final needsPermission =
         (session?.pendingPermissions.isNotEmpty ?? false) ||
         (session?.pendingWrites.isNotEmpty ?? false);
+    final canResume = session == null || !session.isLive;
     return ListTile(
       onTap: onOpen,
       minVerticalPadding: 12,
@@ -256,49 +256,46 @@ class _AgentSessionRow extends StatelessWidget {
               message: 'Needs permission',
               child: Icon(Icons.pending_actions, color: colorScheme.tertiary),
             ),
-          PopupMenuButton<_RowAction>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (action) {
-              switch (action) {
-                case _RowAction.open:
-                  onOpen();
-                case _RowAction.reconnect:
-                  onOpen();
-                case _RowAction.stop:
-                  onStop?.call();
-              }
-            },
-            itemBuilder: (context) => [
-              if (session == null || !session.isLive)
-                const PopupMenuItem(
-                  value: _RowAction.reconnect,
-                  child: ListTile(
-                    leading: Icon(Icons.refresh),
-                    title: Text('Reconnect'),
+          if (canResume)
+            TextButton.icon(
+              onPressed: onOpen,
+              icon: const Icon(Icons.history, size: 18),
+              label: const Text('Resume'),
+            ),
+          if (!canResume || onStop != null)
+            PopupMenuButton<_RowAction>(
+              icon: const Icon(Icons.more_vert),
+              onSelected: (action) {
+                switch (action) {
+                  case _RowAction.open:
+                    onOpen();
+                  case _RowAction.stop:
+                    onStop?.call();
+                }
+              },
+              itemBuilder: (context) => [
+                if (!canResume)
+                  const PopupMenuItem(
+                    value: _RowAction.open,
+                    child: ListTile(
+                      leading: Icon(Icons.open_in_new),
+                      title: Text('Open'),
+                    ),
                   ),
-                )
-              else
-                const PopupMenuItem(
-                  value: _RowAction.open,
-                  child: ListTile(
-                    leading: Icon(Icons.open_in_new),
-                    title: Text('Open'),
+                if (onStop != null)
+                  const PopupMenuItem(
+                    value: _RowAction.stop,
+                    child: ListTile(
+                      leading: Icon(Icons.stop_circle_outlined),
+                      title: Text('Stop'),
+                    ),
                   ),
-                ),
-              if (onStop != null)
-                const PopupMenuItem(
-                  value: _RowAction.stop,
-                  child: ListTile(
-                    leading: Icon(Icons.stop_circle_outlined),
-                    title: Text('Stop'),
-                  ),
-                ),
-            ],
-          ),
+              ],
+            ),
         ],
       ),
     );
   }
 }
 
-enum _RowAction { open, reconnect, stop }
+enum _RowAction { open, stop }

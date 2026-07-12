@@ -1,9 +1,12 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/acp_recent_session.dart';
+import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/services/acp_concurrency_policy.dart';
@@ -18,13 +21,25 @@ import '../support/fake_acp_session_manager.dart';
 
 class _MockSshService extends Mock implements SshService {}
 
+class _MockSshSession extends Mock implements SshSession {}
+
+class _FakeSftpClient extends Fake implements SftpClient {}
+
 Widget _wrap(
   FakeAcpSessionManager manager, {
   Size size = const Size(390, 800),
+  AcpSessionKey? routeKey,
+  bool hasActiveSshSession = false,
 }) {
   final ssh = _MockSshService();
-  when(() => ssh.getSessionsForHost(any())).thenReturn(const <SshSession>[]);
-  final key = fakeAcpKey();
+  final key = routeKey ?? fakeAcpKey();
+  final sshSession = _MockSshSession();
+  when(() => sshSession.connectionId).thenReturn(7);
+  when(() => sshSession.hostId).thenReturn(key.hostId);
+  when(sshSession.sftp).thenAnswer((_) async => _FakeSftpClient());
+  when(() => ssh.getSessionsForHost(any())).thenReturn(
+    hasActiveSshSession ? <SshSession>[sshSession] : const <SshSession>[],
+  );
   return ProviderScope(
     overrides: [
       acpSessionManagerProvider.overrideWithValue(manager),
@@ -75,6 +90,46 @@ void main() {
 
     expect(find.text('sessions'), findsOneWidget);
     expect(find.byType(AcpMessageThread), findsOneWidget);
+  });
+
+  testWidgets('adopts the replacement bridge key after resuming an expired '
+      'bridge', (tester) async {
+    final oldKey = fakeAcpKey(bridgeId: 'expired-bridge');
+    final resumedKey = fakeAcpKey(bridgeId: 'replacement-bridge');
+    final now = DateTime(2026);
+    final resumedSession = fakeAcpSession(
+      key: resumedKey,
+      timeline: fakeAcpTimeline('Recovered session'),
+    );
+    final manager =
+        FakeAcpSessionManager(
+            recents: [
+              AcpRecentSessionRef(
+                hostId: oldKey.hostId,
+                providerId: oldKey.providerId,
+                bridgeId: oldKey.bridgeId,
+                acpSessionId: oldKey.acpSessionId,
+                cwd: '/repo',
+                createdAt: now,
+                lastActivityAt: now,
+              ),
+            ],
+          )
+          ..reconnectSessionResult = AcpSessionLaunchStarted(resumedKey)
+          ..reconnectSessionState = resumedSession;
+
+    await tester.pumpWidget(
+      _wrap(manager, routeKey: oldKey, hasActiveSshSession: true),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Recovered session'), findsOneWidget);
+    expect(find.byType(AcpComposer), findsOneWidget);
+    expect(find.text('Reconnect'), findsNothing);
+    expect(manager.selected, contains(resumedKey.value));
+    expect(manager.selected, isNot(contains(oldKey.value)));
+    expect(manager.reconnects, hasLength(1));
+    expect(manager.reconnects.single.bridgeId, oldKey.bridgeId);
   });
 
   testWidgets('surfaces a pending permission and resolves with the exact '

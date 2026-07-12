@@ -150,8 +150,15 @@ final class MonkeyMuxAcpBridgeService {
   }
 
   /// Lists running bridges using only the helper's safe metadata schema.
-  Future<List<MonkeyMuxAcpBridgeMetadata>> list(SshSession session) async {
-    final installation = await _installer.ensureInstalled(session);
+  Future<List<MonkeyMuxAcpBridgeMetadata>> list(
+    SshSession session, {
+    MonkeyMuxInstallConfirmation? confirmInstall,
+  }) async {
+    final installation = await _installer.ensureInstalled(
+      session,
+      priority: SshExecPriority.normal,
+      confirmInstall: confirmInstall,
+    );
     final message = await _runHelper(session, installation, const [
       'acp',
       'list',

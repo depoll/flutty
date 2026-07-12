@@ -155,12 +155,13 @@ class AcpComposerController extends ChangeNotifier {
   /// Creates a composer controller for [sessionKey].
   AcpComposerController({
     required AcpSessionManager manager,
-    required this.sessionKey,
+    required AcpSessionKey sessionKey,
     AcpAttachmentPreparationService preparationService =
         const AcpAttachmentPreparationService(),
     AcpAttachmentUploader? Function()? uploaderBuilder,
     AcpSessionState? initialSession,
   }) : _manager = manager,
+       _sessionKey = sessionKey,
        _preparationService = preparationService,
        _uploaderBuilder = uploaderBuilder,
        _session = initialSession {
@@ -170,7 +171,9 @@ class AcpComposerController extends ChangeNotifier {
   final AcpSessionManager _manager;
 
   /// The session this composer submits prompts to.
-  final AcpSessionKey sessionKey;
+  AcpSessionKey get sessionKey => _sessionKey;
+
+  AcpSessionKey _sessionKey;
 
   final AcpAttachmentPreparationService _preparationService;
   final AcpAttachmentUploader? Function()? _uploaderBuilder;
@@ -302,6 +305,16 @@ class AcpComposerController extends ChangeNotifier {
       _recomputeSlash();
     }
     notifyListeners();
+  }
+
+  /// Rebinds this draft to [sessionKey] after a resumed ACP session recreates
+  /// its expired remote bridge.
+  void rebindSession(
+    AcpSessionKey sessionKey, {
+    required AcpSessionState? session,
+  }) {
+    _sessionKey = sessionKey;
+    updateSession(session);
   }
 
   /// Adds [candidate] as an ordered attachment.

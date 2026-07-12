@@ -75,8 +75,12 @@ abstract interface class AcpBridgeConnector {
     MonkeyMuxInstallConfirmation? confirmInstall,
   });
 
-  /// Lists running bridges on [hostId].
-  Future<List<MonkeyMuxAcpBridgeMetadata>> listBridges(int hostId);
+  /// Lists running bridges on [hostId], installing or updating MonkeyMux after
+  /// [confirmInstall] approves when the current helper is unavailable.
+  Future<List<MonkeyMuxAcpBridgeMetadata>> listBridges(
+    int hostId, {
+    MonkeyMuxInstallConfirmation? confirmInstall,
+  });
 
   /// Reads safe metadata for [bridgeId] on [hostId].
   Future<MonkeyMuxAcpBridgeMetadata> bridgeStatus(int hostId, String bridgeId);
@@ -140,9 +144,12 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
   }
 
   @override
-  Future<List<MonkeyMuxAcpBridgeMetadata>> listBridges(int hostId) async {
+  Future<List<MonkeyMuxAcpBridgeMetadata>> listBridges(
+    int hostId, {
+    MonkeyMuxInstallConfirmation? confirmInstall,
+  }) async {
     final session = await _sessionResolver(hostId);
-    return _bridgeService.list(session);
+    return _bridgeService.list(session, confirmInstall: confirmInstall);
   }
 
   @override
