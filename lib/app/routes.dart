@@ -21,6 +21,9 @@ abstract final class Routes {
   /// Snippets route.
   static const snippets = 'snippets';
 
+  /// Full-screen ACP agent chat route.
+  static const agentChat = 'agent-chat';
+
   /// Add snippet route.
   static const snippetAdd = 'snippet-add';
 

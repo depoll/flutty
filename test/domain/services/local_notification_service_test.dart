@@ -158,7 +158,7 @@ void main() {
     });
   });
 
-  test('buildAcpNotificationLocation targets the general agents overview', () {
+  test('buildAcpNotificationLocation deep-links to the specific chat', () {
     final location = buildAcpNotificationLocation(
       const AcpNotificationPayload(
         kind: AcpNotificationKind.completion,
@@ -169,6 +169,11 @@ void main() {
       ),
     );
 
-    expect(location, '/home?tab=agents');
+    final uri = Uri.parse(location);
+    expect(uri.path, acpAgentChatRoutePath);
+    expect(uri.queryParameters[acpAgentChatHostQueryKey], '3');
+    expect(uri.queryParameters[acpAgentChatSessionQueryKey], 'session-1');
+    // Must not target the nonexistent /home route.
+    expect(location.startsWith('/home'), isFalse);
   });
 }

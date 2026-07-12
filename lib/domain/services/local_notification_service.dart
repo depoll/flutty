@@ -319,13 +319,58 @@ class AcpNotificationPayload {
       Object.hash(kind, hostId, providerId, bridgeId, acpSessionId);
 }
 
+/// Route path for the full-screen ACP agent chat.
+const acpAgentChatRoutePath = '/agents/chat';
+
+/// Query key carrying the opaque host identifier for the agent chat route.
+const acpAgentChatHostQueryKey = 'h';
+
+/// Query key carrying the opaque provider identifier for the agent chat route.
+const acpAgentChatProviderQueryKey = 'p';
+
+/// Query key carrying the opaque bridge identifier for the agent chat route.
+const acpAgentChatBridgeQueryKey = 'b';
+
+/// Query key carrying the opaque remote ACP session identifier for the agent
+/// chat route.
+const acpAgentChatSessionQueryKey = 's';
+
+/// Location that opens the Agents overview tab on the home screen.
+///
+/// This is the safe fallback when a specific chat cannot be deep-linked; it
+/// must match the real home route (`/`) rather than a nonexistent `/home`.
+String buildAgentsOverviewLocation() =>
+    Uri(path: '/', queryParameters: const {'tab': 'agents'}).toString();
+
+/// Builds the deep-link location for a specific ACP chat session, carrying
+/// only opaque identifiers. No working directory, title, command, prompt, or
+/// path is ever placed in the URL.
+String buildAgentChatLocation({
+  required int hostId,
+  required String providerId,
+  required String bridgeId,
+  required String acpSessionId,
+}) => Uri(
+  path: acpAgentChatRoutePath,
+  queryParameters: <String, String>{
+    acpAgentChatHostQueryKey: '$hostId',
+    acpAgentChatProviderQueryKey: providerId,
+    acpAgentChatBridgeQueryKey: bridgeId,
+    acpAgentChatSessionQueryKey: acpSessionId,
+  },
+).toString();
+
 /// Builds the safe navigation location for an ACP notification tap.
 ///
-/// This intentionally lands on the general Agents overview rather than a
-/// session-specific deep link: routing into a specific chat session is
-/// outside this change's scope.
+/// When the payload carries the full set of session identifiers, the tap lands
+/// directly on that chat. Otherwise it falls back to the Agents overview.
 String buildAcpNotificationLocation(AcpNotificationPayload payload) =>
-    Uri(path: '/home', queryParameters: const {'tab': 'agents'}).toString();
+    buildAgentChatLocation(
+      hostId: payload.hostId,
+      providerId: payload.providerId,
+      bridgeId: payload.bridgeId,
+      acpSessionId: payload.acpSessionId,
+    );
 
 /// Service for showing local notifications inside the app.
 class LocalNotificationService {

@@ -5,8 +5,10 @@ import 'package:go_router/go_router.dart';
 
 import '../domain/models/monetization.dart';
 import '../domain/services/auth_service.dart';
+import '../domain/services/local_notification_service.dart';
 import '../domain/services/port_forward_browser_service.dart';
 import '../domain/services/telemetry_service.dart';
+import '../presentation/screens/agent_chat_screen.dart';
 import '../presentation/screens/app_review_demo_screen.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
@@ -198,6 +200,47 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/snippets',
         name: Routes.snippets,
         builder: (context, state) => const SnippetsScreen(),
+      ),
+      GoRoute(
+        path: acpAgentChatRoutePath,
+        name: Routes.agentChat,
+        pageBuilder: (context, state) {
+          final hostId = int.tryParse(
+            state.uri.queryParameters[acpAgentChatHostQueryKey] ?? '',
+          );
+          final providerId =
+              state.uri.queryParameters[acpAgentChatProviderQueryKey];
+          final bridgeId =
+              state.uri.queryParameters[acpAgentChatBridgeQueryKey];
+          final acpSessionId =
+              state.uri.queryParameters[acpAgentChatSessionQueryKey];
+          if (hostId == null ||
+              providerId == null ||
+              providerId.isEmpty ||
+              bridgeId == null ||
+              bridgeId.isEmpty ||
+              acpSessionId == null ||
+              acpSessionId.isEmpty) {
+            return _buildSlideUpPage<void>(
+              key: state.pageKey,
+              child: const Scaffold(
+                body: Center(child: Text('Invalid agent session')),
+              ),
+            );
+          }
+          return _buildSlideUpPage<void>(
+            key: state.pageKey,
+            child: AgentChatScreen(
+              key: ValueKey<String>(
+                'agent-chat:$hostId:$providerId:$bridgeId:$acpSessionId',
+              ),
+              hostId: hostId,
+              providerId: providerId,
+              bridgeId: bridgeId,
+              acpSessionId: acpSessionId,
+            ),
+          );
+        },
       ),
       GoRoute(
         path: '/snippets/add',

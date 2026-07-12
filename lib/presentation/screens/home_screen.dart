@@ -38,6 +38,7 @@ import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../providers/host_row_providers.dart';
 import '../widgets/agent_tool_icon.dart';
+import '../widgets/agents_panel.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/brand_empty_state.dart';
 import '../widgets/brand_error_state.dart';
@@ -680,33 +681,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         child: switch (_selectedTab) {
           HomeScreenTab.hosts => const HostsPanel(),
           HomeScreenTab.connections => const _ConnectionsPanel(),
-          HomeScreenTab.agents => const _AgentsPanel(),
+          HomeScreenTab.agents => const AgentsPanel(),
           HomeScreenTab.keys => const _KeysPanel(),
           HomeScreenTab.snippets => const SnippetsPanel(),
         },
-      ),
-    ],
-  );
-}
-
-class _AgentsPanel extends StatelessWidget {
-  const _AgentsPanel();
-
-  @override
-  Widget build(BuildContext context) => const Column(
-    children: [
-      PanelHeader(title: 'agents'),
-      Expanded(
-        child: Center(
-          child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 24),
-            child: BrandEmptyState(
-              title: 'no agent sessions yet',
-              message:
-                  'Start an ACP session and keep the work moving from here.',
-            ),
-          ),
-        ),
       ),
     ],
   );
