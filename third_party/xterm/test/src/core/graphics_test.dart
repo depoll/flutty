@@ -912,6 +912,39 @@ void main() {
         waited += 20;
       }
       expect(responses.single, contains('EINVAL'));
+
+      responses.clear();
+      terminal.write('\x1b_Ga=f,i=19,q=0\x1b\\');
+      expect(responses.single, contains('EINVAL: missing frame data'));
+
+      responses.clear();
+      terminal.write('\x1b_Ga=f,i=19,q=2\x1b\\');
+      expect(responses, isEmpty);
+    });
+  });
+
+  testWidgets('empty a=f failure preserves per-image response order', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(512, 512);
+      final pixel = base64.encode(<int>[255, 0, 0, 255]);
+      final responses = <String>[];
+      final terminal = Terminal(onOutput: responses.add);
+
+      terminal
+        ..write('\x1b_Ga=t,i=66,f=100;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=f,i=66,f=32,s=1,v=1,q=0;$pixel\x1b\\')
+        ..write('\x1b_Ga=f,i=66,q=0\x1b\\');
+
+      var waited = 0;
+      while (responses.length < 2 && waited < 3000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses, hasLength(2));
+      expect(responses.first, '\x1b_Gi=66;OK\x1b\\');
+      expect(responses.last, contains('EINVAL: missing frame data'));
     });
   });
 
@@ -1244,6 +1277,47 @@ void main() {
 
       await Future<void>.delayed(const Duration(milliseconds: 300));
       expect(terminal.graphics.hasPlacements, isFalse);
+    });
+  });
+
+  testWidgets('queued positional delete snapshots the command-time cursor', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final visiblePng = await _buildPngBase64(8, 8);
+      final pendingPng = await _buildPngBase64(256, 256);
+      final pixel = base64.encode(<int>[255, 0, 0, 255]);
+      final terminal = Terminal();
+
+      terminal.write(
+        '\x1b_Ga=T,i=301,f=100,c=4,r=2,C=1;$visiblePng\x1b\\',
+      );
+      var waited = 0;
+      while (terminal.graphics.placements.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      terminal
+        ..write('\x1b_Ga=t,i=300,f=100;$pendingPng\x1b\\')
+        ..write('\x1b_Ga=f,i=300,f=32,s=1,v=1,q=2;$pixel\x1b\\')
+        ..write('\x1b[5;1H')
+        ..write('\x1b_Ga=d,d=c,q=2\x1b\\')
+        ..write('\x1b[H');
+
+      waited = 0;
+      while ((terminal.graphics.imageById(300)?.frameCount ?? 0) < 2 &&
+          waited < 3000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(
+        terminal.graphics.placements.map((placement) => placement.imageId),
+        contains(301),
+        reason: 'd=c must target row 5 even though the cursor later moved home',
+      );
     });
   });
 
@@ -2030,6 +2104,88 @@ void main() {
       });
     },
   );
+
+  testWidgets('implicit placement deletes use inferred cell spans', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(240, 160);
+      final terminal = Terminal();
+      terminal.graphics.setCellPixelSize(10, 20);
+
+      terminal.write(
+        '\x1b_Ga=T,i=201,f=100,c=30,C=1;$pngBase64\x1b\\',
+      );
+      var waited = 0;
+      while (terminal.graphics.placements.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements.single.rows, 0);
+
+      // The inferred c-only footprint is 30x10 cells; row 5 must hit it even
+      // though only the anchor row is explicitly stored on the placement.
+      terminal.write('\x1b_Ga=d,d=p,x=1,y=5,q=2\x1b\\');
+      expect(terminal.graphics.placements, isEmpty);
+
+      terminal.write(
+        '\x1b_Ga=T,i=202,f=100,r=10,C=1;$pngBase64\x1b\\',
+      );
+      waited = 0;
+      while (terminal.graphics.placements.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements.single.cols, 0);
+
+      // The inferred r-only footprint is 30x10 cells; column 20 must hit it.
+      terminal.write('\x1b_Ga=d,d=x,x=20,q=2\x1b\\');
+      expect(terminal.graphics.placements, isEmpty);
+
+      terminal.write(
+        '\x1b_Ga=T,i=203,f=100,C=1;$pngBase64\x1b\\',
+      );
+      waited = 0;
+      while (terminal.graphics.placements.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements.single.cols, 0);
+      expect(terminal.graphics.placements.single.rows, 0);
+
+      // At its natural 240x160 size this placement occupies 24x8 cells.
+      terminal.write('\x1b_Ga=d,d=p,x=1,y=5,q=2\x1b\\');
+      expect(terminal.graphics.placements, isEmpty);
+
+      terminal.resize(10, 24);
+      terminal.write(
+        '\x1b_Ga=T,i=204,f=100,C=1;$pngBase64\x1b\\',
+      );
+      waited = 0;
+      while (terminal.graphics.placements.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements.single.row, 0);
+      expect(terminal.graphics.placements.single.col, 0);
+
+      // Width fitting scales the natural footprint to 10x4 cells.
+      terminal.write('\x1b[5;1H');
+      expect(terminal.buffer.cursorY, 4);
+      terminal.write('\x1b_Ga=d,d=c,q=2\x1b\\');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(terminal.graphics.placements, hasLength(1));
+      terminal.write('\x1b[3;1H');
+      expect(terminal.buffer.cursorY, 2);
+      terminal.write('\x1b_Ga=d,d=c,q=2\x1b\\');
+      waited = 0;
+      while (terminal.graphics.placements.isNotEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements, isEmpty);
+    });
+  });
 
   testWidgets('Kitty graphics a=d with no selector deletes all placements', (
     tester,

@@ -595,6 +595,7 @@ class GraphicsManager {
   int _accessClock = 0;
   double _cellPixelWidth = 0;
   double _cellPixelHeight = 0;
+  int _viewportColumns = 80;
 
   /// Active placements, oldest first.
   List<TerminalImagePlacement> get placements => _placements;
@@ -711,6 +712,13 @@ class GraphicsManager {
     }
     _cellPixelWidth = width;
     _cellPixelHeight = height;
+  }
+
+  /// Updates the terminal viewport width used to size natural Kitty placements.
+  void setViewportColumns(int columns) {
+    if (columns > 0) {
+      _viewportColumns = columns;
+    }
   }
 
   /// Cell width divided by cell height, with a terminal-like fallback.
@@ -1768,7 +1776,7 @@ class GraphicsManager {
     int firstRow,
     int lastRow,
   ) {
-    final rows = placement.rows > 0 ? placement.rows : 1;
+    final rows = _placementCellSpan(placement).rows;
     final placementFirst = placement.row;
     final placementLast = placementFirst + rows - 1;
     return placementFirst <= lastRow && placementLast >= firstRow;
@@ -1779,10 +1787,84 @@ class GraphicsManager {
     int firstCol,
     int lastCol,
   ) {
-    final cols = placement.cols > 0 ? placement.cols : 1;
+    final cols = _placementCellSpan(placement).cols;
     final placementFirst = placement.col;
     final placementLast = placementFirst + cols - 1;
     return placementFirst <= lastCol && placementLast >= firstCol;
+  }
+
+  ({int cols, int rows}) _placementCellSpan(
+    TerminalImagePlacement placement,
+  ) {
+    if (placement.cols > 0 && placement.rows > 0) {
+      return (cols: placement.cols, rows: placement.rows);
+    }
+    final source = _placementSourceSize(placement);
+    if (source == null) {
+      return (
+        cols: math.max(1, placement.cols),
+        rows: math.max(1, placement.rows),
+      );
+    }
+    final cellWidth = _cellPixelWidth > 0 ? _cellPixelWidth : 10.0;
+    final cellHeight = _cellPixelHeight > 0 ? _cellPixelHeight : 20.0;
+    final double destinationWidth;
+    final double destinationHeight;
+    if (placement.cols > 0) {
+      destinationWidth = placement.cols * cellWidth;
+      destinationHeight = source.height * (destinationWidth / source.width);
+    } else if (placement.rows > 0) {
+      destinationHeight = placement.rows * cellHeight;
+      destinationWidth = source.width * (destinationHeight / source.height);
+    } else {
+      final availableColumns = math.max(
+        1,
+        _viewportColumns - placement.col,
+      );
+      final maxWidth = availableColumns * cellWidth;
+      final scale = source.width > maxWidth ? maxWidth / source.width : 1.0;
+      destinationWidth = source.width * scale;
+      destinationHeight = source.height * scale;
+    }
+    return (
+      cols: math.max(1, (destinationWidth / cellWidth).ceil()),
+      rows: math.max(1, (destinationHeight / cellHeight).ceil()),
+    );
+  }
+
+  ({double width, double height})? _placementSourceSize(
+    TerminalImagePlacement placement,
+  ) {
+    final image = _images[placement.imageId];
+    final pending = _pendingImages[placement.imageId];
+    final sourceWidth = image?.sourceWidth ?? pending?.sourceWidth ?? 0;
+    final sourceHeight = image?.sourceHeight ?? pending?.sourceHeight ?? 0;
+    if (sourceWidth <= 0 || sourceHeight <= 0) {
+      return null;
+    }
+
+    final left = placement.srcX.clamp(0, sourceWidth).toDouble();
+    final top = placement.srcY.clamp(0, sourceHeight).toDouble();
+    final availableWidth = sourceWidth - left;
+    final availableHeight = sourceHeight - top;
+    final logicalWidth = (placement.srcWidth > 0
+            ? math.min(placement.srcWidth.toDouble(), availableWidth)
+            : availableWidth)
+        .toDouble();
+    final logicalHeight = (placement.srcHeight > 0
+            ? math.min(placement.srcHeight.toDouble(), availableHeight)
+            : availableHeight)
+        .toDouble();
+    if (logicalWidth <= 0 || logicalHeight <= 0) {
+      return null;
+    }
+
+    final decoded = image?.image;
+    return (
+      width: logicalWidth * (decoded == null ? 1 : decoded.width / sourceWidth),
+      height:
+          logicalHeight * (decoded == null ? 1 : decoded.height / sourceHeight),
+    );
   }
 
   void _evictIfNeeded(int requiredBytes) {

@@ -26,6 +26,12 @@ import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 
 typedef _GraphicsPreinflation = ({Uint8List? payload, int micros});
+typedef _GraphicsDeletePosition = ({
+  Buffer buffer,
+  int cursorCol,
+  int cursorRow,
+  int scrollBack,
+});
 
 /// [Terminal] is an interface to interact with command line applications. It
 /// translates escape sequences from the application into updates to the
@@ -543,6 +549,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
     _viewWidth = newWidth;
     _viewHeight = newHeight;
+    _altBuffer.graphics.setViewportColumns(newWidth);
+    _mainBuffer.graphics.setViewportColumns(newWidth);
 
     if (buffer == _altBuffer) {
       buffer.clearScrollback();
@@ -1407,35 +1415,38 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
     if (action == 'd') {
       final selector = args['d'] ?? 'a';
+      final buffer = _buffer;
+      final position = (
+        buffer: buffer,
+        cursorCol: buffer.cursorX,
+        cursorRow: buffer.absoluteCursorY,
+        scrollBack: buffer.absoluteCursorY - buffer.cursorY,
+      );
       if ((selector == 'i' ||
               selector == 'I' ||
               selector == 'n' ||
               selector == 'N') &&
           _graphicsOperationKey(manager, args) != null) {
-        final buffer = _buffer;
         _scheduleGraphicsOperation(
           manager,
           args,
-          () async => _deleteGraphics(args, buffer),
+          () async => _deleteGraphics(args, position),
         );
       } else {
-        final buffer = _buffer;
         _scheduleGraphicsBarrier(
           manager,
-          () async => _deleteGraphics(args, buffer),
+          () async => _deleteGraphics(args, position),
         );
       }
       return;
     }
 
     if (action == 'f') {
-      if (data.isNotEmpty) {
-        _scheduleGraphicsOperation(
-          manager,
-          args,
-          () => _finalizeAnimationFrame(args, data, manager),
-        );
-      }
+      _scheduleGraphicsOperation(
+        manager,
+        args,
+        () => _finalizeAnimationFrame(args, data, manager),
+      );
       return;
     }
     if (action == 'a') {
@@ -1624,6 +1635,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     Uint8List data,
     GraphicsManager manager,
   ) async {
+    if (data.isEmpty) {
+      _respondToGraphicsFailure(args, 'EINVAL: missing frame data');
+      return;
+    }
     manager.onChanged ??= notifyListeners;
     final imageId = _resolveGraphicsImageId(manager, args);
     if (imageId == null) {
@@ -2092,11 +2107,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// client placed and then explicitly asked to remove (e.g. Copilot CLI closing
   /// its full-screen image viewer) would linger as a stale overlay behind later
   /// output.
-  void _deleteGraphics(Map<String, String> args, Buffer buffer) {
+  void _deleteGraphics(
+    Map<String, String> args,
+    _GraphicsDeletePosition position,
+  ) {
+    final buffer = position.buffer;
     // Kitty `x`/`y` are 1-based cell coordinates in the cursor's (viewport)
     // space; translate the row into the absolute buffer coordinates placements
     // are tracked in.
-    final scrollBack = buffer.absoluteCursorY - buffer.cursorY;
     final x = int.tryParse(args['x'] ?? '');
     final y = int.tryParse(args['y'] ?? '');
 
@@ -2118,10 +2136,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       what: what,
       imageId: imageId,
       placementId: int.tryParse(args['p'] ?? ''),
-      cursorCol: buffer.cursorX,
-      cursorRow: buffer.absoluteCursorY,
+      cursorCol: position.cursorCol,
+      cursorRow: position.cursorRow,
       cellCol: x == null ? null : x - 1,
-      cellRow: y == null ? null : (y - 1) + scrollBack,
+      cellRow: y == null ? null : (y - 1) + position.scrollBack,
     );
     if (removed) {
       notifyListeners();
