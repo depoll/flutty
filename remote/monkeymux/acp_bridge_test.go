@@ -35,6 +35,137 @@ func TestAcpWireFramingRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAcpAttachQueuesHelloBeforeConcurrentLiveEvent(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	peer, primed, release, attachDone := startPrimedTestAttach(t, bridge)
+	defer finishPrimedTestAttach(t, peer, release, attachDone)
+	<-primed
+
+	published := make(chan struct{})
+	go func() {
+		bridge.publish(
+			"output",
+			json.RawMessage(`{"jsonrpc":"2.0","method":"live"}`),
+			"",
+			nil,
+		)
+		close(published)
+	}()
+	close(release)
+	<-published
+
+	reader := bufio.NewReader(peer)
+	hello := readTestAcpFrame(t, reader, peer)
+	live := readTestAcpFrame(t, reader, peer)
+	if hello.Type != "hello" {
+		t.Fatalf("first attach frame = %#v, want hello", hello)
+	}
+	if live.Type != "output" || live.Sequence != 1 {
+		t.Fatalf("second attach frame = %#v, want live sequence 1", live)
+	}
+}
+
+func TestAcpAttachQueuesReplayBeforeConcurrentLiveEvent(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	bridge.publish("output", json.RawMessage(`{"jsonrpc":"2.0","method":"one"}`), "", nil)
+	bridge.publish("output", json.RawMessage(`{"jsonrpc":"2.0","method":"two"}`), "", nil)
+	peer, primed, release, attachDone := startPrimedTestAttach(t, bridge)
+	defer finishPrimedTestAttach(t, peer, release, attachDone)
+	<-primed
+
+	published := make(chan struct{})
+	go func() {
+		bridge.publish(
+			"output",
+			json.RawMessage(`{"jsonrpc":"2.0","method":"live"}`),
+			"",
+			nil,
+		)
+		close(published)
+	}()
+	close(release)
+	<-published
+
+	reader := bufio.NewReader(peer)
+	frames := []acpWireMessage{
+		readTestAcpFrame(t, reader, peer),
+		readTestAcpFrame(t, reader, peer),
+		readTestAcpFrame(t, reader, peer),
+		readTestAcpFrame(t, reader, peer),
+	}
+	if frames[0].Type != "hello" {
+		t.Fatalf("first attach frame = %#v, want hello", frames[0])
+	}
+	for index, sequence := range []uint64{1, 2, 3} {
+		frame := frames[index+1]
+		if frame.Type != "output" || frame.Sequence != sequence {
+			t.Fatalf(
+				"attach frame %d = %#v, want output sequence %d",
+				index+1,
+				frame,
+				sequence,
+			)
+		}
+	}
+}
+
+func newOrderingTestBridge() *acpBridge {
+	now := time.Now()
+	return &acpBridge{
+		id:              "0123456789abcdef0123456789abcdef",
+		state:           "running",
+		startedAt:       now,
+		lastActivity:    now,
+		clients:         map[string]*acpBridgeClient{},
+		pendingRequests: map[string]struct{}{},
+		inFlightTurns:   map[string]struct{}{},
+	}
+}
+
+func startPrimedTestAttach(
+	t *testing.T,
+	bridge *acpBridge,
+) (net.Conn, <-chan struct{}, chan struct{}, <-chan struct{}) {
+	t.Helper()
+	server, peer := net.Pipe()
+	primed := make(chan struct{})
+	release := make(chan struct{})
+	bridge.beforeClientVisible = func() {
+		close(primed)
+		<-release
+	}
+	attachDone := make(chan struct{})
+	go func() {
+		defer close(attachDone)
+		bridge.handleAttach(
+			server,
+			bufio.NewReader(server),
+			acpWireMessage{Version: acpBridgeProtocolVersion, Type: "hello"},
+		)
+	}()
+	return peer, primed, release, attachDone
+}
+
+func finishPrimedTestAttach(
+	t *testing.T,
+	peer net.Conn,
+	release chan struct{},
+	attachDone <-chan struct{},
+) {
+	t.Helper()
+	select {
+	case <-release:
+	default:
+		close(release)
+	}
+	_ = peer.Close()
+	select {
+	case <-attachDone:
+	case <-time.After(time.Second):
+		t.Error("primed attach did not stop")
+	}
+}
+
 func TestAcpDetachedIdleClientStopsWriter(t *testing.T) {
 	server, peer := net.Pipe()
 	defer peer.Close()

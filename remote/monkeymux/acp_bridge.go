@@ -113,23 +113,24 @@ type acpBridge struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 
-	mu               sync.Mutex
-	stdinMu          sync.Mutex
-	state            string
-	startedAt        time.Time
-	lastActivity     time.Time
-	nextSequence     uint64
-	replay           []acpReplayEvent
-	replayBytes      int
-	clients          map[string]*acpBridgeClient
-	writerClientID   string
-	pendingRequests  map[string]struct{}
-	inFlightTurns    map[string]struct{}
-	exitCode         *int
-	providerDone     chan struct{}
-	providerDoneOnce sync.Once
-	stopOnce         sync.Once
-	done             chan struct{}
+	mu                  sync.Mutex
+	stdinMu             sync.Mutex
+	state               string
+	startedAt           time.Time
+	lastActivity        time.Time
+	nextSequence        uint64
+	replay              []acpReplayEvent
+	replayBytes         int
+	clients             map[string]*acpBridgeClient
+	writerClientID      string
+	pendingRequests     map[string]struct{}
+	inFlightTurns       map[string]struct{}
+	exitCode            *int
+	providerDone        chan struct{}
+	providerDoneOnce    sync.Once
+	beforeClientVisible func()
+	stopOnce            sync.Once
+	done                chan struct{}
 }
 
 func acpCommand(args []string) {
@@ -723,15 +724,12 @@ func (b *acpBridge) handleAttach(
 		done:       make(chan struct{}),
 		writerDone: make(chan struct{}),
 	}
-	go b.writeClient(client)
-
 	b.mu.Lock()
 	if b.writerClientID == "" {
 		b.writerClientID = clientID
 	}
 	canSend := b.writerClientID == clientID
 	client.ack = hello.LastAck
-	b.clients[clientID] = client
 	b.lastActivity = time.Now()
 	replay := append([]acpReplayEvent(nil), b.replay...)
 	retainedFrom := b.nextSequence + 1
@@ -739,30 +737,37 @@ func (b *acpBridge) handleAttach(
 		retainedFrom = replay[0].message.Sequence
 	}
 	snapshot := b.snapshotLocked()
-	b.mu.Unlock()
-
-	b.enqueue(client, acpWireMessage{
+	snapshot.ClientCount++
+	primed := []acpWireMessage{{
 		Version:  acpBridgeProtocolVersion,
 		Type:     "hello",
 		BridgeID: b.id,
 		ClientID: clientID,
 		CanSend:  canSend,
 		Bridge:   &snapshot,
-	})
+	}}
 	if hello.LastAck+1 < retainedFrom || replayHasGap(replay, hello.LastAck) {
-		b.enqueue(client, acpWireMessage{
+		primed = append(primed, acpWireMessage{
 			Version:      acpBridgeProtocolVersion,
 			Type:         "overflow",
 			BridgeID:     b.id,
 			RetainedFrom: retainedFrom,
 		})
 	}
-
 	for _, event := range replay {
 		if event.message.Sequence > hello.LastAck {
-			b.enqueue(client, event.message)
+			primed = append(primed, event.message)
 		}
 	}
+	for _, message := range primed {
+		client.send <- message
+	}
+	if b.beforeClientVisible != nil {
+		b.beforeClientVisible()
+	}
+	b.clients[clientID] = client
+	b.mu.Unlock()
+	go b.writeClient(client)
 
 	for {
 		message, err := readAcpWireFrame(reader)
