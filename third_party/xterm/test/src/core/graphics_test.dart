@@ -987,7 +987,8 @@ void main() {
     tester,
   ) async {
     await tester.runAsync(() async {
-      final terminal = Terminal();
+      final responses = <String>[];
+      final terminal = Terminal(onOutput: responses.add);
       final redGreen = base64.encode(<int>[
         255,
         0,
@@ -1003,7 +1004,7 @@ void main() {
       terminal
         ..write('\x1b_Ga=t,i=8,f=32,s=2,v=1;$redGreen\x1b\\')
         ..write(
-          '\x1b_Ga=f,i=8,f=32,s=1,v=1,x=1,c=1,X=1,z=60;'
+          '\x1b_Ga=f,i=8,f=32,s=1,v=1,x=1,c=1,X=1,z=60,q=2;'
           '$blue\x1b\\',
         );
 
@@ -1019,7 +1020,7 @@ void main() {
       expect(await _pixelColor(second, 1, 0), const Color(0xFF0000FF));
 
       terminal.write(
-        '\x1b_Ga=c,i=8,r=2,c=1,x=1,y=0,X=0,Y=0,w=1,h=1,C=1\x1b\\',
+        '\x1b_Ga=c,i=8,r=2,c=1,x=0,y=0,X=1,Y=0,w=1,h=1,C=1,q=0\x1b\\',
       );
       waited = 0;
       while (await _pixelColor(image.imageAtFrame(1)!, 0, 0) !=
@@ -1031,6 +1032,14 @@ void main() {
       final root = image.imageAtFrame(1)!;
       expect(await _pixelColor(root, 0, 0), const Color(0xFF0000FF));
       expect(await _pixelColor(root, 1, 0), const Color(0xFF00FF00));
+      expect(responses, ['\x1b_Gi=8;OK\x1b\\']);
+
+      responses.clear();
+      terminal.write(
+        '\x1b_Ga=c,i=8,r=2,c=1,x=0,y=0,X=1,Y=0,w=1,h=1,C=1,q=1\x1b\\',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(responses, isEmpty);
     });
   });
 
@@ -1405,6 +1414,52 @@ void main() {
 
       expect(terminal.graphics.imageIdForNumber(5), 1);
       expect(terminal.graphics.imageById(1), isNotNull);
+
+      terminal.write(
+        '\x1b_Ga=T,i=2,I=5,f=32,s=0,v=0,C=1,q=2;$pixel\x1b\\',
+      );
+      waited = 0;
+      while (terminal.graphics.imageIdForNumber(5) != 1 && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageIdForNumber(5), 1);
+      expect(terminal.graphics.imageById(2), isNull);
+
+      terminal.write(
+        '\x1b_Ga=t,i=3,I=5,f=32,s=0,v=0,q=2;$pixel\x1b\\',
+      );
+      expect(terminal.graphics.imageIdForNumber(5), 3);
+      expect(terminal.graphics.imageById(3), isNull);
+      expect(terminal.graphics.hasPendingImage(3), isTrue);
+      terminal.graphics.imageForPlacement(3);
+      waited = 0;
+      while (terminal.graphics.imageIdForNumber(5) != 1 && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageIdForNumber(5), 1);
+      expect(terminal.graphics.hasPendingImage(3), isFalse);
+
+      terminal.graphics.registerImageNumber(6, 2);
+      terminal
+        ..write('\x1b_Ga=t,i=4,I=5,f=32,s=0,v=0,q=2;$pixel\x1b\\')
+        ..write('\x1b_Ga=t,i=4,I=6,f=32,s=0,v=0,q=2;$pixel\x1b\\');
+      expect(terminal.graphics.imageIdForNumber(5), 4);
+      expect(terminal.graphics.imageIdForNumber(6), 4);
+      terminal.graphics.imageForPlacement(4);
+      waited = 0;
+      while ((terminal.graphics.imageIdForNumber(5) != 1 ||
+              terminal.graphics.imageIdForNumber(6) != 2) &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageIdForNumber(5), 1);
+      expect(terminal.graphics.imageIdForNumber(6), 2);
     });
   });
 
@@ -1447,6 +1502,28 @@ void main() {
         waited += 20;
       }
       expect(responses.single, contains('ENOENT'));
+    });
+  });
+
+  testWidgets('unknown a=a target reports ENOENT unless silenced', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final responses = <String>[];
+      final terminal = Terminal(onOutput: responses.add);
+
+      terminal.write('\x1b_Ga=a,i=999,s=3,q=0\x1b\\');
+      var waited = 0;
+      while (responses.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses.single, contains('ENOENT'));
+
+      responses.clear();
+      terminal.write('\x1b_Ga=a,i=999,s=3,q=2\x1b\\');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(responses, isEmpty);
     });
   });
 

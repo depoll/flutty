@@ -30,6 +30,7 @@ typedef _GraphicsImageNumberReservation = ({
   int number,
   int imageId,
   int? previousImageId,
+  bool requiresEagerDecode,
 });
 typedef _GraphicsDeletePosition = ({
   Buffer buffer,
@@ -1401,13 +1402,23 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final manager = _buffer.graphics;
     final explicitImageId = int.tryParse(args['i'] ?? '');
     final imageNumber = int.tryParse(args['I'] ?? '');
+    _GraphicsImageNumberReservation? imageNumberReservation;
     if (explicitImageId != null &&
         explicitImageId > 0 &&
         imageNumber != null &&
         imageNumber > 0) {
+      final previousImageId = manager.imageIdForNumber(imageNumber);
       // Establish explicit id/number mappings before placement or async image
       // commands so every action in the stream observes the same association.
       manager.registerImageNumber(imageNumber, explicitImageId);
+      if ((action == 't' || action == 'T') && data.isNotEmpty) {
+        imageNumberReservation = (
+          number: imageNumber,
+          imageId: explicitImageId,
+          previousImageId: previousImageId,
+          requiresEagerDecode: false,
+        );
+      }
     }
     if (action == 'p') {
       if (virtualPlacement) {
@@ -1418,8 +1429,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
-    _GraphicsImageNumberReservation? imageNumberReservation;
-    if ((action == 't' || action == 'T') &&
+    if (imageNumberReservation == null &&
+        (action == 't' || action == 'T') &&
         data.isNotEmpty &&
         (explicitImageId == null || explicitImageId <= 0) &&
         imageNumber != null &&
@@ -1429,6 +1440,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         number: imageNumber,
         imageId: reserved.imageId,
         previousImageId: reserved.previousImageId,
+        requiresEagerDecode: true,
       );
     }
     final commandImageId = imageNumberReservation?.imageId ??
@@ -1792,6 +1804,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     manager.onChanged ??= notifyListeners;
     final imageId = commandImageId ?? _resolveGraphicsImageId(manager, args);
     if (imageId == null || await manager.resolveImage(imageId) == null) {
+      _respondToGraphicsFailure(args, 'ENOENT: image not found');
       return;
     }
 
@@ -1829,10 +1842,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       imageId,
       sourceFrame: sourceFrame,
       destinationFrame: destinationFrame,
-      sourceX: int.tryParse(args['x'] ?? '') ?? 0,
-      sourceY: int.tryParse(args['y'] ?? '') ?? 0,
-      destinationX: int.tryParse(args['X'] ?? '') ?? 0,
-      destinationY: int.tryParse(args['Y'] ?? '') ?? 0,
+      // Kitty's reference implementation uses X/Y for the source and x/y for
+      // the destination (matching the protocol's composition example).
+      sourceX: int.tryParse(args['X'] ?? '') ?? 0,
+      sourceY: int.tryParse(args['Y'] ?? '') ?? 0,
+      destinationX: int.tryParse(args['x'] ?? '') ?? 0,
+      destinationY: int.tryParse(args['y'] ?? '') ?? 0,
       width: int.tryParse(args['w'] ?? '') ?? 0,
       height: int.tryParse(args['h'] ?? '') ?? 0,
       replace: args['C'] == '1',
@@ -1849,7 +1864,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       TerminalAnimationCompositionResult.rasterizationFailed =>
         'EINVAL: frame composition failed',
     };
-    if (error != null) {
+    if (error == null) {
+      _respondToGraphicsSuccess(args);
+    } else {
       _respondToGraphicsFailure(args, error);
     }
   }
@@ -1987,8 +2004,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     if (anchor == null &&
         imageId != null &&
         !compressed &&
-        imageNumberReservation == null) {
-      if (!manager.hasPendingWithSignature(imageId, signature)) {
+        !(imageNumberReservation?.requiresEagerDecode ?? false)) {
+      if (imageNumberReservation != null ||
+          !manager.hasPendingWithSignature(imageId, signature)) {
         final sourceDimensions = _graphicsPayloadDimensions(args, payload);
         manager.storePendingImage(
           imageId,
@@ -1999,7 +2017,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           sourceWidth: sourceDimensions?.width ?? 0,
           sourceHeight: sourceDimensions?.height ?? 0,
           sourceSignature: signature,
+          imageNumber: imageNumberReservation?.number,
+          mappedImageId: imageNumberReservation?.imageId,
+          previousImageId: imageNumberReservation?.previousImageId,
         );
+      }
+      if (!manager.hasPendingImage(imageId)) {
+        _rollbackGraphicsImageNumberReservation(
+          manager,
+          imageNumberReservation,
+        );
+        _respondToGraphicsFailure(
+          args,
+          'ENOSPC: pending image memory limit exceeded',
+        );
+        return;
       }
       _placeStoredImageId(manager, imageId, null, args, generation);
       notifyListeners();

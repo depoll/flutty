@@ -525,6 +525,12 @@ class TerminalImageVirtualPlacement {
 /// all of them eagerly wastes CPU, memory and raster bandwidth on images the
 /// user never sees; keeping the encoded payload and decoding on first reference
 /// bounds the work to the visible set.
+typedef _PendingImageNumberReservation = ({
+  int number,
+  int mappedImageId,
+  int? previousImageId,
+});
+
 class _PendingGraphicsImage {
   _PendingGraphicsImage({
     required this.payload,
@@ -534,6 +540,7 @@ class _PendingGraphicsImage {
     required this.sourceWidth,
     required this.sourceHeight,
     required this.sourceSignature,
+    this.imageNumberReservations = const <_PendingImageNumberReservation>[],
   });
 
   final Uint8List payload;
@@ -543,6 +550,7 @@ class _PendingGraphicsImage {
   final int sourceWidth;
   final int sourceHeight;
   final int sourceSignature;
+  final List<_PendingImageNumberReservation> imageNumberReservations;
 }
 
 /// Stores decoded terminal images and their placements with count and memory
@@ -960,6 +968,9 @@ class GraphicsManager {
     int sourceWidth = 0,
     int sourceHeight = 0,
     int sourceSignature = 0,
+    int? imageNumber,
+    int? mappedImageId,
+    int? previousImageId,
   }) {
     if (id <= 0) {
       return;
@@ -976,8 +987,30 @@ class GraphicsManager {
       _currentMemoryBytes -= stale.sizeBytes;
     }
     final existing = _pendingImages.remove(id);
+    final reservations = <_PendingImageNumberReservation>[
+      ...?existing?.imageNumberReservations,
+    ];
     if (existing != null) {
       _pendingBytes -= existing.payload.length;
+    }
+    if (imageNumber != null && mappedImageId != null) {
+      var rollbackImageId = previousImageId;
+      for (final reservation in reservations) {
+        if (reservation.number == imageNumber &&
+            reservation.mappedImageId == mappedImageId &&
+            previousImageId == mappedImageId) {
+          rollbackImageId = reservation.previousImageId;
+          break;
+        }
+      }
+      reservations.removeWhere(
+        (reservation) => reservation.number == imageNumber,
+      );
+      reservations.add((
+        number: imageNumber,
+        mappedImageId: mappedImageId,
+        previousImageId: rollbackImageId,
+      ));
     }
     _pendingImages[id] = _PendingGraphicsImage(
       payload: payload,
@@ -987,6 +1020,8 @@ class GraphicsManager {
       sourceWidth: sourceWidth > 0 ? sourceWidth : width,
       sourceHeight: sourceHeight > 0 ? sourceHeight : height,
       sourceSignature: sourceSignature,
+      imageNumberReservations:
+          List<_PendingImageNumberReservation>.unmodifiable(reservations),
     );
     _pendingBytes += payload.length;
     if (id >= _nextImageId) {
@@ -1003,6 +1038,7 @@ class GraphicsManager {
       final removed = _pendingImages.remove(oldest);
       if (removed != null) {
         _pendingBytes -= removed.payload.length;
+        _rollbackPendingImageNumber(removed);
       }
       // The image bytes are gone, so its virtual placement (if any) can no
       // longer back a placeholder; drop it unless a decoded image kept the id.
@@ -1052,15 +1088,30 @@ class GraphicsManager {
     _pendingImages.remove(id);
     _pendingBytes -= pending.payload.length;
     if (decoded == null) {
+      _rollbackPendingImageNumber(pending);
       return null;
     }
-    storeDecodedImageWithId(
+    final storedImageId = storeDecodedImageWithId(
       id,
       decoded,
       sourceSignature: pending.sourceSignature,
     );
+    if (storedImageId <= 0) {
+      _rollbackPendingImageNumber(pending);
+      return null;
+    }
     onChanged?.call();
     return imageById(id);
+  }
+
+  void _rollbackPendingImageNumber(_PendingGraphicsImage pending) {
+    for (final reservation in pending.imageNumberReservations) {
+      rollbackImageIdReservation(
+        reservation.number,
+        reservation.mappedImageId,
+        reservation.previousImageId,
+      );
+    }
   }
 
   /// Stores [image] and returns its new id, or `0` when it exceeds the memory
@@ -1980,6 +2031,7 @@ class GraphicsManager {
     final pending = _pendingImages.remove(imageId);
     if (pending != null) {
       _pendingBytes -= pending.payload.length;
+      _rollbackPendingImageNumber(pending);
     }
     _retainedImageIds.remove(imageId);
     _virtualPlacements.remove(imageId);
