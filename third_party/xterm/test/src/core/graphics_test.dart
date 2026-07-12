@@ -126,6 +126,16 @@ String _rawRgbaBase64(int width, int height) {
 }
 
 void main() {
+  test('counted image-number reservations restore their first predecessor', () {
+    final manager = GraphicsManager();
+    final firstPrevious = manager.reserveExplicitImageIdForNumber(5, 100);
+    final secondPrevious = manager.reserveExplicitImageIdForNumber(5, 100);
+    manager
+      ..rollbackImageIdReservation(5, 100, firstPrevious)
+      ..rollbackImageIdReservation(5, 100, secondPrevious);
+    expect(manager.imageIdForNumber(5), isNull);
+  });
+
   test('DecodedTerminalImage rejects an empty frame sequence', () {
     expect(
       () => DecodedTerminalImage(
@@ -1537,6 +1547,61 @@ void main() {
     });
   });
 
+  testWidgets('same-id concurrent reservations keep a later successful root', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pixel = base64.encode(<int>[255, 0, 0, 255]);
+      final pngBase64 = await _buildPngBase64(8, 8);
+      final terminal = Terminal();
+
+      terminal
+        ..write('\x1b_Ga=T,i=100,I=5,f=32,s=0,v=0,C=1,q=2;$pixel\x1b\\')
+        ..write('\x1b_Ga=T,i=100,I=5,f=100,C=1,q=2;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (terminal.graphics.imageById(100) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageById(100), isNotNull);
+      expect(terminal.graphics.imageIdForNumber(5), 100);
+    });
+  });
+
+  testWidgets('same-id concurrent failures restore a null predecessor', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final invalid = base64.encode(<int>[255, 0, 0, 255]);
+      final terminal = Terminal();
+
+      await terminalGraphicsDecodeGate.acquire();
+      await terminalGraphicsDecodeGate.acquire();
+      await terminalGraphicsDecodeGate.acquire();
+      try {
+        terminal
+          ..write('\x1b_Ga=T,i=100,I=5,f=32,s=0,v=0,C=1,q=2;$invalid\x1b\\')
+          ..write('\x1b_Ga=T,i=100,I=5,f=32,s=0,v=0,C=1,q=2;$invalid\x1b\\');
+        expect(terminal.graphics.imageIdForNumber(5), 100);
+      } finally {
+        terminalGraphicsDecodeGate.release();
+        terminalGraphicsDecodeGate.release();
+        terminalGraphicsDecodeGate.release();
+      }
+
+      var waited = 0;
+      while (terminal.graphics.imageIdForNumber(5) != null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageIdForNumber(5), isNull);
+      expect(terminal.graphics.imageById(100), isNull);
+    });
+  });
+
   testWidgets('invalid a=c reports a protocol error unless silenced', (
     tester,
   ) async {
@@ -2138,6 +2203,37 @@ void main() {
 
       expect(terminal.buffer.lines[0].getText().trimRight(), 'X');
       expect(terminal.buffer.lines[3].getText().trimRight(), isEmpty);
+    });
+  });
+
+  testWidgets('explicit row spans retain geometry beyond the viewport', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(8, 8);
+      final terminal = Terminal()..resize(80, 10);
+
+      terminal.write(
+        '\x1b_Ga=T,i=401,f=100,c=4,r=30;$pngBase64\x1b\\',
+      );
+      var waited = 0;
+      while (terminal.graphics.placements.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements.single.rows, 30);
+
+      terminal.write('\x1b_Ga=t,i=402,f=100,q=2;$pngBase64\x1b\\');
+      terminal.graphics.imageForPlacement(402);
+      await _awaitImage(terminal, 402);
+      terminal.write('\x1b_Ga=p,i=402,c=4,r=30\x1b\\');
+      expect(
+        terminal.graphics.placements
+            .where((placement) => placement.imageId == 402)
+            .single
+            .rows,
+        30,
+      );
     });
   });
 

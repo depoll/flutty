@@ -103,7 +103,7 @@ out of scope.
   decoded memory. Encoded GIF/APNG transmissions preserve all decoded frames,
   durations and repetition metadata instead of freezing on frame one. The host
   renderer advances only visible, active animations and paints the current
-  frame. MonkeyMux 0.1.109 retains and replays each image's ordered frame,
+  frame. MonkeyMux 0.1.110 retains and replays each image's ordered frame,
   composition and control commands so reconnects/window switches do not restore
   only a static root image, resolves `I=` image-number commands, and drops
   over-budget per-image replay histories while preserving lowercase soft-deleted
