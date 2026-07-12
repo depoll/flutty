@@ -586,6 +586,72 @@ void main() {
     });
   });
 
+  testWidgets('held signatures exclude queued animation mutations', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final pixel = base64.encode(<int>[255, 0, 0, 255]);
+      final terminal = Terminal();
+
+      terminal.write('\x1b_Ga=t,i=73,f=100;$pngBase64\x1b\\');
+      await _decodeDeferredImage(terminal, 73);
+      expect(terminal.heldImageSignatures(), contains(73));
+
+      await terminalGraphicsDecodeGate.acquire();
+      await terminalGraphicsDecodeGate.acquire();
+      await terminalGraphicsDecodeGate.acquire();
+      try {
+        terminal.write(
+          '\x1b_Ga=f,i=73,f=32,s=1,v=1,q=2;$pixel\x1b\\',
+        );
+        expect(
+          terminal.heldImageSignatures(),
+          isNot(contains(73)),
+          reason: 'a queued frame must dirty the held root before decode',
+        );
+      } finally {
+        terminalGraphicsDecodeGate.release();
+        terminalGraphicsDecodeGate.release();
+        terminalGraphicsDecodeGate.release();
+      }
+    });
+  });
+
+  testWidgets('pending decode promotion preserves animation-dirty state', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager();
+      manager.storePendingImage(
+        74,
+        payload: base64.decode('AAAA'),
+        format: 100,
+        sourceSignature: 555,
+      );
+      expect(manager.heldImageSignatures(), {74: 555});
+
+      manager.markImageAnimationDirty(74);
+      expect(manager.heldImageSignatures(), isEmpty);
+      manager.storeDecodedImageWithId(
+        74,
+        DecodedTerminalImage.single(await _buildImage(1, 1)),
+        sourceSignature: 555,
+      );
+
+      expect(manager.heldImageSignatures(), isEmpty);
+      manager.markImageAnimationDirty(74);
+      manager.settleImageAnimationMutation(74);
+      expect(
+        manager.heldImageSignatures(),
+        isEmpty,
+        reason: 'one of two pending mutations remains unsettled',
+      );
+      manager.settleImageAnimationMutation(74);
+      expect(manager.heldImageSignatures(), {74: 555});
+    });
+  });
+
   testWidgets(
     'heldImageSignatures omits an image that would not survive a clear',
     (tester) async {
