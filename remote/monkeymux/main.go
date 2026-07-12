@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.112"
+	monkeyMuxVersion                  = "0.1.113"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -9088,8 +9088,9 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 		if len(selected) >= maxReplayedKittyImages {
 			break
 		}
-		if len(selected) > 0 && total+imageBytes > maxReplayedKittyImageBytes {
-			break
+		if imageBytes > maxReplayedKittyImageBytes ||
+			total+imageBytes > maxReplayedKittyImageBytes {
+			continue
 		}
 		selected = append(selected, id)
 		total += imageBytes
@@ -9122,7 +9123,8 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 }
 
 func (w *muxWindow) kittyImageNumberReplayLocked(id string) []byte {
-	if _, err := strconv.ParseUint(id, 10, 32); err != nil {
+	numericID, err := strconv.ParseUint(id, 10, 32)
+	if err != nil || numericID == 0 {
 		return nil
 	}
 	var numbers []string
@@ -9409,7 +9411,8 @@ func rewriteKittyReplayCommand(seq []byte, storeOnly bool) []byte {
 // image-number mapping that may change later. Synthetic I=-only roots have no
 // numeric id yet and are intentionally left unchanged.
 func rewriteKittyImageReferenceToID(seq []byte, imageID string) []byte {
-	if _, err := strconv.ParseUint(imageID, 10, 32); err != nil || len(seq) < 5 {
+	numericID, err := strconv.ParseUint(imageID, 10, 32)
+	if err != nil || numericID == 0 || len(seq) < 5 {
 		return seq
 	}
 	apcEnd := kittyApcEnd(seq, 0)

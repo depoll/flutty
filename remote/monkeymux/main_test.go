@@ -5188,6 +5188,21 @@ func TestObserveKittyGraphicsRetainsImageNumberOnlyRoot(t *testing.T) {
 	}
 }
 
+func TestObserveKittyGraphicsKeepsImageNumberOnZeroIDAnimations(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=0,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "a=f,I=5") {
+		t.Fatalf("zero-id animation lost its image-number reference: %q", replay)
+	}
+	if strings.Contains(replay, "a=f,i=0") {
+		t.Fatalf("zero id was treated as canonical during replay: %q", replay)
+	}
+}
+
 func TestKittyAnimationReplaySuppressesProtocolResponses(t *testing.T) {
 	window := &muxWindow{}
 	window.observeKittyGraphicsLocked([]byte(
@@ -5606,14 +5621,36 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 	}
 
 	replay := window.kittyImageReplayLocked(nil)
-	if len(replay) > maxReplayedKittyImageBytes+len(big) {
-		t.Fatalf("replay %d bytes exceeds budget %d (+one image slack)",
+	if len(replay) > maxReplayedKittyImageBytes {
+		t.Fatalf("replay %d bytes exceeds budget %d",
 			len(replay), maxReplayedKittyImageBytes)
 	}
 	// At least one image (the most recent) is always replayed.
 	newest := fmt.Sprintf("i=%d,", count-1)
 	if !strings.Contains(string(replay), newest) {
 		t.Fatalf("most-recent image %q missing from byte-capped replay", newest)
+	}
+}
+
+func TestKittyImageReplaySkipsOversizedImageAndKeepsSmallerCandidate(t *testing.T) {
+	window := &muxWindow{
+		kittyImages: map[string][]byte{
+			"1": []byte("\x1b_Ga=t,i=1,f=100;SMALL\x1b\\"),
+			"2": bytes.Repeat([]byte{'X'}, maxReplayedKittyImageBytes+1),
+		},
+		kittyImageOrder: []string{"1", "2"},
+		kittyImageSeq:   map[string]uint64{"1": 1, "2": 2},
+	}
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, strings.Repeat("X", 1024)) {
+		t.Fatalf("oversized image was included in replay")
+	}
+	if !strings.Contains(replay, "SMALL") {
+		t.Fatalf("smaller candidate was not replayed after oversized image")
+	}
+	if len(replay) > maxReplayedKittyImageBytes {
+		t.Fatalf("replay exceeded attach-safe byte budget: %d", len(replay))
 	}
 }
 
