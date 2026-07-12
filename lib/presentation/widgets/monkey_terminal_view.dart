@@ -896,6 +896,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       widget.terminal.addListener(_handleTerminalMetricsChanged);
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
+      _scheduleGraphicsAnimationSync();
     }
     if (oldWidget.focusNode != widget.focusNode) {
       if (oldWidget.focusNode == null) {
@@ -4330,12 +4331,6 @@ class MonkeyRenderTerminal extends RenderBox
         continue;
       }
 
-      final rowSpan = (dstHeight / cellHeight).ceil();
-      if (placement.row + rowSpan <= firstLine || placement.row > lastLine) {
-        continue;
-      }
-      _visibleGraphicsImageIds.add(stored.id);
-
       // Apply the in-cell pixel offset (X=,Y=) to the destination top-left.
       final topLeft = _linePaintOffset(offset, placement.row).translate(
         placement.col * cellWidth + placement.xOffset,
@@ -4344,6 +4339,16 @@ class MonkeyRenderTerminal extends RenderBox
       if (!topLeft.dx.isFinite || !topLeft.dy.isFinite) {
         continue;
       }
+      final destination = Rect.fromLTWH(
+        topLeft.dx,
+        topLeft.dy,
+        dstWidth,
+        dstHeight,
+      );
+      if (!destination.overlaps(offset & size)) {
+        continue;
+      }
+      _visibleGraphicsImageIds.add(stored.id);
 
       // Defense in depth: image compositing is non-essential overlay drawing,
       // but an exception here (e.g. a disposed image surfaced by an unexpected
@@ -4353,7 +4358,7 @@ class MonkeyRenderTerminal extends RenderBox
         canvas.drawImageRect(
           image,
           Rect.fromLTWH(srcLeft, srcTop, srcWidth, srcHeight),
-          Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, dstHeight),
+          destination,
           Paint()..filterQuality = FilterQuality.medium,
         );
       } on Object catch (_) {

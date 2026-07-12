@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.106"
+	monkeyMuxVersion                  = "0.1.107"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -8601,7 +8601,7 @@ type kittyGraphicsEvent struct {
 	buf         []byte
 	animation   bool
 	delete      bool
-	deleteAll   bool
+	clearCache  bool
 }
 
 // scanKittyTransmissions parses complete Kitty graphics events from the front of
@@ -8645,10 +8645,16 @@ func scanKittyTransmissions(
 			return events, i
 		}
 		if isDelete {
-			deleteAll := parseKittyControl(kittyControl(data, i, end))["d"] == "A"
-			if id != "" || imageNumber != "" || deleteAll {
+			selector := parseKittyControl(kittyControl(data, i, end))["d"]
+			clearCache := selector == "A" ||
+				selector == "C" ||
+				selector == "P" ||
+				selector == "X" ||
+				selector == "Y" ||
+				(selector == "I" && id == "")
+			if id != "" || imageNumber != "" || clearCache {
 				events = append(events, kittyGraphicsEvent{
-					id: id, imageNumber: imageNumber, delete: true, deleteAll: deleteAll,
+					id: id, imageNumber: imageNumber, delete: true, clearCache: clearCache,
 				})
 			}
 		} else if buf != nil {
@@ -8692,7 +8698,13 @@ func assembleKittyTransmission(
 	switch action {
 	case "d":
 		selector := args["d"]
-		freeImageData := selector == "A" || selector == "I" || selector == "N"
+		freeImageData := selector == "A" ||
+			selector == "C" ||
+			selector == "I" ||
+			selector == "N" ||
+			selector == "P" ||
+			selector == "X" ||
+			selector == "Y"
 		return apcEnd, nil, args["i"], args["I"],
 			freeImageData, false, true
 	case "t", "T":
@@ -8749,7 +8761,7 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	events, consumed := scanKittyTransmissions(data)
 	for _, event := range events {
 		if event.delete {
-			if event.deleteAll {
+			if event.clearCache {
 				if w.clearKittyImagesLocked() {
 					changed = true
 				}

@@ -5311,6 +5311,24 @@ func TestObserveKittyGraphicsAppliesDeleteAllInStreamOrder(t *testing.T) {
 	}
 }
 
+func TestObserveKittyGraphicsInvalidatesForPositionalHardDeletes(t *testing.T) {
+	for _, selector := range []string{"C", "P", "X", "Y"} {
+		t.Run(selector, func(t *testing.T) {
+			window := &muxWindow{}
+			window.observeKittyGraphicsLocked([]byte(
+				"\x1b_Ga=t,i=7,I=5,f=100;ROOT\x1b\\" +
+					"\x1b_Ga=d,d=" + selector + ",x=1,y=1\x1b\\"))
+
+			if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
+				t.Fatalf("d=%s retained conservatively matched image data: %q", selector, got)
+			}
+			if len(window.kittyImageNumberToID) != 0 {
+				t.Fatalf("d=%s retained image-number mappings", selector)
+			}
+		})
+	}
+}
+
 func TestObserveKittyGraphicsDeleteByNumberRemovesRetainedImage(t *testing.T) {
 	window := &muxWindow{}
 	window.observeKittyGraphicsLocked(

@@ -427,6 +427,86 @@ void main() {
     },
   );
 
+  testWidgets('terminal swap starts a visible animation after repaint', (
+    tester,
+  ) async {
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final firstTerminal = Terminal();
+    final secondTerminal = Terminal();
+
+    Widget build(Terminal terminal) => MaterialApp(
+      home: SizedBox(
+        width: 400,
+        height: 300,
+        child: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          hardwareKeyboardOnly: true,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(build(firstTerminal));
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+    await tester.runAsync(() async {
+      secondTerminal.write(
+        '\x1b_Ga=T,i=57,f=100,c=4,r=2;$_animatedGifBase64\x1b\\',
+      );
+      var waited = 0;
+      while ((secondTerminal.graphics.imageById(57)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+
+    await tester.pumpWidget(build(secondTerminal));
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+  });
+
+  testWidgets(
+    'animation ticker ignores a placement shifted outside its bounds',
+    (tester) async {
+      final viewKey = GlobalKey<MonkeyTerminalViewState>();
+      final terminal = Terminal();
+      await tester.runAsync(() async {
+        terminal.write(
+          '\x1b_Ga=T,i=58,f=100,c=4,r=2,X=10000;$_animatedGifBase64\x1b\\',
+        );
+        var waited = 0;
+        while ((terminal.graphics.imageById(58)?.frameCount ?? 0) != 2 &&
+            waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 400,
+            height: 300,
+            child: MonkeyTerminalView(
+              terminal,
+              key: viewKey,
+              hardwareKeyboardOnly: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(terminal.graphics.placements, hasLength(1));
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+      final image = terminal.graphics.imageById(58)!;
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(image.currentFrame, 1);
+    },
+  );
+
   testWidgets('reduced motion keeps animated terminal images static', (
     tester,
   ) async {

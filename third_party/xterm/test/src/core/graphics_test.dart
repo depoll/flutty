@@ -126,6 +126,17 @@ String _rawRgbaBase64(int width, int height) {
 }
 
 void main() {
+  test('DecodedTerminalImage rejects an empty frame sequence', () {
+    expect(
+      () => DecodedTerminalImage(
+        frames: const <TerminalImageFrame>[],
+        sourceWidth: 1,
+        sourceHeight: 1,
+      ),
+      throwsArgumentError,
+    );
+  });
+
   testWidgets('Kitty graphics a=T decodes, stores and places an image', (
     tester,
   ) async {
