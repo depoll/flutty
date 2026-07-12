@@ -33,6 +33,46 @@ Widget wrap(Widget child) => MaterialApp(
   ),
 );
 
+// Pumps enough frames for the async header-inspection (ImageDescriptor) flow
+// to settle to a ready/error state.
+Future<void> settleImage(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 100));
+  await tester.pump(const Duration(milliseconds: 100));
+}
+
+int _pngCrc(List<int> bytes) {
+  var crc = 0xFFFFFFFF;
+  for (final b in bytes) {
+    crc ^= b;
+    for (var i = 0; i < 8; i++) {
+      crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+    }
+  }
+  return crc ^ 0xFFFFFFFF;
+}
+
+List<int> _be32(int v) => [
+  (v >> 24) & 0xFF,
+  (v >> 16) & 0xFF,
+  (v >> 8) & 0xFF,
+  v & 0xFF,
+];
+
+List<int> _pngChunk(String type, List<int> data) {
+  final body = [...type.codeUnits, ...data];
+  return [..._be32(data.length), ...body, ..._be32(_pngCrc(body))];
+}
+
+// Builds a structurally valid PNG whose IHDR declares [w]x[h]; the pixel data
+// is intentionally minimal so only the header dimensions are meaningful.
+Uint8List buildPng(int w, int h) => Uint8List.fromList([
+  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, //
+  ..._pngChunk('IHDR', [..._be32(w), ..._be32(h), 8, 6, 0, 0, 0]),
+  ..._pngChunk('IDAT', [0x78, 0x9C, 0x63, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01]),
+  ..._pngChunk('IEND', const []),
+]);
+
 void main() {
   setUp(() => FluttyTheme.debugUseSystemFonts = true);
   tearDown(() => FluttyTheme.debugUseSystemFonts = false);
@@ -206,7 +246,7 @@ void main() {
       await tester.pumpWidget(
         wrap(AcpInlineImage(image: AcpImageContent(bytes: _pngBytes))),
       );
-      await tester.pump();
+      await settleImage(tester);
       expect(find.byType(Image), findsOneWidget);
     });
 
@@ -217,7 +257,7 @@ void main() {
       await tester.pumpWidget(
         wrap(AcpInlineImage(image: AcpImageContent(uri: dataUri))),
       );
-      await tester.pump();
+      await settleImage(tester);
       expect(find.byType(Image), findsOneWidget);
     });
 
@@ -252,8 +292,7 @@ void main() {
           ),
         ),
       );
-      await tester.pump();
-      await tester.pump();
+      await settleImage(tester);
       expect(called, isTrue);
       expect(find.byType(Image), findsOneWidget);
     });
@@ -269,8 +308,7 @@ void main() {
           ),
         ),
       );
-      await tester.pump();
-      await tester.pump();
+      await settleImage(tester);
       expect(find.text('Image failed to load'), findsOneWidget);
     });
 
@@ -320,32 +358,107 @@ void main() {
       expect(find.text('Image too large to display'), findsOneWidget);
     });
 
-    testWidgets('applies a bounded default decode dimension without hints', (
+    testWidgets('rejects a non-positive decode hint', (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          AcpInlineImage(
+            image: AcpImageContent(bytes: _pngBytes, decodeWidth: -1),
+          ),
+        ),
+      );
+      await settleImage(tester);
+      expect(find.byType(Image), findsNothing);
+      expect(find.text('Image failed to load'), findsOneWidget);
+    });
+
+    testWidgets('bounds both decode dimensions for a tall image', (
       tester,
     ) async {
       await tester.pumpWidget(
-        wrap(AcpInlineImage(image: AcpImageContent(bytes: _pngBytes))),
+        wrap(AcpInlineImage(image: AcpImageContent(bytes: buildPng(2, 20000)))),
       );
-      await tester.pump();
+      await settleImage(tester);
+      final image = tester.widget<Image>(find.byType(Image));
+      final resize = image.image as ResizeImage;
+      expect(resize.width, lessThanOrEqualTo(kAcpMaxImageDecodeDimension));
+      expect(resize.height, lessThanOrEqualTo(kAcpMaxImageDecodeDimension));
+      // Longer (height) edge is bounded to the default budget; aspect ratio is
+      // preserved, so the short edge shrinks accordingly.
+      expect(resize.height, kAcpDefaultImageDecodeDimension);
+      expect(resize.width, 1);
+      expect(
+        resize.width! * resize.height!,
+        lessThanOrEqualTo(kAcpMaxImageDecodePixels),
+      );
+    });
+
+    testWidgets('bounds both decode dimensions for a wide image', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(AcpInlineImage(image: AcpImageContent(bytes: buildPng(20000, 2)))),
+      );
+      await settleImage(tester);
+      final image = tester.widget<Image>(find.byType(Image));
+      final resize = image.image as ResizeImage;
+      expect(resize.width, kAcpDefaultImageDecodeDimension);
+      expect(resize.height, 1);
+      expect(
+        resize.width! * resize.height!,
+        lessThanOrEqualTo(kAcpMaxImageDecodePixels),
+      );
+    });
+
+    testWidgets('rejects decompression-bomb dimensions', (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          AcpInlineImage(
+            image: AcpImageContent(bytes: buildPng(100000, 100000)),
+          ),
+        ),
+      );
+      await settleImage(tester);
+      expect(find.byType(Image), findsNothing);
+      expect(find.text('Image too large to display'), findsOneWidget);
+    });
+
+    testWidgets('applies a bounded default decode dimension without hints', (
+      tester,
+    ) async {
+      // A 512x512 source is bounded by the default budget without upscaling.
+      await tester.pumpWidget(
+        wrap(
+          AcpInlineImage(image: AcpImageContent(bytes: buildPng(2000, 1000))),
+        ),
+      );
+      await settleImage(tester);
       final image = tester.widget<Image>(find.byType(Image));
       expect(image.image, isA<ResizeImage>());
-      expect(
-        (image.image as ResizeImage).width,
-        kAcpDefaultImageDecodeDimension,
-      );
+      final resize = image.image as ResizeImage;
+      expect(resize.width, kAcpDefaultImageDecodeDimension);
+      expect(resize.height, kAcpDefaultImageDecodeDimension ~/ 2);
     });
 
     testWidgets('caps an oversized decode hint', (tester) async {
       await tester.pumpWidget(
         wrap(
           AcpInlineImage(
-            image: AcpImageContent(bytes: _pngBytes, decodeWidth: 999999),
+            image: AcpImageContent(
+              bytes: buildPng(8000, 8000),
+              decodeWidth: 999999,
+            ),
           ),
         ),
       );
-      await tester.pump();
+      await settleImage(tester);
       final image = tester.widget<Image>(find.byType(Image));
-      expect((image.image as ResizeImage).width, kAcpMaxImageDecodeDimension);
+      final resize = image.image as ResizeImage;
+      expect(resize.width, lessThanOrEqualTo(kAcpMaxImageDecodeDimension));
+      expect(resize.height, lessThanOrEqualTo(kAcpMaxImageDecodeDimension));
+      expect(
+        resize.width! * resize.height!,
+        lessThanOrEqualTo(kAcpMaxImageDecodePixels),
+      );
     });
 
     testWidgets('stale resolver completion cannot overwrite a newer image', (
@@ -372,13 +485,12 @@ void main() {
           ),
         ),
       );
-      await tester.pump();
-      await tester.pump();
+      await settleImage(tester);
       expect(find.byType(Image), findsOneWidget);
 
       // The stale completion arrives last and must be ignored.
       slow.complete(null);
-      await tester.pump();
+      await settleImage(tester);
       expect(find.byType(Image), findsOneWidget);
       expect(find.text('Image failed to load'), findsNothing);
     });
@@ -508,6 +620,68 @@ void main() {
       expect(find.text('ctx-0004'), findsOneWidget);
       expect(find.text('ctx-0005'), findsNothing);
       expect(find.text('Showing 5 of 20 lines'), findsOneWidget);
+    });
+
+    testWidgets('truncates a huge single-line source before splitting', (
+      tester,
+    ) async {
+      // A single enormous line with no newlines must not be split wholesale.
+      final huge = 'x' * 5000;
+      await tester.pumpWidget(
+        wrap(
+          AcpDiffView(
+            diff: AcpDiff(path: 'oneline.txt', unifiedDiff: huge),
+            maxSourceChars: 100,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Diff truncated (very large)'), findsOneWidget);
+      // Only the bounded 100-char prefix is rendered as a single line.
+      final rendered = tester.widget<Text>(
+        find.textContaining(RegExp(r'^x+$')),
+      );
+      expect(rendered.data, hasLength(100));
+    });
+
+    testWidgets('truncates huge multi-line source and shows a notice', (
+      tester,
+    ) async {
+      final huge = List.generate(2000, (i) => 'ctx-$i').join('\n');
+      await tester.pumpWidget(
+        wrap(
+          AcpDiffView(
+            diff: AcpDiff(path: 'many.txt', unifiedDiff: huge),
+            maxSourceChars: 50,
+            initialLineCap: 5,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Diff truncated (very large)'), findsOneWidget);
+      // The line list is derived only from the bounded 50-char prefix, so far
+      // fewer than 2000 lines exist.
+      expect(find.text('ctx-1999'), findsNothing);
+    });
+
+    testWidgets('exposes truncation in semantics', (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(
+        wrap(
+          AcpDiffView(
+            diff: AcpDiff(path: 'big.txt', unifiedDiff: 'x' * 5000),
+            maxSourceChars: 100,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(
+        find.bySemanticsLabel(
+          RegExp('Diff truncated because it exceeds 100 characters'),
+        ),
+        findsOneWidget,
+      );
+      handle.dispose();
     });
   });
 }

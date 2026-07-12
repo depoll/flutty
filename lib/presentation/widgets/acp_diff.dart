@@ -11,6 +11,11 @@ import '../models/acp_timeline.dart';
 /// show-more reveals another page of the same size.
 const int kAcpDiffInitialLineCap = 200;
 
+/// Maximum number of source characters split into lines. Source longer than
+/// this is truncated to a bounded prefix before splitting so a multi-megabyte
+/// diff (or a single enormous line) never allocates an unbounded line list.
+const int kAcpDiffMaxSourceChars = 256 * 1024; // 256K characters
+
 enum _DiffLineKind { addition, deletion, hunk, meta, context }
 
 _DiffLineKind _classifyDiffLine(String line) {
@@ -48,6 +53,7 @@ class AcpDiffView extends StatefulWidget {
     super.key,
     this.showPathHeader = true,
     this.initialLineCap = kAcpDiffInitialLineCap,
+    this.maxSourceChars = kAcpDiffMaxSourceChars,
   });
 
   /// The diff to render.
@@ -59,6 +65,10 @@ class AcpDiffView extends StatefulWidget {
   /// Number of lines shown before the show-more control appears.
   final int initialLineCap;
 
+  /// Maximum number of source characters split into lines; longer source is
+  /// truncated to this bounded prefix with a visible truncation notice.
+  final int maxSourceChars;
+
   @override
   State<AcpDiffView> createState() => _AcpDiffViewState();
 }
@@ -66,25 +76,38 @@ class AcpDiffView extends StatefulWidget {
 class _AcpDiffViewState extends State<AcpDiffView> {
   late List<String> _lines;
   late int _visibleCount;
+  late bool _sourceTruncated;
 
   @override
   void initState() {
     super.initState();
-    _lines = widget.diff.unifiedDiff.split('\n');
-    _visibleCount = _initialCount;
+    _prepareSource();
   }
 
   @override
   void didUpdateWidget(AcpDiffView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.diff != widget.diff ||
-        oldWidget.initialLineCap != widget.initialLineCap) {
-      _lines = widget.diff.unifiedDiff.split('\n');
-      _visibleCount = _initialCount;
+        oldWidget.initialLineCap != widget.initialLineCap ||
+        oldWidget.maxSourceChars != widget.maxSourceChars) {
+      _prepareSource();
     }
   }
 
+  void _prepareSource() {
+    final source = widget.diff.unifiedDiff;
+    final maxChars = math.max(1, widget.maxSourceChars);
+    _sourceTruncated = source.length > maxChars;
+    // Only ever split the bounded prefix so the line list stays bounded even
+    // for a multi-megabyte source or a single enormous line.
+    final bounded = _sourceTruncated ? source.substring(0, maxChars) : source;
+    _lines = bounded.split('\n');
+    _visibleCount = _initialCount;
+  }
+
   int get _cap => math.max(1, widget.initialLineCap);
+
+  int get _cappedChars => math.max(1, widget.maxSourceChars);
 
   int get _initialCount => math.min(_cap, _lines.length);
 
@@ -147,8 +170,13 @@ class _AcpDiffViewState extends State<AcpDiffView> {
     final remaining = _lines.length - visible;
     final truncated = _lines.length > _cap;
 
+    final semanticsLabel = _sourceTruncated
+        ? 'Diff for ${widget.diff.path}, truncated, '
+              'first ${_lines.length} lines'
+        : 'Diff for ${widget.diff.path}, ${_lines.length} lines';
+
     return Semantics(
-      label: 'Diff for ${widget.diff.path}, ${_lines.length} lines',
+      label: semanticsLabel,
       container: true,
       child: DecoratedBox(
         decoration: BoxDecoration(
@@ -190,6 +218,7 @@ class _AcpDiffViewState extends State<AcpDiffView> {
                   ),
                 ),
               ),
+              if (_sourceTruncated) _DiffTruncationNotice(limit: _cappedChars),
               if (truncated)
                 _DiffPagingFooter(
                   visible: visible,
@@ -200,6 +229,44 @@ class _AcpDiffViewState extends State<AcpDiffView> {
                 ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffTruncationNotice extends StatelessWidget {
+  const _DiffTruncationNotice({required this.limit});
+
+  final int limit;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Semantics(
+      label: 'Diff truncated because it exceeds $limit characters',
+      container: true,
+      child: Container(
+        width: double.infinity,
+        color: scheme.surfaceContainerHighest,
+        padding: const EdgeInsets.symmetric(
+          horizontal: FluttyTheme.spacingSm,
+          vertical: FluttyTheme.spacingXs,
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, size: 14, color: scheme.tertiary),
+            const SizedBox(width: FluttyTheme.spacingXs),
+            Expanded(
+              child: Text(
+                'Diff truncated (very large)',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

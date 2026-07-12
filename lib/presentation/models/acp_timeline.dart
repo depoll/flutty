@@ -234,8 +234,9 @@ enum AcpImageSourceKind {
 class AcpImageContent extends Equatable {
   /// Creates image content from in-memory [bytes] and/or a [uri].
   ///
-  /// [bytes], when provided, is defensively cloned so the model cannot be
-  /// mutated by the caller after construction.
+  /// [bytes], when provided, is defensively cloned and stored privately so the
+  /// model's published state cannot be mutated by the caller after
+  /// construction. The public [bytes] getter returns an unmodifiable view.
   AcpImageContent({
     Uint8List? bytes,
     this.uri,
@@ -243,14 +244,20 @@ class AcpImageContent extends Equatable {
     this.label,
     this.decodeWidth,
     this.decodeHeight,
-  }) : bytes = bytes == null ? null : Uint8List.fromList(bytes),
+  }) : _bytes = bytes == null ? null : Uint8List.fromList(bytes),
        assert(
          bytes != null || uri != null,
          'AcpImageContent requires bytes or a uri',
        );
 
+  // Privately owned clone; never handed out directly.
+  final Uint8List? _bytes;
+
   /// The raw, already-decoded image bytes, when available in memory.
-  final Uint8List? bytes;
+  ///
+  /// Returns an unmodifiable view: attempts to mutate it (e.g. `bytes[0] = x`)
+  /// throw, so published state stays immutable.
+  Uint8List? get bytes => _bytes?.asUnmodifiableView();
 
   /// The image URI (`data:`, `file:`, `http:`/`https:`), when not in memory.
   final String? uri;
@@ -269,7 +276,7 @@ class AcpImageContent extends Equatable {
 
   /// Classifies how this image must be resolved for display.
   AcpImageSourceKind get sourceKind {
-    if (bytes != null) {
+    if (_bytes != null) {
       return AcpImageSourceKind.bytes;
     }
     final value = uri ?? '';
@@ -284,7 +291,7 @@ class AcpImageContent extends Equatable {
 
   @override
   List<Object?> get props => [
-    bytes,
+    _bytes,
     uri,
     mimeType,
     label,

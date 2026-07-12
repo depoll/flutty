@@ -155,6 +155,15 @@ void main() {
       source[0] = 99;
       expect(image.bytes, [1, 2, 3]);
     });
+
+    test('published image bytes are an unmodifiable view', () {
+      final image = AcpImageContent(bytes: Uint8List.fromList([1, 2, 3]));
+      final published = image.bytes!;
+      // Element assignment on the published view must throw...
+      expect(() => published[0] = 99, throwsUnsupportedError);
+      // ...and the model's own state is unchanged.
+      expect(image.bytes, [1, 2, 3]);
+    });
   });
 
   group('formatResourceSize', () {
