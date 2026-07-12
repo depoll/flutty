@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.102"
+	monkeyMuxVersion                  = "0.1.103"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -4077,7 +4077,7 @@ func (c *attachClient) writeLoop() {
 					return
 				}
 			}
-			if write.responseWindowID != "" {
+			if write.responseWindowID != "" && write.responseCount > 0 {
 				c.expectTerminalResponses(
 					write.responseWindowID,
 					write.responseCount,
@@ -4174,9 +4174,6 @@ func (c *attachClient) enqueueWrite(
 		responseWindowID: responseWindowID,
 		responseCount:    responseCount,
 		gate:             gate,
-	}
-	if responseWindowID != "" && write.responseCount == 0 {
-		write.responseCount = 1
 	}
 	if wait {
 		write.complete = make(chan error, 1)
@@ -4438,17 +4435,21 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 			incompleteStart = -1
 			break
 		}
+		windowID := c.currentTerminalResponseWindowLocked()
 		result.responses = append(
 			result.responses,
 			routedTerminalResponse{
-				windowID: c.currentTerminalResponseWindowLocked(),
+				windowID: windowID,
 				data: append(
 					[]byte(nil),
 					combined[responseStart:responseEnd]...,
 				),
 			},
 		)
-		c.finishTerminalResponseLocked()
+		c.finishTerminalResponseSequenceLocked(
+			windowID,
+			combined[responseStart:responseEnd],
+		)
 		if c.hasExpectedTerminalResponseLocked() {
 			c.renewTerminalResponseDeadlineLocked()
 		}
@@ -4620,6 +4621,23 @@ func (c *attachClient) currentTerminalResponseWindowLocked() string {
 
 func (c *attachClient) finishTerminalResponseLocked() {
 	c.terminalResponseActiveWindow = ""
+	if len(c.terminalResponseWindows) == 0 {
+		c.terminalResponseUntil = time.Time{}
+	}
+}
+
+func (c *attachClient) finishTerminalResponseSequenceLocked(
+	windowID string,
+	sequence []byte,
+) {
+	c.finishTerminalResponseLocked()
+	remaining := terminalResponseSequenceExpectationCount(sequence) - 1
+	for remaining > 0 &&
+		len(c.terminalResponseWindows) > 0 &&
+		c.terminalResponseWindows[0] == windowID {
+		c.terminalResponseWindows = c.terminalResponseWindows[1:]
+		remaining--
+	}
 	if len(c.terminalResponseWindows) == 0 {
 		c.terminalResponseUntil = time.Time{}
 	}
@@ -8395,22 +8413,54 @@ func terminalQueryResponseCount(data []byte) int {
 
 func terminalQuerySequenceResponseCount(sequence []byte) int {
 	payloadStart := 0
+	osc := false
+	dcs := false
 	switch {
 	case len(sequence) >= 2 &&
 		sequence[0] == '\x1b' &&
 		sequence[1] == ']':
 		payloadStart = 2
+		osc = true
 	case len(sequence) >= 1 && sequence[0] == 0x9d:
 		payloadStart = 1
+		osc = true
+	case len(sequence) >= 2 &&
+		sequence[0] == '\x1b' &&
+		sequence[1] == 'P':
+		payloadStart = 2
+		dcs = true
+	case len(sequence) >= 1 && sequence[0] == 0x90:
+		payloadStart = 1
+		dcs = true
 	default:
 		return 1
 	}
-	end, _, ok := findOscTerminator(sequence[payloadStart:])
+	findTerminator := findStringTerminator
+	if osc {
+		findTerminator = findOscTerminator
+	}
+	end, _, ok := findTerminator(sequence[payloadStart:])
 	if !ok {
 		return 1
 	}
+	payload := sequence[payloadStart : payloadStart+end]
+	if dcs {
+		if !bytes.HasPrefix(payload, []byte("+q")) {
+			return 1
+		}
+		count := 0
+		for _, capability := range bytes.Split(payload[2:], []byte{';'}) {
+			if len(capability) > 0 {
+				count++
+			}
+		}
+		if count > 0 {
+			return count
+		}
+		return 0
+	}
 	code, value, ok := strings.Cut(
-		string(sequence[payloadStart:payloadStart+end]),
+		string(payload),
 		";",
 	)
 	if !ok || code != "4" {
@@ -8432,6 +8482,39 @@ func terminalQuerySequenceResponseCount(sequence []byte) int {
 		return 1
 	}
 	return count
+}
+
+func terminalResponseSequenceExpectationCount(sequence []byte) int {
+	payloadStart := 0
+	switch {
+	case len(sequence) >= 2 &&
+		sequence[0] == '\x1b' &&
+		sequence[1] == 'P':
+		payloadStart = 2
+	case len(sequence) >= 1 && sequence[0] == 0x90:
+		payloadStart = 1
+	default:
+		return 1
+	}
+	end, _, ok := findStringTerminator(sequence[payloadStart:])
+	if !ok {
+		return 1
+	}
+	payload := sequence[payloadStart : payloadStart+end]
+	if !bytes.HasPrefix(payload, []byte("0+r")) &&
+		!bytes.HasPrefix(payload, []byte("1+r")) {
+		return 1
+	}
+	count := 0
+	for _, capability := range bytes.Split(payload[3:], []byte{';'}) {
+		if len(capability) > 0 {
+			count++
+		}
+	}
+	if count > 0 {
+		return count
+	}
+	return 1
 }
 
 func (w *muxWindow) secondaryAttachOutputLocked(chunk []byte) []byte {
