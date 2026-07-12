@@ -133,6 +133,30 @@ String buildMonkeyMuxAttachCommand({
   return parts.join(' ');
 }
 
+/// Outcome of a retained-image recovery request.
+@immutable
+class MonkeyMuxImageReplayResult {
+  /// Creates an image recovery outcome.
+  MonkeyMuxImageReplayResult({
+    required Set<int> served,
+    required this.retryableFailure,
+  }) : served = Set<int>.unmodifiable(served);
+
+  /// Image IDs whose retained transmissions reached the attach client.
+  final Set<int> served;
+
+  /// Whether unserved IDs may be retried after a transport-level failure.
+  final bool retryableFailure;
+
+  /// Returns requested IDs that remain eligible for a bounded retry.
+  Set<int> retryableUnserved(Iterable<int> requested) {
+    if (!retryableFailure) {
+      return const <int>{};
+    }
+    return requested.where((id) => !served.contains(id)).toSet();
+  }
+}
+
 /// Controls a remote MonkeyMux session through its JSON backchannel.
 class MonkeyMuxService implements RemoteMultiplexerService {
   /// Creates a MonkeyMux service.
@@ -485,7 +509,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   /// per-window retained cache. Best-effort: a failure (e.g. an older server
   /// without this command) is logged and swallowed so image gaps never break
   /// the session.
-  Future<Set<int>> requestImages(
+  Future<MonkeyMuxImageReplayResult> requestImages(
     SshSession session,
     String sessionName,
     Iterable<int> imageIds,
@@ -495,10 +519,16 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         if (id > 0) id,
     };
     if (isAppReviewDemoSession(session)) {
-      return requestedIds;
+      return MonkeyMuxImageReplayResult(
+        served: requestedIds,
+        retryableFailure: false,
+      );
     }
     if (requestedIds.isEmpty) {
-      return const <int>{};
+      return MonkeyMuxImageReplayResult(
+        served: const <int>{},
+        retryableFailure: false,
+      );
     }
     final pending = {for (final id in requestedIds) id.toString()};
     final served = <int>{};
@@ -510,7 +540,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           'imageIds': pending.toList(growable: false),
         }, priority: SshExecPriority.low);
         if (!response.imagesAcknowledged) {
-          return requestedIds;
+          return MonkeyMuxImageReplayResult(
+            served: served,
+            retryableFailure: false,
+          );
         }
         final batch = response.imageIds.where(pending.contains).toSet();
         if (batch.isEmpty) {
@@ -519,6 +552,21 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         pending.removeAll(batch);
         served.addAll(batch.map(int.parse));
       }
+    } on _MonkeyMuxControlCommandException catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.graphics',
+        'request_images_unsupported',
+        fields: {
+          'connectionId': session.connectionId,
+          'count': requestedIds.length,
+          'served': served.length,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+      return MonkeyMuxImageReplayResult(
+        served: served,
+        retryableFailure: false,
+      );
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'monkeymux.graphics',
@@ -530,8 +578,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           'errorType': error.runtimeType.toString(),
         },
       );
+      return MonkeyMuxImageReplayResult(served: served, retryableFailure: true);
     }
-    return served;
+    return MonkeyMuxImageReplayResult(served: served, retryableFailure: false);
   }
 
   @override
@@ -1098,7 +1147,9 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
         continue;
       }
       if (response.isError) {
-        throw MonkeyMuxInstallException(response.error ?? 'MonkeyMux failed.');
+        throw _MonkeyMuxControlCommandException(
+          response.error ?? 'MonkeyMux failed.',
+        );
       }
       return response;
     }
@@ -1196,6 +1247,10 @@ Future<void> _closeMonkeyMuxSession(
     category: category,
     operation: operation,
   );
+}
+
+class _MonkeyMuxControlCommandException extends MonkeyMuxInstallException {
+  const _MonkeyMuxControlCommandException(super.message);
 }
 
 void _closeSshSessionBestEffort(
@@ -1404,7 +1459,9 @@ class _MonkeyMuxWindowChangeObserver {
     if (pendingCommand != null) {
       if (response.isError) {
         pendingCommand.completeError(
-          MonkeyMuxInstallException(response.error ?? 'MonkeyMux failed.'),
+          _MonkeyMuxControlCommandException(
+            response.error ?? 'MonkeyMux failed.',
+          ),
           StackTrace.current,
         );
       } else {

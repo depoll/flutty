@@ -84,10 +84,15 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   int runningServerStatusFromInstalledHelpersCalls = 0;
   bool hasLiveControlChannelValue = false;
   bool focusClientChangedValue = true;
+  MonkeyMuxImageReplayResult imageReplayResult = MonkeyMuxImageReplayResult(
+    served: const <int>{},
+    retryableFailure: false,
+  );
   final controlOperations = <String>[];
   final resizeTerminalCalls =
       <({String sessionName, int columns, int rows, bool redraw})>[];
   final focusClientCalls = <({String sessionName, int columns, int rows})>[];
+  final imageReplayCalls = <({String sessionName, Set<int> imageIds})>[];
 
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
@@ -153,6 +158,19 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
       rows: rows,
     ));
     return focusClientChangedValue;
+  }
+
+  @override
+  Future<MonkeyMuxImageReplayResult> requestImages(
+    SshSession session,
+    String sessionName,
+    Iterable<int> imageIds,
+  ) async {
+    imageReplayCalls.add((
+      sessionName: sessionName,
+      imageIds: imageIds.toSet(),
+    ));
+    return imageReplayResult;
   }
 }
 

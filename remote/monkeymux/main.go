@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.99"
+	monkeyMuxVersion                  = "0.1.100"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -4379,6 +4379,7 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		c.terminalResponseContinuationUtf8 = utf8Remaining
 		windowID := c.currentTerminalResponseWindowLocked()
 		if !complete {
+			c.renewTerminalResponseDeadlineLocked()
 			result.passthrough = nil
 			result.responses = append(
 				result.responses,
@@ -4403,6 +4404,9 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 			)
 		}
 		c.finishTerminalResponseLocked()
+		if c.hasExpectedTerminalResponseLocked() {
+			c.renewTerminalResponseDeadlineLocked()
+		}
 		c.terminalResponseContinuation = 0
 		c.terminalResponseContinuationEscape = false
 		c.terminalResponseContinuationUtf8 = 0
@@ -4445,6 +4449,9 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 			},
 		)
 		c.finishTerminalResponseLocked()
+		if c.hasExpectedTerminalResponseLocked() {
+			c.renewTerminalResponseDeadlineLocked()
+		}
 		responseStart = responseEnd
 	}
 	if incompleteStart >= 0 {
@@ -4453,6 +4460,7 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 			return result
 		}
 		incomplete := combined[incompleteStart:]
+		c.renewTerminalResponseDeadlineLocked()
 		if len(incomplete) <= terminalResponseCarryLimitBytes {
 			c.storeTerminalResponseCarryLocked(incomplete)
 		} else if continuation != 0 {
@@ -4530,6 +4538,13 @@ func (c *attachClient) resetTerminalResponseStateLocked() {
 	c.terminalResponseWindows = nil
 	c.terminalResponseActiveWindow = ""
 	c.terminalResponseUntil = time.Time{}
+}
+
+func (c *attachClient) renewTerminalResponseDeadlineLocked() {
+	c.terminalResponseUntil = time.Now().Add(terminalResponseFocusGrace)
+	if len(c.terminalResponseCarry) > 0 {
+		c.scheduleTerminalResponseCarryLocked()
+	}
 }
 
 func (c *attachClient) storeTerminalResponseCarryLocked(

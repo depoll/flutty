@@ -156,6 +156,26 @@ void main() {
     });
   });
 
+  group('MonkeyMuxImageReplayResult', () {
+    test('retries only unserved ids after a transport failure', () {
+      final result = MonkeyMuxImageReplayResult(
+        served: const {7},
+        retryableFailure: true,
+      );
+
+      expect(result.retryableUnserved(const {7, 8, 9}), {8, 9});
+    });
+
+    test('keeps acknowledged missing ids suppressed', () {
+      final result = MonkeyMuxImageReplayResult(
+        served: const {7},
+        retryableFailure: false,
+      );
+
+      expect(result.retryableUnserved(const {7, 8, 9}), isEmpty);
+    });
+  });
+
   group('MonkeyMux control responses', () {
     test('parse foreground attach state', () {
       final hasForegroundClient = parseMonkeyMuxHasForegroundClientForTesting(
