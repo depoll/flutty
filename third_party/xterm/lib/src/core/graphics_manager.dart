@@ -106,7 +106,7 @@ class DecodedTerminalImage {
     required this.sourceWidth,
     required this.sourceHeight,
     this.repetitionCount = 0,
-  }) : frames = List<TerminalImageFrame>.unmodifiable(frames);
+  }) : frames = _validateFrames(frames);
 
   /// Creates a one-frame image whose logical dimensions match [image].
   factory DecodedTerminalImage.single(ui.Image image) => DecodedTerminalImage(
@@ -114,6 +114,15 @@ class DecodedTerminalImage {
         sourceWidth: image.width,
         sourceHeight: image.height,
       );
+
+  static List<TerminalImageFrame> _validateFrames(
+    List<TerminalImageFrame> frames,
+  ) {
+    if (frames.isEmpty) {
+      throw ArgumentError.value(frames, 'frames', 'must not be empty');
+    }
+    return List<TerminalImageFrame>.unmodifiable(frames);
+  }
 
   /// Fully composed frames in playback order.
   final List<TerminalImageFrame> frames;
