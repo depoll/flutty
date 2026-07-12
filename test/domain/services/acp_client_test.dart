@@ -30,6 +30,16 @@ final class _ServerTransport implements AcpTransport {
     if (id == null) return;
     switch (request['method']) {
       case 'initialize':
+        final params = request['params'] as Map;
+        final clientInfo = params['clientInfo'] as Map?;
+        if (clientInfo?['version'] is! String) {
+          send({
+            'jsonrpc': '2.0',
+            'id': id,
+            'error': {'code': -32602, 'message': 'Invalid params'},
+          });
+          return;
+        }
         send({
           'jsonrpc': '2.0',
           'id': id,
@@ -100,6 +110,16 @@ void main() {
     final initialization = await client.initialize();
     final sessions = await client.listAllSessions(cwd: '/repo');
 
+    final initializeRequest = transport.requests.firstWhere(
+      (request) => request['method'] == 'initialize',
+    );
+    final initializeParams =
+        initializeRequest['params']! as Map<String, Object?>;
+    expect(initializeParams['clientInfo'], {
+      'name': 'monkeyssh',
+      'title': 'MonkeySSH',
+      'version': '1',
+    });
     expect(initialization.agentCapabilities.session.list, isTrue);
     expect(sessions.map((session) => session.sessionId), [
       'session-1',

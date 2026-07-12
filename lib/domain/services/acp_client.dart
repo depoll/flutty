@@ -104,6 +104,7 @@ final class AcpClient {
     AcpImplementation clientInfo = const AcpImplementation(
       name: 'monkeyssh',
       title: 'MonkeySSH',
+      version: '1',
     ),
     AcpJsonMap meta = const <String, Object?>{},
     Duration? timeout,

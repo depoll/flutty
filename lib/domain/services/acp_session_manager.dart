@@ -1864,6 +1864,10 @@ class _SessionController {
       kind: AcpSessionErrorKind.protocol,
       message: 'The agent sent invalid protocol data.',
     ),
+    AcpRemoteException(:final code) => AcpSessionError(
+      kind: AcpSessionErrorKind.protocol,
+      message: 'The agent rejected connection setup ($code).',
+    ),
     AcpConnectionClosedException() => const AcpSessionError(
       kind: AcpSessionErrorKind.transport,
       message: 'The agent connection closed.',

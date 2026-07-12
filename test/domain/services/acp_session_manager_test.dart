@@ -35,6 +35,7 @@ class _FakeAcpServer implements AcpTransport {
     this.authMethods = const <Map<String, Object?>>[],
     this.failNewSession = false,
     this.failEstablish = false,
+    this.rejectInitialize = false,
     this.replayTextOnLoad,
     this.permissionIdOnLoad,
   });
@@ -48,6 +49,9 @@ class _FakeAcpServer implements AcpTransport {
 
   /// When true, `session/resume` and `session/load` reply with an error.
   final bool failEstablish;
+
+  /// When true, `initialize` rejects the client metadata.
+  final bool rejectInitialize;
 
   /// When set, a `session/load` pushes an agent message chunk with this text
   /// BEFORE replying, simulating synchronous history replay during the load.
@@ -92,6 +96,10 @@ class _FakeAcpServer implements AcpTransport {
 
     switch (method) {
       case 'initialize':
+        if (rejectInitialize) {
+          _replyError(id, -32602, 'Invalid params');
+          break;
+        }
         _reply(id, {
           'protocolVersion': 1,
           'agentCapabilities': {
@@ -478,6 +486,27 @@ void main() {
     expect(connector.startedBridges, hasLength(1));
     expect(manager.state.selectedKey, key.value);
   });
+
+  test(
+    'maps an initialize rejection to an actionable protocol error',
+    () async {
+      final rejectingConnector = _FakeConnector(
+        serverFactory: (_, _) => _FakeAcpServer(rejectInitialize: true),
+      );
+      final rejectingManager = buildManagerWith(rejectingConnector);
+
+      final result = await rejectingManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+
+      expect(result, isA<AcpSessionLaunchFailed>());
+      final failure = result as AcpSessionLaunchFailed;
+      expect(failure.error.kind, AcpSessionErrorKind.protocol);
+      expect(failure.error.message, contains('-32602'));
+    },
+  );
 
   test('records a non-content recent-session reference', () async {
     final key = await startCopilot();
