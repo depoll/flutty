@@ -777,8 +777,24 @@ void main() {
         terminal.graphics.advanceAnimations(
           const Duration(milliseconds: 50),
         ),
+        isTrue,
+        reason: 'v=2 repeats once after the initial pass',
+      );
+      expect(image.currentFrame, 1);
+      expect(terminal.graphics.hasActiveAnimations, isTrue);
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 30),
+        ),
+        isTrue,
+      );
+      expect(image.currentFrame, 2);
+      expect(
+        terminal.graphics.advanceAnimations(
+          const Duration(milliseconds: 50),
+        ),
         isFalse,
-        reason: 'v=2 stops at the end of the first pass',
+        reason: 'v=2 stops after two total passes',
       );
       expect(image.currentFrame, 2);
       expect(terminal.graphics.hasActiveAnimations, isFalse);
@@ -886,6 +902,11 @@ void main() {
         ..advanceAnimations(const Duration(milliseconds: 20))
         ..advanceAnimations(const Duration(milliseconds: 20));
 
+      expect(image.currentFrame, 1);
+      expect(terminal.graphics.hasActiveAnimations, isTrue);
+      terminal.graphics
+        ..advanceAnimations(const Duration(milliseconds: 20))
+        ..advanceAnimations(const Duration(milliseconds: 20));
       expect(image.currentFrame, 2);
       expect(terminal.graphics.hasActiveAnimations, isFalse);
     });
@@ -998,7 +1019,7 @@ void main() {
       expect(await _pixelColor(second, 1, 0), const Color(0xFF0000FF));
 
       terminal.write(
-        '\x1b_Ga=c,i=8,r=2,c=1,x=0,y=0,X=1,Y=0,w=1,h=1,C=1\x1b\\',
+        '\x1b_Ga=c,i=8,r=2,c=1,x=1,y=0,X=0,Y=0,w=1,h=1,C=1\x1b\\',
       );
       waited = 0;
       while (await _pixelColor(image.imageAtFrame(1)!, 0, 0) !=
@@ -1144,6 +1165,31 @@ void main() {
       );
       expect(identical(replacingManager.imageById(7)!.image, existing), isTrue);
       expect(replacingManager.currentMemoryBytes, 4);
+    });
+  });
+
+  testWidgets('impossible animation frame does not evict unrelated images', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager(maxMemoryBytes: 100);
+      manager
+        ..storeImageWithId(1, await _buildImage(3, 5))
+        ..storeImageWithId(2, await _buildImage(1, 1));
+      final rejectedFrame = await _buildImage(3, 5);
+
+      expect(manager.currentMemoryBytes, 64);
+      expect(
+        await manager.addAnimationFrame(
+          1,
+          DecodedTerminalImage.single(rejectedFrame),
+        ),
+        TerminalAnimationFrameResult.noSpace,
+      );
+
+      expect(manager.imageById(2), isNotNull);
+      expect(manager.currentMemoryBytes, 64);
+      expect(rejectedFrame.debugDisposed, isTrue);
     });
   });
 
