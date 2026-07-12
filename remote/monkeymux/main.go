@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.100"
+	monkeyMuxVersion                  = "0.1.101"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -6026,7 +6026,12 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
-	sizeChanged := s.width != width || s.height != height || hadPendingResize
+	sizeChanged :=
+		s.width != width ||
+			s.height != height ||
+			s.publishedWidth != width ||
+			s.publishedHeight != height ||
+			hadPendingResize
 	s.width = width
 	s.height = height
 	if sizeChanged && serializeViewport {

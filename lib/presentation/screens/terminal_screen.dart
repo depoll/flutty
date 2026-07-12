@@ -3398,7 +3398,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void Function(String)? _terminalOutputHandler;
   void Function(int, int, int, int)? _terminalResizeHandler;
   void Function(int, int)? _terminalHostResizeHandler;
-  bool Function()? _terminalHostResizeGate;
   bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
   bool _suppressTerminalAutoScrollFromTerminalRefresh = false;
   bool _isConnecting = true;
@@ -7186,15 +7185,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalResizeHandler = handleTerminalResize;
     _terminal.onResize = handleTerminalResize;
 
-    bool canTerminalResizeFromHost() =>
-        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
-        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
-
-    _terminalHostResizeGate = canTerminalResizeFromHost;
-    _terminal.canResizeFromHost = canTerminalResizeFromHost;
-
     void handleTerminalHostResize(int width, int height) {
-      if (!canTerminalResizeFromHost() ||
+      if (session.remoteMuxBackend != RemoteMuxBackend.monkeyMux ||
           session.monkeyMuxViewportClippingEnabled) {
         return;
       }
@@ -7246,14 +7238,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminal.onHostResize = null;
     }
     _terminalHostResizeHandler = null;
-
-    final hostResizeGate = _terminalHostResizeGate;
-    if (terminal != null &&
-        hostResizeGate != null &&
-        identical(terminal.canResizeFromHost, hostResizeGate)) {
-      terminal.canResizeFromHost = null;
-    }
-    _terminalHostResizeGate = null;
     _terminalWithOwnedCallbacks = null;
   }
 
