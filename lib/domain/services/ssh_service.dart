@@ -3042,6 +3042,9 @@ class SshSession {
   /// The terminal multiplexer backend currently attached in this session.
   RemoteMuxBackend? remoteMuxBackend;
 
+  bool _canTerminalResizeFromHost() =>
+      remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+
   /// The terminal multiplexer session name currently attached in this session.
   String? remoteMuxSessionName;
 

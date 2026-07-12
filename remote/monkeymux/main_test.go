@@ -883,10 +883,11 @@ func TestTerminalQueryDeliveryFailsOverFromClosedPrimary(t *testing.T) {
 
 func TestPrimaryDetachDropsItsDeferredViewport(t *testing.T) {
 	server := newMuxServerWithSize("test", 160, 50)
+	replacementConn := &recordingConn{}
 	replacement := registerTestAttachClient(
 		t,
 		server,
-		&recordingConn{},
+		replacementConn,
 		"replacement",
 		160,
 		50,
@@ -925,6 +926,9 @@ func TestPrimaryDetachDropsItsDeferredViewport(t *testing.T) {
 			pendingWidth,
 			pendingHeight,
 		)
+	}
+	if got := replacementConn.String(); got != "" {
+		t.Fatalf("already-published replacement viewport was replayed: %q", got)
 	}
 }
 
@@ -1171,6 +1175,58 @@ func TestLiveQueryWaitDoesNotHoldAttachLock(t *testing.T) {
 		"before\x1b[>qafter",
 	)
 	waitForRecordedOutput(t, secondaryConn, "beforeafter")
+}
+
+func TestPrimaryDetachPublishesAlreadyPendingReplacementViewport(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	replacementConn := &recordingConn{}
+	replacement := registerTestAttachClient(
+		t,
+		server,
+		replacementConn,
+		"replacement",
+		160,
+		50,
+	)
+	replacement.clipViewport = true
+	replacement.terminalWidth = 80
+	replacement.terminalHeight = 24
+	primary := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"primary",
+		80,
+		24,
+	)
+	replacement.focusSequence.Store(primary.focusSequence.Load() - 1)
+	server.width = 160
+	server.height = 50
+	server.pendingResizeWidth = 160
+	server.pendingResizeHeight = 50
+
+	server.removeAttachClient(primary)
+
+	server.mu.Lock()
+	width, height := server.width, server.height
+	publishedWidth, publishedHeight :=
+		server.publishedWidth, server.publishedHeight
+	server.mu.Unlock()
+	if width != 160 || height != 50 ||
+		publishedWidth != 160 || publishedHeight != 50 {
+		t.Fatalf(
+			"replacement viewport = desired %dx%d published %dx%d, want 160x50",
+			width,
+			height,
+			publishedWidth,
+			publishedHeight,
+		)
+	}
+	waitForRecordedContains(
+		t,
+		replacementConn,
+		string(terminalViewportResizeSequence(160, 50, false)),
+	)
 }
 
 func TestPausedRedrawFallbackPreservesQueryOrder(t *testing.T) {
@@ -3825,6 +3881,8 @@ func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
 	server.activeID = "@1"
 	server.width = 120
 	server.height = 40
+	server.publishedWidth = 120
+	server.publishedHeight = 40
 
 	originalSignalForegroundResize := signalForegroundResize
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
