@@ -1241,6 +1241,37 @@ void main() {
     });
   });
 
+  testWidgets('protocol animation frames respect the frame-count cap', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager();
+      final root = await _buildImage(1, 1);
+      manager.storeDecodedImageWithId(
+        1,
+        DecodedTerminalImage(
+          frames: List<TerminalImageFrame>.generate(
+            256,
+            (_) => TerminalImageFrame(root),
+          ),
+          sourceWidth: 1,
+          sourceHeight: 1,
+        ),
+      );
+      final rejectedFrame = await _buildImage(1, 1);
+
+      expect(
+        await manager.addAnimationFrame(
+          1,
+          DecodedTerminalImage.single(rejectedFrame),
+        ),
+        TerminalAnimationFrameResult.noSpace,
+      );
+      expect(manager.imageById(1)!.frameCount, 256);
+      expect(rejectedFrame.debugDisposed, isTrue);
+    });
+  });
+
   testWidgets('decoded root storage rejects sequences over the memory cap', (
     tester,
   ) async {

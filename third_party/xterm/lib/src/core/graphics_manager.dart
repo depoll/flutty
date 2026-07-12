@@ -1528,6 +1528,9 @@ class GraphicsManager {
       if (image == null || frameData.frames.isEmpty) {
         return TerminalAnimationFrameResult.imageNotFound;
       }
+      if (editFrame <= 0 && image.frameCount >= _maxDecodedAnimationFrames) {
+        return TerminalAnimationFrameResult.noSpace;
+      }
       final regionWidth = width > 0 ? width : frameData.sourceWidth;
       final regionHeight = height > 0 ? height : frameData.sourceHeight;
       if (x < 0 ||
