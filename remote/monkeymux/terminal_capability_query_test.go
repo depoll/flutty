@@ -24,16 +24,29 @@ func TestXtversionClassifiedAsReplayUnsafeQuery(t *testing.T) {
 		{"xtversion", xtversionQuery, true},
 		{"da1", da1Query, true},
 		{"da2", "\x1b[>0c", true},
+		{"c1 da1", string([]byte{0x9b, 'c'}), true},
 		{"dsr cursor position", "\x1b[6n", true},
 		{"decscusr cursor style is not a query", "\x1b[2 q", false},
 		{"sgr is not a query", "\x1b[0m", false},
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isReplayUnsafeCsiQuery([]byte(tc.sequence)); got != tc.want {
 				t.Fatalf("isReplayUnsafeCsiQuery(%q) = %v, want %v", tc.sequence, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestC1CapabilityQueryBufferedWhileDetached(t *testing.T) {
+	window := &muxWindow{id: "@1", index: 0, lastActivity: time.Now()}
+	query := []byte{0x9b, 'c'}
+
+	window.appendPendingTerminalQueriesLocked(query)
+
+	if got := string(window.pendingTerminalQueries); got != string(query) {
+		t.Fatalf("pending C1 query = %q, want %q", got, query)
 	}
 }
 
@@ -73,14 +86,33 @@ func TestPendingCapabilityQueriesDeliveredOnAttach(t *testing.T) {
 		controlMessage{Width: 80, Height: 24},
 	)
 
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got := attach.String()
+		if strings.Contains(got, xtversionQuery) && strings.Contains(got, da1Query) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	got := attach.String()
 	if !strings.Contains(got, xtversionQuery) || !strings.Contains(got, da1Query) {
-		t.Fatalf("attach output = %q, want XTVERSION+DA1 delivered to terminal", got)
+		t.Fatalf(
+			"attach output = %q, want XTVERSION+DA1 delivered to terminal",
+			got,
+		)
 	}
 
-	server.mu.Lock()
-	remaining := len(window.pendingTerminalQueries)
-	server.mu.Unlock()
+	remaining := -1
+	for time.Now().Before(deadline) {
+		server.mu.Lock()
+		remaining = len(window.pendingTerminalQueries) +
+			len(window.pendingTerminalQueriesInFlight)
+		server.mu.Unlock()
+		if remaining == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if remaining != 0 {
 		t.Fatalf("pending queries not cleared after flush: %d bytes remain", remaining)
 	}

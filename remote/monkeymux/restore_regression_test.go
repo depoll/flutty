@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -173,22 +174,23 @@ func TestRestoreRedrawFollowUpSkipsInactiveOrDetachedWindow(t *testing.T) {
 
 	// Not the active window anymore.
 	server.activeID = "@other"
-	server.redrawRestoredWindow(attach, "@1")
+	server.redrawRestoredWindow("@1")
 	if len(simulated) != 0 {
 		t.Fatalf("redraw fired for non-active window: %#v", simulated)
 	}
 
-	// Active again but a different client is attached.
+	// Any attached client can keep the restored redraw alive.
 	server.activeID = "@1"
-	server.redrawRestoredWindow(&recordingConn{}, "@1")
-	if len(simulated) != 0 {
-		t.Fatalf("redraw fired for detached client: %#v", simulated)
-	}
-
-	// Active and attached: the redraw runs.
-	server.redrawRestoredWindow(attach, "@1")
+	server.redrawRestoredWindow("@1")
 	if !reflect.DeepEqual(simulated, []string{"@1"}) {
 		t.Fatalf("redraw did not run for active attached window: %#v", simulated)
+	}
+
+	// No attached clients: skip.
+	server.attachConn = nil
+	server.redrawRestoredWindow("@1")
+	if !reflect.DeepEqual(simulated, []string{"@1"}) {
+		t.Fatalf("redraw fired without an attached client: %#v", simulated)
 	}
 }
 
@@ -197,13 +199,58 @@ func TestScheduleRestoreRedrawFollowUpsIgnoresNilConn(t *testing.T) {
 	server := newMuxServer("restore-redraw-nil")
 	server.markRestoreRedrawPending([]string{"@1"})
 
-	server.scheduleRestoreRedrawFollowUps(nil, "@1")
+	server.scheduleRestoreRedrawFollowUps("@1")
 	if len(*actions) != 0 {
 		t.Fatalf("scheduled follow-ups without an attached client: %d", len(*actions))
 	}
 	// The pending entry is preserved for the next real attach.
 	if !server.restoreRedrawPending["@1"] {
 		t.Fatal("pending redraw entry was consumed without an attached client")
+	}
+}
+
+func TestRestoreRedrawUsesCurrentPrimaryClientSize(t *testing.T) {
+	withStubbedRestoreRedraw(t)
+
+	var simulated []string
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+	server := newMuxServerWithSize("restore-primary-size", 80, 24)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "codex",
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"primary",
+		132,
+		43,
+	)
+	server.mu.Lock()
+	server.width = 80
+	server.height = 24
+	server.mu.Unlock()
+
+	server.redrawRestoredWindow("@1")
+
+	server.mu.Lock()
+	width, height := server.width, server.height
+	server.mu.Unlock()
+	if width != 132 || height != 43 {
+		t.Fatalf("restored redraw size = %dx%d, want 132x43", width, height)
+	}
+	if !reflect.DeepEqual(simulated, []string{"@1:132x43"}) {
+		t.Fatalf("restored redraw simulation = %#v", simulated)
 	}
 }
 

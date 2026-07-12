@@ -22,6 +22,7 @@ void main() {
     double keyboardInset = 0,
     FocusNode? focusNode,
     bool readOnly = true,
+    bool resizeTerminalToViewport = true,
   }) => MaterialApp(
     home: MediaQuery(
       data: MediaQueryData(
@@ -38,6 +39,7 @@ void main() {
             focusNode: focusNode,
             hardwareKeyboardOnly: true,
             readOnly: readOnly,
+            resizeTerminalToViewport: resizeTerminalToViewport,
           ),
         ),
       ),
@@ -68,6 +70,100 @@ void main() {
     expect(event.pixelWidth, 320);
     expect(event.pixelHeight, 240);
   });
+
+  test('host-requested resize does not echo a resize event', () {
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    final hostResizeEvents = <({int width, int height})>[];
+    final terminal = Terminal()
+      ..canResizeFromHost = (() => true)
+      ..onResize = (width, height, pixelWidth, pixelHeight) {
+        resizeEvents.add((
+          width: width,
+          height: height,
+          pixelWidth: pixelWidth,
+          pixelHeight: pixelHeight,
+        ));
+      }
+      ..onHostResize = (width, height) {
+        hostResizeEvents.add((width: width, height: height));
+      }
+      ..write('\x1b[?8;50;160t');
+
+    expect(terminal.viewWidth, 160);
+    expect(terminal.viewHeight, 50);
+    expect(resizeEvents, isEmpty);
+    expect(hostResizeEvents, [(width: 160, height: 50)]);
+    expect(terminal.hostResizeGeneration, 1);
+
+    terminal.resetHostResizeState();
+
+    expect(terminal.hostResizeGeneration, 0);
+  });
+
+  test('standard host resize still reports the new size', () {
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    final terminal = Terminal()
+      ..onResize = (width, height, pixelWidth, pixelHeight) {
+        resizeEvents.add((
+          width: width,
+          height: height,
+          pixelWidth: pixelWidth,
+          pixelHeight: pixelHeight,
+        ));
+      }
+      ..write('\x1b[8;40;120t');
+
+    expect(terminal.viewWidth, 120);
+    expect(terminal.viewHeight, 40);
+    expect(resizeEvents, hasLength(1));
+    expect(resizeEvents.single.width, 120);
+    expect(resizeEvents.single.height, 40);
+  });
+
+  testWidgets(
+    'shared terminal grid is clipped instead of resized to viewport',
+    (tester) async {
+      final terminal = Terminal()..resize(160, 50);
+      final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+      final resizeEvents =
+          <({int width, int height, int pixelWidth, int pixelHeight})>[];
+      terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+        resizeEvents.add((
+          width: width,
+          height: height,
+          pixelWidth: pixelWidth,
+          pixelHeight: pixelHeight,
+        ));
+      };
+
+      await tester.pumpWidget(
+        buildTerminal(
+          terminal: terminal,
+          terminalKey: terminalKey,
+          size: const Size(320, 240),
+          resizeTerminalToViewport: false,
+        ),
+      );
+
+      final viewportCellSize = terminalKey.currentState!.viewportCellSize!;
+      expect(viewportCellSize.columns, lessThan(160));
+      expect(viewportCellSize.rows, lessThan(50));
+      expect(terminal.viewWidth, 160);
+      expect(terminal.viewHeight, 50);
+      expect(resizeEvents.last.width, viewportCellSize.columns);
+      expect(resizeEvents.last.height, viewportCellSize.rows);
+
+      terminal.write('x' * 120);
+
+      expect(terminal.buffer.cursorX, 120);
+      expect(
+        terminal.buffer.lines[terminal.buffer.absoluteCursorY].isWrapped,
+        isFalse,
+      );
+    },
+  );
 
   testWidgets('size refresh re-sends the current viewport dimensions', (
     tester,

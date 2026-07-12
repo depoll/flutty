@@ -294,6 +294,42 @@ class MockEscapeHandler extends _i1.Mock implements _i2.EscapeHandler {
       );
 
   @override
+  void sendTerminalVersion() => super.noSuchMethod(
+        Invocation.method(
+          #sendTerminalVersion,
+          [],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void sendModeReport(int? mode) => super.noSuchMethod(
+        Invocation.method(
+          #sendModeReport,
+          [mode],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void sendTermcapReport(List<String>? capabilities) => super.noSuchMethod(
+        Invocation.method(
+          #sendTermcapReport,
+          [capabilities],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void sendStatusStringReport(String? request) => super.noSuchMethod(
+        Invocation.method(
+          #sendStatusStringReport,
+          [request],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
   void sendOperatingStatus() => super.noSuchMethod(
         Invocation.method(
           #sendOperatingStatus,
@@ -725,6 +761,22 @@ class MockEscapeHandler extends _i1.Mock implements _i2.EscapeHandler {
       super.noSuchMethod(
         Invocation.method(
           #resize,
+          [
+            cols,
+            rows,
+          ],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void resizeFromHost(
+    int? cols,
+    int? rows,
+  ) =>
+      super.noSuchMethod(
+        Invocation.method(
+          #resizeFromHost,
           [
             cols,
             rows,
