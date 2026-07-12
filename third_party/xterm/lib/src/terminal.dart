@@ -1575,9 +1575,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           )
         : 0;
     if (shouldPlace && !keepCursor) {
-      for (var i = 0; i < rows; i++) {
-        buffer.index();
-      }
+      _advanceGraphicsCursor(buffer, rows);
     }
 
     _scheduleGraphicsOperation(
@@ -2248,10 +2246,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         ? manager.pendingImageDimensions(imageId)
         : (width: image.sourceWidth, height: image.sourceHeight);
     final rows = dimensions == null
-        ? min(
-            int.tryParse(args['r'] ?? '') ?? 0,
-            _buffer.viewHeight,
-          )
+        ? (int.tryParse(args['r'] ?? '') ?? 0)
         : _graphicsDisplayRowsForDimensions(
             args,
             manager,
@@ -2259,9 +2254,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
             maxRows: _buffer.viewHeight,
           );
     if (!keepCursor) {
-      for (var i = 0; i < rows; i++) {
-        _buffer.index();
-      }
+      _advanceGraphicsCursor(_buffer, rows);
     }
     notifyListeners();
   }
@@ -2395,6 +2388,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   int _graphicsFormat(Map<String, String> args) =>
       int.tryParse(args['f'] ?? '') ?? 32;
 
+  void _advanceGraphicsCursor(Buffer buffer, int rows) {
+    // Once the requested span leaves the viewport Kitty declares the exact
+    // cursor position undefined. A viewport's worth fully clears the visible
+    // placement while bounding work for untrusted r= values.
+    final boundedRows = min(max(0, rows), buffer.viewHeight);
+    for (var i = 0; i < boundedRows; i++) {
+      buffer.index();
+    }
+  }
+
   int _graphicsDisplayRows(
     Map<String, String> args,
     Uint8List data,
@@ -2407,7 +2410,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
     final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
     if (explicitRows > 0) {
-      return min(explicitRows, maxRows);
+      return explicitRows;
     }
     final columns = int.tryParse(args['c'] ?? '') ?? 0;
     if (columns <= 0) {
@@ -2451,7 +2454,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }) {
     final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
     if (explicitRows > 0) {
-      return min(explicitRows, maxRows);
+      return explicitRows;
     }
     final columns = int.tryParse(args['c'] ?? '') ?? 0;
     if (columns <= 0) {
