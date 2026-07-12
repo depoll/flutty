@@ -387,7 +387,7 @@ class AcpTimelineBuilder {
     final role = _roleFor(update.kind);
     if (role == null) return;
     final messageId = update.messageId;
-    final block = _boundedBlock(update.content);
+    final block = update.content;
 
     // Append to the currently open message when the role matches and either
     // both message IDs are absent (a single unlabeled streaming message) or
@@ -418,11 +418,13 @@ class AcpTimelineBuilder {
       }
     }
 
-    final entry = AcpMessageEntry(
-      role: role,
-      order: _nextOrder++,
-      messageId: messageId,
-      content: [block],
+    final entry = _boundedMessageEntry(
+      AcpMessageEntry(
+        role: role,
+        order: _nextOrder++,
+        messageId: messageId,
+        content: [block],
+      ),
     );
     _totalBytes += approximateTimelineEntryBytes(entry);
     _entries.add(entry);
@@ -455,19 +457,51 @@ class AcpTimelineBuilder {
 
   void _replaceEntry(int index, AcpTimelineEntry updated) {
     _totalBytes -= approximateTimelineEntryBytes(_entries[index]);
-    final bounded = updated is AcpToolCallEntry
-        ? _boundedToolCall(updated)
-        : updated;
+    final bounded = switch (updated) {
+      AcpToolCallEntry() => _boundedToolCall(updated),
+      AcpMessageEntry() => _boundedMessageEntry(updated),
+    };
     _totalBytes += approximateTimelineEntryBytes(bounded);
     _entries[index] = bounded;
   }
 
-  /// Truncates an oversized standalone content block before it is stored.
-  AcpContentBlock _boundedBlock(AcpContentBlock block) {
-    final bytes = approximateContentBlockBytes(block);
-    if (bytes <= _limits.maxEntryBytes) return block;
+  /// Bounds a single message entry's own accumulated size to
+  /// [AcpTimelineLimits.maxEntryBytes], regardless of how many streamed
+  /// chunks (potentially thousands, all sharing one message id) were merged
+  /// into it.
+  ///
+  /// A per-chunk check alone is not enough: many small chunks that each stay
+  /// under the cap can still accumulate without bound onto the same open
+  /// message. This drops the oldest content blocks within the message first
+  /// (preserving the most recent, most useful context, mirroring how the
+  /// whole timeline drops its oldest entries), then truncates a single
+  /// remaining oversized block as a last resort.
+  AcpMessageEntry _boundedMessageEntry(AcpMessageEntry entry) {
+    if (_approximateMessageBytes(entry) <= _limits.maxEntryBytes) {
+      return entry;
+    }
     _overflowed = true;
-    return _truncatedContentBlock(block, _limits.maxEntryBytes);
+    final content = List<AcpContentBlock>.of(entry.content);
+    var total = content.fold<int>(
+      0,
+      (sum, block) => sum + approximateContentBlockBytes(block),
+    );
+    while (content.length > 1 && total > _limits.maxEntryBytes) {
+      total -= approximateContentBlockBytes(content.removeAt(0));
+    }
+    if (content.length == 1 &&
+        approximateContentBlockBytes(content.single) > _limits.maxEntryBytes) {
+      content[0] = _truncatedContentBlock(
+        content.single,
+        _limits.maxEntryBytes,
+      );
+    }
+    return AcpMessageEntry(
+      role: entry.role,
+      order: entry.order,
+      messageId: entry.messageId,
+      content: content,
+    );
   }
 
   /// Truncates a merged tool-call entry so its retained payload stays under

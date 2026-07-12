@@ -125,6 +125,41 @@ void main() {
       },
     );
 
+    test(
+      'closeSession cancels only the pending requests for that session, '
+      'leaving another session sharing the same registry untouched',
+      () async {
+        transport
+          ..sendRequest('permission-1', 'session/request_permission', {
+            'sessionId': 'session-1',
+            'toolCall': {'toolCallId': 'call-1'},
+            'options': [
+              {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+            ],
+          })
+          ..sendRequest('permission-2', 'session/request_permission', {
+            'sessionId': 'session-2',
+            'toolCall': {'toolCallId': 'call-2'},
+            'options': [
+              {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+            ],
+          });
+        await _settle();
+        expect(registry.requests, hasLength(2));
+
+        await service.closeSession('session-1');
+
+        // session-1's request was cancelled and removed...
+        expect(transport.responseFor('permission-1')['result'], {
+          'outcome': {'outcome': 'cancelled'},
+        });
+        // ...but session-2's is untouched: no response yet, still pending.
+        expect(transport.responseForOrNull('permission-2'), isNull);
+        expect(registry.requests, hasLength(1));
+        expect(registry.requests.single.sessionId, 'session-2');
+      },
+    );
+
     test('returns method not found for unknown server methods', () async {
       transport.sendRequest('unknown-1', 'terminal/not_a_method', {});
       await _settle();

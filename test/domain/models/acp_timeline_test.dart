@@ -164,6 +164,62 @@ void main() {
       expect(text, contains('truncated'));
     });
 
+    test('bounds a single message entry even when thousands of small chunks '
+        'share the same message id', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(
+          maxEntries: 1000,
+          maxEntryBytes: 2048,
+          maxTotalBytes: 1 << 30,
+        ),
+      );
+      AcpTimeline? last;
+      for (var i = 0; i < 5000; i++) {
+        last = builder.apply(
+          _chunk('agent_message_chunk', 'chunk-$i ', messageId: 'm1'),
+        );
+      }
+      // Still exactly one entry: every chunk shared the same message id, so
+      // nothing should ever split into a second timeline entry.
+      expect(last!.entries, hasLength(1));
+      expect(last.overflowed, isTrue);
+      final entry = last.entries.single as AcpMessageEntry;
+      expect(approximateTimelineEntryBytes(entry), lessThanOrEqualTo(2048));
+      // The most recent chunks are preserved; the earliest are dropped.
+      final joined = entry.content
+          .whereType<AcpTextContent>()
+          .map((c) => c.text)
+          .join();
+      expect(joined, contains('chunk-4999'));
+      expect(joined, isNot(contains('chunk-0 ')));
+    });
+
+    test('a single accumulating message entry never grows the whole timeline '
+        'past its total byte budget', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(
+          maxEntries: 1000,
+          maxEntryBytes: 512,
+          maxTotalBytes: 1024,
+        ),
+      );
+      AcpTimeline? last;
+      for (var i = 0; i < 2000; i++) {
+        last = builder.apply(
+          _chunk('agent_message_chunk', 'x' * 10, messageId: 'm1'),
+        );
+      }
+      expect(last!.entries, hasLength(1));
+      expect(last.overflowed, isTrue);
+      // The single entry's own cap keeps the whole timeline well within
+      // its total budget too.
+      final total = last.entries.fold<int>(
+        0,
+        (sum, entry) => sum + approximateTimelineEntryBytes(entry),
+      );
+      expect(total, lessThanOrEqualTo(1024));
+    });
+
     test('drops oldest entries once the total byte budget is exceeded', () {
       final builder = AcpTimelineBuilder(
         limits: const AcpTimelineLimits(

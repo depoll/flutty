@@ -629,6 +629,15 @@ class AcpSessionManager {
       if (controller == null) continue;
       final hostId = key.hostId;
       final bridgeId = key.bridgeId;
+      // Cancel only this session's own pending permission/write requests
+      // before releasing its lease. When another live session (for example
+      // a fork) still shares this bridge attachment, the attachment and its
+      // capability service stay alive for that other session, so this must
+      // not rely on a full `close()` to clean up: it would incorrectly
+      // cancel the other session's pending requests too.
+      await controller.attachment.capabilityService?.closeSession(
+        key.acpSessionId,
+      );
       // Release the local lease (idempotent) and cancel streams.
       await controller.disposeLocal();
       _telemetry.sessionEnded(reason: 'stopped');
@@ -661,9 +670,16 @@ class AcpSessionManager {
   /// routed and answered; when no same-host filesystem/terminal binding can
   /// be resolved, `fs/*`/`terminal/*` requests are simply declined as
   /// unavailable rather than left unanswered.
+  ///
+  /// When [existingRegistry] is provided (a prior attachment's still-pending
+  /// permission/write decisions, carried across a soft detach/reconnect), it
+  /// is reused instead of creating an empty registry so those decisions stay
+  /// visible immediately and rebind by request id once the agent replays
+  /// them, rather than silently disappearing until/unless a replay arrives.
   Future<AcpClientCapabilityService> Function() _capabilityServiceFactory({
     required int hostId,
     required String cwd,
+    AcpPendingRequestRegistry? existingRegistry,
   }) => () async {
     AcpHostCapabilityBinding? binding;
     try {
@@ -680,7 +696,7 @@ class AcpSessionManager {
       fileSystem: binding?.fileSystem,
       terminalExecutor: binding?.terminalExecutor,
       allowedRoots: <String>[cwd],
-      registry: AcpPendingRequestRegistry(),
+      registry: existingRegistry ?? AcpPendingRequestRegistry(),
       diagnostics: _diagnostics,
     );
   };
@@ -1539,6 +1555,16 @@ class _SessionController {
   /// attachment lease, and surfaces failures as a typed [_LaunchException]
   /// after recording safe error state — it never throws a raw error.
   Future<void> reconnect() async {
+    // Captured before this controller's own lease is released: a solo
+    // (non-forked) session's soft detach closes its bridge attachment, which
+    // only *stops routing* new server requests locally (see
+    // `_BridgeAttachment._performClose`) — it never cancels the capability
+    // service's registry. Carrying that same registry into the replacement
+    // attachment below preserves any still-pending permission/write
+    // decisions across the detach instead of silently discarding them in
+    // favor of a fresh, empty registry.
+    final priorRegistry = attachment.capabilityService?.registry;
+
     // Discard any stale subscriptions and lease left over from a previous
     // (possibly failed) attempt so retries start clean and balanced.
     await _cancelSubscriptions();
@@ -1572,6 +1598,7 @@ class _SessionController {
         capabilityServiceFactory: _manager._capabilityServiceFactory(
           hostId: hostId,
           cwd: _cwd,
+          existingRegistry: priorRegistry,
         ),
       );
       _manager._attachments[bridgeKey.value] = target;

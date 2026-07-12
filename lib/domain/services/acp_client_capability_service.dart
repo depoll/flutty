@@ -326,6 +326,30 @@ final class AcpPendingRequestRegistry {
     final pending = _requests.values.toList(growable: false);
     _requests.clear();
     _emit();
+    await _cancelPending(pending);
+  }
+
+  /// Cancels and removes only the pending requests belonging to
+  /// [sessionId], leaving every other session's pending requests on a
+  /// shared bridge attachment (for example a fork) untouched.
+  ///
+  /// Used when one session sharing a bridge is explicitly stopped/deleted
+  /// while another live session keeps the attachment (and this registry)
+  /// alive: without this, that session's own pending permission/write
+  /// requests would otherwise never be answered or removed.
+  Future<void> cancelForSession(String sessionId) async {
+    final matching = _requests.values
+        .where((request) => request.sessionId == sessionId)
+        .toList(growable: false);
+    if (matching.isEmpty) return;
+    for (final request in matching) {
+      _requests.remove(request.id);
+    }
+    _emit();
+    await _cancelPending(matching);
+  }
+
+  Future<void> _cancelPending(List<AcpPendingClientRequest> pending) async {
     for (final request in pending) {
       try {
         if (request case AcpPendingPermission()) {
@@ -427,6 +451,17 @@ final class AcpClientCapabilityService {
     _terminals.clear();
     await registry.close();
   }
+
+  /// Cancels and removes only the pending permission/write requests that
+  /// belong to [sessionId], leaving any other session sharing this bridge
+  /// attachment (for example a fork) untouched.
+  ///
+  /// Use this when explicitly stopping/deleting one session on a bridge that
+  /// other live sessions still use: closing the whole capability service
+  /// with [close] would incorrectly cancel those other sessions' pending
+  /// requests too and stop routing their `fs`/`terminal` requests.
+  Future<void> closeSession(String sessionId) =>
+      registry.cancelForSession(sessionId);
 
   /// Approves a pending write after explicit user confirmation.
   Future<void> approveWrite(String requestId) async {

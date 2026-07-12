@@ -787,6 +787,139 @@ void main() {
 
       expect(server.permissionResponses[requestId], isNotNull);
     });
+
+    test('detach then reconnect keeps a pending permission visible without '
+        'requiring the agent to replay it (the registry is carried over, not '
+        'recreated empty)', () async {
+      final key = await startCopilot();
+      connector.servers[key.bridgeId]!.requestPermission(
+        key.acpSessionId,
+        't1',
+      );
+      await _pump();
+      final pendingBefore = manager.state
+          .byKeyValue(key.value)!
+          .pendingPermissions;
+      expect(pendingBefore, hasLength(1));
+      final requestKey = pendingBefore.single.requestKey;
+
+      await manager.detachSession(key);
+      await _pump();
+      // Detaching alone must never drop a still-pending decision.
+      expect(
+        manager.state.byKeyValue(key.value)!.pendingPermissions,
+        hasLength(1),
+      );
+
+      final reconnectResult = await manager.reconnectSession(
+        hostId: key.hostId,
+        providerId: key.providerId,
+        bridgeId: key.bridgeId,
+        acpSessionId: key.acpSessionId,
+        cwd: '/repo',
+      );
+      expect(reconnectResult, isA<AcpSessionLaunchStarted>());
+      await _pump();
+
+      // The fake agent never replayed the permission after reconnecting
+      // (only `session/resume` was called); the pending permission is
+      // still visible here purely because the capability registry was
+      // carried over into the new attachment, not recreated empty.
+      final pendingAfter = manager.state
+          .byKeyValue(key.value)!
+          .pendingPermissions;
+      expect(pendingAfter, hasLength(1));
+      expect(pendingAfter.single.requestKey, requestKey);
+      expect(pendingAfter.single.toolCallId, 't1');
+    });
+
+    test('detach then reconnect keeps a pending write visible without '
+        'requiring the agent to replay it', () async {
+      final fileSystem = _FakeCapabilityFileSystem();
+      final capableConnector = _FakeConnector(
+        capabilityBinding: AcpHostCapabilityBinding(
+          fileSystem: fileSystem,
+          terminalExecutor: _FakeCapabilityTerminalExecutor(),
+        ),
+      );
+      final capableManager = buildManagerWith(capableConnector);
+      final result = await capableManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (result as AcpSessionLaunchStarted).key;
+      capableConnector.servers[key.bridgeId]!
+          .pushServerRequest('fs/write_text_file', {
+            'sessionId': key.acpSessionId,
+            'path': '/repo/new.txt',
+            'content': 'pending content',
+          });
+      await _pump();
+      expect(
+        capableManager.state.byKeyValue(key.value)!.pendingWrites,
+        hasLength(1),
+      );
+
+      await capableManager.detachSession(key);
+      await capableManager.reconnectSession(
+        hostId: key.hostId,
+        providerId: key.providerId,
+        bridgeId: key.bridgeId,
+        acpSessionId: key.acpSessionId,
+        cwd: '/repo',
+      );
+      await _pump();
+
+      final pendingWrites = capableManager.state
+          .byKeyValue(key.value)!
+          .pendingWrites;
+      expect(pendingWrites, hasLength(1));
+      expect(pendingWrites.single.path, '/repo/new.txt');
+    });
+
+    test(
+      'stopping one forked session cancels only that session\'s pending '
+      'permission, leaving the sibling fork and the shared bridge untouched',
+      () async {
+        isPro = true;
+        final key = await startCopilot();
+        final forkResult = await manager.forkSession(key);
+        final forkKey = (forkResult as AcpSessionLaunchStarted).key;
+        expect(forkKey.bridgeId, key.bridgeId);
+
+        final server = connector.servers[key.bridgeId]!;
+        final originalRequestId = server.requestPermission(
+          key.acpSessionId,
+          't-original',
+        );
+        server.requestPermission(forkKey.acpSessionId, 't-fork');
+        await _pump();
+        expect(
+          manager.state.byKeyValue(key.value)!.pendingPermissions,
+          hasLength(1),
+        );
+        expect(
+          manager.state.byKeyValue(forkKey.value)!.pendingPermissions,
+          hasLength(1),
+        );
+
+        await manager.stopSession(key);
+        await _pump();
+
+        // The original session is gone and its pending permission was
+        // cancelled (answered) even though the fork keeps the bridge alive.
+        expect(manager.state.byKeyValue(key.value), isNull);
+        expect(server.permissionResponses[originalRequestId], isNotNull);
+        // The fork's own pending permission and the shared bridge are both
+        // untouched.
+        expect(
+          manager.state.byKeyValue(forkKey.value)!.pendingPermissions,
+          hasLength(1),
+        );
+        expect(connector.stoppedBridges, isEmpty);
+      },
+    );
   });
 
   group('prompt lifecycle', () {
