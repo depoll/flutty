@@ -555,6 +555,195 @@ void main() {
     expect(transport.lastDeliveredSequence, 5);
   });
 
+  test(
+    'accepts interior replay gaps through the hello high-water mark',
+    () async {
+      late _TestChannel channel;
+      channel = _TestChannel(
+        onWrite: (value) {
+          final message = jsonDecode(value) as Map<String, dynamic>;
+          if (message['type'] != 'hello') return;
+          channel
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'hello',
+                'bridgeId': _bridgeId,
+                'clientId': _otherBridgeId,
+                'canSend': true,
+                'bridge': _metadata(nextSequence: 5),
+              }),
+            )
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'overflow',
+                'bridgeId': _bridgeId,
+                'retainedFrom': 1,
+              }),
+            )
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'output',
+                'bridgeId': _bridgeId,
+                'sequence': 1,
+                'data': {
+                  'jsonrpc': '2.0',
+                  'id': 'permission-1',
+                  'method': 'session/request_permission',
+                },
+              }),
+            )
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'state',
+                'bridgeId': _bridgeId,
+                'sequence': 4,
+                'state': 'running',
+              }),
+            )
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'output',
+                'bridgeId': _bridgeId,
+                'sequence': 5,
+                'data': {'jsonrpc': '2.0', 'method': 'tail'},
+              }),
+            );
+        },
+      );
+      final client = _MockSshClient();
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => channel.session);
+      final transport =
+          MonkeyMuxAcpBridgeService(
+            installer: _FakeInstaller(
+              const MonkeyMuxInstallation(
+                executablePath: '/helper',
+                platform: 'linux-amd64',
+                version: 'test',
+              ),
+            ),
+          ).connect(
+            sessionProvider: () async => _sshSession(client),
+            bridgeId: _bridgeId,
+            providerId: 'copilot',
+          );
+      addTearDown(transport.close);
+      final errors = <MonkeyMuxAcpBridgeException>[];
+      final errorSubscription = transport.errors.listen(errors.add);
+      addTearDown(errorSubscription.cancel);
+
+      final incoming = await transport.incoming
+          .take(2)
+          .map(
+            (bytes) => jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>,
+          )
+          .toList();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(incoming.first['method'], 'session/request_permission');
+      expect(incoming.last['method'], 'tail');
+      expect(errors.map((error) => error.kind), [
+        MonkeyMuxAcpBridgeErrorKind.replayOverflow,
+      ]);
+      expect(transport.lastDeliveredSequence, 5);
+      expect(transport.isConnected, isTrue);
+    },
+  );
+
+  test('rejects a live gap after the replay high-water mark', () async {
+    late _TestChannel channel;
+    channel = _TestChannel(
+      onWrite: (value) {
+        final message = jsonDecode(value) as Map<String, dynamic>;
+        if (message['type'] != 'hello') return;
+        channel
+          ..addText(
+            _frame({
+              'version': 1,
+              'type': 'hello',
+              'bridgeId': _bridgeId,
+              'clientId': _otherBridgeId,
+              'canSend': true,
+              'bridge': _metadata(nextSequence: 3),
+            }),
+          )
+          ..addText(
+            _frame({
+              'version': 1,
+              'type': 'overflow',
+              'bridgeId': _bridgeId,
+              'retainedFrom': 1,
+            }),
+          )
+          ..addText(
+            _frame({
+              'version': 1,
+              'type': 'output',
+              'bridgeId': _bridgeId,
+              'sequence': 1,
+              'data': {
+                'jsonrpc': '2.0',
+                'id': 'permission-1',
+                'method': 'session/request_permission',
+              },
+            }),
+          )
+          ..addText(
+            _frame({
+              'version': 1,
+              'type': 'state',
+              'bridgeId': _bridgeId,
+              'sequence': 3,
+              'state': 'running',
+            }),
+          )
+          ..addText(
+            _frame({
+              'version': 1,
+              'type': 'output',
+              'bridgeId': _bridgeId,
+              'sequence': 5,
+              'data': {'jsonrpc': '2.0', 'method': 'live-gap'},
+            }),
+          );
+      },
+    );
+    final client = _MockSshClient();
+    when(
+      () => client.execute(any(), pty: any(named: 'pty')),
+    ).thenAnswer((_) async => channel.session);
+    final transport =
+        MonkeyMuxAcpBridgeService(
+          installer: _FakeInstaller(
+            const MonkeyMuxInstallation(
+              executablePath: '/helper',
+              platform: 'linux-amd64',
+              version: 'test',
+            ),
+          ),
+        ).connect(
+          sessionProvider: () async => _sshSession(client),
+          bridgeId: _bridgeId,
+          providerId: 'copilot',
+        );
+    addTearDown(transport.close);
+
+    final errors = await transport.errors.take(2).toList();
+
+    expect(errors.map((error) => error.kind), [
+      MonkeyMuxAcpBridgeErrorKind.replayOverflow,
+      MonkeyMuxAcpBridgeErrorKind.sequenceGap,
+    ]);
+    expect(transport.lastDeliveredSequence, 3);
+    expect(transport.isConnected, isFalse);
+  });
+
   test('rejects non-writer connections and provider exit', () async {
     Future<MonkeyMuxAcpBridgeException> run({
       required bool canSend,

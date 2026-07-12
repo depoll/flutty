@@ -126,7 +126,7 @@ final class MonkeyMuxAcpTransportState {
   /// Opaque bridge identifier.
   final String bridgeId;
 
-  /// Latest ACP output sequence emitted by the transport.
+  /// Latest bridge event sequence delivered and acknowledged by the transport.
   final int lastDeliveredSequence;
 
   /// Consecutive reconnect attempt, when reconnecting.

@@ -350,7 +350,9 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   var _connected = false;
   var _closed = false;
   var _terminalFailure = false;
-  int? _overflowRetainedFrom;
+  int? _handshakeHighWaterSequence;
+  int? _replayWindowRetainedFrom;
+  int? _replayWindowHighWaterSequence;
 
   /// Typed connection lifecycle updates.
   Stream<MonkeyMuxAcpTransportState> get states => _states.stream;
@@ -361,7 +363,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   /// Opaque remote bridge identifier.
   String get bridgeId => _bridgeId;
 
-  /// Latest output sequence emitted to [incoming].
+  /// Latest bridge event sequence delivered and acknowledged.
   int get lastDeliveredSequence => _lastDeliveredSequence;
 
   /// Whether the writer handshake completed.
@@ -595,6 +597,18 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     _handshakeTimer = null;
     _connected = true;
     _reconnectAttempt = 0;
+    if (metadata.nextSequence < _lastDeliveredSequence) {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.sequenceGap,
+          'The bridge handshake sequence regressed.',
+        ),
+      );
+      return;
+    }
+    _handshakeHighWaterSequence = metadata.nextSequence;
+    _replayWindowRetainedFrom = null;
+    _replayWindowHighWaterSequence = null;
     if (metadata.state == MonkeyMuxAcpProviderState.exited ||
         metadata.state == MonkeyMuxAcpProviderState.stopped) {
       _emitState(
@@ -638,20 +652,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
-    if (sequence <= _lastDeliveredSequence) {
-      _sendAck(_lastDeliveredSequence);
-      return;
-    }
-    final expected = _overflowRetainedFrom ?? (_lastDeliveredSequence + 1);
-    if (sequence != expected) {
-      _failTerminal(
-        const MonkeyMuxAcpBridgeException(
-          MonkeyMuxAcpBridgeErrorKind.sequenceGap,
-          'The bridge replay contained an unexplained sequence gap.',
-        ),
-      );
-      return;
-    }
+    if (!_sequenceIsAcceptable(sequence)) return;
     final data = message['data'];
     if (data is! Map) {
       _failTerminal(
@@ -672,8 +673,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
-    _overflowRetainedFrom = null;
-    _lastDeliveredSequence = sequence;
+    _commitSequence(sequence);
     _incoming.add(encoded);
     _sendAck(sequence);
   }
@@ -690,9 +690,6 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
-    if (!_acceptControlSequence(sequence)) {
-      return;
-    }
     final rawState = message['state'];
     if (rawState is! String || rawState.length > 32) {
       _failTerminal(
@@ -706,6 +703,9 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     final state = _parseProviderState(rawState);
     final rawExitCode = message['exitCode'];
     final exitCode = rawExitCode is int ? rawExitCode : null;
+    if (!_sequenceIsAcceptable(sequence)) return;
+    _commitSequence(sequence);
+    _sendAck(sequence);
     if (state == MonkeyMuxAcpProviderState.exited ||
         state == MonkeyMuxAcpProviderState.stopped) {
       _emitState(
@@ -752,7 +752,23 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
-    _overflowRetainedFrom = retainedFrom;
+    final highWater = _handshakeHighWaterSequence;
+    if (highWater == null ||
+        retainedFrom > highWater ||
+        highWater < _lastDeliveredSequence ||
+        _replayWindowHighWaterSequence != null) {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.sequenceGap,
+          'The helper returned an invalid replay window.',
+        ),
+      );
+      return;
+    }
+    if (highWater > _lastDeliveredSequence) {
+      _replayWindowRetainedFrom = retainedFrom;
+      _replayWindowHighWaterSequence = highWater;
+    }
     const error = MonkeyMuxAcpBridgeException(
       MonkeyMuxAcpBridgeErrorKind.replayOverflow,
       'Some detached ACP output is no longer retained.',
@@ -812,25 +828,45 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     );
   }
 
-  bool _acceptControlSequence(int sequence) {
+  bool _sequenceIsAcceptable(int sequence) {
+    final replayHighWater = _replayWindowHighWaterSequence;
+    if (replayHighWater != null) {
+      final retainedFrom = _replayWindowRetainedFrom!;
+      if (sequence <= _lastDeliveredSequence ||
+          sequence < retainedFrom ||
+          sequence > replayHighWater) {
+        _failTerminal(
+          const MonkeyMuxAcpBridgeException(
+            MonkeyMuxAcpBridgeErrorKind.sequenceGap,
+            'The bridge replay sequence was outside its announced window.',
+          ),
+        );
+        return false;
+      }
+      return true;
+    }
     if (sequence <= _lastDeliveredSequence) {
       _sendAck(_lastDeliveredSequence);
       return false;
     }
-    final expected = _overflowRetainedFrom ?? (_lastDeliveredSequence + 1);
-    if (sequence != expected) {
+    if (sequence != _lastDeliveredSequence + 1) {
       _failTerminal(
         const MonkeyMuxAcpBridgeException(
           MonkeyMuxAcpBridgeErrorKind.sequenceGap,
-          'The bridge replay contained an unexplained sequence gap.',
+          'The live bridge sequence contained an unexplained gap.',
         ),
       );
       return false;
     }
-    _overflowRetainedFrom = null;
-    _lastDeliveredSequence = sequence;
-    _sendAck(sequence);
     return true;
+  }
+
+  void _commitSequence(int sequence) {
+    _lastDeliveredSequence = sequence;
+    if (sequence == _replayWindowHighWaterSequence) {
+      _replayWindowRetainedFrom = null;
+      _replayWindowHighWaterSequence = null;
+    }
   }
 
   bool _matchesCurrentBridge(Map<String, Object?> message) {
@@ -896,6 +932,9 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   void _handleChannelLoss(int generation, Object? error) {
     if (generation != _generation || _closed || _terminalFailure) return;
     _connected = false;
+    _handshakeHighWaterSequence = null;
+    _replayWindowRetainedFrom = null;
+    _replayWindowHighWaterSequence = null;
     _handshakeTimer?.cancel();
     _handshakeTimer = null;
     final channel = _channel;
