@@ -862,14 +862,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     // reports disableAnimations when developer/emulator animation scales are
     // zero, which must not freeze GIFs in the terminal. iOS exposes its actual
     // Reduce Motion preference separately, so honor that signal here.
-    final mediaQuery = MediaQuery.maybeOf(context);
     final accessibilityFeatures = View.maybeOf(
       context,
     )?.platformDispatcher.accessibilityFeatures;
     _graphicsAnimationsEnabled =
-        !(accessibilityFeatures?.reduceMotion ??
-            mediaQuery?.disableAnimations ??
-            false);
+        !(accessibilityFeatures?.reduceMotion ?? false);
     _syncGraphicsAnimationTicker();
   }
 
