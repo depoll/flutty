@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.98"
+	monkeyMuxVersion                  = "0.1.99"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -5710,6 +5710,8 @@ func (s *muxServer) selectWindow(windowID string) error {
 // client resets its per-visit request set on every window change and re-requests
 // whatever the new window is still missing. The worst case is a redundant or
 // skipped transmission, never a wrong-window image persisting on screen.
+// Served ids are returned only after the attach write completes, which applies
+// backpressure between the client's bounded repair batches.
 func (s *muxServer) replayRequestedImages(
 	clientID string,
 	ids []string,
@@ -5718,6 +5720,7 @@ func (s *muxServer) replayRequestedImages(
 		return nil
 	}
 	var attach net.Conn
+	var client *attachClient
 	var payload []byte
 	s.attachMu.Lock()
 	s.mu.Lock()
@@ -5729,11 +5732,13 @@ func (s *muxServer) replayRequestedImages(
 	}
 	attach = s.attachConn
 	if normalizedID := strings.TrimSpace(clientID); normalizedID != "" {
-		client := s.attachClientByIDLocked(normalizedID)
+		client = s.attachClientByIDLocked(normalizedID)
 		attach = nil
 		if client != nil {
 			attach = client.conn
 		}
+	} else {
+		client = s.attachClients[attach]
 	}
 	if attach == nil {
 		s.mu.Unlock()
@@ -5742,6 +5747,18 @@ func (s *muxServer) replayRequestedImages(
 	}
 	payload, ids = window.kittyImageTransmissionsForLocked(ids)
 	s.mu.Unlock()
+	if len(payload) == 0 {
+		s.attachMu.Unlock()
+		return nil
+	}
+	if client != nil {
+		completion, queued := client.enqueue(payload, true)
+		s.attachMu.Unlock()
+		if !queued || !client.waitForWrite(completion) {
+			return nil
+		}
+		return ids
+	}
 	queued := s.writeAttachLocked(attach, payload)
 	s.attachMu.Unlock()
 	if !queued {
@@ -7970,6 +7987,10 @@ func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
 	}
 	observedBell := false
 	for _, b := range data {
+		if b == 0x18 || b == 0x1a {
+			w.resetTerminalBellParserLocked()
+			continue
+		}
 		switch w.terminalBellState {
 		case terminalBellParserGround:
 			switch b {
@@ -8056,6 +8077,10 @@ func (w *muxWindow) observeTerminalOutputStateLocked(data []byte) {
 		}
 		if remaining := utf8ContinuationCount(value); remaining > 0 {
 			w.terminalOutputUtf8Remaining = remaining
+			continue
+		}
+		if value == 0x18 || value == 0x1a {
+			w.resetTerminalOutputParserLocked()
 			continue
 		}
 		switch w.terminalOutputState {
