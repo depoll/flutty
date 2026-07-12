@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/services/acp_client.dart';
 import 'package:monkeyssh/domain/services/acp_client_capability_service.dart';
@@ -148,6 +150,21 @@ void main() {
       expect(transport.responseFor('read-1')['result'], {'content': 'two\n'});
     });
 
+    test('rejects a read that resolves through an escaping symlink', () async {
+      files.canonicalPaths['/workspace/link/private.txt'] = '/private.txt';
+      transport.sendRequest('read-link', 'fs/read_text_file', {
+        'sessionId': 'session-1',
+        'path': '/workspace/link/private.txt',
+      });
+      await _settle();
+
+      expect(
+        (transport.responseFor('read-link')['error']! as Map)['code'],
+        -32000,
+      );
+      expect(files.readPaths, isEmpty);
+    });
+
     test(
       'rejects relative, traversal, oversize, and non-text file reads',
       () async {
@@ -198,6 +215,72 @@ void main() {
           (transport.responseFor('write-too-big')['error']! as Map)['code'],
           -32000,
         );
+      },
+    );
+
+    test(
+      'rejects a write whose parent resolves through an escaping symlink',
+      () async {
+        files.canonicalWritePaths['/workspace/link/new.txt'] =
+            '/private/new.txt';
+        transport.sendRequest('write-link', 'fs/write_text_file', {
+          'sessionId': 'session-1',
+          'path': '/workspace/link/new.txt',
+          'content': 'edited',
+        });
+        await _settle();
+
+        expect(
+          (transport.responseFor('write-link')['error']! as Map)['code'],
+          -32000,
+        );
+        expect(registry.requests, isEmpty);
+      },
+    );
+
+    test(
+      'write approval reports failures before removing the request',
+      () async {
+        transport.sendRequest('write-failure', 'fs/write_text_file', {
+          'sessionId': 'session-1',
+          'path': '/workspace/a.txt',
+          'content': 'edited',
+        });
+        await _settle();
+        files.writeFailure = const FileSystemException('SFTP failed');
+
+        await expectLater(
+          () => service.approveWrite('write-failure'),
+          throwsA(isA<FileSystemException>()),
+        );
+        expect(transport.responseFor('write-failure')['error'], {
+          'code': -32000,
+          'message': 'Remote operation failed',
+        });
+        expect(registry.requests, isEmpty);
+      },
+    );
+
+    test(
+      'write approval reports timeout before removing the request',
+      () async {
+        transport.sendRequest('write-timeout', 'fs/write_text_file', {
+          'sessionId': 'session-1',
+          'path': '/workspace/a.txt',
+          'content': 'edited',
+        });
+        await _settle();
+        files.writeFailure = TimeoutException('timed out');
+
+        await expectLater(
+          () => service.approveWrite('write-timeout'),
+          throwsA(isA<TimeoutException>()),
+        );
+        expect(transport.responseFor('write-timeout')['error'], {
+          'code': -32000,
+          'message': 'Remote operation timed out',
+        });
+        expect(registry.requests, isEmpty);
       },
     );
 
@@ -330,6 +413,23 @@ void main() {
     await service.close();
     await client.close();
   });
+
+  test('SFTP writes preserve executable and shared existing modes', () async {
+    final executableSharedMode = SftpFileMode(
+      groupWrite: false,
+      otherWrite: false,
+    );
+    final sftp = _ModePreservingSftp(executableSharedMode);
+    final fileSystem = AcpSftpRemoteFileSystem(() async => sftp);
+
+    await fileSystem.write('/workspace/script', Uint8List.fromList([1]));
+
+    expect(
+      sftp.appliedModes.whereType<SftpFileMode>(),
+      contains(executableSharedMode),
+    );
+    expect(sftp.appliedModes.last, executableSharedMode);
+  });
 }
 
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
@@ -372,9 +472,22 @@ final class _ServerTransport implements AcpTransport {
 
 final class _FakeFileSystem implements AcpRemoteFileSystem {
   final files = <String, Uint8List>{};
+  final canonicalPaths = <String, String>{};
+  final canonicalWritePaths = <String, String>{};
+  final readPaths = <String>[];
+  Exception? writeFailure;
+
+  @override
+  Future<String> canonicalizeExistingPath(String path) async =>
+      canonicalPaths[path] ?? path;
+
+  @override
+  Future<String> canonicalizeWritePath(String path) async =>
+      canonicalWritePaths[path] ?? canonicalPaths[path] ?? path;
 
   @override
   Future<Uint8List> read(String path, {required int maxBytes}) async {
+    readPaths.add(path);
     final bytes =
         files[path] ??
         (throw const AcpClientCapabilityException('Missing file'));
@@ -389,6 +502,8 @@ final class _FakeFileSystem implements AcpRemoteFileSystem {
 
   @override
   Future<void> write(String path, Uint8List bytes) async {
+    final failure = writeFailure;
+    if (failure != null) throw failure;
     files[path] = bytes;
   }
 }
@@ -451,12 +566,74 @@ final class _ThrowingFileSystem implements AcpRemoteFileSystem {
   const _ThrowingFileSystem();
 
   @override
+  Future<String> canonicalizeExistingPath(String path) async => path;
+
+  @override
+  Future<String> canonicalizeWritePath(String path) async => path;
+
+  @override
   Future<Uint8List> read(String path, {required int maxBytes}) =>
       throw StateError('unexpected remote failure');
 
   @override
   Future<void> write(String path, Uint8List bytes) =>
       throw StateError('unexpected remote failure');
+}
+
+final class _ModePreservingSftp implements SftpClient {
+  _ModePreservingSftp(this._existingMode);
+
+  final SftpFileMode _existingMode;
+  final appliedModes = <SftpFileMode?>[];
+
+  @override
+  Future<SftpFileAttrs> stat(String path, {bool followLink = true}) async =>
+      SftpFileAttrs(mode: _existingMode);
+
+  @override
+  Future<SftpFile> open(
+    String path, {
+    SftpFileOpenMode mode = SftpFileOpenMode.read,
+  }) async => _ModePreservingFile();
+
+  @override
+  Future<void> setStat(String path, SftpFileAttrs attrs) async {
+    appliedModes.add(attrs.mode);
+  }
+
+  @override
+  Future<void> rename(String oldPath, String newPath) async {}
+
+  @override
+  Future<void> remove(String filename) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+final class _ModePreservingFile implements SftpFile {
+  var _closed = false;
+
+  @override
+  bool get isClosed => _closed;
+
+  @override
+  Future<void> close() async {
+    _closed = true;
+  }
+
+  @override
+  Future<void> writeBytes(Uint8List data, {int offset = 0}) async {}
+
+  @override
+  SftpFileWriter write(
+    Stream<Uint8List> data, {
+    int offset = 0,
+    void Function(int bytesWritten)? onProgress,
+  }) => SftpFileWriter(this, data, offset, onProgress);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 final class _RecordingLogger implements DiagnosticsLogger {

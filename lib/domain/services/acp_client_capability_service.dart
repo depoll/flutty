@@ -57,6 +57,18 @@ final class AcpClientCapabilityLimits {
 
 /// A remote filesystem used to satisfy ACP filesystem requests.
 abstract interface class AcpRemoteFileSystem {
+  /// Resolves an existing path to its canonical remote target.
+  ///
+  /// Implementations must resolve symbolic links and reject paths that cannot
+  /// be safely canonicalized.
+  Future<String> canonicalizeExistingPath(String path);
+
+  /// Resolves a path intended for writing to its canonical remote target.
+  ///
+  /// Existing targets are resolved in full. New targets are resolved through
+  /// their existing canonical parent before the final filename is appended.
+  Future<String> canonicalizeWritePath(String path);
+
   /// Reads a complete UTF-8 file at [path], up to [maxBytes].
   Future<Uint8List> read(String path, {required int maxBytes});
 
@@ -74,6 +86,44 @@ final class AcpSftpRemoteFileSystem implements AcpRemoteFileSystem {
       AcpSftpRemoteFileSystem(session.sftp);
 
   final Future<SftpClient> Function() _sftp;
+
+  @override
+  Future<String> canonicalizeExistingPath(String path) async {
+    final resolved = await (await _sftp()).absolute(path);
+    final normalized = normalizeSftpAbsolutePath(resolved);
+    if (normalized == null) {
+      throw const AcpClientCapabilityException('Path could not be resolved');
+    }
+    return normalized;
+  }
+
+  @override
+  Future<String> canonicalizeWritePath(String path) async {
+    final sftp = await _sftp();
+    try {
+      // `absolute` uses SFTP realpath and follows an existing final symlink.
+      await sftp.stat(path);
+      final resolved = await sftp.absolute(path);
+      final normalized = normalizeSftpAbsolutePath(resolved);
+      if (normalized == null) {
+        throw const AcpClientCapabilityException('Path could not be resolved');
+      }
+      return normalized;
+    } on SftpStatusError catch (error) {
+      if (error.code != SftpStatusCode.noSuchFile) rethrow;
+    }
+
+    final separator = path.lastIndexOf('/');
+    if (separator <= 0 || separator == path.length - 1) {
+      throw const AcpClientCapabilityException('Path could not be resolved');
+    }
+    final parent = await sftp.absolute(path.substring(0, separator));
+    final normalizedParent = normalizeSftpAbsolutePath(parent);
+    if (normalizedParent == null) {
+      throw const AcpClientCapabilityException('Path could not be resolved');
+    }
+    return joinRemotePath(normalizedParent, path.substring(separator + 1));
+  }
 
   @override
   Future<Uint8List> read(String path, {required int maxBytes}) async {
@@ -113,16 +163,28 @@ final class AcpSftpRemoteFileSystem implements AcpRemoteFileSystem {
     final temporaryPath =
         '$parent/.$filename.acp-${Random.secure().nextInt(1 << 32)}';
     var uploaded = false;
+    SftpFileMode? existingMode;
     try {
+      try {
+        existingMode = (await sftp.stat(path, followLink: false)).mode;
+      } on SftpStatusError catch (error) {
+        if (error.code != SftpStatusCode.noSuchFile) rethrow;
+      }
       await const RemoteFileService().uploadBytes(
         sftp: sftp,
         remotePath: temporaryPath,
         bytes: bytes,
       );
       uploaded = true;
+      if (existingMode != null) {
+        await sftp.setStat(temporaryPath, SftpFileAttrs(mode: existingMode));
+      }
       // SFTP rename keeps the original file untouched if upload fails. Servers
       // that decline replacing an existing destination fail safely instead.
       await sftp.rename(temporaryPath, path);
+      if (existingMode != null) {
+        await sftp.setStat(path, SftpFileAttrs(mode: existingMode));
+      }
     } finally {
       if (uploaded) {
         try {
@@ -355,6 +417,20 @@ final class AcpClientCapabilityService {
     }
     try {
       await pending.approve(() => _writeFile(pending.path, pending.content));
+    } on TimeoutException {
+      await _respondWriteFailure(pending, 'Remote operation timed out');
+      rethrow;
+    } on AcpClientCapabilityException catch (error) {
+      await _respondWriteFailure(pending, error.message);
+      rethrow;
+    } on Object catch (error) {
+      _diagnostics.warning(
+        'acp.capability',
+        'write_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      await _respondWriteFailure(pending, 'Remote operation failed');
+      rethrow;
     } finally {
       registry.remove(requestId);
     }
@@ -468,7 +544,10 @@ final class AcpClientCapabilityService {
     }
     final params = _objectParams(request);
     _requiredSessionId(params);
-    final path = _validatedPath(_requiredString(params, 'path'));
+    final path = await _validatedPath(
+      _requiredString(params, 'path'),
+      forWrite: false,
+    );
     final line = _optionalPositiveInteger(params, 'line');
     final limit = _optionalPositiveInteger(params, 'limit');
     final bytes = await remoteFileSystem
@@ -486,7 +565,10 @@ final class AcpClientCapabilityService {
     }
     final params = _objectParams(request);
     final sessionId = _requiredSessionId(params);
-    final path = _validatedPath(_requiredString(params, 'path'));
+    final path = await _validatedPath(
+      _requiredString(params, 'path'),
+      forWrite: true,
+    );
     final content = _requiredString(params, 'content');
     if (utf8.encode(content).length > limits.maxWriteBytes) {
       throw const AcpLimitExceededException(
@@ -534,7 +616,7 @@ final class AcpClientCapabilityService {
     }
     final cwd = params['cwd'] == null
         ? null
-        : _validatedPath(_requiredString(params, 'cwd'));
+        : await _validatedPath(_requiredString(params, 'cwd'), forWrite: false);
     final requestedOutputLimit = _optionalPositiveInteger(
       params,
       'outputByteLimit',
@@ -618,22 +700,55 @@ final class AcpClientCapabilityService {
     return terminal;
   }
 
-  String _validatedPath(String candidate) {
+  Future<void> _respondWriteFailure(
+    AcpPendingFileWrite pending,
+    String message,
+  ) async {
+    try {
+      await pending.request.respondError(-32000, message);
+    } on Object {
+      // The bridge/session teardown may have already answered this request.
+    }
+  }
+
+  Future<String> _validatedPath(
+    String candidate, {
+    required bool forWrite,
+  }) async {
     final normalized = normalizeSftpAbsolutePath(candidate);
     final includesTraversal = candidate
         .replaceAll(r'\', '/')
         .split('/')
         .any((segment) => segment == '..');
-    if (normalized == null ||
-        includesTraversal ||
-        !_isAllowedPath(normalized)) {
+    if (normalized == null || includesTraversal || fileSystem == null) {
       throw const AcpClientCapabilityException('Path is not allowed');
     }
-    return normalized;
+    try {
+      final resolved = forWrite
+          ? await fileSystem!.canonicalizeWritePath(normalized)
+          : await fileSystem!.canonicalizeExistingPath(normalized);
+      final canonicalRoots = await Future.wait(
+        allowedRoots.map((root) async {
+          final normalizedRoot = normalizeSftpAbsolutePath(root);
+          if (normalizedRoot == null) {
+            throw const AcpClientCapabilityException('Path is not allowed');
+          }
+          return fileSystem!.canonicalizeExistingPath(normalizedRoot);
+        }),
+      );
+      if (!_isAllowedPath(resolved, canonicalRoots)) {
+        throw const AcpClientCapabilityException('Path is not allowed');
+      }
+      return resolved;
+    } on AcpClientCapabilityException {
+      rethrow;
+    } on Object {
+      throw const AcpClientCapabilityException('Path is not allowed');
+    }
   }
 
-  bool _isAllowedPath(String candidate) {
-    for (final root in allowedRoots) {
+  bool _isAllowedPath(String candidate, Iterable<String> roots) {
+    for (final root in roots) {
       final normalizedRoot = normalizeSftpAbsolutePath(root);
       if (normalizedRoot == null) continue;
       if (candidate == normalizedRoot ||
