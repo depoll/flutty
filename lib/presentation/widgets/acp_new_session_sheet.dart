@@ -31,6 +31,7 @@ import '../../domain/services/monkeymux_installer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 import 'acp_concurrency_choice.dart';
+import 'acp_config_option_controls.dart';
 import 'acp_custom_provider_editor.dart';
 import 'acp_session_presentation.dart';
 
@@ -80,6 +81,10 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
   AcpRecentSessionRef? _selectedRecent;
   var _busy = false;
   String? _error;
+
+  // Set once a session has started: the sheet stays open on an initial
+  // configuration stage until the user explicitly opens the chat.
+  AcpSessionKey? _configuringKey;
 
   @override
   void initState() {
@@ -217,7 +222,12 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
       }
       switch (result) {
         case AcpSessionLaunchStarted(:final key):
-          Navigator.of(context).pop(key);
+          // Keep the sheet open on the initial configuration stage; the user
+          // adjusts settings and then explicitly opens the chat.
+          setState(() {
+            _busy = false;
+            _configuringKey = key;
+          });
         case AcpSessionLaunchFailed(:final error):
           await _handleFailure(error);
           if (mounted) {
@@ -342,8 +352,117 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     );
   }
 
+  /// Opens the created session's chat, returning its key to the caller.
+  void _openChat() {
+    final key = _configuringKey;
+    if (key == null) {
+      return;
+    }
+    Navigator.of(context).pop(key);
+  }
+
+  Widget _buildConfigStage(AcpSessionKey key) {
+    final colorScheme = Theme.of(context).colorScheme;
+    // Load the created session's live state so advertised options, model, and
+    // mode stay in sync as they stream in after launch.
+    final manager = ref.read(acpSessionManagerProvider);
+    final managerState =
+        ref.watch(acpSessionManagerStateProvider).asData?.value ??
+        manager.state;
+    final session = managerState.byKeyValue(key.value);
+    final maxHeight = MediaQuery.sizeOf(context).height * 0.85;
+
+    return PopScope(
+      canPop: !_busy,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: FluttyTheme.spacingLg,
+          right: FluttyTheme.spacingLg,
+          bottom:
+              MediaQuery.viewInsetsOf(context).bottom + FluttyTheme.spacingSm,
+        ),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'configure session',
+                style: FluttyTheme.displayMono(
+                  fontSize: 18,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+              if (session != null) ...[
+                const SizedBox(height: FluttyTheme.spacingXs),
+                Text(
+                  '${session.providerLabel} · ${acpCwdSummary(session.cwd)}',
+                  style: FluttyTheme.monoStyle.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+              const SizedBox(height: FluttyTheme.spacingSm),
+              if (session == null)
+                const Padding(
+                  padding: EdgeInsets.symmetric(
+                    vertical: FluttyTheme.spacingLg,
+                  ),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else
+                Flexible(
+                  child: AcpConfigOptionControls(
+                    options: session.configOptions,
+                    onSetConfigOption: (configId, value) => manager
+                        .setConfigOption(key, configId: configId, value: value),
+                    modeState: session.modeState,
+                    modelState: session.modelState,
+                    onSetMode: (modeId) => manager.setMode(key, modeId),
+                    onSetModel: (modelId) => manager.setModel(key, modelId),
+                    enabled: session.status == AcpConnectionStatus.ready,
+                  ),
+                ),
+              const SizedBox(height: FluttyTheme.spacingMd),
+              FilledButton.icon(
+                onPressed: _openChat,
+                icon: const Icon(Icons.forum_outlined),
+                label: Text(
+                  _hasAdjustableSettings(session)
+                      ? 'Open chat'
+                      : 'Skip · Open chat',
+                ),
+              ),
+              const SizedBox(height: FluttyTheme.spacingSm),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  bool _hasAdjustableSettings(AcpSessionState? session) {
+    if (session == null) {
+      return false;
+    }
+    if (session.configOptions.isNotEmpty) {
+      return true;
+    }
+    final mode = session.modeState;
+    if (mode != null && mode.availableModes.isNotEmpty) {
+      return true;
+    }
+    final model = session.modelState;
+    return model != null && model.availableModels.isNotEmpty;
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_configuringKey != null) {
+      return _buildConfigStage(_configuringKey!);
+    }
     final colorScheme = Theme.of(context).colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
     final providersAsync = ref.watch(acpProvidersProvider);

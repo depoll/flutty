@@ -13,6 +13,7 @@ import 'package:monkeyssh/domain/services/acp_bridge_connector.dart';
 import 'package:monkeyssh/domain/services/acp_provider_service.dart';
 import 'package:monkeyssh/domain/services/acp_recent_sessions_service.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
+import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 
 class _FakeConnector extends Fake implements AcpBridgeConnector {}
 
@@ -52,6 +53,16 @@ class FakeAcpSessionManager extends AcpSessionManager {
   /// exhausted, a safe failure is returned.
   final List<AcpSessionLaunchResult> forkResults = <AcpSessionLaunchResult>[];
   int forkCount = 0;
+
+  /// Result returned by [startNewSession]; defaults to a safe failure.
+  AcpSessionLaunchResult startNewSessionResult = const AcpSessionLaunchFailed(
+    null,
+    AcpSessionError(kind: AcpSessionErrorKind.unknown, message: 'No launch.'),
+  );
+
+  final List<(String, Object)> configOptionSets = <(String, Object)>[];
+  final List<String> modeSets = <String>[];
+  final List<String> modelSets = <String>[];
 
   void emit(AcpSessionManagerState state) {
     _current = state;
@@ -128,6 +139,34 @@ class FakeAcpSessionManager extends AcpSessionManager {
   }
 
   @override
+  Future<AcpSessionLaunchResult> startNewSession({
+    required int hostId,
+    required String providerId,
+    required String cwd,
+    MonkeyMuxInstallConfirmation? confirmInstall,
+    List<AcpSessionKey> replace = const <AcpSessionKey>[],
+  }) async => startNewSessionResult;
+
+  @override
+  Future<void> setConfigOption(
+    AcpSessionKey key, {
+    required String configId,
+    required Object value,
+  }) async {
+    configOptionSets.add((configId, value));
+  }
+
+  @override
+  Future<void> setMode(AcpSessionKey key, String modeId) async {
+    modeSets.add(modeId);
+  }
+
+  @override
+  Future<void> setModel(AcpSessionKey key, String modelId) async {
+    modelSets.add(modelId);
+  }
+
+  @override
   Future<void> dispose() async {
     await _emitter.close();
   }
@@ -155,6 +194,9 @@ AcpSessionState fakeAcpSession({
   String? title,
   DateTime? lastActivityAt,
   AcpAgentCapabilities? capabilities,
+  List<AcpSessionConfigOption> configOptions = const <AcpSessionConfigOption>[],
+  AcpSessionModeState? modeState,
+  AcpModelState? modelState,
   List<AcpPendingPermission> pendingPermissions =
       const <AcpPendingPermission>[],
   List<AcpPendingWrite> pendingWrites = const <AcpPendingWrite>[],
@@ -175,6 +217,9 @@ AcpSessionState fakeAcpSession({
             protocolVersion: 1,
             agentCapabilities: capabilities,
           ),
+    configOptions: configOptions,
+    modeState: modeState,
+    modelState: modelState,
     pendingPermissions: pendingPermissions,
     pendingWrites: pendingWrites,
     timeline: timeline,
