@@ -93,6 +93,14 @@ bool _isBlue(int r, int g, int b) => b > 150 && r < 90 && g < 90;
 
 bool _isLight(int r, int g, int b) => r > 150 && g > 150 && b > 150;
 
+class _TopResettingScrollController extends ScrollController {
+  @override
+  void attach(ScrollPosition position) {
+    super.attach(position);
+    position.correctPixels(0);
+  }
+}
+
 const _animatedGifBase64 =
     'R0lGODlhAwADAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQE'
     'BwAAACwAAAAAAwADAAAIBwABCBw4MCAAIfkEBA0AAAAsAAAAAAMAAwCBAAD/AAAA'
@@ -719,6 +727,54 @@ void main() {
     scrollController.jumpTo(0);
     await tester.pump();
     await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+  });
+
+  testWidgets('replacing the scroll controller resyncs animation visibility', (
+    tester,
+  ) async {
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final firstController = ScrollController(keepScrollOffset: false);
+    final replacementController = _TopResettingScrollController();
+    addTearDown(firstController.dispose);
+    addTearDown(replacementController.dispose);
+    final terminal = Terminal(maxLines: 200);
+
+    Widget build(ScrollController controller) => MaterialApp(
+      home: SizedBox(
+        width: 400,
+        height: 160,
+        child: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          scrollController: controller,
+          hardwareKeyboardOnly: true,
+          liveOutputAutoScroll: false,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(build(firstController));
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=59,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(59)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+    terminal.write(List.filled(80, 'line\r\n').join());
+    await tester.pump();
+    firstController.jumpTo(firstController.position.maxScrollExtent);
+    await tester.pump();
+    expect(firstController.offset, greaterThan(0));
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+    await tester.pumpWidget(build(replacementController));
+    await tester.pump();
+    expect(replacementController.offset, 0);
     expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
   });
 

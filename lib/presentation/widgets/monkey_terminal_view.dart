@@ -914,6 +914,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       }
       _scrollController = widget.scrollController ?? ScrollController();
       _scrollController.addListener(_handleViewportScrolled);
+      _scheduleGraphicsAnimationSync();
     }
     if (oldWidget.simulateScroll != widget.simulateScroll) {
       _stopTouchScrollInertia();
