@@ -587,7 +587,7 @@ final class AcpAttachmentPreparationService {
           byteCount += chunk.length;
           _validateSize(byteCount, remainingTotalBytes);
           if (byteCount > inlineLimit) {
-            return _uploadBufferedOrReject(
+            final uploaded = await _uploadBufferedOrReject(
               draft: draft,
               buffered: bytes,
               overflowChunk: chunk,
@@ -602,6 +602,7 @@ final class AcpAttachmentPreparationService {
               remainingTotalBytes: remainingTotalBytes,
               onUploadProgress: onUploadProgress,
             );
+            return uploaded;
           }
           bytes.add(chunk);
         }
@@ -628,7 +629,7 @@ final class AcpAttachmentPreparationService {
       for (final chunk in prefix) {
         buffered.add(chunk);
       }
-      return _uploadBufferedOrReject(
+      final uploaded = await _uploadBufferedOrReject(
         draft: draft,
         buffered: buffered,
         iterator: iterator,
@@ -642,6 +643,7 @@ final class AcpAttachmentPreparationService {
         remainingTotalBytes: remainingTotalBytes,
         onUploadProgress: onUploadProgress,
       );
+      return uploaded;
     } finally {
       await iterator.cancel();
     }

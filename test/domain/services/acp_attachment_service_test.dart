@@ -74,6 +74,7 @@ class _RecordingDiagnostics implements DiagnosticsLogger {
 
 class _RecordingUploader implements AcpAttachmentUploader {
   final uploadedBytes = <int>[];
+  final uploadedPayloads = <List<int>>[];
   int calls = 0;
 
   @override
@@ -89,15 +90,13 @@ class _RecordingUploader implements AcpAttachmentUploader {
     void Function(AcpAttachmentUploadProgress progress)? onProgress,
   }) async {
     calls++;
-    var bytes = 0;
-    await for (final chunk in stream) {
-      bytes += chunk.length;
-    }
-    uploadedBytes.add(bytes);
+    final payload = await stream.expand((chunk) => chunk).toList();
+    uploadedBytes.add(payload.length);
+    uploadedPayloads.add(payload);
     return AcpUploadedAttachment(
       remotePath: '/home/demo/.cache/monkeyssh/uploads/safe-$calls.bin',
       displayName: 'safe-$calls.bin',
-      sizeBytes: bytes,
+      sizeBytes: payload.length,
       mimeType: mimeType,
     );
   }
@@ -421,6 +420,85 @@ void main() {
       expect(resource.text, 'hello');
     });
 
+    test('uploads all local chunks after the MIME-sniff fallback', () async {
+      var chunksRead = 0;
+      final uploader = _RecordingUploader();
+      final candidate = AcpAttachmentCandidate.localFile(
+        name: 'data.bin',
+        sizeBytes: 9,
+        openRead: () async* {
+          for (final chunk in const <List<int>>[
+            <int>[1, 2, 3],
+            <int>[4, 5, 6],
+            <int>[7, 8, 9],
+          ]) {
+            chunksRead++;
+            yield chunk;
+          }
+        },
+      );
+
+      final blocks =
+          await const AcpAttachmentPreparationService(
+            limits: AcpAttachmentLimits(mimeSniffBytes: 4),
+          ).prepare(
+            draft: AcpPromptDraft([
+              AcpAttachmentDraft(
+                candidate: candidate,
+                fallback: AcpAttachmentFallback.remoteUpload,
+              ),
+            ]),
+            capabilities: const AcpPromptCapabilities(),
+            uploader: uploader,
+          );
+
+      expect(chunksRead, 3);
+      expect(uploader.uploadedBytes, <int>[9]);
+      expect(uploader.uploadedPayloads, <List<int>>[
+        <int>[1, 2, 3, 4, 5, 6, 7, 8, 9],
+      ]);
+      expect((blocks.single as AcpResourceLinkContent).size, 9);
+    });
+
+    test('uploads all local chunks after inline buffering overflows', () async {
+      var chunksRead = 0;
+      final uploader = _RecordingUploader();
+      final candidate = AcpAttachmentCandidate.localFile(
+        name: 'data.bin',
+        openRead: () async* {
+          for (final chunk in const <List<int>>[
+            <int>[1, 2, 3],
+            <int>[4, 5, 6],
+            <int>[7, 8, 9],
+          ]) {
+            chunksRead++;
+            yield chunk;
+          }
+        },
+      );
+
+      final blocks =
+          await const AcpAttachmentPreparationService(
+            limits: AcpAttachmentLimits(maxEmbeddedBytes: 7, mimeSniffBytes: 4),
+          ).prepare(
+            draft: AcpPromptDraft([
+              AcpAttachmentDraft(
+                candidate: candidate,
+                fallback: AcpAttachmentFallback.remoteUpload,
+              ),
+            ]),
+            capabilities: const AcpPromptCapabilities(embeddedContext: true),
+            uploader: uploader,
+          );
+
+      expect(chunksRead, 3);
+      expect(uploader.uploadedBytes, <int>[9]);
+      expect(uploader.uploadedPayloads, <List<int>>[
+        <int>[1, 2, 3, 4, 5, 6, 7, 8, 9],
+      ]);
+      expect((blocks.single as AcpResourceLinkContent).size, 9);
+    });
+
     test('stops reading an unknown-size file at the byte limit', () async {
       var chunksRead = 0;
       final candidate = AcpAttachmentCandidate.localFile(
@@ -725,6 +803,66 @@ void main() {
         ),
       ).called(1);
     });
+
+    test(
+      'preparation cancellation closes the source and cleans upload',
+      () async {
+        var sourceClosed = false;
+        final token = AcpAttachmentCancellationToken();
+        final uploader = SftpAcpAttachmentUploader(
+          sftp: sftp,
+          remoteFileService: remoteFileService,
+          now: () => DateTime.utc(2026, 7, 12),
+          uniqueId: () => 'pipeline-cancel',
+        );
+        final candidate = AcpAttachmentCandidate.localFile(
+          name: 'file.bin',
+          sizeBytes: 9,
+          openRead: () async* {
+            try {
+              yield const <int>[1, 2, 3];
+              yield const <int>[4, 5, 6];
+              yield const <int>[7, 8, 9];
+            } finally {
+              sourceClosed = true;
+            }
+          },
+        );
+
+        await expectLater(
+          const AcpAttachmentPreparationService(
+            limits: AcpAttachmentLimits(mimeSniffBytes: 4),
+          ).prepare(
+            draft: AcpPromptDraft([
+              AcpAttachmentDraft(
+                candidate: candidate,
+                fallback: AcpAttachmentFallback.remoteUpload,
+              ),
+            ]),
+            capabilities: const AcpPromptCapabilities(),
+            uploader: uploader,
+            cancellationToken: token,
+            onUploadProgress: (progress) {
+              if (progress.bytesTransferred > 0) token.cancel();
+            },
+          ),
+          throwsA(
+            isA<AcpAttachmentException>().having(
+              (error) => error.failure,
+              'failure',
+              AcpAttachmentFailure.cancelled,
+            ),
+          ),
+        );
+        expect(sourceClosed, isTrue);
+        verify(
+          () => sftp.remove(
+            '/home/demo/.cache/monkeyssh/uploads/'
+            'acp-1783814400000-pipelinecancel-file.bin',
+          ),
+        ).called(1);
+      },
+    );
 
     test('cleans a partial file when SFTP upload fails', () async {
       when(
