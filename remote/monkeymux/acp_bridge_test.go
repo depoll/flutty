@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -104,6 +105,55 @@ func TestAcpAttachQueuesReplayBeforeConcurrentLiveEvent(t *testing.T) {
 				index+1,
 				frame,
 				sequence,
+			)
+		}
+	}
+}
+
+func TestAcpAttachPrimesPinnedReplayBeyondDefaultQueue(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	pinnedCount := acpClientLiveQueueCapacity + 1
+	for index := range pinnedCount {
+		request := json.RawMessage(fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":"permission-%d","method":"session/request_permission"}`,
+			index,
+		))
+		bridge.observeProviderMessage(request)
+		bridge.publish("output", request, "", nil)
+	}
+	peer, primed, release, attachDone := startPrimedTestAttach(t, bridge)
+	defer finishPrimedTestAttach(t, peer, release, attachDone)
+	select {
+	case <-primed:
+	case <-time.After(time.Second):
+		t.Fatal("attach blocked while priming pinned replay")
+	}
+
+	published := make(chan struct{})
+	go func() {
+		bridge.publish(
+			"output",
+			json.RawMessage(`{"jsonrpc":"2.0","method":"live"}`),
+			"",
+			nil,
+		)
+		close(published)
+	}()
+	close(release)
+	<-published
+
+	reader := bufio.NewReader(peer)
+	hello := readTestAcpFrame(t, reader, peer)
+	if hello.Type != "hello" {
+		t.Fatalf("first attach frame = %#v, want hello", hello)
+	}
+	for sequence := uint64(1); sequence <= uint64(pinnedCount+1); sequence++ {
+		frame := readTestAcpFrame(t, reader, peer)
+		if frame.Type != "output" || frame.Sequence != sequence {
+			t.Fatalf(
+				"replay frame sequence %d = %#v, want ordered output",
+				sequence,
+				frame,
 			)
 		}
 	}

@@ -30,6 +30,12 @@ const (
 	acpReplayMaxEvents       = 1024
 	acpReplayMaxBytes        = 4 * 1024 * 1024
 	acpIdleTimeout           = 24 * time.Hour
+	// The usual queue holds a complete bounded replay plus control frames. A
+	// replay consisting entirely of pending requests is intentionally retained
+	// past that bound, so attaching such a bridge allocates enough space to
+	// prime every retained frame before live publishing is enabled.
+	acpClientLiveQueueCapacity = acpReplayMaxEvents + 4
+	acpAttachQueueSafetyMargin = 4
 )
 
 var acpBridgeIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -714,22 +720,11 @@ func (b *acpBridge) handleAttach(
 	if err != nil {
 		return
 	}
-	client := &acpBridgeClient{
-		id:   clientID,
-		conn: conn,
-		// A complete bounded replay must fit before the writer goroutine gets a
-		// scheduling turn; live slow consumers are still disconnected once this
-		// bounded queue fills and can resume with ACK.
-		send:       make(chan acpWireMessage, acpReplayMaxEvents+4),
-		done:       make(chan struct{}),
-		writerDone: make(chan struct{}),
-	}
 	b.mu.Lock()
 	if b.writerClientID == "" {
 		b.writerClientID = clientID
 	}
 	canSend := b.writerClientID == clientID
-	client.ack = hello.LastAck
 	b.lastActivity = time.Now()
 	replay := append([]acpReplayEvent(nil), b.replay...)
 	retainedFrom := b.nextSequence + 1
@@ -759,6 +754,14 @@ func (b *acpBridge) handleAttach(
 			primed = append(primed, event.message)
 		}
 	}
+	client := &acpBridgeClient{
+		id:         clientID,
+		conn:       conn,
+		send:       make(chan acpWireMessage, acpClientQueueCapacityFor(len(primed))),
+		done:       make(chan struct{}),
+		writerDone: make(chan struct{}),
+	}
+	client.ack = hello.LastAck
 	for _, message := range primed {
 		client.send <- message
 	}
@@ -775,6 +778,7 @@ func (b *acpBridge) handleAttach(
 			b.detachClient(clientID)
 			return
 		}
+
 		if message.Version != acpBridgeProtocolVersion {
 			b.enqueue(client, acpWireMessage{
 				Version: acpBridgeProtocolVersion,
@@ -828,6 +832,14 @@ func (b *acpBridge) handleAttach(
 			})
 		}
 	}
+}
+
+func acpClientQueueCapacityFor(primedCount int) int {
+	capacity := acpClientLiveQueueCapacity
+	if required := primedCount + acpAttachQueueSafetyMargin; required > capacity {
+		capacity = required
+	}
+	return capacity
 }
 
 func replayHasGap(replay []acpReplayEvent, after uint64) bool {
