@@ -30,7 +30,6 @@ typedef _GraphicsImageNumberReservation = ({
   int number,
   int imageId,
   int? previousImageId,
-  bool requiresEagerDecode,
 });
 typedef _GraphicsDeletePosition = ({
   Buffer buffer,
@@ -1423,7 +1422,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           number: imageNumber,
           imageId: explicitImageId,
           previousImageId: reservation.previousImageId,
-          requiresEagerDecode: false,
         );
       } else {
         // Establish explicit id/number mappings before placement or async image
@@ -1464,7 +1462,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         number: imageNumber,
         imageId: reserved.imageId,
         previousImageId: reserved.previousImageId,
-        requiresEagerDecode: true,
       );
     }
     final commandImageId = imageNumberReservation?.imageId ??
@@ -2085,10 +2082,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // Compressed (`o=z`) and immediately-placed (`a=T`) images keep the eager
     // path: the former to avoid deferring the inflate/signature handling, the
     // latter because they must appear at the anchored cell straight away.
-    if (anchor == null &&
-        imageId != null &&
-        !compressed &&
-        !(imageNumberReservation?.requiresEagerDecode ?? false)) {
+    if (anchor == null && imageId != null && !compressed) {
       if (imageNumberReservation != null ||
           !manager.hasPendingWithSignature(imageId, signature)) {
         final sourceDimensions = _graphicsPayloadDimensions(args, payload);

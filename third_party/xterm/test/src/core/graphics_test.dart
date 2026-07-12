@@ -2992,6 +2992,24 @@ void main() {
     });
   });
 
+  testWidgets('I=-only root supports an immediate placement by number', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      terminal
+        ..write('\x1b_Ga=t,I=15,f=100,q=2;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=p,I=15,c=3,r=2,q=2\x1b\\');
+      final imageId = terminal.graphics.imageIdForNumber(15)!;
+
+      expect(terminal.graphics.hasPendingImage(imageId), isTrue);
+      expect(terminal.graphics.placements, hasLength(1));
+      expect(terminal.graphics.placements.single.imageId, imageId);
+    });
+  });
+
   testWidgets('I=-only virtual placement resolves an explicit placement remap',
       (
     tester,
