@@ -1032,7 +1032,8 @@ class GraphicsManager {
     return imageById(id);
   }
 
-  /// Stores [image] and returns its new id.
+  /// Stores [image] and returns its new id, or `0` when it exceeds the memory
+  /// budget.
   int storeImage(ui.Image image, {int sourceSignature = 0}) =>
       storeDecodedImage(
         DecodedTerminalImage.single(image),
@@ -1040,8 +1041,15 @@ class GraphicsManager {
       );
 
   /// Stores a decoded static or animated [image] and returns its new id.
+  ///
+  /// Returns `0` and disposes [image] when its decoded frames exceed
+  /// [maxMemoryBytes].
   int storeDecodedImage(DecodedTerminalImage image, {int sourceSignature = 0}) {
     final sizeBytes = image.sizeBytes;
+    if (sizeBytes > maxMemoryBytes) {
+      _disposeDecodedTerminalImage(image);
+      return 0;
+    }
     _evictIfNeeded(sizeBytes);
 
     final id = _nextImageId++;
@@ -1055,6 +1063,7 @@ class GraphicsManager {
   }
 
   /// Stores [image] using an id supplied by the Kitty graphics protocol.
+  /// Returns `0` when it exceeds the memory budget.
   ///
   /// Any existing image with [id] is replaced in place. Crucially, placements,
   /// placeholders and the virtual placement that already reference [id] are
@@ -1070,6 +1079,10 @@ class GraphicsManager {
       );
 
   /// Stores a decoded static or animated [image] using a protocol-supplied id.
+  ///
+  /// Returns `0` and disposes [image] when its decoded frames exceed
+  /// [maxMemoryBytes]. Any existing image or pending payload for [id] is
+  /// preserved when admission fails.
   int storeDecodedImageWithId(
     int id,
     DecodedTerminalImage image, {
@@ -1080,6 +1093,10 @@ class GraphicsManager {
     }
 
     final sizeBytes = image.sizeBytes;
+    if (sizeBytes > maxMemoryBytes) {
+      _disposeDecodedTerminalImage(image);
+      return 0;
+    }
     final pending = _pendingImages.remove(id);
     if (pending != null) {
       _pendingBytes -= pending.payload.length;

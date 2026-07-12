@@ -1100,6 +1100,53 @@ void main() {
     });
   });
 
+  testWidgets('decoded root storage rejects sequences over the memory cap', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager(maxMemoryBytes: 4);
+      final rejectedImages = <ui.Image>[
+        await _buildImage(1, 1),
+        await _buildImage(1, 1),
+      ];
+      final rejected = DecodedTerminalImage(
+        frames:
+            rejectedImages.map((image) => TerminalImageFrame(image)).toList(),
+        sourceWidth: 1,
+        sourceHeight: 1,
+      );
+
+      expect(manager.storeDecodedImage(rejected), 0);
+      expect(rejectedImages.every((image) => image.debugDisposed), isTrue);
+      expect(manager.imageCount, 0);
+      expect(manager.currentMemoryBytes, 0);
+
+      final replacingManager = GraphicsManager(maxMemoryBytes: 8);
+      final existing = await _buildImage(1, 1);
+      replacingManager.storeImageWithId(7, existing);
+      final replacementImages = <ui.Image>[
+        await _buildImage(1, 1),
+        await _buildImage(1, 1),
+        await _buildImage(1, 1),
+      ];
+      final replacement = DecodedTerminalImage(
+        frames: replacementImages
+            .map((image) => TerminalImageFrame(image))
+            .toList(),
+        sourceWidth: 1,
+        sourceHeight: 1,
+      );
+
+      expect(replacingManager.storeDecodedImageWithId(7, replacement), 0);
+      expect(
+        replacementImages.every((image) => image.debugDisposed),
+        isTrue,
+      );
+      expect(identical(replacingManager.imageById(7)!.image, existing), isTrue);
+      expect(replacingManager.currentMemoryBytes, 4);
+    });
+  });
+
   testWidgets('protocol animation consumes every decoded payload frame', (
     tester,
   ) async {

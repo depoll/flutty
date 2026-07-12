@@ -2016,6 +2016,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
             decoded,
             sourceSignature: signature,
           );
+    if (storedImageId <= 0) {
+      anchor?.dispose();
+      _respondToGraphicsFailure(
+        args,
+        'ENOSPC: image memory limit exceeded',
+      );
+      return;
+    }
     _placeStoredImageId(manager, storedImageId, anchor, args, generation);
   }
 
