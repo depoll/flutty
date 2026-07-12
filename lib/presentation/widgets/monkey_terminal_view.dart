@@ -557,6 +557,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.padding,
     this.scrollController,
     this.autoResize = true,
+    this.resizeTerminalToViewport = true,
     this.backgroundOpacity = 1,
     this.focusNode,
     this.cursorFocusNode,
@@ -616,6 +617,13 @@ class MonkeyTerminalView extends StatefulWidget {
   /// Should this widget automatically notify the underlying terminal when its
   /// size changes. [true] by default.
   final bool autoResize;
+
+  /// Whether viewport changes should resize the terminal buffer itself.
+  ///
+  /// Disable this when a shared remote PTY owns the grid size. Viewport changes
+  /// are still reported through [Terminal.onResize], while this widget clips the
+  /// remote grid to its local bounds.
+  final bool resizeTerminalToViewport;
 
   /// Opacity of the terminal background. Set to 0 to make the terminal
   /// background transparent.
@@ -808,6 +816,15 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   /// Whether the Kitty graphics frame ticker is currently running.
   @visibleForTesting
   bool get graphicsAnimationTickerActive => _graphicsAnimationTicker.isActive;
+
+  /// Current local viewport dimensions in terminal cells.
+  ({int columns, int rows})? get viewportCellSize {
+    final viewportSize = _renderTerminalOrNull?.viewportSize;
+    if (viewportSize == null) {
+      return null;
+    }
+    return (columns: viewportSize.width, rows: viewportSize.height);
+  }
 
   /// Forces the live terminal to relayout and repaint its current buffer.
   /// Used as a safety net after a multiplexer window switch.
@@ -1202,6 +1219,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           padding: EdgeInsets.zero,
           alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
           autoResize: widget.autoResize,
+          resizeTerminalToViewport: widget.resizeTerminalToViewport,
           resizeBottomInset: mediaQuery.viewInsets.bottom,
           liveOutputAutoScroll: widget.liveOutputAutoScroll,
           textStyle: widget.textStyle,
@@ -1739,6 +1757,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.padding,
     required this.alignToTrailingEdges,
     required this.autoResize,
+    required this.resizeTerminalToViewport,
     required this.resizeBottomInset,
     required this.liveOutputAutoScroll,
     required this.textStyle,
@@ -1764,6 +1783,8 @@ class _TerminalView extends LeafRenderObjectWidget {
   final bool alignToTrailingEdges;
 
   final bool autoResize;
+
+  final bool resizeTerminalToViewport;
 
   final double resizeBottomInset;
 
@@ -1798,6 +1819,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       padding: padding,
       alignToTrailingEdges: alignToTrailingEdges,
       autoResize: autoResize,
+      resizeTerminalToViewport: resizeTerminalToViewport,
       resizeBottomInset: resizeBottomInset,
       liveOutputAutoScroll: liveOutputAutoScroll,
       textStyle: textStyle,
@@ -1825,6 +1847,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..padding = padding
       ..alignToTrailingEdges = alignToTrailingEdges
       ..autoResize = autoResize
+      ..resizeTerminalToViewport = resizeTerminalToViewport
       ..resizeBottomInset = resizeBottomInset
       ..liveOutputAutoScroll = liveOutputAutoScroll
       ..textStyle = textStyle
@@ -2741,6 +2764,7 @@ class MonkeyRenderTerminal extends RenderBox
     required EdgeInsets padding,
     required bool alignToTrailingEdges,
     required bool autoResize,
+    required bool resizeTerminalToViewport,
     required double resizeBottomInset,
     required bool liveOutputAutoScroll,
     required TerminalStyle textStyle,
@@ -2759,6 +2783,7 @@ class MonkeyRenderTerminal extends RenderBox
        _padding = padding,
        _alignToTrailingEdges = alignToTrailingEdges,
        _autoResize = autoResize,
+       _resizeTerminalToViewport = resizeTerminalToViewport,
        _resizeBottomInset = resizeBottomInset,
        _liveOutputAutoScroll = liveOutputAutoScroll,
        _inlineUnderlines = inlineUnderlines,
@@ -2828,6 +2853,16 @@ class MonkeyRenderTerminal extends RenderBox
     if (value == _autoResize) return;
     _autoResize = value;
     if (!_autoResize) {
+      _cancelPendingTerminalResize();
+    }
+    markNeedsLayout();
+  }
+
+  bool _resizeTerminalToViewport;
+  set resizeTerminalToViewport(bool value) {
+    if (value == _resizeTerminalToViewport) return;
+    _resizeTerminalToViewport = value;
+    if (!_resizeTerminalToViewport) {
       _cancelPendingTerminalResize();
     }
     markNeedsLayout();
@@ -2925,6 +2960,8 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   TerminalSize? _viewportSize;
+
+  TerminalSize? get viewportSize => _viewportSize;
 
   ({int width, int height})? _viewportPixelSize;
 
@@ -3817,14 +3854,30 @@ class MonkeyRenderTerminal extends RenderBox
     final terminalNeedsResize =
         _terminal.viewWidth != viewportSize.width ||
         _terminal.viewHeight != viewportSize.height;
+    final hasCachedViewportSize = _viewportSize != null;
+    final viewportSizeChanged = _viewportSize != viewportSize;
+    final pixelSizeChanged = _viewportPixelSize != pixelSize;
+
+    if (!_resizeTerminalToViewport) {
+      _viewportSize = viewportSize;
+      _viewportPixelSize = pixelSize;
+      if (!hasCachedViewportSize ||
+          viewportSizeChanged ||
+          pixelSizeChanged ||
+          notifyIfUnchanged) {
+        _notifyTerminalResizeIfNeeded(
+          viewportSize: viewportSize,
+          pixelSize: pixelSize,
+        );
+      }
+      return;
+    }
 
     if (terminalNeedsResize) {
       _resizeTerminalIfNeeded(viewportSize: viewportSize, pixelSize: pixelSize);
       return;
     }
 
-    final hasCachedViewportSize = _viewportSize != null;
-    final pixelSizeChanged = _viewportPixelSize != pixelSize;
     _viewportSize = viewportSize;
     _viewportPixelSize = pixelSize;
 

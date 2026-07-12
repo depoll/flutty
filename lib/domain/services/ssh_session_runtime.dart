@@ -177,7 +177,8 @@ if(!$__flResolved){$__flResolved='cmd'}
     _terminal ??= Terminal(maxLines: maxLines);
     _terminal!
       ..onTitleChange = _session._handleWindowTitleChange
-      ..onIconChange = _session._handleIconNameChange;
+      ..onIconChange = _session._handleIconNameChange
+      ..canResizeFromHost = _session._canTerminalResizeFromHost;
     _session.terminalHyperlinkTracker.attach(_terminal!);
     _terminal!.onPrivateOSC = _session._handlePrivateOsc;
     _refreshTerminalPreview();
