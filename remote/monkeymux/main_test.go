@@ -580,6 +580,49 @@ func TestMultipleAttachClientsRouteC1QueriesOnlyToPrimary(t *testing.T) {
 	waitForRecordedOutput(t, secondaryConn, "beforeafter")
 }
 
+func TestRequestedImagesUseNewestMatchingClientID(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		lastActivity: time.Now(),
+		kittyImages: map[string][]byte{
+			"7": []byte("retained-image"),
+		},
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	staleConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		staleConn,
+		"same-client",
+		80,
+		24,
+	)
+	currentConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		currentConn,
+		"same-client",
+		80,
+		24,
+	)
+
+	served := server.replayRequestedImages("same-client", []string{"7"})
+
+	if !reflect.DeepEqual(served, []string{"7"}) {
+		t.Fatalf("served image ids = %#v, want [7]", served)
+	}
+	waitForRecordedOutput(t, currentConn, "retained-image")
+	time.Sleep(10 * time.Millisecond)
+	if got := staleConn.String(); got != "" {
+		t.Fatalf("stale matching client received image replay: %q", got)
+	}
+}
+
 func TestC1QueryScannerPreservesUtf8ContinuationBytes(t *testing.T) {
 	window := &muxWindow{}
 	input := []byte{'a', 0xc5, 0x9b, 0xf0, 0x9f, 0x98, 0x80, 'b'}
@@ -986,7 +1029,82 @@ func TestTerminalQueryRetryCanUseClientThatJoinedAfterObservation(t *testing.T) 
 	waitForRecordedOutput(t, joiningConn, "\x1b[c")
 }
 
-func TestPausedRedrawRetriesCompleteCarriedQuery(t *testing.T) {
+func TestLiveQueryWaitDoesNotHoldAttachLock(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	secondaryConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		secondaryConn,
+		"secondary",
+		120,
+		40,
+	)
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	primaryConn := &gatedConn{
+		recordingConn: &recordingConn{},
+		gate:          gate,
+		started:       started,
+	}
+	primary := registerTestAttachClient(
+		t,
+		server,
+		primaryConn,
+		"primary",
+		80,
+		24,
+	)
+
+	written := make(chan struct{})
+	go func() {
+		server.writeAttachOutputIfActive(
+			"@1",
+			primary.conn,
+			[]byte("before\x1b[>qafter"),
+			[]byte("before\x1b[>qafter"),
+			[]byte("beforeafter"),
+			[]byte("\x1b[>q"),
+			primary.sequence,
+			0,
+		)
+		close(written)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("primary query write did not start")
+	}
+	lockAcquired := make(chan struct{})
+	go func() {
+		server.attachMu.Lock()
+		server.attachMu.Unlock()
+		close(lockAcquired)
+	}()
+	select {
+	case <-lockAcquired:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("live query write wait held the server-wide attach lock")
+	}
+	close(gate)
+	select {
+	case <-written:
+	case <-time.After(time.Second):
+		t.Fatal("live query forwarding did not finish")
+	}
+	waitForRecordedOutput(
+		t,
+		primaryConn.recordingConn,
+		"before\x1b[>qafter",
+	)
+	waitForRecordedOutput(t, secondaryConn, "beforeafter")
+}
+
+func TestPausedRedrawFallbackPreservesQueryOrder(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                              "@1",
@@ -994,9 +1112,9 @@ func TestPausedRedrawRetriesCompleteCarriedQuery(t *testing.T) {
 		lastActivity:                    time.Now(),
 		redrawForwardingPaused:          true,
 		redrawForwardingGeneration:      1,
-		redrawForwardingBuffer:          []byte("qright"),
-		redrawForwardingFailoverBuffer:  []byte("\x1b[>qright"),
-		redrawForwardingSecondaryBuffer: []byte("right"),
+		redrawForwardingBuffer:          []byte("before\x1b[>qafter"),
+		redrawForwardingFailoverBuffer:  []byte("before\x1b[>qafter"),
+		redrawForwardingSecondaryBuffer: []byte("beforeafter"),
 		redrawForwardingQueryBuffer:     []byte("\x1b[>q"),
 	}
 	server.windows = []*muxWindow{window}
@@ -1022,7 +1140,76 @@ func TestPausedRedrawRetriesCompleteCarriedQuery(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", 1)
 
-	waitForRecordedOutput(t, secondaryConn, "\x1b[>qright")
+	waitForRecordedOutput(t, secondaryConn, "before\x1b[>qafter")
+}
+
+func TestPausedRedrawQueryWaitDoesNotHoldAttachLock(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                              "@1",
+		index:                           0,
+		lastActivity:                    time.Now(),
+		redrawForwardingPaused:          true,
+		redrawForwardingGeneration:      1,
+		redrawForwardingBuffer:          []byte("\x1b[>q"),
+		redrawForwardingFailoverBuffer:  []byte("\x1b[>q"),
+		redrawForwardingSecondaryBuffer: []byte("visible"),
+		redrawForwardingQueryBuffer:     []byte("\x1b[>q"),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"secondary",
+		120,
+		40,
+	)
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	primaryConn := &gatedConn{
+		recordingConn: &recordingConn{},
+		gate:          gate,
+		started:       started,
+	}
+	primary := registerTestAttachClient(
+		t,
+		server,
+		primaryConn,
+		"primary",
+		80,
+		24,
+	)
+	window.redrawForwardingPrimaryConn = primary.conn
+
+	resumed := make(chan struct{})
+	go func() {
+		server.resumePausedAttachForwarding("@1", 1)
+		close(resumed)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("primary query write did not start")
+	}
+	lockAcquired := make(chan struct{})
+	go func() {
+		server.attachMu.Lock()
+		server.attachMu.Unlock()
+		close(lockAcquired)
+	}()
+	select {
+	case <-lockAcquired:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("query write wait held the server-wide attach lock")
+	}
+	close(gate)
+	select {
+	case <-resumed:
+	case <-time.After(time.Second):
+		t.Fatal("paused redraw did not finish after primary write resumed")
+	}
 }
 
 func TestPausedRedrawUsesFailoverBufferForReboundPrimary(t *testing.T) {
@@ -1231,6 +1418,51 @@ func TestClippingClientReceivesInitialCanonicalViewport(t *testing.T) {
 	server.attachMu.Unlock()
 
 	waitForRecordedOutput(t, conn, "\x1b[?8;24;80t")
+}
+
+func TestLegacyResizeWithoutClientIDOnlyUpdatesPrimaryClient(t *testing.T) {
+	server := newMuxServerWithSize("test", 160, 60)
+	background := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"background",
+		120,
+		40,
+	)
+	primary := registerTestAttachClient(
+		t,
+		server,
+		&recordingConn{},
+		"primary",
+		80,
+		24,
+	)
+
+	server.resizeForClient("", 90, 30, false)
+
+	server.mu.Lock()
+	width, height := server.width, server.height
+	backgroundWidth, backgroundHeight := background.width, background.height
+	primaryWidth, primaryHeight := primary.width, primary.height
+	server.mu.Unlock()
+	if width != 90 || height != 30 {
+		t.Fatalf("shared size = %dx%d, want 90x30", width, height)
+	}
+	if backgroundWidth != 120 || backgroundHeight != 40 {
+		t.Fatalf(
+			"background size = %dx%d, want 120x40",
+			backgroundWidth,
+			backgroundHeight,
+		)
+	}
+	if primaryWidth != 90 || primaryHeight != 30 {
+		t.Fatalf(
+			"primary size = %dx%d, want 90x30",
+			primaryWidth,
+			primaryHeight,
+		)
+	}
 }
 
 func TestConcurrentClientResizesLeavePrimarySize(t *testing.T) {
@@ -2001,7 +2233,7 @@ func TestTerminalProtocolResponseDoesNotStealClientFocus(t *testing.T) {
 		80,
 		24,
 	)
-	oldPrimary.expectTerminalResponse()
+	oldPrimary.expectTerminalResponse("@1")
 
 	if oldPrimary.inputClaimsFocus([]byte("\x1b[?62;4c")) {
 		server.promoteAttachClient(oldPrimary)
@@ -2018,6 +2250,327 @@ func TestTerminalProtocolResponseDoesNotStealClientFocus(t *testing.T) {
 			width,
 			height,
 		)
+	}
+}
+
+func TestTerminalResponseRoutesToOriginatingWindowAfterSwitch(t *testing.T) {
+	originReader, originWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeReader, activeWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = originReader.Close()
+		_ = originWriter.Close()
+		_ = activeReader.Close()
+		_ = activeWriter.Close()
+	})
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:           "@1",
+			index:        0,
+			pty:          wrapPty(originWriter),
+			lastActivity: time.Now(),
+		},
+		{
+			id:           "@2",
+			index:        1,
+			pty:          wrapPty(activeWriter),
+			lastActivity: time.Now(),
+		},
+	}
+	server.activeID = "@2"
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	response := []byte("\x1b[?62;4c")
+
+	routing := client.routeInput(response)
+	for _, routed := range routing.responses {
+		if routed.windowID == "" {
+			server.writeActiveFromAttach(routed.data)
+		} else if err := server.writeWindow(routed.windowID, routed.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if routing.claimsFocus || len(routing.passthrough) != 0 {
+		t.Fatalf("response routing = %#v, want response-only input", routing)
+	}
+	got := readPipeUntil(t, originReader, func(output string) bool {
+		return output == string(response)
+	})
+	if got != string(response) {
+		t.Fatalf("origin window input = %q, want %q", got, response)
+	}
+	_ = activeReader
+}
+
+func TestCoalescedTerminalResponsesRouteToEachOriginWindow(t *testing.T) {
+	client := newAttachClient(
+		&recordingConn{},
+		controlMessage{ClientID: "coalesced-responses"},
+	)
+	t.Cleanup(client.close)
+	paletteQuery := []byte("\x1b]4;0;?;7;?\x1b\\")
+	paletteResponseCount := terminalQueryResponseCount(paletteQuery)
+	if paletteResponseCount != 2 {
+		t.Fatalf(
+			"palette response count = %d, want 2",
+			paletteResponseCount,
+		)
+	}
+	firstCompletion, queued := client.enqueueTerminalQuery(
+		paletteQuery,
+		true,
+		"@1",
+		paletteResponseCount,
+	)
+	if !queued || !client.waitForWrite(firstCompletion) {
+		t.Fatal("first window queries were not written")
+	}
+	secondCompletion, queued := client.enqueueTerminalQuery(
+		[]byte("\x1b[>q"),
+		true,
+		"@2",
+		1,
+	)
+	if !queued || !client.waitForWrite(secondCompletion) {
+		t.Fatal("second window query was not written")
+	}
+
+	responses := [][]byte{
+		[]byte("\x1b]4;0;rgb:0000/0000/0000\x1b\\"),
+		[]byte("\x1b]4;7;rgb:ffff/ffff/ffff\x1b\\"),
+		[]byte("\x1b[?1;2c"),
+	}
+	routing := client.routeInput(bytes.Join(responses, nil))
+
+	if routing.claimsFocus || len(routing.passthrough) != 0 {
+		t.Fatalf("response routing = %#v, want response-only input", routing)
+	}
+	if len(routing.responses) != 3 {
+		t.Fatalf(
+			"routed response count = %d, want 3",
+			len(routing.responses),
+		)
+	}
+	wantWindows := []string{"@1", "@1", "@2"}
+	for index, routed := range routing.responses {
+		if routed.windowID != wantWindows[index] {
+			t.Errorf(
+				"response %d window = %q, want %q",
+				index,
+				routed.windowID,
+				wantWindows[index],
+			)
+		}
+		if !bytes.Equal(routed.data, responses[index]) {
+			t.Errorf(
+				"response %d data = %q, want %q",
+				index,
+				routed.data,
+				responses[index],
+			)
+		}
+	}
+}
+
+func TestExpiredTerminalResponseWindowsAreNotRevived(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	client.activityMu.Lock()
+	client.terminalResponseUntil = time.Now().Add(-time.Second)
+	client.activityMu.Unlock()
+	client.expectTerminalResponse("@2")
+
+	routing := client.routeInput([]byte("\x1b[?62;4c"))
+
+	if len(routing.responses) != 1 {
+		t.Fatalf("routed response count = %d, want 1", len(routing.responses))
+	}
+	if routing.responses[0].windowID != "@2" {
+		t.Fatalf(
+			"response window = %q, want @2",
+			routing.responses[0].windowID,
+		)
+	}
+}
+
+func TestRenewedTerminalResponseDeadlineReschedulesHeldPrefix(t *testing.T) {
+	passthrough := make(chan []byte, 1)
+	client := &attachClient{
+		done: make(chan struct{}),
+		inputPassthrough: func(data []byte) {
+			passthrough <- append([]byte(nil), data...)
+		},
+	}
+	client.expectTerminalResponse("@1")
+	client.activityMu.Lock()
+	client.terminalResponseUntil = time.Now().Add(40 * time.Millisecond)
+	client.activityMu.Unlock()
+	firstRouting := client.routeInput([]byte{'\x1b'})
+	if len(firstRouting.passthrough) != 0 {
+		t.Fatalf("held prefix passthrough = %q", firstRouting.passthrough)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	client.expectTerminalResponse("@2")
+	select {
+	case data := <-passthrough:
+		t.Fatalf("renewed prefix was released early: %q", data)
+	case <-time.After(60 * time.Millisecond):
+	}
+
+	routing := client.routeInput([]byte("[?62;4c"))
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		string(routing.responses[0].data) != "\x1b[?62;4c" {
+		t.Fatalf("renewed response routing = %#v", routing)
+	}
+	close(client.done)
+}
+
+func TestExpiredHeldResponsePrefixIsPassedThroughBeforeRenewal(t *testing.T) {
+	passthrough := make(chan []byte, 1)
+	client := &attachClient{
+		done: make(chan struct{}),
+		inputPassthrough: func(data []byte) {
+			passthrough <- append([]byte(nil), data...)
+		},
+	}
+	client.expectTerminalResponse("@1")
+	if routing := client.routeInput([]byte{'\x1b'}); len(routing.passthrough) != 0 {
+		t.Fatalf("held prefix passthrough = %q", routing.passthrough)
+	}
+	client.activityMu.Lock()
+	client.terminalResponseUntil = time.Now().Add(-time.Second)
+	client.activityMu.Unlock()
+
+	client.expectTerminalResponse("@2")
+
+	select {
+	case data := <-passthrough:
+		if !bytes.Equal(data, []byte{'\x1b'}) {
+			t.Fatalf("expired prefix passthrough = %q", data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expired prefix was dropped")
+	}
+	routing := client.routeInput([]byte("\x1b[?62;4c"))
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@2" {
+		t.Fatalf("renewed response routing = %#v", routing)
+	}
+	close(client.done)
+}
+
+func TestSplitTerminalResponseIntroducerIsRoutedOnce(t *testing.T) {
+	tests := []struct {
+		name     string
+		first    []byte
+		second   []byte
+		response []byte
+	}{
+		{
+			name:     "escape",
+			first:    []byte{'\x1b'},
+			second:   []byte("[?62;4c"),
+			response: []byte("\x1b[?62;4c"),
+		},
+		{
+			name:     "escape csi",
+			first:    []byte("\x1b["),
+			second:   []byte("?62;4c"),
+			response: []byte("\x1b[?62;4c"),
+		},
+		{
+			name:     "c1 csi",
+			first:    []byte{0x9b},
+			second:   []byte("?62;4c"),
+			response: []byte{0x9b, '?', '6', '2', ';', '4', 'c'},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &attachClient{}
+			client.expectTerminalResponse("@1")
+
+			firstRouting := client.routeInput(test.first)
+			if len(firstRouting.passthrough) != 0 ||
+				len(firstRouting.responses) != 0 ||
+				firstRouting.claimsFocus {
+				t.Fatalf(
+					"first fragment routing = %#v, want held input",
+					firstRouting,
+				)
+			}
+			secondRouting := client.routeInput(test.second)
+			if len(secondRouting.passthrough) != 0 ||
+				secondRouting.claimsFocus ||
+				len(secondRouting.responses) != 1 {
+				t.Fatalf(
+					"completed response routing = %#v",
+					secondRouting,
+				)
+			}
+			routed := secondRouting.responses[0]
+			if routed.windowID != "@1" ||
+				!bytes.Equal(routed.data, test.response) {
+				t.Fatalf(
+					"routed response = %#v, want @1 %q",
+					routed,
+					test.response,
+				)
+			}
+		})
+	}
+}
+
+func TestSplitUtf8ContinuationIsNotTreatedAsC1Response(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	encoded := []byte("丝")
+
+	firstRouting := client.routeInput(encoded[:2])
+	if !bytes.Equal(firstRouting.passthrough, encoded[:2]) ||
+		!firstRouting.claimsFocus ||
+		len(firstRouting.responses) != 0 {
+		t.Fatalf("UTF-8 prefix routing = %#v", firstRouting)
+	}
+	secondRouting := client.routeInput(encoded[2:])
+	if !bytes.Equal(secondRouting.passthrough, encoded[2:]) ||
+		!secondRouting.claimsFocus ||
+		len(secondRouting.responses) != 0 {
+		t.Fatalf("UTF-8 continuation routing = %#v", secondRouting)
+	}
+	client.activityMu.Lock()
+	carry := append([]byte(nil), client.terminalResponseCarry...)
+	client.activityMu.Unlock()
+	if len(carry) != 0 {
+		t.Fatalf("UTF-8 continuation was held as a C1 response: %x", carry)
+	}
+}
+
+func TestTerminalResponseFollowedByInputRoutesBoth(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	response := []byte("\x1b[?62;4c")
+
+	routing := client.routeInput(append(response, 'x'))
+
+	if len(routing.responses) != 1 {
+		t.Fatalf("routed response count = %d, want 1", len(routing.responses))
+	}
+	if routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, response) {
+		t.Fatalf("routed response = %#v", routing.responses[0])
+	}
+	if !routing.claimsFocus || string(routing.passthrough) != "x" {
+		t.Fatalf("input routing = %#v, want focus-claiming x", routing)
 	}
 }
 
@@ -2039,7 +2592,7 @@ func TestRealInputClaimsFocusDuringTerminalResponseGrace(t *testing.T) {
 		80,
 		24,
 	)
-	first.expectTerminalResponse()
+	first.expectTerminalResponse("@1")
 
 	for _, input := range [][]byte{
 		[]byte("x"),
@@ -2161,7 +2714,7 @@ func TestDelayedEscapeDoesNotOverwriteNewerClientFocus(t *testing.T) {
 
 func TestSplitTerminalProtocolResponseDoesNotClaimFocus(t *testing.T) {
 	client := &attachClient{}
-	client.expectTerminalResponse()
+	client.expectTerminalResponse("@1")
 
 	if client.inputClaimsFocus([]byte("\x1b]11;rgb:ffff/")) {
 		t.Fatal("partial terminal response claimed focus")
@@ -2189,7 +2742,7 @@ func TestSplitResponseEscapeDoesNotClaimFocusDuringGrace(t *testing.T) {
 		80,
 		24,
 	)
-	responder.expectTerminalResponse()
+	responder.expectTerminalResponse("@1")
 
 	if responder.inputClaimsFocus([]byte{'\x1b'}) {
 		t.Fatal("split response Escape claimed focus immediately")
@@ -2214,7 +2767,7 @@ func TestSupportedTerminalResponseFormsDoNotClaimFocus(t *testing.T) {
 	}
 	for _, response := range responses {
 		client := &attachClient{}
-		client.expectTerminalResponse()
+		client.expectTerminalResponse("@1")
 		if client.inputClaimsFocus(response) {
 			t.Fatalf("terminal response %q claimed focus", response)
 		}
@@ -2223,7 +2776,7 @@ func TestSupportedTerminalResponseFormsDoNotClaimFocus(t *testing.T) {
 
 func TestLargeSplitClipboardResponseUsesBoundedFocusParserState(t *testing.T) {
 	client := &attachClient{}
-	client.expectTerminalResponse()
+	client.expectTerminalResponse("@1")
 	payload := append(
 		[]byte("\x1b]52;c;"),
 		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes+1024)...,
@@ -2248,7 +2801,7 @@ func TestLargeSplitClipboardResponseUsesBoundedFocusParserState(t *testing.T) {
 
 func TestLargeSplitResponseDoesNotTreatUtf8ContinuationAsC1ST(t *testing.T) {
 	client := &attachClient{}
-	client.expectTerminalResponse()
+	client.expectTerminalResponse("@1")
 	payload := append(
 		[]byte("\x1b]52;c;"),
 		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes)...,
@@ -2298,12 +2851,65 @@ func TestQueryWriteArmsResponseGraceBeforeSocketWrite(t *testing.T) {
 	conn.client = client
 	t.Cleanup(client.close)
 
-	completion, queued := client.enqueueTerminalQuery([]byte("\x1b[c"), true)
+	completion, queued := client.enqueueTerminalQuery(
+		[]byte("\x1b[c"),
+		true,
+		"@1",
+		1,
+	)
 	if !queued || !client.waitForWrite(completion) {
 		t.Fatal("terminal query was not written")
 	}
 	if conn.responseClaimedFocus {
 		t.Fatal("immediate terminal response claimed focus before grace was armed")
+	}
+}
+
+func TestSuccessfulQueryWriteWinsConcurrentClientClose(t *testing.T) {
+	conn := &closeOnSuccessfulWriteConn{}
+	client := newAttachClient(
+		conn,
+		controlMessage{ClientID: "close-after-write"},
+	)
+	conn.client = client
+
+	completion, queued := client.enqueueTerminalQuery(
+		[]byte("\x1b[c"),
+		true,
+		"@1",
+		1,
+	)
+	if !queued || !client.waitForWrite(completion) {
+		t.Fatal("successful query write was reported as failed after close")
+	}
+}
+
+func TestAttachCloseCompletesQueuedWriteWaiters(t *testing.T) {
+	client := newAttachClient(
+		discardConn{},
+		controlMessage{ClientID: "queued-close"},
+	)
+	gate := &attachWriteGate{done: make(chan struct{})}
+	completion, queued := client.enqueueConditionalTerminalQuery(
+		[]byte("\x1b[c"),
+		true,
+		"@1",
+		1,
+		gate,
+	)
+	if !queued {
+		t.Fatal("conditional query was not queued")
+	}
+
+	client.close()
+
+	select {
+	case err := <-completion:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("queued write error = %v, want closed pipe", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued write completion was not resolved on close")
 	}
 }
 
@@ -3135,6 +3741,18 @@ func TestForegroundRedrawDoesNotResizeClosedPty(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(foregroundRedrawResizeDelay + 20*time.Millisecond)
+}
+
+func TestClosedUnixPtyUsesInvalidFileDescriptorSentinel(t *testing.T) {
+	windowPty := openTestPty(t)
+
+	if err := windowPty.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := windowPty.Fd(); got != ^uintptr(0) {
+		t.Fatalf("closed pty fd = %d, want invalid sentinel", got)
+	}
 }
 
 func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
@@ -7856,9 +8474,16 @@ type failingConn struct {
 	discardConn
 }
 
+type closeOnSuccessfulWriteConn struct {
+	discardConn
+	client *attachClient
+}
+
 type gatedConn struct {
 	*recordingConn
-	gate <-chan struct{}
+	gate    <-chan struct{}
+	started chan struct{}
+	once    sync.Once
 }
 
 type responseCheckConn struct {
@@ -7883,7 +8508,17 @@ func (failingConn) Write([]byte) (int, error) {
 	return 0, io.ErrClosedPipe
 }
 
+func (c *closeOnSuccessfulWriteConn) Write(data []byte) (int, error) {
+	c.client.close()
+	return len(data), nil
+}
+
 func (c *gatedConn) Write(data []byte) (int, error) {
+	if c.started != nil {
+		c.once.Do(func() {
+			close(c.started)
+		})
+	}
 	<-c.gate
 	return c.recordingConn.Write(data)
 }

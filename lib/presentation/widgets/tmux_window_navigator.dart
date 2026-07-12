@@ -825,7 +825,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         const SizedBox(width: 8),
         Expanded(
           child: Text(
-            'Ctrl-B: c new / n,p switch / 0-9 select / & close / d detach',
+            'Ctrl-B: c new / n,p switch / 0-9 select / & then y close / d detach',
             style: FluttyTheme.monoStyle.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
               fontSize: 11,

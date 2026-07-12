@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.97"
+	monkeyMuxVersion                  = "0.1.98"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -612,9 +612,27 @@ type attachFocusResult struct {
 }
 
 type attachWrite struct {
-	data           []byte
-	complete       chan error
-	expectResponse bool
+	data             []byte
+	complete         chan error
+	responseWindowID string
+	responseCount    int
+	gate             *attachWriteGate
+}
+
+type attachWriteGate struct {
+	done    chan struct{}
+	deliver atomic.Bool
+}
+
+type routedTerminalResponse struct {
+	windowID string
+	data     []byte
+}
+
+type attachInputRouting struct {
+	claimsFocus bool
+	passthrough []byte
+	responses   []routedTerminalResponse
 }
 
 type attachClient struct {
@@ -630,16 +648,22 @@ type attachClient struct {
 	prefixEnabled                      bool
 	prefixPending                      bool
 	confirmCloseID                     string
+	inputMu                            sync.Mutex
 	activityMu                         sync.Mutex
 	terminalResponseUntil              time.Time
 	terminalResponseCarry              []byte
 	terminalResponseContinuation       byte
 	terminalResponseContinuationEscape bool
 	terminalResponseContinuationUtf8   int
+	terminalResponseWindows            []string
+	terminalResponseActiveWindow       string
+	terminalResponseCarryGeneration    uint64
+	inputUtf8Remaining                 int
 	focusInputCarry                    []byte
 	focusInputGeneration               uint64
 	focusSequenceSnapshot              func() uint64
 	focusClaim                         func(uint64)
+	inputPassthrough                   func([]byte)
 	replayMu                           sync.Mutex
 	replayedWindowID                   string
 	replayedOutputGeneration           uint64
@@ -649,6 +673,7 @@ type attachClient struct {
 	closeOnce   sync.Once
 	queueMu     sync.Mutex
 	queuedBytes int
+	queueClosed bool
 }
 
 func main() {
@@ -4036,27 +4061,58 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 }
 
 func (c *attachClient) writeLoop() {
+	defer c.failQueuedWrites(io.ErrClosedPipe)
 	for {
 		select {
 		case write := <-c.queue:
-			if write.expectResponse {
-				c.expectTerminalResponse()
+			if write.gate != nil {
+				select {
+				case <-write.gate.done:
+					if !write.gate.deliver.Load() {
+						c.finishQueuedWrite(write, nil)
+						continue
+					}
+				case <-c.done:
+					c.finishQueuedWrite(write, io.ErrClosedPipe)
+					return
+				}
+			}
+			if write.responseWindowID != "" {
+				c.expectTerminalResponses(
+					write.responseWindowID,
+					write.responseCount,
+				)
 			}
 			_ = c.conn.SetWriteDeadline(time.Now().Add(attachWriteTimeout))
 			err := writeConnection(c.conn, write.data)
 			_ = c.conn.SetWriteDeadline(time.Time{})
-			c.queueMu.Lock()
-			c.queuedBytes -= len(write.data)
-			c.queueMu.Unlock()
-			if write.complete != nil {
-				write.complete <- err
-				close(write.complete)
-			}
+			c.finishQueuedWrite(write, err)
 			if err != nil {
 				c.close()
 				return
 			}
 		case <-c.done:
+			return
+		}
+	}
+}
+
+func (c *attachClient) finishQueuedWrite(write attachWrite, err error) {
+	c.queueMu.Lock()
+	c.queuedBytes -= len(write.data)
+	c.queueMu.Unlock()
+	if write.complete != nil {
+		write.complete <- err
+		close(write.complete)
+	}
+}
+
+func (c *attachClient) failQueuedWrites(err error) {
+	for {
+		select {
+		case write := <-c.queue:
+			c.finishQueuedWrite(write, err)
+		default:
 			return
 		}
 	}
@@ -4077,20 +4133,34 @@ func writeConnection(conn net.Conn, data []byte) error {
 }
 
 func (c *attachClient) enqueue(data []byte, wait bool) (<-chan error, bool) {
-	return c.enqueueWrite(data, wait, false)
+	return c.enqueueWrite(data, wait, "", 0, nil)
 }
 
 func (c *attachClient) enqueueTerminalQuery(
 	data []byte,
 	wait bool,
+	windowID string,
+	responseCount int,
 ) (<-chan error, bool) {
-	return c.enqueueWrite(data, wait, true)
+	return c.enqueueWrite(data, wait, windowID, responseCount, nil)
+}
+
+func (c *attachClient) enqueueConditionalTerminalQuery(
+	data []byte,
+	wait bool,
+	windowID string,
+	responseCount int,
+	gate *attachWriteGate,
+) (<-chan error, bool) {
+	return c.enqueueWrite(data, wait, windowID, responseCount, gate)
 }
 
 func (c *attachClient) enqueueWrite(
 	data []byte,
 	wait bool,
-	expectResponse bool,
+	responseWindowID string,
+	responseCount int,
+	gate *attachWriteGate,
 ) (<-chan error, bool) {
 	if len(data) == 0 {
 		return nil, true
@@ -4100,30 +4170,33 @@ func (c *attachClient) enqueueWrite(
 		return nil, false
 	}
 	write := attachWrite{
-		data:           append([]byte(nil), data...),
-		expectResponse: expectResponse,
+		data:             append([]byte(nil), data...),
+		responseWindowID: responseWindowID,
+		responseCount:    responseCount,
+		gate:             gate,
+	}
+	if responseWindowID != "" && write.responseCount == 0 {
+		write.responseCount = 1
 	}
 	if wait {
 		write.complete = make(chan error, 1)
 	}
-	select {
-	case <-c.done:
-		return nil, false
-	default:
-	}
 	c.queueMu.Lock()
-	if c.queuedBytes+len(write.data) > attachWriteQueueLimitBytes {
+	queueClosed := c.queueClosed
+	if queueClosed ||
+		c.queuedBytes+len(write.data) > attachWriteQueueLimitBytes {
 		c.queueMu.Unlock()
-		c.close()
+		if !queueClosed {
+			c.close()
+		}
 		return nil, false
 	}
 	c.queuedBytes += len(write.data)
-	c.queueMu.Unlock()
 	select {
 	case c.queue <- write:
+		c.queueMu.Unlock()
 		return write.complete, true
 	default:
-		c.queueMu.Lock()
 		c.queuedBytes -= len(write.data)
 		c.queueMu.Unlock()
 		c.close()
@@ -4135,17 +4208,16 @@ func (c *attachClient) waitForWrite(completion <-chan error) bool {
 	if completion == nil {
 		return true
 	}
-	select {
-	case err := <-completion:
-		return err == nil
-	case <-c.done:
-		return false
-	}
+	err, ok := <-completion
+	return ok && err == nil
 }
 
 func (c *attachClient) close() {
 	c.closeOnce.Do(func() {
+		c.queueMu.Lock()
+		c.queueClosed = true
 		close(c.done)
+		c.queueMu.Unlock()
 		_ = c.conn.Close()
 	})
 }
@@ -4184,21 +4256,239 @@ func (c *attachClient) suppressesReplayedOutput(
 	return false
 }
 
-func (c *attachClient) expectTerminalResponse() {
-	if c == nil {
+func (c *attachClient) expectTerminalResponse(windowID string) {
+	c.expectTerminalResponses(windowID, 1)
+}
+
+func (c *attachClient) expectTerminalResponses(windowID string, count int) {
+	if c == nil || windowID == "" {
 		return
 	}
+	if count < 1 {
+		count = 1
+	}
+	now := time.Now()
+	var expiredInput []byte
+	var expiredFocusSequence uint64
+	var claim func(uint64)
+	var passthrough func([]byte)
+	inputLocked := false
 	c.activityMu.Lock()
-	c.terminalResponseUntil = time.Now().Add(terminalResponseFocusGrace)
+	if !c.terminalResponseUntil.IsZero() &&
+		now.After(c.terminalResponseUntil) {
+		if len(c.terminalResponseCarry) > 0 {
+			c.inputMu.Lock()
+			inputLocked = true
+			expiredInput = append(
+				expiredInput,
+				c.terminalResponseCarry...,
+			)
+			if c.focusSequenceSnapshot != nil {
+				expiredFocusSequence = c.focusSequenceSnapshot()
+			}
+			claim = c.focusClaim
+			passthrough = c.inputPassthrough
+		}
+		c.resetTerminalResponseStateLocked()
+	}
+	c.terminalResponseUntil = now.Add(terminalResponseFocusGrace)
+	for range count {
+		c.terminalResponseWindows = append(
+			c.terminalResponseWindows,
+			windowID,
+		)
+	}
+	if len(c.terminalResponseCarry) > 0 {
+		c.scheduleTerminalResponseCarryLocked()
+	}
 	c.activityMu.Unlock()
+	if !inputLocked {
+		return
+	}
+	defer c.inputMu.Unlock()
+	select {
+	case <-c.done:
+		return
+	default:
+	}
+	if claim != nil {
+		claim(expiredFocusSequence)
+	}
+	if passthrough != nil {
+		passthrough(expiredInput)
+	}
 }
 
 func (c *attachClient) inputClaimsFocus(data []byte) bool {
+	return c.routeInput(data).claimsFocus
+}
+
+func (c *attachClient) routeInput(data []byte) attachInputRouting {
+	result := attachInputRouting{passthrough: data}
 	if c == nil || len(data) == 0 {
-		return false
+		return result
 	}
 	c.activityMu.Lock()
 	defer c.activityMu.Unlock()
+	previousInputUtf8Remaining := c.inputUtf8Remaining
+	leadingInputUtf8Prefix := leadingUtf8ContinuationPrefix(
+		data,
+		previousInputUtf8Remaining,
+	)
+	c.inputUtf8Remaining = nextQueryUtf8Remaining(
+		data,
+		previousInputUtf8Remaining,
+		leadingInputUtf8Prefix,
+	)
+	now := time.Now()
+	if !c.terminalResponseUntil.IsZero() &&
+		now.After(c.terminalResponseUntil) {
+		userInput := data
+		if len(c.terminalResponseCarry) > 0 {
+			userInput = make(
+				[]byte,
+				0,
+				len(c.terminalResponseCarry)+len(data),
+			)
+			userInput = append(userInput, c.terminalResponseCarry...)
+			userInput = append(userInput, data...)
+		}
+		c.resetTerminalResponseStateLocked()
+		c.routeUserInputLocked(userInput, &result)
+		return result
+	}
+	if !c.hasExpectedTerminalResponseLocked() &&
+		len(c.terminalResponseCarry) == 0 {
+		c.routeUserInputLocked(data, &result)
+		return result
+	}
+
+	responseInput := data
+	combined := responseInput
+	responseLeadingUtf8Prefix := leadingInputUtf8Prefix
+	if c.terminalResponseContinuation != 0 {
+		responseLeadingUtf8Prefix = 0
+		remaining, complete, trailingEscape, utf8Remaining :=
+			consumeTerminalResponseContinuation(
+				responseInput,
+				c.terminalResponseContinuation,
+				c.terminalResponseContinuationEscape,
+				c.terminalResponseContinuationUtf8,
+			)
+		c.terminalResponseContinuationEscape = trailingEscape
+		c.terminalResponseContinuationUtf8 = utf8Remaining
+		windowID := c.currentTerminalResponseWindowLocked()
+		if !complete {
+			result.passthrough = nil
+			result.responses = append(
+				result.responses,
+				routedTerminalResponse{
+					windowID: windowID,
+					data:     append([]byte(nil), responseInput...),
+				},
+			)
+			return result
+		}
+		consumed := len(responseInput) - len(remaining)
+		if consumed > 0 {
+			result.responses = append(
+				result.responses,
+				routedTerminalResponse{
+					windowID: windowID,
+					data: append(
+						[]byte(nil),
+						responseInput[:consumed]...,
+					),
+				},
+			)
+		}
+		c.finishTerminalResponseLocked()
+		c.terminalResponseContinuation = 0
+		c.terminalResponseContinuationEscape = false
+		c.terminalResponseContinuationUtf8 = 0
+		if len(remaining) == 0 {
+			result.passthrough = nil
+			return result
+		}
+		combined = remaining
+		responseInput = remaining
+	}
+	if len(c.terminalResponseCarry) > 0 {
+		responseLeadingUtf8Prefix = 0
+		combined = make(
+			[]byte,
+			0,
+			len(c.terminalResponseCarry)+len(responseInput),
+		)
+		combined = append(combined, c.terminalResponseCarry...)
+		combined = append(combined, responseInput...)
+		c.terminalResponseCarry = nil
+		c.terminalResponseCarryGeneration++
+	}
+	responseEnds, incompleteStart, continuation, passthroughStart :=
+		scanTerminalResponseInput(combined, responseLeadingUtf8Prefix)
+	responseStart := 0
+	for _, responseEnd := range responseEnds {
+		if !c.hasExpectedTerminalResponseLocked() {
+			passthroughStart = responseStart
+			incompleteStart = -1
+			break
+		}
+		result.responses = append(
+			result.responses,
+			routedTerminalResponse{
+				windowID: c.currentTerminalResponseWindowLocked(),
+				data: append(
+					[]byte(nil),
+					combined[responseStart:responseEnd]...,
+				),
+			},
+		)
+		c.finishTerminalResponseLocked()
+		responseStart = responseEnd
+	}
+	if incompleteStart >= 0 {
+		if !c.hasExpectedTerminalResponseLocked() {
+			c.routeUserInputLocked(combined[responseStart:], &result)
+			return result
+		}
+		incomplete := combined[incompleteStart:]
+		if len(incomplete) <= terminalResponseCarryLimitBytes {
+			c.storeTerminalResponseCarryLocked(incomplete)
+		} else if continuation != 0 {
+			windowID := c.currentTerminalResponseWindowLocked()
+			c.terminalResponseContinuation = continuation
+			c.terminalResponseContinuationEscape =
+				incomplete[len(incomplete)-1] == '\x1b'
+			c.terminalResponseContinuationUtf8 =
+				trailingUtf8ContinuationCount(incomplete)
+			result.responses = append(
+				result.responses,
+				routedTerminalResponse{
+					windowID: windowID,
+					data:     append([]byte(nil), incomplete...),
+				},
+			)
+		}
+		result.passthrough = nil
+		return result
+	}
+	if passthroughStart >= len(combined) {
+		result.passthrough = nil
+		return result
+	}
+	c.routeUserInputLocked(combined[passthroughStart:], &result)
+	return result
+}
+
+func (c *attachClient) routeUserInputLocked(
+	data []byte,
+	result *attachInputRouting,
+) {
+	result.passthrough = data
+	if len(data) == 0 {
+		return
+	}
 	c.focusInputGeneration++
 	focusGeneration := c.focusInputGeneration
 	combinedFocusInput := data
@@ -4223,64 +4513,101 @@ func (c *attachClient) inputClaimsFocus(data []byte) bool {
 			c.resolveAmbiguousFocusInput(focusGeneration, focusSequence)
 		})
 	}
-	if len(filteredInput) == 0 {
-		return false
+	result.claimsFocus = len(filteredInput) > 0
+}
+
+func (c *attachClient) hasExpectedTerminalResponseLocked() bool {
+	return c.terminalResponseActiveWindow != "" ||
+		len(c.terminalResponseWindows) > 0
+}
+
+func (c *attachClient) resetTerminalResponseStateLocked() {
+	c.terminalResponseCarry = nil
+	c.terminalResponseCarryGeneration++
+	c.terminalResponseContinuation = 0
+	c.terminalResponseContinuationEscape = false
+	c.terminalResponseContinuationUtf8 = 0
+	c.terminalResponseWindows = nil
+	c.terminalResponseActiveWindow = ""
+	c.terminalResponseUntil = time.Time{}
+}
+
+func (c *attachClient) storeTerminalResponseCarryLocked(
+	data []byte,
+) {
+	c.terminalResponseCarry = append(c.terminalResponseCarry[:0], data...)
+	c.scheduleTerminalResponseCarryLocked()
+}
+
+func (c *attachClient) scheduleTerminalResponseCarryLocked() {
+	c.terminalResponseCarryGeneration++
+	generation := c.terminalResponseCarryGeneration
+	focusSequence := uint64(0)
+	if c.focusSequenceSnapshot != nil {
+		focusSequence = c.focusSequenceSnapshot()
 	}
-	data = filteredInput
-	if time.Now().After(c.terminalResponseUntil) {
-		c.terminalResponseCarry = nil
-		c.terminalResponseContinuation = 0
-		c.terminalResponseContinuationEscape = false
-		c.terminalResponseContinuationUtf8 = 0
-		return true
+	delay := time.Until(c.terminalResponseUntil)
+	if delay < 0 {
+		delay = 0
 	}
-	combined := data
-	if c.terminalResponseContinuation != 0 {
-		remaining, complete, trailingEscape, utf8Remaining :=
-			consumeTerminalResponseContinuation(
-				data,
-				c.terminalResponseContinuation,
-				c.terminalResponseContinuationEscape,
-				c.terminalResponseContinuationUtf8,
-			)
-		c.terminalResponseContinuationEscape = trailingEscape
-		c.terminalResponseContinuationUtf8 = utf8Remaining
-		if !complete {
-			return false
-		}
-		c.terminalResponseContinuation = 0
-		c.terminalResponseContinuationEscape = false
-		c.terminalResponseContinuationUtf8 = 0
-		if len(remaining) == 0 {
-			return false
-		}
-		combined = remaining
+	time.AfterFunc(delay, func() {
+		c.resolveAmbiguousTerminalResponseInput(generation, focusSequence)
+	})
+}
+
+func (c *attachClient) resolveAmbiguousTerminalResponseInput(
+	generation uint64,
+	focusSequence uint64,
+) {
+	c.activityMu.Lock()
+	if c.terminalResponseCarryGeneration != generation ||
+		len(c.terminalResponseCarry) == 0 {
+		c.activityMu.Unlock()
+		return
 	}
-	if len(c.terminalResponseCarry) > 0 {
-		combined = make([]byte, 0, len(c.terminalResponseCarry)+len(data))
-		combined = append(combined, c.terminalResponseCarry...)
-		combined = append(combined, data...)
-		c.terminalResponseCarry = nil
+	c.inputMu.Lock()
+	data := append([]byte(nil), c.terminalResponseCarry...)
+	c.terminalResponseCarry = nil
+	c.terminalResponseCarryGeneration++
+	if !c.terminalResponseUntil.IsZero() &&
+		time.Now().After(c.terminalResponseUntil) {
+		c.resetTerminalResponseStateLocked()
 	}
-	isResponse, incomplete, continuation := classifyTerminalResponseInput(
-		combined,
-	)
-	if incomplete {
-		if len(combined) <= terminalResponseCarryLimitBytes {
-			c.terminalResponseCarry = append(
-				c.terminalResponseCarry[:0],
-				combined...,
-			)
-		} else if continuation != 0 {
-			c.terminalResponseContinuation = continuation
-			c.terminalResponseContinuationEscape =
-				combined[len(combined)-1] == '\x1b'
-			c.terminalResponseContinuationUtf8 =
-				trailingUtf8ContinuationCount(combined)
-		}
-		return false
+	claim := c.focusClaim
+	passthrough := c.inputPassthrough
+	c.activityMu.Unlock()
+	defer c.inputMu.Unlock()
+
+	select {
+	case <-c.done:
+		return
+	default:
 	}
-	return !isResponse
+	if claim != nil {
+		claim(focusSequence)
+	}
+	if passthrough != nil {
+		passthrough(data)
+	}
+}
+
+func (c *attachClient) currentTerminalResponseWindowLocked() string {
+	if c.terminalResponseActiveWindow != "" {
+		return c.terminalResponseActiveWindow
+	}
+	if len(c.terminalResponseWindows) == 0 {
+		return ""
+	}
+	c.terminalResponseActiveWindow = c.terminalResponseWindows[0]
+	c.terminalResponseWindows = c.terminalResponseWindows[1:]
+	return c.terminalResponseActiveWindow
+}
+
+func (c *attachClient) finishTerminalResponseLocked() {
+	c.terminalResponseActiveWindow = ""
+	if len(c.terminalResponseWindows) == 0 {
+		c.terminalResponseUntil = time.Time{}
+	}
 }
 
 func (c *attachClient) resolveAmbiguousFocusInput(
@@ -4290,13 +4617,6 @@ func (c *attachClient) resolveAmbiguousFocusInput(
 	c.activityMu.Lock()
 	if c.focusInputGeneration != generation || len(c.focusInputCarry) == 0 {
 		c.activityMu.Unlock()
-		return
-	}
-	if remaining := time.Until(c.terminalResponseUntil); remaining > 0 {
-		c.activityMu.Unlock()
-		time.AfterFunc(remaining, func() {
-			c.resolveAmbiguousFocusInput(generation, focusSequence)
-		})
 		return
 	}
 	c.focusInputCarry = nil
@@ -4660,6 +4980,9 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	client.focusClaim = func(expectedFocusSequence uint64) {
 		s.focusAttachClientIfUnchanged(client, expectedFocusSequence)
 	}
+	client.inputPassthrough = func(data []byte) {
+		_ = s.handleAttachInput(client, data)
+	}
 	s.resizeMu.Lock()
 	s.attachMu.Lock()
 	s.mu.Lock()
@@ -4750,10 +5073,19 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
-			if client.inputClaimsFocus(buf[:n]) {
+			routing := client.routeInput(buf[:n])
+			if routing.claimsFocus {
 				s.promoteAttachClient(client)
 			}
-			if s.handleAttachInput(client, buf[:n]) {
+			for _, response := range routing.responses {
+				if response.windowID == "" {
+					s.writeActiveFromAttach(response.data)
+					continue
+				}
+				_ = s.writeWindow(response.windowID, response.data)
+			}
+			if len(routing.passthrough) > 0 &&
+				s.handleAttachInputSerialized(client, routing.passthrough) {
 				return
 			}
 		}
@@ -5397,12 +5729,10 @@ func (s *muxServer) replayRequestedImages(
 	}
 	attach = s.attachConn
 	if normalizedID := strings.TrimSpace(clientID); normalizedID != "" {
+		client := s.attachClientByIDLocked(normalizedID)
 		attach = nil
-		for _, client := range s.attachClients {
-			if client.id == normalizedID {
-				attach = client.conn
-				break
-			}
+		if client != nil {
+			attach = client.conn
 		}
 	}
 	if attach == nil {
@@ -5876,7 +6206,6 @@ func (s *muxServer) resumePausedAttachForwarding(
 	var refreshPendingFocus bool
 	var refreshPendingResize bool
 	s.attachMu.Lock()
-	defer s.attachMu.Unlock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil ||
@@ -5884,6 +6213,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 		!window.redrawForwardingPaused ||
 		window.redrawForwardingGeneration != generation {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return
 	}
 	replay = append([]byte(nil), window.redrawForwardingReplay...)
@@ -5940,6 +6270,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 	secondaryOutput := append(append([]byte(nil), replay...), secondaryBuffered...)
 	if legacy != nil {
 		s.writeAttachLocked(legacy, primaryOutput)
+		s.attachMu.Unlock()
 		return
 	}
 	var primaryClient *attachClient
@@ -5951,46 +6282,94 @@ func (s *muxServer) resumePausedAttachForwarding(
 	}
 	var deliveredPrimary *attachClient
 	if len(queryData) > 0 {
-		tryWrite := func(client *attachClient, data []byte) bool {
-			if client == nil {
-				return false
-			}
-			completion, queued := client.enqueueTerminalQuery(data, true)
-			return queued && client.waitForWrite(completion)
+		type queryFallback struct {
+			client              *attachClient
+			queryCompletion     <-chan error
+			queryGate           *attachWriteGate
+			secondaryOutputGate *attachWriteGate
 		}
+		responseCount := terminalQueryResponseCount(queryData)
 		initialOutput := primaryOutput
 		if primaryNeedsFailover {
 			initialOutput = failoverOutput
 		}
-		if tryWrite(primaryClient, initialOutput) {
-			deliveredPrimary = primaryClient
-		} else {
-			sort.Slice(clients, func(i int, j int) bool {
-				return moreRecentlyFocusedAttachClient(clients[i], clients[j])
-			})
-			for _, client := range clients {
-				if client == primaryClient || !tryWrite(client, failoverOutput) {
-					continue
-				}
-				deliveredPrimary = client
-				break
-			}
+		var primaryCompletion <-chan error
+		primaryQueued := false
+		if primaryClient != nil {
+			primaryCompletion, primaryQueued =
+				primaryClient.enqueueTerminalQuery(
+					initialOutput,
+					true,
+					windowID,
+					responseCount,
+				)
 		}
-		for _, client := range clients {
-			if client == deliveredPrimary || len(secondaryOutput) == 0 {
+		sortedClients := append([]*attachClient(nil), clients...)
+		sort.Slice(sortedClients, func(i int, j int) bool {
+			return moreRecentlyFocusedAttachClient(
+				sortedClients[i],
+				sortedClients[j],
+			)
+		})
+		fallbacks := make([]queryFallback, 0, len(sortedClients))
+		for _, client := range sortedClients {
+			if client == primaryClient {
 				continue
 			}
-			_, _ = client.enqueue(secondaryOutput, false)
-		}
-		if deliveredPrimary == nil {
-			s.mu.Lock()
-			window := s.windowByIDLocked(windowID)
-			if window != nil && !window.closed {
-				s.storePendingTerminalQueriesLocked(window, queryData)
+			queryGate := &attachWriteGate{done: make(chan struct{})}
+			queryCompletion, queued :=
+				client.enqueueConditionalTerminalQuery(
+					failoverOutput,
+					true,
+					windowID,
+					responseCount,
+					queryGate,
+				)
+			if !queued {
+				continue
 			}
-			s.mu.Unlock()
-		} else {
-			deliveredPrimary.expectTerminalResponse()
+			fallback := queryFallback{
+				client:          client,
+				queryCompletion: queryCompletion,
+				queryGate:       queryGate,
+			}
+			if len(secondaryOutput) > 0 {
+				secondaryGate := &attachWriteGate{done: make(chan struct{})}
+				if _, queued := client.enqueueWrite(
+					secondaryOutput,
+					false,
+					"",
+					0,
+					secondaryGate,
+				); queued {
+					fallback.secondaryOutputGate = secondaryGate
+				}
+			}
+			fallbacks = append(fallbacks, fallback)
+		}
+		s.attachMu.Unlock()
+		primaryDelivered := primaryQueued &&
+			primaryClient.waitForWrite(primaryCompletion)
+		for _, fallback := range fallbacks {
+			tryFallback := !primaryDelivered
+			fallback.queryGate.deliver.Store(tryFallback)
+			close(fallback.queryGate.done)
+			if tryFallback &&
+				fallback.client.waitForWrite(fallback.queryCompletion) {
+				primaryDelivered = true
+			}
+			if fallback.secondaryOutputGate != nil {
+				fallback.secondaryOutputGate.deliver.Store(!tryFallback)
+				close(fallback.secondaryOutputGate.done)
+			}
+		}
+		if !primaryDelivered {
+			s.redeliverTerminalQueries(
+				windowID,
+				queryData,
+				nil,
+				nil,
+			)
 		}
 		if refreshPendingFocus || refreshPendingResize {
 			go s.refreshPendingClientViewport(
@@ -6034,6 +6413,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 			refreshPendingResize,
 		)
 	}
+	s.attachMu.Unlock()
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
@@ -6462,11 +6842,11 @@ func (s *muxServer) writeAttachOutputIfActive(
 		return
 	}
 	s.attachMu.Lock()
-	defer s.attachMu.Unlock()
 
 	s.mu.Lock()
 	if s.activeID != windowID {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return
 	}
 	clients := make([]*attachClient, 0, len(s.attachClients))
@@ -6483,6 +6863,7 @@ func (s *muxServer) writeAttachOutputIfActive(
 
 	if legacy {
 		s.writeAttachLocked(primary, primaryData)
+		s.attachMu.Unlock()
 		return
 	}
 	var primaryClient *attachClient
@@ -6494,62 +6875,112 @@ func (s *muxServer) writeAttachOutputIfActive(
 	}
 	var deliveredPrimary *attachClient
 	if len(queryData) > 0 {
-		tryWrite := func(client *attachClient, data []byte) bool {
-			if client == nil {
-				return false
-			}
-			if client.suppressesReplayedOutput(windowID, outputGeneration) {
+		responseCount := terminalQueryResponseCount(queryData)
+		type queryFallback struct {
+			client              *attachClient
+			queryCompletion     <-chan error
+			queryGate           *attachWriteGate
+			secondaryOutputGate *attachWriteGate
+		}
+		var primaryCompletion <-chan error
+		primaryQueued := false
+		if primaryClient != nil {
+			data := primaryData
+			if primaryClient.suppressesReplayedOutput(
+				windowID,
+				outputGeneration,
+			) {
 				data = queryData
 			}
-			completion, queued := client.enqueueTerminalQuery(data, true)
-			return queued && client.waitForWrite(completion)
-		}
-		if tryWrite(primaryClient, primaryData) {
-			deliveredPrimary = primaryClient
-		} else {
-			sort.Slice(allClients, func(i int, j int) bool {
-				iCurrent := allClients[i].conn == currentPrimary
-				jCurrent := allClients[j].conn == currentPrimary
-				if iCurrent != jCurrent {
-					return iCurrent
-				}
-				return moreRecentlyFocusedAttachClient(
-					allClients[i],
-					allClients[j],
+			primaryCompletion, primaryQueued =
+				primaryClient.enqueueTerminalQuery(
+					data,
+					true,
+					windowID,
+					responseCount,
 				)
-			})
-			for _, client := range allClients {
-				if client == primaryClient {
-					continue
-				}
-				data := queryData
-				if client.sequence <= maxAttachSequence {
-					data = failoverPrimaryData
-				}
-				if !tryWrite(client, data) {
-					continue
-				}
-				deliveredPrimary = client
-				break
-			}
 		}
-		for _, client := range clients {
-			if client == deliveredPrimary ||
-				len(secondaryData) == 0 ||
-				client.suppressesReplayedOutput(windowID, outputGeneration) {
+		sort.Slice(allClients, func(i int, j int) bool {
+			iCurrent := allClients[i].conn == currentPrimary
+			jCurrent := allClients[j].conn == currentPrimary
+			if iCurrent != jCurrent {
+				return iCurrent
+			}
+			return moreRecentlyFocusedAttachClient(
+				allClients[i],
+				allClients[j],
+			)
+		})
+		fallbacks := make([]queryFallback, 0, len(allClients))
+		for _, client := range allClients {
+			if client == primaryClient {
 				continue
 			}
-			_, _ = client.enqueue(secondaryData, false)
-		}
-		if deliveredPrimary == nil {
-			s.mu.Lock()
-			window := s.windowByIDLocked(windowID)
-			if window != nil && !window.closed {
-				s.storePendingTerminalQueriesLocked(window, queryData)
+			suppressesOutput := client.suppressesReplayedOutput(
+				windowID,
+				outputGeneration,
+			)
+			data := queryData
+			if client.sequence <= maxAttachSequence && !suppressesOutput {
+				data = failoverPrimaryData
 			}
-			s.mu.Unlock()
-		} else {
-			deliveredPrimary.expectTerminalResponse()
+			queryGate := &attachWriteGate{done: make(chan struct{})}
+			queryCompletion, queued :=
+				client.enqueueConditionalTerminalQuery(
+					data,
+					true,
+					windowID,
+					responseCount,
+					queryGate,
+				)
+			if !queued {
+				continue
+			}
+			fallback := queryFallback{
+				client:          client,
+				queryCompletion: queryCompletion,
+				queryGate:       queryGate,
+			}
+			if client.sequence <= maxAttachSequence &&
+				len(secondaryData) > 0 &&
+				!suppressesOutput {
+				secondaryGate := &attachWriteGate{done: make(chan struct{})}
+				if _, queued := client.enqueueWrite(
+					secondaryData,
+					false,
+					"",
+					0,
+					secondaryGate,
+				); queued {
+					fallback.secondaryOutputGate = secondaryGate
+				}
+			}
+			fallbacks = append(fallbacks, fallback)
+		}
+		s.attachMu.Unlock()
+
+		primaryDelivered := primaryQueued &&
+			primaryClient.waitForWrite(primaryCompletion)
+		for _, fallback := range fallbacks {
+			tryFallback := !primaryDelivered
+			fallback.queryGate.deliver.Store(tryFallback)
+			close(fallback.queryGate.done)
+			if tryFallback &&
+				fallback.client.waitForWrite(fallback.queryCompletion) {
+				primaryDelivered = true
+			}
+			if fallback.secondaryOutputGate != nil {
+				fallback.secondaryOutputGate.deliver.Store(!tryFallback)
+				close(fallback.secondaryOutputGate.done)
+			}
+		}
+		if !primaryDelivered {
+			s.redeliverTerminalQueries(
+				windowID,
+				queryData,
+				nil,
+				nil,
+			)
 		}
 		return
 	}
@@ -6595,6 +7026,7 @@ func (s *muxServer) writeAttachOutputIfActive(
 		}
 		_, _ = client.enqueue(secondaryData, false)
 	}
+	s.attachMu.Unlock()
 }
 
 func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []byte) {
@@ -6614,6 +7046,7 @@ func (s *muxServer) enqueuePrimaryAttachLocked(
 	preferred net.Conn,
 	data []byte,
 	tracked bool,
+	windowID string,
 ) (*attachClient, <-chan error, bool) {
 	if len(data) == 0 {
 		return nil, nil, true
@@ -6642,8 +7075,14 @@ func (s *muxServer) enqueuePrimaryAttachLocked(
 		}
 		return moreRecentlyFocusedAttachClient(clients[i], clients[j])
 	})
+	responseCount := terminalQueryResponseCount(data)
 	for _, client := range clients {
-		completion, queued := client.enqueueTerminalQuery(data, tracked)
+		completion, queued := client.enqueueTerminalQuery(
+			data,
+			tracked,
+			windowID,
+			responseCount,
+		)
 		if !queued {
 			continue
 		}
@@ -6667,18 +7106,11 @@ func (s *muxServer) watchTerminalQueryWrite(
 		return
 	}
 	go func() {
-		var writeErr error
-		select {
-		case writeErr = <-completion:
-		case <-client.done:
-			select {
-			case writeErr = <-completion:
-			default:
-				writeErr = io.ErrClosedPipe
-			}
+		writeErr, ok := <-completion
+		if !ok {
+			writeErr = io.ErrClosedPipe
 		}
 		if writeErr == nil {
-			client.expectTerminalResponse()
 			if onSuccess != nil {
 				onSuccess()
 			}
@@ -6711,17 +7143,13 @@ func (s *muxServer) redeliverTerminalQueries(
 		return
 	}
 	if s.activeID != windowID || s.attachCountLocked() == 0 {
+		if onDeferred == nil {
+			s.storePendingTerminalQueriesLocked(window, queries)
+		}
 		s.mu.Unlock()
 		s.attachMu.Unlock()
 		if onDeferred != nil {
 			onDeferred()
-		} else {
-			s.mu.Lock()
-			window = s.windowByIDLocked(windowID)
-			if window != nil && !window.closed {
-				s.storePendingTerminalQueriesLocked(window, queries)
-			}
-			s.mu.Unlock()
 		}
 		return
 	}
@@ -6731,12 +7159,10 @@ func (s *muxServer) redeliverTerminalQueries(
 		preferred,
 		queries,
 		true,
+		windowID,
 	)
-	s.attachMu.Unlock()
 	if !queued {
-		if onDeferred != nil {
-			onDeferred()
-		} else {
+		if onDeferred == nil {
 			s.mu.Lock()
 			window = s.windowByIDLocked(windowID)
 			if window != nil && !window.closed {
@@ -6744,8 +7170,13 @@ func (s *muxServer) redeliverTerminalQueries(
 			}
 			s.mu.Unlock()
 		}
+		s.attachMu.Unlock()
+		if onDeferred != nil {
+			onDeferred()
+		}
 		return
 	}
+	s.attachMu.Unlock()
 	if client == nil {
 		if onSuccess != nil {
 			onSuccess()
@@ -6814,6 +7245,7 @@ func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID st
 		conn,
 		pending,
 		true,
+		windowID,
 	)
 	if !queued {
 		s.restorePendingTerminalQueries(windowID, pending)
@@ -6874,6 +7306,15 @@ func (s *muxServer) restorePendingTerminalQueries(
 
 func (s *muxServer) writeActive(data []byte) {
 	_ = s.writeWindow(s.activeWindowID(), data)
+}
+
+func (s *muxServer) handleAttachInputSerialized(
+	client *attachClient,
+	data []byte,
+) bool {
+	client.inputMu.Lock()
+	defer client.inputMu.Unlock()
+	return s.handleAttachInput(client, data)
 }
 
 func (s *muxServer) handleAttachInput(client *attachClient, data []byte) bool {
@@ -7885,6 +8326,69 @@ func terminalQueriesFromData(data []byte) []byte {
 	return queries
 }
 
+func terminalQueryResponseCount(data []byte) int {
+	count := 0
+	for index := 0; index < len(data); {
+		sequenceEnd, isQuery, incomplete, recognized :=
+			terminalQuerySequenceAt(data, index)
+		if incomplete {
+			break
+		}
+		if !recognized {
+			index++
+			continue
+		}
+		if isQuery {
+			count += terminalQuerySequenceResponseCount(
+				data[index:sequenceEnd],
+			)
+		}
+		index = sequenceEnd
+	}
+	return count
+}
+
+func terminalQuerySequenceResponseCount(sequence []byte) int {
+	payloadStart := 0
+	switch {
+	case len(sequence) >= 2 &&
+		sequence[0] == '\x1b' &&
+		sequence[1] == ']':
+		payloadStart = 2
+	case len(sequence) >= 1 && sequence[0] == 0x9d:
+		payloadStart = 1
+	default:
+		return 1
+	}
+	end, _, ok := findOscTerminator(sequence[payloadStart:])
+	if !ok {
+		return 1
+	}
+	code, value, ok := strings.Cut(
+		string(sequence[payloadStart:payloadStart+end]),
+		";",
+	)
+	if !ok || code != "4" {
+		return 1
+	}
+	args := strings.Split(value, ";")
+	count := 0
+	for index := 0; index+1 < len(args); index += 2 {
+		paletteIndex, err := strconv.Atoi(strings.TrimSpace(args[index]))
+		if err != nil ||
+			paletteIndex < 0 ||
+			paletteIndex > 255 ||
+			strings.TrimSpace(args[index+1]) != "?" {
+			continue
+		}
+		count++
+	}
+	if count == 0 {
+		return 1
+	}
+	return count
+}
+
 func (w *muxWindow) secondaryAttachOutputLocked(chunk []byte) []byte {
 	w.lastForwardedTerminalQueries = nil
 	if len(chunk) == 0 && len(w.secondaryQueryCarry) == 0 {
@@ -8728,12 +9232,19 @@ func isReplayUnsafeCsiQuery(sequence []byte) bool {
 	}
 }
 
-func classifyTerminalResponseInput(data []byte) (bool, bool, byte) {
+func scanTerminalResponseInput(
+	data []byte,
+	leadingUtf8Prefix int,
+) ([]int, int, byte, int) {
 	if len(data) == 0 {
-		return false, false, 0
+		return nil, -1, 0, 0
 	}
-	sawResponse := false
+	var responseEnds []int
 	for index := 0; index < len(data); {
+		if index < leadingUtf8Prefix &&
+			data[index]&0xc0 == 0x80 {
+			return responseEnds, -1, 0, index
+		}
 		sequenceEnd := -1
 		isResponse := false
 		introducer := data[index]
@@ -8741,7 +9252,7 @@ func classifyTerminalResponseInput(data []byte) (bool, bool, byte) {
 		escaped := false
 		if introducer == '\x1b' {
 			if index+1 >= len(data) {
-				return false, true, 0
+				return responseEnds, index, 0, len(data)
 			}
 			escaped = true
 			introducer = data[index+1]
@@ -8750,28 +9261,28 @@ func classifyTerminalResponseInput(data []byte) (bool, bool, byte) {
 		switch introducer {
 		case '[':
 			if !escaped {
-				return false, false, 0
+				return responseEnds, -1, 0, index
 			}
 			end := csiSequenceEnd(data, payloadStart)
 			if end < 0 {
-				return false, true, 0
+				return responseEnds, index, 0, len(data)
 			}
 			sequenceEnd = end + 1
 			isResponse = isTerminalResponseCsi(data[index:sequenceEnd])
 		case 0x9b:
 			end := csiSequenceEnd(data, payloadStart)
 			if end < 0 {
-				return false, true, 0
+				return responseEnds, index, 0, len(data)
 			}
 			sequenceEnd = end + 1
 			isResponse = isTerminalResponseCsi(data[index:sequenceEnd])
 		case ']':
 			if !escaped {
-				return false, false, 0
+				return responseEnds, -1, 0, index
 			}
 			end, terminatorLength, ok := findOscTerminator(data[payloadStart:])
 			if !ok {
-				return false, true, ']'
+				return responseEnds, index, ']', len(data)
 			}
 			sequenceEnd = payloadStart + end + terminatorLength
 			isResponse = isTerminalResponseOsc(
@@ -8780,7 +9291,7 @@ func classifyTerminalResponseInput(data []byte) (bool, bool, byte) {
 		case 0x9d:
 			end, terminatorLength, ok := findOscTerminator(data[payloadStart:])
 			if !ok {
-				return false, true, ']'
+				return responseEnds, index, ']', len(data)
 			}
 			sequenceEnd = payloadStart + end + terminatorLength
 			isResponse = isTerminalResponseOsc(
@@ -8788,13 +9299,13 @@ func classifyTerminalResponseInput(data []byte) (bool, bool, byte) {
 			)
 		case 'P':
 			if !escaped {
-				return false, false, 0
+				return responseEnds, -1, 0, index
 			}
 			end, terminatorLength, ok := findStringTerminator(
 				data[payloadStart:],
 			)
 			if !ok {
-				return false, true, 'P'
+				return responseEnds, index, 'P', len(data)
 			}
 			sequenceEnd = payloadStart + end + terminatorLength
 			isResponse = isTerminalResponseDcs(
@@ -8805,7 +9316,7 @@ func classifyTerminalResponseInput(data []byte) (bool, bool, byte) {
 				data[payloadStart:],
 			)
 			if !ok {
-				return false, true, 'P'
+				return responseEnds, index, 'P', len(data)
 			}
 			sequenceEnd = payloadStart + end + terminatorLength
 			isResponse = isTerminalResponseDcs(
@@ -8813,13 +9324,13 @@ func classifyTerminalResponseInput(data []byte) (bool, bool, byte) {
 			)
 		case '_':
 			if !escaped {
-				return false, false, 0
+				return responseEnds, -1, 0, index
 			}
 			end, terminatorLength, ok := findStringTerminator(
 				data[payloadStart:],
 			)
 			if !ok {
-				return false, true, '_'
+				return responseEnds, index, '_', len(data)
 			}
 			sequenceEnd = payloadStart + end + terminatorLength
 			isResponse = isTerminalResponseKitty(
@@ -8830,22 +9341,22 @@ func classifyTerminalResponseInput(data []byte) (bool, bool, byte) {
 				data[payloadStart:],
 			)
 			if !ok {
-				return false, true, '_'
+				return responseEnds, index, '_', len(data)
 			}
 			sequenceEnd = payloadStart + end + terminatorLength
 			isResponse = isTerminalResponseKitty(
 				data[payloadStart : payloadStart+end],
 			)
 		default:
-			return false, false, 0
+			return responseEnds, -1, 0, index
 		}
 		if !isResponse {
-			return false, false, 0
+			return responseEnds, -1, 0, index
 		}
-		sawResponse = true
+		responseEnds = append(responseEnds, sequenceEnd)
 		index = sequenceEnd
 	}
-	return sawResponse, false, 0
+	return responseEnds, -1, 0, len(data)
 }
 
 func stripFocusOutInput(data []byte) ([]byte, []byte) {

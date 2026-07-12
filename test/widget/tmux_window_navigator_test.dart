@@ -194,6 +194,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('Ctrl-B: c new'), findsOneWidget);
+      expect(find.textContaining('& then y close'), findsOneWidget);
       expect(find.textContaining('d detach'), findsOneWidget);
     });
 

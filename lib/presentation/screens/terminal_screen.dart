@@ -3365,6 +3365,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void Function(String)? _terminalOutputHandler;
   void Function(int, int, int, int)? _terminalResizeHandler;
   void Function(int, int)? _terminalHostResizeHandler;
+  bool Function()? _terminalHostResizeGate;
   bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
   bool _suppressTerminalAutoScrollFromTerminalRefresh = false;
   bool _isConnecting = true;
@@ -7148,11 +7149,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalResizeHandler = handleTerminalResize;
     _terminal.onResize = handleTerminalResize;
 
+    bool canTerminalResizeFromHost() =>
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+
+    _terminalHostResizeGate = canTerminalResizeFromHost;
+    _terminal.canResizeFromHost = canTerminalResizeFromHost;
+
     void handleTerminalHostResize(int width, int height) {
-      final isMonkeyMuxSession =
-          _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
-          session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
-      if (!isMonkeyMuxSession || session.monkeyMuxViewportClippingEnabled) {
+      if (!canTerminalResizeFromHost() ||
+          session.monkeyMuxViewportClippingEnabled) {
         return;
       }
       session.monkeyMuxViewportClippingEnabled = true;
@@ -7203,6 +7209,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminal.onHostResize = null;
     }
     _terminalHostResizeHandler = null;
+
+    final hostResizeGate = _terminalHostResizeGate;
+    if (terminal != null &&
+        hostResizeGate != null &&
+        identical(terminal.canResizeFromHost, hostResizeGate)) {
+      terminal.canResizeFromHost = null;
+    }
+    _terminalHostResizeGate = null;
     _terminalWithOwnedCallbacks = null;
   }
 
@@ -7373,18 +7387,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'unresolved': unresolved.length,
       },
     );
-    unawaited(
-      _monkeyMuxService.requestImages(session, sessionName, toRequest).then((
-        served,
-      ) {
-        if (!mounted) {
-          return;
-        }
-        _requestedMissingImageIds.removeAll(
-          toRequest.where((id) => !served.contains(id)),
-        );
-      }),
-    );
+    unawaited(_monkeyMuxService.requestImages(session, sessionName, toRequest));
   }
 
   void _resetMissingImageRecoveryState() {
