@@ -5159,15 +5159,32 @@ func TestObserveKittyGraphicsRetainsPlacementAndAnimationMappings(t *testing.T) 
 func TestObserveKittyGraphicsRetainsImageNumberOnlyRoot(t *testing.T) {
 	window := &muxWindow{}
 	window.observeKittyGraphicsLocked([]byte(
-		"\x1b_Ga=t,I=5,f=100;ROOT\x1b\\" +
-			"\x1b_Ga=f,I=5,f=100;FRAME\x1b\\" +
+		"\x1b_Ga=t,I=5,f=100;ROOT1\x1b\\" +
+			"\x1b_Ga=t,I=5,f=100;ROOT2\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME2\x1b\\" +
 			"\x1b_Ga=a,I=5,s=3,v=1\x1b\\"))
 
 	replay := string(window.kittyImageReplayLocked(nil))
-	for _, want := range []string{"a=t,I=5", "a=f,I=5", "a=a,I=5"} {
+	for _, want := range []string{
+		"ROOT1",
+		"ROOT2",
+		"a=f,I=5",
+		"FRAME2",
+		"a=a,I=5",
+	} {
 		if !strings.Contains(replay, want) {
 			t.Fatalf("image-number-only replay missing %q: %q", want, replay)
 		}
+	}
+	if len(window.kittyImages) != 2 {
+		t.Fatalf("retained %d I-only roots, want 2", len(window.kittyImages))
+	}
+	if strings.Index(replay, "ROOT1") > strings.Index(replay, "ROOT2") {
+		t.Fatalf("I-only root order changed: %q", replay)
+	}
+	latestID := window.kittyImageNumberToID["5"]
+	if !strings.Contains(string(window.kittyImageAnimations[latestID]), "FRAME2") {
+		t.Fatalf("latest I-only root did not retain its animation")
 	}
 }
 
