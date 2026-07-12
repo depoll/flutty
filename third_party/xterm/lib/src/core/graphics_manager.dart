@@ -780,6 +780,37 @@ class GraphicsManager {
     }
   }
 
+  /// Reserves a fresh protocol image id and maps [number] to it immediately.
+  ///
+  /// I-only roots use this before their asynchronous decode so following
+  /// commands in the same stream bind to the new root rather than an older image
+  /// that previously used the number.
+  ({int imageId, int? previousImageId}) reserveImageIdForNumber(int number) {
+    if (number <= 0) {
+      return (imageId: 0, previousImageId: null);
+    }
+    final previousImageId = _imageNumberToId[number];
+    final imageId = _nextImageId++;
+    _imageNumberToId[number] = imageId;
+    return (imageId: imageId, previousImageId: previousImageId);
+  }
+
+  /// Rolls back a failed reservation unless a later command remapped [number].
+  void rollbackImageIdReservation(
+    int number,
+    int reservedImageId,
+    int? previousImageId,
+  ) {
+    if (_imageNumberToId[number] != reservedImageId) {
+      return;
+    }
+    if (previousImageId == null) {
+      _imageNumberToId.remove(number);
+    } else {
+      _imageNumberToId[number] = previousImageId;
+    }
+  }
+
   /// Resolves a client image number (`I=`) to its current image id, if known.
   int? imageIdForNumber(int number) => _imageNumberToId[number];
 

@@ -1342,6 +1342,72 @@ void main() {
     });
   });
 
+  testWidgets('I=-only root reserves a new mapping for queued frames', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final red = base64.encode(<int>[255, 0, 0, 255]);
+      final blue = base64.encode(<int>[0, 0, 255, 255]);
+      final terminal = Terminal();
+
+      terminal.write('\x1b_Ga=T,i=1,I=5,f=32,s=1,v=1,C=1;$red\x1b\\');
+      var waited = 0;
+      while (terminal.graphics.imageById(1) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageIdForNumber(5), 1);
+
+      terminal
+        ..write('\x1b_Ga=t,I=5,f=32,s=1,v=1,q=2;$red\x1b\\')
+        ..write('\x1b_Ga=f,I=5,f=32,s=1,v=1,q=2;$blue\x1b\\');
+      final replacementId = terminal.graphics.imageIdForNumber(5)!;
+      expect(replacementId, isNot(1));
+
+      waited = 0;
+      while (
+          (terminal.graphics.imageById(replacementId)?.frameCount ?? 0) < 2 &&
+              waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageById(1)!.frameCount, 1);
+      expect(terminal.graphics.imageById(replacementId)!.frameCount, 2);
+    });
+  });
+
+  testWidgets('failed I=-only root restores the previous image mapping', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pixel = base64.encode(<int>[255, 0, 0, 255]);
+      final terminal = Terminal();
+
+      terminal.write(
+        '\x1b_Ga=T,i=1,I=5,f=32,s=1,v=1,C=1;$pixel\x1b\\',
+      );
+      var waited = 0;
+      while (terminal.graphics.imageById(1) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageIdForNumber(5), 1);
+
+      terminal.write(
+        '\x1b_Ga=T,I=5,f=32,s=0,v=0,C=1,q=2;$pixel\x1b\\',
+      );
+      waited = 0;
+      while (terminal.graphics.imageIdForNumber(5) != 1 && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageIdForNumber(5), 1);
+      expect(terminal.graphics.imageById(1), isNotNull);
+    });
+  });
+
   testWidgets('invalid a=c reports a protocol error unless silenced', (
     tester,
   ) async {
@@ -2502,12 +2568,36 @@ void main() {
 
       // ...and deleted by number (lowercase keeps the image data).
       terminal.write('\x1b_Ga=d,d=n,I=5\x1b\\');
+      waited = 0;
+      while (terminal.graphics.placements.isNotEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
       expect(terminal.graphics.placements, isEmpty);
       expect(
         terminal.graphics.imageIdForNumber(5),
         isNotNull,
         reason: 'd=n keeps the image data; only the placement is removed',
       );
+    });
+  });
+
+  testWidgets('I=-only virtual placement resolves an explicit placement remap',
+      (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      terminal.graphics.storeImageWithId(7, await _buildImage(2, 2));
+
+      terminal.write('\x1b_Ga=p,U=1,i=7,I=9,c=1,r=1\x1b\\');
+      expect(terminal.graphics.imageIdForNumber(9), 7);
+
+      terminal.write('\x1b_Ga=p,U=1,I=9,c=3,r=2\x1b\\');
+      final virtual = terminal.graphics.virtualPlacementById(7);
+      expect(virtual, isNotNull);
+      expect(virtual!.cols, 3);
+      expect(virtual.rows, 2);
     });
   });
 
