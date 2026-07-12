@@ -3,6 +3,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
+import 'package:monkeyssh/domain/models/acp_updates.dart';
 
 void main() {
   AcpSessionState base({
@@ -71,6 +72,41 @@ void main() {
       expect(next.key, base().key);
       expect(next.createdAt, base().createdAt);
       expect(next.status, AcpConnectionStatus.failed);
+    });
+  });
+
+  group('defensive lists', () {
+    test('copies the caller list and exposes an unmodifiable view', () {
+      final commands = <AcpAvailableCommand>[
+        const AcpAvailableCommand(name: 'review', description: 'Review'),
+      ];
+      final state = base().copyWith(availableCommands: commands);
+      // Mutating the caller list must not affect the constructed state.
+      commands.clear();
+      expect(state.availableCommands, hasLength(1));
+      // The exposed list itself is unmodifiable.
+      expect(
+        () => state.availableCommands.add(
+          const AcpAvailableCommand(name: 'x', description: 'y'),
+        ),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('defends the pending permissions list', () {
+      final pending = <AcpPendingPermission>[
+        AcpPendingPermission(
+          requestKey: 'r1',
+          sessionId: 's',
+          toolCallId: 't',
+          options: const [],
+          requestedAt: DateTime.utc(2024),
+        ),
+      ];
+      final state = base().copyWith(pendingPermissions: pending);
+      pending.clear();
+      expect(state.pendingPermissions, hasLength(1));
+      expect(state.pendingPermissions.clear, throwsUnsupportedError);
     });
   });
 }

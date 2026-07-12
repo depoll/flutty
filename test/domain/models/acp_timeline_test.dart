@@ -125,4 +125,31 @@ void main() {
       expect(builder.apply(const AcpAvailableCommandsUpdate()), isNull);
     });
   });
+
+  group('defensive lists', () {
+    test('timeline entries are defensively copied and unmodifiable', () {
+      final content = <AcpContentBlock>[const AcpTextContent('a')];
+      final entry = AcpMessageEntry(
+        role: AcpMessageRole.agent,
+        order: 0,
+        content: content,
+      );
+      content.clear();
+      expect(entry.content, hasLength(1));
+      expect(entry.content.clear, throwsUnsupportedError);
+    });
+
+    test(
+      'AcpTimeline copies the caller list and exposes an immutable view',
+      () {
+        final entries = <AcpTimelineEntry>[
+          AcpMessageEntry(role: AcpMessageRole.user, order: 0),
+        ];
+        final timeline = AcpTimeline(entries: entries);
+        entries.clear();
+        expect(timeline.entries, hasLength(1));
+        expect(timeline.entries.clear, throwsUnsupportedError);
+      },
+    );
+  });
 }

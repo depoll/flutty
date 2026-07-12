@@ -132,13 +132,15 @@ final class AcpSessionError {
 @immutable
 final class AcpPendingPermission {
   /// Creates a pending permission reference.
-  const AcpPendingPermission({
+  ///
+  /// [options] is defensively copied into an unmodifiable list.
+  AcpPendingPermission({
     required this.requestKey,
     required this.sessionId,
     required this.toolCallId,
-    required this.options,
+    required List<AcpPermissionOption> options,
     required this.requestedAt,
-  });
+  }) : options = List<AcpPermissionOption>.unmodifiable(options);
 
   /// Local key that uniquely identifies this pending request within a session.
   final String requestKey;
@@ -186,7 +188,10 @@ final class AcpPendingPermission {
 @immutable
 final class AcpSessionState {
   /// Creates a session state snapshot.
-  const AcpSessionState({
+  ///
+  /// Every list field is defensively copied into an unmodifiable list so a
+  /// caller can never mutate a published snapshot after construction.
+  AcpSessionState({
     required this.key,
     required this.providerLabel,
     required this.cwd,
@@ -197,21 +202,31 @@ final class AcpSessionState {
     this.title,
     this.attached = true,
     this.initialization,
-    this.authMethods = const <AcpAuthMethod>[],
+    List<AcpAuthMethod> authMethods = const <AcpAuthMethod>[],
     this.pendingAuthentication = false,
     this.modeState,
     this.modelState,
-    this.configOptions = const <AcpSessionConfigOption>[],
-    this.availableCommands = const <AcpAvailableCommand>[],
-    this.plan = const <AcpPlanEntry>[],
+    List<AcpSessionConfigOption> configOptions =
+        const <AcpSessionConfigOption>[],
+    List<AcpAvailableCommand> availableCommands = const <AcpAvailableCommand>[],
+    List<AcpPlanEntry> plan = const <AcpPlanEntry>[],
     this.usage,
     this.lastStopReason,
     this.promptStatus = AcpPromptStatus.idle,
-    this.pendingPermissions = const <AcpPendingPermission>[],
+    List<AcpPendingPermission> pendingPermissions =
+        const <AcpPendingPermission>[],
     this.transportState,
     this.error,
-    this.timeline = const AcpTimeline(),
-  });
+    this.timeline = const AcpTimeline.empty(),
+  }) : authMethods = List<AcpAuthMethod>.unmodifiable(authMethods),
+       configOptions = List<AcpSessionConfigOption>.unmodifiable(configOptions),
+       availableCommands = List<AcpAvailableCommand>.unmodifiable(
+         availableCommands,
+       ),
+       plan = List<AcpPlanEntry>.unmodifiable(plan),
+       pendingPermissions = List<AcpPendingPermission>.unmodifiable(
+         pendingPermissions,
+       );
 
   /// Stable composite identity of this session.
   final AcpSessionKey key;

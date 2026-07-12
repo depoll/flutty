@@ -72,10 +72,12 @@ final class AcpSessionLaunchFailed extends AcpSessionLaunchResult {
 @immutable
 final class AcpSessionManagerState {
   /// Creates a manager state snapshot.
-  const AcpSessionManagerState({
-    this.sessions = const <AcpSessionState>[],
+  ///
+  /// [sessions] is defensively copied into an unmodifiable list.
+  AcpSessionManagerState({
+    List<AcpSessionState> sessions = const <AcpSessionState>[],
     this.selectedKey,
-  });
+  }) : sessions = List<AcpSessionState>.unmodifiable(sessions);
 
   /// All tracked sessions, ordered by creation time.
   final List<AcpSessionState> sessions;
@@ -161,7 +163,7 @@ class AcpSessionManager {
   Future<void> _mutationQueue = Future<void>.value();
 
   String? _selectedKeyValue;
-  AcpSessionManagerState _state = const AcpSessionManagerState();
+  AcpSessionManagerState _state = AcpSessionManagerState();
   var _disposed = false;
 
   /// Current aggregate state.
@@ -249,7 +251,12 @@ class AcpSessionManager {
 
     // Re-attach an existing (detached) controller in place when possible.
     if (existing != null) {
-      await existing.reconnect();
+      try {
+        await existing.reconnect();
+      } on _LaunchException catch (error) {
+        _emit();
+        return AcpSessionLaunchFailed(error.key ?? key, error.error);
+      }
       _select(key.value);
       return AcpSessionLaunchStarted(key);
     }
@@ -425,6 +432,7 @@ class AcpSessionManager {
       cwd: cwd,
       existingSessionId: existingSessionId,
       confirmInstall: confirmInstall,
+      startedBridge: true,
       bridgeStartedAt: startedAt,
     );
   }
@@ -436,6 +444,7 @@ class AcpSessionManager {
     required String cwd,
     required String? existingSessionId,
     required MonkeyMuxInstallConfirmation? confirmInstall,
+    bool startedBridge = false,
     DateTime? bridgeStartedAt,
   }) async {
     final bridgeKey = AcpBridgeKey(
@@ -454,7 +463,6 @@ class AcpSessionManager {
           ),
         );
     _attachments[bridgeKey.value] = attachment;
-    attachment.retain();
 
     final controller = _SessionController(
       manager: this,
@@ -464,7 +472,7 @@ class AcpSessionManager {
       cwd: cwd,
       clock: _clock,
       diagnostics: _diagnostics,
-    );
+    ).._acquireLease(attachment);
 
     try {
       final key = await controller.open(
@@ -491,12 +499,61 @@ class AcpSessionManager {
       return AcpSessionLaunchStarted(key);
     } on _LaunchException catch (error) {
       await controller.disposeLocal();
-      await _releaseAttachment(attachment);
+      await _maybeStopOrphanBridge(
+        startedBridge: startedBridge,
+        error: error.error,
+        hostId: hostId,
+        bridgeId: bridgeId,
+      );
       return AcpSessionLaunchFailed(error.key, error.error);
     } on Object catch (error) {
       await controller.disposeLocal();
-      await _releaseAttachment(attachment);
-      return AcpSessionLaunchFailed(null, _mapBridgeError(error));
+      final mapped = _mapBridgeError(error);
+      await _maybeStopOrphanBridge(
+        startedBridge: startedBridge,
+        error: mapped,
+        hostId: hostId,
+        bridgeId: bridgeId,
+      );
+      return AcpSessionLaunchFailed(null, mapped);
+    }
+  }
+
+  /// Best-effort stops a freshly started bridge that never produced a usable
+  /// session, so a failed initialization does not orphan the remote process.
+  ///
+  /// The bridge is intentionally retained when the failure is a modeled
+  /// authentication retry (the user completes auth out of band and retries),
+  /// and when any other session still uses the bridge.
+  Future<void> _maybeStopOrphanBridge({
+    required bool startedBridge,
+    required AcpSessionError error,
+    required int hostId,
+    required String bridgeId,
+  }) async {
+    if (!startedBridge) return;
+    if (error.kind == AcpSessionErrorKind.authenticationRequired) return;
+    final bridgeKey = AcpBridgeKey(
+      host: AcpHostKey(hostId),
+      bridgeId: bridgeId,
+    );
+    final stillUsed = _controllers.values.any(
+      (controller) => controller.bridgeKey == bridgeKey,
+    );
+    if (stillUsed) return;
+    try {
+      await _connector.stopBridge(hostId, bridgeId);
+      _diagnostics.info(
+        'acp.manager',
+        'orphan_bridge_stopped',
+        fields: {'hostId': hostId, 'bridgeId': bridgeId},
+      );
+    } on Object catch (stopError) {
+      _diagnostics.warning(
+        'acp.manager',
+        'orphan_bridge_stop_failed',
+        fields: {'hostId': hostId, 'errorType': stopError.runtimeType},
+      );
     }
   }
 
@@ -521,19 +578,23 @@ class AcpSessionManager {
       if (controller == null) continue;
       final hostId = key.hostId;
       final bridgeId = key.bridgeId;
+      // Release the local lease (idempotent) and cancel streams.
       await controller.disposeLocal();
-      final attachment = controller.attachment;
-      final released = await _releaseAttachment(attachment);
-      if (released) {
-        try {
-          await _connector.stopBridge(hostId, bridgeId);
-        } on Object catch (error) {
-          _diagnostics.warning(
-            'acp.manager',
-            'bridge_stop_failed',
-            fields: {'hostId': hostId, 'errorType': error.runtimeType},
-          );
-        }
+      // Explicit stop must terminate the remote bridge process even if this
+      // session had detached locally, unless another live session still uses
+      // that bridge (for example, a fork sharing the same provider process).
+      final bridgeStillUsed = _controllers.values.any(
+        (other) => other.bridgeKey == key.bridge,
+      );
+      if (bridgeStillUsed) continue;
+      try {
+        await _connector.stopBridge(hostId, bridgeId);
+      } on Object catch (error) {
+        _diagnostics.warning(
+          'acp.manager',
+          'bridge_stop_failed',
+          fields: {'hostId': hostId, 'errorType': error.runtimeType},
+        );
       }
     }
     _emit();
@@ -541,7 +602,8 @@ class AcpSessionManager {
 
   Future<bool> _releaseAttachment(_BridgeAttachment attachment) async {
     final closed = await attachment.release();
-    if (closed) {
+    if (closed &&
+        identical(_attachments[attachment.bridgeKey.value], attachment)) {
       _attachments.remove(attachment.bridgeKey.value);
     }
     return closed;
@@ -616,7 +678,7 @@ class AcpSessionManager {
       _selectedKeyValue = sessions.isEmpty ? null : sessions.last.key.value;
     }
     _state = AcpSessionManagerState(
-      sessions: List<AcpSessionState>.unmodifiable(sessions),
+      sessions: sessions,
       selectedKey: _selectedKeyValue,
     );
     if (!_stateController.isClosed) _stateController.add(_state);
@@ -666,7 +728,9 @@ class AcpSessionManager {
 ///
 /// Multiple sessions (for example, an original and its fork) can share a single
 /// attachment. Its underlying client, JSON-RPC connection, and transport are
-/// released only when the last session detaches.
+/// released only when the last leaseholder releases it. Release is guarded so
+/// the reference count can never go negative and the transport is closed at
+/// most once.
 class _BridgeAttachment {
   _BridgeAttachment({
     required this.bridgeKey,
@@ -676,10 +740,12 @@ class _BridgeAttachment {
 
   final AcpBridgeKey bridgeKey;
   final String providerId;
-  AcpBridgeSession _session;
+  final AcpBridgeSession _session;
   int _refCount = 0;
   AcpInitializeResult? _initialization;
   Future<AcpInitializeResult>? _initializeFuture;
+  Future<void>? _closeFuture;
+  var _terminated = false;
 
   AcpClient get client => _session.client;
   Stream<AcpSessionNotification> get notifications => client.updates;
@@ -690,19 +756,36 @@ class _BridgeAttachment {
       _session.transportErrors;
   AcpInitializeResult? get initialization => _initialization;
 
+  /// Whether the underlying transport has terminally failed or been closed and
+  /// this attachment must be replaced rather than reused on reconnect.
+  bool get isTerminated => _terminated || _closeFuture != null;
+
+  /// Current lease count. Exposed only for assertions and diagnostics.
+  int get refCount => _refCount;
+
+  /// Marks the transport as terminally unusable without releasing a lease, so
+  /// the next reconnect replaces it. Idempotent.
+  void markTerminated() => _terminated = true;
+
   void retain() => _refCount++;
 
+  /// Releases one lease. Returns `true` only when this call dropped the last
+  /// lease and closed the transport. Never decrements below zero and never
+  /// closes the transport more than once.
   Future<bool> release() async {
+    if (_refCount <= 0) return false;
     _refCount--;
     if (_refCount > 0) return false;
-    await _session.close();
+    await _close();
     return true;
   }
 
   Future<void> forceClose() async {
     _refCount = 0;
-    await _session.close();
+    await _close();
   }
+
+  Future<void> _close() => _closeFuture ??= _session.close();
 
   Future<AcpInitializeResult> ensureInitialized() =>
       _initializeFuture ??= _doInitialize();
@@ -711,13 +794,6 @@ class _BridgeAttachment {
     final result = await client.initialize();
     _initialization = result;
     return result;
-  }
-
-  /// Replaces the underlying session on reconnect and re-initializes.
-  void reset(AcpBridgeSession session) {
-    _session = session;
-    _initialization = null;
-    _initializeFuture = null;
   }
 }
 
@@ -760,11 +836,32 @@ class _SessionController {
 
   late AcpSessionState _state;
   late AcpSessionKey _key;
-  int _permissionCounter = 0;
+  var _holdsAttachment = false;
   var _disposed = false;
 
   /// Current immutable state.
   AcpSessionState get state => _state;
+
+  /// Bridge key of the attachment currently backing this session.
+  AcpBridgeKey get bridgeKey => _key.bridge;
+
+  /// Acquires a lease on [target], making it this controller's attachment.
+  void _acquireLease(_BridgeAttachment target) {
+    attachment = target;
+    target.retain();
+    _holdsAttachment = true;
+  }
+
+  /// Releases this controller's lease exactly once, if it holds one.
+  ///
+  /// Returns whether releasing dropped the attachment's last lease (closing
+  /// the local transport). A controller that already released (for example a
+  /// detached original) never decrements the count again.
+  Future<bool> _releaseLease() async {
+    if (!_holdsAttachment) return false;
+    _holdsAttachment = false;
+    return _manager._releaseAttachment(attachment);
+  }
 
   /// Opens the session: initializes the connection and creates/loads/resumes
   /// the ACP session capability-adaptively.
@@ -806,6 +903,14 @@ class _SessionController {
       (s) => s.copyWith(initialization: init, authMethods: init.authMethods),
     );
 
+    // For an existing session, the id is already known, so subscribe to session
+    // updates BEFORE issuing session/load or session/resume. History replay is
+    // emitted while the load RPC is still in flight; subscribing first ensures
+    // those replayed updates are retained rather than dropped.
+    if (existingSessionId != null) {
+      _subscribeSessionStreams();
+    }
+
     final resolvedSessionId = await _establishSession(existingSessionId, init);
     _key = AcpSessionKey.of(
       hostId: hostId,
@@ -821,7 +926,11 @@ class _SessionController {
       key: _key,
     );
 
-    _subscribeSessionStreams();
+    // A brand-new session's id was unknown until session/new returned, so its
+    // update subscription is established here.
+    if (existingSessionId == null) {
+      _subscribeSessionStreams();
+    }
     return _key;
   }
 
@@ -982,8 +1091,20 @@ class _SessionController {
   void _onServerRequest(AcpServerRequest request) {
     if (request is! AcpPermissionServerRequest) return;
     if (request.permission.sessionId != _key.acpSessionId) return;
-    final requestKey = 'perm-${_permissionCounter++}';
+    // Deduplicate by the stable JSON-RPC request id so a replayed permission
+    // request (for example after reconnect) rebinds the responder onto the
+    // current connection without appending a second pending UI entry.
+    final requestKey = 'perm:${request.raw.id}';
+    final isNew = !_pendingRequests.containsKey(requestKey);
     _pendingRequests[requestKey] = request;
+    if (!isNew) {
+      _diagnostics.debug(
+        'acp.session',
+        'permission_rebound',
+        fields: {'pendingCount': _pendingRequests.length},
+      );
+      return;
+    }
     final pending = AcpPendingPermission(
       requestKey: requestKey,
       sessionId: request.permission.sessionId,
@@ -1166,8 +1287,7 @@ class _SessionController {
         cwd: _cwd,
         clock: _clock,
         diagnostics: _diagnostics,
-      );
-      attachment.retain();
+      ).._acquireLease(attachment);
       final key = await forkController.adoptForked(
         hostId: _key.hostId,
         providerId: _key.providerId,
@@ -1227,12 +1347,18 @@ class _SessionController {
   }
 
   /// Detaches locally while leaving the remote bridge running.
+  ///
+  /// Idempotent: calling it again after the session is already detached (or has
+  /// no lease) is a no-op and never decrements the shared attachment's
+  /// reference count a second time. A detached original therefore can never
+  /// stop a bridge still used by a fork.
   Future<void> detach() async {
+    if (!_holdsAttachment) return;
     _update(
       (s) => s.copyWith(status: AcpConnectionStatus.detached, attached: false),
     );
     await _cancelSubscriptions();
-    final closed = await _manager._releaseAttachment(attachment);
+    final closed = await _releaseLease();
     _diagnostics.info(
       'acp.session',
       'detached',
@@ -1241,7 +1367,17 @@ class _SessionController {
   }
 
   /// Re-attaches a detached session and resumes/loads it.
+  ///
+  /// Replaces a terminally failed or closed attachment with a fresh one,
+  /// cancels any stale subscriptions before resubscribing, balances the
+  /// attachment lease, and surfaces failures as a typed [_LaunchException]
+  /// after recording safe error state — it never throws a raw error.
   Future<void> reconnect() async {
+    // Discard any stale subscriptions and lease left over from a previous
+    // (possibly failed) attempt so retries start clean and balanced.
+    await _cancelSubscriptions();
+    await _releaseLease();
+
     final hostId = _key.hostId;
     final providerId = _key.providerId;
     final bridgeId = _key.bridgeId;
@@ -1251,20 +1387,26 @@ class _SessionController {
       bridgeId: bridgeId,
     );
 
-    final existingAttachment = _manager._attachments[bridgeKey.value];
-    if (existingAttachment != null) {
-      attachment = existingAttachment;
+    final existing = _manager._attachments[bridgeKey.value];
+    final _BridgeAttachment target;
+    if (existing != null && !existing.isTerminated) {
+      target = existing;
     } else {
-      attachment.reset(
-        _manager._connector.connect(
+      if (existing != null) {
+        _manager._attachments.remove(bridgeKey.value);
+      }
+      target = _BridgeAttachment(
+        bridgeKey: bridgeKey,
+        providerId: providerId,
+        session: _manager._connector.connect(
           hostId: hostId,
           bridgeId: bridgeId,
           providerId: providerId,
         ),
       );
-      _manager._attachments[bridgeKey.value] = attachment;
+      _manager._attachments[bridgeKey.value] = target;
     }
-    attachment.retain();
+    _acquireLease(target);
 
     _update(
       (s) => s.copyWith(
@@ -1273,12 +1415,29 @@ class _SessionController {
         clearError: true,
       ),
     );
-    _subscribeTransport();
-    final init = await attachment.ensureInitialized();
-    _update((s) => s.copyWith(initialization: init));
-    await _establishSession(sessionId, init);
-    _update((s) => s.copyWith(status: AcpConnectionStatus.ready));
-    _subscribeSessionStreams();
+    try {
+      _subscribeTransport();
+      final init = await attachment.ensureInitialized();
+      _update((s) => s.copyWith(initialization: init));
+      // Subscribe before load/resume so replayed history is retained.
+      _subscribeSessionStreams();
+      await _establishSession(sessionId, init);
+      _update((s) => s.copyWith(status: AcpConnectionStatus.ready));
+    } on Object catch (error) {
+      final mapped = error is _LaunchException
+          ? error.error
+          : _mapClientError(error);
+      _update(
+        (s) => s.copyWith(
+          status: AcpConnectionStatus.failed,
+          attached: false,
+          error: mapped,
+        ),
+      );
+      await _cancelSubscriptions();
+      await _releaseLease();
+      throw _LaunchException(_key, mapped);
+    }
   }
 
   void _onTransportState(MonkeyMuxAcpTransportState transportState) {
@@ -1296,6 +1455,7 @@ class _SessionController {
             next = next.copyWith(status: AcpConnectionStatus.reconnecting);
           }
         case MonkeyMuxAcpTransportStatus.providerExited:
+          attachment.markTerminated();
           next = next.copyWith(
             status: AcpConnectionStatus.providerExited,
             attached: false,
@@ -1305,6 +1465,7 @@ class _SessionController {
             ),
           );
         case MonkeyMuxAcpTransportStatus.failed:
+          attachment.markTerminated();
           next = next.copyWith(
             status: AcpConnectionStatus.failed,
             error: const AcpSessionError(
@@ -1354,6 +1515,8 @@ class _SessionController {
       }
     }
     _pendingRequests.clear();
+    // Release the local lease exactly once (a no-op if already detached).
+    await _releaseLease();
     if (_state.status != AcpConnectionStatus.detached) {
       _state = _state.copyWith(
         status: AcpConnectionStatus.closed,

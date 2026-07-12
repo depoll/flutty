@@ -30,11 +30,29 @@ class _FakeAcpServer implements AcpTransport {
     this.supportsResume = true,
     this.supportsLoad = true,
     this.authMethods = const <Map<String, Object?>>[],
+    this.failNewSession = false,
+    this.failEstablish = false,
+    this.replayTextOnLoad,
+    this.permissionIdOnLoad,
   });
 
   final bool supportsResume;
   final bool supportsLoad;
   final List<Map<String, Object?>> authMethods;
+
+  /// When true, `session/new` replies with a JSON-RPC error.
+  final bool failNewSession;
+
+  /// When true, `session/resume` and `session/load` reply with an error.
+  final bool failEstablish;
+
+  /// When set, a `session/load` pushes an agent message chunk with this text
+  /// BEFORE replying, simulating synchronous history replay during the load.
+  final String? replayTextOnLoad;
+
+  /// When set, a `session/load` pushes a permission request with this stable
+  /// JSON-RPC id before replying, simulating a replayed pending permission.
+  final String? permissionIdOnLoad;
 
   final _incoming = StreamController<List<int>>();
   final List<String> methods = <String>[];
@@ -85,7 +103,7 @@ class _FakeAcpServer implements AcpTransport {
           if (authMethods.isNotEmpty) 'authMethods': authMethods,
         });
       case 'session/new':
-        if (authMethods.isNotEmpty) {
+        if (authMethods.isNotEmpty || failNewSession) {
           _replyError(id, -32000, 'Authentication required');
         } else {
           _reply(id, {'sessionId': 'session-${++_sessionCounter}'});
@@ -94,7 +112,29 @@ class _FakeAcpServer implements AcpTransport {
         final sessionId = 'fork-${++_sessionCounter}';
         _reply(id, {'sessionId': sessionId});
       case 'session/resume':
+        if (failEstablish) {
+          _replyError(id, -32001, 'Cannot resume');
+        } else {
+          _reply(id, <String, Object?>{});
+        }
       case 'session/load':
+        if (failEstablish) {
+          _replyError(id, -32001, 'Cannot load');
+          break;
+        }
+        final params = (message['params']! as Map).cast<String, Object?>();
+        final sessionId = params['sessionId'] as String? ?? '';
+        // Emit synchronous replay BEFORE replying to the load request.
+        if (replayTextOnLoad != null) {
+          pushUpdate(sessionId, {
+            'sessionUpdate': 'agent_message_chunk',
+            'messageId': 'replay',
+            'content': {'type': 'text', 'text': replayTextOnLoad},
+          });
+        }
+        if (permissionIdOnLoad != null) {
+          _pushPermission(permissionIdOnLoad!, sessionId, 'replay-tool');
+        }
         _reply(id, <String, Object?>{});
       case 'session/prompt':
         _reply(id, {'stopReason': 'end_turn'});
@@ -125,9 +165,14 @@ class _FakeAcpServer implements AcpTransport {
     });
   }
 
-  /// Sends a permission request and returns the server request id.
+  /// Sends a permission request with an auto-allocated id and returns it.
   Object requestPermission(String sessionId, String toolCallId) {
     final id = 'srv-${++_serverRequestId}';
+    _pushPermission(id, sessionId, toolCallId);
+    return id;
+  }
+
+  void _pushPermission(String id, String sessionId, String toolCallId) {
     _push({
       'jsonrpc': '2.0',
       'id': id,
@@ -141,7 +186,6 @@ class _FakeAcpServer implements AcpTransport {
         ],
       },
     });
-    return id;
   }
 
   void _reply(Object? id, Object? result) =>
@@ -270,6 +314,18 @@ void main() {
     isProUnlocked: () => isPro,
     diagnostics: const NoopDiagnosticsLogger(),
   );
+
+  AcpSessionManager buildManagerWith(_FakeConnector custom) {
+    final built = AcpSessionManager(
+      connector: custom,
+      providerService: providerService,
+      recentSessions: recentSessions,
+      isProUnlocked: () => isPro,
+      diagnostics: const NoopDiagnosticsLogger(),
+    );
+    addTearDown(built.dispose);
+    return built;
+  }
 
   setUp(() {
     database = AppDatabase.forTesting(NativeDatabase.memory());
@@ -575,20 +631,11 @@ void main() {
   });
 
   group('capability adaptation', () {
-    AcpSessionManager managerFor(_FakeConnector custom) {
-      final built = AcpSessionManager(
-        connector: custom,
-        providerService: providerService,
-        recentSessions: recentSessions,
-        isProUnlocked: () => isPro,
-        diagnostics: const NoopDiagnosticsLogger(),
-      );
-      addTearDown(built.dispose);
-      return built;
-    }
+    AcpSessionManager managerFor(_FakeConnector custom) =>
+        buildManagerWith(custom);
 
     test(
-      'surfaces authentication-required when the agent demands auth',
+      'surfaces authentication-required and retains the bridge for retry',
       () async {
         final authConnector = _FakeConnector(
           serverFactory: (_, _) => _FakeAcpServer(
@@ -608,6 +655,10 @@ void main() {
           (result as AcpSessionLaunchFailed).error.kind,
           AcpSessionErrorKind.authenticationRequired,
         );
+        // The bridge is intentionally kept so the user can authenticate and
+        // retry rather than being torn down.
+        expect(authConnector.startedBridges, hasLength(1));
+        expect(authConnector.stoppedBridges, isEmpty);
       },
     );
 
@@ -635,6 +686,211 @@ void main() {
       final server = plainConnector.servers[key.bridgeId]!;
       expect(server.methods, isNot(contains('session/resume')));
       expect(server.methods, isNot(contains('session/load')));
+    });
+  });
+
+  group('attachment lease', () {
+    test('detach is idempotent and never double-releases', () async {
+      final key = await startCopilot();
+      await manager.detachSession(key);
+      // A second detach must be a no-op and must not stop the bridge.
+      await manager.detachSession(key);
+      expect(
+        manager.state.byKeyValue(key.value)!.status,
+        AcpConnectionStatus.detached,
+      );
+      expect(connector.stoppedBridges, isEmpty);
+    });
+
+    test(
+      'detaching the original never stops a bridge still used by a fork',
+      () async {
+        isPro = true;
+        final key = await startCopilot();
+        final fork = await manager.forkSession(key);
+        final forkKey = (fork as AcpSessionLaunchStarted).key;
+        expect(forkKey.bridgeId, key.bridgeId);
+
+        // Detach the original twice, then explicitly stop it.
+        await manager.detachSession(key);
+        await manager.detachSession(key);
+        await manager.stopSession(key);
+
+        // The shared bridge must not be stopped while the fork still uses it.
+        expect(connector.stoppedBridges, isEmpty);
+        expect(manager.state.byKeyValue(forkKey.value)!.isLive, isTrue);
+
+        // Stopping the fork (the last user) finally stops the bridge once.
+        await manager.stopSession(forkKey);
+        expect(connector.stoppedBridges, [key.bridgeId]);
+      },
+    );
+  });
+
+  group('reconnect hardening', () {
+    test(
+      'repeated reconnect failures return typed errors and then recover',
+      () async {
+        var failEstablish = true;
+        final flakyConnector = _FakeConnector(
+          serverFactory: (_, _) => _FakeAcpServer(failEstablish: failEstablish),
+        );
+        final flakyManager = buildManagerWith(flakyConnector);
+        final started = await flakyManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+
+        Future<AcpSessionLaunchResult> reconnect() async {
+          await flakyManager.detachSession(key);
+          return flakyManager.reconnectSession(
+            hostId: key.hostId,
+            providerId: key.providerId,
+            bridgeId: key.bridgeId,
+            acpSessionId: key.acpSessionId,
+            cwd: '/repo',
+          );
+        }
+
+        final first = await reconnect();
+        expect(first, isA<AcpSessionLaunchFailed>());
+        expect(
+          (first as AcpSessionLaunchFailed).error.kind,
+          AcpSessionErrorKind.protocol,
+        );
+        expect(
+          flakyManager.state.byKeyValue(key.value)!.status,
+          AcpConnectionStatus.failed,
+        );
+
+        final second = await reconnect();
+        expect(second, isA<AcpSessionLaunchFailed>());
+
+        // Leases stayed balanced across repeated failures: once the agent
+        // recovers, a fresh reconnect succeeds and the session is live again.
+        failEstablish = false;
+        final third = await reconnect();
+        expect(third, isA<AcpSessionLaunchStarted>());
+        final state = flakyManager.state.byKeyValue(key.value)!;
+        expect(state.status, AcpConnectionStatus.ready);
+        expect(state.isLive, isTrue);
+      },
+    );
+  });
+
+  group('history replay on load', () {
+    test('retains replay emitted synchronously during session/load', () async {
+      final replayConnector = _FakeConnector(
+        serverFactory: (_, _) => _FakeAcpServer(
+          supportsResume: false,
+          replayTextOnLoad: 'Replayed history',
+        ),
+      );
+      final replayManager = buildManagerWith(replayConnector);
+      final started = await replayManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (started as AcpSessionLaunchStarted).key;
+      await replayManager.detachSession(key);
+      final result = await replayManager.reconnectSession(
+        hostId: key.hostId,
+        providerId: key.providerId,
+        bridgeId: key.bridgeId,
+        acpSessionId: key.acpSessionId,
+        cwd: '/repo',
+      );
+      expect(result, isA<AcpSessionLaunchStarted>());
+      await _pump();
+      final timeline = replayManager.state.byKeyValue(key.value)!.timeline;
+      final message = timeline.entries.whereType<AcpMessageEntry>().firstWhere(
+        (e) => e.messageId == 'replay',
+      );
+      expect(
+        (message.content.single as AcpTextContent).text,
+        'Replayed history',
+      );
+    });
+
+    test(
+      'deduplicates a replayed permission by request id across reconnect',
+      () async {
+        final permConnector = _FakeConnector(
+          serverFactory: (_, _) => _FakeAcpServer(
+            supportsResume: false,
+            permissionIdOnLoad: 'perm-stable-1',
+          ),
+        );
+        final permManager = buildManagerWith(permConnector);
+        final started = await permManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+
+        Future<void> reconnect() async {
+          await permManager.detachSession(key);
+          await permManager.reconnectSession(
+            hostId: key.hostId,
+            providerId: key.providerId,
+            bridgeId: key.bridgeId,
+            acpSessionId: key.acpSessionId,
+            cwd: '/repo',
+          );
+          await _pump();
+        }
+
+        await reconnect();
+        expect(
+          permManager.state.byKeyValue(key.value)!.pendingPermissions,
+          hasLength(1),
+        );
+
+        // Reconnect again: the same JSON-RPC id is replayed and must rebind the
+        // responder without appending a second pending UI entry.
+        await reconnect();
+        final pending = permManager.state
+            .byKeyValue(key.value)!
+            .pendingPermissions;
+        expect(pending, hasLength(1));
+
+        await permManager.respondToPermission(
+          key,
+          pending.single.requestKey,
+          'allow',
+        );
+        await _pump();
+        expect(
+          permManager.state.byKeyValue(key.value)!.pendingPermissions,
+          isEmpty,
+        );
+        // The responder was rebound to the latest connection, which received
+        // the response.
+        final latestServer = permConnector.servers[key.bridgeId]!;
+        expect(latestServer.permissionResponses['perm-stable-1'], isNotNull);
+      },
+    );
+  });
+
+  group('orphan bridge cleanup', () {
+    test('stops a fresh bridge when session creation fails', () async {
+      final failConnector = _FakeConnector(
+        serverFactory: (_, _) => _FakeAcpServer(failNewSession: true),
+      );
+      final failManager = buildManagerWith(failConnector);
+      final result = await failManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      expect(result, isA<AcpSessionLaunchFailed>());
+      // The orphaned bridge was best-effort stopped.
+      expect(failConnector.startedBridges, hasLength(1));
+      expect(failConnector.stoppedBridges, failConnector.startedBridges);
     });
   });
 }

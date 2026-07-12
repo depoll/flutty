@@ -35,12 +35,15 @@ sealed class AcpTimelineEntry {
 @immutable
 final class AcpMessageEntry extends AcpTimelineEntry {
   /// Creates a message entry.
-  const AcpMessageEntry({
+  ///
+  /// [content] is defensively copied into an unmodifiable list so a caller can
+  /// never mutate this entry after construction.
+  AcpMessageEntry({
     required this.role,
     required this.order,
     this.messageId,
-    this.content = const <AcpContentBlock>[],
-  });
+    List<AcpContentBlock> content = const <AcpContentBlock>[],
+  }) : content = List<AcpContentBlock>.unmodifiable(content);
 
   /// Message role.
   final AcpMessageRole role;
@@ -59,7 +62,7 @@ final class AcpMessageEntry extends AcpTimelineEntry {
     role: role,
     order: order,
     messageId: messageId,
-    content: List<AcpContentBlock>.unmodifiable([...content, block]),
+    content: [...content, block],
   );
 
   @override
@@ -85,17 +88,18 @@ final class AcpMessageEntry extends AcpTimelineEntry {
 @immutable
 final class AcpToolCallEntry extends AcpTimelineEntry {
   /// Creates a tool-call entry.
-  const AcpToolCallEntry({
+  AcpToolCallEntry({
     required this.toolCallId,
     required this.order,
     this.title,
     this.toolKind,
     this.status,
-    this.content = const <AcpToolContent>[],
-    this.locations = const <AcpToolLocation>[],
+    List<AcpToolContent> content = const <AcpToolContent>[],
+    List<AcpToolLocation> locations = const <AcpToolLocation>[],
     this.rawInput,
     this.rawOutput,
-  });
+  }) : content = List<AcpToolContent>.unmodifiable(content),
+       locations = List<AcpToolLocation>.unmodifiable(locations);
 
   /// Tool-call identifier.
   final String toolCallId;
@@ -179,8 +183,13 @@ final class AcpToolCallEntry extends AcpTimelineEntry {
 /// Immutable snapshot of a session's normalized in-memory timeline.
 @immutable
 final class AcpTimeline {
-  /// Creates a timeline from [entries].
-  const AcpTimeline({this.entries = const <AcpTimelineEntry>[]});
+  /// Creates a timeline from [entries], defensively copied into an
+  /// unmodifiable list.
+  AcpTimeline({List<AcpTimelineEntry> entries = const <AcpTimelineEntry>[]})
+    : entries = List<AcpTimelineEntry>.unmodifiable(entries);
+
+  /// Creates the shared empty timeline.
+  const AcpTimeline.empty() : entries = const <AcpTimelineEntry>[];
 
   /// Ordered timeline entries.
   final List<AcpTimelineEntry> entries;
@@ -239,8 +248,7 @@ class AcpTimelineBuilder {
   }
 
   /// Returns an immutable snapshot of the current timeline.
-  AcpTimeline snapshot() =>
-      AcpTimeline(entries: List<AcpTimelineEntry>.unmodifiable(_entries));
+  AcpTimeline snapshot() => AcpTimeline(entries: _entries);
 
   void _applyContentChunk(AcpContentChunkUpdate update) {
     final role = _roleFor(update.kind);
@@ -281,7 +289,7 @@ class AcpTimelineBuilder {
         role: role,
         order: _nextOrder++,
         messageId: messageId,
-        content: List<AcpContentBlock>.unmodifiable([update.content]),
+        content: [update.content],
       ),
     );
     _openMessageIndex = _entries.length - 1;
