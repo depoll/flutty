@@ -1800,12 +1800,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // latter because they must appear at the anchored cell straight away.
     if (anchor == null && imageId != null && !compressed) {
       if (!manager.hasPendingWithSignature(imageId, signature)) {
+        final sourceDimensions = _graphicsPayloadDimensions(args, payload);
         manager.storePendingImage(
           imageId,
           payload: payload,
           format: format,
           width: width,
           height: height,
+          sourceWidth: sourceDimensions?.width ?? 0,
+          sourceHeight: sourceDimensions?.height ?? 0,
           sourceSignature: signature,
         );
       }
@@ -1949,12 +1952,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // Respect the no-cursor-movement policy (C=1); otherwise drop below the
     // image so subsequent output does not overlap it.
     final keepCursor = args['C'] == '1';
-    final rows = image == null
+    final dimensions = image == null
+        ? manager.pendingImageDimensions(imageId)
+        : (width: image.sourceWidth, height: image.sourceHeight);
+    final rows = dimensions == null
         ? (int.tryParse(args['r'] ?? '') ?? 0)
         : _graphicsDisplayRowsForDimensions(
             args,
             manager,
-            (width: image.sourceWidth, height: image.sourceHeight),
+            dimensions,
           );
     if (!keepCursor) {
       for (var i = 0; i < rows; i++) {
