@@ -1,0 +1,891 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:dartssh2/dartssh2.dart';
+
+import '../models/acp_client_capabilities.dart';
+import '../models/acp_json.dart';
+import '../models/acp_protocol.dart';
+import '../models/acp_updates.dart';
+import 'acp_client.dart';
+import 'acp_json_rpc_connection.dart';
+import 'diagnostics_log_service.dart';
+import 'remote_file_service.dart';
+import 'ssh_service.dart';
+import 'windows_remote_powershell.dart';
+
+/// Limits applied to agent-initiated remote filesystem and terminal work.
+final class AcpClientCapabilityLimits {
+  /// Creates capability limits.
+  const AcpClientCapabilityLimits({
+    this.maxFileBytes = 1024 * 1024,
+    this.maxWriteBytes = 1024 * 1024,
+    this.fileTimeout = const Duration(seconds: 20),
+    this.maxTerminals = 4,
+    this.maxCommandCharacters = 8192,
+    this.maxEnvironmentVariables = 64,
+    this.maxTerminalOutputBytes = 1024 * 1024,
+    this.maxTerminalLifetime = const Duration(minutes: 10),
+  });
+
+  /// Maximum file bytes read from SFTP.
+  final int maxFileBytes;
+
+  /// Maximum UTF-8 bytes accepted for a write.
+  final int maxWriteBytes;
+
+  /// Timeout for one SFTP operation.
+  final Duration fileTimeout;
+
+  /// Maximum concurrently retained ACP terminals.
+  final int maxTerminals;
+
+  /// Maximum command plus argument character count.
+  final int maxCommandCharacters;
+
+  /// Maximum environment variables accepted for one terminal.
+  final int maxEnvironmentVariables;
+
+  /// Largest output ring buffer retained for one terminal.
+  final int maxTerminalOutputBytes;
+
+  /// Maximum lifetime for an unreleased terminal.
+  final Duration maxTerminalLifetime;
+}
+
+/// A remote filesystem used to satisfy ACP filesystem requests.
+abstract interface class AcpRemoteFileSystem {
+  /// Reads a complete UTF-8 file at [path], up to [maxBytes].
+  Future<Uint8List> read(String path, {required int maxBytes});
+
+  /// Writes [bytes] to [path], creating it when absent.
+  Future<void> write(String path, Uint8List bytes);
+}
+
+/// SFTP implementation of [AcpRemoteFileSystem].
+final class AcpSftpRemoteFileSystem implements AcpRemoteFileSystem {
+  /// Creates an SFTP-backed filesystem.
+  AcpSftpRemoteFileSystem(this._sftp);
+
+  /// Creates a filesystem using the active SSH session's SFTP channel.
+  factory AcpSftpRemoteFileSystem.fromSshSession(SshSession session) =>
+      AcpSftpRemoteFileSystem(session.sftp);
+
+  final Future<SftpClient> Function() _sftp;
+
+  @override
+  Future<Uint8List> read(String path, {required int maxBytes}) async {
+    final sftp = await _sftp();
+    final stat = await sftp.stat(path, followLink: false);
+    if (stat.isDirectory) {
+      throw const AcpClientCapabilityException('Path is a directory');
+    }
+    if (stat.size != null && stat.size! > maxBytes) {
+      throw const AcpLimitExceededException(
+        'File exceeds the configured limit',
+      );
+    }
+    final file = await sftp.open(path);
+    final bytes = BytesBuilder(copy: false);
+    try {
+      await for (final chunk in file.read()) {
+        if (bytes.length + chunk.length > maxBytes) {
+          throw const AcpLimitExceededException(
+            'File exceeds the configured limit',
+          );
+        }
+        bytes.add(chunk);
+      }
+      return bytes.takeBytes();
+    } finally {
+      await file.close();
+    }
+  }
+
+  @override
+  Future<void> write(String path, Uint8List bytes) async {
+    final sftp = await _sftp();
+    final separator = path.lastIndexOf('/');
+    final parent = separator <= 0 ? '/' : path.substring(0, separator);
+    final filename = separator == -1 ? path : path.substring(separator + 1);
+    final temporaryPath =
+        '$parent/.$filename.acp-${Random.secure().nextInt(1 << 32)}';
+    var uploaded = false;
+    try {
+      await const RemoteFileService().uploadBytes(
+        sftp: sftp,
+        remotePath: temporaryPath,
+        bytes: bytes,
+      );
+      uploaded = true;
+      // SFTP rename keeps the original file untouched if upload fails. Servers
+      // that decline replacing an existing destination fail safely instead.
+      await sftp.rename(temporaryPath, path);
+    } finally {
+      if (uploaded) {
+        try {
+          await sftp.remove(temporaryPath);
+        } on Object {
+          // A successful rename removes the temporary path. Cleanup is best effort.
+        }
+      }
+    }
+  }
+}
+
+/// A running remote terminal process.
+abstract interface class AcpTerminalProcess {
+  /// Standard-output bytes from the process.
+  Stream<List<int>> get stdout;
+
+  /// Standard-error bytes from the process.
+  Stream<List<int>> get stderr;
+
+  /// Completes when the SSH command channel closes.
+  Future<void> get done;
+
+  /// Waits for the process exit status.
+  Future<AcpTerminalExitStatus> waitForExit();
+
+  /// Terminates the process/channel.
+  void kill();
+}
+
+/// Starts remote non-PTY terminal processes.
+abstract interface class AcpTerminalExecutor {
+  /// Starts [command] without a PTY.
+  Future<AcpTerminalProcess> start(String command);
+}
+
+/// SSH implementation of [AcpTerminalExecutor].
+final class AcpSshTerminalExecutor implements AcpTerminalExecutor {
+  /// Creates a terminal executor over [session].
+  const AcpSshTerminalExecutor(this.session);
+
+  /// Active SSH session for the same remote host as ACP.
+  final SshSession session;
+
+  @override
+  Future<AcpTerminalProcess> start(String command) async =>
+      _SshAcpTerminalProcess(await session.execute(command));
+}
+
+/// Terminal exit status returned by ACP terminal methods.
+final class AcpTerminalExitStatus {
+  /// Creates an exit status.
+  const AcpTerminalExitStatus({this.exitCode, this.signal});
+
+  /// Numeric exit code, if the command returned normally.
+  final int? exitCode;
+
+  /// Remote signal name, if the command was signalled.
+  final String? signal;
+
+  /// Encodes this status for ACP.
+  AcpJsonMap toJson() => <String, Object?>{
+    'exitCode': exitCode,
+    'signal': signal,
+  };
+}
+
+/// A configuration or remote-operation failure safe to return to ACP.
+class AcpClientCapabilityException implements Exception {
+  /// Creates a capability failure.
+  const AcpClientCapabilityException(this.message);
+
+  /// Safe error message.
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// A configured resource limit was exceeded.
+final class AcpLimitExceededException extends AcpClientCapabilityException {
+  /// Creates a limit-exceeded failure.
+  const AcpLimitExceededException(super.message);
+}
+
+/// A state registry for user decisions that survives a transport detach.
+final class AcpPendingRequestRegistry {
+  final _requests = <String, AcpPendingClientRequest>{};
+  final _changes = StreamController<List<AcpPendingClientRequest>>.broadcast(
+    sync: true,
+  );
+
+  /// Current pending requests.
+  List<AcpPendingClientRequest> get requests =>
+      List<AcpPendingClientRequest>.unmodifiable(_requests.values);
+
+  /// Emits an immutable request snapshot after each change.
+  Stream<List<AcpPendingClientRequest>> get changes => _changes.stream;
+
+  /// Adds a new request or rebinds its response channel after reconnect.
+  T register<T extends AcpPendingClientRequest>(T pending) {
+    final existing = _requests[pending.id];
+    if (existing != null && existing.runtimeType == pending.runtimeType) {
+      existing.request = pending.request;
+      _emit();
+      return existing as T;
+    }
+    _requests[pending.id] = pending;
+    _emit();
+    return pending;
+  }
+
+  /// Removes [id] after it has been answered.
+  void remove(String id) {
+    if (_requests.remove(id) != null) _emit();
+  }
+
+  /// Cancels unresolved permissions during explicit ACP session destruction.
+  Future<void> cancelAll() async {
+    final pending = _requests.values.toList(growable: false);
+    _requests.clear();
+    _emit();
+    for (final request in pending) {
+      try {
+        if (request case AcpPendingPermission()) {
+          await request.cancel();
+        } else if (request case AcpPendingFileWrite()) {
+          await request.reject();
+        }
+      } on Object {
+        // A detached bridge can no longer accept a response; its replayed request
+        // remains unresolved remotely until the explicit bridge/session teardown.
+      }
+    }
+  }
+
+  /// Closes the registry after explicit session destruction.
+  Future<void> close() async {
+    await cancelAll();
+    await _changes.close();
+  }
+
+  void _emit() {
+    if (!_changes.isClosed) _changes.add(requests);
+  }
+}
+
+/// Binds ACP server requests to same-host SSH filesystem and terminal services.
+final class AcpClientCapabilityService {
+  /// Creates a capability request handler.
+  AcpClientCapabilityService({
+    required this.fileSystem,
+    required this.terminalExecutor,
+    required this.allowedRoots,
+    required this.registry,
+    this.limits = const AcpClientCapabilityLimits(),
+    DiagnosticsLogger? diagnostics,
+  }) : _diagnostics = diagnostics ?? DiagnosticsLogService.instance;
+
+  /// Filesystem implementation for the current remote host.
+  final AcpRemoteFileSystem? fileSystem;
+
+  /// Terminal implementation for the current remote host.
+  final AcpTerminalExecutor? terminalExecutor;
+
+  /// Roots that file and terminal working-directory requests may access.
+  final List<String> allowedRoots;
+
+  /// User-decision registry. It may be retained over bridge detach/reconnect.
+  final AcpPendingRequestRegistry registry;
+
+  /// Resource limits for this service.
+  final AcpClientCapabilityLimits limits;
+
+  final DiagnosticsLogger _diagnostics;
+  final _terminals = <String, _ManagedAcpTerminal>{};
+  StreamSubscription<AcpServerRequest>? _subscription;
+  var _nextTerminalId = 0;
+
+  /// Capabilities that are safe to advertise for this service instance.
+  AcpClientCapabilities get capabilities => AcpClientCapabilities(
+    fileSystem: fileSystem == null
+        ? null
+        : const AcpFileSystemCapabilities(
+            readTextFile: true,
+            writeTextFile: true,
+          ),
+    terminal: terminalExecutor != null,
+  );
+
+  /// Starts routing server requests from [client].
+  ///
+  /// Detaching only cancels the stream subscription. It deliberately keeps
+  /// [registry] and terminals alive for bridge replay after reconnect.
+  void attach(AcpClient client) {
+    _subscription?.cancel();
+    _subscription = client.serverRequests.listen(_handle);
+  }
+
+  /// Attaches to [client] and initializes it with exactly these capabilities.
+  Future<AcpInitializeResult> initialize(
+    AcpClient client, {
+    Duration? timeout,
+  }) {
+    attach(client);
+    return client.initialize(capabilities: capabilities, timeout: timeout);
+  }
+
+  /// Stops receiving requests without cancelling retained user decisions.
+  Future<void> detach() async {
+    await _subscription?.cancel();
+    _subscription = null;
+  }
+
+  /// Explicitly destroys session-owned terminal resources and pending requests.
+  Future<void> close() async {
+    await detach();
+    await Future.wait<void>(
+      _terminals.values.map((terminal) => terminal.release()),
+    );
+    _terminals.clear();
+    await registry.close();
+  }
+
+  /// Approves a pending write after explicit user confirmation.
+  Future<void> approveWrite(String requestId) async {
+    final pending = registry._requests[requestId];
+    if (pending is! AcpPendingFileWrite || fileSystem == null) {
+      throw StateError('No pending file write for request');
+    }
+    try {
+      await pending.approve(() => _writeFile(pending.path, pending.content));
+    } finally {
+      registry.remove(requestId);
+    }
+  }
+
+  /// Rejects an unapproved file write.
+  Future<void> rejectWrite(String requestId) async {
+    final pending = registry._requests[requestId];
+    if (pending is! AcpPendingFileWrite) {
+      throw StateError('No pending file write for request');
+    }
+    try {
+      await pending.reject();
+    } finally {
+      registry.remove(requestId);
+    }
+  }
+
+  /// Answers a permission request with an exact agent option ID.
+  Future<void> selectPermission(String requestId, String optionId) async {
+    final pending = registry._requests[requestId];
+    if (pending is! AcpPendingPermission) {
+      throw StateError('No pending permission for request');
+    }
+    try {
+      await pending.select(optionId);
+    } finally {
+      registry.remove(requestId);
+    }
+  }
+
+  /// Cancels an outstanding permission request.
+  Future<void> cancelPermission(String requestId) async {
+    final pending = registry._requests[requestId];
+    if (pending is! AcpPendingPermission) {
+      throw StateError('No pending permission for request');
+    }
+    try {
+      await pending.cancel();
+    } finally {
+      registry.remove(requestId);
+    }
+  }
+
+  void _handle(AcpServerRequest serverRequest) {
+    final request = serverRequest.raw;
+    unawaited(_route(request));
+  }
+
+  Future<void> _route(AcpJsonRpcServerRequest request) async {
+    final startedAt = DateTime.now();
+    try {
+      switch (request.method) {
+        case 'session/request_permission':
+          await _permission(request);
+        case 'fs/read_text_file':
+          await _readTextFile(request);
+        case 'fs/write_text_file':
+          await _queueTextFileWrite(request);
+        case 'terminal/create':
+          await _createTerminal(request);
+        case 'terminal/output':
+          await _terminalOutput(request);
+        case 'terminal/wait_for_exit':
+          await _terminalWait(request);
+        case 'terminal/kill':
+          await _terminalKill(request);
+        case 'terminal/release':
+          await _terminalRelease(request);
+        default:
+          await request.respondError(-32601, 'Method not found');
+      }
+    } on AcpClientCapabilityException catch (error) {
+      await request.respondError(-32000, error.message);
+    } on TimeoutException {
+      await request.respondError(-32000, 'Remote operation timed out');
+    } on Object catch (error) {
+      _diagnostics.warning(
+        'acp.capability',
+        'request_failed',
+        fields: {
+          'methodCategory': _methodCategory(request.method),
+          'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
+          'errorType': error.runtimeType,
+        },
+      );
+      await request.respondError(-32000, 'Remote operation failed');
+    }
+  }
+
+  Future<void> _permission(AcpJsonRpcServerRequest request) async {
+    final params = _objectParams(request);
+    final permission = AcpPermissionRequest.fromJson(params);
+    if (permission.sessionId.isEmpty || permission.options.isEmpty) {
+      throw const AcpClientCapabilityException('Invalid permission request');
+    }
+    registry.register(AcpPendingPermission(request, permission));
+    _diagnostics.info(
+      'acp.capability',
+      'permission_pending',
+      fields: {'optionCount': permission.options.length},
+    );
+  }
+
+  Future<void> _readTextFile(AcpJsonRpcServerRequest request) async {
+    final remoteFileSystem = fileSystem;
+    if (remoteFileSystem == null) {
+      throw const AcpClientCapabilityException(
+        'Filesystem access is unavailable',
+      );
+    }
+    final params = _objectParams(request);
+    _requiredSessionId(params);
+    final path = _validatedPath(_requiredString(params, 'path'));
+    final line = _optionalPositiveInteger(params, 'line');
+    final limit = _optionalPositiveInteger(params, 'limit');
+    final bytes = await remoteFileSystem
+        .read(path, maxBytes: limits.maxFileBytes)
+        .timeout(limits.fileTimeout);
+    final content = _decodeUtf8(bytes);
+    await request.respond(<String, Object?>{
+      'content': _selectLines(content, line: line, limit: limit),
+    });
+  }
+
+  Future<void> _queueTextFileWrite(AcpJsonRpcServerRequest request) async {
+    if (fileSystem == null) {
+      throw const AcpClientCapabilityException('File writes are unavailable');
+    }
+    final params = _objectParams(request);
+    final sessionId = _requiredSessionId(params);
+    final path = _validatedPath(_requiredString(params, 'path'));
+    final content = _requiredString(params, 'content');
+    if (utf8.encode(content).length > limits.maxWriteBytes) {
+      throw const AcpLimitExceededException(
+        'Write exceeds the configured limit',
+      );
+    }
+    registry.register(
+      AcpPendingFileWrite(
+        request: request,
+        sessionId: sessionId,
+        path: path,
+        content: content,
+      ),
+    );
+    _diagnostics.info('acp.capability', 'write_pending');
+  }
+
+  Future<void> _writeFile(String path, String content) async {
+    final bytes = Uint8List.fromList(utf8.encode(content));
+    if (bytes.length > limits.maxWriteBytes) {
+      throw const AcpLimitExceededException(
+        'Write exceeds the configured limit',
+      );
+    }
+    await fileSystem!.write(path, bytes).timeout(limits.fileTimeout);
+  }
+
+  Future<void> _createTerminal(AcpJsonRpcServerRequest request) async {
+    final executor = terminalExecutor;
+    if (executor == null) {
+      throw const AcpClientCapabilityException(
+        'Terminal access is unavailable',
+      );
+    }
+    if (_terminals.length >= limits.maxTerminals) {
+      throw const AcpLimitExceededException('Too many active terminals');
+    }
+    final params = _objectParams(request);
+    _requiredSessionId(params);
+    final command = _requiredString(params, 'command');
+    final arguments = _stringList(params['args'], 'args');
+    final environment = _environment(params['env']);
+    if (environment.length > limits.maxEnvironmentVariables) {
+      throw const AcpLimitExceededException('Too many environment variables');
+    }
+    final cwd = params['cwd'] == null
+        ? null
+        : _validatedPath(_requiredString(params, 'cwd'));
+    final requestedOutputLimit = _optionalPositiveInteger(
+      params,
+      'outputByteLimit',
+    );
+    final outputLimit = requestedOutputLimit == null
+        ? limits.maxTerminalOutputBytes
+        : min(requestedOutputLimit, limits.maxTerminalOutputBytes);
+    if (outputLimit <= 0 ||
+        command.length +
+                arguments.fold<int>(0, (total, value) => total + value.length) >
+            limits.maxCommandCharacters) {
+      throw const AcpLimitExceededException(
+        'Terminal command exceeds the limit',
+      );
+    }
+    final remoteCommand = buildAcpRemoteTerminalCommand(
+      command: command,
+      arguments: arguments,
+      environment: environment,
+      cwd: cwd,
+      windows:
+          executor is AcpSshTerminalExecutor &&
+          executor.session.remoteIsWindows,
+    );
+    final process = await executor.start(remoteCommand);
+    final id = 'acp-terminal-${++_nextTerminalId}';
+    final terminal = _ManagedAcpTerminal(process, outputLimit);
+    _terminals[id] = terminal;
+    terminal
+      ..start(
+        onExit: () {
+          _diagnostics.info(
+            'acp.capability',
+            'terminal_exited',
+            fields: {'terminalCount': _terminals.length},
+          );
+        },
+      )
+      ..lifetimeTimer = Timer(
+        limits.maxTerminalLifetime,
+        () => unawaited(terminal.kill()),
+      );
+    await request.respond(<String, Object?>{'terminalId': id});
+  }
+
+  Future<void> _terminalOutput(AcpJsonRpcServerRequest request) async {
+    final terminal = _terminalFor(request);
+    await request.respond(terminal.output());
+  }
+
+  Future<void> _terminalWait(AcpJsonRpcServerRequest request) async {
+    final terminal = _terminalFor(request);
+    await request.respond((await terminal.wait()).toJson());
+  }
+
+  Future<void> _terminalKill(AcpJsonRpcServerRequest request) async {
+    final terminal = _terminalFor(request);
+    await terminal.kill();
+    await request.respond();
+  }
+
+  Future<void> _terminalRelease(AcpJsonRpcServerRequest request) async {
+    final params = _objectParams(request);
+    _requiredSessionId(params);
+    final id = _requiredString(params, 'terminalId');
+    final terminal = _terminals.remove(id);
+    if (terminal == null) {
+      throw const AcpClientCapabilityException('Unknown terminal');
+    }
+    await terminal.release();
+    await request.respond();
+  }
+
+  _ManagedAcpTerminal _terminalFor(AcpJsonRpcServerRequest request) {
+    final params = _objectParams(request);
+    _requiredSessionId(params);
+    final terminal = _terminals[_requiredString(params, 'terminalId')];
+    if (terminal == null) {
+      throw const AcpClientCapabilityException('Unknown terminal');
+    }
+    return terminal;
+  }
+
+  String _validatedPath(String candidate) {
+    final normalized = normalizeSftpAbsolutePath(candidate);
+    final includesTraversal = candidate
+        .replaceAll(r'\', '/')
+        .split('/')
+        .any((segment) => segment == '..');
+    if (normalized == null ||
+        includesTraversal ||
+        !_isAllowedPath(normalized)) {
+      throw const AcpClientCapabilityException('Path is not allowed');
+    }
+    return normalized;
+  }
+
+  bool _isAllowedPath(String candidate) {
+    for (final root in allowedRoots) {
+      final normalizedRoot = normalizeSftpAbsolutePath(root);
+      if (normalizedRoot == null) continue;
+      if (candidate == normalizedRoot ||
+          candidate.startsWith(
+            normalizedRoot.endsWith('/') ? normalizedRoot : '$normalizedRoot/',
+          )) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+/// Builds a safely quoted command for a remote non-PTY SSH exec channel.
+String buildAcpRemoteTerminalCommand({
+  required String command,
+  required List<String> arguments,
+  required Map<String, String> environment,
+  required String? cwd,
+  required bool windows,
+}) {
+  if (windows) {
+    final script = StringBuffer();
+    for (final entry in environment.entries) {
+      script
+        ..write(r'$env:')
+        ..write(entry.key)
+        ..write('=')
+        ..write(powerShellSingleQuote(entry.value))
+        ..write(';');
+    }
+    if (cwd != null) {
+      script
+        ..write('Set-Location -LiteralPath ')
+        ..write(powerShellSingleQuote(sftpPathToWindowsShellPath(cwd)))
+        ..write(';');
+    }
+    script
+      ..write('& ')
+      ..write(powerShellSingleQuote(command));
+    for (final argument in arguments) {
+      script
+        ..write(' ')
+        ..write(powerShellSingleQuote(argument));
+    }
+    script.write(r';exit $LASTEXITCODE');
+    return buildWindowsPowerShellCommand(script.toString());
+  }
+  final prefix = StringBuffer();
+  if (cwd != null) {
+    prefix
+      ..write('cd -- ')
+      ..write(shellEscapePosix(cwd))
+      ..write(' && ');
+  }
+  for (final entry in environment.entries) {
+    prefix
+      ..write(entry.key)
+      ..write('=')
+      ..write(shellEscapePosix(entry.value))
+      ..write(' ');
+  }
+  prefix.write(shellEscapePosix(command));
+  for (final argument in arguments) {
+    prefix
+      ..write(' ')
+      ..write(shellEscapePosix(argument));
+  }
+  return prefix.toString();
+}
+
+final class _SshAcpTerminalProcess implements AcpTerminalProcess {
+  _SshAcpTerminalProcess(this._session);
+
+  final SSHSession _session;
+
+  @override
+  Stream<List<int>> get stderr => _session.stderr.cast<List<int>>();
+
+  @override
+  Stream<List<int>> get stdout => _session.stdout.cast<List<int>>();
+
+  @override
+  Future<void> get done => _session.done;
+
+  @override
+  void kill() => _session.close();
+
+  @override
+  Future<AcpTerminalExitStatus> waitForExit() async => AcpTerminalExitStatus(
+    exitCode: await _session.waitForExit(),
+    signal: _session.exitSignal?.signalName,
+  );
+}
+
+final class _ManagedAcpTerminal {
+  _ManagedAcpTerminal(this._process, this._limit);
+
+  final AcpTerminalProcess _process;
+  final int _limit;
+  final BytesBuilder _output = BytesBuilder(copy: false);
+  late final StreamSubscription<List<int>> _stdoutSubscription;
+  late final StreamSubscription<List<int>> _stderrSubscription;
+  Completer<AcpTerminalExitStatus>? _exit;
+  AcpTerminalExitStatus? _exitStatus;
+  Timer? lifetimeTimer;
+  var _truncated = false;
+  var _started = false;
+  var _released = false;
+
+  void start({required void Function() onExit}) {
+    if (_started) return;
+    _started = true;
+    _stdoutSubscription = _process.stdout.listen(_append, onError: (_) {});
+    _stderrSubscription = _process.stderr.listen(_append, onError: (_) {});
+    _exit = Completer<AcpTerminalExitStatus>();
+    unawaited(() async {
+      try {
+        final status = await _process.waitForExit();
+        _exitStatus = status;
+        if (!_exit!.isCompleted) _exit!.complete(status);
+      } on Object {
+        _exitStatus = const AcpTerminalExitStatus();
+        if (!_exit!.isCompleted) _exit!.complete(_exitStatus);
+      } finally {
+        onExit();
+      }
+    }());
+  }
+
+  void _append(List<int> bytes) {
+    final combined = <int>[..._output.toBytes(), ...bytes];
+    if (combined.length <= _limit) {
+      _output
+        ..clear()
+        ..add(combined);
+      return;
+    }
+    _truncated = true;
+    var start = combined.length - _limit;
+    // Retain only a valid UTF-8 suffix so ACP output remains valid text.
+    while (start < combined.length) {
+      try {
+        utf8.decode(combined.sublist(start), allowMalformed: false);
+        break;
+      } on FormatException {
+        start += 1;
+      }
+    }
+    _output
+      ..clear()
+      ..add(combined.sublist(start));
+  }
+
+  AcpJsonMap output() => <String, Object?>{
+    'output': utf8.decode(_output.toBytes(), allowMalformed: true),
+    'truncated': _truncated,
+    if (_exit?.isCompleted ?? false) 'exitStatus': _exitStatusJson(),
+  };
+
+  AcpJsonMap _exitStatusJson() => _exitStatus!.toJson();
+
+  Future<AcpTerminalExitStatus> wait() => _exit!.future;
+
+  Future<void> kill() async {
+    if (!_exit!.isCompleted) _process.kill();
+  }
+
+  Future<void> release() async {
+    if (_released) return;
+    _released = true;
+    lifetimeTimer?.cancel();
+    await kill();
+    await Future.wait<void>([
+      _stdoutSubscription.cancel(),
+      _stderrSubscription.cancel(),
+    ]);
+  }
+}
+
+AcpJsonMap _objectParams(AcpJsonRpcServerRequest request) {
+  final params = AcpJson.object(request.params);
+  if (params == null) {
+    throw const AcpClientCapabilityException('Invalid request parameters');
+  }
+  return params;
+}
+
+String _requiredString(AcpJsonMap params, String name) {
+  final value = AcpJson.string(params, name);
+  if (value == null || value.isEmpty) {
+    throw const AcpClientCapabilityException('Invalid request parameters');
+  }
+  return value;
+}
+
+String _requiredSessionId(AcpJsonMap params) =>
+    _requiredString(params, 'sessionId');
+
+int? _optionalPositiveInteger(AcpJsonMap params, String name) {
+  if (!params.containsKey(name)) return null;
+  final value = AcpJson.integer(params, name);
+  if (value == null || value < 1) {
+    throw const AcpClientCapabilityException('Invalid request parameters');
+  }
+  return value;
+}
+
+List<String> _stringList(Object? raw, String name) {
+  if (raw == null) return const <String>[];
+  if (raw is! List || raw.any((item) => item is! String)) {
+    throw AcpClientCapabilityException('Invalid $name');
+  }
+  return List<String>.unmodifiable(raw.cast<String>());
+}
+
+Map<String, String> _environment(Object? raw) {
+  if (raw == null) return const <String, String>{};
+  if (raw is! List) {
+    throw const AcpClientCapabilityException('Invalid env');
+  }
+  final environment = <String, String>{};
+  for (final item in raw) {
+    final value = AcpJson.object(item);
+    final name = value == null ? null : AcpJson.string(value, 'name');
+    final content = value == null ? null : AcpJson.string(value, 'value');
+    if (name == null ||
+        content == null ||
+        !RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(name)) {
+      throw const AcpClientCapabilityException('Invalid env');
+    }
+    environment[name] = content;
+  }
+  return Map<String, String>.unmodifiable(environment);
+}
+
+String _decodeUtf8(Uint8List bytes) {
+  try {
+    return utf8.decode(bytes, allowMalformed: false);
+  } on FormatException {
+    throw const AcpClientCapabilityException('File is not valid UTF-8 text');
+  }
+}
+
+String _selectLines(String content, {int? line, int? limit}) {
+  if (line == null && limit == null) return content;
+  final lines = const LineSplitter().convert(content);
+  final start = (line ?? 1) - 1;
+  if (start >= lines.length) return '';
+  final end = limit == null ? lines.length : min(lines.length, start + limit);
+  final selected = lines.sublist(start, end).join('\n');
+  return selected.isEmpty ? selected : '$selected\n';
+}
+
+String _methodCategory(String method) => method.split('/').first;
