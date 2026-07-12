@@ -75,6 +75,63 @@ void main() {
     });
   });
 
+  group('key rebuild', () {
+    AcpPendingPermission permission(String requestKey, String toolCallId) =>
+        AcpPendingPermission(
+          requestKey: requestKey,
+          sessionId: 's',
+          toolCallId: toolCallId,
+          options: const [],
+          requestedAt: DateTime.utc(2024),
+        );
+
+    test('preserves pending state and its ordering under a new key', () {
+      // A brand-new session is created under a provisional key and rebuilt once
+      // its real remote id is known. That rebuild must carry over every field.
+      final provisional = base(status: AcpConnectionStatus.initializing)
+          .copyWith(
+            availableCommands: const [
+              AcpAvailableCommand(name: 'review', description: 'Review'),
+            ],
+            pendingPermissions: [
+              permission('r1', 't1'),
+              permission('r2', 't2'),
+              permission('r3', 't3'),
+            ],
+            promptStatus: AcpPromptStatus.streaming,
+          );
+
+      final rebuilt = provisional.copyWith(
+        key: AcpSessionKey.of(
+          hostId: 1,
+          providerId: 'copilot',
+          bridgeId: 'b',
+          acpSessionId: 'resolved-session',
+        ),
+        status: AcpConnectionStatus.ready,
+      );
+
+      expect(rebuilt.key.acpSessionId, 'resolved-session');
+      expect(rebuilt.status, AcpConnectionStatus.ready);
+      // Pending permissions survive the rebuild with order intact.
+      expect(rebuilt.pendingPermissions.map((p) => p.requestKey), [
+        'r1',
+        'r2',
+        'r3',
+      ]);
+      expect(rebuilt.availableCommands, provisional.availableCommands);
+      expect(rebuilt.promptStatus, AcpPromptStatus.streaming);
+    });
+
+    test('key defaults to the current key when omitted', () {
+      final state = base();
+      expect(
+        state.copyWith(status: AcpConnectionStatus.detached).key,
+        state.key,
+      );
+    });
+  });
+
   group('defensive lists', () {
     test('copies the caller list and exposes an unmodifiable view', () {
       final commands = <AcpAvailableCommand>[

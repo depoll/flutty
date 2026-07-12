@@ -1760,33 +1760,10 @@ class _SessionController {
     AcpSessionKey? key,
   }) {
     _state = transform(_state);
+    // Rebuild under a new identity through the single copyWith path so no
+    // field can ever be silently dropped when the key changes.
     if (key != null && key != _state.key) {
-      _state = AcpSessionState(
-        key: key,
-        providerLabel: _state.providerLabel,
-        isCustomProvider: _state.isCustomProvider,
-        cwd: _state.cwd,
-        title: _state.title,
-        status: _state.status,
-        attached: _state.attached,
-        createdAt: _state.createdAt,
-        lastActivityAt: _state.lastActivityAt,
-        initialization: _state.initialization,
-        authMethods: _state.authMethods,
-        pendingAuthentication: _state.pendingAuthentication,
-        modeState: _state.modeState,
-        modelState: _state.modelState,
-        configOptions: _state.configOptions,
-        availableCommands: _state.availableCommands,
-        plan: _state.plan,
-        usage: _state.usage,
-        lastStopReason: _state.lastStopReason,
-        promptStatus: _state.promptStatus,
-        pendingPermissions: _state.pendingPermissions,
-        transportState: _state.transportState,
-        error: _state.error,
-        timeline: _state.timeline,
-      );
+      _state = _state.copyWith(key: key);
     }
     _manager._onControllerChanged();
   }

@@ -381,7 +381,13 @@ final class AcpSessionState {
   ///
   /// Nullable fields use dedicated `clear*` flags so an explicit `null` can be
   /// distinguished from "leave unchanged".
+  ///
+  /// [key] may be supplied to rebuild the snapshot under a new identity (for
+  /// example once a brand-new session's remote id becomes known). Because this
+  /// is the single copy path, changing the key can never silently drop other
+  /// fields the way a hand-written field-by-field reconstruction could.
   AcpSessionState copyWith({
+    AcpSessionKey? key,
     String? providerLabel,
     String? cwd,
     String? title,
@@ -412,7 +418,7 @@ final class AcpSessionState {
     bool clearError = false,
     AcpTimeline? timeline,
   }) => AcpSessionState(
-    key: key,
+    key: key ?? this.key,
     providerLabel: providerLabel ?? this.providerLabel,
     isCustomProvider: isCustomProvider,
     cwd: cwd ?? this.cwd,
