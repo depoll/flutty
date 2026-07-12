@@ -182,4 +182,31 @@ void main() {
     expect(await errorFuture, isA<AcpProtocolException>());
     expect(connection.isClosed, isTrue);
   });
+
+  test('redacts malformed frame content from protocol errors', () async {
+    final transport = _MemoryTransport();
+    final connection = AcpJsonRpcConnection(transport: transport);
+    final errorFuture = connection.errors.first;
+    const secrets = <String>[
+      'secret-token-value',
+      '/Users/private/project',
+      'private prompt contents',
+    ];
+
+    transport.add(
+      utf8.encode(
+        '{"jsonrpc":"2.0","token":"${secrets[0]}",'
+        '"path":"${secrets[1]}","prompt":"${secrets[2]}"\n',
+      ),
+    );
+
+    final error = await errorFuture;
+    expect(error, isA<AcpProtocolException>());
+    expect(error.message, 'Invalid ACP JSON frame');
+    for (final secret in secrets) {
+      expect(error.message, isNot(contains(secret)));
+      expect(error.toString(), isNot(contains(secret)));
+    }
+    expect(connection.isClosed, isTrue);
+  });
 }

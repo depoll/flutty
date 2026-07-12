@@ -350,8 +350,8 @@ final class AcpJsonRpcConnection {
     late final Object? decoded;
     try {
       decoded = jsonDecode(utf8.decode(bytes, allowMalformed: false));
-    } on FormatException catch (error) {
-      _protocolFailure(AcpProtocolException('Invalid ACP frame: $error'));
+    } on FormatException {
+      _protocolFailure(const AcpProtocolException('Invalid ACP JSON frame'));
       return;
     }
     final message = AcpJson.object(decoded);
