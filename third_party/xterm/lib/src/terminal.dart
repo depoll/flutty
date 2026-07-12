@@ -25,6 +25,8 @@ import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 
+typedef _GraphicsPreinflation = ({Uint8List? payload, int micros});
+
 /// [Terminal] is an interface to interact with command line applications. It
 /// translates escape sequences from the application into updates to the
 /// [buffer] and events such as [onTitleChange] or [onBell], as well as
@@ -1483,7 +1485,26 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // redrawing a full-screen image in place keeps the cursor where it is, and
     // advancing it past the bottom margin would scroll the screen.
     final keepCursor = args['C'] == '1';
-    final rows = _graphicsDisplayRows(args, data, buffer.graphics);
+    _GraphicsPreinflation? preinflation;
+    if (shouldPlace &&
+        !keepCursor &&
+        args['o'] == 'z' &&
+        _graphicsDisplayNeedsPayloadDimensions(args)) {
+      final observer = terminalGraphicsDecodeObserver;
+      final stopwatch = observer == null ? null : (Stopwatch()..start());
+      preinflation = (
+        payload: inflateZlibData(data),
+        micros: stopwatch?.elapsedMicroseconds ?? 0,
+      );
+    }
+    final rows = shouldPlace && !keepCursor
+        ? _graphicsDisplayRows(
+            args,
+            data,
+            buffer.graphics,
+            preinflation: preinflation,
+          )
+        : 0;
     if (shouldPlace && !keepCursor) {
       for (var i = 0; i < rows; i++) {
         buffer.index();
@@ -1501,6 +1522,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
             anchor,
             buffer.graphics,
             generation,
+            preinflation: preinflation,
           );
         } finally {
           if (anchor != null) {
@@ -1810,8 +1832,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     Uint8List data,
     CellAnchor? anchor,
     GraphicsManager manager,
-    int? generation,
-  ) async {
+    int? generation, {
+    _GraphicsPreinflation? preinflation,
+  }) async {
     final format = _graphicsFormat(args);
     final width = int.tryParse(args['s'] ?? '') ?? 0;
     final height = int.tryParse(args['v'] ?? '') ?? 0;
@@ -1828,9 +1851,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     var payload = data;
     var inflateMicros = 0;
     if (compressed) {
-      final inflateStopwatch = observer == null ? null : (Stopwatch()..start());
-      final inflated = inflateZlibData(data);
-      inflateMicros = inflateStopwatch?.elapsedMicroseconds ?? 0;
+      final Uint8List? inflated;
+      if (preinflation != null) {
+        inflated = preinflation.payload;
+        inflateMicros = preinflation.micros;
+      } else {
+        final inflateStopwatch =
+            observer == null ? null : (Stopwatch()..start());
+        inflated = inflateZlibData(data);
+        inflateMicros = inflateStopwatch?.elapsedMicroseconds ?? 0;
+      }
       if (inflated == null) {
         observer?.call(
           payloadBytes: data.length,
@@ -2177,8 +2207,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   int _graphicsDisplayRows(
     Map<String, String> args,
     Uint8List data,
-    GraphicsManager manager,
-  ) {
+    GraphicsManager manager, {
+    _GraphicsPreinflation? preinflation,
+  }) {
     final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
     if (explicitRows > 0) {
       return explicitRows;
@@ -2187,7 +2218,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     if (columns <= 0) {
       return 0;
     }
-    final dimensions = _graphicsPayloadDimensions(args, data);
+    final dimensions = preinflation == null
+        ? _graphicsPayloadDimensions(args, data)
+        : preinflation.payload == null
+            ? null
+            : _graphicsPayloadDimensions(
+                args,
+                preinflation.payload!,
+                payloadIsInflated: true,
+              );
     if (dimensions == null) {
       return 1;
     }
@@ -2196,6 +2235,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       manager,
       dimensions,
     );
+  }
+
+  bool _graphicsDisplayNeedsPayloadDimensions(Map<String, String> args) {
+    final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
+    final columns = int.tryParse(args['c'] ?? '') ?? 0;
+    final rawWidth = int.tryParse(args['s'] ?? '') ?? 0;
+    final rawHeight = int.tryParse(args['v'] ?? '') ?? 0;
+    return explicitRows <= 0 &&
+        columns > 0 &&
+        (rawWidth <= 0 || rawHeight <= 0);
   }
 
   int _graphicsDisplayRowsForDimensions(
@@ -2240,8 +2289,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   ({int width, int height})? _graphicsPayloadDimensions(
     Map<String, String> args,
-    Uint8List data,
-  ) {
+    Uint8List data, {
+    bool payloadIsInflated = false,
+  }) {
     final rawWidth = int.tryParse(args['s'] ?? '') ?? 0;
     final rawHeight = int.tryParse(args['v'] ?? '') ?? 0;
     if (rawWidth > 0 && rawHeight > 0) {
@@ -2249,7 +2299,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     var payload = data;
-    if (args['o'] == 'z') {
+    if (!payloadIsInflated && args['o'] == 'z') {
       final inflated = inflateZlibData(data);
       if (inflated == null) {
         return null;
