@@ -2037,18 +2037,25 @@ func TestObserveKittyGraphicsNewRootResetsRetainedAnimation(t *testing.T) {
 	}
 }
 
-func TestObserveKittyGraphicsDeleteRemovesRetainedImage(t *testing.T) {
+func TestObserveKittyGraphicsSoftDeleteKeepsRetainedImage(t *testing.T) {
 	window := &muxWindow{}
 
 	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
+	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,d=i,i=7\x1b\\"))
 	if got := window.kittyImageReplayLocked(nil); !strings.Contains(string(got), "PAYLOAD") {
-		t.Fatalf("image id=7 not retained: %q", got)
+		t.Fatalf("soft-deleted image data was not retained: %q", got)
 	}
+}
 
-	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,i=7;\x1b\\"))
+func TestObserveKittyGraphicsHardDeleteRemovesRetainedImage(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
+
+	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,d=I,i=7\x1b\\"))
 	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
-		t.Fatalf("deleted image id=7 still retained: %q", got)
+		t.Fatalf("hard-deleted image id=7 still retained: %q", got)
 	}
 }
 
@@ -2059,7 +2066,7 @@ func TestObserveKittyGraphicsDeleteByNumberRemovesRetainedImage(t *testing.T) {
 	)
 
 	window.observeKittyGraphicsLocked(
-		[]byte("\x1b_Ga=d,d=n,I=5\x1b\\"),
+		[]byte("\x1b_Ga=d,d=N,I=5\x1b\\"),
 	)
 
 	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {

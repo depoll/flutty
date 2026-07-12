@@ -251,7 +251,7 @@ class TerminalImage {
         break;
       }
       if (duration > Duration.zero) {
-        _frameElapsed = Duration.zero;
+        _frameElapsed -= duration;
       }
       if (!_moveToNextFrame()) {
         break;
@@ -2067,8 +2067,34 @@ Future<ui.Image?> decodeTerminalImage(
   if (bytes.isEmpty) {
     return null;
   }
+  final decoded = await decodeTerminalImageFirstFrameSequence(
+    bytes,
+    format: format,
+    width: width,
+    height: height,
+  );
+  if (decoded == null || decoded.frames.isEmpty) {
+    return null;
+  }
+  return decoded.frames.first.image;
+}
+
+/// Decodes one frame while preserving the encoded image's source dimensions.
+///
+/// Protocol `a=f` transmits one logical frame per command even when its payload
+/// happens to use a multi-frame container. Limiting the codec avoids decoding
+/// and allocating frames that cannot affect that command.
+Future<DecodedTerminalImage?> decodeTerminalImageFirstFrameSequence(
+  Uint8List bytes, {
+  int format = 100,
+  int width = 0,
+  int height = 0,
+}) async {
+  if (bytes.isEmpty) {
+    return null;
+  }
   try {
-    final decoded = format == 32 || format == 24
+    return format == 32 || format == 24
         ? await decodeTerminalImageSequence(
             bytes,
             format: format,
@@ -2076,10 +2102,6 @@ Future<ui.Image?> decodeTerminalImage(
             height: height,
           )
         : await _decodeEncodedImageSequenceBounded(bytes, maxFrames: 1);
-    if (decoded == null || decoded.frames.isEmpty) {
-      return null;
-    }
-    return decoded.frames.first.image;
   } catch (_) {
     return null;
   }
