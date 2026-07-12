@@ -18,6 +18,7 @@ class AcpAttachmentStrip extends StatelessWidget {
     required this.onRemove,
     required this.onRetry,
     super.key,
+    this.enabled = true,
   });
 
   /// The ordered attachments to render.
@@ -28,6 +29,12 @@ class AcpAttachmentStrip extends StatelessWidget {
 
   /// Called to retry the failed attachment with the given id.
   final ValueChanged<String> onRetry;
+
+  /// Whether the remove/retry controls are interactive.
+  ///
+  /// The strip is shown read-only while a prompt is being prepared, submitted,
+  /// or streamed so the snapshotted draft cannot be mutated mid-flight.
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -44,6 +51,7 @@ class AcpAttachmentStrip extends StatelessWidget {
             const SizedBox(width: FluttyTheme.spacingSm),
         itemBuilder: (context, index) => _AttachmentTile(
           attachment: attachments[index],
+          enabled: enabled,
           onRemove: () => onRemove(attachments[index].id),
           onRetry: () => onRetry(attachments[index].id),
         ),
@@ -57,11 +65,13 @@ class _AttachmentTile extends StatelessWidget {
     required this.attachment,
     required this.onRemove,
     required this.onRetry,
+    required this.enabled,
   });
 
   final AcpComposerAttachment attachment;
   final VoidCallback onRemove;
   final VoidCallback onRetry;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -146,7 +156,7 @@ class _AttachmentTile extends StatelessWidget {
                       minHeight: 44,
                     ),
                     icon: const Icon(Icons.refresh, size: 18),
-                    onPressed: onRetry,
+                    onPressed: enabled ? onRetry : null,
                   )
                 else
                   IconButton(
@@ -157,7 +167,7 @@ class _AttachmentTile extends StatelessWidget {
                       minHeight: 44,
                     ),
                     icon: const Icon(Icons.close, size: 18),
-                    onPressed: uploading ? null : onRemove,
+                    onPressed: (enabled && !uploading) ? onRemove : null,
                   ),
               ],
             ),

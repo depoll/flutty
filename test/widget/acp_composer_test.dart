@@ -297,4 +297,88 @@ void main() {
     await tester.pump();
     expect(opened, isTrue);
   });
+
+  testWidgets('rebinds to a replacement controller in didUpdateWidget', (
+    tester,
+  ) async {
+    final controllerA = _makeController(_RecordingManager())..setText('from A');
+    final controllerB = _makeController(_RecordingManager())..setText('from B');
+    addTearDown(controllerA.dispose);
+    addTearDown(controllerB.dispose);
+
+    await _pump(tester, controllerA);
+    expect(find.text('from A'), findsOneWidget);
+
+    await _pump(tester, controllerB);
+    await tester.pump();
+    expect(find.text('from B'), findsOneWidget);
+
+    // Edits now flow to the new controller, not the detached old one.
+    await tester.enterText(find.byType(TextField), 'edited');
+    await tester.pump();
+    expect(controllerB.text, 'edited');
+    expect(controllerA.text, 'from A');
+  });
+
+  testWidgets('disables editing controls while a turn streams', (tester) async {
+    final controller = _makeController(
+      _RecordingManager(),
+      session: _session(promptStatus: AcpPromptStatus.streaming),
+    );
+    addTearDown(controller.dispose);
+    await _pump(
+      tester,
+      controller,
+      actions: AcpComposerAttachmentActions(pickFiles: (_) async => const []),
+    );
+
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.readOnly, isTrue);
+    final addButton = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.add),
+    );
+    expect(addButton.onPressed, isNull);
+  });
+
+  testWidgets('adds no extra keyboard inset padding under a Scaffold', (
+    tester,
+  ) async {
+    final controller = _makeController(_RecordingManager());
+    addTearDown(controller.dispose);
+    tester.view.physicalSize = const Size(400, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(viewInsets: const EdgeInsets.only(bottom: 250)),
+            child: Scaffold(
+              body: Column(
+                children: [
+                  const Expanded(child: SizedBox.expand()),
+                  AcpComposer(controller: controller),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final paddings = tester.widgetList<Padding>(
+      find.descendant(
+        of: find.byType(AcpComposer),
+        matching: find.byType(Padding),
+      ),
+    );
+    final doublePadded = paddings.any(
+      (padding) => padding.padding.resolve(TextDirection.ltr).bottom >= 250,
+    );
+    expect(doublePadded, isFalse);
+  });
 }

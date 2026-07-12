@@ -338,6 +338,9 @@ class _AcpConfigOptionControlsState extends State<AcpConfigOptionControls> {
                 currentValue: currentValue,
                 values: values,
               );
+              if (!mounted) {
+                return;
+              }
               if (chosen != null && chosen != currentValue) {
                 await _run(id, () => onSelected(chosen));
               }

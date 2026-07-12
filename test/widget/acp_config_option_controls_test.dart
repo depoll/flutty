@@ -141,4 +141,34 @@ void main() {
     );
     expect(find.text('Unsupported setting'), findsOneWidget);
   });
+
+  testWidgets('dismissing the value picker applies no change', (tester) async {
+    final calls = <(String, Object)>[];
+    await _pump(
+      tester,
+      AcpConfigOptionControls(
+        options: const [
+          AcpSelectConfigOption(
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            currentValue: 'fast',
+            options: [
+              AcpConfigValue(value: 'fast', name: 'Fast'),
+              AcpConfigValue(value: 'smart', name: 'Smart'),
+            ],
+          ),
+        ],
+        onSetConfigOption: (id, value) async => calls.add((id, value)),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(ListTile, 'Model'));
+    await tester.pumpAndSettle();
+    // Dismiss the value sheet without choosing (tap the scrim).
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+    expect(calls, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
 }

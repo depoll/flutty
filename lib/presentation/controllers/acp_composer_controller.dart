@@ -185,6 +185,11 @@ class AcpComposerController extends ChangeNotifier {
   AcpAttachmentCancellationToken? _cancellation;
   AcpComposerError? _error;
 
+  // Monotonic id of the current send operation. Bumped when a send starts so
+  // any awaited continuation from a superseded (or post-dispose) operation can
+  // detect that it is stale and avoid mutating state or notifying listeners.
+  var _operation = 0;
+
   AcpSlashQuery? _slashQuery;
   List<AcpAvailableCommand> _slashCommands = const <AcpAvailableCommand>[];
 
@@ -258,8 +263,21 @@ class AcpComposerController extends ChangeNotifier {
       activity == AcpComposerActivity.sending ||
       activity == AcpComposerActivity.streaming;
 
+  /// Whether the draft currently accepts edits.
+  ///
+  /// Editing is locked while a prompt is being prepared, submitted, or
+  /// streamed so a post-snapshot edit can never be silently dropped when an
+  /// accepted prompt clears the composer. The widget mirrors this by making the
+  /// field read-only and disabling the attachment controls while busy.
+  bool get isEditable => !_disposed && !isBusy;
+
+  bool _isStale(int generation) => _disposed || generation != _operation;
+
   /// Updates the composer text and caret, recomputing the slash query.
   void setText(String value, {int? caret}) {
+    if (!isEditable) {
+      return;
+    }
     final nextCaret = (caret ?? value.length).clamp(0, value.length);
     if (value == _text && nextCaret == _caret) {
       return;
@@ -292,6 +310,9 @@ class AcpComposerController extends ChangeNotifier {
   /// per-file limit) and count-limit violations are rejected here, before the
   /// UI accepts them, and surface a content-free [error].
   bool addAttachment(AcpAttachmentCandidate candidate) {
+    if (!isEditable) {
+      return false;
+    }
     if (!canAddAttachment) {
       _setError(
         const AcpComposerError(
@@ -324,6 +345,9 @@ class AcpComposerController extends ChangeNotifier {
 
   /// Removes the attachment with [id].
   void removeAttachment(String id) {
+    if (!isEditable) {
+      return;
+    }
     final before = _attachments.length;
     _attachments.removeWhere((attachment) => attachment.id == id);
     if (_attachments.length != before) {
@@ -333,6 +357,9 @@ class AcpComposerController extends ChangeNotifier {
 
   /// Clears a failed attachment's error so it is retried on the next send.
   void retryAttachment(String id) {
+    if (!isEditable) {
+      return;
+    }
     final index = _attachments.indexWhere((attachment) => attachment.id == id);
     if (index < 0) {
       return;
@@ -350,6 +377,9 @@ class AcpComposerController extends ChangeNotifier {
   /// The UI uses this to record an explicit user confirmation before falling
   /// back to a remote upload for an attachment that cannot be embedded inline.
   void setAttachmentFallback(String id, AcpAttachmentFallback fallback) {
+    if (!isEditable) {
+      return;
+    }
     final index = _attachments.indexWhere((attachment) => attachment.id == id);
     if (index < 0) {
       return;
@@ -363,7 +393,7 @@ class AcpComposerController extends ChangeNotifier {
   /// The UI calls this only after an explicit user confirmation, so a large or
   /// unsupported attachment is never uploaded off-device without consent.
   void enableRemoteUploadFallback() {
-    if (_attachments.isEmpty) {
+    if (!isEditable || _attachments.isEmpty) {
       return;
     }
     for (var i = 0; i < _attachments.length; i++) {
@@ -379,6 +409,9 @@ class AcpComposerController extends ChangeNotifier {
 
   /// Inserts [command] for the active leading slash token.
   void selectSlashCommand(AcpAvailableCommand command) {
+    if (!isEditable) {
+      return;
+    }
     final insertion = applySlashCommand(fullText: _text, command: command);
     _text = insertion.text;
     _caret = insertion.caret;
@@ -415,6 +448,7 @@ class AcpComposerController extends ChangeNotifier {
       return false;
     }
 
+    final generation = ++_operation;
     final snapshotText = _text.trim();
     final snapshotAttachments = List<AcpComposerAttachment>.of(_attachments);
     final draft = AcpPromptDraft(<AcpPromptDraftItem>[
@@ -443,6 +477,9 @@ class AcpComposerController extends ChangeNotifier {
         onUploadProgress: _onUploadProgress,
       );
     } on AcpAttachmentException catch (exception) {
+      if (_isStale(generation)) {
+        return false;
+      }
       _cancellation = null;
       _sendState = _SendState.idle;
       _applyAttachmentFailure(exception);
@@ -450,6 +487,9 @@ class AcpComposerController extends ChangeNotifier {
       return false;
     }
 
+    if (_isStale(generation)) {
+      return false;
+    }
     _cancellation = null;
     _sendState = _SendState.submitting;
     _markAttachments(AcpComposerAttachmentStatus.ready, clearProgress: true);
@@ -458,6 +498,9 @@ class AcpComposerController extends ChangeNotifier {
     try {
       await _manager.prompt(sessionKey, content);
     } on Object {
+      if (_isStale(generation)) {
+        return false;
+      }
       _sendState = _SendState.idle;
       _setError(
         const AcpComposerError(
@@ -468,6 +511,9 @@ class AcpComposerController extends ChangeNotifier {
       return false;
     }
 
+    if (_isStale(generation)) {
+      return true;
+    }
     // Accepted: clear the composer only now.
     _sendState = _SendState.idle;
     _text = '';
@@ -481,6 +527,9 @@ class AcpComposerController extends ChangeNotifier {
 
   /// Cancels the in-flight preparation or streaming turn.
   Future<void> cancel() async {
+    if (_disposed) {
+      return;
+    }
     if (_sendState == _SendState.preparing) {
       _cancellation?.cancel();
       return;
@@ -489,7 +538,7 @@ class AcpComposerController extends ChangeNotifier {
   }
 
   void _onUploadProgress(AcpAttachmentUploadProgress progress) {
-    if (_disposed) {
+    if (_disposed || _sendState != _SendState.preparing) {
       return;
     }
     final index = progress.attachmentIndex;

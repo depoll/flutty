@@ -91,8 +91,22 @@ class _AcpComposerState extends State<AcpComposer> {
   }
 
   @override
+  void didUpdateWidget(AcpComposer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      oldWidget.controller.removeListener(_onControllerChanged);
+      widget.controller.addListener(_onControllerChanged);
+      _highlightedSlash = 0;
+      // Re-sync the field to the newly bound controller's text/caret.
+      _syncFieldFromController();
+      _clampHighlight();
+    }
+  }
+
+  @override
   void dispose() {
     _text.removeListener(_onFieldChanged);
+    // Detach from whichever controller is currently bound.
     _controller.removeListener(_onControllerChanged);
     _text.dispose();
     _focusNode.dispose();
@@ -109,6 +123,11 @@ class _AcpComposerState extends State<AcpComposer> {
   }
 
   void _onControllerChanged() {
+    _syncFieldFromController();
+    _clampHighlight();
+  }
+
+  void _syncFieldFromController() {
     if (_controller.text != _text.text) {
       _syncing = true;
       _text.value = TextEditingValue(
@@ -119,7 +138,6 @@ class _AcpComposerState extends State<AcpComposer> {
       );
       _syncing = false;
     }
-    _clampHighlight();
   }
 
   void _clampHighlight() {
@@ -212,6 +230,9 @@ class _AcpComposerState extends State<AcpComposer> {
       return;
     }
     final candidates = await source(context);
+    if (!mounted) {
+      return;
+    }
     for (final candidate in candidates) {
       if (!_controller.addAttachment(candidate)) {
         break;
@@ -263,114 +284,112 @@ class _AcpComposerState extends State<AcpComposer> {
       animation: _controller,
       builder: (context, _) {
         _clampHighlight();
-        return Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.viewInsetsOf(context).bottom,
-          ),
-          child: SafeArea(
-            top: false,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: scheme.surface,
-                border: Border(top: BorderSide(color: scheme.outlineVariant)),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (_controller.isSlashActive)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(
-                        FluttyTheme.spacingSm,
-                        FluttyTheme.spacingSm,
-                        FluttyTheme.spacingSm,
-                        0,
-                      ),
-                      child: AcpSlashCommandPicker(
-                        commands: _controller.slashCommands,
-                        highlightedIndex: _highlightedSlash,
-                        onHighlightChanged: (index) =>
-                            setState(() => _highlightedSlash = index),
-                        onSelected: _selectSlash,
-                      ),
-                    ),
-                  if (_controller.error != null)
-                    _ErrorBanner(
-                      error: _controller.error!,
-                      onDismiss: _controller.clearError,
-                      onUpload:
-                          _controller.error!.isUploadRecoverable &&
-                              _controller.attachments.isNotEmpty
-                          ? _confirmRemoteUpload
-                          : null,
-                    ),
-                  if (_controller.attachments.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: FluttyTheme.spacingSm,
-                      ),
-                      child: AcpAttachmentStrip(
-                        attachments: _controller.attachments,
-                        onRemove: _controller.removeAttachment,
-                        onRetry: _controller.retryAttachment,
-                      ),
-                    ),
+        return SafeArea(
+          top: false,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: scheme.surface,
+              border: Border(top: BorderSide(color: scheme.outlineVariant)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (_controller.isSlashActive)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(
                       FluttyTheme.spacingSm,
                       FluttyTheme.spacingSm,
                       FluttyTheme.spacingSm,
-                      FluttyTheme.spacingSm,
+                      0,
                     ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        _AddButton(
-                          enabled:
-                              widget.attachmentActions.hasAny &&
-                              _controller.canAddAttachment,
-                          onPressed: _openAddMenu,
-                        ),
-                        Expanded(
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 160),
-                            child: TextField(
-                              controller: _text,
-                              focusNode: _focusNode,
-                              minLines: 1,
-                              maxLines: null,
-                              keyboardType: TextInputType.multiline,
-                              textInputAction: TextInputAction.newline,
-                              textCapitalization: TextCapitalization.sentences,
-                              decoration: InputDecoration(
-                                isDense: true,
-                                border: InputBorder.none,
-                                hintText: widget.hintText,
-                              ),
-                            ),
-                          ),
-                        ),
-                        if (widget.onOpenConfig != null)
-                          IconButton(
-                            tooltip: 'Session settings',
-                            constraints: const BoxConstraints(
-                              minWidth: 44,
-                              minHeight: 44,
-                            ),
-                            icon: const Icon(Icons.tune),
-                            onPressed: widget.onOpenConfig,
-                          ),
-                        _PrimaryActionButton(
-                          activity: _controller.activity,
-                          canSend: _controller.canSend,
-                          canCancel: _controller.canCancel,
-                          onPressed: _handlePrimaryAction,
-                        ),
-                      ],
+                    child: AcpSlashCommandPicker(
+                      commands: _controller.slashCommands,
+                      highlightedIndex: _highlightedSlash,
+                      onHighlightChanged: (index) =>
+                          setState(() => _highlightedSlash = index),
+                      onSelected: _selectSlash,
                     ),
                   ),
-                ],
-              ),
+                if (_controller.error != null)
+                  _ErrorBanner(
+                    error: _controller.error!,
+                    onDismiss: _controller.clearError,
+                    onUpload:
+                        _controller.error!.isUploadRecoverable &&
+                            _controller.attachments.isNotEmpty
+                        ? _confirmRemoteUpload
+                        : null,
+                  ),
+                if (_controller.attachments.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: FluttyTheme.spacingSm,
+                    ),
+                    child: AcpAttachmentStrip(
+                      attachments: _controller.attachments,
+                      enabled: _controller.isEditable,
+                      onRemove: _controller.removeAttachment,
+                      onRetry: _controller.retryAttachment,
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    FluttyTheme.spacingSm,
+                    FluttyTheme.spacingSm,
+                    FluttyTheme.spacingSm,
+                    FluttyTheme.spacingSm,
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      _AddButton(
+                        enabled:
+                            _controller.isEditable &&
+                            widget.attachmentActions.hasAny &&
+                            _controller.canAddAttachment,
+                        onPressed: _openAddMenu,
+                      ),
+                      Expanded(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 160),
+                          child: TextField(
+                            controller: _text,
+                            focusNode: _focusNode,
+                            readOnly: !_controller.isEditable,
+                            minLines: 1,
+                            maxLines: null,
+                            keyboardType: TextInputType.multiline,
+                            textInputAction: TextInputAction.newline,
+                            textCapitalization: TextCapitalization.sentences,
+                            decoration: InputDecoration(
+                              isDense: true,
+                              border: InputBorder.none,
+                              hintText: widget.hintText,
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (widget.onOpenConfig != null)
+                        IconButton(
+                          tooltip: 'Session settings',
+                          constraints: const BoxConstraints(
+                            minWidth: 44,
+                            minHeight: 44,
+                          ),
+                          icon: const Icon(Icons.tune),
+                          onPressed: widget.onOpenConfig,
+                        ),
+                      _PrimaryActionButton(
+                        activity: _controller.activity,
+                        canSend: _controller.canSend,
+                        canCancel: _controller.canCancel,
+                        onPressed: _handlePrimaryAction,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
         );

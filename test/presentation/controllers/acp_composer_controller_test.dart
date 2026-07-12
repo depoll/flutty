@@ -431,4 +431,71 @@ void main() {
       expect(manager.prompts, isEmpty);
     },
   );
+
+  test('locks draft mutations while submitting and clears only the '
+      'snapshot', () async {
+    final manager = _RecordingManager();
+    final gate = Completer<void>();
+    manager.promptGate = gate;
+    final controller = _controller(manager)..setText('snapshot');
+    addTearDown(controller.dispose);
+
+    final future = controller.send();
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.isEditable, isFalse);
+
+    // Direct controller mutations are rejected while submitting.
+    controller.setText('post-snapshot edit');
+    expect(
+      controller.addAttachment(
+        AcpAttachmentCandidate.memory(
+          name: 'x.txt',
+          bytes: Uint8List.fromList(<int>[1]),
+        ),
+      ),
+      isFalse,
+    );
+    expect(controller.text, 'snapshot');
+    expect(controller.attachments, isEmpty);
+
+    gate.complete();
+    expect(await future, isTrue);
+    // Only the submitted snapshot is cleared; nothing else was retained.
+    expect(controller.text, isEmpty);
+  });
+
+  test('locks draft mutations while a turn is streaming', () {
+    final manager = _RecordingManager();
+    final controller = _controller(
+      manager,
+      session: _session(promptStatus: AcpPromptStatus.streaming),
+    );
+    addTearDown(controller.dispose);
+    expect(controller.isEditable, isFalse);
+
+    controller.setText('typed while streaming');
+    expect(controller.text, isEmpty);
+    controller.updateSession(_session());
+    expect(controller.isEditable, isTrue);
+  });
+
+  test('does not mutate or notify after dispose mid-send', () async {
+    final manager = _RecordingManager();
+    final gate = Completer<void>();
+    manager.promptGate = gate;
+    final controller = _controller(manager)..setText('hi');
+    var notifications = 0;
+    controller.addListener(() => notifications++);
+
+    final future = controller.send();
+    await Future<void>.delayed(Duration.zero);
+    final countBeforeDispose = notifications;
+    controller.dispose();
+    gate.complete();
+
+    // Completing the awaited prompt after dispose must not notify listeners
+    // (which would throw on a disposed ChangeNotifier) or clear state.
+    expect(await future, isTrue);
+    expect(notifications, countBeforeDispose);
+  });
 }

@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
@@ -192,5 +194,96 @@ void main() {
       entries.whereType<p.AcpStatusEntry>().single.severity,
       p.AcpStatusSeverity.warning,
     );
+  });
+
+  test('preserves inline image data as bytes when no URI is present', () {
+    final data = base64.encode(List<int>.filled(16, 1));
+    final timeline = AcpTimeline(
+      entries: [
+        AcpMessageEntry(
+          role: AcpMessageRole.user,
+          order: 0,
+          content: [AcpImageContent(data: data, mimeType: 'image/png')],
+        ),
+      ],
+    );
+    final user =
+        mapAcpSessionTimeline(_state(timeline: timeline)).single
+            as p.AcpUserPromptEntry;
+    final image = (user.parts.single as p.AcpImagePart).image;
+    expect(image.bytes, isNotNull);
+    expect(image.uri, isNull);
+  });
+
+  test('embeds a bounded data URI for a URI-less assistant image', () {
+    final data = base64.encode(List<int>.filled(16, 2));
+    final timeline = AcpTimeline(
+      entries: [
+        AcpMessageEntry(
+          role: AcpMessageRole.agent,
+          order: 0,
+          content: [
+            const AcpTextContent('see: '),
+            AcpImageContent(data: data, mimeType: 'image/png'),
+          ],
+        ),
+      ],
+    );
+    final assistant =
+        mapAcpSessionTimeline(_state(timeline: timeline)).single
+            as p.AcpAssistantMessageEntry;
+    expect(assistant.markdown, startsWith('see: '));
+    expect(assistant.markdown, contains('data:image/png;base64,$data'));
+  });
+
+  test('drops oversized image data without a URI and never decodes it', () {
+    // A base64 string whose *estimated* decoded size exceeds the inline bound;
+    // the mapper must skip it via preflight rather than allocating/decoding.
+    final oversized = 'A' * (kAcpMapperMaxInlineImageBytes * 4 ~/ 3 + 8);
+    final timeline = AcpTimeline(
+      entries: [
+        AcpMessageEntry(
+          role: AcpMessageRole.user,
+          order: 0,
+          content: [AcpImageContent(data: oversized, mimeType: 'image/png')],
+        ),
+        AcpMessageEntry(
+          role: AcpMessageRole.agent,
+          order: 1,
+          content: [AcpImageContent(data: oversized, mimeType: 'image/png')],
+        ),
+      ],
+    );
+    final entries = mapAcpSessionTimeline(_state(timeline: timeline));
+    // The user prompt held only an undisplayable image, so it maps to no
+    // renderable parts and is omitted.
+    expect(entries.whereType<p.AcpUserPromptEntry>(), isEmpty);
+    final assistant = entries.whereType<p.AcpAssistantMessageEntry>().single;
+    expect(assistant.markdown, isEmpty);
+  });
+
+  test('falls back to the URI for an oversized image that has one', () {
+    final oversized = 'A' * (kAcpMapperMaxInlineImageBytes * 4 ~/ 3 + 8);
+    final timeline = AcpTimeline(
+      entries: [
+        AcpMessageEntry(
+          role: AcpMessageRole.user,
+          order: 0,
+          content: [
+            AcpImageContent(
+              data: oversized,
+              mimeType: 'image/png',
+              uri: 'file:///big.png',
+            ),
+          ],
+        ),
+      ],
+    );
+    final user =
+        mapAcpSessionTimeline(_state(timeline: timeline)).single
+            as p.AcpUserPromptEntry;
+    final image = (user.parts.single as p.AcpImagePart).image;
+    expect(image.uri, 'file:///big.png');
+    expect(image.bytes, isNull);
   });
 }

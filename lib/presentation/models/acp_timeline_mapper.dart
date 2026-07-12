@@ -179,7 +179,10 @@ List<AcpPromptPart> _mapPromptParts(List<d.AcpContentBlock> content) {
 AcpImageContent? _mapImage(d.AcpImageContent block) {
   final uri = block.uri;
   final data = block.data;
-  if (data.isNotEmpty) {
+  // Preflight the decoded size from the base64 length before ever decoding, so
+  // an oversized payload can never force an unbounded allocation into memory.
+  if (data.isNotEmpty &&
+      _base64DecodedLength(data) <= kAcpMapperMaxInlineImageBytes) {
     try {
       final bytes = base64.decode(data);
       if (bytes.length <= kAcpMapperMaxInlineImageBytes) {
@@ -202,6 +205,41 @@ AcpImageContent? _mapImage(d.AcpImageContent block) {
   return null;
 }
 
+/// Estimates the number of bytes a base64 [data] string decodes to, without
+/// decoding it. Used to bound image decoding before any allocation.
+int _base64DecodedLength(String data) {
+  final length = data.length;
+  if (length < 4) {
+    return length == 0 ? 0 : (length * 3) ~/ 4;
+  }
+  var padding = 0;
+  if (data.endsWith('==')) {
+    padding = 2;
+  } else if (data.endsWith('=')) {
+    padding = 1;
+  }
+  return (length ~/ 4) * 3 - padding;
+}
+
+/// Builds Markdown for a domain image, preferring a remote URI and otherwise
+/// embedding a bounded `data:` URI so inline image data is not lost when no URI
+/// is present. Returns `null` when neither a URI nor bounded data is available.
+String? _imageMarkdown(d.AcpImageContent block) {
+  final uri = block.uri;
+  if (uri != null && uri.isNotEmpty) {
+    return '\n\n![image]($uri)';
+  }
+  final data = block.data;
+  if (data.isNotEmpty &&
+      _base64DecodedLength(data) <= kAcpMapperMaxInlineImageBytes) {
+    final mime = block.mimeType.isEmpty
+        ? 'application/octet-stream'
+        : block.mimeType;
+    return '\n\n![image](data:$mime;base64,$data)';
+  }
+  return null;
+}
+
 String _markdownFromContent(List<d.AcpContentBlock> content) {
   final buffer = StringBuffer();
   for (final block in content) {
@@ -209,9 +247,9 @@ String _markdownFromContent(List<d.AcpContentBlock> content) {
       case d.AcpTextContent(:final text):
         buffer.write(text);
       case d.AcpImageContent():
-        final uri = block.uri;
-        if (uri != null && uri.isNotEmpty) {
-          buffer.write('\n\n![image]($uri)');
+        final markdown = _imageMarkdown(block);
+        if (markdown != null) {
+          buffer.write(markdown);
         }
       case d.AcpResourceLinkContent():
         buffer.write('\n\n[${block.title ?? block.name}](${block.uri})');
