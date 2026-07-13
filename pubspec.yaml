@@ -41,7 +41,7 @@ dependencies:
   flutter_secure_storage: ^10.1.0
   
   # Biometrics
-  local_auth: ^3.0.1
+  local_auth: ^3.0.2
   
   # File handling
   file_picker: ^12.0.0-beta.7
@@ -73,7 +73,7 @@ dependencies:
   in_app_purchase_android: ^0.5.1
   in_app_purchase_storekit: ^0.4.10+1
   quick_actions: ^1.1.0
-  video_player: ^2.11.1
+  video_player: ^2.12.0
   http: ^1.6.0
   xml: ^7.0.1
 
@@ -81,7 +81,7 @@ dependencies:
   network_info_plus: ^8.2.0
   permission_handler: ^12.0.1
   wakelock_plus: ^1.5.2
-  sqlite3: ^3.3.4
+  sqlite3: ^3.4.0
   firebase_core: ^4.11.0
   firebase_analytics: ^12.4.3
   firebase_crashlytics: ^5.2.4
@@ -92,7 +92,7 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   
   # Code generation
-  build_runner: ^2.15.0
+  build_runner: ^2.15.1
   drift_dev: ^2.31.0
   # Pin: the current Flutter SDK caps analyzer at 12.x, so drift_dev is held at
   # 2.34.0 (2.34.1+ needs analyzer ^13). drift_dev 2.34.0 calls
