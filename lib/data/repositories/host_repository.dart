@@ -153,33 +153,16 @@ class HostRepository {
   /// Duplicate an existing host and its port forwards.
   Future<int> duplicate(Host host) => _db.transaction(() async {
     final duplicateHostId = await insert(
-      HostsCompanion.insert(
-        label: '${host.label} (copy)',
-        hostname: host.hostname,
-        port: Value(host.port),
-        username: host.username,
-        password: Value(host.password),
-        keyId: Value(host.keyId),
-        groupId: Value(host.groupId),
-        jumpHostId: Value(host.jumpHostId),
-        skipJumpHostOnSsids: Value(host.skipJumpHostOnSsids),
-        isFavorite: Value(host.isFavorite),
-        color: Value(host.color),
-        notes: Value(host.notes),
-        tags: Value(host.tags),
-        terminalThemeLightId: Value(host.terminalThemeLightId),
-        terminalThemeDarkId: Value(host.terminalThemeDarkId),
-        terminalFontFamily: Value(host.terminalFontFamily),
-        autoConnectCommand: Value(host.autoConnectCommand),
-        autoConnectSnippetId: Value(host.autoConnectSnippetId),
-        autoConnectRequiresConfirmation: Value(
-          host.autoConnectRequiresConfirmation,
-        ),
-        tmuxSessionName: Value(host.tmuxSessionName),
-        tmuxWorkingDirectory: Value(host.tmuxWorkingDirectory),
-        tmuxExtraFlags: Value(host.tmuxExtraFlags),
-        remoteMuxBackend: Value(host.remoteMuxBackend),
-      ),
+      host
+          .toCompanion(false)
+          .copyWith(
+            id: const Value.absent(),
+            label: Value('${host.label} (copy)'),
+            createdAt: const Value.absent(),
+            updatedAt: const Value.absent(),
+            lastConnectedAt: const Value(null),
+            sortOrder: const Value.absent(),
+          ),
     );
 
     final portForwards = await (_db.select(
@@ -190,16 +173,13 @@ class HostRepository {
       await _db
           .into(_db.portForwards)
           .insert(
-            PortForwardsCompanion.insert(
-              name: portForward.name,
-              hostId: duplicateHostId,
-              forwardType: portForward.forwardType,
-              localHost: Value(portForward.localHost),
-              localPort: portForward.localPort,
-              remoteHost: portForward.remoteHost,
-              remotePort: portForward.remotePort,
-              autoStart: Value(portForward.autoStart),
-            ),
+            portForward
+                .toCompanion(false)
+                .copyWith(
+                  id: const Value.absent(),
+                  hostId: Value(duplicateHostId),
+                  createdAt: const Value.absent(),
+                ),
           );
     }
 
