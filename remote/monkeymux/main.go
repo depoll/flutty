@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.113"
+	monkeyMuxVersion                  = "0.1.114"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -421,6 +421,7 @@ type restoreWindowState struct {
 	AgentTool                string          `json:"agentTool,omitempty"`
 	AgentSessionID           string          `json:"agentSessionId,omitempty"`
 	HistoryBase64            string          `json:"historyBase64,omitempty"`
+	HistoryStartsAtGround    bool            `json:"historyStartsAtGround,omitempty"`
 	CursorVisible            bool            `json:"cursorVisible,omitempty"`
 	CursorVisibilityKnown    bool            `json:"cursorVisibilityKnown,omitempty"`
 	PrivateModes             map[string]bool `json:"privateModes,omitempty"`
@@ -491,6 +492,7 @@ type muxWindow struct {
 	terminalOutputState         terminalOutputParserState
 	terminalOutputBytes         int
 	terminalOutputUtf8Remaining int
+	historyStartTerminalOutput  terminalOutputParserSnapshot
 	terminalOutputForwarding    bool
 	lastActivity                time.Time
 	outputGeneration            uint64
@@ -589,6 +591,12 @@ const (
 	terminalOutputParserString
 	terminalOutputParserStringEscape
 )
+
+type terminalOutputParserSnapshot struct {
+	state         terminalOutputParserState
+	bytes         int
+	utf8Remaining int
+}
 
 type windowBroadcastIdentity struct {
 	name      string
@@ -3505,6 +3513,13 @@ func createWindowOptionsForRestore(
 	history := []byte(nil)
 	if isShellRestoreWindow(state) {
 		history = decodeRestoreHistory(state.HistoryBase64)
+		if !state.HistoryStartsAtGround {
+			history = sanitizeLegacyRestoreHistory(history)
+		}
+		history = terminalHistoryAtGroundBoundaries(
+			history,
+			terminalOutputParserSnapshot{},
+		)
 	}
 	return createWindowOptions{
 		name:                     firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
@@ -5577,7 +5592,12 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			Active:                   s.activeID == window.id,
 		}
 		if isShellRestoreWindow(state) && len(window.history) > 0 {
-			state.HistoryBase64 = base64.StdEncoding.EncodeToString(window.historyTailLocked())
+			history, historyStart := window.historyTailWithParserLocked()
+			history = terminalHistoryAtGroundBoundaries(history, historyStart)
+			if len(history) > 0 {
+				state.HistoryBase64 = base64.StdEncoding.EncodeToString(history)
+				state.HistoryStartsAtGround = true
+			}
 		}
 		restore.Windows = append(restore.Windows, state)
 	}
@@ -6516,7 +6536,7 @@ func (s *muxServer) replayBytesLockedWithSkip(
 	window *muxWindow,
 	clientHas map[string]uint32,
 ) []byte {
-	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
+	history, historyStart := window.historyTailWithParserLocked()
 	if window.usesForegroundRedrawReplayLocked() {
 		// The foreground app redraws its own cells on reattach (driven by a
 		// resize), so we must not replay the visible history or it would draw
@@ -6529,7 +6549,8 @@ func (s *muxServer) replayBytesLockedWithSkip(
 		// (a=T downgraded to a=t) so they produce no visible output themselves.
 		history = window.kittyImageReplayLocked(clientHas)
 	} else {
-		history = trimReplayHistoryForAttach(history)
+		history = trimReplayHistoryForAttachWithParser(history, historyStart)
+		history = stripTerminalQueriesFromReplay(history)
 	}
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
@@ -7922,6 +7943,10 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	}
 	limit := w.historyLimitLocked()
 	if len(chunk) >= limit {
+		parser := w.historyStartTerminalOutput
+		parser.observe(w.history)
+		parser.observe(chunk[:len(chunk)-limit])
+		w.historyStartTerminalOutput = parser
 		w.history = append(
 			w.history[:0],
 			chunk[len(chunk)-limit:]...,
@@ -7937,20 +7962,32 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	}
 	w.history = append(w.history, chunk...)
 	if len(w.history) > 2*limit {
+		start := len(w.history) - limit
+		w.historyStartTerminalOutput.observe(w.history[:start])
 		// copy() handles the overlap correctly because src is after dst.
-		n := copy(w.history, w.history[len(w.history)-limit:])
+		n := copy(w.history, w.history[start:])
 		w.history = w.history[:n]
 	}
 }
 
 func (w *muxWindow) historyTailLocked() []byte {
+	history, _ := w.historyTailWithParserLocked()
+	return history
+}
+
+func (w *muxWindow) historyTailWithParserLocked() (
+	[]byte,
+	terminalOutputParserSnapshot,
+) {
 	limit := w.historyLimitLocked()
 	if len(w.history) <= limit {
-		return w.history
+		return w.history, w.historyStartTerminalOutput
 	}
 	start := len(w.history) - limit
 	start = advanceToUtf8Boundary(w.history, start)
-	return w.history[start:]
+	parser := w.historyStartTerminalOutput
+	parser.observe(w.history[:start])
+	return w.history[start:], parser
 }
 
 func (w *muxWindow) historyLimitLocked() int {
@@ -7961,10 +7998,27 @@ func (w *muxWindow) historyLimitLocked() int {
 }
 
 func trimReplayHistoryForAttach(history []byte) []byte {
-	if len(history) <= windowReplayLimitBytes {
+	return trimReplayHistoryForAttachWithParser(
+		history,
+		terminalOutputParserSnapshot{},
+	)
+}
+
+func trimReplayHistoryForAttachWithParser(
+	history []byte,
+	historyStart terminalOutputParserSnapshot,
+) []byte {
+	if len(history) <= windowReplayLimitBytes && historyStart.isGround() {
 		return history
 	}
-	start := len(history) - windowReplayLimitBytes
+	start := 0
+	if len(history) > windowReplayLimitBytes {
+		start = len(history) - windowReplayLimitBytes
+	}
+	start = advanceReplayStartToTerminalGround(history, start, historyStart)
+	if start >= len(history) {
+		return nil
+	}
 	scanEnd := start + 2048
 	if scanEnd > len(history) {
 		scanEnd = len(history)
@@ -7977,6 +8031,97 @@ func trimReplayHistoryForAttach(history []byte) []byte {
 	}
 	start = advanceToUtf8Boundary(history, start)
 	return history[start:]
+}
+
+// advanceReplayStartToTerminalGround moves a size-based replay cut past any
+// escape sequence it bisects. In particular, starting inside a Kitty APC would
+// render its base64 payload as text and scroll the image away from its anchor.
+func advanceReplayStartToTerminalGround(
+	data []byte,
+	start int,
+	scanner terminalOutputParserSnapshot,
+) int {
+	if start >= len(data) {
+		return len(data)
+	}
+	scanner.observe(data[:start])
+	for start < len(data) && !scanner.isGround() {
+		scanner.observe(data[start : start+1])
+		start++
+	}
+	return advanceToUtf8Boundary(data, start)
+}
+
+func terminalHistoryAtGroundBoundaries(
+	data []byte,
+	startState terminalOutputParserSnapshot,
+) []byte {
+	start := advanceReplayStartToTerminalGround(data, 0, startState)
+	if start >= len(data) {
+		return nil
+	}
+	data = data[start:]
+	scanner := terminalOutputParserSnapshot{}
+	lastGround := 0
+	for i := range data {
+		scanner.observe(data[i : i+1])
+		if scanner.isGround() {
+			lastGround = i + 1
+		}
+	}
+	return data[:lastGround]
+}
+
+// sanitizeLegacyRestoreHistory discards a payload-like prefix from snapshots
+// written before parser-boundary state was recorded. Ordinary short shell text
+// is preserved, while a retained Kitty base64 tail is resumed at the first
+// trustworthy terminal boundary.
+func sanitizeLegacyRestoreHistory(data []byte) []byte {
+	boundary := -1
+	resume := -1
+	for i, value := range data {
+		switch value {
+		case '\n', '\r':
+			boundary = i
+		case '\a':
+			boundary = i
+			resume = i + 1
+		case '\x1b':
+			boundary = i
+			if i+1 < len(data) && data[i+1] == '\\' {
+				resume = i + 2
+			}
+		}
+		if boundary >= 0 {
+			break
+		}
+	}
+	prefixEnd := len(data)
+	if boundary >= 0 {
+		prefixEnd = boundary
+	}
+	if resume < 0 && !looksLikeKittyPayload(data[:prefixEnd]) {
+		return data
+	}
+	if boundary < 0 {
+		return nil
+	}
+	if resume >= 0 {
+		return data[resume:]
+	}
+	return data[boundary:]
+}
+
+func looksLikeKittyPayload(data []byte) bool {
+	if len(data) < 256 {
+		return false
+	}
+	for _, value := range data {
+		if base64DecodeValue[value] < 0 && value != '=' {
+			return false
+		}
+	}
+	return true
 }
 
 // advanceToUtf8Boundary moves start forward past any UTF-8 continuation bytes
@@ -8110,106 +8255,127 @@ func (w *muxWindow) resetTerminalBellParserLocked() {
 }
 
 func (w *muxWindow) observeTerminalOutputStateLocked(data []byte) {
+	parser := terminalOutputParserSnapshot{
+		state:         w.terminalOutputState,
+		bytes:         w.terminalOutputBytes,
+		utf8Remaining: w.terminalOutputUtf8Remaining,
+	}
+	parser.observe(data)
+	w.terminalOutputState = parser.state
+	w.terminalOutputBytes = parser.bytes
+	w.terminalOutputUtf8Remaining = parser.utf8Remaining
+}
+
+func (p *terminalOutputParserSnapshot) observe(data []byte) {
 	for _, value := range data {
-		if w.terminalOutputUtf8Remaining > 0 {
+		if p.utf8Remaining > 0 {
 			if value&0xc0 == 0x80 {
-				w.terminalOutputUtf8Remaining--
+				p.utf8Remaining--
 				continue
 			}
-			w.terminalOutputUtf8Remaining = 0
+			p.utf8Remaining = 0
 		}
 		if remaining := utf8ContinuationCount(value); remaining > 0 {
-			w.terminalOutputUtf8Remaining = remaining
+			p.utf8Remaining = remaining
 			continue
 		}
 		if value == 0x18 || value == 0x1a {
-			w.resetTerminalOutputParserLocked()
+			p.reset()
 			continue
 		}
-		switch w.terminalOutputState {
+		switch p.state {
 		case terminalOutputParserGround:
 			switch value {
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case 0x90, 0x98, 0x9e, 0x9f:
-				w.terminalOutputState = terminalOutputParserString
+				p.state = terminalOutputParserString
 			case 0x9b:
-				w.terminalOutputState = terminalOutputParserCsi
+				p.state = terminalOutputParserCsi
 			case 0x9d:
-				w.terminalOutputState = terminalOutputParserOsc
+				p.state = terminalOutputParserOsc
 			}
 		case terminalOutputParserEscape:
 			switch {
 			case value == '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case value == '[':
-				w.terminalOutputState = terminalOutputParserCsi
+				p.state = terminalOutputParserCsi
 			case value == ']':
-				w.terminalOutputState = terminalOutputParserOsc
+				p.state = terminalOutputParserOsc
 			case value == 'P' || value == 'X' || value == '^' || value == '_':
-				w.terminalOutputState = terminalOutputParserString
+				p.state = terminalOutputParserString
 			case value >= 0x20 && value <= 0x2f:
-				w.terminalOutputState = terminalOutputParserEscapeIntermediate
+				p.state = terminalOutputParserEscapeIntermediate
 			default:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			}
 		case terminalOutputParserEscapeIntermediate:
 			switch {
 			case value == '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case value >= 0x20 && value <= 0x2f:
 			case value >= 0x30 && value <= 0x7e:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			default:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			}
 		case terminalOutputParserCsi:
 			switch {
 			case value == '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case value >= 0x40 && value <= 0x7e:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			}
 		case terminalOutputParserOsc:
 			switch value {
 			case '\a', 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserOscEscape
+				p.state = terminalOutputParserOscEscape
 			}
 		case terminalOutputParserOscEscape:
 			switch value {
 			case '\\', '\a', 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserOscEscape
+				p.state = terminalOutputParserOscEscape
 			default:
-				w.terminalOutputState = terminalOutputParserOsc
+				p.state = terminalOutputParserOsc
 			}
 		case terminalOutputParserString:
 			switch value {
 			case 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserStringEscape
+				p.state = terminalOutputParserStringEscape
 			}
 		case terminalOutputParserStringEscape:
 			switch value {
 			case '\\', 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserStringEscape
+				p.state = terminalOutputParserStringEscape
 			default:
-				w.terminalOutputState = terminalOutputParserString
+				p.state = terminalOutputParserString
 			}
 		}
-		if w.terminalOutputState != terminalOutputParserGround {
-			w.terminalOutputBytes++
-			if w.terminalOutputBytes > maxKittyGraphicsPendingBytes {
-				w.resetTerminalOutputParserLocked()
+		if p.state != terminalOutputParserGround {
+			p.bytes++
+			if p.bytes > maxKittyGraphicsPendingBytes {
+				p.reset()
 			}
 		}
 	}
+}
+
+func (p *terminalOutputParserSnapshot) reset() {
+	p.state = terminalOutputParserGround
+	p.bytes = 0
+}
+
+func (p terminalOutputParserSnapshot) isGround() bool {
+	return p.state == terminalOutputParserGround && p.utf8Remaining == 0
 }
 
 func (w *muxWindow) resetTerminalOutputParserLocked() {
@@ -8218,8 +8384,10 @@ func (w *muxWindow) resetTerminalOutputParserLocked() {
 }
 
 func (w *muxWindow) terminalOutputIsGroundLocked() bool {
-	return w.terminalOutputState == terminalOutputParserGround &&
-		w.terminalOutputUtf8Remaining == 0
+	return terminalOutputParserSnapshot{
+		state:         w.terminalOutputState,
+		utf8Remaining: w.terminalOutputUtf8Remaining,
+	}.isGround()
 }
 
 // stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color

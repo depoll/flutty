@@ -6544,6 +6544,71 @@ func TestTrimReplayHistoryAlignsToUtf8WhenNoControlChars(t *testing.T) {
 	}
 }
 
+func TestTrimReplayHistorySkipsPartialKittyPayload(t *testing.T) {
+	payload := bytes.Repeat([]byte("A"), windowReplayLimitBytes+4096)
+	history := append(
+		[]byte("before\x1b_Ga=f,i=7,f=32,m=0;"),
+		payload...,
+	)
+	history = append(history, "\x1b\\\r\nprompt"...)
+
+	rawStart := len(history) - windowReplayLimitBytes
+	if history[rawStart] != 'A' {
+		t.Fatalf("setup error: raw replay cut = 0x%02x, want payload", history[rawStart])
+	}
+	if bytes.Contains(history[rawStart:rawStart+2048], []byte{'\x1b'}) {
+		t.Fatal("setup error: old scan window unexpectedly reaches APC terminator")
+	}
+
+	trimmed := trimReplayHistoryForAttach(history)
+	if got, want := string(trimmed), "\r\nprompt"; got != want {
+		t.Fatalf("trimmed replay = %q, want %q", got, want)
+	}
+}
+
+func TestReplayHistoryRetainsParserStateAcrossKittyPayloadEviction(t *testing.T) {
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		name:              "zsh",
+		command:           "zsh",
+		foregroundCommand: "zsh",
+		lastActivity:      time.Now(),
+	}
+	payload := bytes.Repeat([]byte("A"), windowHistoryLimitBytes+4096)
+	stream := append(
+		[]byte("before\x1b_Ga=f,i=7,f=32,m=0;"),
+		payload...,
+	)
+	stream = append(stream, "\x1b\\\r\nprompt"...)
+	window.appendHistoryLocked(stream)
+
+	if window.historyStartTerminalOutput.isGround() {
+		t.Fatal("setup error: retained history should begin inside the Kitty APC")
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
+
+	replay := server.replayBytesLocked(window)
+	if bytes.Contains(replay, bytes.Repeat([]byte("A"), 128)) {
+		t.Fatal("replay leaked evicted Kitty payload as terminal text")
+	}
+	if !bytes.Contains(replay, []byte("\r\nprompt")) {
+		t.Fatalf("replay dropped settled shell output: %q", replay)
+	}
+	restore := server.restoreSnapshot()
+	if len(restore.Windows) != 1 {
+		t.Fatalf("restore window count = %d, want 1", len(restore.Windows))
+	}
+	if !restore.Windows[0].HistoryStartsAtGround {
+		t.Fatal("restore history was not marked as parser-ground aligned")
+	}
+	if got, want := string(decodeRestoreHistory(restore.Windows[0].HistoryBase64)), "\r\nprompt"; got != want {
+		t.Fatalf("restored history = %q, want %q", got, want)
+	}
+}
+
 func TestAdvanceToUtf8BoundarySkipsContinuationBytes(t *testing.T) {
 	// 0xE2 0x94 0x82 is "│". Starting in the middle should advance past the
 	// continuation bytes to the next valid starter.
@@ -8045,6 +8110,36 @@ func TestCreateWindowOptionsForRestorePreservesShellHistory(t *testing.T) {
 	}
 	if !options.cursorVisibilityKnown || options.cursorVisible {
 		t.Fatalf("cursor visibility = known:%v visible:%v, want known hidden", options.cursorVisibilityKnown, options.cursorVisible)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreSanitizesLegacyKittyPayload(t *testing.T) {
+	history := append(bytes.Repeat([]byte("A"), 512), "\x1b\\\r\nprompt"...)
+	state := restoreWindowState{
+		Name:           "Project shell",
+		CurrentCommand: "zsh",
+		HistoryBase64:  base64.StdEncoding.EncodeToString(history),
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if got, want := string(options.history), "\r\nprompt"; got != want {
+		t.Fatalf("legacy restore history = %q, want %q", got, want)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreDropsIncompleteTrailingAPC(t *testing.T) {
+	state := restoreWindowState{
+		Name:                  "Project shell",
+		CurrentCommand:        "zsh",
+		HistoryBase64:         base64.StdEncoding.EncodeToString([]byte("prompt\r\n\x1b_Ga=f,i=7;AAAA")),
+		HistoryStartsAtGround: true,
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if got, want := string(options.history), "prompt\r\n"; got != want {
+		t.Fatalf("restore history = %q, want %q", got, want)
 	}
 }
 
