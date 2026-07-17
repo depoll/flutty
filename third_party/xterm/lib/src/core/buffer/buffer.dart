@@ -159,7 +159,7 @@ class Buffer {
     for (var i = absoluteCursorY + 1; i < height; i++) {
       final line = lines[i];
       line.isWrapped = false;
-      line.eraseRange(0, viewWidth, terminal.cursor);
+      _eraseRange(line, i, 0, viewWidth);
     }
     _removeGraphicsInRegion(
         absoluteCursorY, absoluteCursorY, _cursorX, viewWidth - 1);
@@ -174,7 +174,7 @@ class Buffer {
     for (var i = 0; i < _cursorY; i++) {
       final line = lines[i + scrollBack];
       line.isWrapped = false;
-      line.eraseRange(0, viewWidth, terminal.cursor);
+      _eraseRange(line, i + scrollBack, 0, viewWidth);
     }
     _removeGraphicsInRows(scrollBack, absoluteCursorY - 1);
     _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, _cursorX - 1);
@@ -185,17 +185,19 @@ class Buffer {
     for (var i = 0; i < viewHeight; i++) {
       final line = lines[i + scrollBack];
       line.isWrapped = false;
-      line.eraseRange(0, viewWidth, terminal.cursor);
+      _eraseRange(line, i + scrollBack, 0, viewWidth);
     }
-    // The visible rows were just cleared, so drop any images placed on them.
-    graphics.removePlacementsInRows(scrollBack, scrollBack + viewHeight - 1);
+    graphics.removePlaceholdersInRows(
+      scrollBack,
+      scrollBack + viewHeight - 1,
+    );
   }
 
   /// Erases the line from the cursor to the end of the line, including the
   /// cursor position.
   void eraseLineFromCursor() {
     currentLine.isWrapped = false;
-    currentLine.eraseRange(_cursorX, viewWidth, terminal.cursor);
+    _eraseRange(currentLine, absoluteCursorY, _cursorX, viewWidth);
     _removeGraphicsInRegion(
         absoluteCursorY, absoluteCursorY, _cursorX, viewWidth - 1);
   }
@@ -204,21 +206,21 @@ class Buffer {
   /// cursor.
   void eraseLineToCursor() {
     currentLine.isWrapped = false;
-    currentLine.eraseRange(0, _cursorX, terminal.cursor);
+    _eraseRange(currentLine, absoluteCursorY, 0, _cursorX);
     _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, _cursorX - 1);
   }
 
   /// Erases the line at the current cursor position.
   void eraseLine() {
     currentLine.isWrapped = false;
-    currentLine.eraseRange(0, viewWidth, terminal.cursor);
+    _eraseRange(currentLine, absoluteCursorY, 0, viewWidth);
     _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, viewWidth - 1);
   }
 
   /// Erases [count] cells starting at the cursor position.
   void eraseChars(int count) {
     final start = _cursorX;
-    currentLine.eraseRange(start, start + count, terminal.cursor);
+    _eraseRange(currentLine, absoluteCursorY, start, start + count);
     _removeGraphicsInRegion(
       absoluteCursorY,
       absoluteCursorY,
@@ -229,7 +231,21 @@ class Buffer {
 
   void _removeGraphicsInRows(int firstRow, int lastRow) {
     if (lastRow < firstRow) return;
-    graphics.removePlacementsInRows(firstRow, lastRow);
+    graphics.removePlaceholdersInRows(firstRow, lastRow);
+  }
+
+  void _eraseRange(
+    BufferLine line,
+    int row,
+    int start,
+    int end,
+  ) {
+    line.eraseRange(
+      start,
+      end,
+      terminal.cursor,
+      preservedAnchors: graphics.physicalPlacementAnchorsInRow(row),
+    );
   }
 
   void _removeGraphicsInRegion(
@@ -239,7 +255,12 @@ class Buffer {
     int lastCol,
   ) {
     if (lastRow < firstRow || lastCol < firstCol) return;
-    graphics.removePlacementsInRegion(firstRow, lastRow, firstCol, lastCol);
+    graphics.removePlaceholdersInRegion(
+      firstRow,
+      lastRow,
+      firstCol,
+      lastCol,
+    );
   }
 
   void scrollDown(int lines) {
