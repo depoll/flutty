@@ -2532,7 +2532,7 @@ void main() {
     );
 
     test(
-      'removes stale sessions when local forwards report a closed transport',
+      'removes stale sessions when IPv6 browser forwards report a closed transport',
       () async {
         final notifier = container.read(activeSessionsProvider.notifier);
 
@@ -2567,9 +2567,9 @@ void main() {
           activeTunnel.browserHost,
           portForwardBrowserHostForPortForwardId(activeTunnel.portForwardId),
         );
-        expect(activeTunnel.browserPort, isNotNull);
+        expect(activeTunnel.browserPort, localPort);
         final socket = await Socket.connect(
-          activeTunnel.browserHost,
+          InternetAddress.loopbackIPv6,
           activeTunnel.browserPort!,
         );
         socket.destroy();
