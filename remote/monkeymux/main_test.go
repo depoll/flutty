@@ -5086,18 +5086,351 @@ func TestObserveKittyGraphicsReassemblesSplitTransmission(t *testing.T) {
 	}
 }
 
-func TestObserveKittyGraphicsDeleteRemovesRetainedImage(t *testing.T) {
+func TestObserveKittyGraphicsRetainsAnimationCommandsInOrder(t *testing.T) {
+	window := &muxWindow{}
+	stream := []byte(
+		"\x1b_Ga=T,U=1,i=7,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100,m=1;FRAME-A\x1b\\" +
+			"\x1b_Gm=0;FRAME-B\x1b\\" +
+			"\x1b_Ga=c,i=7,r=2,c=1,w=1,h=1\x1b\\" +
+			"\x1b_Ga=a,i=7,r=1,z=80,s=3,v=1\x1b\\")
+
+	window.observeKittyGraphicsLocked(stream)
+	replay := string(window.kittyImageReplayLocked(nil))
+
+	parts := []string{"ROOT", "FRAME-A", "FRAME-B", "a=c", "a=a"}
+	last := -1
+	for _, part := range parts {
+		index := strings.Index(replay, part)
+		if index <= last {
+			t.Fatalf("animation replay order lost at %q: %q", part, replay)
+		}
+		last = index
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("root transmit must be replayed store-only: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsResolvesImageNumberAnimations(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME\x1b\\" +
+			"\x1b_Ga=a,I=5,s=3,v=1\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	for _, want := range []string{"i=7,I=5", "a=f,f=100", "a=a,s=3", "i=7"} {
+		if !strings.Contains(replay, want) {
+			t.Fatalf("image-number animation missing %q: %q", want, replay)
+		}
+	}
+	if strings.Count(replay, "I=5") != 2 {
+		t.Fatalf("animation commands were not canonicalized to id 7: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsRetainsPlacementAndAnimationMappings(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=p,i=7,I=9,c=1,r=1\x1b\\" +
+			"\x1b_Ga=f,i=8,I=9,f=100;FRAME8\x1b\\" +
+			"\x1b_Ga=a,I=9,s=3,v=1\x1b\\"))
+
+	if got := window.kittyImageNumberToID["9"]; got != "8" {
+		t.Fatalf("image number 9 maps to %q, want 8", got)
+	}
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "a=p") {
+		t.Fatalf("placement command must not be replayed: %q", replay)
+	}
+	if !strings.Contains(replay, "FRAME8") ||
+		!strings.Contains(replay, "a=a") ||
+		!strings.Contains(replay, "i=8") {
+		t.Fatalf("mapped animation history missing from image 8: %q", replay)
+	}
+	if !strings.Contains(replay, "i=8,I=9,q=2") {
+		t.Fatalf("current image-number mapping missing from replay: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsRetainsImageNumberOnlyRoot(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,I=5,f=100;ROOT1\x1b\\" +
+			"\x1b_Ga=t,I=5,f=100;ROOT2\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME2\x1b\\" +
+			"\x1b_Ga=a,I=5,s=3,v=1\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	for _, want := range []string{
+		"ROOT1",
+		"ROOT2",
+		"a=f,I=5",
+		"FRAME2",
+		"a=a,I=5",
+	} {
+		if !strings.Contains(replay, want) {
+			t.Fatalf("image-number-only replay missing %q: %q", want, replay)
+		}
+	}
+	if len(window.kittyImages) != 2 {
+		t.Fatalf("retained %d I-only roots, want 2", len(window.kittyImages))
+	}
+	if strings.Index(replay, "ROOT1") > strings.Index(replay, "ROOT2") {
+		t.Fatalf("I-only root order changed: %q", replay)
+	}
+	latestID := window.kittyImageNumberToID["5"]
+	if !strings.Contains(string(window.kittyImageAnimations[latestID]), "FRAME2") {
+		t.Fatalf("latest I-only root did not retain its animation")
+	}
+}
+
+func TestObserveKittyGraphicsKeepsImageNumberOnZeroIDAnimations(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=0,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "a=f,I=5") {
+		t.Fatalf("zero-id animation lost its image-number reference: %q", replay)
+	}
+	if strings.Contains(replay, "a=f,i=0") {
+		t.Fatalf("zero id was treated as canonical during replay: %q", replay)
+	}
+}
+
+func TestKittyAnimationReplaySuppressesProtocolResponses(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=T,i=7,I=5,f=100,q=0;ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100,q=0;FRAME\x1b\\" +
+			"\x1b_Ga=a,i=7,s=3,v=1,q=0\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "q=0") {
+		t.Fatalf("replay retained response-producing quiet mode: %q", replay)
+	}
+	if got := strings.Count(replay, "q=2"); got != 4 {
+		t.Fatalf("replay q=2 count = %d, want 4: %q", got, replay)
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("root replay was not downgraded to store-only: %q", replay)
+	}
+}
+
+func TestKittyAnimationDoesNotReorderImageNumberRoots(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=5,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100;FRAME7\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	root8 := strings.Index(replay, "ROOT8")
+	frame7 := strings.Index(replay, "FRAME7")
+	if root8 < 0 || frame7 < 0 || frame7 > root8 {
+		t.Fatalf("animation mutation reordered root mapping: %q", replay)
+	}
+	if got := window.kittyImageNumberToID["5"]; got != "8" {
+		t.Fatalf("image number 5 maps to %q, want 8", got)
+	}
+}
+
+func TestKittyReplayDoesNotRestoreStaleImageNumberMapping(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=5,f=100;ROOT8\x1b\\"))
+	for i := 0; i < maxReplayedKittyImages; i++ {
+		window.observeKittyGraphicsLocked([]byte(fmt.Sprintf(
+			"\x1b_Ga=t,i=%d,f=100;OTHER%d\x1b\\",
+			100+i,
+			i,
+		)))
+	}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=7,f=100;FRAME7\x1b\\"),
+	)
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "ROOT7") || strings.Contains(replay, "ROOT8") {
+		t.Fatalf("test precondition did not select only the older mapped root: %q", replay)
+	}
+	if strings.Contains(replay, "i=7,I=5") {
+		t.Fatalf("older root restored stale image-number mapping: %q", replay)
+	}
+	if !strings.Contains(replay, "a=f,i=7") ||
+		strings.Contains(replay, "a=f,I=5") {
+		t.Fatalf("older animation was not canonicalized to image id 7: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsDropsAnimationThatExceedsPerIDBudget(t *testing.T) {
+	originalBudget := kittyImagePerIDBudgetBytes
+	kittyImagePerIDBudgetBytes = 160
+	t.Cleanup(func() { kittyImagePerIDBudgetBytes = originalBudget })
+
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,I=5,f=100;ROOT\x1b\\"),
+	)
+	for i := 0; i < 20 && len(window.kittyImages) > 0; i++ {
+		window.observeKittyGraphicsLocked(
+			[]byte("\x1b_Ga=a,I=5,s=3,v=1,q=2\x1b\\"),
+		)
+	}
+
+	if len(window.kittyImages) != 0 ||
+		len(window.kittyImageAnimations) != 0 ||
+		len(window.kittyImageReplayLocked(nil)) != 0 {
+		t.Fatalf("oversized animation replay cache was not dropped")
+	}
+	if _, ok := window.kittyImageNumberToID["5"]; ok {
+		t.Fatalf("image-number mapping survived cache eviction")
+	}
+}
+
+func TestObserveKittyGraphicsNewRootResetsRetainedAnimation(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,f=100;OLD-ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100;OLD-FRAME\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,f=100;NEW-ROOT\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "NEW-ROOT") {
+		t.Fatalf("replacement root missing: %q", replay)
+	}
+	if strings.Contains(replay, "OLD-ROOT") || strings.Contains(replay, "OLD-FRAME") {
+		t.Fatalf("replacement root retained stale animation state: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsSoftDeleteKeepsRetainedImage(t *testing.T) {
 	window := &muxWindow{}
 
 	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
+	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,d=i,i=7\x1b\\"))
 	if got := window.kittyImageReplayLocked(nil); !strings.Contains(string(got), "PAYLOAD") {
-		t.Fatalf("image id=7 not retained: %q", got)
+		t.Fatalf("soft-deleted image data was not retained: %q", got)
 	}
+}
 
-	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,i=7;\x1b\\"))
+func TestObserveKittyGraphicsHardDeleteRemovesRetainedImage(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
+
+	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,d=I,i=7\x1b\\"))
 	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
-		t.Fatalf("deleted image id=7 still retained: %q", got)
+		t.Fatalf("hard-deleted image id=7 still retained: %q", got)
+	}
+}
+
+func TestObserveKittyGraphicsPreservesSameChunkHardDeleteOrder(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=T,U=1,i=7,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100;FRAME\x1b\\" +
+			"\x1b_Ga=d,d=I,i=7\x1b\\"))
+
+	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
+		t.Fatalf("same-chunk hard delete resurrected retained image: %q", got)
+	}
+	if _, ok := window.kittyImageNumberToID["5"]; ok {
+		t.Fatalf("same-chunk hard delete retained image-number mapping")
+	}
+}
+
+func TestObserveKittyGraphicsAppliesDeleteAllInStreamOrder(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=6,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=d,d=A\x1b\\" +
+			"\x1b_Ga=t,i=9,I=7,f=100;ROOT9\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "ROOT7") || strings.Contains(replay, "ROOT8") {
+		t.Fatalf("d=A retained image data transmitted before it: %q", replay)
+	}
+	if !strings.Contains(replay, "ROOT9") {
+		t.Fatalf("d=A removed image data transmitted after it: %q", replay)
+	}
+	if len(window.kittyImageNumberToID) != 1 ||
+		window.kittyImageNumberToID["7"] != "9" {
+		t.Fatalf("d=A left stale image-number mappings: %#v", window.kittyImageNumberToID)
+	}
+}
+
+func TestObserveKittyGraphicsInvalidatesForPositionalHardDeletes(t *testing.T) {
+	for _, selector := range []string{"C", "P", "X", "Y"} {
+		t.Run(selector, func(t *testing.T) {
+			window := &muxWindow{}
+			window.observeKittyGraphicsLocked([]byte(
+				"\x1b_Ga=t,i=7,I=5,f=100;ROOT\x1b\\" +
+					"\x1b_Ga=d,d=" + selector + ",x=1,y=1\x1b\\"))
+
+			if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
+				t.Fatalf("d=%s retained conservatively matched image data: %q", selector, got)
+			}
+			if len(window.kittyImageNumberToID) != 0 {
+				t.Fatalf("d=%s retained image-number mappings", selector)
+			}
+		})
+	}
+}
+
+func TestObserveKittyGraphicsDeleteByNumberRemovesRetainedImage(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,I=5,f=100;PAYLOAD\x1b\\"),
+	)
+
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=d,d=N,I=5\x1b\\"),
+	)
+
+	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
+		t.Fatalf("image deleted by number still retained: %q", got)
+	}
+	if _, ok := window.kittyImageNumberToID["5"]; ok {
+		t.Fatalf("deleted image-number mapping still retained")
+	}
+}
+
+func TestObserveKittyGraphicsHardDeleteByNumberKeepsUnrelatedImages(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=6,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=d,d=I,I=5\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "ROOT7") {
+		t.Fatalf("d=I,I=5 retained targeted image: %q", replay)
+	}
+	if !strings.Contains(replay, "ROOT8") {
+		t.Fatalf("d=I,I=5 removed unrelated image: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsUnaddressedIDDeleteKeepsAllImages(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=6,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=d,d=I\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "ROOT7") || !strings.Contains(replay, "ROOT8") {
+		t.Fatalf("unaddressed d=I removed retained images: %q", replay)
 	}
 }
 
@@ -5105,7 +5438,10 @@ func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 	window := &muxWindow{}
 
 	for i := 0; i < maxRetainedKittyImages+5; i++ {
-		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;DATA%d\x1b\\", i, i)
+		seq := fmt.Sprintf(
+			"\x1b_Ga=T,U=1,i=%d,I=%d,f=100;DATA%d\x1b\\",
+			i, i, i,
+		)
 		window.observeKittyGraphicsLocked([]byte(seq))
 	}
 
@@ -5118,9 +5454,52 @@ func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 	if strings.Contains(replay, "DATA0") {
 		t.Fatalf("oldest image should have been evicted: %q", replay)
 	}
+	if _, ok := window.kittyImageNumberToID["0"]; ok {
+		t.Fatalf("evicted image-number mapping should be removed")
+	}
 	newest := fmt.Sprintf("DATA%d", maxRetainedKittyImages+4)
 	if !strings.Contains(replay, newest) {
 		t.Fatalf("newest image %q missing: %q", newest, replay)
+	}
+}
+
+func TestObserveKittyGraphicsCapsMappingOnlyImageNumbers(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,f=100;ROOT\x1b\\"),
+	)
+	for i := 0; i < maxRetainedKittyImageNumbers+20; i++ {
+		window.observeKittyGraphicsLocked([]byte(fmt.Sprintf(
+			"\x1b_Ga=p,i=7,I=%d,c=1,r=1\x1b\\",
+			i+1,
+		)))
+	}
+
+	if got := len(window.kittyImageNumberToID); got > maxRetainedKittyImageNumbers {
+		t.Fatalf("retained %d image-number mappings, want <= %d",
+			got, maxRetainedKittyImageNumbers)
+	}
+	if _, ok := window.kittyImageNumberToID["1"]; ok {
+		t.Fatalf("oldest image-number mapping survived bounded insertion")
+	}
+	if got := window.kittyImageNumberToID[fmt.Sprintf("%d", maxRetainedKittyImageNumbers+20)]; got != "7" {
+		t.Fatalf("recent image-number mapping = %q, want 7", got)
+	}
+	if !strings.Contains(string(window.kittyImageReplayLocked(nil)), "i=7,I=") {
+		t.Fatalf("bounded image-number mappings were not replayed")
+	}
+
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=8,I=999,f=100;NEWROOT\x1b\\"),
+	)
+	if got := window.kittyImageNumberToID["999"]; got != "8" {
+		t.Fatalf("new root mapping at cap = %q, want 8", got)
+	}
+	if got := len(window.kittyImageNumberToID); got > maxRetainedKittyImageNumbers {
+		t.Fatalf("new root grew mapping table to %d", got)
+	}
+	if !strings.Contains(string(window.kittyImageReplayLocked(nil)), "NEWROOT") {
+		t.Fatalf("new root at mapping cap was not retained")
 	}
 }
 
@@ -5147,6 +5526,17 @@ func TestKittyImageReplayCapsCount(t *testing.T) {
 	tooOld := fmt.Sprintf("i=%d,", oldestKept-1)
 	if strings.Contains(replay, tooOld) {
 		t.Fatalf("image %q older than the replay cap should be omitted", tooOld)
+	}
+
+	// Mutating that older root makes it recent for selection without changing
+	// the root transmission order used to preserve image-number mappings.
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=0,f=100;RECENT_FRAME\x1b\\"),
+	)
+	replay = string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "i=0,") ||
+		!strings.Contains(replay, "RECENT_FRAME") {
+		t.Fatalf("recently animated older root missing from replay: %q", replay)
 	}
 }
 
@@ -5231,8 +5621,8 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 	}
 
 	replay := window.kittyImageReplayLocked(nil)
-	if len(replay) > maxReplayedKittyImageBytes+len(big) {
-		t.Fatalf("replay %d bytes exceeds budget %d (+one image slack)",
+	if len(replay) > maxReplayedKittyImageBytes {
+		t.Fatalf("replay %d bytes exceeds budget %d",
 			len(replay), maxReplayedKittyImageBytes)
 	}
 	// At least one image (the most recent) is always replayed.
@@ -5242,30 +5632,69 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 	}
 }
 
+func TestKittyImageReplaySkipsOversizedImageAndKeepsSmallerCandidate(t *testing.T) {
+	window := &muxWindow{
+		kittyImages: map[string][]byte{
+			"1": []byte("\x1b_Ga=t,i=1,f=100;SMALL\x1b\\"),
+			"2": bytes.Repeat([]byte{'X'}, maxReplayedKittyImageBytes+1),
+		},
+		kittyImageOrder: []string{"1", "2"},
+		kittyImageSeq:   map[string]uint64{"1": 1, "2": 2},
+	}
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, strings.Repeat("X", 1024)) {
+		t.Fatalf("oversized image was included in replay")
+	}
+	if !strings.Contains(replay, "SMALL") {
+		t.Fatalf("smaller candidate was not replayed after oversized image")
+	}
+	if len(replay) > maxReplayedKittyImageBytes {
+		t.Fatalf("replay exceeded attach-safe byte budget: %d", len(replay))
+	}
+}
+
 func TestKittyImageReplaySkipsImagesClientAlreadyHolds(t *testing.T) {
 	window := &muxWindow{}
 	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=101,f=100;AAAABBBBCCCC\x1b\\"))
 	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=101,f=100;FRAME101\x1b\\"))
+	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=202,f=100;DDDDEEEEFFFF\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=303,I=5,f=100;ROOT303\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=303,f=100;FRAME303\x1b\\"))
 
 	// The client reports holding image 101 with its true signature and image
 	// 202 with a stale signature (different content). Only 101 may be skipped.
 	clientHas := map[string]uint32{
 		"101": window.kittyImageToken["101"],
 		"202": window.kittyImageToken["202"] ^ 0x1,
+		"303": window.kittyImageToken["303"],
 	}
 	replay := string(window.kittyImageReplayLocked(clientHas))
-	if strings.Contains(replay, "i=101") {
-		t.Fatalf("image 101 should be skipped; client holds it: %q", replay)
+	if strings.Contains(replay, "AAAABBBBCCCC") {
+		t.Fatalf("image 101 root should be skipped; client holds it: %q", replay)
+	}
+	if !strings.Contains(replay, "FRAME101") {
+		t.Fatalf("image 101 animation updates must still be replayed: %q", replay)
 	}
 	if !strings.Contains(replay, "i=202") {
 		t.Fatalf("image 202 has a stale client signature and must be re-sent: %q",
 			replay)
 	}
+	if strings.Contains(replay, "ROOT303") ||
+		!strings.Contains(replay, "i=303,I=5,q=2") ||
+		!strings.Contains(replay, "FRAME303") {
+		t.Fatalf("held root should replay mapping and animation only: %q", replay)
+	}
 	// A nil skip-set (fresh attach) still replays everything.
 	full := string(window.kittyImageReplayLocked(nil))
-	if !strings.Contains(full, "i=101") || !strings.Contains(full, "i=202") {
+	if !strings.Contains(full, "AAAABBBBCCCC") ||
+		!strings.Contains(full, "DDDDEEEEFFFF") ||
+		!strings.Contains(full, "ROOT303") {
 		t.Fatalf("nil skip-set must replay every image: %q", full)
 	}
 }
@@ -6112,6 +6541,71 @@ func TestTrimReplayHistoryAlignsToUtf8WhenNoControlChars(t *testing.T) {
 	}
 	if len(trimmed) > windowReplayLimitBytes {
 		t.Fatalf("trimmed length = %d, want <= %d", len(trimmed), windowReplayLimitBytes)
+	}
+}
+
+func TestTrimReplayHistorySkipsPartialKittyPayload(t *testing.T) {
+	payload := bytes.Repeat([]byte("A"), windowReplayLimitBytes+4096)
+	history := append(
+		[]byte("before\x1b_Ga=f,i=7,f=32,m=0;"),
+		payload...,
+	)
+	history = append(history, "\x1b\\\r\nprompt"...)
+
+	rawStart := len(history) - windowReplayLimitBytes
+	if history[rawStart] != 'A' {
+		t.Fatalf("setup error: raw replay cut = 0x%02x, want payload", history[rawStart])
+	}
+	if bytes.Contains(history[rawStart:rawStart+2048], []byte{'\x1b'}) {
+		t.Fatal("setup error: old scan window unexpectedly reaches APC terminator")
+	}
+
+	trimmed := trimReplayHistoryForAttach(history)
+	if got, want := string(trimmed), "\r\nprompt"; got != want {
+		t.Fatalf("trimmed replay = %q, want %q", got, want)
+	}
+}
+
+func TestReplayHistoryRetainsParserStateAcrossKittyPayloadEviction(t *testing.T) {
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		name:              "zsh",
+		command:           "zsh",
+		foregroundCommand: "zsh",
+		lastActivity:      time.Now(),
+	}
+	payload := bytes.Repeat([]byte("A"), windowHistoryLimitBytes+4096)
+	stream := append(
+		[]byte("before\x1b_Ga=f,i=7,f=32,m=0;"),
+		payload...,
+	)
+	stream = append(stream, "\x1b\\\r\nprompt"...)
+	window.appendHistoryLocked(stream)
+
+	if window.historyStartTerminalOutput.isGround() {
+		t.Fatal("setup error: retained history should begin inside the Kitty APC")
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
+
+	replay := server.replayBytesLocked(window)
+	if bytes.Contains(replay, bytes.Repeat([]byte("A"), 128)) {
+		t.Fatal("replay leaked evicted Kitty payload as terminal text")
+	}
+	if !bytes.Contains(replay, []byte("\r\nprompt")) {
+		t.Fatalf("replay dropped settled shell output: %q", replay)
+	}
+	restore := server.restoreSnapshot()
+	if len(restore.Windows) != 1 {
+		t.Fatalf("restore window count = %d, want 1", len(restore.Windows))
+	}
+	if !restore.Windows[0].HistoryStartsAtGround {
+		t.Fatal("restore history was not marked as parser-ground aligned")
+	}
+	if got, want := string(decodeRestoreHistory(restore.Windows[0].HistoryBase64)), "\r\nprompt"; got != want {
+		t.Fatalf("restored history = %q, want %q", got, want)
 	}
 }
 
@@ -7616,6 +8110,36 @@ func TestCreateWindowOptionsForRestorePreservesShellHistory(t *testing.T) {
 	}
 	if !options.cursorVisibilityKnown || options.cursorVisible {
 		t.Fatalf("cursor visibility = known:%v visible:%v, want known hidden", options.cursorVisibilityKnown, options.cursorVisible)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreSanitizesLegacyKittyPayload(t *testing.T) {
+	history := append(bytes.Repeat([]byte("A"), 512), "\x1b\\\r\nprompt"...)
+	state := restoreWindowState{
+		Name:           "Project shell",
+		CurrentCommand: "zsh",
+		HistoryBase64:  base64.StdEncoding.EncodeToString(history),
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if got, want := string(options.history), "\r\nprompt"; got != want {
+		t.Fatalf("legacy restore history = %q, want %q", got, want)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreDropsIncompleteTrailingAPC(t *testing.T) {
+	state := restoreWindowState{
+		Name:                  "Project shell",
+		CurrentCommand:        "zsh",
+		HistoryBase64:         base64.StdEncoding.EncodeToString([]byte("prompt\r\n\x1b_Ga=f,i=7;AAAA")),
+		HistoryStartsAtGround: true,
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if got, want := string(options.history), "prompt\r\n"; got != want {
+		t.Fatalf("restore history = %q, want %q", got, want)
 	}
 }
 
