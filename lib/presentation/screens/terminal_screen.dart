@@ -45,6 +45,7 @@ import '../../domain/services/monetization_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
 import '../../domain/services/monkeymux_service.dart';
 import '../../domain/services/port_forward_browser_service.dart';
+import '../../domain/services/port_forward_runtime_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/remote_multiplexer_service.dart';
@@ -70,6 +71,7 @@ import '../widgets/premium_access.dart';
 import '../widgets/terminal_menu_style.dart';
 import '../widgets/terminal_overlay_focus.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
+import '../widgets/terminal_port_forwards_sheet.dart';
 import '../widgets/terminal_selection_text.dart' as terminal_selection_text;
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
@@ -3933,10 +3935,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required IconData icon,
     required String label,
     required String action,
+    bool enabled = true,
   }) => MenuItemButton(
     style: TerminalMenuStyles.itemButtonStyle(context),
     leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
-    onPressed: () => unawaited(_handleMenuAction(action)),
+    onPressed: enabled ? () => unawaited(_handleMenuAction(action)) : null,
     child: _terminalOverflowMenuLabel(label),
   );
 
@@ -8042,32 +8045,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     var startedCount = 0;
     final failedNames = <String>[];
     for (final forward in autoStartForwards) {
-      if (forward.forwardType == 'local') {
-        final success = await session.startLocalForward(
-          portForwardId: forward.id,
-          localHost: forward.localHost,
-          localPort: forward.localPort,
-          remoteHost: forward.remoteHost,
-          remotePort: forward.remotePort,
-        );
-        if (success) {
+      final result = await activatePortForwardOnConnectedSession(
+        sessions: ref.read(activeSessionsProvider.notifier),
+        portForward: forward,
+        preferredConnectionId: session.connectionId,
+      );
+      switch (result.status) {
+        case PortForwardActivationStatus.started:
           startedCount++;
-        } else {
+        case PortForwardActivationStatus.failed:
           failedNames.add(forward.name);
-        }
-      } else if (forward.forwardType == 'remote') {
-        final success = await session.startRemoteForward(
-          portForwardId: forward.id,
-          remoteHost: forward.remoteHost,
-          remotePort: forward.remotePort,
-          localHost: forward.localHost,
-          localPort: forward.localPort,
-        );
-        if (success) {
-          startedCount++;
-        } else {
-          failedNames.add(forward.name);
-        }
+        case PortForwardActivationStatus.alreadyActive:
+        case PortForwardActivationStatus.noConnectedSession:
+          break;
       }
     }
 
@@ -11169,6 +11159,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   label: 'Change Theme',
                   action: 'change_theme',
                 ),
+                _terminalOverflowMenuItem(
+                  context: context,
+                  icon: Icons.alt_route_rounded,
+                  label: 'Port Forwards',
+                  action: 'port_forwards',
+                  enabled:
+                      _connectionId != null &&
+                      connectionState == SshConnectionState.connected,
+                ),
                 if (isPortForwardBrowserSupported())
                   _terminalOverflowMenuItem(
                     context: context,
@@ -12378,6 +12377,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'open_port_forward_browser':
         await _openPortForwardBrowserFromTerminal();
+        break;
+      case 'port_forwards':
+        await _openPortForwardsFromTerminal();
         break;
       case 'toggle_terminal_info':
         setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
@@ -14021,6 +14023,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     await _openPortForwardBrowserOptions(options);
+  }
+
+  Future<void> _openPortForwardsFromTerminal() async {
+    final connectionId = _connectionId;
+    final session = connectionId == null
+        ? null
+        : ref.read(activeSessionsProvider.notifier).getSession(connectionId);
+    if (connectionId == null || session == null) {
+      _showTerminalLinkMessage('Connect before managing live port forwards');
+      return;
+    }
+
+    final shouldRestoreKeyboard = _temporarilyDismissTerminalKeyboard();
+    try {
+      await showTerminalPortForwardsSheet(
+        context: context,
+        hostId: widget.hostId,
+        connectionId: connectionId,
+        session: session,
+      );
+    } finally {
+      _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+    }
   }
 
   Future<void> _openPortForwardBrowserOption(
