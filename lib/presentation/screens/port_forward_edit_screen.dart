@@ -35,7 +35,9 @@ class PortForwardEditScreen extends ConsumerStatefulWidget {
   /// The port forward ID to edit, or null for a new port forward.
   final int? portForwardId;
 
-  /// Host selected when creating a rule from a host-specific surface.
+  /// Fixed host used when creating from a host-specific surface.
+  ///
+  /// When set for a new rule, the host selector is omitted.
   final int? initialHostId;
 
   /// Connection that should receive a newly auto-started rule when available.
@@ -66,7 +68,9 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
   void initState() {
     super.initState();
     _selectedHostId = widget.initialHostId;
-    _loadHosts();
+    if (!_usesFixedHost) {
+      _loadHosts();
+    }
     if (widget.portForwardId != null) {
       _loadPortForward();
     } else {
@@ -102,6 +106,9 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
       });
     }
   }
+
+  bool get _usesFixedHost =>
+      widget.portForwardId == null && widget.initialHostId != null;
 
   @override
   void dispose() {
@@ -192,31 +199,33 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    // Host selection
-                    DropdownButtonFormField<int>(
-                      initialValue: _selectedHostId,
-                      decoration: const InputDecoration(
-                        labelText: 'Host',
-                        prefixIcon: Icon(Icons.computer),
+                    if (!_usesFixedHost) ...[
+                      // Host selection
+                      DropdownButtonFormField<int>(
+                        initialValue: _selectedHostId,
+                        decoration: const InputDecoration(
+                          labelText: 'Host',
+                          prefixIcon: Icon(Icons.computer),
+                        ),
+                        items: _hosts
+                            .map(
+                              (host) => DropdownMenuItem(
+                                value: host.id,
+                                child: Text(host.label),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) =>
+                            setState(() => _selectedHostId = value),
+                        validator: (value) {
+                          if (value == null) {
+                            return 'Please select a host';
+                          }
+                          return null;
+                        },
                       ),
-                      items: _hosts
-                          .map(
-                            (host) => DropdownMenuItem(
-                              value: host.id,
-                              child: Text(host.label),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: (value) =>
-                          setState(() => _selectedHostId = value),
-                      validator: (value) {
-                        if (value == null) {
-                          return 'Please select a host';
-                        }
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 16),
+                      const SizedBox(height: 16),
+                    ],
 
                     // Forward type
                     Text(
