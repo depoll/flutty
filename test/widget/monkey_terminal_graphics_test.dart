@@ -93,22 +93,41 @@ bool _isBlue(int r, int g, int b) => b > 150 && r < 90 && g < 90;
 
 bool _isLight(int r, int g, int b) => r > 150 && g > 150 && b > 150;
 
+class _TopResettingScrollController extends ScrollController {
+  @override
+  void attach(ScrollPosition position) {
+    super.attach(position);
+    position.correctPixels(0);
+  }
+}
+
+const _animatedGifBase64 =
+    'R0lGODlhAwADAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQE'
+    'BwAAACwAAAAAAwADAAAIBwABCBw4MCAAIfkEBA0AAAAsAAAAAAMAAwCBAAD/AAAA'
+    'AAAAAAAACAcAAQgcODAgADs=';
+
 /// Builds a PNG whose left half is [left] and right half is [right], used to
 /// verify source-rectangle cropping selects the requested region.
-Future<String> _buildSplitPngBase64(Color left, Color right, int size) async {
+Future<String> _buildSplitPngBase64(
+  Color left,
+  Color right,
+  int width, [
+  int? height,
+]) async {
   final recorder = ui.PictureRecorder();
   final canvas = ui.Canvas(recorder);
-  final half = size / 2;
+  final imageHeight = height ?? width;
+  final half = width / 2;
   canvas
     ..drawRect(
-      Rect.fromLTWH(0, 0, half, size.toDouble()),
+      Rect.fromLTWH(0, 0, half, imageHeight.toDouble()),
       Paint()..color = left,
     )
     ..drawRect(
-      Rect.fromLTWH(half, 0, half, size.toDouble()),
+      Rect.fromLTWH(half, 0, half, imageHeight.toDouble()),
       Paint()..color = right,
     );
-  final image = await recorder.endRecording().toImage(size, size);
+  final image = await recorder.endRecording().toImage(width, imageHeight);
   final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
   return base64.encode(bytes!.buffer.asUint8List());
 }
@@ -351,6 +370,453 @@ void main() {
   });
 
   testWidgets(
+    'animated GIF advances, stops, restarts and disposes its ticker',
+    (tester) async {
+      final boundaryKey = GlobalKey();
+      final viewKey = GlobalKey<MonkeyTerminalViewState>();
+      final terminal = Terminal();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RepaintBoundary(
+              key: boundaryKey,
+              child: MonkeyTerminalView(
+                terminal,
+                key: viewKey,
+                hardwareKeyboardOnly: true,
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+      await tester.runAsync(() async {
+        terminal.write(
+          '\x1b_Ga=T,i=51,f=100,c=4,r=2;$_animatedGifBase64\x1b\\',
+        );
+        var waited = 0;
+        while ((terminal.graphics.imageById(51)?.frameCount ?? 0) != 2 &&
+            waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+      });
+      await tester.pump();
+
+      final image = terminal.graphics.imageById(51)!;
+      expect(image.currentFrame, 1);
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+      expect(await tester.runAsync(() => _boundaryHasRed(boundaryKey)), isTrue);
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 69));
+      expect(image.currentFrame, 1);
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(image.currentFrame, 2);
+      expect(
+        await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+        greaterThan(0),
+      );
+
+      terminal.write('\x1b_Ga=a,i=51,s=1\x1b\\');
+      await tester.pump();
+      await tester.pump();
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+      terminal.write('\x1b_Ga=a,i=51,s=3\x1b\\');
+      await tester.pump();
+      await tester.pump();
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('terminal swap starts a visible animation after repaint', (
+    tester,
+  ) async {
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final firstTerminal = Terminal();
+    final secondTerminal = Terminal();
+
+    Widget build(Terminal terminal) => MaterialApp(
+      home: SizedBox(
+        width: 400,
+        height: 300,
+        child: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          hardwareKeyboardOnly: true,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(build(firstTerminal));
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+    await tester.runAsync(() async {
+      secondTerminal.write(
+        '\x1b_Ga=T,i=57,f=100,c=4,r=2;$_animatedGifBase64\x1b\\',
+      );
+      var waited = 0;
+      while ((secondTerminal.graphics.imageById(57)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+
+    await tester.pumpWidget(build(secondTerminal));
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+  });
+
+  testWidgets(
+    'animation ticker ignores a placement shifted outside its bounds',
+    (tester) async {
+      final viewKey = GlobalKey<MonkeyTerminalViewState>();
+      final terminal = Terminal();
+      await tester.runAsync(() async {
+        terminal.write(
+          '\x1b_Ga=T,i=58,f=100,c=4,r=2,X=10000;$_animatedGifBase64\x1b\\',
+        );
+        var waited = 0;
+        while ((terminal.graphics.imageById(58)?.frameCount ?? 0) != 2 &&
+            waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 400,
+            height: 300,
+            child: MonkeyTerminalView(
+              terminal,
+              key: viewKey,
+              hardwareKeyboardOnly: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(terminal.graphics.placements, hasLength(1));
+      expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+      final image = terminal.graphics.imageById(58)!;
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(image.currentFrame, 1);
+    },
+  );
+
+  testWidgets('reduced motion keeps animated terminal images static', (
+    tester,
+  ) async {
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(reduceMotion: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=52,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(52)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          hardwareKeyboardOnly: true,
+        ),
+      ),
+    );
+    final image = terminal.graphics.imageById(52)!;
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+    expect(image.currentFrame, 1);
+
+    await tester.pump(const Duration(seconds: 1));
+    expect(image.currentFrame, 1);
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+  });
+
+  testWidgets('live Reduce Motion changes resynchronize terminal playback', (
+    tester,
+  ) async {
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=60,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(60)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          hardwareKeyboardOnly: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(reduceMotion: true);
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures();
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+  });
+
+  testWidgets('disabled UI transitions do not pause terminal GIFs', (
+    tester,
+  ) async {
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=55,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(55)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          hardwareKeyboardOnly: true,
+        ),
+      ),
+    );
+
+    final image = terminal.graphics.imageById(55)!;
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+    expect(image.currentFrame, 2);
+  });
+
+  testWidgets('animated GIF advances through Unicode placeholders', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepaintBoundary(
+          key: boundaryKey,
+          child: MonkeyTerminalView(
+            terminal,
+            key: viewKey,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    terminal
+      ..write('\x1b_Ga=T,U=1,i=53,f=100,c=4,r=2;$_animatedGifBase64\x1b\\')
+      ..write(_placeholderGrid(53, cols: 4, rows: 2));
+    await tester.pump();
+    await _pumpUntilImagesDecoded(tester, terminal, const [53]);
+    await tester.pump();
+
+    final image = terminal.graphics.imageById(53)!;
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+    expect(image.currentFrame, 1);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+    expect(image.currentFrame, 2);
+    expect(
+      await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+      greaterThan(0),
+    );
+  });
+
+  testWidgets('Copilot protocol animation survives a TUI redraw', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final terminal = Terminal();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepaintBoundary(
+          key: boundaryKey,
+          child: MonkeyTerminalView(
+            terminal,
+            key: viewKey,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+
+    await tester.runAsync(() async {
+      final red = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+      final blue = await _buildSolidPngBase64(const Color(0xFF0000FF), 24);
+      terminal
+        ..write(
+          '\x1b_Ga=T,i=56,f=100,c=4,r=2,C=1;'
+          '$red\x1b\\',
+        )
+        ..write('\x1b_Ga=a,i=56,r=1,z=70,q=2\x1b\\')
+        ..write(
+          '\x1b_Ga=f,i=56,f=100,z=70,X=1,q=2;'
+          '$blue\x1b\\',
+        )
+        ..write('\x1b_Ga=a,i=56,s=3,v=1,q=2\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(56)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+    terminal.write('\x1b[2J\x1b[H\x1b[2Kprompt');
+    await tester.pump();
+    expect(terminal.graphics.placements, hasLength(1));
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 70));
+    expect(terminal.graphics.imageById(56)!.currentFrame, 2);
+    expect(
+      await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+      greaterThan(0),
+    );
+  });
+
+  testWidgets('animation ticker stops off-screen and resumes when revealed', (
+    tester,
+  ) async {
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+    final terminal = Terminal(maxLines: 200);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 400,
+          height: 160,
+          child: MonkeyTerminalView(
+            terminal,
+            key: viewKey,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=54,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(54)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+
+    terminal.write(List.filled(80, 'line\r\n').join());
+    await tester.pump();
+    await tester.pump();
+    expect(scrollController.offset, greaterThan(0));
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+    scrollController.jumpTo(0);
+    await tester.pump();
+    await tester.pump();
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+  });
+
+  testWidgets('replacing the scroll controller resyncs animation visibility', (
+    tester,
+  ) async {
+    final viewKey = GlobalKey<MonkeyTerminalViewState>();
+    final firstController = ScrollController(keepScrollOffset: false);
+    final replacementController = _TopResettingScrollController();
+    addTearDown(firstController.dispose);
+    addTearDown(replacementController.dispose);
+    final terminal = Terminal(maxLines: 200);
+
+    Widget build(ScrollController controller) => MaterialApp(
+      home: SizedBox(
+        width: 400,
+        height: 160,
+        child: MonkeyTerminalView(
+          terminal,
+          key: viewKey,
+          scrollController: controller,
+          hardwareKeyboardOnly: true,
+          liveOutputAutoScroll: false,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(build(firstController));
+    await tester.runAsync(() async {
+      terminal.write('\x1b_Ga=T,i=59,f=100,c=4,r=2;$_animatedGifBase64\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(59)?.frameCount ?? 0) != 2 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+    terminal.write(List.filled(80, 'line\r\n').join());
+    await tester.pump();
+    firstController.jumpTo(firstController.position.maxScrollExtent);
+    await tester.pump();
+    expect(firstController.offset, greaterThan(0));
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isFalse);
+
+    await tester.pumpWidget(build(replacementController));
+    await tester.pump();
+    expect(replacementController.offset, 0);
+    expect(viewKey.currentState!.graphicsAnimationTickerActive, isTrue);
+  });
+
+  testWidgets(
     'Kitty Unicode placeholder image is composited into the terminal',
     (tester) async {
       final boundaryKey = GlobalKey();
@@ -387,7 +853,7 @@ void main() {
           waited += 20;
         }
       });
-      terminal.write('\x1b[H\x1b[2J');
+      terminal.write('\x1b_Ga=d,d=i,i=42\x1b\\\x1b[H\x1b[2J');
       expect(terminal.graphics.hasPlacements, isFalse);
       expect(terminal.graphics.imageById(42), isNotNull);
 
@@ -1027,7 +1493,7 @@ void main() {
     );
   });
 
-  testWidgets('zoom, clear and re-place an image without crashing', (
+  testWidgets('zoom, delete and re-place an image without crashing', (
     tester,
   ) async {
     final boundaryKey = GlobalKey();
@@ -1085,15 +1551,16 @@ void main() {
       expect(tester.takeException(), isNull, reason: 'zoom to $fs crashed');
     }
 
-    // Clearing must remove the image (it does not "come back") and must not
-    // dispose it out from under an in-flight frame.
-    terminal.write('\x1b[2J\x1b[H');
+    // A graphics delete removes the image without disposing it out from under
+    // an in-flight frame. ED only clears the surrounding text.
+    final imageId = terminal.graphics.placements.single.imageId;
+    terminal.write('\x1b_Ga=d,d=I,i=$imageId\x1b\\\x1b[2J\x1b[H');
     await tester.pump();
     expect(terminal.graphics.hasPlacements, isFalse);
     expect(
       await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
       isFalse,
-      reason: 'image should be gone after clear',
+      reason: 'image should be gone after the graphics delete',
     );
     for (final fs in [10.0, 24.0, 8.0, 14.0]) {
       fontSize = fs;
@@ -1103,22 +1570,22 @@ void main() {
       expect(
         tester.takeException(),
         isNull,
-        reason: 'zoom after clear at $fs crashed',
+        reason: 'zoom after delete at $fs crashed',
       );
     }
     expect(
       terminal.graphics.hasPlacements,
       isFalse,
-      reason: 'cleared image must not reappear after zoom',
+      reason: 'deleted image must not reappear after zoom',
     );
 
-    // A fresh image still renders after the clear.
+    // A fresh image still renders after the delete.
     await tester.runAsync(() => writeImage(const Color(0xFFFF0000)));
     await tester.pump();
     expect(
       await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
       isTrue,
-      reason: 'a new image should render after a clear',
+      reason: 'a new image should render after a delete',
     );
   });
 
@@ -1219,6 +1686,49 @@ void main() {
       await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
       0,
       reason: 'cropping to the left half must exclude the blue right half',
+    );
+  });
+
+  testWidgets('Kitty source crop scales into a downsampled decoded image', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+    await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
+    await tester.pump();
+
+    await tester.runAsync(() async {
+      // The decoder bounds this 2560px source to 1280px. Crop coordinates
+      // remain in the original 2560px Kitty coordinate space.
+      final png = await _buildSplitPngBase64(
+        const Color(0xFFFF0000),
+        const Color(0xFF0000FF),
+        2560,
+        20,
+      );
+      terminal.write(
+        '\x1b_Ga=T,i=2,f=100,c=6,r=3,x=1280,y=0,w=1280,h=20;$png\x1b\\',
+      );
+      var waited = 0;
+      while (terminal.graphics.imageById(2) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+
+    final stored = terminal.graphics.imageById(2)!;
+    expect(stored.sourceWidth, 2560);
+    expect(stored.image.width, 1280);
+    expect(
+      await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+      greaterThan(0),
+      reason: 'the logical right-half crop must render from the decoded image',
+    );
+    expect(
+      await tester.runAsync(() => _boundaryRedPixelCount(boundaryKey)),
+      0,
+      reason: 'the logical crop must exclude the source image left half',
     );
   });
 

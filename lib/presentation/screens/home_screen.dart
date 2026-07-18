@@ -12,6 +12,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/commands/duplicate_host_command.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
@@ -1644,7 +1645,7 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _duplicateHost(BuildContext context, WidgetRef ref) async {
-    await ref.read(hostRepositoryProvider).duplicate(host);
+    await ref.read(duplicateHostCommandProvider).execute(host);
     if (context.mounted) {
       ScaffoldMessenger.of(
         context,

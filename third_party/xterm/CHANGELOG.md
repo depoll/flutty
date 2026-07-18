@@ -24,8 +24,9 @@ out of scope.
   neovim diagnostics can draw a red undercurl. Supports both the colon
   (`58:2::r:g:b`, `58:5:n`) and legacy semicolon forms.
 * Kitty graphics protocol (`APC _G … ST`). Transmitted images are parsed and
-  consumed (so payloads never leak as text), decoded (PNG/JPEG/GIF via Flutter's
-  codecs, or raw RGBA/RGB), and composited over the cell grid. Each placement is
+  consumed (so payloads never leak as text), decoded (PNG/JPEG/GIF/APNG via
+  Flutter's codecs, or raw RGBA/RGB), and composited over the cell grid. Each
+  placement is
   anchored to its cursor cell with a `CellAnchor` so it tracks scrollback and
   reflow. Chunked transmissions and a 16 MiB cap are handled.
 * Robustness: CSI parameter/sub-parameter cap (256) to avoid OOM on malformed
@@ -96,6 +97,32 @@ out of scope.
   do not need.
 
 ### MonkeySSH-local additions (preserve across kterm syncs)
+* Kitty graphics animation (#586): protocol frames (`a=f`), animation control
+  (`a=a`) and frame composition (`a=c`) now retain fully composed frame
+  sequences with Kitty-compatible gaps, loading/loop/stop state and bounded
+  decoded memory. Encoded GIF/APNG transmissions preserve all decoded frames,
+  durations and repetition metadata instead of freezing on frame one. The host
+  renderer advances only visible, active animations and paints the current
+  frame. MonkeyMux 0.1.113 retains and replays each image's ordered frame,
+  composition and control commands so reconnects/window switches do not restore
+  only a static root image, resolves `I=` image-number commands, and drops
+  over-budget per-image replay histories while preserving lowercase soft-deleted
+  image data. Replay suppresses duplicate protocol responses, preserves root
+  order for `I=` remapping, and retains roots addressed only by image number.
+  Protocol frame/composition failures now return Kitty errors unless
+  silenced; frame timing carries ticker overshoot and `a=f` decodes only its
+  first logical payload frame. Android UI animation scales no longer pause
+  terminal media (a common emulator/developer setting), while iOS Reduce Motion
+  still keeps animated images static. Width-only/height-only placements preserve
+  aspect ratio and compute the missing cursor row span (including JPEG sources),
+  so Copilot CLI's `a=T,c=...` animation is not erased by its next prompt redraw.
+  Standard terminal ED/EL/ECH erases only Unicode cell-image references, matching
+  Kitty; physical placements (including in-flight decodes) remain until a
+  graphics delete or buffer reset, so Copilot's full-screen TUI redraw no longer
+  removes a running `C=1` animation. Async deletes and replacement decodes stay
+  stream-ordered so stale pending payloads cannot resurrect or overwrite images.
+  Keep the frame model and animation APIs in `graphics_manager.dart` when
+  re-syncing.
 * MonkeyMux private character-grid resizes (`CSI ? 8 ; rows ; cols t`) update
   the terminal buffer without echoing `onResize` back to the host. Standard
   `CSI 8 ; rows ; cols t` keeps its normal resize callback. This lets every

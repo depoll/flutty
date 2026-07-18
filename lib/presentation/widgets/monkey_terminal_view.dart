@@ -761,7 +761,7 @@ class MonkeyTerminalView extends StatefulWidget {
 }
 
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   static const _touchScrollReportedWheelLinesPerEvent = 3.0;
 
   late FocusNode _focusNode;
@@ -778,8 +778,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
   late final Ticker _touchScrollInertiaTicker;
+  late final Ticker _graphicsAnimationTicker;
   Simulation? _touchScrollInertiaSimulation;
   double _lastTouchScrollInertiaOffset = 0;
+  Duration _lastGraphicsAnimationElapsed = Duration.zero;
+  bool _graphicsAnimationsEnabled = true;
+  bool _graphicsAnimationSyncScheduled = false;
+  bool? _lastLoggedGraphicsAnimationActive;
+  int _graphicsAnimationFrameLogAtMs = 0;
   int _lastTerminalViewWidth = 0;
   Timer? _pendingFocusInReportTimer;
 
@@ -807,6 +813,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   /// or null if it is not attached. Exposed for window-switch diagnostics.
   int? get terminalChangeCount => _renderTerminalOrNull?.terminalChangeCount;
 
+  /// Whether the Kitty graphics frame ticker is currently running.
+  @visibleForTesting
+  bool get graphicsAnimationTickerActive => _graphicsAnimationTicker.isActive;
+
   /// Current local viewport dimensions in terminal cells.
   ({int columns, int rows})? get viewportCellSize {
     final viewportSize = _renderTerminalOrNull?.viewportSize;
@@ -825,6 +835,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _focusNode = widget.focusNode ?? FocusNode();
     _controller = widget.controller ?? TerminalController();
     _scrollController = widget.scrollController ?? ScrollController();
+    _scrollController.addListener(_handleViewportScrolled);
     _lastTerminalViewWidth = widget.terminal.viewWidth;
     widget.terminal.addListener(_handleTerminalMetricsChanged);
     _shortcutManager = ShortcutManager(
@@ -840,18 +851,47 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       ),
     };
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _touchScrollInertiaTicker = createTicker(_onTouchScrollInertiaTick);
+    _graphicsAnimationTicker = createTicker(_onGraphicsAnimationTick);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Terminal images are user-requested media, not UI transitions. Android
+    // reports disableAnimations when developer/emulator animation scales are
+    // zero, which must not freeze GIFs in the terminal. iOS exposes its actual
+    // Reduce Motion preference separately, so honor that signal here.
+    _updateGraphicsAnimationsEnabled();
+  }
+
+  @override
+  void didChangeAccessibilityFeatures() {
+    _updateGraphicsAnimationsEnabled();
+    _scheduleGraphicsAnimationSync();
+  }
+
+  void _updateGraphicsAnimationsEnabled() {
+    _graphicsAnimationsEnabled = !WidgetsBinding
+        .instance
+        .platformDispatcher
+        .accessibilityFeatures
+        .reduceMotion;
+    _syncGraphicsAnimationTicker();
   }
 
   @override
   void activate() {
     super.activate();
     _logAndroidBackLifecycle('activate');
+    _scheduleGraphicsAnimationSync();
   }
 
   @override
   void deactivate() {
     _logAndroidBackLifecycle('deactivate');
+    _stopGraphicsAnimationTicker();
     super.deactivate();
   }
 
@@ -859,10 +899,12 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   void didUpdateWidget(covariant MonkeyTerminalView oldWidget) {
     if (oldWidget.terminal != widget.terminal) {
       oldWidget.terminal.removeListener(_handleTerminalMetricsChanged);
+      _stopGraphicsAnimationTicker();
       _lastTerminalViewWidth = widget.terminal.viewWidth;
       widget.terminal.addListener(_handleTerminalMetricsChanged);
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
+      _scheduleGraphicsAnimationSync();
     }
     if (oldWidget.focusNode != widget.focusNode) {
       if (oldWidget.focusNode == null) {
@@ -877,10 +919,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _controller = widget.controller ?? TerminalController();
     }
     if (oldWidget.scrollController != widget.scrollController) {
+      _scrollController.removeListener(_handleViewportScrolled);
       if (oldWidget.scrollController == null) {
         _scrollController.dispose();
       }
       _scrollController = widget.scrollController ?? ScrollController();
+      _scrollController.addListener(_handleViewportScrolled);
+      _scheduleGraphicsAnimationSync();
     }
     if (oldWidget.simulateScroll != widget.simulateScroll) {
       _stopTouchScrollInertia();
@@ -900,15 +945,20 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
     super.didUpdateWidget(oldWidget);
+    _syncGraphicsAnimationTicker();
   }
 
   @override
   void dispose() {
     _logAndroidBackLifecycle('dispose');
+    WidgetsBinding.instance.removeObserver(this);
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
     _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
     _touchScrollInertiaTicker.dispose();
+    _stopGraphicsAnimationTicker();
+    _graphicsAnimationTicker.dispose();
+    _scrollController.removeListener(_handleViewportScrolled);
     if (widget.focusNode == null) {
       _focusNode.dispose();
     }
@@ -947,6 +997,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _handleTerminalMetricsChanged() {
+    _syncGraphicsAnimationTicker();
+    _scheduleGraphicsAnimationSync();
     final currentViewWidth = widget.terminal.viewWidth;
     if (currentViewWidth == _lastTerminalViewWidth) {
       return;
@@ -955,6 +1007,112 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (mounted) {
       setState(() {});
     }
+  }
+
+  void _handleViewportScrolled() => _scheduleGraphicsAnimationSync();
+
+  void _scheduleGraphicsAnimationSync() {
+    if (_graphicsAnimationSyncScheduled) {
+      return;
+    }
+    _graphicsAnimationSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _graphicsAnimationSyncScheduled = false;
+      if (mounted) {
+        _syncGraphicsAnimationTicker();
+      }
+    });
+  }
+
+  void _syncGraphicsAnimationTicker() {
+    final graphics = widget.terminal.graphics;
+    final visibleImageIds =
+        _renderTerminalOrNull?._paintedVisibleGraphicsImageIds;
+    final shouldAnimate =
+        _graphicsAnimationsEnabled &&
+        (visibleImageIds == null
+            ? graphics.hasActiveAnimations
+            : graphics.hasActiveAnimationsFor(visibleImageIds));
+    _maybeLogGraphicsAnimationState(shouldAnimate, graphics, visibleImageIds);
+    if (shouldAnimate) {
+      if (!_graphicsAnimationTicker.isActive) {
+        _lastGraphicsAnimationElapsed = Duration.zero;
+        _graphicsAnimationTicker.start();
+      }
+      return;
+    }
+    _stopGraphicsAnimationTicker();
+  }
+
+  void _stopGraphicsAnimationTicker() {
+    if (_graphicsAnimationTicker.isActive) {
+      _graphicsAnimationTicker.stop();
+    }
+    _lastGraphicsAnimationElapsed = Duration.zero;
+  }
+
+  void _onGraphicsAnimationTick(Duration elapsed) {
+    final delta = elapsed - _lastGraphicsAnimationElapsed;
+    _lastGraphicsAnimationElapsed = elapsed;
+    if (!delta.isNegative) {
+      final visibleImageIds =
+          _renderTerminalOrNull?._paintedVisibleGraphicsImageIds;
+      final changed = widget.terminal.graphics.advanceAnimations(
+        delta,
+        imageIds: visibleImageIds,
+      );
+      if (changed) {
+        _maybeLogGraphicsAnimationFrame(visibleImageIds?.length);
+      }
+    }
+    _syncGraphicsAnimationTicker();
+  }
+
+  void _maybeLogGraphicsAnimationState(
+    bool active,
+    GraphicsManager graphics,
+    Set<int>? visibleImageIds,
+  ) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled ||
+        _lastLoggedGraphicsAnimationActive == active ||
+        (!active &&
+            _lastLoggedGraphicsAnimationActive == null &&
+            graphics.animationImageCount == 0)) {
+      return;
+    }
+    _lastLoggedGraphicsAnimationActive = active;
+    diagnostics.debug(
+      'terminal.graphics',
+      'animation_ticker',
+      fields: {
+        'state': active ? 'running' : 'stopped',
+        'reducedMotion': !_graphicsAnimationsEnabled,
+        'tickerMuted': _graphicsAnimationTicker.muted,
+        'animatedImages': graphics.animationImageCount,
+        'visibleImages': visibleImageIds?.length ?? -1,
+      },
+    );
+  }
+
+  void _maybeLogGraphicsAnimationFrame(int? visibleImageCount) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled) {
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _graphicsAnimationFrameLogAtMs < 1000) {
+      return;
+    }
+    _graphicsAnimationFrameLogAtMs = nowMs;
+    diagnostics.debug(
+      'terminal.graphics',
+      'animation_frame',
+      fields: {
+        'visibleImages': visibleImageCount ?? -1,
+        'tickerMuted': _graphicsAnimationTicker.muted,
+      },
+    );
   }
 
   /// Re-sends focus reports after terminal state changes.
@@ -2831,6 +2989,12 @@ class MonkeyRenderTerminal extends RenderBox
 
   final MonkeyTerminalPainter _painter;
 
+  final Set<int> _visibleGraphicsImageIds = <int>{};
+  bool _hasPaintedGraphicsVisibility = false;
+
+  Set<int>? get _paintedVisibleGraphicsImageIds =>
+      _hasPaintedGraphicsVisibility ? _visibleGraphicsImageIds : null;
+
   var _stickToBottom = true;
 
   int? _selectionStartOffset;
@@ -2981,6 +3145,10 @@ class MonkeyRenderTerminal extends RenderBox
     size = constraints.biggest;
 
     _updateViewportSize();
+    _terminal.graphics.setCellPixelSize(
+      _painter.cellSize.width,
+      _painter.cellSize.height,
+    );
     _updateScrollOffset();
 
     if (_liveOutputAutoScroll && _stickToBottom) {
@@ -3954,6 +4122,8 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   void _paint(PaintingContext context, Offset offset) {
+    _visibleGraphicsImageIds.clear();
+    _hasPaintedGraphicsVisibility = true;
     final canvas = context.canvas;
     final lines = _terminal.buffer.lines;
     final charHeight = _painter.cellSize.height;
@@ -4110,19 +4280,33 @@ class MonkeyRenderTerminal extends RenderBox
       final imageWidth = image.width.toDouble();
       final imageHeight = image.height.toDouble();
 
-      // Source rectangle: the optional crop (x=,y=,w=,h=), clamped to the image.
-      final srcLeft = placement.srcX.toDouble().clamp(0.0, imageWidth);
-      final srcTop = placement.srcY.toDouble().clamp(0.0, imageHeight);
-      final srcWidth =
+      // Kitty crop coordinates use the original source dimensions. Encoded
+      // images may have been downscaled while decoding, so map the logical crop
+      // into the decoded image before painting it.
+      final sourceWidth = stored.sourceWidth > 0
+          ? stored.sourceWidth.toDouble()
+          : imageWidth;
+      final sourceHeight = stored.sourceHeight > 0
+          ? stored.sourceHeight.toDouble()
+          : imageHeight;
+      final logicalSrcLeft = placement.srcX.toDouble().clamp(0.0, sourceWidth);
+      final logicalSrcTop = placement.srcY.toDouble().clamp(0.0, sourceHeight);
+      final logicalSrcWidth =
           (placement.srcWidth > 0
                   ? placement.srcWidth.toDouble()
-                  : imageWidth - srcLeft)
-              .clamp(0.0, imageWidth - srcLeft);
-      final srcHeight =
+                  : sourceWidth - logicalSrcLeft)
+              .clamp(0.0, sourceWidth - logicalSrcLeft);
+      final logicalSrcHeight =
           (placement.srcHeight > 0
                   ? placement.srcHeight.toDouble()
-                  : imageHeight - srcTop)
-              .clamp(0.0, imageHeight - srcTop);
+                  : sourceHeight - logicalSrcTop)
+              .clamp(0.0, sourceHeight - logicalSrcTop);
+      final scaleX = imageWidth / sourceWidth;
+      final scaleY = imageHeight / sourceHeight;
+      final srcLeft = logicalSrcLeft * scaleX;
+      final srcTop = logicalSrcTop * scaleY;
+      final srcWidth = logicalSrcWidth * scaleX;
+      final srcHeight = logicalSrcHeight * scaleY;
       if (srcWidth <= 0 || srcHeight <= 0) {
         continue;
       }
@@ -4132,6 +4316,12 @@ class MonkeyRenderTerminal extends RenderBox
       if (placement.cols > 0 && placement.rows > 0) {
         dstWidth = placement.cols * cellWidth;
         dstHeight = placement.rows * cellHeight;
+      } else if (placement.cols > 0) {
+        dstWidth = placement.cols * cellWidth;
+        dstHeight = srcHeight * (dstWidth / srcWidth);
+      } else if (placement.rows > 0) {
+        dstHeight = placement.rows * cellHeight;
+        dstWidth = srcWidth * (dstHeight / srcHeight);
       } else {
         // No explicit cell span: fit the (cropped) source width within the row.
         final maxWidth =
@@ -4151,11 +4341,6 @@ class MonkeyRenderTerminal extends RenderBox
         continue;
       }
 
-      final rowSpan = (dstHeight / cellHeight).ceil();
-      if (placement.row + rowSpan < firstLine || placement.row > lastLine) {
-        continue;
-      }
-
       // Apply the in-cell pixel offset (X=,Y=) to the destination top-left.
       final topLeft = _linePaintOffset(offset, placement.row).translate(
         placement.col * cellWidth + placement.xOffset,
@@ -4164,6 +4349,16 @@ class MonkeyRenderTerminal extends RenderBox
       if (!topLeft.dx.isFinite || !topLeft.dy.isFinite) {
         continue;
       }
+      final destination = Rect.fromLTWH(
+        topLeft.dx,
+        topLeft.dy,
+        dstWidth,
+        dstHeight,
+      );
+      if (!destination.overlaps(offset & size)) {
+        continue;
+      }
+      _visibleGraphicsImageIds.add(stored.id);
 
       // Defense in depth: image compositing is non-essential overlay drawing,
       // but an exception here (e.g. a disposed image surfaced by an unexpected
@@ -4173,7 +4368,7 @@ class MonkeyRenderTerminal extends RenderBox
         canvas.drawImageRect(
           image,
           Rect.fromLTWH(srcLeft, srcTop, srcWidth, srcHeight),
-          Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, dstHeight),
+          destination,
           Paint()..filterQuality = FilterQuality.medium,
         );
       } on Object catch (_) {
@@ -4556,6 +4751,7 @@ class MonkeyRenderTerminal extends RenderBox
         continue;
       }
       _kittyResolvedInstances++;
+      _visibleGraphicsImageIds.add(stored.id);
       final imageIntKey = start.imageId * 64 + start.bitWidth;
       final cols = gridColsByImage[imageIntKey] ?? 1;
       final rows = gridRowsByImage[imageIntKey] ?? 1;

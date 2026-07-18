@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:math' show max;
+import 'dart:math' show max, min;
 import 'dart:typed_data';
 
 import 'package:xterm/src/base/observable.dart';
@@ -24,6 +24,19 @@ import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
+
+typedef _GraphicsPreinflation = ({Uint8List? payload, int micros});
+typedef _GraphicsImageNumberReservation = ({
+  int number,
+  int imageId,
+  int? previousImageId,
+});
+typedef _GraphicsDeletePosition = ({
+  Buffer buffer,
+  int cursorCol,
+  int cursorRow,
+  int scrollBack,
+});
 
 /// [Terminal] is an interface to interact with command line applications. It
 /// translates escape sequences from the application into updates to the
@@ -146,10 +159,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   /// Cap on the size of a single buffered graphics transmission (16 MiB).
   static const _maxGraphicsBytes = 16 * 1024 * 1024;
+  static const _graphicsBarrierOperationKey = 'barrier';
+  static const _graphicsUnkeyedOperationKey = 'unkeyed';
 
   bool _graphicsActive = false;
   Map<String, String> _graphicsArgs = const {};
   final List<int> _graphicsData = [];
+  final Map<GraphicsManager, Map<String, Future<void>>> _graphicsOperations =
+      {};
   _PendingKittyPlaceholder? _pendingKittyPlaceholder;
   _PendingKittyPlaceholder? _lastKittyPlaceholder;
 
@@ -537,6 +554,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
     _viewWidth = newWidth;
     _viewHeight = newHeight;
+    _altBuffer.graphics.setViewportColumns(newWidth);
+    _mainBuffer.graphics.setViewportColumns(newWidth);
 
     if (buffer == _altBuffer) {
       buffer.clearScrollback();
@@ -1379,6 +1398,43 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
     final action = args['a'] ?? 't';
     final virtualPlacement = args['U'] == '1';
+    final manager = _buffer.graphics;
+    final explicitImageId = int.tryParse(args['i'] ?? '');
+    final imageNumber = int.tryParse(args['I'] ?? '');
+    _GraphicsImageNumberReservation? imageNumberReservation;
+    if (explicitImageId != null &&
+        explicitImageId > 0 &&
+        imageNumber != null &&
+        imageNumber > 0) {
+      if ((action == 't' || action == 'T') && data.isNotEmpty) {
+        final reservation = manager.reserveExplicitImageIdForNumber(
+          imageNumber,
+          explicitImageId,
+        );
+        if (!reservation.accepted) {
+          _respondToGraphicsFailure(
+            args,
+            'ENOSPC: image-number limit exceeded',
+          );
+          return;
+        }
+        imageNumberReservation = (
+          number: imageNumber,
+          imageId: explicitImageId,
+          previousImageId: reservation.previousImageId,
+        );
+      } else {
+        // Establish explicit id/number mappings before placement or async image
+        // commands so every action in the stream observes the same association.
+        if (!manager.registerImageNumber(imageNumber, explicitImageId)) {
+          _respondToGraphicsFailure(
+            args,
+            'ENOSPC: image-number limit exceeded',
+          );
+          return;
+        }
+      }
+    }
     if (action == 'p') {
       if (virtualPlacement) {
         _setVirtualGraphicsPlacement(args);
@@ -1388,17 +1444,145 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
+    if (imageNumberReservation == null &&
+        (action == 't' || action == 'T') &&
+        data.isNotEmpty &&
+        (explicitImageId == null || explicitImageId <= 0) &&
+        imageNumber != null &&
+        imageNumber > 0) {
+      final reserved = manager.reserveImageIdForNumber(imageNumber);
+      if (reserved.imageId <= 0) {
+        _respondToGraphicsFailure(
+          args,
+          'ENOSPC: image-number limit exceeded',
+        );
+        return;
+      }
+      imageNumberReservation = (
+        number: imageNumber,
+        imageId: reserved.imageId,
+        previousImageId: reserved.previousImageId,
+      );
+    }
+    final commandImageId = imageNumberReservation?.imageId ??
+        _resolveGraphicsImageId(manager, args);
+    final mutatesAnimation = action == 'f' ||
+        action == 'c' ||
+        (action == 'a' &&
+            (args.containsKey('c') ||
+                args.containsKey('s') ||
+                args.containsKey('v') ||
+                args.containsKey('r') ||
+                args.containsKey('z')));
+    final animationMutationImageId = mutatesAnimation ? commandImageId : null;
+    if (animationMutationImageId != null) {
+      manager.markImageAnimationDirty(animationMutationImageId);
+    }
     if (action == 'd') {
-      _deleteGraphics(args);
+      final selector = args['d'] ?? 'a';
+      final buffer = _buffer;
+      final position = (
+        buffer: buffer,
+        cursorCol: buffer.cursorX,
+        cursorRow: buffer.absoluteCursorY,
+        scrollBack: buffer.absoluteCursorY - buffer.cursorY,
+      );
+      if ((selector == 'i' ||
+              selector == 'I' ||
+              selector == 'n' ||
+              selector == 'N') &&
+          _graphicsOperationKey(manager, args) != null) {
+        _scheduleGraphicsOperation(
+          manager,
+          args,
+          () async => _deleteGraphics(
+            args,
+            position,
+            commandImageId: commandImageId,
+          ),
+        );
+      } else {
+        _scheduleGraphicsBarrier(
+          manager,
+          () async => _deleteGraphics(
+            args,
+            position,
+            commandImageId: commandImageId,
+          ),
+        );
+      }
       return;
     }
 
-    // Only transmit (a=t) and transmit-and-display (a=T) are rendered here.
-    // Animation actions (a=f transmit-frame, a=a control, a=c compose) are
-    // intentionally not supported — no client we target uses protocol-level
-    // animation, and it requires a frame-advancing ticker in the render widget.
-    // They are ignored safely: the chunk state was already reset above, so the
-    // payload is simply discarded.
+    if (action == 'f') {
+      _scheduleGraphicsOperation(
+        manager,
+        args,
+        () async {
+          try {
+            await _finalizeAnimationFrame(
+              args,
+              data,
+              manager,
+              commandImageId: commandImageId,
+            );
+          } finally {
+            if (animationMutationImageId != null) {
+              manager.settleImageAnimationMutation(
+                animationMutationImageId,
+              );
+            }
+          }
+        },
+      );
+      return;
+    }
+    if (action == 'a') {
+      _scheduleGraphicsOperation(
+        manager,
+        args,
+        () async {
+          try {
+            await _controlGraphicsAnimation(
+              args,
+              manager,
+              commandImageId: commandImageId,
+            );
+          } finally {
+            if (animationMutationImageId != null) {
+              manager.settleImageAnimationMutation(
+                animationMutationImageId,
+              );
+            }
+          }
+        },
+      );
+      return;
+    }
+    if (action == 'c') {
+      _scheduleGraphicsOperation(
+        manager,
+        args,
+        () async {
+          try {
+            await _composeGraphicsAnimationFrames(
+              args,
+              manager,
+              commandImageId: commandImageId,
+            );
+          } finally {
+            if (animationMutationImageId != null) {
+              manager.settleImageAnimationMutation(
+                animationMutationImageId,
+              );
+            }
+          }
+        },
+      );
+      return;
+    }
+
+    // Only transmit (a=t) and transmit-and-display (a=T) remain.
     if ((action != 't' && action != 'T') || data.isEmpty) {
       return;
     }
@@ -1419,22 +1603,381 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final anchor =
         shouldPlace ? buffer.currentLine.createAnchor(buffer.cursorX) : null;
     final generation = shouldPlace ? buffer.graphics.generation : null;
+    if (anchor != null) {
+      buffer.graphics.retainPendingPlacementAnchor(anchor);
+    }
 
     // Move the cursor below the image so following output does not overlap it,
     // unless the client set the no-cursor-movement policy (C=1) — e.g. a client
     // redrawing a full-screen image in place keeps the cursor where it is, and
     // advancing it past the bottom margin would scroll the screen.
     final keepCursor = args['C'] == '1';
-    final rows = int.tryParse(args['r'] ?? '') ?? 0;
+    _GraphicsPreinflation? preinflation;
+    if (shouldPlace &&
+        !keepCursor &&
+        args['o'] == 'z' &&
+        _graphicsDisplayNeedsPayloadDimensions(args)) {
+      final observer = terminalGraphicsDecodeObserver;
+      final stopwatch = observer == null ? null : (Stopwatch()..start());
+      preinflation = (
+        payload: inflateZlibData(data),
+        micros: stopwatch?.elapsedMicroseconds ?? 0,
+      );
+    }
+    final rows = shouldPlace && !keepCursor
+        ? _graphicsDisplayRows(
+            args,
+            data,
+            buffer.graphics,
+            preinflation: preinflation,
+            maxRows: buffer.viewHeight,
+          )
+        : 0;
     if (shouldPlace && !keepCursor) {
-      for (var i = 0; i < rows; i++) {
-        buffer.index();
-      }
+      _advanceGraphicsCursor(buffer, rows);
     }
 
-    unawaited(
-      _finalizeGraphics(args, data, anchor, buffer.graphics, generation),
+    _scheduleGraphicsOperation(
+      buffer.graphics,
+      args,
+      () async {
+        try {
+          await _finalizeGraphics(
+            args,
+            data,
+            anchor,
+            buffer.graphics,
+            generation,
+            preinflation: preinflation,
+            commandImageId: commandImageId,
+            imageNumberReservation: imageNumberReservation,
+          );
+        } finally {
+          if (anchor != null) {
+            buffer.graphics.releasePendingPlacementAnchor(anchor);
+          }
+        }
+      },
     );
+  }
+
+  void _scheduleGraphicsOperation(
+    GraphicsManager manager,
+    Map<String, String> args,
+    Future<void> Function() operation,
+  ) {
+    final key =
+        _graphicsOperationKey(manager, args) ?? _graphicsUnkeyedOperationKey;
+    final operations = _graphicsOperations.putIfAbsent(manager, () => {});
+    final previous = operations[key];
+    final barrier = operations[_graphicsBarrierOperationKey];
+    final blockers = <Future<void>>{
+      if (previous != null) previous,
+      if (barrier != null) barrier,
+    };
+    final future = blockers.isEmpty
+        ? operation()
+        : Future.wait(blockers).then((_) => operation());
+    operations[key] = future;
+    unawaited(
+      future.whenComplete(() {
+        if (identical(operations[key], future)) {
+          operations.remove(key);
+          if (operations.isEmpty) {
+            _graphicsOperations.remove(manager);
+          }
+        }
+      }),
+    );
+  }
+
+  /// Runs a graphics operation after every earlier image operation and makes
+  /// every later operation wait for it. Position/all-image deletes need this
+  /// barrier because they have no image id to share a per-image queue with.
+  void _scheduleGraphicsBarrier(
+    GraphicsManager manager,
+    Future<void> Function() operation,
+  ) {
+    final operations = _graphicsOperations.putIfAbsent(manager, () => {});
+    final blockers = operations.values.toSet();
+    final future = blockers.isEmpty
+        ? operation()
+        : Future.wait(blockers).then((_) => operation());
+    operations[_graphicsBarrierOperationKey] = future;
+    unawaited(
+      future.whenComplete(() {
+        if (identical(operations[_graphicsBarrierOperationKey], future)) {
+          operations.remove(_graphicsBarrierOperationKey);
+          if (operations.isEmpty) {
+            _graphicsOperations.remove(manager);
+          }
+        }
+      }),
+    );
+  }
+
+  String? _graphicsOperationKey(
+    GraphicsManager manager,
+    Map<String, String> args,
+  ) {
+    final imageId = int.tryParse(args['i'] ?? '');
+    if (imageId != null && imageId > 0) {
+      return 'i:$imageId';
+    }
+    final imageNumber = int.tryParse(args['I'] ?? '');
+    if (imageNumber != null && imageNumber > 0) {
+      final mappedId = manager.imageIdForNumber(imageNumber);
+      return mappedId == null ? 'I:$imageNumber' : 'i:$mappedId';
+    }
+    return null;
+  }
+
+  int? _resolveGraphicsImageId(
+    GraphicsManager manager,
+    Map<String, String> args,
+  ) {
+    final imageId = int.tryParse(args['i'] ?? '');
+    if (imageId != null && imageId > 0) {
+      return imageId;
+    }
+    final imageNumber = int.tryParse(args['I'] ?? '');
+    if (imageNumber == null || imageNumber <= 0) {
+      return null;
+    }
+    return manager.imageIdForNumber(imageNumber);
+  }
+
+  Future<void> _finalizeAnimationFrame(
+    Map<String, String> args,
+    Uint8List data,
+    GraphicsManager manager, {
+    int? commandImageId,
+  }) async {
+    if (data.isEmpty) {
+      _respondToGraphicsFailure(args, 'EINVAL: missing frame data');
+      return;
+    }
+    manager.onChanged ??= notifyListeners;
+    final imageId = commandImageId ?? _resolveGraphicsImageId(manager, args);
+    if (imageId == null) {
+      _respondToGraphicsFailure(args, 'ENOENT: image not found');
+      return;
+    }
+    final image = await manager.resolveImage(imageId);
+    if (image == null) {
+      _respondToGraphicsFailure(args, 'ENOENT: image not found');
+      return;
+    }
+
+    final observer = terminalGraphicsDecodeObserver;
+    final compressed = args['o'] == 'z';
+    var payload = data;
+    var inflateMicros = 0;
+    if (compressed) {
+      final inflateStopwatch = observer == null ? null : (Stopwatch()..start());
+      final inflated = inflateZlibData(data);
+      inflateMicros = inflateStopwatch?.elapsedMicroseconds ?? 0;
+      if (inflated == null) {
+        observer?.call(
+          payloadBytes: data.length,
+          inflateMicros: inflateMicros,
+          decodeMicros: 0,
+          compressed: true,
+          success: false,
+          imageId: imageId.toString(),
+          action: 'f',
+        );
+        _respondToGraphicsFailure(args, 'EINVAL: invalid compressed frame');
+        return;
+      }
+      payload = inflated;
+    }
+
+    final format = _graphicsFormat(args);
+    final blockWidth = int.tryParse(args['s'] ?? '') ?? image.sourceWidth;
+    final blockHeight = int.tryParse(args['v'] ?? '') ?? image.sourceHeight;
+    final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
+    await terminalGraphicsDecodeGate.acquire();
+    final decoded = await () async {
+      try {
+        return await decodeTerminalImageFirstFrameSequence(
+          payload,
+          format: format,
+          width: blockWidth,
+          height: blockHeight,
+        );
+      } finally {
+        terminalGraphicsDecodeGate.release();
+      }
+    }();
+    observer?.call(
+      payloadBytes: payload.length,
+      inflateMicros: inflateMicros,
+      decodeMicros: decodeStopwatch?.elapsedMicroseconds ?? 0,
+      compressed: compressed,
+      success: decoded != null,
+      imageId: imageId.toString(),
+      action: 'f',
+      reused: false,
+    );
+    if (decoded == null) {
+      _respondToGraphicsFailure(args, 'EINVAL: invalid frame data');
+      return;
+    }
+
+    final result = await manager.addAnimationFrame(
+      imageId,
+      decoded,
+      x: int.tryParse(args['x'] ?? '') ?? 0,
+      y: int.tryParse(args['y'] ?? '') ?? 0,
+      width: int.tryParse(args['s'] ?? '') ?? 0,
+      height: int.tryParse(args['v'] ?? '') ?? 0,
+      backgroundFrame: int.tryParse(args['c'] ?? '') ?? 0,
+      backgroundColor: int.tryParse(args['Y'] ?? ''),
+      replace: args['X'] == '1',
+      editFrame: int.tryParse(args['r'] ?? '') ?? 0,
+      gap: _graphicsAnimationGap(args),
+    );
+    final error = switch (result) {
+      TerminalAnimationFrameResult.success => null,
+      TerminalAnimationFrameResult.imageNotFound => 'ENOENT: image not found',
+      TerminalAnimationFrameResult.frameNotFound =>
+        'ENOENT: base or edit frame not found',
+      TerminalAnimationFrameResult.invalidRectangle =>
+        'EINVAL: invalid frame rectangle',
+      TerminalAnimationFrameResult.noSpace =>
+        'ENOSPC: image memory limit exceeded',
+      TerminalAnimationFrameResult.rasterizationFailed =>
+        'EINVAL: frame composition failed',
+    };
+    if (error == null) {
+      _respondToGraphicsSuccess(args);
+    } else {
+      _respondToGraphicsFailure(args, error);
+    }
+  }
+
+  Future<void> _controlGraphicsAnimation(
+    Map<String, String> args,
+    GraphicsManager manager, {
+    int? commandImageId,
+  }) async {
+    manager.onChanged ??= notifyListeners;
+    final imageId = commandImageId ?? _resolveGraphicsImageId(manager, args);
+    final hasControl = args.containsKey('c') ||
+        args.containsKey('s') ||
+        args.containsKey('v') ||
+        args.containsKey('r') ||
+        args.containsKey('z');
+    if (!hasControl) {
+      if (imageId == null ||
+          (manager.imageById(imageId) == null &&
+              !manager.hasPendingImage(imageId))) {
+        _respondToGraphicsFailure(args, 'ENOENT: image not found');
+      }
+      return;
+    }
+    if (imageId == null || await manager.resolveImage(imageId) == null) {
+      _respondToGraphicsFailure(args, 'ENOENT: image not found');
+      return;
+    }
+
+    final state = switch (int.tryParse(args['s'] ?? '')) {
+      1 => TerminalAnimationState.stopped,
+      2 => TerminalAnimationState.loading,
+      3 => TerminalAnimationState.running,
+      _ => null,
+    };
+    manager.controlAnimation(
+      imageId,
+      currentFrame: int.tryParse(args['c'] ?? ''),
+      state: state,
+      protocolLoopCount: int.tryParse(args['v'] ?? ''),
+      gapFrame: int.tryParse(args['r'] ?? ''),
+      gap: _graphicsAnimationGap(args),
+    );
+  }
+
+  Future<void> _composeGraphicsAnimationFrames(
+    Map<String, String> args,
+    GraphicsManager manager, {
+    int? commandImageId,
+  }) async {
+    manager.onChanged ??= notifyListeners;
+    final imageId = commandImageId ?? _resolveGraphicsImageId(manager, args);
+    if (imageId == null) {
+      _respondToGraphicsFailure(args, 'ENOENT: image not found');
+      return;
+    }
+    await manager.resolveImage(imageId);
+    final sourceFrame = int.tryParse(args['r'] ?? '') ?? 0;
+    final destinationFrame = int.tryParse(args['c'] ?? '') ?? 0;
+    final result = await manager.composeAnimationFrames(
+      imageId,
+      sourceFrame: sourceFrame,
+      destinationFrame: destinationFrame,
+      // Kitty's reference implementation uses X/Y for the source and x/y for
+      // the destination (matching the protocol's composition example).
+      sourceX: int.tryParse(args['X'] ?? '') ?? 0,
+      sourceY: int.tryParse(args['Y'] ?? '') ?? 0,
+      destinationX: int.tryParse(args['x'] ?? '') ?? 0,
+      destinationY: int.tryParse(args['y'] ?? '') ?? 0,
+      width: int.tryParse(args['w'] ?? '') ?? 0,
+      height: int.tryParse(args['h'] ?? '') ?? 0,
+      replace: args['C'] == '1',
+    );
+    final error = switch (result) {
+      TerminalAnimationCompositionResult.success => null,
+      TerminalAnimationCompositionResult.imageNotFound ||
+      TerminalAnimationCompositionResult.frameNotFound =>
+        'ENOENT: image or frame not found',
+      TerminalAnimationCompositionResult.invalidRectangle =>
+        'EINVAL: invalid composition rectangle',
+      TerminalAnimationCompositionResult.noSpace =>
+        'ENOSPC: image memory limit exceeded',
+      TerminalAnimationCompositionResult.rasterizationFailed =>
+        'EINVAL: frame composition failed',
+    };
+    if (error == null) {
+      _respondToGraphicsSuccess(args);
+    } else {
+      _respondToGraphicsFailure(args, error);
+    }
+  }
+
+  Duration? _graphicsAnimationGap(Map<String, String> args) {
+    final milliseconds = int.tryParse(args['z'] ?? '');
+    if (milliseconds == null || milliseconds == 0) {
+      return null;
+    }
+    return Duration(milliseconds: max(0, milliseconds));
+  }
+
+  void _respondToGraphicsFailure(
+    Map<String, String> args,
+    String error,
+  ) {
+    if (_graphicsResponseSuppressed(args, success: false)) {
+      return;
+    }
+    final control = <String>[
+      if (args['i'] case final imageId? when imageId.isNotEmpty) 'i=$imageId',
+      if (args['I'] case final imageNumber? when imageNumber.isNotEmpty)
+        'I=$imageNumber',
+    ];
+    onOutput?.call('\x1b_G${control.join(',')};$error\x1b\\');
+  }
+
+  void _respondToGraphicsSuccess(Map<String, String> args) {
+    if (_graphicsResponseSuppressed(args, success: true)) {
+      return;
+    }
+    final control = <String>[
+      if (args['i'] case final imageId? when imageId.isNotEmpty) 'i=$imageId',
+      if (args['I'] case final imageNumber? when imageNumber.isNotEmpty)
+        'I=$imageNumber',
+    ];
+    onOutput?.call('\x1b_G${control.join(',')};OK\x1b\\');
   }
 
   Future<void> _finalizeGraphics(
@@ -1442,8 +1985,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     Uint8List data,
     CellAnchor? anchor,
     GraphicsManager manager,
-    int? generation,
-  ) async {
+    int? generation, {
+    _GraphicsPreinflation? preinflation,
+    int? commandImageId,
+    _GraphicsImageNumberReservation? imageNumberReservation,
+  }) async {
     final format = _graphicsFormat(args);
     final width = int.tryParse(args['s'] ?? '') ?? 0;
     final height = int.tryParse(args['v'] ?? '') ?? 0;
@@ -1460,9 +2006,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     var payload = data;
     var inflateMicros = 0;
     if (compressed) {
-      final inflateStopwatch = observer == null ? null : (Stopwatch()..start());
-      final inflated = inflateZlibData(data);
-      inflateMicros = inflateStopwatch?.elapsedMicroseconds ?? 0;
+      final Uint8List? inflated;
+      if (preinflation != null) {
+        inflated = preinflation.payload;
+        inflateMicros = preinflation.micros;
+      } else {
+        final inflateStopwatch =
+            observer == null ? null : (Stopwatch()..start());
+        inflated = inflateZlibData(data);
+        inflateMicros = inflateStopwatch?.elapsedMicroseconds ?? 0;
+      }
       if (inflated == null) {
         observer?.call(
           payloadBytes: data.length,
@@ -1473,13 +2026,20 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           imageId: args['i'],
           action: args['a'],
         );
+        _rollbackGraphicsImageNumberReservation(
+          manager,
+          imageNumberReservation,
+        );
         anchor?.dispose();
         return;
       }
       payload = inflated;
     }
 
-    final imageId = int.tryParse(args['i'] ?? '');
+    final parsedImageId = int.tryParse(args['i'] ?? '');
+    final imageId = parsedImageId != null && parsedImageId > 0
+        ? parsedImageId
+        : commandImageId;
     // Signature over the base64-decoded payload *before* inflation. The
     // MonkeyMux server computes the same hash over the base64-decoded
     // transmission bytes (which it stores compressed for o=z), so hashing
@@ -1505,6 +2065,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         action: args['a'],
         reused: true,
       );
+      _commitGraphicsImageNumberReservation(
+        manager,
+        imageNumberReservation,
+      );
       _placeStoredImageId(manager, imageId, anchor, args, generation);
       return;
     }
@@ -1519,15 +2083,33 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // path: the former to avoid deferring the inflate/signature handling, the
     // latter because they must appear at the anchored cell straight away.
     if (anchor == null && imageId != null && !compressed) {
-      if (!manager.hasPendingWithSignature(imageId, signature)) {
+      if (imageNumberReservation != null ||
+          !manager.hasPendingWithSignature(imageId, signature)) {
+        final sourceDimensions = _graphicsPayloadDimensions(args, payload);
         manager.storePendingImage(
           imageId,
           payload: payload,
           format: format,
           width: width,
           height: height,
+          sourceWidth: sourceDimensions?.width ?? 0,
+          sourceHeight: sourceDimensions?.height ?? 0,
           sourceSignature: signature,
+          imageNumber: imageNumberReservation?.number,
+          mappedImageId: imageNumberReservation?.imageId,
+          previousImageId: imageNumberReservation?.previousImageId,
         );
+      }
+      if (!manager.hasPendingImage(imageId)) {
+        _rollbackGraphicsImageNumberReservation(
+          manager,
+          imageNumberReservation,
+        );
+        _respondToGraphicsFailure(
+          args,
+          'ENOSPC: pending image memory limit exceeded',
+        );
+        return;
       }
       _placeStoredImageId(manager, imageId, null, args, generation);
       notifyListeners();
@@ -1536,9 +2118,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
     final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
     await terminalGraphicsDecodeGate.acquire();
-    final image = await () async {
+    final decoded = await () async {
       try {
-        return await decodeTerminalImage(
+        return await decodeTerminalImageSequence(
           payload,
           format: format,
           width: width,
@@ -1553,7 +2135,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       inflateMicros: inflateMicros,
       decodeMicros: decodeStopwatch?.elapsedMicroseconds ?? 0,
       compressed: compressed,
-      success: image != null,
+      success: decoded != null,
       imageId: args['i'],
       action: args['a'],
       reused: false,
@@ -1562,15 +2144,66 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // Skip placing if the decode failed, the anchored cell is gone, or the
     // screen was cleared while we were decoding (e.g. a MonkeyMux replay clear
     // racing this decode — placing now would leave a duplicate/stale image).
-    if (image == null) {
+    if (decoded == null) {
+      _rollbackGraphicsImageNumberReservation(
+        manager,
+        imageNumberReservation,
+      );
       anchor?.dispose();
       return;
     }
 
     final storedImageId = imageId == null
-        ? manager.storeImage(image, sourceSignature: signature)
-        : manager.storeImageWithId(imageId, image, sourceSignature: signature);
+        ? manager.storeDecodedImage(decoded, sourceSignature: signature)
+        : manager.storeDecodedImageWithId(
+            imageId,
+            decoded,
+            sourceSignature: signature,
+          );
+    if (storedImageId <= 0) {
+      _rollbackGraphicsImageNumberReservation(
+        manager,
+        imageNumberReservation,
+      );
+      anchor?.dispose();
+      _respondToGraphicsFailure(
+        args,
+        'ENOSPC: image memory limit exceeded',
+      );
+      return;
+    }
+    _commitGraphicsImageNumberReservation(
+      manager,
+      imageNumberReservation,
+    );
     _placeStoredImageId(manager, storedImageId, anchor, args, generation);
+  }
+
+  void _rollbackGraphicsImageNumberReservation(
+    GraphicsManager manager,
+    _GraphicsImageNumberReservation? reservation,
+  ) {
+    if (reservation == null) {
+      return;
+    }
+    manager.rollbackImageIdReservation(
+      reservation.number,
+      reservation.imageId,
+      reservation.previousImageId,
+    );
+  }
+
+  void _commitGraphicsImageNumberReservation(
+    GraphicsManager manager,
+    _GraphicsImageNumberReservation? reservation,
+  ) {
+    if (reservation == null) {
+      return;
+    }
+    manager.commitImageIdReservation(
+      reservation.number,
+      reservation.imageId,
+    );
   }
 
   /// Registers the image number, virtual placement and cell placement for an
@@ -1588,7 +2221,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // handshake so the client learns the id it can address later.
     final imageNumber = int.tryParse(args['I'] ?? '');
     if (imageNumber != null && imageNumber > 0) {
-      manager.registerImageNumber(imageNumber, storedImageId);
+      final explicitImageId = int.tryParse(args['i'] ?? '');
+      if (explicitImageId == null || explicitImageId <= 0) {
+        manager.registerImageNumber(imageNumber, storedImageId);
+      }
       if (!_graphicsResponseSuppressed(args, success: true)) {
         onOutput?.call('\x1b_GI=$imageNumber,i=$storedImageId;OK\x1b\\');
       }
@@ -1641,29 +2277,40 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   void _placeStoredGraphics(Map<String, String> args) {
+    final manager = _buffer.graphics;
     var imageId = int.tryParse(args['i'] ?? '');
     // a=p may address the image by number (`I=`) instead of id.
     if (imageId == null) {
       final number = int.tryParse(args['I'] ?? '');
       if (number != null) {
-        imageId = _buffer.graphics.imageIdForNumber(number);
+        imageId = manager.imageIdForNumber(number);
       }
     }
-    if (imageId == null ||
-        (_buffer.graphics.imageById(imageId) == null &&
-            !_buffer.graphics.hasPendingImage(imageId))) {
+    if (imageId == null) {
+      return;
+    }
+    final image = manager.imageById(imageId);
+    if (image == null && !manager.hasPendingImage(imageId)) {
       return;
     }
     final anchor = _buffer.currentLine.createAnchor(_buffer.cursorX);
-    _placeImageWithDisplayArgs(_buffer.graphics, imageId, anchor, args);
+    _placeImageWithDisplayArgs(manager, imageId, anchor, args);
     // Respect the no-cursor-movement policy (C=1); otherwise drop below the
     // image so subsequent output does not overlap it.
     final keepCursor = args['C'] == '1';
-    final rows = int.tryParse(args['r'] ?? '') ?? 0;
+    final dimensions = image == null
+        ? manager.pendingImageDimensions(imageId)
+        : (width: image.sourceWidth, height: image.sourceHeight);
+    final rows = dimensions == null
+        ? (int.tryParse(args['r'] ?? '') ?? 0)
+        : _graphicsDisplayRowsForDimensions(
+            args,
+            manager,
+            dimensions,
+            maxRows: _buffer.viewHeight,
+          );
     if (!keepCursor) {
-      for (var i = 0; i < rows; i++) {
-        _buffer.index();
-      }
+      _advanceGraphicsCursor(_buffer, rows);
     }
     notifyListeners();
   }
@@ -1672,37 +2319,43 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// client placed and then explicitly asked to remove (e.g. Copilot CLI closing
   /// its full-screen image viewer) would linger as a stale overlay behind later
   /// output.
-  void _deleteGraphics(Map<String, String> args) {
-    final buffer = _buffer;
+  void _deleteGraphics(
+    Map<String, String> args,
+    _GraphicsDeletePosition position, {
+    int? commandImageId,
+  }) {
+    final buffer = position.buffer;
     // Kitty `x`/`y` are 1-based cell coordinates in the cursor's (viewport)
     // space; translate the row into the absolute buffer coordinates placements
     // are tracked in.
-    final scrollBack = buffer.absoluteCursorY - buffer.cursorY;
     final x = int.tryParse(args['x'] ?? '');
     final y = int.tryParse(args['y'] ?? '');
 
     var what = args['d'] ?? 'a';
-    var imageId = int.tryParse(args['i'] ?? '');
+    var imageId = commandImageId ?? int.tryParse(args['i'] ?? '');
     // Delete-by-number (d=n/N): resolve the image number to its id and delete by
     // id, preserving the lower/upper free-data semantics.
     if (what == 'n' || what == 'N') {
       final number = int.tryParse(args['I'] ?? '');
-      imageId =
+      imageId ??=
           number == null ? null : buffer.graphics.imageIdForNumber(number);
       if (imageId == null) {
         return;
       }
       what = what == 'n' ? 'i' : 'I';
     }
+    if ((what == 'i' || what == 'I') && imageId == null) {
+      return;
+    }
 
     final removed = buffer.graphics.deletePlacements(
       what: what,
       imageId: imageId,
       placementId: int.tryParse(args['p'] ?? ''),
-      cursorCol: buffer.cursorX,
-      cursorRow: buffer.absoluteCursorY,
+      cursorCol: position.cursorCol,
+      cursorRow: position.cursorRow,
       cellCol: x == null ? null : x - 1,
-      cellRow: y == null ? null : (y - 1) + scrollBack,
+      cellRow: y == null ? null : (y - 1) + position.scrollBack,
     );
     if (removed) {
       notifyListeners();
@@ -1710,7 +2363,13 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   void _setVirtualGraphicsPlacement(Map<String, String> args) {
-    final imageId = int.tryParse(args['i'] ?? '');
+    var imageId = int.tryParse(args['i'] ?? '');
+    if (imageId == null) {
+      final imageNumber = int.tryParse(args['I'] ?? '');
+      if (imageNumber != null) {
+        imageId = _buffer.graphics.imageIdForNumber(imageNumber);
+      }
+    }
     if (imageId == null) {
       return;
     }
@@ -1784,6 +2443,200 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   int _graphicsFormat(Map<String, String> args) =>
       int.tryParse(args['f'] ?? '') ?? 32;
+
+  void _advanceGraphicsCursor(Buffer buffer, int rows) {
+    // Once the requested span leaves the viewport Kitty declares the exact
+    // cursor position undefined. A viewport's worth fully clears the visible
+    // placement while bounding work for untrusted r= values.
+    final boundedRows = min(max(0, rows), buffer.viewHeight);
+    for (var i = 0; i < boundedRows; i++) {
+      buffer.index();
+    }
+  }
+
+  int _graphicsDisplayRows(
+    Map<String, String> args,
+    Uint8List data,
+    GraphicsManager manager, {
+    _GraphicsPreinflation? preinflation,
+    required int maxRows,
+  }) {
+    if (maxRows <= 0) {
+      return 0;
+    }
+    final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
+    if (explicitRows > 0) {
+      return explicitRows;
+    }
+    final columns = int.tryParse(args['c'] ?? '') ?? 0;
+    if (columns <= 0) {
+      return 0;
+    }
+    final dimensions = preinflation == null
+        ? _graphicsPayloadDimensions(args, data)
+        : preinflation.payload == null
+            ? null
+            : _graphicsPayloadDimensions(
+                args,
+                preinflation.payload!,
+                payloadIsInflated: true,
+              );
+    if (dimensions == null) {
+      return 1;
+    }
+    return _graphicsDisplayRowsForDimensions(
+      args,
+      manager,
+      dimensions,
+      maxRows: maxRows,
+    );
+  }
+
+  bool _graphicsDisplayNeedsPayloadDimensions(Map<String, String> args) {
+    final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
+    final columns = int.tryParse(args['c'] ?? '') ?? 0;
+    final rawWidth = int.tryParse(args['s'] ?? '') ?? 0;
+    final rawHeight = int.tryParse(args['v'] ?? '') ?? 0;
+    return explicitRows <= 0 &&
+        columns > 0 &&
+        (rawWidth <= 0 || rawHeight <= 0);
+  }
+
+  int _graphicsDisplayRowsForDimensions(
+    Map<String, String> args,
+    GraphicsManager manager,
+    ({int width, int height}) dimensions, {
+    required int maxRows,
+  }) {
+    final explicitRows = int.tryParse(args['r'] ?? '') ?? 0;
+    if (explicitRows > 0) {
+      return explicitRows;
+    }
+    final columns = int.tryParse(args['c'] ?? '') ?? 0;
+    if (columns <= 0) {
+      return 0;
+    }
+    final x = (int.tryParse(args['x'] ?? '') ?? 0).clamp(
+      0,
+      dimensions.width,
+    );
+    final y = (int.tryParse(args['y'] ?? '') ?? 0).clamp(
+      0,
+      dimensions.height,
+    );
+    final availableWidth = dimensions.width - x;
+    final availableHeight = dimensions.height - y;
+    final requestedWidth = int.tryParse(args['w'] ?? '') ?? 0;
+    final requestedHeight = int.tryParse(args['h'] ?? '') ?? 0;
+    final width = requestedWidth > 0
+        ? min(requestedWidth, availableWidth)
+        : availableWidth;
+    final height = requestedHeight > 0
+        ? min(requestedHeight, availableHeight)
+        : availableHeight;
+    if (width <= 0 || height <= 0) {
+      return 1;
+    }
+    final rowsPerColumn = height / width * manager.cellPixelAspectRatio;
+    if (!rowsPerColumn.isFinite || rowsPerColumn <= 0) {
+      return 1;
+    }
+    if (columns >= maxRows / rowsPerColumn) {
+      return maxRows;
+    }
+    return min(maxRows, max(1, (rowsPerColumn * columns).ceil()));
+  }
+
+  ({int width, int height})? _graphicsPayloadDimensions(
+    Map<String, String> args,
+    Uint8List data, {
+    bool payloadIsInflated = false,
+  }) {
+    final rawWidth = int.tryParse(args['s'] ?? '') ?? 0;
+    final rawHeight = int.tryParse(args['v'] ?? '') ?? 0;
+    if (rawWidth > 0 && rawHeight > 0) {
+      return (width: rawWidth, height: rawHeight);
+    }
+
+    var payload = data;
+    if (!payloadIsInflated && args['o'] == 'z') {
+      final inflated = inflateZlibData(data);
+      if (inflated == null) {
+        return null;
+      }
+      payload = inflated;
+    }
+    if (_looksLikePng(payload) && payload.length >= 24) {
+      final width = _readGraphicsUint32(payload, 16);
+      final height = _readGraphicsUint32(payload, 20);
+      return width > 0 && height > 0 ? (width: width, height: height) : null;
+    }
+    if (payload.length >= 10 &&
+        payload[0] == 0x47 &&
+        payload[1] == 0x49 &&
+        payload[2] == 0x46) {
+      final width = payload[6] | (payload[7] << 8);
+      final height = payload[8] | (payload[9] << 8);
+      return width > 0 && height > 0 ? (width: width, height: height) : null;
+    }
+    final jpegDimensions = _graphicsJpegDimensions(payload);
+    if (jpegDimensions != null) {
+      return jpegDimensions;
+    }
+    return null;
+  }
+
+  ({int width, int height})? _graphicsJpegDimensions(Uint8List data) {
+    if (data.length < 4 || data[0] != 0xFF || data[1] != 0xD8) {
+      return null;
+    }
+    var offset = 2;
+    while (offset + 3 < data.length) {
+      while (offset < data.length && data[offset] != 0xFF) {
+        offset += 1;
+      }
+      while (offset < data.length && data[offset] == 0xFF) {
+        offset += 1;
+      }
+      if (offset >= data.length) {
+        return null;
+      }
+      final marker = data[offset++];
+      if (marker == 0xD9 || marker == 0xDA) {
+        return null;
+      }
+      if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8)) {
+        continue;
+      }
+      if (offset + 1 >= data.length) {
+        return null;
+      }
+      final segmentLength = (data[offset] << 8) | data[offset + 1];
+      if (segmentLength < 2 || offset + segmentLength > data.length) {
+        return null;
+      }
+      if (_isGraphicsJpegStartOfFrame(marker) && segmentLength >= 7) {
+        final height = (data[offset + 3] << 8) | data[offset + 4];
+        final width = (data[offset + 5] << 8) | data[offset + 6];
+        return width > 0 && height > 0 ? (width: width, height: height) : null;
+      }
+      offset += segmentLength;
+    }
+    return null;
+  }
+
+  bool _isGraphicsJpegStartOfFrame(int marker) =>
+      marker >= 0xC0 &&
+      marker <= 0xCF &&
+      marker != 0xC4 &&
+      marker != 0xC8 &&
+      marker != 0xCC;
+
+  int _readGraphicsUint32(Uint8List data, int offset) =>
+      (data[offset] << 24) |
+      (data[offset + 1] << 16) |
+      (data[offset + 2] << 8) |
+      data[offset + 3];
 
   bool _graphicsResponseSuppressed(
     Map<String, String> args, {
