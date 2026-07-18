@@ -6477,16 +6477,32 @@ void main() {
 
     for (final testCase in const [
       (
-        name: 'installs helper without restarting an older MonkeyMux server',
+        name: 'updates and restores an older MonkeyMux server',
         runningVersion: '0.1.13',
-        dialogTitle: 'Update MonkeyMux helper?',
-        confirmLabel: 'Update',
+        dialogTitle: 'Update running MonkeyMux?',
+        confirmLabel: 'Update and restore',
         dialogMessage:
-            'MonkeySSH will upload helper 0.1.14 without interrupting its windows.',
-        notice:
-            'MonkeyMux 0.1.14 is installed, but this workspace is still running '
-            '0.1.13. Close all MonkeyMux windows, then reconnect to finish '
-            'updating.',
+            'MonkeySSH will upload helper 0.1.14. It can then restart this '
+            'workspace',
+        capabilities: <String>{},
+        showsUpgradeDecision: true,
+        warningMessage: 'The running helper cannot stop itself cleanly',
+        updatePolicy: MonkeyMuxServerUpdatePolicy.always,
+        notice: null,
+      ),
+      (
+        name: 'connects to an older MonkeyMux server when update is deferred',
+        runningVersion: '0.1.13',
+        dialogTitle: 'Update running MonkeyMux?',
+        confirmLabel: 'Use 0.1.13 for now',
+        dialogMessage:
+            'MonkeySSH will upload helper 0.1.14. It can then restart this '
+            'workspace',
+        capabilities: {'shutdown'},
+        showsUpgradeDecision: true,
+        warningMessage: 'Updating may briefly interrupt running programs',
+        updatePolicy: MonkeyMuxServerUpdatePolicy.never,
+        notice: null,
       ),
       (
         name: 'keeps a newer MonkeyMux server without downgrade guidance',
@@ -6494,6 +6510,10 @@ void main() {
         dialogTitle: 'Install bundled MonkeyMux helper?',
         confirmLabel: 'Install',
         dialogMessage: 'newer than bundled 0.1.14',
+        capabilities: {'shutdown'},
+        showsUpgradeDecision: false,
+        warningMessage: null,
+        updatePolicy: MonkeyMuxServerUpdatePolicy.never,
         notice:
             'This workspace is running MonkeyMux 0.1.15, newer than bundled '
             '0.1.14. Keeping the running server.',
@@ -6504,6 +6524,10 @@ void main() {
         dialogTitle: 'Install bundled MonkeyMux helper?',
         confirmLabel: 'Install',
         dialogMessage: 'running a different MonkeyMux version',
+        capabilities: {'shutdown'},
+        showsUpgradeDecision: false,
+        warningMessage: null,
+        updatePolicy: MonkeyMuxServerUpdatePolicy.never,
         notice:
             'This workspace is running a different MonkeyMux version. Keeping '
             'the running server to avoid interrupting its windows.',
@@ -6520,11 +6544,11 @@ void main() {
         final monkeyMuxService = _MockMonkeyMuxService()
           ..installedHelpersStatus = MonkeyMuxServerStatus(
             version: testCase.runningVersion,
-            capabilities: const {'shutdown'},
+            capabilities: testCase.capabilities,
           )
           ..runningStatus = MonkeyMuxServerStatus(
             version: testCase.runningVersion,
-            capabilities: const {'shutdown'},
+            capabilities: testCase.capabilities,
           );
         final tmuxService = _MockTmuxService();
         const sessionName = 'work';
@@ -6606,22 +6630,35 @@ void main() {
           find.text('Running version: ${testCase.runningVersion ?? 'unknown'}'),
           findsOneWidget,
         );
-        expect(find.text('Update MonkeyMux?'), findsNothing);
         expect(find.textContaining(testCase.dialogMessage), findsOneWidget);
+        if (testCase.showsUpgradeDecision) {
+          expect(
+            find.textContaining('automatically restore its existing windows'),
+            findsOneWidget,
+          );
+          expect(find.textContaining(testCase.warningMessage!), findsOneWidget);
+          expect(find.text('Use 0.1.13 for now'), findsOneWidget);
+          expect(find.text('Update and restore'), findsOneWidget);
+          expect(
+            find.textContaining('Close all MonkeyMux windows'),
+            findsNothing,
+          );
+        }
         expect(executedCommands, isEmpty);
 
-        await tester.tap(
-          find.widgetWithText(FilledButton, testCase.confirmLabel),
-        );
+        await tester.tap(find.text(testCase.confirmLabel));
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pump(const Duration(milliseconds: 300));
 
         expect(find.text(testCase.dialogTitle), findsNothing);
-        expect(find.text('Update MonkeyMux?'), findsNothing);
+        expect(find.text('Update running MonkeyMux?'), findsNothing);
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
         expect(startupCommand, contains("'/tmp/monkeymux' attach"));
-        expect(startupCommand, contains('--update-policy never'));
+        expect(
+          startupCommand,
+          contains('--update-policy ${testCase.updatePolicy.cliValue}'),
+        );
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[true]);
         expect(
@@ -6629,7 +6666,11 @@ void main() {
           1,
         );
         expect(monkeyMuxService.runningServerStatusCalls, 1);
-        expect(find.text(testCase.notice), findsOneWidget);
+        if (testCase.notice case final notice?) {
+          expect(find.text(notice), findsOneWidget);
+        } else {
+          expect(find.byType(SnackBar), findsNothing);
+        }
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
       }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));

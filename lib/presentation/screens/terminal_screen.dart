@@ -8337,19 +8337,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (configuredBackend == RemoteMuxBackend.monkeyMux ||
         configuredBackend == RemoteMuxBackend.auto) {
       try {
+        MonkeyMuxServerUpdatePolicy? requestedUpdatePolicy;
         final installation = await _monkeyMuxInstallerService.ensureInstalled(
           session,
           priority: SshExecPriority.normal,
-          confirmInstall: (request) => _confirmMonkeyMuxInstall(
-            request,
-            resolveRunningStatus: () => _monkeyMuxService
-                .runningServerStatusFromInstalledHelpers(session, sessionName),
-          ),
+          confirmInstall: (request) async {
+            final decision = await _confirmMonkeyMuxInstall(
+              request,
+              resolveRunningStatus: () =>
+                  _monkeyMuxService.runningServerStatusFromInstalledHelpers(
+                    session,
+                    sessionName,
+                  ),
+            );
+            requestedUpdatePolicy = decision.updatePolicy;
+            return decision.install;
+          },
         );
         final updatePolicy = await _resolveMonkeyMuxServerUpdatePolicy(
           session,
           installation,
           sessionName,
+          preferredUpdatePolicy: requestedUpdatePolicy,
         );
         final terminalThemeReports = buildTerminalThemeHintReports(
           session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
@@ -8430,8 +8439,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<MonkeyMuxServerUpdatePolicy> _resolveMonkeyMuxServerUpdatePolicy(
     SshSession session,
     MonkeyMuxInstallation installation,
-    String sessionName,
-  ) async {
+    String sessionName, {
+    MonkeyMuxServerUpdatePolicy? preferredUpdatePolicy,
+  }) async {
     session.monkeyMuxViewportClippingEnabled = false;
     session.terminal?.resetHostResizeState();
     final status = await _monkeyMuxService.runningServerStatus(
@@ -8451,16 +8461,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     final bundledVersionIsNewer =
         versionComparison != null && versionComparison > 0;
+    if (bundledVersionIsNewer) {
+      final updatePolicy =
+          preferredUpdatePolicy ??
+          await _confirmMonkeyMuxRunningServerUpdate(
+            status: status,
+            bundledVersion: installation.version,
+          );
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        updatePolicy == MonkeyMuxServerUpdatePolicy.always
+            ? 'upgrade_restore_accepted'
+            : 'upgrade_restore_deferred',
+        fields: {
+          'connectionId': session.connectionId,
+          'supportsShutdown': status.supportsShutdown,
+          'installedDuringCall': installation.installedDuringCall,
+        },
+      );
+      return updatePolicy;
+    }
     DiagnosticsLogService.instance.info(
       'monkeymux.install',
-      bundledVersionIsNewer
-          ? 'upgrade_deferred_running_server'
-          : 'version_mismatch_running_server_kept',
+      'version_mismatch_running_server_kept',
       fields: {
         'connectionId': session.connectionId,
         'supportsShutdown': status.supportsShutdown,
         'installedDuringCall': installation.installedDuringCall,
-        'bundledVersionIsNewer': bundledVersionIsNewer,
+        'bundledVersionIsNewer': false,
       },
     );
     _showMonkeyMuxVersionMismatchNotice(
@@ -8471,6 +8499,124 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       versionComparison: versionComparison,
     );
     return MonkeyMuxServerUpdatePolicy.never;
+  }
+
+  Future<MonkeyMuxServerUpdatePolicy> _confirmMonkeyMuxRunningServerUpdate({
+    required MonkeyMuxServerStatus status,
+    required String bundledVersion,
+    MonkeyMuxInstallRequest? installRequest,
+  }) async {
+    if (!mounted) {
+      return MonkeyMuxServerUpdatePolicy.never;
+    }
+    final runningVersion = status.version?.trim();
+    final currentVersionLabel = runningVersion == null || runningVersion.isEmpty
+        ? 'current version'
+        : runningVersion;
+    final warning = status.supportsShutdown
+        ? 'Updating may briefly interrupt running programs. Some restored '
+              'sessions may not resume exactly where they left off.'
+        : 'The running helper cannot stop itself cleanly. Updating may '
+              'interrupt sessions and can leave old processes running while '
+              'MonkeySSH restores the windows.';
+    final decision = await showDialog<MonkeyMuxServerUpdatePolicy>(
+      context: context,
+      barrierDismissible: false,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (context) {
+        final theme = Theme.of(context);
+        final colorScheme = theme.colorScheme;
+        return AlertDialog(
+          title: Text(
+            'Update running MonkeyMux?',
+            style: FluttyTheme.displayMono(
+              fontSize: 18,
+              color: colorScheme.onSurface,
+            ),
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    installRequest == null
+                        ? 'MonkeySSH can restart this workspace with helper '
+                              '$bundledVersion and automatically restore its '
+                              'existing windows.'
+                        : 'MonkeySSH will upload helper $bundledVersion. It can '
+                              'then restart this workspace and automatically '
+                              'restore its existing windows.',
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: colorScheme.tertiary),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          Icons.warning_amber_rounded,
+                          color: colorScheme.tertiary,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            warning,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: colorScheme.onSurface,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Use $currentVersionLabel for now to connect without '
+                    'changing the running workspace.',
+                  ),
+                  if (installRequest case final request?) ...[
+                    const SizedBox(height: 16),
+                    Text('Running version: $currentVersionLabel'),
+                    Text('Bundled version: $bundledVersion'),
+                    Text('Platform: ${request.platform}'),
+                    Text('Size: ${_formatMonkeyMuxInstallSize(request.size)}'),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'The versioned helper is stored under '
+                      '~/.monkeyssh/bin/monkeymux. A managed launcher is added '
+                      'to ~/.local/bin so it can also be used from the host '
+                      'terminal.',
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(context, MonkeyMuxServerUpdatePolicy.never),
+              child: Text('Use $currentVersionLabel for now'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.pop(context, MonkeyMuxServerUpdatePolicy.always),
+              child: const Text('Update and restore'),
+            ),
+          ],
+        );
+      },
+    );
+    return decision ?? MonkeyMuxServerUpdatePolicy.never;
   }
 
   void _showMonkeyMuxVersionMismatchNotice({
@@ -8487,12 +8633,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_lastMonkeyMuxUpgradeDeferredNotice == noticeKey) return;
     _lastMonkeyMuxUpgradeDeferredNotice = noticeKey;
     late final String message;
-    if (versionComparison != null && versionComparison > 0) {
-      message =
-          'MonkeyMux $bundledVersion is installed, but this workspace is still '
-          'running ${runningLabel ?? 'an older version'}. Close all MonkeyMux '
-          'windows, then reconnect to finish updating.';
-    } else if (versionComparison != null && versionComparison < 0) {
+    if (versionComparison != null && versionComparison < 0) {
       message =
           'This workspace is running MonkeyMux '
           '${runningLabel ?? 'a newer version'}, newer than bundled '
@@ -8507,18 +8648,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  Future<bool> _confirmMonkeyMuxInstall(
+  Future<({bool install, MonkeyMuxServerUpdatePolicy? updatePolicy})>
+  _confirmMonkeyMuxInstall(
     MonkeyMuxInstallRequest request, {
     Future<MonkeyMuxServerStatus?> Function()? resolveRunningStatus,
   }) async {
     if (!mounted) {
-      return false;
+      return (install: false, updatePolicy: null);
     }
     MonkeyMuxServerStatus? runningStatus;
     if (resolveRunningStatus != null) {
       runningStatus = await resolveRunningStatus();
       if (!mounted) {
-        return false;
+        return (install: false, updatePolicy: null);
       }
     }
     final updateStatus =
@@ -8531,24 +8673,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     final bundledVersionIsNewer =
         versionComparison != null && versionComparison > 0;
+    if (updateStatus != null && bundledVersionIsNewer) {
+      final updatePolicy = await _confirmMonkeyMuxRunningServerUpdate(
+        status: updateStatus,
+        bundledVersion: request.version,
+        installRequest: request,
+      );
+      if (!mounted) {
+        return (install: false, updatePolicy: null);
+      }
+      return (install: true, updatePolicy: updatePolicy);
+    }
     final title = switch ((updateStatus, bundledVersionIsNewer)) {
       (null, _) => 'Install MonkeyMux helper?',
-      (_, true) => 'Update MonkeyMux helper?',
       _ => 'Install bundled MonkeyMux helper?',
     };
-    final confirmLabel = bundledVersionIsNewer ? 'Update' : 'Install';
     final runningVersionLabel = updateStatus?.version?.trim();
     late final String explanation;
     if (updateStatus == null) {
       explanation =
           'MonkeySSH needs to upload its bundled MonkeyMux helper before using '
           'MonkeyMux on this connected host.';
-    } else if (versionComparison != null && versionComparison > 0) {
-      explanation =
-          'This MonkeyMux workspace is running helper '
-          '${runningVersionLabel ?? 'unknown'}. MonkeySSH will upload helper '
-          '${request.version} without interrupting its windows. Close all '
-          'MonkeyMux windows, then reconnect to start the new helper.';
     } else if (versionComparison != null && versionComparison < 0) {
       explanation =
           'This workspace is running helper ${runningVersionLabel ?? 'unknown'}, '
@@ -8592,12 +8737,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: Text(confirmLabel),
+            child: const Text('Install'),
           ),
         ],
       ),
     );
-    return confirmed ?? false;
+    return (install: confirmed ?? false, updatePolicy: null);
   }
 
   String _formatMonkeyMuxInstallSize(int bytes) {
@@ -8670,14 +8815,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     late String attachCommand;
     try {
+      MonkeyMuxServerUpdatePolicy? requestedUpdatePolicy;
       final installation = await _monkeyMuxInstallerService.ensureInstalled(
         session,
         priority: SshExecPriority.normal,
-        confirmInstall: (request) => _confirmMonkeyMuxInstall(
-          request,
-          resolveRunningStatus: () => _monkeyMuxService
-              .runningServerStatusFromInstalledHelpers(session, sessionName),
-        ),
+        confirmInstall: (request) async {
+          final decision = await _confirmMonkeyMuxInstall(
+            request,
+            resolveRunningStatus: () => _monkeyMuxService
+                .runningServerStatusFromInstalledHelpers(session, sessionName),
+          );
+          requestedUpdatePolicy = decision.updatePolicy;
+          return decision.install;
+        },
       );
       DiagnosticsLogService.instance.info(
         'terminal.agent_launch',
@@ -8692,6 +8842,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session,
         installation,
         sessionName,
+        preferredUpdatePolicy: requestedUpdatePolicy,
       );
       final terminalThemeReports = buildTerminalThemeHintReports(
         session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
