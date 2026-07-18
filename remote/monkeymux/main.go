@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.103"
+	monkeyMuxVersion                  = "0.1.114"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -91,6 +91,7 @@ const (
 	// screenshots); the byte cap is the binding limit and is per window, so peak
 	// server memory is this times the number of image-heavy windows.
 	maxRetainedKittyImages       = 128
+	maxRetainedKittyImageNumbers = maxRetainedKittyImages
 	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
 	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
 	// Caps for how many retained images are *replayed* on a window switch.
@@ -420,6 +421,7 @@ type restoreWindowState struct {
 	AgentTool                string          `json:"agentTool,omitempty"`
 	AgentSessionID           string          `json:"agentSessionId,omitempty"`
 	HistoryBase64            string          `json:"historyBase64,omitempty"`
+	HistoryStartsAtGround    bool            `json:"historyStartsAtGround,omitempty"`
 	CursorVisible            bool            `json:"cursorVisible,omitempty"`
 	CursorVisibilityKnown    bool            `json:"cursorVisibilityKnown,omitempty"`
 	PrivateModes             map[string]bool `json:"privateModes,omitempty"`
@@ -490,6 +492,7 @@ type muxWindow struct {
 	terminalOutputState         terminalOutputParserState
 	terminalOutputBytes         int
 	terminalOutputUtf8Remaining int
+	historyStartTerminalOutput  terminalOutputParserSnapshot
 	terminalOutputForwarding    bool
 	lastActivity                time.Time
 	outputGeneration            uint64
@@ -545,12 +548,16 @@ type muxWindow struct {
 	// and thereafter only re-emit placeholder cells, so the one-time image
 	// bytes must survive independently of the rolling visible history (which
 	// evicts them once enough newer output arrives) or reattached placeholders
-	// render blank. Keyed by protocol image id; kittyImageOrder tracks recency.
-	kittyImages     map[string][]byte
-	kittyImageOrder []string
-	// kittyImageSeq records a global monotonic store sequence per image id so a
-	// machine-wide budget can evict the globally-oldest image across all
-	// windows. Protected by the server lock, like the maps above.
+	// render blank. Keyed by protocol image id; kittyImageOrder preserves root
+	// transmission order so replay reproduces image-number mapping semantics.
+	kittyImages          map[string][]byte
+	kittyImageAnimations map[string][]byte
+	kittyImageNumberToID map[string]string
+	kittyImageNumberSeq  map[string]uint64
+	kittyImageOrder      []string
+	// kittyImageSeq records mutation recency independently of root order so local
+	// replay selection and the machine-wide budget favor recently animated
+	// images. Protected by the server lock, like the maps above.
 	kittyImageSeq map[string]uint64
 	// kittyImageToken holds the FNV-1a-32 signature of each retained image's
 	// base64-decoded transmission payload, keyed by protocol image id. A client
@@ -584,6 +591,12 @@ const (
 	terminalOutputParserString
 	terminalOutputParserStringEscape
 )
+
+type terminalOutputParserSnapshot struct {
+	state         terminalOutputParserState
+	bytes         int
+	utf8Remaining int
+}
 
 type windowBroadcastIdentity struct {
 	name      string
@@ -3500,6 +3513,13 @@ func createWindowOptionsForRestore(
 	history := []byte(nil)
 	if isShellRestoreWindow(state) {
 		history = decodeRestoreHistory(state.HistoryBase64)
+		if !state.HistoryStartsAtGround {
+			history = sanitizeLegacyRestoreHistory(history)
+		}
+		history = terminalHistoryAtGroundBoundaries(
+			history,
+			terminalOutputParserSnapshot{},
+		)
 	}
 	return createWindowOptions{
 		name:                     firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
@@ -5572,7 +5592,12 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			Active:                   s.activeID == window.id,
 		}
 		if isShellRestoreWindow(state) && len(window.history) > 0 {
-			state.HistoryBase64 = base64.StdEncoding.EncodeToString(window.historyTailLocked())
+			history, historyStart := window.historyTailWithParserLocked()
+			history = terminalHistoryAtGroundBoundaries(history, historyStart)
+			if len(history) > 0 {
+				state.HistoryBase64 = base64.StdEncoding.EncodeToString(history)
+				state.HistoryStartsAtGround = true
+			}
 		}
 		restore.Windows = append(restore.Windows, state)
 	}
@@ -6511,7 +6536,7 @@ func (s *muxServer) replayBytesLockedWithSkip(
 	window *muxWindow,
 	clientHas map[string]uint32,
 ) []byte {
-	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
+	history, historyStart := window.historyTailWithParserLocked()
 	if window.usesForegroundRedrawReplayLocked() {
 		// The foreground app redraws its own cells on reattach (driven by a
 		// resize), so we must not replay the visible history or it would draw
@@ -6524,7 +6549,8 @@ func (s *muxServer) replayBytesLockedWithSkip(
 		// (a=T downgraded to a=t) so they produce no visible output themselves.
 		history = window.kittyImageReplayLocked(clientHas)
 	} else {
-		history = trimReplayHistoryForAttach(history)
+		history = trimReplayHistoryForAttachWithParser(history, historyStart)
+		history = stripTerminalQueriesFromReplay(history)
 	}
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
@@ -7917,6 +7943,10 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	}
 	limit := w.historyLimitLocked()
 	if len(chunk) >= limit {
+		parser := w.historyStartTerminalOutput
+		parser.observe(w.history)
+		parser.observe(chunk[:len(chunk)-limit])
+		w.historyStartTerminalOutput = parser
 		w.history = append(
 			w.history[:0],
 			chunk[len(chunk)-limit:]...,
@@ -7932,20 +7962,32 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	}
 	w.history = append(w.history, chunk...)
 	if len(w.history) > 2*limit {
+		start := len(w.history) - limit
+		w.historyStartTerminalOutput.observe(w.history[:start])
 		// copy() handles the overlap correctly because src is after dst.
-		n := copy(w.history, w.history[len(w.history)-limit:])
+		n := copy(w.history, w.history[start:])
 		w.history = w.history[:n]
 	}
 }
 
 func (w *muxWindow) historyTailLocked() []byte {
+	history, _ := w.historyTailWithParserLocked()
+	return history
+}
+
+func (w *muxWindow) historyTailWithParserLocked() (
+	[]byte,
+	terminalOutputParserSnapshot,
+) {
 	limit := w.historyLimitLocked()
 	if len(w.history) <= limit {
-		return w.history
+		return w.history, w.historyStartTerminalOutput
 	}
 	start := len(w.history) - limit
 	start = advanceToUtf8Boundary(w.history, start)
-	return w.history[start:]
+	parser := w.historyStartTerminalOutput
+	parser.observe(w.history[:start])
+	return w.history[start:], parser
 }
 
 func (w *muxWindow) historyLimitLocked() int {
@@ -7956,10 +7998,27 @@ func (w *muxWindow) historyLimitLocked() int {
 }
 
 func trimReplayHistoryForAttach(history []byte) []byte {
-	if len(history) <= windowReplayLimitBytes {
+	return trimReplayHistoryForAttachWithParser(
+		history,
+		terminalOutputParserSnapshot{},
+	)
+}
+
+func trimReplayHistoryForAttachWithParser(
+	history []byte,
+	historyStart terminalOutputParserSnapshot,
+) []byte {
+	if len(history) <= windowReplayLimitBytes && historyStart.isGround() {
 		return history
 	}
-	start := len(history) - windowReplayLimitBytes
+	start := 0
+	if len(history) > windowReplayLimitBytes {
+		start = len(history) - windowReplayLimitBytes
+	}
+	start = advanceReplayStartToTerminalGround(history, start, historyStart)
+	if start >= len(history) {
+		return nil
+	}
 	scanEnd := start + 2048
 	if scanEnd > len(history) {
 		scanEnd = len(history)
@@ -7972,6 +8031,97 @@ func trimReplayHistoryForAttach(history []byte) []byte {
 	}
 	start = advanceToUtf8Boundary(history, start)
 	return history[start:]
+}
+
+// advanceReplayStartToTerminalGround moves a size-based replay cut past any
+// escape sequence it bisects. In particular, starting inside a Kitty APC would
+// render its base64 payload as text and scroll the image away from its anchor.
+func advanceReplayStartToTerminalGround(
+	data []byte,
+	start int,
+	scanner terminalOutputParserSnapshot,
+) int {
+	if start >= len(data) {
+		return len(data)
+	}
+	scanner.observe(data[:start])
+	for start < len(data) && !scanner.isGround() {
+		scanner.observe(data[start : start+1])
+		start++
+	}
+	return advanceToUtf8Boundary(data, start)
+}
+
+func terminalHistoryAtGroundBoundaries(
+	data []byte,
+	startState terminalOutputParserSnapshot,
+) []byte {
+	start := advanceReplayStartToTerminalGround(data, 0, startState)
+	if start >= len(data) {
+		return nil
+	}
+	data = data[start:]
+	scanner := terminalOutputParserSnapshot{}
+	lastGround := 0
+	for i := range data {
+		scanner.observe(data[i : i+1])
+		if scanner.isGround() {
+			lastGround = i + 1
+		}
+	}
+	return data[:lastGround]
+}
+
+// sanitizeLegacyRestoreHistory discards a payload-like prefix from snapshots
+// written before parser-boundary state was recorded. Ordinary short shell text
+// is preserved, while a retained Kitty base64 tail is resumed at the first
+// trustworthy terminal boundary.
+func sanitizeLegacyRestoreHistory(data []byte) []byte {
+	boundary := -1
+	resume := -1
+	for i, value := range data {
+		switch value {
+		case '\n', '\r':
+			boundary = i
+		case '\a':
+			boundary = i
+			resume = i + 1
+		case '\x1b':
+			boundary = i
+			if i+1 < len(data) && data[i+1] == '\\' {
+				resume = i + 2
+			}
+		}
+		if boundary >= 0 {
+			break
+		}
+	}
+	prefixEnd := len(data)
+	if boundary >= 0 {
+		prefixEnd = boundary
+	}
+	if resume < 0 && !looksLikeKittyPayload(data[:prefixEnd]) {
+		return data
+	}
+	if boundary < 0 {
+		return nil
+	}
+	if resume >= 0 {
+		return data[resume:]
+	}
+	return data[boundary:]
+}
+
+func looksLikeKittyPayload(data []byte) bool {
+	if len(data) < 256 {
+		return false
+	}
+	for _, value := range data {
+		if base64DecodeValue[value] < 0 && value != '=' {
+			return false
+		}
+	}
+	return true
 }
 
 // advanceToUtf8Boundary moves start forward past any UTF-8 continuation bytes
@@ -8105,106 +8255,127 @@ func (w *muxWindow) resetTerminalBellParserLocked() {
 }
 
 func (w *muxWindow) observeTerminalOutputStateLocked(data []byte) {
+	parser := terminalOutputParserSnapshot{
+		state:         w.terminalOutputState,
+		bytes:         w.terminalOutputBytes,
+		utf8Remaining: w.terminalOutputUtf8Remaining,
+	}
+	parser.observe(data)
+	w.terminalOutputState = parser.state
+	w.terminalOutputBytes = parser.bytes
+	w.terminalOutputUtf8Remaining = parser.utf8Remaining
+}
+
+func (p *terminalOutputParserSnapshot) observe(data []byte) {
 	for _, value := range data {
-		if w.terminalOutputUtf8Remaining > 0 {
+		if p.utf8Remaining > 0 {
 			if value&0xc0 == 0x80 {
-				w.terminalOutputUtf8Remaining--
+				p.utf8Remaining--
 				continue
 			}
-			w.terminalOutputUtf8Remaining = 0
+			p.utf8Remaining = 0
 		}
 		if remaining := utf8ContinuationCount(value); remaining > 0 {
-			w.terminalOutputUtf8Remaining = remaining
+			p.utf8Remaining = remaining
 			continue
 		}
 		if value == 0x18 || value == 0x1a {
-			w.resetTerminalOutputParserLocked()
+			p.reset()
 			continue
 		}
-		switch w.terminalOutputState {
+		switch p.state {
 		case terminalOutputParserGround:
 			switch value {
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case 0x90, 0x98, 0x9e, 0x9f:
-				w.terminalOutputState = terminalOutputParserString
+				p.state = terminalOutputParserString
 			case 0x9b:
-				w.terminalOutputState = terminalOutputParserCsi
+				p.state = terminalOutputParserCsi
 			case 0x9d:
-				w.terminalOutputState = terminalOutputParserOsc
+				p.state = terminalOutputParserOsc
 			}
 		case terminalOutputParserEscape:
 			switch {
 			case value == '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case value == '[':
-				w.terminalOutputState = terminalOutputParserCsi
+				p.state = terminalOutputParserCsi
 			case value == ']':
-				w.terminalOutputState = terminalOutputParserOsc
+				p.state = terminalOutputParserOsc
 			case value == 'P' || value == 'X' || value == '^' || value == '_':
-				w.terminalOutputState = terminalOutputParserString
+				p.state = terminalOutputParserString
 			case value >= 0x20 && value <= 0x2f:
-				w.terminalOutputState = terminalOutputParserEscapeIntermediate
+				p.state = terminalOutputParserEscapeIntermediate
 			default:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			}
 		case terminalOutputParserEscapeIntermediate:
 			switch {
 			case value == '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case value >= 0x20 && value <= 0x2f:
 			case value >= 0x30 && value <= 0x7e:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			default:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			}
 		case terminalOutputParserCsi:
 			switch {
 			case value == '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case value >= 0x40 && value <= 0x7e:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			}
 		case terminalOutputParserOsc:
 			switch value {
 			case '\a', 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserOscEscape
+				p.state = terminalOutputParserOscEscape
 			}
 		case terminalOutputParserOscEscape:
 			switch value {
 			case '\\', '\a', 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserOscEscape
+				p.state = terminalOutputParserOscEscape
 			default:
-				w.terminalOutputState = terminalOutputParserOsc
+				p.state = terminalOutputParserOsc
 			}
 		case terminalOutputParserString:
 			switch value {
 			case 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserStringEscape
+				p.state = terminalOutputParserStringEscape
 			}
 		case terminalOutputParserStringEscape:
 			switch value {
 			case '\\', 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserStringEscape
+				p.state = terminalOutputParserStringEscape
 			default:
-				w.terminalOutputState = terminalOutputParserString
+				p.state = terminalOutputParserString
 			}
 		}
-		if w.terminalOutputState != terminalOutputParserGround {
-			w.terminalOutputBytes++
-			if w.terminalOutputBytes > maxKittyGraphicsPendingBytes {
-				w.resetTerminalOutputParserLocked()
+		if p.state != terminalOutputParserGround {
+			p.bytes++
+			if p.bytes > maxKittyGraphicsPendingBytes {
+				p.reset()
 			}
 		}
 	}
+}
+
+func (p *terminalOutputParserSnapshot) reset() {
+	p.state = terminalOutputParserGround
+	p.bytes = 0
+}
+
+func (p terminalOutputParserSnapshot) isGround() bool {
+	return p.state == terminalOutputParserGround && p.utf8Remaining == 0
 }
 
 func (w *muxWindow) resetTerminalOutputParserLocked() {
@@ -8213,8 +8384,10 @@ func (w *muxWindow) resetTerminalOutputParserLocked() {
 }
 
 func (w *muxWindow) terminalOutputIsGroundLocked() bool {
-	return w.terminalOutputState == terminalOutputParserGround &&
-		w.terminalOutputUtf8Remaining == 0
+	return terminalOutputParserSnapshot{
+		state:         w.terminalOutputState,
+		utf8Remaining: w.terminalOutputUtf8Remaining,
+	}.isGround()
 }
 
 // stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
@@ -8590,22 +8763,29 @@ func (w *muxWindow) storeSecondaryQueryCarryLocked(data []byte) bool {
 	return true
 }
 
-// kittyTransmission is a single complete Kitty graphics image transmission in
-// store-only form (action downgraded to a=t), keyed by its protocol image id.
-type kittyTransmission struct {
-	id  string
-	buf []byte
+// kittyGraphicsEvent is a complete retained Kitty root, animation command, or
+// hard image-data delete in its original stream order.
+type kittyGraphicsEvent struct {
+	id          string
+	imageNumber string
+	buf         []byte
+	animation   bool
+	delete      bool
+	clearCache  bool
+	mappingOnly bool
 }
 
-// scanKittyTransmissions parses complete Kitty graphics image transmissions from
-// the front of data. It returns the store-only transmissions found (a=T rewritten
-// to a=t), any image ids deleted via a=d, and the number of leading bytes fully
-// consumed. data[consumed:] is the trailing remainder, which either is empty or
-// begins an incomplete transmission and must be prepended to the next chunk.
+// scanKittyTransmissions parses complete Kitty graphics events from the front of
+// data. It returns retained roots (a=T rewritten to a=t), animation commands and
+// hard deletes in stream order, plus the number of leading bytes fully consumed.
+// data[consumed:] is the trailing remainder, which either is empty or begins an
+// incomplete transmission and must be prepended to the next chunk.
 //
 // Non-graphics bytes are consumed and discarded; the remainder therefore never
 // accumulates ordinary terminal output.
-func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []string, consumed int) {
+func scanKittyTransmissions(
+	data []byte,
+) (events []kittyGraphicsEvent, consumed int) {
 	i := 0
 	for i < len(data) {
 		if data[i] != '\x1b' {
@@ -8622,29 +8802,47 @@ func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []str
 				consumed = i
 				continue
 			}
-			return txs, deletes, i
+			return events, i
 		}
 		if data[i+1] != '_' || data[i+2] != 'G' {
 			i++
 			consumed = i
 			continue
 		}
-		end, buf, id, isDelete, ok := assembleKittyTransmission(data, i)
+		end, buf, id, imageNumber, isDelete, isAnimation, ok :=
+			assembleKittyTransmission(data, i)
 		if !ok {
 			// Incomplete transmission: carry everything from here forward.
-			return txs, deletes, i
+			return events, i
 		}
 		if isDelete {
-			if id != "" {
-				deletes = append(deletes, id)
+			selector := parseKittyControl(kittyControl(data, i, end))["d"]
+			clearCache := selector == "A" ||
+				selector == "C" ||
+				selector == "P" ||
+				selector == "X" ||
+				selector == "Y"
+			if id != "" || imageNumber != "" || clearCache {
+				events = append(events, kittyGraphicsEvent{
+					id: id, imageNumber: imageNumber, delete: true, clearCache: clearCache,
+				})
 			}
 		} else if buf != nil {
-			txs = append(txs, kittyTransmission{id: id, buf: buf})
+			events = append(events, kittyGraphicsEvent{
+				id: id, imageNumber: imageNumber, buf: buf, animation: isAnimation,
+			})
+		} else {
+			args := parseKittyControl(kittyControl(data, i, end))
+			if args["a"] == "p" && args["i"] != "" && args["I"] != "" {
+				events = append(events, kittyGraphicsEvent{
+					id: args["i"], imageNumber: args["I"], mappingOnly: true,
+				})
+			}
 		}
 		i = end
 		consumed = end
 	}
-	return txs, deletes, consumed
+	return events, consumed
 }
 
 // assembleKittyTransmission parses a (possibly multi-chunk) Kitty graphics
@@ -8656,10 +8854,18 @@ func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []str
 func assembleKittyTransmission(
 	data []byte,
 	start int,
-) (end int, buf []byte, id string, isDelete bool, ok bool) {
+) (
+	end int,
+	buf []byte,
+	id string,
+	imageNumber string,
+	isDelete bool,
+	isAnimation bool,
+	ok bool,
+) {
 	apcEnd := kittyApcEnd(data, start)
 	if apcEnd < 0 {
-		return 0, nil, "", false, false
+		return 0, nil, "", "", false, false, false
 	}
 	args := parseKittyControl(kittyControl(data, start, apcEnd))
 	action := args["a"]
@@ -8668,32 +8874,49 @@ func assembleKittyTransmission(
 	}
 	switch action {
 	case "d":
-		return apcEnd, nil, args["i"], true, true
+		selector := args["d"]
+		freeImageData := selector == "A" ||
+			selector == "C" ||
+			selector == "I" ||
+			selector == "N" ||
+			selector == "P" ||
+			selector == "X" ||
+			selector == "Y"
+		return apcEnd, nil, args["i"], args["I"],
+			freeImageData, false, true
 	case "t", "T":
 		// An image transmission; assemble continuation chunks below.
+		buf = append(buf, rewriteKittyReplayCommand(data[start:apcEnd], true)...)
+	case "f":
+		// Animation frame payloads use the same continuation rules as roots.
+		buf = append(buf, rewriteKittyReplayCommand(data[start:apcEnd], false)...)
+		isAnimation = true
+	case "a", "c":
+		// Control/composition commands have no chunked payload.
+		return apcEnd, rewriteKittyReplayCommand(data[start:apcEnd], false),
+			args["i"], args["I"], false, true, true
 	default:
 		// Queries (a=q), placements (a=p) etc. are complete but not retained.
-		return apcEnd, nil, "", false, true
+		return apcEnd, nil, "", "", false, false, true
 	}
 
-	buf = append(buf, rewriteKittyTransmitAction(data[start:apcEnd])...)
 	more := args["m"] == "1"
 	next := apcEnd
 	for more {
 		if next+2 >= len(data) || data[next] != '\x1b' ||
 			data[next+1] != '_' || data[next+2] != 'G' {
-			return 0, nil, "", false, false
+			return 0, nil, "", "", false, false, false
 		}
 		chunkEnd := kittyApcEnd(data, next)
 		if chunkEnd < 0 {
-			return 0, nil, "", false, false
+			return 0, nil, "", "", false, false, false
 		}
 		chunkArgs := parseKittyControl(kittyControl(data, next, chunkEnd))
 		buf = append(buf, data[next:chunkEnd]...)
 		more = chunkArgs["m"] == "1"
 		next = chunkEnd
 	}
-	return next, buf, args["i"], false, true
+	return next, buf, args["i"], args["I"], false, isAnimation, true
 }
 
 // observeKittyGraphicsLocked retains the Kitty image transmissions seen in chunk
@@ -8712,18 +8935,73 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	}
 
 	changed := false
-	txs, deletes, consumed := scanKittyTransmissions(data)
-	for _, id := range deletes {
-		if w.removeKittyImageLocked(id) {
-			changed = true
+	events, consumed := scanKittyTransmissions(data)
+	for _, event := range events {
+		if event.delete {
+			if event.clearCache {
+				if w.clearKittyImagesLocked() {
+					changed = true
+				}
+				continue
+			}
+			id := event.id
+			if id == "" && event.imageNumber != "" {
+				id = w.kittyImageNumberToID[event.imageNumber]
+			}
+			if w.removeKittyImageLocked(id) {
+				changed = true
+			}
+			continue
 		}
-	}
-	for _, tx := range txs {
-		if tx.id == "" {
+		id := event.id
+		if event.imageNumber != "" {
+			if id == "" {
+				if event.animation {
+					id = w.kittyImageNumberToID[event.imageNumber]
+				} else {
+					id = fmt.Sprintf(
+						"I:%s:%d",
+						event.imageNumber,
+						kittyImageStoreSeq+1,
+					)
+					if _, exists := w.kittyImageNumberToID[event.imageNumber]; !exists &&
+						len(w.kittyImageNumberToID) >= maxRetainedKittyImageNumbers {
+						w.evictOldestKittyImageNumberMappingLocked()
+					}
+					w.recordKittyImageNumberMappingLocked(event.imageNumber, id)
+				}
+			} else {
+				if (event.mappingOnly || event.animation) &&
+					w.kittyImages[id] == nil {
+					continue
+				}
+				if w.kittyImageNumberToID == nil {
+					w.kittyImageNumberToID = map[string]string{}
+				}
+				if _, exists := w.kittyImageNumberToID[event.imageNumber]; !exists &&
+					len(w.kittyImageNumberToID) >= maxRetainedKittyImageNumbers {
+					w.evictOldestKittyImageNumberMappingLocked()
+				}
+				w.recordKittyImageNumberMappingLocked(event.imageNumber, id)
+			}
+		}
+		if event.mappingOnly {
+			kittyImageStoreSeq++
+			w.kittyImageSeq[id] = kittyImageStoreSeq
+			w.enforceKittyImageCapsLocked()
+			changed = true
+			continue
+		}
+		if id == "" {
 			continue // cannot dedupe or replay without an id
 		}
-		w.storeKittyImageLocked(tx.id, tx.buf)
-		changed = true
+		if event.animation {
+			animation := rewriteKittyImageReferenceToID(event.buf, id)
+			changed = w.appendKittyImageAnimationLocked(id, animation) || changed
+		} else {
+			w.storeKittyImageLocked(id, event.buf)
+			changed = true
+		}
 	}
 
 	remainder := data[consumed:]
@@ -8756,10 +9034,32 @@ func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
 	}
 	w.kittyImageOrder = append(w.kittyImageOrder, id)
 	w.kittyImages[id] = append([]byte(nil), buf...)
+	delete(w.kittyImageAnimations, id)
 	w.kittyImageToken[id] = kittyTransmissionPayloadSignature(buf)
 	kittyImageStoreSeq++
 	w.kittyImageSeq[id] = kittyImageStoreSeq
 	w.enforceKittyImageCapsLocked()
+}
+
+func (w *muxWindow) appendKittyImageAnimationLocked(id string, buf []byte) bool {
+	if len(buf) == 0 {
+		return false
+	}
+	if _, exists := w.kittyImages[id]; !exists {
+		return false
+	}
+	if w.kittyImageAnimations == nil {
+		w.kittyImageAnimations = map[string][]byte{}
+	}
+	if len(w.kittyImages[id])+len(w.kittyImageAnimations[id])+len(buf) >
+		kittyImagePerIDBudgetBytes {
+		return w.removeKittyImageLocked(id)
+	}
+	w.kittyImageAnimations[id] = append(w.kittyImageAnimations[id], buf...)
+	kittyImageStoreSeq++
+	w.kittyImageSeq[id] = kittyImageStoreSeq
+	w.enforceKittyImageCapsLocked()
+	return true
 }
 
 func (w *muxWindow) removeKittyImageLocked(id string) bool {
@@ -8767,33 +9067,88 @@ func (w *muxWindow) removeKittyImageLocked(id string) bool {
 		return false
 	}
 	delete(w.kittyImages, id)
+	delete(w.kittyImageAnimations, id)
 	delete(w.kittyImageSeq, id)
 	delete(w.kittyImageToken, id)
+	for number, mappedID := range w.kittyImageNumberToID {
+		if mappedID == id {
+			delete(w.kittyImageNumberToID, number)
+			delete(w.kittyImageNumberSeq, number)
+		}
+	}
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
 	return true
 }
 
+func (w *muxWindow) evictOldestKittyImageNumberMappingLocked() {
+	var oldestNumber string
+	var oldestSeq uint64
+	for number := range w.kittyImageNumberToID {
+		seq := w.kittyImageNumberSeq[number]
+		if oldestNumber == "" || seq < oldestSeq ||
+			(seq == oldestSeq && number < oldestNumber) {
+			oldestNumber = number
+			oldestSeq = seq
+		}
+	}
+	if oldestNumber != "" {
+		delete(w.kittyImageNumberToID, oldestNumber)
+		delete(w.kittyImageNumberSeq, oldestNumber)
+	}
+}
+
+func (w *muxWindow) recordKittyImageNumberMappingLocked(number, id string) {
+	if w.kittyImageNumberToID == nil {
+		w.kittyImageNumberToID = map[string]string{}
+	}
+	if w.kittyImageNumberSeq == nil {
+		w.kittyImageNumberSeq = map[string]uint64{}
+	}
+	kittyImageStoreSeq++
+	w.kittyImageNumberToID[number] = id
+	w.kittyImageNumberSeq[number] = kittyImageStoreSeq
+}
+
+func (w *muxWindow) clearKittyImagesLocked() bool {
+	changed := len(w.kittyImages) > 0
+	w.kittyImages = nil
+	w.kittyImageAnimations = nil
+	w.kittyImageNumberToID = nil
+	w.kittyImageNumberSeq = nil
+	w.kittyImageOrder = nil
+	w.kittyImageSeq = nil
+	w.kittyImageToken = nil
+	return changed
+}
+
 func (w *muxWindow) enforceKittyImageCapsLocked() {
 	total := 0
-	for _, b := range w.kittyImages {
-		total += len(b)
+	for id, b := range w.kittyImages {
+		total += len(b) + len(w.kittyImageAnimations[id])
 	}
 	for len(w.kittyImageOrder) > 0 &&
 		(len(w.kittyImageOrder) > maxRetainedKittyImages ||
 			(total > maxRetainedKittyImageBytes && len(w.kittyImageOrder) > 1)) {
 		oldest := w.kittyImageOrder[0]
-		w.kittyImageOrder = w.kittyImageOrder[1:]
-		total -= len(w.kittyImages[oldest])
-		delete(w.kittyImages, oldest)
-		delete(w.kittyImageSeq, oldest)
-		delete(w.kittyImageToken, oldest)
+		for _, id := range w.kittyImageOrder[1:] {
+			if w.kittyImageSeq[id] < w.kittyImageSeq[oldest] {
+				oldest = id
+			}
+		}
+		total -= len(w.kittyImages[oldest]) + len(w.kittyImageAnimations[oldest])
+		w.removeKittyImageLocked(oldest)
 	}
 }
 
-// kittyImageStoreSeq is a global monotonic counter assigning each stored image
-// a store order, used to evict the globally-oldest image under the machine-wide
-// budget. Mutated only while the server lock is held.
+// kittyImageStoreSeq is a global monotonic counter assigning each image mutation
+// an order, used to evict the least recently changed image under the local and
+// machine-wide budgets. Mutated only while the server lock is held.
 var kittyImageStoreSeq uint64
+
+// kittyImagePerIDBudgetBytes prevents one long-running animation from bypassing
+// the per-window/global "keep one image" policy and growing without bound.
+// Package-level so tests can exercise overflow without allocating 64 MiB.
+var kittyImagePerIDBudgetBytes = maxRetainedKittyImageBytes
 
 // kittyImageGlobalBudgetBytes bounds the total Kitty image bytes retained across
 // all windows so a busy multi-window session cannot exhaust memory on a small
@@ -8812,8 +9167,8 @@ func (s *muxServer) enforceGlobalKittyImageBudgetLocked() {
 	total := 0
 	count := 0
 	for _, w := range s.windows {
-		for _, b := range w.kittyImages {
-			total += len(b)
+		for id, b := range w.kittyImages {
+			total += len(b) + len(w.kittyImageAnimations[id])
 			count++
 		}
 	}
@@ -8841,7 +9196,8 @@ func (s *muxServer) enforceGlobalKittyImageBudgetLocked() {
 		if !found || victimWin == nil {
 			return
 		}
-		total -= len(victimWin.kittyImages[victimID])
+		total -= len(victimWin.kittyImages[victimID]) +
+			len(victimWin.kittyImageAnimations[victimID])
 		count--
 		victimWin.removeKittyImageLocked(victimID)
 	}
@@ -8885,32 +9241,74 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 	if len(w.kittyImageOrder) == 0 {
 		return nil
 	}
-	// Walk newest-first, keeping images until a cap is hit.
+	// Select by mutation recency so an actively changing older root is retained.
+	// Emission below still follows root order to preserve I= mapping semantics.
+	candidates := append([]string(nil), w.kittyImageOrder...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return w.kittyImageSeq[candidates[i]] > w.kittyImageSeq[candidates[j]]
+	})
 	selected := make([]string, 0, maxReplayedKittyImages)
 	total := 0
-	for i := len(w.kittyImageOrder) - 1; i >= 0; i-- {
-		id := w.kittyImageOrder[i]
-		buf := w.kittyImages[id]
+	for _, id := range candidates {
+		imageBytes := len(w.kittyImages[id]) +
+			len(w.kittyImageNumberReplayLocked(id)) +
+			len(w.kittyImageAnimations[id])
 		if len(selected) >= maxReplayedKittyImages {
 			break
 		}
-		if len(selected) > 0 && total+len(buf) > maxReplayedKittyImageBytes {
-			break
+		if imageBytes > maxReplayedKittyImageBytes ||
+			total+imageBytes > maxReplayedKittyImageBytes {
+			continue
 		}
 		selected = append(selected, id)
-		total += len(buf)
+		total += imageBytes
 	}
-	// Emit oldest-kept first so ids are established in chronological order,
-	// skipping any the client already holds with identical content.
+	selectedSet := make(map[string]struct{}, len(selected))
+	for _, id := range selected {
+		selectedSet[id] = struct{}{}
+	}
+	// Emit selected roots in original transmission order so repeated I= mappings
+	// end in the same state as the live stream.
 	var out []byte
-	for i := len(selected) - 1; i >= 0; i-- {
-		id := selected[i]
+	for _, id := range w.kittyImageOrder {
+		if _, ok := selectedSet[id]; !ok {
+			continue
+		}
+		clientHasRoot := false
 		if len(clientHas) > 0 {
-			if token, ok := clientHas[id]; ok && token == w.kittyImageToken[id] {
-				continue
+			if token, ok := clientHas[id]; ok &&
+				token == w.kittyImageToken[id] {
+				clientHasRoot = true
 			}
 		}
-		out = append(out, w.kittyImages[id]...)
+		if !clientHasRoot {
+			out = append(out, w.kittyImageRootReplayLocked(id)...)
+		}
+		out = append(out, w.kittyImageNumberReplayLocked(id)...)
+		out = append(out, w.kittyImageAnimations[id]...)
+	}
+	return out
+}
+
+func (w *muxWindow) kittyImageNumberReplayLocked(id string) []byte {
+	numericID, err := strconv.ParseUint(id, 10, 32)
+	if err != nil || numericID == 0 {
+		return nil
+	}
+	var numbers []string
+	for number, mappedID := range w.kittyImageNumberToID {
+		if mappedID == id {
+			numbers = append(numbers, number)
+		}
+	}
+	sort.Strings(numbers)
+	var out []byte
+	for _, number := range numbers {
+		out = append(out, "\x1b_Ga=a,i="...)
+		out = append(out, id...)
+		out = append(out, ",I="...)
+		out = append(out, number...)
+		out = append(out, ",q=2\x1b\\"...)
 	}
 	return out
 }
@@ -8942,8 +9340,12 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 		if !ok {
 			continue
 		}
-		if len(buf) > maxReplayedKittyImageBytes ||
-			len(out)+len(buf) > maxReplayedKittyImageBytes {
+		buf = w.kittyImageRootReplayLocked(id)
+		mappings := w.kittyImageNumberReplayLocked(id)
+		animation := w.kittyImageAnimations[id]
+		imageBytes := len(buf) + len(mappings) + len(animation)
+		if imageBytes > maxReplayedKittyImageBytes ||
+			len(out)+imageBytes > maxReplayedKittyImageBytes {
 			continue
 		}
 		if seen == nil {
@@ -8951,9 +9353,27 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 		}
 		seen[id] = struct{}{}
 		out = append(out, buf...)
+		out = append(out, mappings...)
+		out = append(out, animation...)
 		served = append(served, id)
 	}
 	return out, served
+}
+
+func (w *muxWindow) kittyImageRootReplayLocked(id string) []byte {
+	buf := w.kittyImages[id]
+	if len(buf) == 0 {
+		return buf
+	}
+	apcEnd := kittyApcEnd(buf, 0)
+	if apcEnd < 0 {
+		return buf
+	}
+	number := parseKittyControl(kittyControl(buf, 0, apcEnd))["I"]
+	if number == "" || w.kittyImageNumberToID[number] == id {
+		return buf
+	}
+	return rewriteKittyImageReferenceToID(buf, id)
 }
 
 func removeStringOnce(items []string, target string) []string {
@@ -9120,22 +9540,79 @@ func parseKittyControl(control string) map[string]string {
 	return args
 }
 
-// rewriteKittyTransmitAction returns a copy of a single Kitty APC sequence with
-// a display transmit (a=T) downgraded to a store-only transmit (a=t) so replay
-// never draws or moves the cursor. Other sequences are returned unchanged.
-func rewriteKittyTransmitAction(seq []byte) []byte {
-	from := 3 // past ESC _ G
-	to := len(seq)
-	if semi := bytes.IndexByte(seq, ';'); semi >= 0 && semi < to {
-		to = semi
+// rewriteKittyReplayCommand suppresses protocol responses during replay and,
+// for roots, downgrades a=T to store-only a=t so replay never draws or moves
+// the cursor before the foreground app redraws its placements.
+func rewriteKittyReplayCommand(seq []byte, storeOnly bool) []byte {
+	if len(seq) < 5 {
+		return append([]byte(nil), seq...)
 	}
-	idx := bytes.Index(seq[from:to], []byte("a=T"))
-	if idx < 0 {
+	controlEnd := len(seq) - 2 // before ST
+	if semi := bytes.IndexByte(seq, ';'); semi >= 0 && semi < controlEnd {
+		controlEnd = semi
+	}
+	parts := strings.Split(string(seq[3:controlEnd]), ",")
+	foundQuiet := false
+	for index, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		switch key {
+		case "a":
+			if storeOnly && part == "a=T" {
+				parts[index] = "a=t"
+			}
+		case "q":
+			parts[index] = "q=2"
+			foundQuiet = true
+		}
+	}
+	if !foundQuiet {
+		parts = append(parts, "q=2")
+	}
+	out := make([]byte, 0, len(seq)+4)
+	out = append(out, seq[:3]...)
+	out = append(out, strings.Join(parts, ",")...)
+	out = append(out, seq[controlEnd:]...)
+	return out
+}
+
+// rewriteKittyImageReferenceToID makes a retained command independent of an
+// image-number mapping that may change later. Synthetic I=-only roots have no
+// numeric id yet and are intentionally left unchanged.
+func rewriteKittyImageReferenceToID(seq []byte, imageID string) []byte {
+	numericID, err := strconv.ParseUint(imageID, 10, 32)
+	if err != nil || numericID == 0 || len(seq) < 5 {
 		return seq
 	}
-	out := make([]byte, len(seq))
-	copy(out, seq)
-	out[from+idx+2] = 't'
+	apcEnd := kittyApcEnd(seq, 0)
+	if apcEnd < 0 {
+		return seq
+	}
+	controlEnd := apcEnd - 2 // before ST
+	if semi := bytes.IndexByte(seq[:apcEnd], ';'); semi >= 0 {
+		controlEnd = semi
+	}
+	parts := strings.Split(string(seq[3:controlEnd]), ",")
+	rewritten := make([]string, 0, len(parts)+1)
+	foundID := false
+	for _, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		switch key {
+		case "I":
+			continue
+		case "i":
+			rewritten = append(rewritten, "i="+imageID)
+			foundID = true
+		default:
+			rewritten = append(rewritten, part)
+		}
+	}
+	if !foundID {
+		rewritten = append(rewritten, "i="+imageID)
+	}
+	out := make([]byte, 0, len(seq)+len(imageID)+3)
+	out = append(out, seq[:3]...)
+	out = append(out, strings.Join(rewritten, ",")...)
+	out = append(out, seq[controlEnd:]...)
 	return out
 }
 
