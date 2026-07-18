@@ -1470,6 +1470,124 @@ void main() {
     });
 
     test(
+      'returns completed startup commands to a login shell without disconnecting',
+      () async {
+        final client = _MockSshClient();
+        final startupShell = _MockExecSession();
+        final loginShell = _MockExecSession();
+        final startupStdout = StreamController<Uint8List>();
+        final loginStdout = StreamController<Uint8List>();
+        final startupDone = Completer<void>();
+        final loginDone = Completer<void>();
+        final loginOpen = Completer<SSHSession>();
+        final executedCommands = <String>[];
+        final startupWrites = <List<int>>[];
+        final loginWrites = <List<int>>[];
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        const pty = SSHPtyConfig(width: 120, height: 30);
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          invocation,
+        ) {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return executedCommands.length == 1
+              ? Future.value(startupShell)
+              : loginOpen.future;
+        });
+        when(() => startupShell.stdout).thenAnswer((_) => startupStdout.stream);
+        when(() => startupShell.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => startupShell.done).thenAnswer((_) => startupDone.future);
+        when(() => startupShell.write(any())).thenAnswer((invocation) {
+          startupWrites.add(
+            List<int>.from(invocation.positionalArguments.single as List<int>),
+          );
+        });
+        when(startupShell.close).thenAnswer((_) {});
+        when(() => loginShell.stdout).thenAnswer((_) => loginStdout.stream);
+        when(() => loginShell.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => loginShell.done).thenAnswer((_) => loginDone.future);
+        when(() => loginShell.write(any())).thenAnswer((invocation) {
+          loginWrites.add(
+            List<int>.from(invocation.positionalArguments.single as List<int>),
+          );
+        });
+        when(loginShell.close).thenAnswer((_) {});
+
+        addTearDown(() async {
+          await session.closeShell(waitForStreams: false);
+          await startupStdout.close();
+          await loginStdout.close();
+          if (!startupDone.isCompleted) {
+            startupDone.complete();
+          }
+          if (!loginDone.isCompleted) {
+            loginDone.complete();
+          }
+        });
+
+        final openedShell = await session.getShell(
+          pty: pty,
+          command: 'monkeymux attach work',
+          returnToLoginShell: true,
+        );
+        expect(openedShell, same(startupShell));
+        final shellDoneEvents = <void>[];
+        final shellDoneSubscription = session.shellDoneStream.listen(
+          shellDoneEvents.add,
+        );
+        addTearDown(shellDoneSubscription.cancel);
+
+        startupStdout.add(Uint8List.fromList(utf8.encode('\x1b[?9001h')));
+        await pumpEventQueue();
+        session.debugFlushPendingTerminalOutput();
+        startupDone.complete();
+        await untilCalled(
+          () => client.execute(
+            any(that: contains('COLORTERM=truecolor')),
+            pty: pty,
+          ),
+        );
+        session.writeToShell('queued input');
+        loginOpen.complete(loginShell);
+        final replacementShell = await session.getShell();
+
+        expect(replacementShell, same(loginShell));
+        expect(shellDoneEvents, isEmpty);
+        expect(startupWrites, isEmpty);
+        expect(loginWrites.map(utf8.decode), contains('queued input'));
+        expect(executedCommands, [
+          'monkeymux attach work',
+          r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
+        ]);
+        session.writeToShell('live input');
+        expect(loginWrites.map(utf8.decode), contains('live input'));
+
+        final loginOutput = Completer<String>();
+        final stdoutSubscription = session.shellStdoutStream.listen(
+          loginOutput.complete,
+        );
+        addTearDown(stdoutSubscription.cancel);
+        loginStdout.add(Uint8List.fromList(utf8.encode('login prompt')));
+        await pumpEventQueue();
+        session.debugFlushPendingTerminalOutput();
+        expect(await loginOutput.future, 'login prompt');
+
+        loginDone.complete();
+        await pumpEventQueue();
+        expect(shellDoneEvents, hasLength(1));
+      },
+    );
+
+    test(
       'falls back to shell request when truecolor bootstrap is rejected',
       () async {
         final client = _MockSshClient();

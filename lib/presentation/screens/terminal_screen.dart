@@ -6995,6 +6995,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           height: viewportCellSize.rows,
         ),
         command: startupCommand?.command,
+        returnToLoginShell: startupCommand != null,
       );
       DiagnosticsLogService.instance.info(
         'terminal',
@@ -7125,7 +7126,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _clearDetectedSensitiveKeyboardPromptAfterInput(output);
       _handleTerminalOutputForShellCompletion(output);
       try {
-        _shell?.write(utf8.encode(output));
+        session.writeToShell(output);
       } on Object catch (error) {
         DiagnosticsLogService.instance.warning(
           'terminal.input',
@@ -7160,7 +7161,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pixelHeight: pixelHeight,
       );
       try {
-        _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
+        session.resizeShell(width, height, pixelWidth, pixelHeight);
       } on Object catch (error) {
         DiagnosticsLogService.instance.warning(
           'terminal.resize',
@@ -10591,7 +10592,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _activeMuxBackend = attachCommand.backend;
       reattachCommand = attachCommand.command;
     }
-    shell.write(utf8.encode(formatAutoConnectCommandForShell(reattachCommand)));
+    session.writeToShell(formatAutoConnectCommandForShell(reattachCommand));
     DiagnosticsLogService.instance.info(
       'tmux.ui',
       'reattach_command_sent',
