@@ -7,6 +7,8 @@ import 'package:go_router/go_router.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../../domain/services/port_forward_runtime_service.dart';
+import '../../domain/services/ssh_service.dart';
 import '../widgets/unsaved_changes_guard.dart';
 
 typedef _PortForwardEditDraft = ({
@@ -23,10 +25,21 @@ typedef _PortForwardEditDraft = ({
 /// Screen for adding or editing a port forward rule.
 class PortForwardEditScreen extends ConsumerStatefulWidget {
   /// Creates a new [PortForwardEditScreen].
-  const PortForwardEditScreen({this.portForwardId, super.key});
+  const PortForwardEditScreen({
+    this.portForwardId,
+    this.initialHostId,
+    this.preferredConnectionId,
+    super.key,
+  });
 
   /// The port forward ID to edit, or null for a new port forward.
   final int? portForwardId;
+
+  /// Host selected when creating a rule from a host-specific surface.
+  final int? initialHostId;
+
+  /// Connection that should receive a newly auto-started rule when available.
+  final int? preferredConnectionId;
 
   @override
   ConsumerState<PortForwardEditScreen> createState() =>
@@ -52,6 +65,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
   @override
   void initState() {
     super.initState();
+    _selectedHostId = widget.initialHostId;
     _loadHosts();
     if (widget.portForwardId != null) {
       _loadPortForward();
@@ -401,24 +415,25 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
 
     try {
       final repo = ref.read(portForwardRepositoryProvider);
+      final previousPortForward = _existingPortForward;
+      late final PortForward savedPortForward;
 
-      if (widget.portForwardId != null && _existingPortForward != null) {
+      if (widget.portForwardId != null && previousPortForward != null) {
         // Update existing port forward
-        await repo.update(
-          _existingPortForward!.copyWith(
-            name: _nameController.text,
-            hostId: _selectedHostId,
-            forwardType: _forwardType,
-            localHost: _localHostController.text,
-            localPort: int.parse(_localPortController.text),
-            remoteHost: _remoteHostController.text,
-            remotePort: int.parse(_remotePortController.text),
-            autoStart: _autoStart,
-          ),
+        savedPortForward = previousPortForward.copyWith(
+          name: _nameController.text,
+          hostId: _selectedHostId,
+          forwardType: _forwardType,
+          localHost: _localHostController.text,
+          localPort: int.parse(_localPortController.text),
+          remoteHost: _remoteHostController.text,
+          remotePort: int.parse(_remotePortController.text),
+          autoStart: _autoStart,
         );
+        await repo.update(savedPortForward);
       } else {
         // Create new port forward
-        await repo.insert(
+        final portForwardId = await repo.insert(
           PortForwardsCompanion.insert(
             name: _nameController.text,
             hostId: _selectedHostId!,
@@ -430,18 +445,55 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
             autoStart: drift.Value(_autoStart),
           ),
         );
+        savedPortForward = PortForward(
+          id: portForwardId,
+          name: _nameController.text,
+          hostId: _selectedHostId!,
+          forwardType: _forwardType,
+          localHost: _localHostController.text,
+          localPort: int.parse(_localPortController.text),
+          remoteHost: _remoteHostController.text,
+          remotePort: int.parse(_remotePortController.text),
+          autoStart: _autoStart,
+          createdAt: DateTime.now(),
+        );
+      }
+
+      PortForwardActivationResult? activationResult;
+      final sessions = ref.read(activeSessionsProvider.notifier);
+      if (shouldApplyPortForwardLive(
+        sessions: sessions,
+        portForward: savedPortForward,
+        previous: previousPortForward,
+      )) {
+        try {
+          activationResult = await activatePortForwardOnConnectedSession(
+            sessions: sessions,
+            portForward: savedPortForward,
+            previous: previousPortForward,
+            preferredConnectionId: widget.preferredConnectionId,
+          );
+        } on Exception catch (error, stackTrace) {
+          FlutterError.reportError(
+            FlutterErrorDetails(
+              exception: error,
+              stack: stackTrace,
+              library: 'port forwards',
+              context: ErrorDescription(
+                'while applying a saved port forward live',
+              ),
+            ),
+          );
+          activationResult = const PortForwardActivationResult(
+            status: PortForwardActivationStatus.failed,
+          );
+        }
       }
 
       if (mounted) {
         didScheduleClose = true;
         _closeWithoutUnsavedPrompt(
-          SnackBar(
-            content: Text(
-              widget.portForwardId != null
-                  ? 'Port forward updated'
-                  : 'Port forward added',
-            ),
-          ),
+          SnackBar(content: Text(_saveResultMessage(activationResult))),
         );
       }
     } on Exception catch (e) {
@@ -461,6 +513,23 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
       }
     } finally {
       if (mounted && !didScheduleClose) setState(() => _isLoading = false);
+    }
+  }
+
+  String _saveResultMessage(PortForwardActivationResult? activationResult) {
+    final isEditing = widget.portForwardId != null;
+    switch (activationResult?.status) {
+      case PortForwardActivationStatus.started:
+        return isEditing
+            ? 'Port forward updated and applied live'
+            : 'Port forward added and started';
+      case PortForwardActivationStatus.failed:
+        return 'Port forward saved, but it couldn’t start. '
+            'Check the configured ports.';
+      case PortForwardActivationStatus.alreadyActive:
+      case PortForwardActivationStatus.noConnectedSession:
+      case null:
+        return isEditing ? 'Port forward updated' : 'Port forward added';
     }
   }
 }

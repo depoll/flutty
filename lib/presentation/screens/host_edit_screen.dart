@@ -19,6 +19,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/port_forward_runtime_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
@@ -2237,19 +2238,19 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
     if ((result ?? false) && mounted) {
       final repo = ref.read(portForwardRepositoryProvider);
+      late final PortForward savedPortForward;
 
       if (isEdit) {
-        await repo.update(
-          existing.copyWith(
-            name: nameController.text,
-            localPort: int.parse(localPortController.text),
-            remoteHost: remoteHostController.text,
-            remotePort: int.parse(remotePortController.text),
-            autoStart: autoStart,
-          ),
+        savedPortForward = existing.copyWith(
+          name: nameController.text,
+          localPort: int.parse(localPortController.text),
+          remoteHost: remoteHostController.text,
+          remotePort: int.parse(remotePortController.text),
+          autoStart: autoStart,
         );
+        await repo.update(savedPortForward);
       } else {
-        await repo.insert(
+        final portForwardId = await repo.insert(
           PortForwardsCompanion.insert(
             hostId: widget.hostId!,
             name: nameController.text,
@@ -2260,17 +2261,61 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             autoStart: drift.Value(autoStart),
           ),
         );
+        savedPortForward = PortForward(
+          id: portForwardId,
+          name: nameController.text,
+          hostId: widget.hostId!,
+          forwardType: 'local',
+          localHost: '127.0.0.1',
+          localPort: int.parse(localPortController.text),
+          remoteHost: remoteHostController.text,
+          remotePort: int.parse(remotePortController.text),
+          autoStart: autoStart,
+          createdAt: DateTime.now(),
+        );
+      }
+
+      PortForwardActivationResult? activationResult;
+      final sessions = ref.read(activeSessionsProvider.notifier);
+      if (shouldApplyPortForwardLive(
+        sessions: sessions,
+        portForward: savedPortForward,
+        previous: existing,
+      )) {
+        try {
+          activationResult = await activatePortForwardOnConnectedSession(
+            sessions: sessions,
+            portForward: savedPortForward,
+            previous: existing,
+          );
+        } on Exception catch (error, stackTrace) {
+          FlutterError.reportError(
+            FlutterErrorDetails(
+              exception: error,
+              stack: stackTrace,
+              library: 'port forwards',
+              context: ErrorDescription(
+                'while applying a host port forward live',
+              ),
+            ),
+          );
+          activationResult = const PortForwardActivationResult(
+            status: PortForwardActivationStatus.failed,
+          );
+        }
       }
 
       // Reload port forwards
       final updated = await repo.getByHostId(widget.hostId!);
-      setState(() => _portForwards = updated);
-
       if (mounted) {
+        setState(() => _portForwards = updated);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              isEdit ? 'Port forward updated' : 'Port forward added',
+              _hostPortForwardSaveMessage(
+                isEdit: isEdit,
+                activationResult: activationResult,
+              ),
             ),
           ),
         );
@@ -2307,18 +2352,40 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
     if ((confirmed ?? false) && mounted) {
       final repo = ref.read(portForwardRepositoryProvider);
+      await stopPortForwardOnConnectedSessions(
+        sessions: ref.read(activeSessionsProvider.notifier),
+        portForward: pf,
+      );
       await repo.delete(pf.id);
 
       // Reload port forwards
       final updated = await repo.getByHostId(widget.hostId!);
-      setState(() => _portForwards = updated);
-
       if (mounted) {
+        setState(() => _portForwards = updated);
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Deleted "${pf.name}"')));
       }
     }
+  }
+}
+
+String _hostPortForwardSaveMessage({
+  required bool isEdit,
+  required PortForwardActivationResult? activationResult,
+}) {
+  switch (activationResult?.status) {
+    case PortForwardActivationStatus.started:
+      return isEdit
+          ? 'Port forward updated and applied live'
+          : 'Port forward added and started';
+    case PortForwardActivationStatus.failed:
+      return 'Port forward saved, but it couldn’t start. '
+          'Check the configured ports.';
+    case PortForwardActivationStatus.alreadyActive:
+    case PortForwardActivationStatus.noConnectedSession:
+    case null:
+      return isEdit ? 'Port forward updated' : 'Port forward added';
   }
 }
 

@@ -228,14 +228,26 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/port-forwards/add',
         name: 'port-forward-add',
-        builder: (context, state) => const PortForwardEditScreen(),
+        builder: (context, state) => PortForwardEditScreen(
+          initialHostId: int.tryParse(
+            state.uri.queryParameters['hostId'] ?? '',
+          ),
+          preferredConnectionId: int.tryParse(
+            state.uri.queryParameters['connectionId'] ?? '',
+          ),
+        ),
       ),
       GoRoute(
         path: '/port-forwards/edit/:id',
         name: 'port-forward-edit',
         builder: (context, state) {
           final portForwardId = int.tryParse(state.pathParameters['id'] ?? '');
-          return PortForwardEditScreen(portForwardId: portForwardId);
+          return PortForwardEditScreen(
+            portForwardId: portForwardId,
+            preferredConnectionId: int.tryParse(
+              state.uri.queryParameters['connectionId'] ?? '',
+            ),
+          );
         },
       ),
       GoRoute(

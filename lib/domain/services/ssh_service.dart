@@ -2951,6 +2951,8 @@ class _SshHostKeyParser {
   }
 }
 
+enum _PortForwardOperationKind { start, replace, stop }
+
 /// An active SSH session.
 class SshSession {
   /// Creates a new [SshSession].
@@ -2972,6 +2974,7 @@ class SshSession {
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
   static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
+  static const _portForwardStartTimeout = Duration(seconds: 10);
   static const _sftpOpenRetryDelays = [
     Duration(milliseconds: 250),
     Duration(milliseconds: 750),
@@ -3233,6 +3236,12 @@ class SshSession {
   /// Active port forward tunnels.
   final Map<int, _ActiveTunnel> _activeTunnels = {};
 
+  final Map<int, ({Future<void> done, _PortForwardOperationKind kind})>
+  _portForwardOperations = {};
+  final _portForwardChanges = StreamController<void>.broadcast(sync: true);
+  final _closeStarted = Completer<void>();
+  bool _isClosing = false;
+
   /// Get active tunnel info for display.
   List<ActiveTunnelInfo> get activeTunnels => _activeTunnels.entries
       .map(
@@ -3248,6 +3257,82 @@ class SshSession {
         ),
       )
       .toList();
+
+  /// Emits whenever this session starts or stops a port forward.
+  Stream<void> get portForwardChanges => _portForwardChanges.stream;
+
+  /// Whether this session owns an active tunnel for [portForwardId].
+  bool isPortForwardActive(int portForwardId) =>
+      activeTunnels.any((tunnel) => tunnel.portForwardId == portForwardId);
+
+  /// Whether this session is currently starting or replacing [portForwardId].
+  bool isPortForwardStarting(int portForwardId) {
+    final operation = _portForwardOperations[portForwardId];
+    return operation != null &&
+        operation.kind != _PortForwardOperationKind.stop &&
+        !isPortForwardActive(portForwardId);
+  }
+
+  /// Starts a saved [portForward] on this SSH session.
+  Future<bool> startPortForward(PortForward portForward) {
+    switch (portForward.forwardType) {
+      case 'local':
+        return startLocalForward(
+          portForwardId: portForward.id,
+          localHost: portForward.localHost,
+          localPort: portForward.localPort,
+          remoteHost: portForward.remoteHost,
+          remotePort: portForward.remotePort,
+        );
+      case 'remote':
+        return startRemoteForward(
+          portForwardId: portForward.id,
+          remoteHost: portForward.remoteHost,
+          remotePort: portForward.remotePort,
+          localHost: portForward.localHost,
+          localPort: portForward.localPort,
+        );
+      default:
+        return Future<bool>.value(false);
+    }
+  }
+
+  /// Atomically replaces any active or starting tunnel with [portForward].
+  Future<bool> replacePortForward(PortForward portForward) {
+    if (_isClosing) {
+      return Future<bool>.value(false);
+    }
+    return _runPortForwardOperation(portForward.id, () async {
+      await _stopForward(portForward.id);
+      if (_isClosing) {
+        return false;
+      }
+      return _startPortForwardUnlocked(portForward);
+    }, kind: _PortForwardOperationKind.replace);
+  }
+
+  Future<bool> _startPortForwardUnlocked(PortForward portForward) {
+    switch (portForward.forwardType) {
+      case 'local':
+        return _startLocalForward(
+          portForwardId: portForward.id,
+          localHost: portForward.localHost,
+          localPort: portForward.localPort,
+          remoteHost: portForward.remoteHost,
+          remotePort: portForward.remotePort,
+        );
+      case 'remote':
+        return _startRemoteForward(
+          portForwardId: portForward.id,
+          remoteHost: portForward.remoteHost,
+          remotePort: portForward.remotePort,
+          localHost: portForward.localHost,
+          localPort: portForward.localPort,
+        );
+      default:
+        return Future<bool>.value(false);
+    }
+  }
 
   /// Get or create a shell session.
   ///
@@ -3840,6 +3925,29 @@ class SshSession {
     required int localPort,
     required String remoteHost,
     required int remotePort,
+  }) {
+    if (_isClosing) {
+      return Future<bool>.value(false);
+    }
+    return _runPortForwardOperation(
+      portForwardId,
+      () => _startLocalForward(
+        portForwardId: portForwardId,
+        localHost: localHost,
+        localPort: localPort,
+        remoteHost: remoteHost,
+        remotePort: remotePort,
+      ),
+      kind: _PortForwardOperationKind.start,
+    );
+  }
+
+  Future<bool> _startLocalForward({
+    required int portForwardId,
+    required String localHost,
+    required int localPort,
+    required String remoteHost,
+    required int remotePort,
   }) async {
     if (_activeTunnels.containsKey(portForwardId)) {
       return true; // Already running
@@ -3867,6 +3975,11 @@ class SshSession {
           },
         );
       }
+      if (_isClosing) {
+        await browserServerSocket?.close();
+        await serverSocket.close();
+        return false;
+      }
       final tunnel = _ActiveTunnel.local(
         serverSocket: serverSocket,
         browserServerSocket: browserServerSocket,
@@ -3893,11 +4006,15 @@ class SshSession {
         );
       }
 
+      _notifyPortForwardsChanged();
       return true;
     } on Exception catch (e) {
-      _activeTunnels.remove(portForwardId);
+      final removedActiveTunnel = _activeTunnels.remove(portForwardId) != null;
       await browserServerSocket?.close();
       await serverSocket?.close();
+      if (removedActiveTunnel) {
+        _notifyPortForwardsChanged();
+      }
       DiagnosticsLogService.instance.warning(
         'ssh.forward',
         'local_start_failed',
@@ -3969,17 +4086,65 @@ class SshSession {
     required int remotePort,
     required String localHost,
     required int localPort,
+  }) {
+    if (_isClosing) {
+      return Future<bool>.value(false);
+    }
+    return _runPortForwardOperation(
+      portForwardId,
+      () => _startRemoteForward(
+        portForwardId: portForwardId,
+        remoteHost: remoteHost,
+        remotePort: remotePort,
+        localHost: localHost,
+        localPort: localPort,
+      ),
+      kind: _PortForwardOperationKind.start,
+    );
+  }
+
+  Future<bool> _startRemoteForward({
+    required int portForwardId,
+    required String remoteHost,
+    required int remotePort,
+    required String localHost,
+    required int localPort,
   }) async {
     if (_activeTunnels.containsKey(portForwardId)) {
       return true;
     }
 
+    SSHRemoteForward? remoteForward;
     try {
-      final remoteForward = await client.forwardRemote(
-        host: remoteHost,
-        port: remotePort,
-      );
+      final request = client.forwardRemote(host: remoteHost, port: remotePort);
+      late final ({bool cancelled, SSHRemoteForward? remoteForward}) outcome;
+      try {
+        outcome =
+            await Future.any<
+                  ({bool cancelled, SSHRemoteForward? remoteForward})
+                >([
+                  request.then(
+                    (forward) => (cancelled: false, remoteForward: forward),
+                  ),
+                  _closeStarted.future.then(
+                    (_) => (cancelled: true, remoteForward: null),
+                  ),
+                ])
+                .timeout(_portForwardStartTimeout);
+      } on TimeoutException {
+        _closeLateRemoteForward(request);
+        rethrow;
+      }
+      if (outcome.cancelled) {
+        _closeLateRemoteForward(request);
+        return false;
+      }
+      remoteForward = outcome.remoteForward;
       if (remoteForward == null) {
+        return false;
+      }
+      if (_isClosing) {
+        remoteForward.close();
         return false;
       }
 
@@ -4022,8 +4187,14 @@ class SshSession {
         }
       });
 
+      _notifyPortForwardsChanged();
       return true;
     } on SSHError catch (e) {
+      final removedActiveTunnel = _activeTunnels.remove(portForwardId) != null;
+      remoteForward?.close();
+      if (removedActiveTunnel) {
+        _notifyPortForwardsChanged();
+      }
       DiagnosticsLogService.instance.warning(
         'ssh.forward',
         'remote_start_failed',
@@ -4039,6 +4210,11 @@ class SshSession {
       }
       return false;
     } on Exception catch (e) {
+      final removedActiveTunnel = _activeTunnels.remove(portForwardId) != null;
+      remoteForward?.close();
+      if (removedActiveTunnel) {
+        _notifyPortForwardsChanged();
+      }
       DiagnosticsLogService.instance.warning(
         'ssh.forward',
         'remote_start_failed',
@@ -4051,8 +4227,23 @@ class SshSession {
     }
   }
 
+  void _closeLateRemoteForward(Future<SSHRemoteForward?> request) {
+    unawaited(
+      request.then<void>(
+        (remoteForward) => remoteForward?.close(),
+        onError: (Object _, StackTrace _) {},
+      ),
+    );
+  }
+
   /// Stop a specific port forward tunnel.
-  Future<void> stopForward(int portForwardId) async {
+  Future<void> stopForward(int portForwardId) => _runPortForwardOperation(
+    portForwardId,
+    () => _stopForward(portForwardId),
+    kind: _PortForwardOperationKind.stop,
+  );
+
+  Future<void> _stopForward(int portForwardId) async {
     final tunnel = _activeTunnels.remove(portForwardId);
     if (tunnel != null) {
       await tunnel.subscription?.cancel();
@@ -4060,13 +4251,51 @@ class SshSession {
       await tunnel.serverSocket?.close();
       await tunnel.browserServerSocket?.close();
       tunnel.remoteForward?.close();
+      _notifyPortForwardsChanged();
     }
   }
 
   /// Stop all port forward tunnels.
   Future<void> stopAllForwards() async {
-    for (final id in _activeTunnels.keys.toList()) {
+    final portForwardIds = {
+      ..._activeTunnels.keys,
+      ..._portForwardOperations.keys,
+    };
+    for (final id in portForwardIds) {
       await stopForward(id);
+    }
+  }
+
+  Future<T> _runPortForwardOperation<T>(
+    int portForwardId,
+    Future<T> Function() operation, {
+    required _PortForwardOperationKind kind,
+  }) async {
+    while (true) {
+      final pendingOperation = _portForwardOperations[portForwardId];
+      if (pendingOperation == null) {
+        break;
+      }
+      await pendingOperation.done;
+    }
+
+    final gate = Completer<void>();
+    final gateFuture = gate.future;
+    _portForwardOperations[portForwardId] = (done: gateFuture, kind: kind);
+    try {
+      return await operation();
+    } finally {
+      if (identical(_portForwardOperations[portForwardId]?.done, gateFuture)) {
+        final removedOperation = _portForwardOperations.remove(portForwardId);
+        unawaited(removedOperation?.done);
+      }
+      gate.complete();
+    }
+  }
+
+  void _notifyPortForwardsChanged() {
+    if (!_portForwardChanges.isClosed) {
+      _portForwardChanges.add(null);
     }
   }
 
@@ -4087,9 +4316,14 @@ class SshSession {
 
   /// Close the session.
   Future<void> close() async {
+    _isClosing = true;
+    if (!_closeStarted.isCompleted) {
+      _closeStarted.complete();
+    }
     await stopAllForwards();
     await closeShell();
     discardSftpClient(null);
+    await _portForwardChanges.close();
     await _connectionHealthFailures.close();
     await _terminalNotifications.close();
     client.close();

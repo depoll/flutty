@@ -46,6 +46,13 @@ final allPortForwardsProvider = StreamProvider<List<PortForward>>((ref) {
   return repo.watchAll();
 });
 
+/// Stream of saved port forwards for a single host.
+final portForwardsForHostProvider =
+    StreamProvider.family<List<PortForward>, int>((ref, hostId) {
+      final repo = ref.watch(portForwardRepositoryProvider);
+      return repo.watchByHostId(hostId);
+    });
+
 /// Signature for invalidating shared providers from any Riverpod context.
 typedef ProviderInvalidator =
     void Function(ProviderBase<Object?> provider, {bool asReload});

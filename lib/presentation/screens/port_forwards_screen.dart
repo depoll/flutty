@@ -9,6 +9,7 @@ import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/services/port_forward_browser_service.dart';
+import '../../domain/services/port_forward_runtime_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/brand_empty_state.dart';
@@ -246,6 +247,10 @@ class PortForwardsScreen extends ConsumerWidget {
     );
 
     if (confirmed ?? false) {
+      await stopPortForwardOnConnectedSessions(
+        sessions: ref.read(activeSessionsProvider.notifier),
+        portForward: portForward,
+      );
       await ref.read(portForwardRepositoryProvider).delete(portForward.id);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

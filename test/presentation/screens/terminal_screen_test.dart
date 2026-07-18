@@ -1785,6 +1785,26 @@ void main() {
       expect(terminalMenuItemButton('Paste Files'), findsOneWidget);
     });
 
+    testWidgets('terminal overflow opens live port forward controls', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+
+      await openTerminalOverflowMenu(tester);
+      expect(terminalMenuItemButton('Port Forwards'), findsOneWidget);
+
+      await tester.tap(terminalMenuItemButton('Port Forwards'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('no forwards for this host'), findsOneWidget);
+      expect(find.text('Add Forward'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.close));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 1));
+    });
+
     testWidgets(
       'terminal overflow opens active local forwards in browser tabs',
       (tester) async {
