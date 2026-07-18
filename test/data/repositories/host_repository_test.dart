@@ -36,6 +36,21 @@ class _PausingSecretEncryptionService extends SecretEncryptionService {
   }
 }
 
+Map<String, dynamic> _hostConfiguration(Host host) =>
+    Map<String, dynamic>.from(host.toJson())
+      ..remove('id')
+      ..remove('label')
+      ..remove('createdAt')
+      ..remove('updatedAt')
+      ..remove('lastConnectedAt')
+      ..remove('sortOrder');
+
+Map<String, dynamic> _portForwardConfiguration(PortForward portForward) =>
+    Map<String, dynamic>.from(portForward.toJson())
+      ..remove('id')
+      ..remove('hostId')
+      ..remove('createdAt');
+
 void main() {
   late AppDatabase db;
   late HostRepository repository;
@@ -270,7 +285,7 @@ void main() {
       expect(host.autoConnectRequiresConfirmation, isTrue);
     });
 
-    test('duplicate copies skip-jump SSIDs', () async {
+    test('duplicate copies all host configuration and port forwards', () async {
       final keyId = await db
           .into(db.sshKeys)
           .insert(
@@ -324,6 +339,10 @@ void main() {
           autoConnectCommand: const Value('tmux attach'),
           autoConnectSnippetId: Value(snippetId),
           autoConnectRequiresConfirmation: const Value(true),
+          tmuxSessionName: const Value('production'),
+          tmuxWorkingDirectory: const Value('~/src/service'),
+          tmuxExtraFlags: const Value('-x 160 -y 48'),
+          remoteMuxBackend: const Value('monkey_mux'),
         ),
       );
 
@@ -339,6 +358,7 @@ void main() {
               remoteHost: 'db.internal',
               remotePort: 5432,
               autoStart: const Value(true),
+              createdAt: Value(DateTime(2020, 4, 5, 6, 7, 8)),
             ),
           );
       await db
@@ -353,6 +373,7 @@ void main() {
               remoteHost: 'redis.internal',
               remotePort: 6379,
               autoStart: const Value(false),
+              createdAt: Value(DateTime(2021, 5, 6, 7, 8, 9)),
             ),
           );
 
@@ -393,9 +414,18 @@ void main() {
         duplicateHost.autoConnectRequiresConfirmation,
         sourceHost.autoConnectRequiresConfirmation,
       );
+      expect(duplicateHost.tmuxSessionName, sourceHost.tmuxSessionName);
+      expect(
+        duplicateHost.tmuxWorkingDirectory,
+        sourceHost.tmuxWorkingDirectory,
+      );
+      expect(duplicateHost.tmuxExtraFlags, sourceHost.tmuxExtraFlags);
+      expect(duplicateHost.remoteMuxBackend, sourceHost.remoteMuxBackend);
+      expect(_hostConfiguration(duplicateHost), _hostConfiguration(sourceHost));
       expect(duplicateHost.lastConnectedAt, isNull);
       expect(duplicateHost.createdAt, isNot(sourceHost.createdAt));
       expect(duplicateHost.updatedAt, isNot(sourceHost.updatedAt));
+      expect(duplicateHost.sortOrder, greaterThan(sourceHost.sortOrder));
 
       final duplicatePortForwards =
           await (db.select(db.portForwards)..where(
@@ -419,6 +449,7 @@ void main() {
       expect(databaseTunnel.remoteHost, 'db.internal');
       expect(databaseTunnel.remotePort, 5432);
       expect(databaseTunnel.autoStart, isTrue);
+      expect(databaseTunnel.createdAt, isNot(DateTime(2020, 4, 5, 6, 7, 8)));
 
       final redisTunnel = duplicatePortForwards.singleWhere(
         (portForward) => portForward.name == 'Redis Tunnel',
@@ -430,6 +461,20 @@ void main() {
       expect(redisTunnel.remoteHost, 'redis.internal');
       expect(redisTunnel.remotePort, 6379);
       expect(redisTunnel.autoStart, isFalse);
+      expect(redisTunnel.createdAt, isNot(DateTime(2021, 5, 6, 7, 8, 9)));
+
+      final sourcePortForwards = await (db.select(
+        db.portForwards,
+      )..where((portForward) => portForward.hostId.equals(sourceHostId))).get();
+      for (final sourcePortForward in sourcePortForwards) {
+        final duplicatePortForward = duplicatePortForwards.singleWhere(
+          (portForward) => portForward.name == sourcePortForward.name,
+        );
+        expect(
+          _portForwardConfiguration(duplicatePortForward),
+          _portForwardConfiguration(sourcePortForward),
+        );
+      }
     });
 
     test('getById returns host when exists', () async {

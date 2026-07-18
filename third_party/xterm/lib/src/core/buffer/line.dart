@@ -142,7 +142,12 @@ class BufferLine with IndexedItem {
 
   /// Erase cells whose index satisfies [start] <= index < [end]. Erased cells
   /// are filled with [style].
-  void eraseRange(int start, int end, CursorStyle style) {
+  void eraseRange(
+    int start,
+    int end,
+    CursorStyle style, {
+    Set<CellAnchor> preservedAnchors = const <CellAnchor>{},
+  }) {
     // reset cell one to the left if start is second cell of a wide char
     if (start > 0 && getWidth(start - 1) == 2) {
       eraseCell(start - 1, style);
@@ -158,12 +163,13 @@ class BufferLine with IndexedItem {
       eraseCell(i, style);
     }
 
-    // Erased cells no longer own any anchored content (hyperlinks, in-flight
-    // Kitty image placements, etc.). Detach anchors in the erased range so
-    // asynchronous image decodes that complete after the erase don't recreate
-    // stale content, and hyperlink hit-testing does not resolve cleared text.
+    // Erased cells no longer own anchored text/cell-image content. Physical
+    // Kitty placements are independent terminal layers and are explicitly
+    // preserved by the buffer until a graphics delete or buffer reset.
     for (final anchor in _anchors.toList()) {
-      if (anchor.x >= start && anchor.x < end) {
+      if (anchor.x >= start &&
+          anchor.x < end &&
+          !preservedAnchors.contains(anchor)) {
         anchor.dispose();
       }
     }
