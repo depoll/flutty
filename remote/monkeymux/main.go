@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.115"
+	monkeyMuxVersion                  = "0.1.116"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -207,7 +207,12 @@ var (
 	errRunCommandTimeout      = errors.New("command timed out")
 )
 
-var simulateForegroundResize = func(window *muxWindow, width int, height int) {
+var simulateForegroundResize = func(
+	window *muxWindow,
+	width int,
+	height int,
+	restoreBoundary func(func()),
+) {
 	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
 		return
 	}
@@ -225,7 +230,17 @@ var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 		// Leave the PTY at a temporary size long enough for TUIs that ignore
 		// same-size SIGWINCH events to observe a real resize before restoring.
 		time.AfterFunc(foregroundRedrawResizeDelay, func() {
-			window.resizePtyIfCurrent(generation, width, height)
+			if window.resizeGeneration.Load() != generation {
+				return
+			}
+			restore := func() {
+				window.resizePtyIfCurrent(generation, width, height)
+			}
+			if restoreBoundary != nil {
+				restoreBoundary(restore)
+				return
+			}
+			restore()
 		})
 		return
 	}
@@ -525,11 +540,24 @@ type muxWindow struct {
 	alert                                bool
 	closed                               bool
 	redrawForwardingPaused               bool
+	redrawForwardingCapturingSettled     bool
 	redrawForwardingGeneration           int
 	redrawForwardingReplay               []byte
 	redrawForwardingBuffer               []byte
 	redrawForwardingFailoverBuffer       []byte
 	redrawForwardingSecondaryBuffer      []byte
+	redrawForwardingFallbackBuffer       []byte
+	redrawForwardingFallbackFailover     []byte
+	redrawForwardingFallbackSecondary    []byte
+	redrawForwardingSettledBuffer        []byte
+	redrawForwardingSettledFailover      []byte
+	redrawForwardingSettledSecondary     []byte
+	redrawForwardingHasSettledOutput     bool
+	redrawForwardingMustPreserveFallback bool
+	redrawForwardingProcessGroup         int
+	redrawForwardingCommand              string
+	redrawForwardingPrimaryQueryBuffer   []byte
+	redrawForwardingFailoverQueryBuffer  []byte
 	redrawForwardingQueryBuffer          []byte
 	redrawForwardingPrimaryConn          net.Conn
 	redrawForwardingPrimaryNeedsFailover bool
@@ -546,6 +574,8 @@ type muxWindow struct {
 	pendingTerminalQueryCarry      []byte
 	secondaryQueryCarry            []byte
 	secondaryQueryPrimary          net.Conn
+	secondaryQueryPrimaryDelivered int
+	secondaryQueryPrimaryCommitted int
 	queryUtf8Remaining             int
 	lastForwardedTerminalQueries   []byte
 	// Kitty graphics image transmissions retained for replay on reattach.
@@ -3804,6 +3834,8 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 			)
 			window.secondaryQueryCarry = nil
 			window.secondaryQueryPrimary = nil
+			window.secondaryQueryPrimaryDelivered = 0
+			window.secondaryQueryPrimaryCommitted = 0
 		}
 		window.appendPendingTerminalQueriesLocked(forwarded)
 	} else if len(window.pendingTerminalQueryCarry) > 0 {
@@ -3825,6 +3857,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	if shouldWrite {
 		hadQueryCarry := len(window.secondaryQueryCarry) > 0
 		queryCarry := append([]byte(nil), window.secondaryQueryCarry...)
+		queryCarryDelivered := window.secondaryQueryPrimaryDelivered
 		queryPrimaryMissing := false
 		if hadQueryCarry && window.secondaryQueryPrimary != nil {
 			if s.isAttachConnectionLocked(window.secondaryQueryPrimary) {
@@ -3857,21 +3890,95 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 			if !hadQueryCarry || queryPrimaryMissing {
 				window.secondaryQueryPrimary = attach
 			}
+			if !window.redrawForwardingPaused ||
+				window.redrawForwardingCapturingSettled {
+				window.secondaryQueryPrimaryDelivered =
+					len(window.secondaryQueryCarry)
+				if !window.redrawForwardingPaused {
+					window.secondaryQueryPrimaryCommitted =
+						window.secondaryQueryPrimaryDelivered
+				}
+			}
 		} else {
 			window.secondaryQueryPrimary = nil
+			window.secondaryQueryPrimaryDelivered = 0
+			window.secondaryQueryPrimaryCommitted = 0
 		}
 		if len(forwarded) > 0 && window.redrawForwardingPaused {
+			buffered := forwarded
+			failoverBuffered := failoverForwarded
+			secondaryBuffered := secondaryForwarded
+			primaryQueries := terminalQueries
+			if hadQueryCarry &&
+				!queryPrimaryMissing &&
+				queryCarryDelivered > 0 &&
+				bytes.HasPrefix(primaryQueries, queryCarry) {
+				delivered := min(queryCarryDelivered, len(queryCarry))
+				primaryQueries = primaryQueries[delivered:]
+			}
+			window.redrawForwardingPrimaryQueryBuffer = append(
+				window.redrawForwardingPrimaryQueryBuffer,
+				primaryQueries...,
+			)
+			window.redrawForwardingFailoverQueryBuffer = append(
+				window.redrawForwardingFailoverQueryBuffer,
+				terminalQueries...,
+			)
+			if !window.redrawForwardingCapturingSettled {
+				window.redrawForwardingFallbackBuffer = append(
+					window.redrawForwardingFallbackBuffer,
+					forwarded...,
+				)
+				window.redrawForwardingFallbackFailover = append(
+					window.redrawForwardingFallbackFailover,
+					failoverForwarded...,
+				)
+				window.redrawForwardingFallbackSecondary = append(
+					window.redrawForwardingFallbackSecondary,
+					secondaryForwarded...,
+				)
+				buffered = primaryQueries
+				failoverBuffered = terminalQueries
+				secondaryBuffered = nil
+			} else if hadQueryCarry &&
+				!queryPrimaryMissing &&
+				queryCarryDelivered < len(queryCarry) {
+				buffered = append(
+					append(
+						[]byte(nil),
+						queryCarry[queryCarryDelivered:]...,
+					),
+					buffered...,
+				)
+			}
+			if window.redrawForwardingCapturingSettled {
+				window.redrawForwardingSettledBuffer = append(
+					window.redrawForwardingSettledBuffer,
+					forwarded...,
+				)
+				window.redrawForwardingSettledFailover = append(
+					window.redrawForwardingSettledFailover,
+					failoverForwarded...,
+				)
+				window.redrawForwardingSettledSecondary = append(
+					window.redrawForwardingSettledSecondary,
+					secondaryForwarded...,
+				)
+				if len(secondaryForwarded) > 0 {
+					window.redrawForwardingHasSettledOutput = true
+				}
+			}
 			window.redrawForwardingBuffer = append(
 				window.redrawForwardingBuffer,
-				forwarded...,
+				buffered...,
 			)
 			window.redrawForwardingFailoverBuffer = append(
 				window.redrawForwardingFailoverBuffer,
-				failoverForwarded...,
+				failoverBuffered...,
 			)
 			window.redrawForwardingSecondaryBuffer = append(
 				window.redrawForwardingSecondaryBuffer,
-				secondaryForwarded...,
+				secondaryBuffered...,
 			)
 			window.redrawForwardingQueryBuffer = append(
 				window.redrawForwardingQueryBuffer,
@@ -6104,7 +6211,7 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
 		s.pauseAttachForwardingForRedrawLocked(window, width, height)
-		simulateForegroundResize(window, width, height)
+		s.simulateForegroundResizeLocked(window, width, height)
 		attach = s.attachConn
 		modeReplay = window.modeReplayForAttachedTerminalLocked()
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
@@ -6199,7 +6306,11 @@ func (s *muxServer) deferAttachReplayForRedrawLocked(
 		window.redrawForwardingReplay[:0],
 		replay...,
 	)
-	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
+	s.simulateForegroundResizeLocked(
+		window,
+		s.publishedWidth,
+		s.publishedHeight,
+	)
 	return true
 }
 
@@ -6217,7 +6328,11 @@ func (s *muxServer) simulateForegroundResizeIfAttached(
 		s.publishedWidth,
 		s.publishedHeight,
 	)
-	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
+	s.simulateForegroundResizeLocked(
+		window,
+		s.publishedWidth,
+		s.publishedHeight,
+	)
 	return true
 }
 
@@ -6232,8 +6347,30 @@ func (s *muxServer) simulateForegroundResizeIfAnyAttached(window *muxWindow) boo
 		s.publishedWidth,
 		s.publishedHeight,
 	)
-	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
+	s.simulateForegroundResizeLocked(
+		window,
+		s.publishedWidth,
+		s.publishedHeight,
+	)
 	return true
+}
+
+// simulateForegroundResizeLocked hides the temporary-size redraw and starts
+// capturing output only when the PTY returns to its canonical size.
+// The caller holds s.mu.
+func (s *muxServer) simulateForegroundResizeLocked(
+	window *muxWindow,
+	width int,
+	height int,
+) {
+	if window == nil {
+		return
+	}
+	windowID := window.id
+	generation := window.redrawForwardingGeneration
+	simulateForegroundResize(window, width, height, func(restore func()) {
+		s.beginSettledRedrawForwarding(windowID, generation, restore)
+	})
 }
 
 func (s *muxServer) pauseAttachForwardingForRedrawLocked(
@@ -6250,20 +6387,61 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 	if _, _, ok := foregroundRedrawTemporarySize(width, height); !ok {
 		return
 	}
+	s.resetPausedRedrawBuffersLocked(window, true)
+	window.redrawForwardingCapturingSettled = false
+	window.redrawForwardingPaused = true
+	window.redrawForwardingGeneration += 1
+	windowID := window.id
+	generation := window.redrawForwardingGeneration
+	time.AfterFunc(foregroundRedrawForwardingPause, func() {
+		s.resumePausedAttachForwarding(windowID, generation)
+	})
+}
+
+// resetPausedRedrawBuffersLocked discards superseded screen paint while
+// retaining terminal queries that still need a client response.
+// The caller holds s.mu.
+func (s *muxServer) resetPausedRedrawBuffersLocked(
+	window *muxWindow,
+	discardFallback bool,
+) {
+	wasPaused := window.redrawForwardingPaused
 	preservedQueries := append(
 		[]byte(nil),
 		window.redrawForwardingQueryBuffer...,
 	)
+	preservedPrimaryQueries := append(
+		[]byte(nil),
+		window.redrawForwardingPrimaryQueryBuffer...,
+	)
+	preservedFailoverQueries := append(
+		[]byte(nil),
+		window.redrawForwardingFailoverQueryBuffer...,
+	)
+	if len(preservedQueries) > 0 && len(preservedPrimaryQueries) == 0 {
+		preservedPrimaryQueries = append(preservedPrimaryQueries, preservedQueries...)
+	}
+	if len(preservedQueries) > 0 && len(preservedFailoverQueries) == 0 {
+		preservedFailoverQueries = append(preservedFailoverQueries, preservedQueries...)
+	}
 	preservedPrimary := window.redrawForwardingPrimaryConn
 	window.redrawForwardingBuffer = append(
 		window.redrawForwardingBuffer[:0],
-		preservedQueries...,
+		preservedPrimaryQueries...,
 	)
 	window.redrawForwardingFailoverBuffer = append(
 		window.redrawForwardingFailoverBuffer[:0],
-		preservedQueries...,
+		preservedFailoverQueries...,
 	)
 	window.redrawForwardingSecondaryBuffer = nil
+	window.redrawForwardingPrimaryQueryBuffer = append(
+		window.redrawForwardingPrimaryQueryBuffer[:0],
+		preservedPrimaryQueries...,
+	)
+	window.redrawForwardingFailoverQueryBuffer = append(
+		window.redrawForwardingFailoverQueryBuffer[:0],
+		preservedFailoverQueries...,
+	)
 	window.redrawForwardingQueryBuffer = append(
 		window.redrawForwardingQueryBuffer[:0],
 		preservedQueries...,
@@ -6277,13 +6455,68 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 	window.redrawForwardingPrimaryNeedsFailover =
 		len(preservedQueries) > 0 &&
 			!s.isAttachConnectionLocked(preservedPrimary)
-	window.redrawForwardingPaused = true
-	window.redrawForwardingGeneration += 1
-	windowID := window.id
-	generation := window.redrawForwardingGeneration
-	time.AfterFunc(foregroundRedrawForwardingPause, func() {
-		s.resumePausedAttachForwarding(windowID, generation)
-	})
+	if discardFallback {
+		carryFallback :=
+			wasPaused &&
+				(window.redrawForwardingMustPreserveFallback ||
+					!window.foregroundProcessStillRedrawsLocked(
+						window.redrawForwardingProcessGroup,
+						window.redrawForwardingCommand,
+					))
+		if carryFallback {
+			window.redrawForwardingMustPreserveFallback = true
+			window.redrawForwardingFallbackBuffer = append(
+				window.redrawForwardingFallbackBuffer,
+				window.redrawForwardingSettledBuffer...,
+			)
+			window.redrawForwardingFallbackFailover = append(
+				window.redrawForwardingFallbackFailover,
+				window.redrawForwardingSettledFailover...,
+			)
+			window.redrawForwardingFallbackSecondary = append(
+				window.redrawForwardingFallbackSecondary,
+				window.redrawForwardingSettledSecondary...,
+			)
+		} else {
+			if !wasPaused {
+				window.redrawForwardingMustPreserveFallback = false
+			}
+			window.redrawForwardingFallbackBuffer = nil
+			window.redrawForwardingFallbackFailover = nil
+			window.redrawForwardingFallbackSecondary = nil
+		}
+		window.redrawForwardingSettledBuffer = nil
+		window.redrawForwardingSettledFailover = nil
+		window.redrawForwardingSettledSecondary = nil
+		window.redrawForwardingHasSettledOutput = false
+		window.redrawForwardingProcessGroup =
+			window.foregroundProcessGroupLocked()
+		window.redrawForwardingCommand = window.currentCommandLocked()
+	}
+	if wasPaused {
+		window.secondaryQueryPrimaryDelivered =
+			window.secondaryQueryPrimaryCommitted
+	}
+}
+
+func (s *muxServer) beginSettledRedrawForwarding(
+	windowID string,
+	generation int,
+	restore func(),
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed {
+		return
+	}
+	restore()
+	if !window.redrawForwardingPaused ||
+		window.redrawForwardingGeneration != generation {
+		return
+	}
+	s.resetPausedRedrawBuffersLocked(window, false)
+	window.redrawForwardingCapturingSettled = true
 }
 
 func (s *muxServer) resumePausedAttachForwarding(
@@ -6294,6 +6527,12 @@ func (s *muxServer) resumePausedAttachForwarding(
 	var buffered []byte
 	var failoverBuffered []byte
 	var secondaryBuffered []byte
+	var fallbackBuffered []byte
+	var fallbackFailover []byte
+	var fallbackSecondary []byte
+	var settledBuffered []byte
+	var settledFailover []byte
+	var settledSecondary []byte
 	var queryData []byte
 	var primary net.Conn
 	var primaryNeedsFailover bool
@@ -6322,22 +6561,102 @@ func (s *muxServer) resumePausedAttachForwarding(
 		[]byte(nil),
 		window.redrawForwardingSecondaryBuffer...,
 	)
-	queryData = append([]byte(nil), window.redrawForwardingQueryBuffer...)
+	fallbackBuffered = append(
+		[]byte(nil),
+		window.redrawForwardingFallbackBuffer...,
+	)
+	fallbackFailover = append(
+		[]byte(nil),
+		window.redrawForwardingFallbackFailover...,
+	)
+	fallbackSecondary = append(
+		[]byte(nil),
+		window.redrawForwardingFallbackSecondary...,
+	)
+	settledBuffered = append(
+		[]byte(nil),
+		window.redrawForwardingSettledBuffer...,
+	)
+	settledFailover = append(
+		[]byte(nil),
+		window.redrawForwardingSettledFailover...,
+	)
+	settledSecondary = append(
+		[]byte(nil),
+		window.redrawForwardingSettledSecondary...,
+	)
+	hasFallbackData :=
+		len(fallbackBuffered) > 0 ||
+			len(fallbackFailover) > 0 ||
+			len(fallbackSecondary) > 0
+	hasSettledOutput := window.redrawForwardingHasSettledOutput
+	preserveFallback :=
+		hasFallbackData &&
+			(window.redrawForwardingMustPreserveFallback ||
+				!hasSettledOutput ||
+				!window.foregroundProcessStillRedrawsLocked(
+					window.redrawForwardingProcessGroup,
+					window.redrawForwardingCommand,
+				))
+	if preserveFallback {
+		buffered = append(fallbackBuffered, settledBuffered...)
+		failoverBuffered = append(fallbackFailover, settledFailover...)
+		secondaryBuffered = append(fallbackSecondary, settledSecondary...)
+	}
 	primary = window.redrawForwardingPrimaryConn
 	if !s.isAttachConnectionLocked(primary) {
 		primary = s.attachConn
 		primaryNeedsFailover = true
 	}
+	if len(window.secondaryQueryCarry) > 0 {
+		carry := window.secondaryQueryCarry
+		if window.secondaryQueryPrimary != primary {
+			window.secondaryQueryPrimaryDelivered = 0
+			window.secondaryQueryPrimaryCommitted = 0
+		}
+		committed := min(window.secondaryQueryPrimaryCommitted, len(carry))
+		delivered := min(window.secondaryQueryPrimaryDelivered, len(carry))
+		if delivered == committed {
+			missing := carry[committed:]
+			if !bytes.HasSuffix(buffered, missing) {
+				buffered = append(buffered, missing...)
+			}
+		}
+		if !bytes.HasSuffix(failoverBuffered, carry) {
+			failoverBuffered = append(failoverBuffered, carry...)
+		}
+		window.secondaryQueryPrimaryDelivered = len(carry)
+		window.secondaryQueryPrimaryCommitted = len(carry)
+		window.secondaryQueryPrimary = primary
+	}
+	queryData = append([]byte(nil), window.redrawForwardingQueryBuffer...)
 	primaryNeedsFailover =
 		primaryNeedsFailover || window.redrawForwardingPrimaryNeedsFailover
 	window.redrawForwardingReplay = nil
 	window.redrawForwardingBuffer = nil
 	window.redrawForwardingFailoverBuffer = nil
 	window.redrawForwardingSecondaryBuffer = nil
+	window.redrawForwardingFallbackBuffer = nil
+	window.redrawForwardingFallbackFailover = nil
+	window.redrawForwardingFallbackSecondary = nil
+	window.redrawForwardingSettledBuffer = nil
+	window.redrawForwardingSettledFailover = nil
+	window.redrawForwardingSettledSecondary = nil
+	window.redrawForwardingHasSettledOutput = false
+	window.redrawForwardingMustPreserveFallback = false
+	window.redrawForwardingProcessGroup = 0
+	window.redrawForwardingCommand = ""
+	window.redrawForwardingPrimaryQueryBuffer = nil
+	window.redrawForwardingFailoverQueryBuffer = nil
 	window.redrawForwardingQueryBuffer = nil
 	window.redrawForwardingPrimaryConn = nil
 	window.redrawForwardingPrimaryNeedsFailover = false
 	window.redrawForwardingPaused = false
+	window.redrawForwardingCapturingSettled = false
+	if len(window.secondaryQueryCarry) > 0 {
+		window.secondaryQueryPrimaryCommitted =
+			window.secondaryQueryPrimaryDelivered
+	}
 	refreshPendingFocus =
 		s.pendingFocusRefreshConn != nil &&
 			s.pendingFocusRefreshConn == s.attachConn &&
@@ -6599,6 +6918,35 @@ func (w *muxWindow) usesForegroundRedrawReplayLocked() bool {
 		return false
 	}
 	return w.alternateScreenModeActiveLocked() || w.agentToolLocked() != ""
+}
+
+func (w *muxWindow) foregroundProcessStillRedrawsLocked(
+	initialProcessGroup int,
+	initialCommand string,
+) bool {
+	if w == nil {
+		return false
+	}
+	currentCommand := w.currentCommandLocked()
+	currentProcessGroup := w.foregroundProcessGroupLocked()
+	if runtime.GOOS != "windows" &&
+		initialProcessGroup > 0 &&
+		currentProcessGroup > 0 &&
+		currentProcessGroup != initialProcessGroup {
+		return false
+	}
+	if w.alternateScreenModeActiveLocked() {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		return agentToolFromCommandName(currentCommand) != "" &&
+			strings.TrimSpace(currentCommand) ==
+				strings.TrimSpace(initialCommand)
+	}
+	if strings.TrimSpace(currentCommand) != "" {
+		return agentToolFromCommandName(currentCommand) != ""
+	}
+	return w.agentToolLocked() != ""
 }
 
 func (w *muxWindow) alternateScreenModeActiveLocked() bool {

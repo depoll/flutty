@@ -96,7 +96,7 @@ func withStubbedRestoreRedraw(t *testing.T) *[]func() {
 		mu.Unlock()
 	}
 	// Keep redraw side effects inert and off real PTYs/process groups.
-	simulateForegroundResize = func(*muxWindow, int, int) {}
+	simulateForegroundResize = func(*muxWindow, int, int, func(func())) {}
 	signalForegroundResize = func(int) {}
 	foregroundProcessGroupForWindow = func(*muxWindow) int { return 0 }
 	return actions
@@ -110,7 +110,12 @@ func TestRestoreArmsForegroundRedrawFollowUps(t *testing.T) {
 	actions := withStubbedRestoreRedraw(t)
 
 	var simulated []string
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		_ func(func()),
+	) {
 		simulated = append(simulated, window.id)
 	}
 
@@ -159,7 +164,12 @@ func TestRestoreRedrawFollowUpSkipsInactiveOrDetachedWindow(t *testing.T) {
 	withStubbedRestoreRedraw(t)
 
 	var simulated []string
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		_ func(func()),
+	) {
 		simulated = append(simulated, window.id)
 	}
 
@@ -213,7 +223,12 @@ func TestRestoreRedrawUsesCurrentPrimaryClientSize(t *testing.T) {
 	withStubbedRestoreRedraw(t)
 
 	var simulated []string
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		_ func(func()),
+	) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
