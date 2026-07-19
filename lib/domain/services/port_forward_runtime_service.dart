@@ -1,5 +1,10 @@
+import 'dart:async';
+
 import '../../data/database/database.dart';
 import 'ssh_service.dart';
+
+final _portForwardRuntimeOperations = <int, Future<void>>{};
+final _deletedPortForwardCreatedAt = <int, DateTime>{};
 
 /// Outcome of applying a saved port forward to a connected SSH session.
 enum PortForwardActivationStatus {
@@ -14,6 +19,9 @@ enum PortForwardActivationStatus {
 
   /// A connected session was available, but the forward could not start.
   failed,
+
+  /// The saved rule was deleted before this queued activation could run.
+  superseded,
 }
 
 /// Result of applying a saved port forward to a connected SSH session.
@@ -85,9 +93,36 @@ Future<PortForwardActivationResult> activatePortForwardOnConnectedSession({
   required PortForward portForward,
   PortForward? previous,
   int? preferredConnectionId,
+}) {
+  final deletedCreatedAt = _deletedPortForwardCreatedAt[portForward.id];
+  if (deletedCreatedAt != null && deletedCreatedAt != portForward.createdAt) {
+    _deletedPortForwardCreatedAt.remove(portForward.id);
+  }
+  return _runPortForwardRuntimeOperation(portForward.id, () {
+    if (_deletedPortForwardCreatedAt[portForward.id] == portForward.createdAt) {
+      return Future<PortForwardActivationResult>.value(
+        const PortForwardActivationResult(
+          status: PortForwardActivationStatus.superseded,
+        ),
+      );
+    }
+    return _activatePortForwardOnConnectedSession(
+      sessions: sessions,
+      portForward: portForward,
+      previous: previous,
+      preferredConnectionId: preferredConnectionId,
+    );
+  });
+}
+
+Future<PortForwardActivationResult> _activatePortForwardOnConnectedSession({
+  required ActiveSessionsNotifier sessions,
+  required PortForward portForward,
+  PortForward? previous,
+  int? preferredConnectionId,
 }) async {
   if (previous != null && previous.hostId != portForward.hostId) {
-    await stopPortForwardOnConnectedSessions(
+    await _stopPortForwardOnConnectedSessions(
       sessions: sessions,
       portForward: previous,
     );
@@ -159,6 +194,36 @@ Future<int> stopPortForwardOnConnectedSessions({
   required ActiveSessionsNotifier sessions,
   required PortForward portForward,
 }) async {
+  _deletedPortForwardCreatedAt[portForward.id] = portForward.createdAt;
+  var completed = false;
+  try {
+    final stoppedCount = await _runPortForwardRuntimeOperation(
+      portForward.id,
+      () => _stopPortForwardOnConnectedSessions(
+        sessions: sessions,
+        portForward: portForward,
+      ),
+    );
+    completed = true;
+    return stoppedCount;
+  } finally {
+    if (!completed) {
+      restorePortForwardAfterFailedDeletion(portForward);
+    }
+  }
+}
+
+/// Clears a deletion tombstone when the database deletion did not complete.
+void restorePortForwardAfterFailedDeletion(PortForward portForward) {
+  if (_deletedPortForwardCreatedAt[portForward.id] == portForward.createdAt) {
+    _deletedPortForwardCreatedAt.remove(portForward.id);
+  }
+}
+
+Future<int> _stopPortForwardOnConnectedSessions({
+  required ActiveSessionsNotifier sessions,
+  required PortForward portForward,
+}) async {
   var stoppedCount = 0;
   for (final session in _connectedSessionsForHost(
     sessions,
@@ -173,6 +238,31 @@ Future<int> stopPortForwardOnConnectedSessions({
     }
   }
   return stoppedCount;
+}
+
+Future<T> _runPortForwardRuntimeOperation<T>(
+  int portForwardId,
+  Future<T> Function() operation,
+) async {
+  while (true) {
+    final pendingOperation = _portForwardRuntimeOperations[portForwardId];
+    if (pendingOperation == null) {
+      break;
+    }
+    await pendingOperation;
+  }
+
+  final gate = Completer<void>();
+  final gateFuture = gate.future;
+  _portForwardRuntimeOperations[portForwardId] = gateFuture;
+  try {
+    return await operation();
+  } finally {
+    if (identical(_portForwardRuntimeOperations[portForwardId], gateFuture)) {
+      unawaited(_portForwardRuntimeOperations.remove(portForwardId));
+    }
+    gate.complete();
+  }
 }
 
 List<SshSession> _connectedSessionsForHost(

@@ -234,6 +234,14 @@ void main() {
     await tester.tap(find.text('Add'));
     await tester.pump();
 
+    expect(find.text('Expose remote port forward?'), findsOneWidget);
+    expect(
+      find.textContaining('devices that can access the SSH host'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Allow'));
+    await tester.pump();
+
     await tester.binding.handlePopRoute();
     await tester.pump();
     expect(find.text('Add Port Forward'), findsOneWidget);

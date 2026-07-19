@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,12 +14,49 @@ class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockRemoteForward extends Mock implements SSHRemoteForward {}
 
+class _MockServerSocket extends Mock implements ServerSocket {}
+
+class _ShortTimeoutSshSession extends SshSession {
+  _ShortTimeoutSshSession({
+    required super.connectionId,
+    required super.hostId,
+    required super.client,
+    this.socketBinder,
+  }) : super(
+         config: const SshConnectionConfig(
+           hostname: 'example.com',
+           port: 22,
+           username: 'user',
+         ),
+       );
+
+  final Future<ServerSocket> Function(Object host, int port, {bool v6Only})?
+  socketBinder;
+
+  @override
+  Duration get portForwardStartTimeout => const Duration(milliseconds: 10);
+
+  @override
+  Future<ServerSocket> bindPortForwardServerSocket(
+    Object host,
+    int port, {
+    bool v6Only = false,
+  }) {
+    final binder = socketBinder;
+    if (binder != null) {
+      return binder(host, port, v6Only: v6Only);
+    }
+    return super.bindPortForwardServerSocket(host, port, v6Only: v6Only);
+  }
+}
+
 class _RecordingSshSession extends SshSession {
   _RecordingSshSession({
     required super.connectionId,
     required super.hostId,
     required super.client,
     this.startSucceeds = true,
+    this.replaceGate,
   }) : super(
          config: const SshConnectionConfig(
            hostname: 'example.com',
@@ -28,6 +66,7 @@ class _RecordingSshSession extends SshSession {
        );
 
   final bool startSucceeds;
+  final Completer<void>? replaceGate;
   final Map<int, ActiveTunnelInfo> tunnels = {};
   final List<int> localStarts = [];
   final List<int> remoteStarts = [];
@@ -98,6 +137,7 @@ class _RecordingSshSession extends SshSession {
 
   @override
   Future<bool> replacePortForward(PortForward portForward) async {
+    await replaceGate?.future;
     await stopForward(portForward.id);
     return startPortForward(portForward);
   }
@@ -218,6 +258,55 @@ void main() {
       expect(newer.localStarts, isEmpty);
     });
 
+    test('serializes concurrent activation across sibling sessions', () async {
+      final older = SshSession(
+        connectionId: 7,
+        hostId: 10,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'user',
+        ),
+      );
+      final newer = SshSession(
+        connectionId: 8,
+        hostId: 10,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'user',
+        ),
+      );
+      addTearDown(older.stopAllForwards);
+      addTearDown(newer.stopAllForwards);
+      final sessions = _TestActiveSessionsNotifier([older, newer]);
+      final portForward = _portForward(localPort: 0);
+
+      final results = await Future.wait([
+        activatePortForwardOnConnectedSession(
+          sessions: sessions,
+          portForward: portForward,
+          preferredConnectionId: older.connectionId,
+        ),
+        activatePortForwardOnConnectedSession(
+          sessions: sessions,
+          portForward: portForward,
+          preferredConnectionId: newer.connectionId,
+        ),
+      ]);
+
+      expect(
+        results.map((result) => result.status),
+        containsAll([
+          PortForwardActivationStatus.started,
+          PortForwardActivationStatus.alreadyActive,
+        ]),
+      );
+      expect(older.activeTunnels.length + newer.activeTunnels.length, 1);
+    });
+
     test('restarts an active rule after its endpoints change', () async {
       final session = _RecordingSshSession(
         connectionId: 7,
@@ -243,6 +332,47 @@ void main() {
       expect(result.status, PortForwardActivationStatus.started);
       expect(session.stops, [1]);
       expect(session.localStarts, [1]);
+      expect(session.activeTunnels.single.remotePort, 3000);
+    });
+
+    test('preserves an edit restart ahead of a later auto-start', () async {
+      final replaceGate = Completer<void>();
+      final session = _RecordingSshSession(
+        connectionId: 7,
+        hostId: 10,
+        client: _MockSshClient(),
+        replaceGate: replaceGate,
+      );
+      addTearDown(session.changes.close);
+      session.tunnels[1] = const ActiveTunnelInfo(
+        portForwardId: 1,
+        localHost: '127.0.0.1',
+        localPort: 8080,
+        remoteHost: 'localhost',
+        remotePort: 80,
+        isLocal: true,
+      );
+      final previous = _portForward();
+      final current = _portForward(remotePort: 3000);
+      final sessions = _TestActiveSessionsNotifier([session]);
+
+      final editFuture = activatePortForwardOnConnectedSession(
+        sessions: sessions,
+        previous: previous,
+        portForward: current,
+      );
+      await Future<void>.delayed(Duration.zero);
+      final autoStartFuture = activatePortForwardOnConnectedSession(
+        sessions: sessions,
+        portForward: current,
+      );
+      replaceGate.complete();
+
+      expect((await editFuture).status, PortForwardActivationStatus.started);
+      expect(
+        (await autoStartFuture).status,
+        PortForwardActivationStatus.alreadyActive,
+      );
       expect(session.activeTunnels.single.remotePort, 3000);
     });
 
@@ -308,6 +438,7 @@ void main() {
   });
 
   test('stops local and remote instances across connected sessions', () async {
+    const portForwardId = 50;
     final localSession = _RecordingSshSession(
       connectionId: 7,
       hostId: 10,
@@ -320,16 +451,16 @@ void main() {
     );
     addTearDown(localSession.changes.close);
     addTearDown(remoteSession.changes.close);
-    localSession.tunnels[1] = const ActiveTunnelInfo(
-      portForwardId: 1,
+    localSession.tunnels[portForwardId] = const ActiveTunnelInfo(
+      portForwardId: portForwardId,
       localHost: '127.0.0.1',
       localPort: 8080,
       remoteHost: 'localhost',
       remotePort: 80,
       isLocal: true,
     );
-    remoteSession.tunnels[1] = const ActiveTunnelInfo(
-      portForwardId: 1,
+    remoteSession.tunnels[portForwardId] = const ActiveTunnelInfo(
+      portForwardId: portForwardId,
       localHost: '127.0.0.1',
       localPort: 22,
       remoteHost: '127.0.0.1',
@@ -339,12 +470,38 @@ void main() {
 
     final stopped = await stopPortForwardOnConnectedSessions(
       sessions: _TestActiveSessionsNotifier([localSession, remoteSession]),
-      portForward: _portForward(),
+      portForward: _portForward(id: portForwardId),
     );
 
     expect(stopped, 2);
-    expect(localSession.stops, [1]);
-    expect(remoteSession.stops, [1]);
+    expect(localSession.stops, [portForwardId]);
+    expect(remoteSession.stops, [portForwardId]);
+  });
+
+  test('restores activation when database deletion fails', () async {
+    final portForward = _portForward(id: 51);
+    final sessions = _TestActiveSessionsNotifier(const []);
+
+    await stopPortForwardOnConnectedSessions(
+      sessions: sessions,
+      portForward: portForward,
+    );
+    final blockedActivation = await activatePortForwardOnConnectedSession(
+      sessions: sessions,
+      portForward: portForward,
+    );
+    expect(blockedActivation.status, PortForwardActivationStatus.superseded);
+
+    restorePortForwardAfterFailedDeletion(portForward);
+
+    final restoredActivation = await activatePortForwardOnConnectedSession(
+      sessions: sessions,
+      portForward: portForward,
+    );
+    expect(
+      restoredActivation.status,
+      PortForwardActivationStatus.noConnectedSession,
+    );
   });
 
   test('applies edits to a manually started non-auto rule', () {
@@ -442,6 +599,7 @@ void main() {
   });
 
   test('delete waits for and stops a pending remote forward', () async {
+    const portForwardId = 60;
     final client = _MockSshClient();
     final remoteForward = _MockRemoteForward();
     final pendingForward = Completer<SSHRemoteForward?>();
@@ -460,7 +618,11 @@ void main() {
       ),
     );
     addTearDown(session.close);
-    final portForward = _portForward(forwardType: 'remote', remotePort: 8022);
+    final portForward = _portForward(
+      id: portForwardId,
+      forwardType: 'remote',
+      remotePort: 8022,
+    );
     final sessions = _TestActiveSessionsNotifier([session]);
 
     final startFuture = session.startPortForward(portForward);
@@ -471,15 +633,24 @@ void main() {
       sessions: sessions,
       portForward: portForward,
     );
+    final staleActivationFuture = activatePortForwardOnConnectedSession(
+      sessions: sessions,
+      portForward: portForward,
+    );
     pendingForward.complete(remoteForward);
 
     expect(await startFuture, isTrue);
     expect(await stopFuture, 1);
+    expect(
+      (await staleActivationFuture).status,
+      PortForwardActivationStatus.superseded,
+    );
     expect(session.isPortForwardActive(portForward.id), isFalse);
     verify(remoteForward.close).called(1);
   });
 
   test('edit replaces a pending remote forward atomically', () async {
+    const portForwardId = 61;
     final client = _MockSshClient();
     final oldRemoteForward = _MockRemoteForward();
     final newRemoteForward = _MockRemoteForward();
@@ -504,11 +675,13 @@ void main() {
     );
     addTearDown(session.close);
     final previous = _portForward(
+      id: portForwardId,
       forwardType: 'remote',
       remotePort: 8022,
       autoStart: false,
     );
     final current = _portForward(
+      id: portForwardId,
       forwardType: 'remote',
       remotePort: 9022,
       autoStart: false,
@@ -529,6 +702,68 @@ void main() {
     expect(result.status, PortForwardActivationStatus.started);
     expect(session.activeTunnels.single.remotePort, 9022);
     verify(oldRemoteForward.close).called(1);
+  });
+
+  test('remote timeout releases the gate and closes a late forward', () async {
+    final client = _MockSshClient();
+    final lateRemoteForward = _MockRemoteForward();
+    final pendingForward = Completer<SSHRemoteForward?>();
+    _stubRemoteForward(lateRemoteForward, port: 8022);
+    when(
+      () => client.forwardRemote(host: 'localhost', port: 8022),
+    ).thenAnswer((_) => pendingForward.future);
+    final session = _ShortTimeoutSshSession(
+      connectionId: 7,
+      hostId: 10,
+      client: client,
+    );
+    addTearDown(session.close);
+
+    expect(
+      await session.startRemoteForward(
+        portForwardId: 1,
+        remoteHost: 'localhost',
+        remotePort: 8022,
+        localHost: 'localhost',
+        localPort: 22,
+      ),
+      isFalse,
+    );
+    await session.stopForward(1).timeout(const Duration(seconds: 1));
+
+    pendingForward.complete(lateRemoteForward);
+    await Future<void>.delayed(Duration.zero);
+    verify(lateRemoteForward.close).called(1);
+  });
+
+  test('local timeout releases the gate and closes a late socket', () async {
+    final client = _MockSshClient();
+    final lateServerSocket = _MockServerSocket();
+    final pendingSocket = Completer<ServerSocket>();
+    when(lateServerSocket.close).thenAnswer((_) async => lateServerSocket);
+    final session = _ShortTimeoutSshSession(
+      connectionId: 7,
+      hostId: 10,
+      client: client,
+      socketBinder: (_, _, {bool v6Only = false}) => pendingSocket.future,
+    );
+    addTearDown(session.close);
+
+    expect(
+      await session.startLocalForward(
+        portForwardId: 1,
+        localHost: 'slow.example.com',
+        localPort: 8080,
+        remoteHost: 'localhost',
+        remotePort: 80,
+      ),
+      isFalse,
+    );
+    await session.stopForward(1).timeout(const Duration(seconds: 1));
+
+    pendingSocket.complete(lateServerSocket);
+    await Future<void>.delayed(Duration.zero);
+    verify(lateServerSocket.close).called(1);
   });
 
   test('closing cancels a pending remote-forward request', () async {

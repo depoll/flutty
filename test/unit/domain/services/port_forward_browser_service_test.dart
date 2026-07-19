@@ -69,6 +69,17 @@ void main() {
     });
   });
 
+  group('isPortForwardLoopbackHost', () {
+    test('accepts explicit loopback addresses only', () {
+      expect(isPortForwardLoopbackHost('localhost'), isTrue);
+      expect(isPortForwardLoopbackHost('127.0.0.5'), isTrue);
+      expect(isPortForwardLoopbackHost('::1'), isTrue);
+      expect(isPortForwardLoopbackHost('monkeyssh.localhost'), isTrue);
+      expect(isPortForwardLoopbackHost('127.example.com'), isFalse);
+      expect(isPortForwardLoopbackHost('0.0.0.0'), isFalse);
+    });
+  });
+
   group('isPortForwardBrowserEntryUri', () {
     test('allows only loopback web URLs on valid ports', () {
       expect(

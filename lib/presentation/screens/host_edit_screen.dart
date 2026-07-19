@@ -2141,11 +2141,31 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
     if ((confirmed ?? false) && mounted) {
       final repo = ref.read(portForwardRepositoryProvider);
-      await stopPortForwardOnConnectedSessions(
-        sessions: ref.read(activeSessionsProvider.notifier),
-        portForward: pf,
-      );
-      await repo.delete(pf.id);
+      try {
+        await stopPortForwardOnConnectedSessions(
+          sessions: ref.read(activeSessionsProvider.notifier),
+          portForward: pf,
+        );
+        await repo.delete(pf.id);
+      } on Exception catch (error, stackTrace) {
+        restorePortForwardAfterFailedDeletion(pf);
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'port forwards',
+            context: ErrorDescription('while deleting a host port forward'),
+          ),
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not delete port forward. Try again.'),
+            ),
+          );
+        }
+        return;
+      }
 
       // Reload port forwards
       final updated = await repo.getByHostId(widget.hostId!);
