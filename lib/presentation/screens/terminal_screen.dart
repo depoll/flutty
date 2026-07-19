@@ -14149,9 +14149,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   tunnel.browserPort! <= 65535,
             )
             .map((tunnel) {
+              final sourcePort = tunnel.isAutomatic
+                  ? tunnel.remotePort
+                  : tunnel.localPort;
               final sourceUri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.localHost,
-                localPort: tunnel.localPort,
+                localHost: tunnel.isAutomatic ? 'localhost' : tunnel.localHost,
+                localPort: sourcePort,
               );
               final uri = buildPortForwardBrowserUriForBind(
                 localHost: tunnel.browserHost!,
@@ -14160,8 +14163,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               return _PortForwardBrowserOption(
                 uri: uri,
                 sourceUri: sourceUri,
-                port: tunnel.localPort,
-                title: sourceUri.authority,
+                port: sourcePort,
+                title: tunnel.isAutomatic ? uri.authority : sourceUri.authority,
               );
             })
             .toList(growable: false) ??

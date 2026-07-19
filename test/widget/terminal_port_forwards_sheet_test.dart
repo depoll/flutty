@@ -155,6 +155,17 @@ void main() {
       hostId: 10,
       client: _MockSshClient(),
     );
+    session.tunnels[-3000] = const ActiveTunnelInfo(
+      portForwardId: -3000,
+      localHost: '127.0.0.1',
+      localPort: 49152,
+      browserHost: 'dev-box.localhost',
+      browserPort: 49152,
+      remoteHost: 'localhost',
+      remotePort: 3000,
+      isLocal: true,
+      isAutomatic: true,
+    );
     addTearDown(session.changes.close);
     when(
       () => repository.watchByHostId(session.hostId),
@@ -195,6 +206,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Port Forwards'), findsOneWidget);
+    expect(find.text('detected automatically'), findsOneWidget);
+    expect(find.text('dev-box.localhost:49152'), findsOneWidget);
     expect(find.text('Web preview'), findsOneWidget);
     expect(find.text('Stopped • Auto-start'), findsOneWidget);
 

@@ -152,6 +152,52 @@ void main() {
         portForwardBrowserHostForPortForwardId(42),
       );
     });
+
+    group('hostPortProxyDomain', () {
+      test('generates a stable DNS-safe host-scoped name', () {
+        expect(
+          hostPortProxyDomain(hostLabel: 'Dev Box!', hostId: 42),
+          'dev-box-16.localhost',
+        );
+        expect(
+          hostPortProxyDomain(hostLabel: 'Dev Box!', hostId: 42),
+          hostPortProxyDomain(hostLabel: 'Dev Box!', hostId: 42),
+        );
+      });
+
+      test('uses and normalizes a custom localhost prefix', () {
+        expect(
+          hostPortProxyDomain(
+            hostLabel: 'Ignored',
+            hostId: 1,
+            customName: 'API.Dev.LocalHost',
+          ),
+          'api.dev.localhost',
+        );
+      });
+
+      test('validates DNS labels and allows an empty generated-name field', () {
+        final sixtyCharacterLabel = List.filled(60, 'a').join();
+        final maximumLengthPrefix = List.filled(
+          4,
+          sixtyCharacterLabel,
+        ).join('.');
+        final overlongPrefix = [
+          '${sixtyCharacterLabel}a',
+          sixtyCharacterLabel,
+          sixtyCharacterLabel,
+          sixtyCharacterLabel,
+        ].join('.');
+
+        expect(validatePortProxyName(''), isNull);
+        expect(validatePortProxyName('api.dev'), isNull);
+        expect(validatePortProxyName('api.dev.localhost'), isNull);
+        expect(validatePortProxyName('-api'), isNotNull);
+        expect(validatePortProxyName('api_1'), isNotNull);
+        expect(validatePortProxyName(maximumLengthPrefix), isNull);
+        expect(validatePortProxyName(overlongPrefix), isNotNull);
+      });
+    });
   });
 
   group('rewriteUriForPortForwardBrowser', () {
@@ -163,6 +209,17 @@ void main() {
           browserUri: Uri.parse('http://monkeyssh-42.localhost:8080'),
         ),
         Uri.parse('https://monkeyssh-42.localhost:8080/login?next=%2F'),
+      );
+    });
+
+    test('rewrites a detected remote port to its ephemeral proxy port', () {
+      expect(
+        rewriteUriForPortForwardBrowser(
+          Uri.parse('http://localhost:3000/dashboard'),
+          sourceUri: Uri.parse('http://localhost:3000'),
+          browserUri: Uri.parse('http://dev-box.localhost:49152'),
+        ),
+        Uri.parse('http://dev-box.localhost:49152/dashboard'),
       );
     });
 

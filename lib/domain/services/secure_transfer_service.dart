@@ -18,6 +18,7 @@ import 'diagnostics_log_service.dart';
 import 'host_cli_launch_preferences_service.dart';
 import 'host_key_verification.dart';
 import 'key_service.dart';
+import 'port_forward_browser_service.dart';
 import 'settings_service.dart';
 
 /// Supported transfer payload types.
@@ -468,6 +469,12 @@ class SecureTransferService {
           autoConnectCommand: Value(autoConnectCommand),
           autoConnectSnippetId: const Value(null),
           autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
+          autoForwardPorts: Value(
+            (hostData['autoForwardPorts'] as bool?) ?? false,
+          ),
+          portProxyName: Value(
+            _importedPortProxyName(hostData['portProxyName']),
+          ),
         ),
       );
       final rawCliLaunchPreferences = payload.data['hostCliLaunchPreferences'];
@@ -986,6 +993,8 @@ class SecureTransferService {
           autoConnectCommand: Value(autoConnectCommand),
           autoConnectSnippetId: Value(mappedSnippetId),
           autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
+          autoForwardPorts: Value((item['autoForwardPorts'] as bool?) ?? false),
+          portProxyName: Value(_importedPortProxyName(item['portProxyName'])),
           sortOrder: Value(_optionalInt(item['sortOrder']) ?? 0),
         ),
       );
@@ -1452,6 +1461,14 @@ class SecureTransferService {
   }
 
   String? _optionalString(Object? value) => value is String ? value : null;
+
+  String? _importedPortProxyName(Object? value) {
+    final normalized = normalizeOptionalPortProxyName(_optionalString(value));
+    if (validatePortProxyName(normalized) != null) {
+      throw const FormatException('Invalid port proxy name');
+    }
+    return normalized;
+  }
 
   int? _optionalInt(Object? value) {
     if (value is int) {

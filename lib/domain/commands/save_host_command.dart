@@ -23,6 +23,7 @@ class SaveHostInput {
     required this.username,
     required this.autoConnectRequiresConfirmation,
     required this.isFavorite,
+    this.autoForwardPorts = false,
     this.password,
     this.tags,
     this.keyId,
@@ -38,6 +39,7 @@ class SaveHostInput {
     this.tmuxWorkingDirectory,
     this.tmuxExtraFlags,
     this.remoteMuxBackend,
+    this.portProxyName,
   });
 
   /// Display label.
@@ -99,6 +101,12 @@ class SaveHostInput {
 
   /// Remote multiplexer backend to use with [tmuxSessionName].
   final RemoteMuxBackend? remoteMuxBackend;
+
+  /// Whether remote TCP listeners should be forwarded automatically.
+  final bool autoForwardPorts;
+
+  /// Optional custom prefix for this host's `.localhost` proxy domain.
+  final String? portProxyName;
 
   /// Whether this host is marked as a favourite.
   final bool isFavorite;
@@ -208,6 +216,8 @@ class SaveHostCommand {
           tmuxWorkingDirectory: drift.Value(input.tmuxWorkingDirectory),
           tmuxExtraFlags: drift.Value(input.tmuxExtraFlags),
           remoteMuxBackend: drift.Value(input.remoteMuxBackend?.storageValue),
+          autoForwardPorts: input.autoForwardPorts,
+          portProxyName: drift.Value(input.portProxyName),
           isFavorite: input.isFavorite,
         ),
       );
@@ -237,6 +247,8 @@ class SaveHostCommand {
           tmuxWorkingDirectory: drift.Value(input.tmuxWorkingDirectory),
           tmuxExtraFlags: drift.Value(input.tmuxExtraFlags),
           remoteMuxBackend: drift.Value(input.remoteMuxBackend?.storageValue),
+          autoForwardPorts: drift.Value(input.autoForwardPorts),
+          portProxyName: drift.Value(input.portProxyName),
           isFavorite: drift.Value(input.isFavorite),
         ),
       );

@@ -529,6 +529,7 @@ Host _buildHost({
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
   autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
+  autoForwardPorts: false,
   remoteMuxBackend: remoteMuxBackend?.storageValue,
   sortOrder: 0,
 );
