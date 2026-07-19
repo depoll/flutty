@@ -7,6 +7,9 @@ import 'package:go_router/go_router.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../../domain/services/port_forward_browser_service.dart';
+import '../../domain/services/port_forward_runtime_service.dart';
+import '../../domain/services/ssh_service.dart';
 import '../widgets/unsaved_changes_guard.dart';
 
 typedef _PortForwardEditDraft = ({
@@ -110,22 +113,22 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
     return null;
   }
 
-  bool _isLoopbackBindAddress(String value) {
-    final normalized = value.trim().toLowerCase();
-    return normalized == 'localhost' ||
-        normalized == '127.0.0.1' ||
-        normalized == '::1' ||
-        normalized.startsWith('127.');
-  }
-
-  Future<bool> _confirmNonLoopbackLocalBind() async {
+  Future<bool> _confirmNonLoopbackBind({
+    required String host,
+    required bool isRemote,
+  }) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Expose port forward?'),
+        title: Text(
+          isRemote ? 'Expose remote port forward?' : 'Expose port forward?',
+        ),
         content: Text(
-          'Binding to ${_localHostController.text.trim()} may make this '
-          'forward reachable from other devices on your local network.',
+          isRemote
+              ? 'Binding the remote listener to $host may make this forward '
+                    'reachable from other devices that can access the SSH host.'
+              : 'Binding to $host may make this forward reachable from other '
+                    'devices on your local network.',
         ),
         actions: [
           TextButton(
@@ -390,9 +393,15 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
 
   Future<void> _savePortForward() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_forwardType == 'local' &&
-        !_isLoopbackBindAddress(_localHostController.text)) {
-      final confirmed = await _confirmNonLoopbackLocalBind();
+    final isRemote = _forwardType == 'remote';
+    final bindHost = isRemote
+        ? _remoteHostController.text.trim()
+        : _localHostController.text.trim();
+    if (!isPortForwardLoopbackHost(bindHost)) {
+      final confirmed = await _confirmNonLoopbackBind(
+        host: bindHost,
+        isRemote: isRemote,
+      );
       if (!confirmed || !mounted) return;
     }
 
@@ -401,24 +410,25 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
 
     try {
       final repo = ref.read(portForwardRepositoryProvider);
+      final previousPortForward = _existingPortForward;
+      late final PortForward savedPortForward;
 
-      if (widget.portForwardId != null && _existingPortForward != null) {
+      if (widget.portForwardId != null && previousPortForward != null) {
         // Update existing port forward
-        await repo.update(
-          _existingPortForward!.copyWith(
-            name: _nameController.text,
-            hostId: _selectedHostId,
-            forwardType: _forwardType,
-            localHost: _localHostController.text,
-            localPort: int.parse(_localPortController.text),
-            remoteHost: _remoteHostController.text,
-            remotePort: int.parse(_remotePortController.text),
-            autoStart: _autoStart,
-          ),
+        savedPortForward = previousPortForward.copyWith(
+          name: _nameController.text,
+          hostId: _selectedHostId,
+          forwardType: _forwardType,
+          localHost: _localHostController.text,
+          localPort: int.parse(_localPortController.text),
+          remoteHost: _remoteHostController.text,
+          remotePort: int.parse(_remotePortController.text),
+          autoStart: _autoStart,
         );
+        await repo.update(savedPortForward);
       } else {
         // Create new port forward
-        await repo.insert(
+        final portForwardId = await repo.insert(
           PortForwardsCompanion.insert(
             name: _nameController.text,
             hostId: _selectedHostId!,
@@ -430,18 +440,54 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
             autoStart: drift.Value(_autoStart),
           ),
         );
+        savedPortForward = PortForward(
+          id: portForwardId,
+          name: _nameController.text,
+          hostId: _selectedHostId!,
+          forwardType: _forwardType,
+          localHost: _localHostController.text,
+          localPort: int.parse(_localPortController.text),
+          remoteHost: _remoteHostController.text,
+          remotePort: int.parse(_remotePortController.text),
+          autoStart: _autoStart,
+          createdAt: DateTime.now(),
+        );
+      }
+
+      PortForwardActivationResult? activationResult;
+      final sessions = ref.read(activeSessionsProvider.notifier);
+      if (shouldApplyPortForwardLive(
+        sessions: sessions,
+        portForward: savedPortForward,
+        previous: previousPortForward,
+      )) {
+        try {
+          activationResult = await activatePortForwardOnConnectedSession(
+            sessions: sessions,
+            portForward: savedPortForward,
+            previous: previousPortForward,
+          );
+        } on Exception catch (error, stackTrace) {
+          FlutterError.reportError(
+            FlutterErrorDetails(
+              exception: error,
+              stack: stackTrace,
+              library: 'port forwards',
+              context: ErrorDescription(
+                'while applying a saved port forward live',
+              ),
+            ),
+          );
+          activationResult = const PortForwardActivationResult(
+            status: PortForwardActivationStatus.failed,
+          );
+        }
       }
 
       if (mounted) {
         didScheduleClose = true;
         _closeWithoutUnsavedPrompt(
-          SnackBar(
-            content: Text(
-              widget.portForwardId != null
-                  ? 'Port forward updated'
-                  : 'Port forward added',
-            ),
-          ),
+          SnackBar(content: Text(_saveResultMessage(activationResult))),
         );
       }
     } on Exception catch (e) {
@@ -461,6 +507,24 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
       }
     } finally {
       if (mounted && !didScheduleClose) setState(() => _isLoading = false);
+    }
+  }
+
+  String _saveResultMessage(PortForwardActivationResult? activationResult) {
+    final isEditing = widget.portForwardId != null;
+    switch (activationResult?.status) {
+      case PortForwardActivationStatus.started:
+        return isEditing
+            ? 'Port forward updated and applied live'
+            : 'Port forward added and started';
+      case PortForwardActivationStatus.failed:
+        return 'Port forward saved, but it couldn’t start. '
+            'Check the configured ports.';
+      case PortForwardActivationStatus.alreadyActive:
+      case PortForwardActivationStatus.noConnectedSession:
+      case PortForwardActivationStatus.superseded:
+      case null:
+        return isEditing ? 'Port forward updated' : 'Port forward added';
     }
   }
 }

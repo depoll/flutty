@@ -115,6 +115,16 @@ bool isPortForwardBrowserHost(String host) {
       _isLoopbackIpv4Address(normalized);
 }
 
+/// Returns whether [host] is an explicit loopback bind address.
+bool isPortForwardLoopbackHost(String host) {
+  final normalized = host.trim().toLowerCase();
+  return normalized == 'localhost' ||
+      normalized == '::1' ||
+      normalized == '[::1]' ||
+      normalized.endsWith('.localhost') ||
+      _isLoopbackIpv4Address(normalized);
+}
+
 String _browserHostForBindAddress(String localHost) {
   final host = localHost.trim().toLowerCase();
   if (host.isEmpty || host == '0.0.0.0') {
