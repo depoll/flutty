@@ -3846,34 +3846,46 @@ class SshSession {
     }
 
     ServerSocket? serverSocket;
-    ServerSocket? browserServerSocket;
+    final browserServerSockets = <ServerSocket>[];
     try {
-      serverSocket = await ServerSocket.bind(localHost, localPort);
+      final primaryServerSocket = await ServerSocket.bind(localHost, localPort);
+      serverSocket = primaryServerSocket;
       final browserHost = portForwardBrowserHostForPortForwardId(portForwardId);
-      try {
-        browserServerSocket = await ServerSocket.bind(
-          InternetAddress.loopbackIPv4,
-          0,
+      final browserAddresses = [
+        InternetAddress.loopbackIPv4,
+        InternetAddress.loopbackIPv6,
+      ];
+      for (final address in browserAddresses) {
+        if (_listenerSupportsPortForwardBrowserAddress(
+          primaryServerSocket,
+          address,
+        )) {
+          continue;
+        }
+        final browserServerSocket = await _bindPortForwardBrowserListener(
+          address: address,
+          port: primaryServerSocket.port,
+          portForwardId: portForwardId,
         );
-      } on Exception catch (error) {
-        DiagnosticsLogService.instance.warning(
-          'ssh.forward',
-          'browser_listener_failed',
-          fields: {
-            'connectionId': connectionId,
-            'hostId': hostId,
-            'portForwardId': portForwardId,
-            'errorType': error.runtimeType,
-          },
-        );
+        if (browserServerSocket != null) {
+          browserServerSockets.add(browserServerSocket);
+        }
       }
+      final hasBrowserEndpoint =
+          browserAddresses.any(
+            (address) => _listenerSupportsPortForwardBrowserAddress(
+              primaryServerSocket,
+              address,
+            ),
+          ) ||
+          browserServerSockets.isNotEmpty;
       final tunnel = _ActiveTunnel.local(
-        serverSocket: serverSocket,
-        browserServerSocket: browserServerSocket,
-        browserHost: browserServerSocket == null ? null : browserHost,
-        browserPort: browserServerSocket?.port,
+        serverSocket: primaryServerSocket,
+        browserServerSockets: browserServerSockets,
+        browserHost: hasBrowserEndpoint ? browserHost : null,
+        browserPort: hasBrowserEndpoint ? primaryServerSocket.port : null,
         localHost: localHost,
-        localPort: serverSocket.port,
+        localPort: primaryServerSocket.port,
         remoteHost: remoteHost,
         remotePort: remotePort,
       );
@@ -3881,22 +3893,26 @@ class SshSession {
       _activeTunnels[portForwardId] = tunnel;
 
       tunnel.subscription = _listenToLocalForwardConnections(
-        serverSocket,
+        primaryServerSocket,
         remoteHost: remoteHost,
         remotePort: remotePort,
       );
-      if (browserServerSocket != null) {
-        tunnel.browserSubscription = _listenToLocalForwardConnections(
-          browserServerSocket,
-          remoteHost: remoteHost,
-          remotePort: remotePort,
+      for (final browserServerSocket in browserServerSockets) {
+        tunnel.browserSubscriptions.add(
+          _listenToLocalForwardConnections(
+            browserServerSocket,
+            remoteHost: remoteHost,
+            remotePort: remotePort,
+          ),
         );
       }
 
       return true;
     } on Exception catch (e) {
       _activeTunnels.remove(portForwardId);
-      await browserServerSocket?.close();
+      for (final browserServerSocket in browserServerSockets) {
+        await browserServerSocket.close();
+      }
       await serverSocket?.close();
       DiagnosticsLogService.instance.warning(
         'ssh.forward',
@@ -3907,6 +3923,48 @@ class SshSession {
         debugPrint('Failed to start local forward: $e');
       }
       return false;
+    }
+  }
+
+  bool _listenerSupportsPortForwardBrowserAddress(
+    ServerSocket serverSocket,
+    InternetAddress browserAddress,
+  ) {
+    final address = serverSocket.address;
+    final wildcardAddress = switch (browserAddress.type) {
+      InternetAddressType.IPv4 => InternetAddress.anyIPv4,
+      InternetAddressType.IPv6 => InternetAddress.anyIPv6,
+      _ => null,
+    };
+    return address.type == browserAddress.type &&
+        (address.address == browserAddress.address ||
+            address.address == wildcardAddress?.address);
+  }
+
+  Future<ServerSocket?> _bindPortForwardBrowserListener({
+    required InternetAddress address,
+    required int port,
+    required int portForwardId,
+  }) async {
+    try {
+      return await ServerSocket.bind(
+        address,
+        port,
+        v6Only: address.type == InternetAddressType.IPv6,
+      );
+    } on SocketException catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'browser_listener_failed',
+        fields: {
+          'connectionId': connectionId,
+          'hostId': hostId,
+          'portForwardId': portForwardId,
+          'addressFamily': address.type.name,
+          'errorType': error.runtimeType,
+        },
+      );
+      return null;
     }
   }
 
@@ -4056,9 +4114,13 @@ class SshSession {
     final tunnel = _activeTunnels.remove(portForwardId);
     if (tunnel != null) {
       await tunnel.subscription?.cancel();
-      await tunnel.browserSubscription?.cancel();
+      for (final browserSubscription in tunnel.browserSubscriptions) {
+        await browserSubscription.cancel();
+      }
       await tunnel.serverSocket?.close();
-      await tunnel.browserServerSocket?.close();
+      for (final browserServerSocket in tunnel.browserServerSockets) {
+        await browserServerSocket.close();
+      }
       tunnel.remoteForward?.close();
     }
   }
@@ -4268,7 +4330,7 @@ class ActiveTunnelInfo {
   /// Browser-only loopback host that isolates this tunnel's cookies.
   final String? browserHost;
 
-  /// Browser-only relay port for this tunnel.
+  /// Port exposed through the browser-only loopback host.
   final int? browserPort;
 
   /// The remote host being forwarded to.
@@ -4284,7 +4346,7 @@ class ActiveTunnelInfo {
 class _ActiveTunnel {
   _ActiveTunnel.local({
     required this.serverSocket,
-    required this.browserServerSocket,
+    required this.browserServerSockets,
     required this.browserHost,
     required this.browserPort,
     required this.localHost,
@@ -4301,13 +4363,13 @@ class _ActiveTunnel {
     required this.remoteHost,
     required this.remotePort,
   }) : serverSocket = null,
-       browserServerSocket = null,
+       browserServerSockets = const [],
        browserHost = null,
        browserPort = null,
        isLocal = false;
 
   final ServerSocket? serverSocket;
-  final ServerSocket? browserServerSocket;
+  final List<ServerSocket> browserServerSockets;
   final SSHRemoteForward? remoteForward;
   final String localHost;
   final int localPort;
@@ -4319,9 +4381,7 @@ class _ActiveTunnel {
   // Cancelled in SshSession.stopForward().
   // ignore: cancel_subscriptions
   StreamSubscription<dynamic>? subscription;
-  // Cancelled in SshSession.stopForward().
-  // ignore: cancel_subscriptions
-  StreamSubscription<dynamic>? browserSubscription;
+  final List<StreamSubscription<dynamic>> browserSubscriptions = [];
 }
 
 class _AppReviewDemoSshClient implements SSHClient {
