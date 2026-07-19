@@ -1488,12 +1488,9 @@ func TestAttachQueueAcceptsLiveOutputBurstDuringReplay(t *testing.T) {
 	}
 	<-started
 
-	const liveWrites = 64
+	const liveWrites = 1024
 	for i := 0; i < liveWrites; i++ {
-		if _, queued := client.enqueue(
-			bytes.Repeat([]byte{'L'}, attachWriteChunkBytes),
-			false,
-		); !queued {
+		if _, queued := client.enqueue([]byte{'L'}, false); !queued {
 			t.Fatalf("live output write %d was rejected", i)
 		}
 	}
