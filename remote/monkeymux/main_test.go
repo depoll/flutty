@@ -1372,12 +1372,15 @@ func TestPausedRedrawUsesFailoverBufferForReboundPrimary(t *testing.T) {
 func TestPausedRedrawKeepsSplitQueryBoundToOriginalClient(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
-		id:                         "@1",
-		index:                      0,
-		lastActivity:               time.Now(),
-		redrawForwardingPaused:     true,
-		redrawForwardingGeneration: 1,
-		secondaryQueryCarry:        []byte("\x1b[>"),
+		id:                             "@1",
+		index:                          0,
+		foregroundCommand:              "codex",
+		lastActivity:                   time.Now(),
+		redrawForwardingPaused:         true,
+		redrawForwardingGeneration:     1,
+		secondaryQueryCarry:            []byte("\x1b[>"),
+		secondaryQueryPrimaryDelivered: len("\x1b[>"),
+		secondaryQueryPrimaryCommitted: len("\x1b[>"),
 	}
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
@@ -1408,9 +1411,196 @@ func TestPausedRedrawKeepsSplitQueryBoundToOriginalClient(t *testing.T) {
 	if window.redrawForwardingPrimaryConn != original.conn {
 		t.Fatal("redraw did not retain the split query's original client")
 	}
+	server.beginSettledRedrawForwarding("@1", 1, func() {})
+	server.handleWindowOutput("@1", []byte("settled"))
 	server.resumePausedAttachForwarding("@1", 1)
-	waitForRecordedOutput(t, originalConn, "\x1b[>qright")
-	waitForRecordedOutput(t, replacementConn, "right")
+	waitForRecordedOutput(t, originalConn, "\x1b[>qsettled")
+	waitForRecordedOutput(t, replacementConn, "settled")
+}
+
+func TestPausedRedrawPreservesQueryStartedBeforeSettledPhase(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	server.handleWindowOutput("@1", []byte("\x1b[>"))
+	server.beginSettledRedrawForwarding("@1", generation, func() {})
+	server.handleWindowOutput("@1", []byte("q"))
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "\x1b[>q" {
+		t.Fatalf("split redraw query = %q, want complete query", got)
+	}
+}
+
+func TestPausedRedrawDoesNotRepeatQueryPrefixDeliveredBeforePause(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	server.attachConn = conn
+
+	server.handleWindowOutput("@1", []byte("\x1b[>"))
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	server.beginSettledRedrawForwarding("@1", generation, func() {})
+	server.handleWindowOutput("@1", []byte("q"))
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "\x1b[>q" {
+		t.Fatalf("split redraw query = %q, want one complete query", got)
+	}
+}
+
+func TestPausedRedrawResumeDeliversIncompleteQueryPrefix(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("\x1b[>"))
+
+	server.resumePausedAttachForwarding("@1", generation)
+	server.handleWindowOutput("@1", []byte("q"))
+
+	if got := conn.String(); got != "\x1b[>q" {
+		t.Fatalf("split redraw query = %q, want complete query", got)
+	}
+}
+
+func TestPausedRedrawTimeoutPreservesQueryOrdering(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("before\x1b[>qafter"))
+
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "before\x1b[>qafter" {
+		t.Fatalf("timed-out redraw output = %q, want original ordering", got)
+	}
+}
+
+func TestPausedRedrawRebindsIncompleteQueryToFailoverClient(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	failoverConn := &recordingConn{}
+	failover := registerTestAttachClient(
+		t,
+		server,
+		failoverConn,
+		"failover",
+		80,
+		24,
+	)
+	originalConn := &recordingConn{}
+	original := registerTestAttachClient(
+		t,
+		server,
+		originalConn,
+		"original",
+		80,
+		24,
+	)
+
+	server.handleWindowOutput("@1", []byte("\x1b[>"))
+	waitForRecordedOutput(t, originalConn, "\x1b[>")
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 80, 24)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	server.mu.Lock()
+	delete(server.attachClients, original.conn)
+	server.attachConn = failover.conn
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@1", generation)
+	waitForRecordedOutput(t, failoverConn, "\x1b[>")
+
+	server.handleWindowOutput("@1", []byte("q"))
+
+	waitForRecordedOutput(t, failoverConn, "\x1b[>q")
+}
+
+func TestInactiveOutputClearsQueryDeliveryOffsets(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                             "@1",
+		index:                          0,
+		lastActivity:                   time.Now(),
+		secondaryQueryCarry:            []byte("\x1b[>"),
+		secondaryQueryPrimaryDelivered: len("\x1b[>"),
+		secondaryQueryPrimaryCommitted: len("\x1b[>"),
+	}
+	server.windows = []*muxWindow{
+		window,
+		{id: "@2", index: 1, lastActivity: time.Now()},
+	}
+	server.activeID = "@2"
+
+	server.handleWindowOutput("@1", []byte("q"))
+
+	if window.secondaryQueryPrimaryDelivered != 0 ||
+		window.secondaryQueryPrimaryCommitted != 0 {
+		t.Fatalf(
+			"inactive query delivery offsets = %d/%d, want 0/0",
+			window.secondaryQueryPrimaryDelivered,
+			window.secondaryQueryPrimaryCommitted,
+		)
+	}
 }
 
 func TestPendingTerminalQueryFlushIsSingleFlight(t *testing.T) {
@@ -1917,6 +2107,7 @@ func TestClientFocusHandoffImmediatelyReplaysAndRedrawsWindow(t *testing.T) {
 		window *muxWindow,
 		width int,
 		height int,
+		_ func(func()),
 	) {
 		simulated = append(
 			simulated,
@@ -2039,7 +2230,7 @@ func TestClientFocusReplaySuppressesAlreadyReplayedShellOutput(t *testing.T) {
 		simulateForegroundResize = originalSimulateForegroundResize
 	}()
 	signalForegroundResize = func(int) {}
-	simulateForegroundResize = func(*muxWindow, int, int) {}
+	simulateForegroundResize = func(*muxWindow, int, int, func(func())) {}
 
 	server.replayFocusedWindowToClient(focused, 72, 28)
 	wantReplay := replayPrefixForTest(window) +
@@ -2107,7 +2298,7 @@ func TestClientFocusReplayStillDeliversReplayedTerminalQuery(t *testing.T) {
 		simulateForegroundResize = originalSimulateForegroundResize
 	}()
 	signalForegroundResize = func(int) {}
-	simulateForegroundResize = func(*muxWindow, int, int) {}
+	simulateForegroundResize = func(*muxWindow, int, int, func(func())) {}
 
 	server.replayFocusedWindowToClient(focused, 72, 28)
 	wantReplay := replayPrefixForTest(window) +
@@ -2165,7 +2356,7 @@ func TestClientFocusHandoffDefersReplayUntilSplitQueryCompletes(t *testing.T) {
 		simulateForegroundResize = originalSimulateForegroundResize
 	}()
 	signalForegroundResize = func(int) {}
-	simulateForegroundResize = func(*muxWindow, int, int) {}
+	simulateForegroundResize = func(*muxWindow, int, int, func(func())) {}
 
 	server.handleWindowOutput("@1", []byte("left\x1b[>"))
 	waitForRecordedOutput(t, focusedConn, "left")
@@ -2241,7 +2432,7 @@ func TestDeferredFocusUsesPrimarySizeForWindowSwitch(t *testing.T) {
 		simulateForegroundResize = originalSimulateForegroundResize
 	}()
 	signalForegroundResize = func(int) {}
-	simulateForegroundResize = func(*muxWindow, int, int) {}
+	simulateForegroundResize = func(*muxWindow, int, int, func(func())) {}
 
 	server.promoteAttachClient(phone)
 	server.mu.Lock()
@@ -2306,7 +2497,7 @@ func TestClientFocusHandoffDefersReplayUntilUtf8Completes(t *testing.T) {
 		simulateForegroundResize = originalSimulateForegroundResize
 	}()
 	signalForegroundResize = func(int) {}
-	simulateForegroundResize = func(*muxWindow, int, int) {}
+	simulateForegroundResize = func(*muxWindow, int, int, func(func())) {}
 
 	server.promoteAttachClient(focused)
 	time.Sleep(10 * time.Millisecond)
@@ -2354,7 +2545,7 @@ func TestClientFocusHandoffDefersReplayUntilEscapeSequenceCompletes(t *testing.T
 		simulateForegroundResize = originalSimulateForegroundResize
 	}()
 	signalForegroundResize = func(int) {}
-	simulateForegroundResize = func(*muxWindow, int, int) {}
+	simulateForegroundResize = func(*muxWindow, int, int, func(func())) {}
 
 	server.handleWindowOutput("@1", []byte("\x1b("))
 	waitForRecordedOutput(t, focusedConn, "\x1b(")
@@ -3605,7 +3796,12 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 		}
 		return 0
 	}
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		_ func(func()),
+	) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -3653,7 +3849,12 @@ func TestSelectWindowSkipsSimulatedResizeWithoutAttach(t *testing.T) {
 	}()
 
 	var simulated []string
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		_ func(func()),
+	) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -3696,7 +3897,12 @@ func TestSelectWindowSimulatedResizeUsesLatestServerSize(t *testing.T) {
 	}()
 
 	var simulated []string
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		_ func(func()),
+	) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -3738,9 +3944,18 @@ func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 
 	wantReplay := replayPrefixForTest(inactiveWindow) +
 		replayPostHistorySuffixForTest(true)
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	var beginSettledRedraw func()
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		restoreBoundary func(func()),
+	) {
 		if got := attach.String(); got != "" {
 			t.Fatalf("resize simulated after premature replay write: got %q", got)
+		}
+		beginSettledRedraw = func() {
+			restoreBoundary(func() {})
 		}
 	}
 	signalForegroundResize = func(processGroup int) {
@@ -3758,6 +3973,10 @@ func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 	if got := attach.String(); got != "" {
 		t.Fatalf("foreground redraw replay was written before redraw settled: %q", got)
 	}
+	if beginSettledRedraw == nil {
+		t.Fatal("foreground redraw did not expose its settled-size boundary")
+	}
+	beginSettledRedraw()
 
 	server.handleWindowOutput("@2", []byte("settled tui screen"))
 	if got := attach.String(); got != "" {
@@ -3809,7 +4028,12 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 		}
 		return 0
 	}
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		_ func(func()),
+	) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -4129,7 +4353,12 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 		}
 		return 0
 	}
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		_ func(func()),
+	) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -4164,7 +4393,7 @@ func TestForegroundRedrawDoesNotRestoreStalePtySize(t *testing.T) {
 		lastActivity: time.Now(),
 	}
 
-	simulateForegroundResize(window, 120, 40)
+	simulateForegroundResize(window, 120, 40, nil)
 	window.resizePty(80, 24)
 	time.Sleep(foregroundRedrawResizeDelay + 20*time.Millisecond)
 
@@ -4180,7 +4409,7 @@ func TestForegroundRedrawDoesNotResizeClosedPty(t *testing.T) {
 		lastActivity: time.Now(),
 	}
 
-	simulateForegroundResize(window, 120, 40)
+	simulateForegroundResize(window, 120, 40, nil)
 	if err := window.closePty(windowPty); err != nil {
 		t.Fatal(err)
 	}
@@ -4232,7 +4461,12 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 		}
 		return 0
 	}
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	simulateForegroundResize = func(
+		window *muxWindow,
+		width int,
+		height int,
+		_ func(func()),
+	) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -4311,7 +4545,127 @@ func TestForegroundRedrawTemporarySize(t *testing.T) {
 	}
 }
 
-func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
+func TestRedrawResizeForwardsOnlySettledAttachOutput(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	windowPty := openTestPty(t)
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		pty:               windowPty,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.simulateForegroundResizeLocked(window, 120, 40)
+	server.mu.Unlock()
+
+	server.handleWindowOutput("@1", []byte("temporary layout\x1b[>q"))
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for {
+		server.mu.Lock()
+		capturingSettled :=
+			window.redrawForwardingGeneration == generation &&
+				window.redrawForwardingCapturingSettled
+		server.mu.Unlock()
+		if capturingSettled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("redraw did not reach the canonical-size output phase")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	server.handleWindowOutput("@1", []byte("final layout"))
+	if got := conn.String(); got != "" {
+		t.Fatalf("attach output before redraw settled = %q, want empty", got)
+	}
+
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "\x1b[>qfinal layout" {
+		t.Fatalf(
+			"attach output after redraw settled = %q, want query and final layout",
+			got,
+		)
+	}
+}
+
+func TestRedrawResizePreservesOutputWhenForegroundNoLongerRedraws(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		agentTool:         "copilot",
+		foregroundCommand: "zsh",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("launch failed\r\n"))
+	server.beginSettledRedrawForwarding("@1", generation, func() {})
+	server.handleWindowOutput("@1", []byte("$ "))
+
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "launch failed\r\n$ " {
+		t.Fatalf("fallback shell output = %q, want error and prompt", got)
+	}
+}
+
+func TestRedrawResizePreservesFallbackWhenForegroundProcessChanges(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		privateModes:      map[string]bool{"1049": true},
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	processGroup := 100
+	foregroundProcessGroupForWindow = func(*muxWindow) int {
+		return processGroup
+	}
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("agent stopped\r\n"))
+	server.beginSettledRedrawForwarding("@1", generation, func() {})
+	processGroup = 200
+	server.handleWindowOutput("@1", []byte("$ "))
+
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "agent stopped\r\n$ " {
+		t.Fatalf("changed-process fallback = %q, want exit output and prompt", got)
+	}
+}
+
+func TestRedrawResizeCarriesFallbackAcrossSupersedingProcessChange(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}
 	window := &muxWindow{
@@ -4324,21 +4678,31 @@ func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
 	server.activeID = "@1"
 	server.attachConn = conn
 
-	server.mu.Lock()
-	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
-	generation := window.redrawForwardingGeneration
-	server.mu.Unlock()
-
-	server.handleWindowOutput("@1", []byte("temporary layout"))
-	server.handleWindowOutput("@1", []byte("final layout"))
-	if got := conn.String(); got != "" {
-		t.Fatalf("attach output before redraw settled = %q, want empty", got)
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	processGroup := 100
+	foregroundProcessGroupForWindow = func(*muxWindow) int {
+		return processGroup
 	}
 
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("agent stopped\r\n"))
+
+	processGroup = 200
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 41)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.beginSettledRedrawForwarding("@1", generation, func() {})
+	server.handleWindowOutput("@1", []byte("$ "))
 	server.resumePausedAttachForwarding("@1", generation)
 
-	if got := conn.String(); got != "temporary layoutfinal layout" {
-		t.Fatalf("attach output after redraw settled = %q, want buffered output", got)
+	if got := conn.String(); got != "agent stopped\r\n$ " {
+		t.Fatalf("superseded fallback = %q, want exit output and prompt", got)
 	}
 }
 
@@ -4364,6 +4728,7 @@ func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
 	server.pauseAttachForwardingForRedrawLocked(window, 120, 41)
 	generation := window.redrawForwardingGeneration
 	server.mu.Unlock()
+	server.beginSettledRedrawForwarding("@1", generation, func() {})
 	server.handleWindowOutput("@1", []byte("new settled layout"))
 
 	server.resumePausedAttachForwarding("@1", generation)
@@ -4432,7 +4797,7 @@ func TestRedrawResizePreservesPendingReplay(t *testing.T) {
 		simulateForegroundResize = originalSimulateForegroundResize
 	}()
 	signalForegroundResize = func(processGroup int) {}
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {}
+	simulateForegroundResize = func(*muxWindow, int, int, func(func())) {}
 
 	if err := server.selectWindow("@2"); err != nil {
 		t.Fatal(err)
@@ -4443,6 +4808,7 @@ func TestRedrawResizePreservesPendingReplay(t *testing.T) {
 	server.pauseAttachForwardingForRedrawLocked(window, 120, 41)
 	generation := window.redrawForwardingGeneration
 	server.mu.Unlock()
+	server.beginSettledRedrawForwarding("@2", generation, func() {})
 	server.handleWindowOutput("@2", []byte("settled redraw"))
 
 	server.resumePausedAttachForwarding("@2", generation)
