@@ -149,9 +149,9 @@ void main() {
         rewriteUriForPortForwardBrowser(
           Uri.parse('https://localhost:8080/login?next=%2F'),
           sourceUri: Uri.parse('http://127.0.0.1:8080'),
-          browserUri: Uri.parse('http://monkeyssh-42.localhost:49152'),
+          browserUri: Uri.parse('http://monkeyssh-42.localhost:8080'),
         ),
-        Uri.parse('https://monkeyssh-42.localhost:49152/login?next=%2F'),
+        Uri.parse('https://monkeyssh-42.localhost:8080/login?next=%2F'),
       );
     });
 
@@ -160,7 +160,7 @@ void main() {
         rewriteUriForPortForwardBrowser(
           Uri.parse('http://localhost:3000'),
           sourceUri: Uri.parse('http://127.0.0.1:8080'),
-          browserUri: Uri.parse('http://monkeyssh-42.localhost:49152'),
+          browserUri: Uri.parse('http://monkeyssh-42.localhost:8080'),
         ),
         isNull,
       );
@@ -171,7 +171,7 @@ void main() {
         rewriteUriForPortForwardBrowser(
           Uri.parse('http://127.0.0.2:8080'),
           sourceUri: Uri.parse('http://127.0.0.1:8080'),
-          browserUri: Uri.parse('http://monkeyssh-1.localhost:49152'),
+          browserUri: Uri.parse('http://monkeyssh-1.localhost:8080'),
         ),
         isNull,
       );
@@ -182,9 +182,9 @@ void main() {
         rewriteUriForPortForwardBrowser(
           Uri.parse('http://localhost:8080'),
           sourceUri: Uri.parse('http://0.0.0.0:8080'),
-          browserUri: Uri.parse('http://monkeyssh-1.localhost:49152'),
+          browserUri: Uri.parse('http://monkeyssh-1.localhost:8080'),
         ),
-        Uri.parse('http://monkeyssh-1.localhost:49152'),
+        Uri.parse('http://monkeyssh-1.localhost:8080'),
       );
     });
   });
