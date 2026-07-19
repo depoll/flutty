@@ -247,15 +247,34 @@ class PortForwardsScreen extends ConsumerWidget {
     );
 
     if (confirmed ?? false) {
-      await stopPortForwardOnConnectedSessions(
-        sessions: ref.read(activeSessionsProvider.notifier),
-        portForward: portForward,
-      );
-      await ref.read(portForwardRepositoryProvider).delete(portForward.id);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted "${portForward.name}"')),
+      try {
+        await stopPortForwardOnConnectedSessions(
+          sessions: ref.read(activeSessionsProvider.notifier),
+          portForward: portForward,
         );
+        await ref.read(portForwardRepositoryProvider).delete(portForward.id);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Deleted "${portForward.name}"')),
+          );
+        }
+      } on Exception catch (error, stackTrace) {
+        restorePortForwardAfterFailedDeletion(portForward);
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'port forwards',
+            context: ErrorDescription('while deleting a port forward'),
+          ),
+        );
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not delete port forward. Try again.'),
+            ),
+          );
+        }
       }
     }
   }

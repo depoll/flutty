@@ -8057,6 +8057,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           failedNames.add(forward.name);
         case PortForwardActivationStatus.alreadyActive:
         case PortForwardActivationStatus.noConnectedSession:
+        case PortForwardActivationStatus.superseded:
           break;
       }
     }

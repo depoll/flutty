@@ -2974,7 +2974,7 @@ class SshSession {
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
   static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
-  static const _portForwardStartTimeout = Duration(seconds: 10);
+  static const _defaultPortForwardStartTimeout = Duration(seconds: 10);
   static const _sftpOpenRetryDelays = [
     Duration(milliseconds: 250),
     Duration(milliseconds: 750),
@@ -3260,6 +3260,18 @@ class SshSession {
 
   /// Emits whenever this session starts or stops a port forward.
   Stream<void> get portForwardChanges => _portForwardChanges.stream;
+
+  /// Timeout used while opening local and remote forwarding listeners.
+  @visibleForTesting
+  Duration get portForwardStartTimeout => _defaultPortForwardStartTimeout;
+
+  /// Opens a local forwarding listener.
+  @visibleForTesting
+  Future<ServerSocket> bindPortForwardServerSocket(
+    Object host,
+    int port, {
+    bool v6Only = false,
+  }) => ServerSocket.bind(host, port, v6Only: v6Only);
 
   /// Whether this session owns an active tunnel for [portForwardId].
   bool isPortForwardActive(int portForwardId) =>
@@ -3956,7 +3968,14 @@ class SshSession {
     ServerSocket? serverSocket;
     final browserServerSockets = <ServerSocket>[];
     try {
-      final primaryServerSocket = await ServerSocket.bind(localHost, localPort);
+      final primaryServerSocket =
+          await _bindPortForwardServerSocketWithCancellation(
+            host: localHost,
+            port: localPort,
+          );
+      if (primaryServerSocket == null) {
+        return false;
+      }
       serverSocket = primaryServerSocket;
       final browserHost = portForwardBrowserHostForPortForwardId(portForwardId);
       final browserAddresses = [
@@ -4066,9 +4085,9 @@ class SshSession {
     required int portForwardId,
   }) async {
     try {
-      return await ServerSocket.bind(
-        address,
-        port,
+      return await _bindPortForwardServerSocketWithCancellation(
+        host: address,
+        port: port,
         v6Only: address.type == InternetAddressType.IPv6,
       );
     } on SocketException catch (error) {
@@ -4084,7 +4103,57 @@ class SshSession {
         },
       );
       return null;
+    } on TimeoutException catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'browser_listener_failed',
+        fields: {
+          'connectionId': connectionId,
+          'hostId': hostId,
+          'portForwardId': portForwardId,
+          'addressFamily': address.type.name,
+          'errorType': error.runtimeType,
+        },
+      );
+      return null;
     }
+  }
+
+  Future<ServerSocket?> _bindPortForwardServerSocketWithCancellation({
+    required Object host,
+    required int port,
+    bool v6Only = false,
+  }) async {
+    final request = bindPortForwardServerSocket(host, port, v6Only: v6Only);
+    late final ({bool cancelled, ServerSocket? serverSocket}) outcome;
+    try {
+      outcome =
+          await Future.any<({bool cancelled, ServerSocket? serverSocket})>([
+            request.then(
+              (serverSocket) => (cancelled: false, serverSocket: serverSocket),
+            ),
+            _closeStarted.future.then(
+              (_) => (cancelled: true, serverSocket: null),
+            ),
+          ]).timeout(portForwardStartTimeout);
+    } on TimeoutException {
+      _closeLateServerSocket(request);
+      rethrow;
+    }
+    if (outcome.cancelled) {
+      _closeLateServerSocket(request);
+      return null;
+    }
+    return outcome.serverSocket;
+  }
+
+  void _closeLateServerSocket(Future<ServerSocket> request) {
+    unawaited(
+      request.then<void>(
+        (serverSocket) => serverSocket.close(),
+        onError: (Object _, StackTrace _) {},
+      ),
+    );
   }
 
   StreamSubscription<Socket> _listenToLocalForwardConnections(
@@ -4190,7 +4259,7 @@ class SshSession {
                     (_) => (cancelled: true, remoteForward: null),
                   ),
                 ])
-                .timeout(_portForwardStartTimeout);
+                .timeout(portForwardStartTimeout);
       } on TimeoutException {
         _closeLateRemoteForward(request);
         rethrow;

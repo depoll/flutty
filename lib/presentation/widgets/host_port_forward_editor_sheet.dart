@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/port_forward_runtime_service.dart';
 import '../../domain/services/ssh_service.dart';
 
@@ -297,22 +298,22 @@ class _HostPortForwardEditorSheetState
   String? _validateRequired(String? value) =>
       value == null || value.isEmpty ? 'Required' : null;
 
-  bool _isLoopbackBindAddress(String value) {
-    final normalized = value.trim().toLowerCase();
-    return normalized == 'localhost' ||
-        normalized == '127.0.0.1' ||
-        normalized == '::1' ||
-        normalized.startsWith('127.');
-  }
-
-  Future<bool> _confirmNonLoopbackLocalBind() async {
+  Future<bool> _confirmNonLoopbackBind({
+    required String host,
+    required bool isRemote,
+  }) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Expose port forward?'),
+        title: Text(
+          isRemote ? 'Expose remote port forward?' : 'Expose port forward?',
+        ),
         content: Text(
-          'Binding to ${_localHostController.text.trim()} may make this '
-          'forward reachable from other devices on your local network.',
+          isRemote
+              ? 'Binding the remote listener to $host may make this forward '
+                    'reachable from other devices that can access the SSH host.'
+              : 'Binding to $host may make this forward reachable from other '
+                    'devices on your local network.',
         ),
         actions: [
           TextButton(
@@ -333,9 +334,15 @@ class _HostPortForwardEditorSheetState
     if (!_formKey.currentState!.validate()) {
       return;
     }
-    if (_forwardType == 'local' &&
-        !_isLoopbackBindAddress(_localHostController.text)) {
-      final confirmed = await _confirmNonLoopbackLocalBind();
+    final isRemote = _forwardType == 'remote';
+    final bindHost = isRemote
+        ? _remoteHostController.text.trim()
+        : _localHostController.text.trim();
+    if (!isPortForwardLoopbackHost(bindHost)) {
+      final confirmed = await _confirmNonLoopbackBind(
+        host: bindHost,
+        isRemote: isRemote,
+      );
       if (!confirmed || !mounted) {
         return;
       }
@@ -461,6 +468,7 @@ class _HostPortForwardEditorSheetState
             'Check the configured ports.';
       case PortForwardActivationStatus.alreadyActive:
       case PortForwardActivationStatus.noConnectedSession:
+      case PortForwardActivationStatus.superseded:
       case null:
         return _isEditing ? 'Port forward updated' : 'Port forward added';
     }
