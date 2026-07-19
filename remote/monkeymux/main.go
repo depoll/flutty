@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.114"
+	monkeyMuxVersion                  = "0.1.115"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -69,6 +69,7 @@ const (
 	runCommandTimeout                 = 20 * time.Second
 	socketTimeout                     = 2 * time.Second
 	attachWriteTimeout                = time.Second
+	attachWriteChunkBytes             = 32 * 1024
 	terminalResponseFocusGrace        = 2 * time.Second
 	focusInputCarryDelay              = 75 * time.Millisecond
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
@@ -83,8 +84,12 @@ const (
 	themeHintLimitBytes               = 1024
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
-	attachWriteQueueCapacity          = 32
-	attachWriteQueueLimitBytes        = 16 * 1024 * 1024
+	// Window output is read in 32 KiB chunks. Size the queue from the byte cap so
+	// a large initial replay cannot evict an otherwise healthy attach client
+	// merely because live output produced more than 32 small writes while the
+	// replay was still draining.
+	attachWriteQueueCapacity   = attachWriteQueueLimitBytes / attachWriteChunkBytes
+	attachWriteQueueLimitBytes = 16 * 1024 * 1024
 	// Per-window Kitty image retention, used to survive history eviction across
 	// reattaches and to back placeholder cells the foreground app re-emits.
 	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
@@ -4103,8 +4108,7 @@ func (c *attachClient) writeLoop() {
 					write.responseCount,
 				)
 			}
-			_ = c.conn.SetWriteDeadline(time.Now().Add(attachWriteTimeout))
-			err := writeConnection(c.conn, write.data)
+			err := writeAttachConnection(c.conn, write.data)
 			_ = c.conn.SetWriteDeadline(time.Time{})
 			c.finishQueuedWrite(write, err)
 			if err != nil {
@@ -4148,6 +4152,18 @@ func writeConnection(conn net.Conn, data []byte) error {
 			return io.ErrUnexpectedEOF
 		}
 		data = data[written:]
+	}
+	return nil
+}
+
+func writeAttachConnection(conn net.Conn, data []byte) error {
+	for len(data) > 0 {
+		chunkSize := min(len(data), attachWriteChunkBytes)
+		_ = conn.SetWriteDeadline(time.Now().Add(attachWriteTimeout))
+		if err := writeConnection(conn, data[:chunkSize]); err != nil {
+			return err
+		}
+		data = data[chunkSize:]
 	}
 	return nil
 }
