@@ -36,6 +36,7 @@ HostEditDraft _draft({
   agentTmuxSession: agentTmuxSession,
   agentTmuxExtraFlags: agentTmuxExtraFlags,
   agentArguments: '',
+  portProxyName: '',
   selectedAgentMuxBackend: selectedAgentMuxBackend,
   selectedKeyId: null,
   selectedGroupId: null,
@@ -52,6 +53,7 @@ HostEditDraft _draft({
   disableTmuxStatusBar: false,
   disableAgentTmuxStatusBar: false,
   startClisInYoloMode: false,
+  autoForwardPorts: false,
 );
 
 void main() {

@@ -118,6 +118,36 @@ class _MockExecSession extends Mock implements SSHSession {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
 
+class _AutomaticForwardTestSession extends SshSession {
+  _AutomaticForwardTestSession({
+    required super.connectionId,
+    required super.hostId,
+    required super.client,
+    required super.config,
+    required this.discoveries,
+  });
+
+  final List<Set<int>?> discoveries;
+  final List<({int remotePort, String proxyHost})> starts = [];
+
+  @override
+  Duration get automaticPortForwardDiscoveryInterval => const Duration(days: 1);
+
+  @override
+  Future<Set<int>?> discoverRemoteListeningTcpPorts() async =>
+      discoveries.removeAt(0);
+
+  @override
+  Future<bool> startAutomaticLocalForward({
+    required int portForwardId,
+    required int remotePort,
+    required String proxyHost,
+  }) async {
+    starts.add((remotePort: remotePort, proxyHost: proxyHost));
+    return true;
+  }
+}
+
 void _stubSessionStreams(_MockExecSession session, {String stdout = ''}) {
   when(() => session.stdout).thenAnswer(
     (_) => Stream<Uint8List>.fromIterable([
@@ -286,6 +316,129 @@ void main() {
       expect(SshConnectionState.connected, isNotNull);
       expect(SshConnectionState.error, isNotNull);
       expect(SshConnectionState.reconnecting, isNotNull);
+    });
+  });
+
+  group('automatic port forwarding', () {
+    test('parses listener output from supported remote tools', () {
+      const output = '''
+LISTEN 0 4096 127.0.0.1:3000 0.0.0.0:*
+tcp4 0 0 127.0.0.1.8080 *.* LISTEN
+LISTEN 0 4096 192.168.1.20:9090 0.0.0.0:*
+p42
+n*:5173
+4200
+''';
+
+      expect(parseRemoteListeningTcpPorts(output), {3000, 8080, 5173, 4200});
+    });
+
+    test('rejects listener scans that end without a completion marker', () {
+      final client = _MockSshClient();
+      final execSession = _MockExecSession();
+      _stubSessionStreams(
+        execSession,
+        stdout: 'LISTEN 0 4096 127.0.0.1:3000 0.0.0.0:*\n',
+      );
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 7,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'dev.example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+      expect(
+        session.discoverRemoteListeningTcpPorts(),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test(
+      'adds new listeners and removes ports after two missed scans',
+      () async {
+        final session = _AutomaticForwardTestSession(
+          connectionId: 1,
+          hostId: 7,
+          client: _MockSshClient(),
+          config: const SshConnectionConfig(
+            hostname: 'dev.example.com',
+            port: 2222,
+            username: 'tester',
+          ),
+          discoveries: [
+            {22, 2222, 3000},
+            {3000, 4000},
+            {4000},
+            {4000},
+            {3000, 4000},
+          ],
+        );
+
+        await session.configureAutomaticPortForwarding(
+          enabled: true,
+          proxyHost: 'dev-box.localhost',
+        );
+        expect(session.automaticForwardedRemotePorts, {3000});
+        expect(session.starts, [
+          (remotePort: 3000, proxyHost: 'dev-box.localhost'),
+        ]);
+
+        await session.refreshAutomaticPortForwards();
+        expect(session.automaticForwardedRemotePorts, {3000, 4000});
+        await session.refreshAutomaticPortForwards();
+        expect(session.automaticForwardedRemotePorts, {3000, 4000});
+        await session.refreshAutomaticPortForwards();
+        expect(session.automaticForwardedRemotePorts, {4000});
+
+        await session.configureAutomaticPortForwarding(
+          enabled: true,
+          proxyHost: 'dev-box.localhost',
+          excludedRemotePorts: {4000},
+        );
+        expect(session.automaticForwardedRemotePorts, {3000});
+
+        await session.configureAutomaticPortForwarding(enabled: false);
+        expect(session.automaticForwardedRemotePorts, isEmpty);
+      },
+    );
+
+    test('binds detected ports under the host proxy domain', () async {
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 7,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'dev.example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      addTearDown(session.stopAllForwards);
+
+      expect(
+        await session.startAutomaticLocalForward(
+          portForwardId: -3000,
+          remotePort: 3000,
+          proxyHost: 'dev-box.localhost',
+        ),
+        isTrue,
+      );
+
+      final tunnel = session.activeTunnels.single;
+      expect(tunnel.isAutomatic, isTrue);
+      expect(tunnel.localHost, InternetAddress.loopbackIPv4.address);
+      expect(tunnel.localPort, greaterThan(0));
+      expect(tunnel.browserHost, 'dev-box.localhost');
+      expect(tunnel.browserPort, tunnel.localPort);
+      expect(tunnel.remoteHost, 'localhost');
+      expect(tunnel.remotePort, 3000);
     });
   });
 

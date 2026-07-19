@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
@@ -145,25 +146,32 @@ class _TerminalPortForwardsSheetState
                 onRetry: () =>
                     ref.invalidate(portForwardsForHostProvider(widget.hostId)),
               ),
-              data: (forwards) => forwards.isEmpty
-                  ? _buildEmptyState(context)
-                  : ListView.separated(
-                      controller: widget.scrollController,
-                      padding: const EdgeInsets.symmetric(
-                        vertical: FluttyTheme.spacingSm,
-                      ),
-                      itemCount: forwards.length,
-                      separatorBuilder: (_, _) => const Divider(height: 1),
-                      itemBuilder: (context, index) => _buildForwardRow(
-                        context,
-                        forwards[index],
-                        isConnected: isConnected,
-                      ),
-                    ),
+              data: (forwards) {
+                final automaticTunnels =
+                    widget.session.activeTunnels
+                        .where((tunnel) => tunnel.isAutomatic)
+                        .toList(growable: false)
+                      ..sort(
+                        (left, right) =>
+                            left.remotePort.compareTo(right.remotePort),
+                      );
+                if (forwards.isEmpty && automaticTunnels.isEmpty) {
+                  return _buildEmptyState(context);
+                }
+                return _buildForwardList(
+                  context,
+                  forwards: forwards,
+                  automaticTunnels: automaticTunnels,
+                  isConnected: isConnected,
+                );
+              },
             ),
           ),
         ),
-        if (portForwards.asData?.value.isNotEmpty ?? false) ...[
+        if ((portForwards.asData?.value.isNotEmpty ?? false) ||
+            widget.session.activeTunnels.any(
+              (tunnel) => tunnel.isAutomatic,
+            )) ...[
           const Divider(height: 1),
           SafeArea(
             top: false,
@@ -194,6 +202,96 @@ class _TerminalPortForwardsSheetState
       ),
     ),
   );
+
+  Widget _buildForwardList(
+    BuildContext context, {
+    required List<PortForward> forwards,
+    required List<ActiveTunnelInfo> automaticTunnels,
+    required bool isConnected,
+  }) => ListView(
+    controller: widget.scrollController,
+    padding: const EdgeInsets.symmetric(vertical: FluttyTheme.spacingSm),
+    children: [
+      if (automaticTunnels.isNotEmpty) ...[
+        _buildGroupLabel(context, 'Detected automatically'),
+        for (final tunnel in automaticTunnels) ...[
+          _buildAutomaticForwardRow(context, tunnel),
+          const Divider(height: 1),
+        ],
+      ],
+      if (forwards.isNotEmpty) ...[
+        if (automaticTunnels.isNotEmpty)
+          _buildGroupLabel(context, 'Saved forwards'),
+        for (var index = 0; index < forwards.length; index++) ...[
+          _buildForwardRow(context, forwards[index], isConnected: isConnected),
+          if (index < forwards.length - 1) const Divider(height: 1),
+        ],
+      ],
+    ],
+  );
+
+  Widget _buildGroupLabel(BuildContext context, String label) => Padding(
+    padding: const EdgeInsets.fromLTRB(
+      FluttyTheme.spacingMd,
+      FluttyTheme.spacingSm,
+      FluttyTheme.spacingMd,
+      FluttyTheme.spacingXs,
+    ),
+    child: Text(
+      label.toLowerCase(),
+      style: FluttyTheme.displayMono(
+        fontSize: 12,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    ),
+  );
+
+  Widget _buildAutomaticForwardRow(
+    BuildContext context,
+    ActiveTunnelInfo tunnel,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final proxyHost = tunnel.browserHost ?? tunnel.localHost;
+    final proxyPort = tunnel.browserPort ?? tunnel.localPort;
+    final endpoint = '$proxyHost:$proxyPort';
+    return ListTile(
+      contentPadding: const EdgeInsets.fromLTRB(
+        FluttyTheme.spacingMd,
+        FluttyTheme.spacingXs,
+        FluttyTheme.spacingSm,
+        FluttyTheme.spacingXs,
+      ),
+      leading: Icon(Icons.radar_rounded, color: colorScheme.primary),
+      title: Text(
+        endpoint,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: FluttyTheme.monoStyle.copyWith(
+          color: colorScheme.onSurface,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      subtitle: Text(
+        'localhost:${tunnel.remotePort} → local proxy',
+        style: FluttyTheme.monoStyle.copyWith(
+          fontSize: 11,
+          color: colorScheme.onSurfaceVariant,
+        ),
+      ),
+      trailing: IconButton(
+        tooltip: 'Copy $endpoint',
+        onPressed: () => _copyAutomaticEndpoint(endpoint),
+        icon: const Icon(Icons.copy_rounded),
+      ),
+    );
+  }
+
+  Future<void> _copyAutomaticEndpoint(String endpoint) async {
+    await Clipboard.setData(ClipboardData(text: endpoint));
+    if (mounted) {
+      _showMessage('Copied $endpoint');
+    }
+  }
 
   Widget _buildForwardRow(
     BuildContext context,

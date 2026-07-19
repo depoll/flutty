@@ -59,6 +59,74 @@ Uri buildPortForwardBrowserUriForBind({
 String portForwardBrowserHostForPortForwardId(int portForwardId) =>
     'monkeyssh-${portForwardId.abs().toRadixString(36)}.localhost';
 
+/// Normalizes a user-entered proxy name to the prefix stored before
+/// `.localhost`.
+String normalizePortProxyName(String value) {
+  final normalized = value.trim().toLowerCase();
+  return normalized.endsWith('.localhost')
+      ? normalized.substring(0, normalized.length - '.localhost'.length)
+      : normalized;
+}
+
+/// Normalizes an optional proxy name, returning null for an empty value.
+String? normalizeOptionalPortProxyName(String? value) {
+  if (value == null) {
+    return null;
+  }
+  final normalized = normalizePortProxyName(value);
+  return normalized.isEmpty ? null : normalized;
+}
+
+/// Returns a validation message when [value] is not a valid `.localhost`
+/// prefix.
+String? validatePortProxyName(String? value) {
+  final normalized = normalizeOptionalPortProxyName(value);
+  if (normalized == null) {
+    return null;
+  }
+  if (normalized.length > 243) {
+    return 'Proxy name is too long';
+  }
+  for (final label in normalized.split('.')) {
+    if (label.isEmpty ||
+        label.length > 63 ||
+        !RegExp(r'^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$').hasMatch(label)) {
+      return 'Use letters, numbers, hyphens, or dots';
+    }
+  }
+  return null;
+}
+
+/// Builds a stable generated proxy prefix from a host label and database ID.
+String generatedPortProxyName(String hostLabel, {int? hostId}) {
+  final suffix = hostId == null ? '' : '-${hostId.toRadixString(36)}';
+  final maxBaseLength = 63 - suffix.length;
+  var base = hostLabel
+      .trim()
+      .toLowerCase()
+      .replaceAll(RegExp('[^a-z0-9]+'), '-')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
+  if (base.isEmpty) {
+    base = 'host';
+  }
+  if (base.length > maxBaseLength) {
+    base = base.substring(0, maxBaseLength).replaceFirst(RegExp(r'-+$'), '');
+  }
+  return '$base$suffix';
+}
+
+/// Resolves the full `.localhost` proxy domain for a host.
+String hostPortProxyDomain({
+  required String hostLabel,
+  required int hostId,
+  String? customName,
+}) {
+  final normalizedCustomName = normalizeOptionalPortProxyName(customName);
+  final prefix =
+      normalizedCustomName ?? generatedPortProxyName(hostLabel, hostId: hostId);
+  return '$prefix.localhost';
+}
+
 /// Rewrites a loopback [uri] for one forwarded service's browser-only relay.
 ///
 /// Returns null when [uri] does not target [sourceUri].

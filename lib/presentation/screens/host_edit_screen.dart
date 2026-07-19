@@ -18,6 +18,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/port_forward_runtime_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -86,6 +87,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   late TextEditingController _agentTmuxSessionController;
   late TextEditingController _agentTmuxExtraFlagsController;
   late TextEditingController _agentArgumentsController;
+  late TextEditingController _portProxyNameController;
   late FocusNode _labelFocusNode;
   late FocusNode _hostnameFocusNode;
   late FocusNode _portFocusNode;
@@ -113,6 +115,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   bool _disableTmuxStatusBar = false;
   bool _disableAgentTmuxStatusBar = false;
   bool _startClisInYoloMode = false;
+  bool _autoForwardPorts = false;
 
   List<PortForward> _portForwards = [];
 
@@ -139,6 +142,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _agentTmuxSessionController = TextEditingController();
     _agentTmuxExtraFlagsController = TextEditingController();
     _agentArgumentsController = TextEditingController();
+    _portProxyNameController = TextEditingController();
     _labelFocusNode = FocusNode();
     _hostnameFocusNode = FocusNode();
     _portFocusNode = FocusNode();
@@ -163,6 +167,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _agentTmuxSessionController,
       _agentTmuxExtraFlagsController,
       _agentArgumentsController,
+      _portProxyNameController,
     ]) {
       c.addListener(_updateDirtyState);
     }
@@ -245,6 +250,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _disableTmuxStatusBar = hasTmuxDisableStatusBarCommand(tmuxExtraFlags);
       _disableAgentTmuxStatusBar = preset?.tmuxDisableStatusBar ?? false;
       _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
+      _autoForwardPorts = host.autoForwardPorts;
+      _portProxyNameController.text = host.portProxyName ?? '';
       _selectedAutoConnectMode = resolveAutoConnectCommandMode(
         command: host.autoConnectCommand,
         snippetId: host.autoConnectSnippetId,
@@ -297,6 +304,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _agentTmuxSessionController.dispose();
     _agentTmuxExtraFlagsController.dispose();
     _agentArgumentsController.dispose();
+    _portProxyNameController.dispose();
     _labelFocusNode.dispose();
     _hostnameFocusNode.dispose();
     _portFocusNode.dispose();
@@ -335,6 +343,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     agentTmuxSession: _agentTmuxSessionController.text,
     agentTmuxExtraFlags: _agentTmuxExtraFlagsController.text,
     agentArguments: _agentArgumentsController.text,
+    portProxyName: _portProxyNameController.text,
     selectedAgentMuxBackend: _selectedAgentMuxBackend,
     selectedKeyId: _selectedKeyId,
     selectedGroupId: _selectedGroupId,
@@ -351,6 +360,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     disableTmuxStatusBar: _disableTmuxStatusBar,
     disableAgentTmuxStatusBar: _disableAgentTmuxStatusBar,
     startClisInYoloMode: _startClisInYoloMode,
+    autoForwardPorts: _autoForwardPorts,
   );
 
   void _closeWithoutUnsavedPrompt(SnackBar snackBar) {
@@ -824,6 +834,28 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _applySavedAutomaticPortForwarding(int hostId) async {
+    final hostRepository = ref.read(hostRepositoryProvider);
+    final sessions = ref.read(activeSessionsProvider.notifier);
+    try {
+      final savedHost = await hostRepository.getById(hostId);
+      if (savedHost != null) {
+        await sessions.configureAutomaticPortForwardingForHost(savedHost);
+      }
+    } on Object catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'host editor',
+          context: ErrorDescription(
+            'while applying automatic port forwarding live',
+          ),
+        ),
+      );
+    }
   }
 
   HostStartupMode _resolveStartupMode({
@@ -1456,7 +1488,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       );
 
       final draft = _currentDraft();
-      await ref
+      final savedHostId = await ref
           .read(hostEditViewModelProvider(widget.hostId).notifier)
           .save(
             HostEditSaveRequest(
@@ -1465,6 +1497,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               hasAgentPresetAccess: hasAgentPresetAccess,
             ),
           );
+      unawaited(_applySavedAutomaticPortForwarding(savedHostId));
       if (widget.hostId == null) {
         unawaited(
           ref
@@ -2011,6 +2044,43 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ],
         ),
         const SizedBox(height: 8),
+        SwitchListTile.adaptive(
+          key: const Key('host-auto-forward-ports-switch'),
+          contentPadding: EdgeInsets.zero,
+          secondary: const Icon(Icons.radar_rounded),
+          title: const Text('Detect open ports'),
+          subtitle: const Text(
+            'Automatically proxy new remote TCP listeners while connected',
+          ),
+          value: _autoForwardPorts,
+          onChanged: (value) {
+            setState(() => _autoForwardPorts = value);
+            _updateDirtyState();
+          },
+        ),
+        if (_autoForwardPorts) ...[
+          const SizedBox(height: 8),
+          TextFormField(
+            key: const Key('host-port-proxy-name-field'),
+            controller: _portProxyNameController,
+            decoration: InputDecoration(
+              labelText: 'Proxy domain (optional)',
+              hintText: generatedPortProxyName(
+                _labelController.text,
+                hostId: widget.hostId,
+              ),
+              suffixText: '.localhost',
+              prefixIcon: const Icon(Icons.language_rounded),
+              helperText:
+                  'Leave blank to generate a stable name from the host label.',
+              helperMaxLines: _hostFieldHelperMaxLines,
+            ),
+            autocorrect: false,
+            style: FluttyTheme.monoStyle,
+            validator: validatePortProxyName,
+          ),
+          const SizedBox(height: 16),
+        ],
         if (!isEditing)
           Container(
             padding: const EdgeInsets.all(16),

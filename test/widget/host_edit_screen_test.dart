@@ -48,6 +48,7 @@ Host _testHost({
   autoConnectCommand: autoConnectCommand,
   autoConnectSnippetId: autoConnectSnippetId,
   autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
+  autoForwardPorts: false,
   tmuxSessionName: tmuxSessionName,
   tmuxWorkingDirectory: tmuxWorkingDirectory,
   tmuxExtraFlags: tmuxExtraFlags,
@@ -362,6 +363,35 @@ void main() {
         expect(harness.hostRepository.insertedHost, isNull);
       },
     );
+
+    testWidgets('saves automatic forwarding and a custom proxy domain', (
+      tester,
+    ) async {
+      final harness = await _pumpHostCreateScreen(tester);
+      await _fillRequiredHostFields(tester);
+      final switchFinder = find.byKey(
+        const Key('host-auto-forward-ports-switch'),
+      );
+      await tester.scrollUntilVisible(
+        switchFinder,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(switchFinder);
+      await tester.pump();
+
+      final proxyNameField = find.byKey(
+        const Key('host-port-proxy-name-field'),
+      );
+      expect(proxyNameField, findsOneWidget);
+      await tester.enterText(proxyNameField, 'my.dev');
+      await _tapBottomSave(tester);
+
+      final insertedHost = harness.hostRepository.insertedHost;
+      expect(insertedHost, isNotNull);
+      expect(insertedHost!.autoForwardPorts.value, isTrue);
+      expect(insertedHost.portProxyName.value, 'my.dev');
+    });
 
     testWidgets('warns before leaving with unsaved host changes', (
       tester,

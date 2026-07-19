@@ -12,6 +12,7 @@ import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
+import '../../domain/services/port_forward_browser_service.dart';
 import '../providers/entity_list_providers.dart';
 
 /// Host startup behavior selected in the edit form.
@@ -127,6 +128,7 @@ typedef HostEditDraft = ({
   String agentTmuxSession,
   String agentTmuxExtraFlags,
   String agentArguments,
+  String portProxyName,
   RemoteMuxBackend selectedAgentMuxBackend,
   int? selectedKeyId,
   int? selectedGroupId,
@@ -143,6 +145,7 @@ typedef HostEditDraft = ({
   bool disableTmuxStatusBar,
   bool disableAgentTmuxStatusBar,
   bool startClisInYoloMode,
+  bool autoForwardPorts,
 });
 
 /// Logical validation targets the UI can scroll to and focus.
@@ -457,6 +460,9 @@ class HostEditViewModel extends Notifier<HostEditState> {
     final port = int.parse(draft.port);
     final password = draft.password.isEmpty ? null : draft.password;
     final tags = draft.tags.trim().isEmpty ? null : draft.tags.trim();
+    final portProxyName = draft.portProxyName.trim().isEmpty
+        ? null
+        : normalizePortProxyName(draft.portProxyName);
 
     final autoConnectSnippetId =
         draft.selectedAutoConnectMode == AutoConnectCommandMode.snippet
@@ -609,6 +615,8 @@ class HostEditViewModel extends Notifier<HostEditState> {
       tmuxWorkingDirectory: normalizedTmuxWorkingDirectory,
       tmuxExtraFlags: normalizedTmuxExtraFlags,
       remoteMuxBackend: normalizedRemoteMuxBackend,
+      autoForwardPorts: draft.autoForwardPorts,
+      portProxyName: portProxyName,
       isFavorite: draft.isFavorite,
     );
   }
