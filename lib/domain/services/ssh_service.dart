@@ -3252,12 +3252,20 @@ class SshSession {
   /// Get or create a shell session.
   ///
   /// When [command] is provided for a new shell, the foreground PTY runs that
-  /// command directly instead of opening an interactive login shell first.
+  /// command directly instead of opening an interactive login shell first. If
+  /// [returnToLoginShell] is true, completing that command replaces its channel
+  /// with an interactive login shell without closing the SSH connection.
   Future<SSHSession> getShell({
     SSHPtyConfig? pty,
     bool forceNew = false,
     String? command,
-  }) => _runtime.getShell(pty: pty, forceNew: forceNew, command: command);
+    bool returnToLoginShell = false,
+  }) => _runtime.getShell(
+    pty: pty,
+    forceNew: forceNew,
+    command: command,
+    returnToLoginShell: returnToLoginShell,
+  );
 
   /// Shell stdout as a broadcast stream for screen re-attachment.
   Stream<String> get shellStdoutStream => _runtime.shellStdoutStream;
@@ -3267,6 +3275,13 @@ class SshSession {
 
   /// Shell done event stream for screen re-attachment.
   Stream<void> get shellDoneStream => _runtime.shellDoneStream;
+
+  /// Writes text to the currently active shell channel.
+  void writeToShell(String data) => _runtime.writeToShell(data);
+
+  /// Resizes the currently active shell channel.
+  void resizeShell(int width, int height, int pixelWidth, int pixelHeight) =>
+      _runtime.resizeShell(width, height, pixelWidth, pixelHeight);
 
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell({bool waitForStreams = true}) =>
