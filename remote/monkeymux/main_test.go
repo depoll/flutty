@@ -1469,6 +1469,75 @@ func TestAttachQueueRejectsOversizedBacklog(t *testing.T) {
 	}
 }
 
+func TestAttachQueueAcceptsLiveOutputBurstDuringReplay(t *testing.T) {
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	conn := &gatedConn{
+		recordingConn: &recordingConn{},
+		gate:          gate,
+		started:       started,
+	}
+	client := newAttachClient(conn, controlMessage{ClientID: "replay"})
+	t.Cleanup(client.close)
+
+	if _, queued := client.enqueue(
+		bytes.Repeat([]byte{'R'}, attachWriteChunkBytes),
+		false,
+	); !queued {
+		t.Fatal("initial replay was not queued")
+	}
+	<-started
+
+	const liveWrites = 64
+	for i := 0; i < liveWrites; i++ {
+		if _, queued := client.enqueue(
+			bytes.Repeat([]byte{'L'}, attachWriteChunkBytes),
+			false,
+		); !queued {
+			t.Fatalf("live output write %d was rejected", i)
+		}
+	}
+	select {
+	case <-client.done:
+		t.Fatal("bounded live output burst disconnected the attach client")
+	default:
+	}
+	close(gate)
+}
+
+func TestAttachWriteRenewsDeadlineWhileReplayMakesProgress(t *testing.T) {
+	conn := &deadlineBudgetConn{
+		recordingConn:     &recordingConn{},
+		maxWriteBytes:     attachWriteChunkBytes / 2,
+		writesPerDeadline: 2,
+	}
+	client := newAttachClient(conn, controlMessage{ClientID: "paced"})
+	t.Cleanup(client.close)
+	payload := bytes.Repeat([]byte{'R'}, attachWriteChunkBytes*8+123)
+
+	completion, queued := client.enqueue(payload, true)
+	if !queued {
+		t.Fatal("replay was not queued")
+	}
+	if !client.waitForWrite(completion) {
+		t.Fatal("progressing replay write failed")
+	}
+	if got := conn.recordingConn.String(); got != string(payload) {
+		t.Fatalf("replay output length = %d, want %d", len(got), len(payload))
+	}
+	if conn.deadlineRefreshCount() < 9 {
+		t.Fatalf(
+			"write deadline refreshed %d times, want at least 9",
+			conn.deadlineRefreshCount(),
+		)
+	}
+	select {
+	case <-client.done:
+		t.Fatal("progressing replay disconnected the attach client")
+	default:
+	}
+}
+
 func TestAttachSizeFollowsPrimaryClient(t *testing.T) {
 	server := newMuxServerWithSize("test", 160, 60)
 	first := registerTestAttachClient(
@@ -9388,6 +9457,17 @@ type gatedConn struct {
 	once    sync.Once
 }
 
+type deadlineBudgetConn struct {
+	*recordingConn
+	mu                sync.Mutex
+	maxWriteBytes     int
+	writesPerDeadline int
+	writesRemaining   int
+	deadlineRefreshes int
+}
+
+type deadlineBudgetTimeoutError struct{}
+
 type responseCheckConn struct {
 	discardConn
 	client               *attachClient
@@ -9424,6 +9504,42 @@ func (c *gatedConn) Write(data []byte) (int, error) {
 	<-c.gate
 	return c.recordingConn.Write(data)
 }
+
+func (c *deadlineBudgetConn) Write(data []byte) (int, error) {
+	c.mu.Lock()
+	if c.writesRemaining == 0 {
+		c.mu.Unlock()
+		return 0, deadlineBudgetTimeoutError{}
+	}
+	c.writesRemaining--
+	maxWriteBytes := c.maxWriteBytes
+	c.mu.Unlock()
+	if maxWriteBytes <= 0 || maxWriteBytes > len(data) {
+		maxWriteBytes = len(data)
+	}
+	return c.recordingConn.Write(data[:maxWriteBytes])
+}
+
+func (c *deadlineBudgetConn) SetWriteDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		return nil
+	}
+	c.mu.Lock()
+	c.writesRemaining = c.writesPerDeadline
+	c.deadlineRefreshes++
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *deadlineBudgetConn) deadlineRefreshCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.deadlineRefreshes
+}
+
+func (deadlineBudgetTimeoutError) Error() string   { return "write deadline exceeded" }
+func (deadlineBudgetTimeoutError) Timeout() bool   { return true }
+func (deadlineBudgetTimeoutError) Temporary() bool { return true }
 
 func (c *responseCheckConn) Write(data []byte) (int, error) {
 	c.responseClaimedFocus = c.client.inputClaimsFocus([]byte("\x1b[?62;4c"))
