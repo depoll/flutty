@@ -2619,7 +2619,18 @@ void main() {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final loginShell = _MockShellChannel();
+        final loginStdout = StreamController<Uint8List>.broadcast();
+        final loginDone = Completer<void>();
+        final loginOpen = Completer<SSHSession>();
+        final loginWrites = <List<int>>[];
         final executedCommands = <String>[];
+        addTearDown(() async {
+          await loginStdout.close();
+          if (!loginDone.isCompleted) {
+            loginDone.complete();
+          }
+        });
 
         host = _buildHost(
           id: host.id,
@@ -2639,12 +2650,29 @@ void main() {
         when(
           () => shellChannel.resizeTerminal(any(), any(), any(), any()),
         ).thenAnswer((_) {});
+        when(() => sshClient.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (invocation) {
+            final command = invocation.positionalArguments.single as String;
+            executedCommands.add(command);
+            return command.contains('COLORTERM=truecolor')
+                ? loginOpen.future
+                : Future.value(shellChannel);
+          },
+        );
+        when(() => loginShell.stdout).thenAnswer((_) => loginStdout.stream);
         when(
-          () => sshClient.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((invocation) async {
-          executedCommands.add(invocation.positionalArguments.single as String);
-          return shellChannel;
+          () => loginShell.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(() => loginShell.done).thenAnswer((_) => loginDone.future);
+        when(() => loginShell.write(any())).thenAnswer((invocation) {
+          loginWrites.add(
+            List<int>.from(invocation.positionalArguments.single as List<int>),
+          );
         });
+        when(
+          () => loginShell.resizeTerminal(any(), any(), any(), any()),
+        ).thenAnswer((_) {});
+        when(loginShell.close).thenAnswer((_) {});
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
@@ -2706,6 +2734,7 @@ void main() {
           ),
         ).thenAnswer((_) async {});
 
+        final activeSessions = _TestActiveSessionsNotifier(session);
         await tester.pumpWidget(
           ProviderScope(
             overrides: [
@@ -2718,9 +2747,7 @@ void main() {
                 (ref) => Stream.value(_proMonetizationState),
               ),
               sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
+              activeSessionsProvider.overrideWith(() => activeSessions),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
@@ -2748,6 +2775,30 @@ void main() {
           shellWrites.map(utf8.decode).join(),
           isNot(contains('/tmp/monkeymux')),
         );
+
+        final terminalOutputHandler = session.terminal!.onOutput!;
+        final terminalResizeHandler = session.terminal!.onResize!;
+        await session.closeShell(waitForStreams: false);
+        final replacementShellFuture = session.getShell();
+        terminalOutputHandler('echo queued\r');
+        terminalResizeHandler(100, 32, 800, 512);
+        expect(loginWrites, isEmpty);
+        loginOpen.complete(loginShell);
+        final replacementShell = await replacementShellFuture;
+
+        expect(executedCommands, hasLength(2));
+        expect(executedCommands.last, _trueColorLoginShellCommand);
+        expect(replacementShell, same(loginShell));
+        terminalOutputHandler('echo ready\r');
+        terminalResizeHandler(101, 33, 808, 528);
+        expect(loginWrites.map(utf8.decode), contains('echo queued\r'));
+        expect(loginWrites.map(utf8.decode), contains('echo ready\r'));
+        verify(() => loginShell.resizeTerminal(101, 33, 808, 528)).called(1);
+        expect(activeSessions.disconnectedConnectionIds, isEmpty);
+        expect(find.text('Disconnected'), findsNothing);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
