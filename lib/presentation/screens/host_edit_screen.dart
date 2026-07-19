@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -19,6 +18,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/port_forward_runtime_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
@@ -27,6 +27,7 @@ import '../../domain/services/wifi_network_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../view_models/host_edit_view_model.dart';
 import '../widgets/agent_tool_icon.dart';
+import '../widgets/host_port_forward_editor_sheet.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
 import '../widgets/terminal_text_style.dart';
@@ -2096,191 +2097,24 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Future<void> _showAddEditPortForwardDialog(PortForward? existing) async {
-    final isEdit = existing != null;
-    final nameController = TextEditingController(text: existing?.name ?? '');
-    final localPortController = TextEditingController(
-      text: existing?.localPort.toString() ?? '',
-    );
-    final remoteHostController = TextEditingController(
-      text: existing?.remoteHost ?? 'localhost',
-    );
-    final remotePortController = TextEditingController(
-      text: existing?.remotePort.toString() ?? '',
-    );
-
-    var autoStart = existing?.autoStart ?? true;
-
-    final formKey = GlobalKey<FormState>();
-
-    final result = await showModalBottomSheet<bool>(
+    final result = await showHostPortForwardEditorSheet(
       context: context,
-      isScrollControlled: true,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setModalState) => Padding(
-          padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 20,
-            bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-          ),
-          child: Form(
-            key: formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  isEdit ? 'Edit Port Forward' : 'Add Port Forward',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 20),
-                TextFormField(
-                  controller: nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Name',
-                    hintText: 'e.g., Database Tunnel',
-                    border: OutlineInputBorder(),
-                  ),
-                  validator: (v) =>
-                      v == null || v.isEmpty ? 'Name is required' : null,
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: localPortController,
-                  decoration: const InputDecoration(
-                    labelText: 'Local Port',
-                    hintText: 'e.g., 3306',
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: TextInputType.number,
-                  validator: (v) {
-                    if (v == null || v.isEmpty) return 'Required';
-                    final port = int.tryParse(v);
-                    if (port == null || port < 1 || port > 65535) {
-                      return 'Invalid port (1-65535)';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextFormField(
-                        controller: remoteHostController,
-                        decoration: const InputDecoration(
-                          labelText: 'Remote Host',
-                          hintText: 'localhost',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (v) => v == null || v.isEmpty
-                            ? 'Remote host is required'
-                            : null,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: remotePortController,
-                        decoration: const InputDecoration(
-                          labelText: 'Remote Port',
-                          hintText: '3306',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        validator: (v) {
-                          if (v == null || v.isEmpty) return 'Required';
-                          final port = int.tryParse(v);
-                          if (port == null || port < 1 || port > 65535) {
-                            return 'Invalid';
-                          }
-                          return null;
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                SwitchListTile(
-                  title: const Text('Auto-start'),
-                  subtitle: const Text('Start this forward when connecting'),
-                  value: autoStart,
-                  onChanged: (value) => setModalState(() => autoStart = value),
-                  contentPadding: EdgeInsets.zero,
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, false),
-                      child: const Text('Cancel'),
-                    ),
-                    const SizedBox(width: 12),
-                    FilledButton(
-                      onPressed: () {
-                        if (formKey.currentState!.validate()) {
-                          Navigator.pop(context, true);
-                        }
-                      },
-                      child: Text(isEdit ? 'Save' : 'Add'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+      hostId: widget.hostId!,
+      existing: existing,
     );
-
-    if ((result ?? false) && mounted) {
-      final repo = ref.read(portForwardRepositoryProvider);
-
-      if (isEdit) {
-        await repo.update(
-          existing.copyWith(
-            name: nameController.text,
-            localPort: int.parse(localPortController.text),
-            remoteHost: remoteHostController.text,
-            remotePort: int.parse(remotePortController.text),
-            autoStart: autoStart,
-          ),
-        );
-      } else {
-        await repo.insert(
-          PortForwardsCompanion.insert(
-            hostId: widget.hostId!,
-            name: nameController.text,
-            forwardType: 'local',
-            localPort: int.parse(localPortController.text),
-            remoteHost: remoteHostController.text,
-            remotePort: int.parse(remotePortController.text),
-            autoStart: drift.Value(autoStart),
-          ),
-        );
-      }
-
-      // Reload port forwards
-      final updated = await repo.getByHostId(widget.hostId!);
-      setState(() => _portForwards = updated);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              isEdit ? 'Port forward updated' : 'Port forward added',
-            ),
-          ),
-        );
-      }
+    if (result == null || !mounted) {
+      return;
     }
 
-    nameController.dispose();
-    localPortController.dispose();
-    remoteHostController.dispose();
-    remotePortController.dispose();
+    final updated = await ref
+        .read(portForwardRepositoryProvider)
+        .getByHostId(widget.hostId!);
+    if (mounted) {
+      setState(() => _portForwards = updated);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(result.message)));
+    }
   }
 
   Future<void> _deletePortForward(PortForward pf) async {
@@ -2307,13 +2141,36 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
     if ((confirmed ?? false) && mounted) {
       final repo = ref.read(portForwardRepositoryProvider);
-      await repo.delete(pf.id);
+      try {
+        await stopPortForwardOnConnectedSessions(
+          sessions: ref.read(activeSessionsProvider.notifier),
+          portForward: pf,
+        );
+        await repo.delete(pf.id);
+      } on Exception catch (error, stackTrace) {
+        restorePortForwardAfterFailedDeletion(pf);
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'port forwards',
+            context: ErrorDescription('while deleting a host port forward'),
+          ),
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not delete port forward. Try again.'),
+            ),
+          );
+        }
+        return;
+      }
 
       // Reload port forwards
       final updated = await repo.getByHostId(widget.hostId!);
-      setState(() => _portForwards = updated);
-
       if (mounted) {
+        setState(() => _portForwards = updated);
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Deleted "${pf.name}"')));
