@@ -25,23 +25,10 @@ typedef _PortForwardEditDraft = ({
 /// Screen for adding or editing a port forward rule.
 class PortForwardEditScreen extends ConsumerStatefulWidget {
   /// Creates a new [PortForwardEditScreen].
-  const PortForwardEditScreen({
-    this.portForwardId,
-    this.initialHostId,
-    this.preferredConnectionId,
-    super.key,
-  });
+  const PortForwardEditScreen({this.portForwardId, super.key});
 
   /// The port forward ID to edit, or null for a new port forward.
   final int? portForwardId;
-
-  /// Fixed host used when creating from a host-specific surface.
-  ///
-  /// When set for a new rule, the host selector is omitted.
-  final int? initialHostId;
-
-  /// Connection that should receive a newly auto-started rule when available.
-  final int? preferredConnectionId;
 
   @override
   ConsumerState<PortForwardEditScreen> createState() =>
@@ -67,10 +54,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
   @override
   void initState() {
     super.initState();
-    _selectedHostId = widget.initialHostId;
-    if (!_usesFixedHost) {
-      _loadHosts();
-    }
+    _loadHosts();
     if (widget.portForwardId != null) {
       _loadPortForward();
     } else {
@@ -106,9 +90,6 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
       });
     }
   }
-
-  bool get _usesFixedHost =>
-      widget.portForwardId == null && widget.initialHostId != null;
 
   @override
   void dispose() {
@@ -199,33 +180,31 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    if (!_usesFixedHost) ...[
-                      // Host selection
-                      DropdownButtonFormField<int>(
-                        initialValue: _selectedHostId,
-                        decoration: const InputDecoration(
-                          labelText: 'Host',
-                          prefixIcon: Icon(Icons.computer),
-                        ),
-                        items: _hosts
-                            .map(
-                              (host) => DropdownMenuItem(
-                                value: host.id,
-                                child: Text(host.label),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: (value) =>
-                            setState(() => _selectedHostId = value),
-                        validator: (value) {
-                          if (value == null) {
-                            return 'Please select a host';
-                          }
-                          return null;
-                        },
+                    // Host selection
+                    DropdownButtonFormField<int>(
+                      initialValue: _selectedHostId,
+                      decoration: const InputDecoration(
+                        labelText: 'Host',
+                        prefixIcon: Icon(Icons.computer),
                       ),
-                      const SizedBox(height: 16),
-                    ],
+                      items: _hosts
+                          .map(
+                            (host) => DropdownMenuItem(
+                              value: host.id,
+                              child: Text(host.label),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) =>
+                          setState(() => _selectedHostId = value),
+                      validator: (value) {
+                        if (value == null) {
+                          return 'Please select a host';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
 
                     // Forward type
                     Text(
@@ -480,7 +459,6 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
             sessions: sessions,
             portForward: savedPortForward,
             previous: previousPortForward,
-            preferredConnectionId: widget.preferredConnectionId,
           );
         } on Exception catch (error, stackTrace) {
           FlutterError.reportError(

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
@@ -9,6 +8,7 @@ import '../providers/entity_list_providers.dart';
 import 'brand_empty_state.dart';
 import 'brand_error_state.dart';
 import 'brand_list_skeleton.dart';
+import 'host_port_forward_editor_sheet.dart';
 import 'terminal_overlay_focus.dart';
 
 /// Opens live port-forward controls for the current terminal connection.
@@ -338,15 +338,30 @@ class _TerminalPortForwardsSheetState
     }
   }
 
-  Future<void> _addForward() => context.push<void>(
-    '/port-forwards/add?hostId=${widget.hostId}'
-    '&connectionId=${widget.connectionId}',
-  );
+  Future<void> _addForward() async {
+    final result = await showHostPortForwardEditorSheet(
+      context: context,
+      hostId: widget.hostId,
+      preferredConnectionId: widget.connectionId,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+    );
+    if (result != null && mounted) {
+      _showMessage(result.message);
+    }
+  }
 
-  Future<void> _editForward(PortForward portForward) => context.push<void>(
-    '/port-forwards/edit/${portForward.id}'
-    '?connectionId=${widget.connectionId}',
-  );
+  Future<void> _editForward(PortForward portForward) async {
+    final result = await showHostPortForwardEditorSheet(
+      context: context,
+      hostId: widget.hostId,
+      existing: portForward,
+      preferredConnectionId: widget.connectionId,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+    );
+    if (result != null && mounted) {
+      _showMessage(result.message);
+    }
+  }
 
   void _showMessage(String message) {
     ScaffoldMessenger.of(
