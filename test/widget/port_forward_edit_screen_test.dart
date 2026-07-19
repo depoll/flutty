@@ -126,10 +126,7 @@ void main() {
         ),
         GoRoute(
           path: '/editor',
-          builder: (context, state) => const PortForwardEditScreen(
-            initialHostId: 10,
-            preferredConnectionId: 7,
-          ),
+          builder: (context, state) => const PortForwardEditScreen(),
         ),
       ],
     );
@@ -153,8 +150,11 @@ void main() {
     await tester.tap(find.text('Open Editor'));
     await tester.pumpAndSettle();
 
-    expect(find.byType(DropdownButtonFormField<int>), findsNothing);
-    verifyNever(hostRepository.getAll);
+    expect(find.byType(DropdownButtonFormField<int>), findsOneWidget);
+    await tester.tap(find.byType(DropdownButtonFormField<int>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Dev box').last);
+    await tester.pumpAndSettle();
 
     final fields = find.byType(TextFormField);
     await tester.enterText(fields.at(0), 'Web preview');
@@ -174,21 +174,5 @@ void main() {
     verify(() => portForwardRepository.insert(any())).called(1);
     expect(session.starts, [11]);
     expect(find.text('Port forward added and started'), findsOneWidget);
-  });
-
-  testWidgets('keeps host selection on the global add flow', (tester) async {
-    final hostRepository = _MockHostRepository();
-    when(hostRepository.getAll).thenAnswer((_) async => [_host()]);
-
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [hostRepositoryProvider.overrideWithValue(hostRepository)],
-        child: const MaterialApp(home: PortForwardEditScreen()),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.byType(DropdownButtonFormField<int>), findsOneWidget);
-    verify(hostRepository.getAll).called(1);
   });
 }
