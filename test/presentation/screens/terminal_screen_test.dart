@@ -2809,6 +2809,7 @@ void main() {
         expect(executedCommands, hasLength(2));
         expect(executedCommands.last, _trueColorLoginShellCommand);
         expect(replacementShell, same(loginShell));
+        verify(() => loginShell.resizeTerminal(100, 32, 800, 512)).called(1);
         terminalOutputHandler('echo ready\r');
         terminalResizeHandler(101, 33, 808, 528);
         expect(loginWrites.map(utf8.decode), contains('echo queued\r'));

@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.116"
+	monkeyMuxVersion                  = "0.1.117"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -84,12 +84,7 @@ const (
 	themeHintLimitBytes               = 1024
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
-	// Window output is read in 32 KiB chunks. Size the queue from the byte cap so
-	// a large initial replay cannot evict an otherwise healthy attach client
-	// merely because live output produced more than 32 small writes while the
-	// replay was still draining.
-	attachWriteQueueCapacity   = attachWriteQueueLimitBytes / attachWriteChunkBytes
-	attachWriteQueueLimitBytes = 16 * 1024 * 1024
+	attachWriteQueueLimitBytes        = 16 * 1024 * 1024
 	// Per-window Kitty image retention, used to survive history eviction across
 	// reattaches and to back placeholder cells the foreground app re-emits.
 	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
@@ -716,7 +711,8 @@ type attachClient struct {
 	replayedWindowID                   string
 	replayedOutputGeneration           uint64
 
-	queue       chan attachWrite
+	queue       []attachWrite
+	queueReady  chan struct{}
 	done        chan struct{}
 	closeOnce   sync.Once
 	queueMu     sync.Mutex
@@ -4185,7 +4181,7 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 		terminalHeight: terminalHeight,
 		clipViewport:   hello.ClipViewport,
 		prefixEnabled:  !hello.NoPrefix,
-		queue:          make(chan attachWrite, attachWriteQueueCapacity),
+		queueReady:     make(chan struct{}, 1),
 		done:           make(chan struct{}),
 	}
 	go client.writeLoop()
@@ -4195,35 +4191,61 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 func (c *attachClient) writeLoop() {
 	defer c.failQueuedWrites(io.ErrClosedPipe)
 	for {
-		select {
-		case write := <-c.queue:
-			if write.gate != nil {
-				select {
-				case <-write.gate.done:
-					if !write.gate.deliver.Load() {
-						c.finishQueuedWrite(write, nil)
-						continue
-					}
-				case <-c.done:
-					c.finishQueuedWrite(write, io.ErrClosedPipe)
-					return
+		write, ok := c.nextQueuedWrite()
+		if !ok {
+			return
+		}
+		if write.gate != nil {
+			select {
+			case <-write.gate.done:
+				if !write.gate.deliver.Load() {
+					c.finishQueuedWrite(write, nil)
+					continue
 				}
-			}
-			if write.responseWindowID != "" && write.responseCount > 0 {
-				c.expectTerminalResponses(
-					write.responseWindowID,
-					write.responseCount,
-				)
-			}
-			err := writeAttachConnection(c.conn, write.data)
-			_ = c.conn.SetWriteDeadline(time.Time{})
-			c.finishQueuedWrite(write, err)
-			if err != nil {
-				c.close()
+			case <-c.done:
+				c.finishQueuedWrite(write, io.ErrClosedPipe)
 				return
 			}
-		case <-c.done:
+		}
+		if write.responseWindowID != "" && write.responseCount > 0 {
+			c.expectTerminalResponses(
+				write.responseWindowID,
+				write.responseCount,
+			)
+		}
+		err := writeAttachConnection(c.conn, write.data)
+		_ = c.conn.SetWriteDeadline(time.Time{})
+		c.finishQueuedWrite(write, err)
+		if err != nil {
+			c.close()
 			return
+		}
+	}
+}
+
+func (c *attachClient) nextQueuedWrite() (attachWrite, bool) {
+	for {
+		c.queueMu.Lock()
+		if len(c.queue) > 0 {
+			write := c.queue[0]
+			if len(c.queue) == 1 {
+				c.queue = nil
+			} else {
+				c.queue[0] = attachWrite{}
+				c.queue = c.queue[1:]
+			}
+			c.queueMu.Unlock()
+			return write, true
+		}
+		if c.queueClosed {
+			c.queueMu.Unlock()
+			return attachWrite{}, false
+		}
+		c.queueMu.Unlock()
+		select {
+		case <-c.queueReady:
+		case <-c.done:
+			return attachWrite{}, false
 		}
 	}
 }
@@ -4240,11 +4262,20 @@ func (c *attachClient) finishQueuedWrite(write attachWrite, err error) {
 
 func (c *attachClient) failQueuedWrites(err error) {
 	for {
-		select {
-		case write := <-c.queue:
-			c.finishQueuedWrite(write, err)
-		default:
+		c.queueMu.Lock()
+		if len(c.queue) == 0 {
+			c.queue = nil
+			c.queueMu.Unlock()
 			return
+		}
+		write := c.queue[0]
+		c.queue[0] = attachWrite{}
+		c.queue = c.queue[1:]
+		c.queuedBytes -= len(write.data)
+		c.queueMu.Unlock()
+		if write.complete != nil {
+			write.complete <- err
+			close(write.complete)
 		}
 	}
 }
@@ -4332,16 +4363,32 @@ func (c *attachClient) enqueueWrite(
 		return nil, false
 	}
 	c.queuedBytes += len(write.data)
-	select {
-	case c.queue <- write:
-		c.queueMu.Unlock()
-		return write.complete, true
-	default:
-		c.queuedBytes -= len(write.data)
-		c.queueMu.Unlock()
-		c.close()
-		return nil, false
+	queueWasEmpty := len(c.queue) == 0
+	if attachWritesCanCoalesce(write) && len(c.queue) > 0 {
+		last := &c.queue[len(c.queue)-1]
+		if attachWritesCanCoalesce(*last) &&
+			len(last.data)+len(write.data) <= attachWriteChunkBytes {
+			last.data = append(last.data, write.data...)
+			c.queueMu.Unlock()
+			return nil, true
+		}
 	}
+	c.queue = append(c.queue, write)
+	c.queueMu.Unlock()
+	if queueWasEmpty {
+		select {
+		case c.queueReady <- struct{}{}:
+		default:
+		}
+	}
+	return write.complete, true
+}
+
+func attachWritesCanCoalesce(write attachWrite) bool {
+	return write.complete == nil &&
+		write.responseWindowID == "" &&
+		write.responseCount == 0 &&
+		write.gate == nil
 }
 
 func (c *attachClient) waitForWrite(completion <-chan error) bool {
