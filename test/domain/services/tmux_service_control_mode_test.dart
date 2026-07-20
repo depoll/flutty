@@ -538,6 +538,37 @@ void main() {
       },
     );
 
+    test('client ancestry lookup does not infer another tmux client', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 230);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: _doneMarker()),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final sessionName = await service
+          .foregroundSessionNameFromClientAncestryOrThrow(session);
+
+      expect(sessionName, isNull);
+      verify(
+        () => client.execute(
+          any(that: contains('list-clients')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+      verifyNever(
+        () => client.execute(
+          any(that: contains('display-message')),
+          pty: any(named: 'pty'),
+        ),
+      );
+    });
+
     test('currentSessionName returns the foreground tmux client', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 24);

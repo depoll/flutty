@@ -6683,6 +6683,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'hasAutoConnectCommand':
             _host?.autoConnectCommand?.trim().isNotEmpty ?? false,
         'hasTmuxAutoAttach': _host?.tmuxSessionName?.trim().isNotEmpty ?? false,
+        'configuredMuxBackend': ?_host?.remoteMuxBackend,
+        'hasAgentPreset': _autoConnectAgentPreset != null,
+        'agentPresetHasMuxSession':
+            _autoConnectAgentPreset?.usesMuxSession ?? false,
+        'agentPresetMuxBackend':
+            ?_autoConnectAgentPreset?.effectiveRemoteMuxBackend.storageValue,
       },
     );
     await _loadTheme(reason: 'initial_load');
@@ -9266,6 +9272,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               candidateSessionName,
             );
             foregroundSessionName = active ? candidateSessionName : null;
+          } else if (muxBackend == RemoteMuxBackend.tmux &&
+              candidateSessionName == null) {
+            foregroundSessionName = await _tmuxService
+                .foregroundSessionNameFromClientAncestryOrThrow(
+                  session,
+                  extraFlags: host?.tmuxExtraFlags,
+                );
+            active = foregroundSessionName != null;
           } else {
             foregroundSessionName = await mux.foregroundSessionNameOrThrow(
               session,

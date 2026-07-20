@@ -339,11 +339,25 @@ class TmuxService {
     session,
     priority: SshExecPriority.low,
     extraFlags: extraFlags,
+    allowDirectFallback: true,
+  );
+
+  /// Returns the tmux session whose client process belongs to this SSH
+  /// connection, without inferring another client's session from tmux defaults.
+  Future<String?> foregroundSessionNameFromClientAncestryOrThrow(
+    SshSession session, {
+    String? extraFlags,
+  }) => _foregroundSessionNameOrThrow(
+    session,
+    priority: SshExecPriority.low,
+    extraFlags: extraFlags,
+    allowDirectFallback: false,
   );
 
   Future<String?> _foregroundSessionNameOrThrow(
     SshSession session, {
     required SshExecPriority priority,
+    required bool allowDirectFallback,
     String? extraFlags,
   }) async {
     DiagnosticsLogService.instance.debug(
@@ -364,11 +378,13 @@ class TmuxService {
         .firstOrNull;
     final attachedSessionName =
         sessionName ??
-        await _directCurrentSessionName(
-          session,
-          priority: priority,
-          extraFlags: extraFlags,
-        );
+        (allowDirectFallback
+            ? await _directCurrentSessionName(
+                session,
+                priority: priority,
+                extraFlags: extraFlags,
+              )
+            : null);
     DiagnosticsLogService.instance.info(
       'tmux.query',
       'foreground_session_complete',
@@ -377,6 +393,7 @@ class TmuxService {
         'active': attachedSessionName != null,
         'usedDirectFallback':
             sessionName == null && attachedSessionName != null,
+        'directFallbackAllowed': allowDirectFallback,
       },
     );
     return attachedSessionName;
@@ -1529,6 +1546,7 @@ class TmuxService {
       session,
       priority: SshExecPriority.normal,
       extraFlags: extraFlags,
+      allowDirectFallback: true,
     );
     final hasClient = foregroundSessionName == sessionName;
     DiagnosticsLogService.instance.info(
