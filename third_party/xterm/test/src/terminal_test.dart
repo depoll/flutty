@@ -59,6 +59,61 @@ void main() {
     });
   });
 
+  group('MonkeyMux synchronized output', () {
+    test('repaints only after the synchronized redraw ends', () {
+      final terminal = Terminal()..resize(20, 2);
+      var notifications = 0;
+      terminal.addListener(() => notifications++);
+
+      terminal.writeSilently(
+        '\x1b[?9002h\x1b[2J\x1b[Htemporary layout',
+      );
+      terminal.notifyListeners();
+
+      expect(notifications, 0);
+
+      terminal.writeSilently(
+        '\x1b[2J\x1b[Hfinal layout\x1b[?9002l',
+      );
+
+      expect(notifications, 1);
+      expect(
+        terminal.buffer.lines[0].toString().trimRight(),
+        'final layout',
+      );
+    });
+
+    test('transport reset releases an incomplete synchronized redraw', () {
+      final terminal = Terminal();
+      var notifications = 0;
+      terminal.addListener(() => notifications++);
+
+      terminal.writeSilently('\x1b[?9002hpartial');
+      terminal.resetHostResizeState();
+      terminal.notifyListeners();
+
+      expect(notifications, 1);
+    });
+
+    test('terminal replies remain active while repaint is synchronized', () {
+      final terminal = Terminal();
+      final output = <String>[];
+      var notifications = 0;
+      terminal
+        ..onOutput = output.add
+        ..addListener(() => notifications++);
+
+      terminal.writeSilently('\x1b[?9002h\x1b[c');
+
+      expect(output, isNotEmpty);
+      expect(notifications, 0);
+
+      terminal.writeSilently('\x1b[?9002l');
+
+      expect(notifications, 1);
+    });
+  });
+
   group('Terminal.resizeFromHost', () {
     test('ignores private host resizes unless explicitly enabled', () {
       final terminal = Terminal(maxLines: 10)..resize(80, 24);
