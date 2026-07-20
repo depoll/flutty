@@ -224,7 +224,7 @@ func stubForegroundResize(t *testing.T) func() {
 	originalSimulate := simulateForegroundResize
 	originalProcessGroup := foregroundProcessGroupForWindow
 	signalForegroundResize = func(int) {}
-	simulateForegroundResize = func(*muxWindow, int, int, func(func())) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
 	foregroundProcessGroupForWindow = func(*muxWindow) int { return 0 }
 	return func() {
 		signalForegroundResize = originalSignal
