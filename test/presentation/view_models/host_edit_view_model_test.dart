@@ -19,6 +19,8 @@ HostEditDraft _draft({
   String tmuxSession = '',
   String agentTmuxSession = '',
   String agentTmuxExtraFlags = '',
+  String portProxyName = '',
+  bool autoForwardPorts = false,
   RemoteMuxBackend selectedAgentMuxBackend = RemoteMuxBackend.monkeyMux,
   int? snippetId,
 }) => (
@@ -36,7 +38,7 @@ HostEditDraft _draft({
   agentTmuxSession: agentTmuxSession,
   agentTmuxExtraFlags: agentTmuxExtraFlags,
   agentArguments: '',
-  portProxyName: '',
+  portProxyName: portProxyName,
   selectedAgentMuxBackend: selectedAgentMuxBackend,
   selectedKeyId: null,
   selectedGroupId: null,
@@ -53,7 +55,7 @@ HostEditDraft _draft({
   disableTmuxStatusBar: false,
   disableAgentTmuxStatusBar: false,
   startClisInYoloMode: false,
-  autoForwardPorts: false,
+  autoForwardPorts: autoForwardPorts,
 );
 
 void main() {
@@ -77,6 +79,22 @@ void main() {
               (issue) => issue.message,
               'message',
               'Fix label to save this host',
+            ),
+      );
+      expect(
+        viewModel.validateDraft(
+          _draft(portProxyName: '-invalid', autoForwardPorts: true),
+        ),
+        isA<HostEditValidationIssue>()
+            .having(
+              (issue) => issue.target,
+              'target',
+              HostEditValidationTarget.portProxyName,
+            )
+            .having(
+              (issue) => issue.message,
+              'message',
+              'Fix proxy domain to save this host',
             ),
       );
       expect(

@@ -393,6 +393,74 @@ void main() {
       expect(insertedHost.portProxyName.value, 'my.dev');
     });
 
+    testWidgets('updates the generated proxy hint with the host label', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester);
+      await _fillRequiredHostFields(tester);
+      final switchFinder = find.byKey(
+        const Key('host-auto-forward-ports-switch'),
+      );
+      await tester.scrollUntilVisible(
+        switchFinder,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(switchFinder);
+      await tester.pump();
+
+      final proxyNameField = find.byKey(
+        const Key('host-port-proxy-name-field'),
+      );
+      InputDecoration proxyNameDecoration() => tester
+          .widget<InputDecorator>(
+            find.descendant(
+              of: proxyNameField,
+              matching: find.byType(InputDecorator),
+            ),
+          )
+          .decoration;
+      expect(proxyNameDecoration().hintText, 'new-host');
+
+      await tester.enterText(
+        find.byKey(const Key('host-label-field')),
+        'Renamed Proxy Host',
+      );
+      await tester.pump();
+
+      expect(proxyNameDecoration().hintText, 'renamed-proxy-host');
+    });
+
+    testWidgets('focuses an invalid automatic proxy domain on save', (
+      tester,
+    ) async {
+      final harness = await _pumpHostCreateScreen(tester);
+      await _fillRequiredHostFields(tester);
+      final switchFinder = find.byKey(
+        const Key('host-auto-forward-ports-switch'),
+      );
+      await tester.scrollUntilVisible(
+        switchFinder,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(switchFinder);
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('host-port-proxy-name-field')),
+        '-invalid',
+      );
+
+      await _tapBottomSave(tester);
+
+      expect(find.text('Fix proxy domain to save this host'), findsOneWidget);
+      expect(
+        _textFieldHasFocus(tester, const Key('host-port-proxy-name-field')),
+        isTrue,
+      );
+      expect(harness.hostRepository.insertedHost, isNull);
+    });
+
     testWidgets('warns before leaving with unsaved host changes', (
       tester,
     ) async {

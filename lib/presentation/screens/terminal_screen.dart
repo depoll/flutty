@@ -14132,43 +14132,46 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   List<_PortForwardBrowserOption> _activePortForwardBrowserOptions() {
-    final connectionId = _connectionId;
-    final session = connectionId == null
-        ? _sessionController.observedSession
-        : ref.read(activeSessionsProvider.notifier).getSession(connectionId);
-    return session?.activeTunnels
-            .where(
-              (tunnel) =>
-                  tunnel.isLocal &&
-                  isPortForwardBrowserHost(tunnel.localHost) &&
-                  tunnel.localPort >= 1 &&
-                  tunnel.localPort <= 65535 &&
-                  tunnel.browserHost != null &&
-                  tunnel.browserPort != null &&
-                  tunnel.browserPort! >= 1 &&
-                  tunnel.browserPort! <= 65535,
-            )
-            .map((tunnel) {
-              final sourcePort = tunnel.isAutomatic
-                  ? tunnel.remotePort
-                  : tunnel.localPort;
-              final sourceUri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.isAutomatic ? 'localhost' : tunnel.localHost,
-                localPort: sourcePort,
-              );
-              final uri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.browserHost!,
-                localPort: tunnel.browserPort!,
-              );
-              return _PortForwardBrowserOption(
-                uri: uri,
-                sourceUri: sourceUri,
-                port: sourcePort,
-                title: tunnel.isAutomatic ? uri.authority : sourceUri.authority,
-              );
-            })
-            .toList(growable: false) ??
-        const <_PortForwardBrowserOption>[];
+    final sessions = ref.read(activeSessionsProvider.notifier);
+    final hostTunnels = sessions.getActiveTunnelsForHost(widget.hostId);
+    final fallbackSession = _sessionController.observedSession;
+    final tunnels = hostTunnels.isNotEmpty
+        ? hostTunnels
+        : fallbackSession?.activeTunnels ?? const <ActiveTunnelInfo>[];
+    return tunnels
+        .where(
+          (tunnel) =>
+              tunnel.isLocal &&
+              isPortForwardBrowserHost(tunnel.localHost) &&
+              tunnel.localPort >= 1 &&
+              tunnel.localPort <= 65535 &&
+              tunnel.browserHost != null &&
+              tunnel.browserPort != null &&
+              tunnel.browserPort! >= 1 &&
+              tunnel.browserPort! <= 65535,
+        )
+        .map((tunnel) {
+          final sourcePort = tunnel.isAutomatic
+              ? tunnel.remotePort
+              : tunnel.localPort;
+          final sourceUri = buildPortForwardBrowserUriForBind(
+            localHost: tunnel.isAutomatic
+                ? tunnel.remoteHost
+                : tunnel.localHost,
+            localPort: sourcePort,
+          );
+          final uri = buildPortForwardBrowserUriForBind(
+            localHost: tunnel.browserHost!,
+            localPort: tunnel.browserPort!,
+          );
+          return _PortForwardBrowserOption(
+            uri: uri,
+            sourceUri: sourceUri,
+            port: sourcePort,
+            title: tunnel.isAutomatic ? uri.authority : sourceUri.authority,
+          );
+        })
+        .toList(growable: false);
   }
 
   Future<void> _openPortForwardBrowserFromTerminal() async {

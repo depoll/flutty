@@ -92,22 +92,31 @@ class _LiveTestSession extends SshSession {
 }
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
-  _TestActiveSessionsNotifier(this.session);
+  _TestActiveSessionsNotifier(this.sessions);
 
-  final SshSession session;
+  final List<SshSession> sessions;
 
   @override
   Map<int, SshConnectionState> build() => {
-    session.connectionId: SshConnectionState.connected,
+    for (final session in sessions)
+      session.connectionId: SshConnectionState.connected,
   };
 
   @override
-  SshSession? getSession(int connectionId) =>
-      connectionId == session.connectionId ? session : null;
+  SshSession? getSession(int connectionId) {
+    for (final session in sessions) {
+      if (session.connectionId == connectionId) {
+        return session;
+      }
+    }
+    return null;
+  }
 
   @override
-  List<int> getConnectionsForHost(int hostId) =>
-      hostId == session.hostId ? [session.connectionId] : const [];
+  List<int> getConnectionsForHost(int hostId) => sessions
+      .where((session) => session.hostId == hostId)
+      .map((session) => session.connectionId)
+      .toList(growable: false);
 }
 
 PortForward _portForward() => PortForward(
@@ -155,18 +164,25 @@ void main() {
       hostId: 10,
       client: _MockSshClient(),
     );
-    session.tunnels[-3000] = const ActiveTunnelInfo(
+    final automaticOwner = _LiveTestSession(
+      connectionId: 8,
+      hostId: 10,
+      client: _MockSshClient(),
+    );
+    automaticOwner.tunnels[-3000] = const ActiveTunnelInfo(
       portForwardId: -3000,
       localHost: '127.0.0.1',
       localPort: 49152,
-      browserHost: 'dev-box.localhost',
+      browserHost: 'p3000-ha.dev-box.localhost',
       browserPort: 49152,
-      remoteHost: 'localhost',
+      remoteHost: '127.0.0.2',
       remotePort: 3000,
       isLocal: true,
       isAutomatic: true,
+      isShellRelated: true,
     );
     addTearDown(session.changes.close);
+    addTearDown(automaticOwner.changes.close);
     when(
       () => repository.watchByHostId(session.hostId),
     ).thenAnswer((_) => Stream.value([_portForward()]));
@@ -179,7 +195,7 @@ void main() {
         overrides: [
           portForwardRepositoryProvider.overrideWithValue(repository),
           activeSessionsProvider.overrideWith(
-            () => _TestActiveSessionsNotifier(session),
+            () => _TestActiveSessionsNotifier([session, automaticOwner]),
           ),
         ],
         child: MaterialApp(
@@ -207,7 +223,8 @@ void main() {
 
     expect(find.text('Port Forwards'), findsOneWidget);
     expect(find.text('detected automatically'), findsOneWidget);
-    expect(find.text('dev-box.localhost:49152'), findsOneWidget);
+    expect(find.text('p3000-ha.dev-box.localhost:49152'), findsOneWidget);
+    expect(find.textContaining('Started from connected shell'), findsOneWidget);
     expect(find.text('Web preview'), findsOneWidget);
     expect(find.text('Stopped • Auto-start'), findsOneWidget);
 

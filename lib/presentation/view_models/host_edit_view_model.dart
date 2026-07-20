@@ -162,6 +162,9 @@ enum HostEditValidationTarget {
   /// Username field.
   username,
 
+  /// Optional automatic-forwarding proxy name field.
+  portProxyName,
+
   /// tmux session field.
   tmuxSession,
 
@@ -366,6 +369,13 @@ class HostEditViewModel extends Notifier<HostEditState> {
       return const HostEditValidationIssue(
         target: HostEditValidationTarget.username,
         message: 'Fix username to save this host',
+      );
+    }
+    if (draft.autoForwardPorts &&
+        validatePortProxyName(draft.portProxyName) != null) {
+      return const HostEditValidationIssue(
+        target: HostEditValidationTarget.portProxyName,
+        message: 'Fix proxy domain to save this host',
       );
     }
 

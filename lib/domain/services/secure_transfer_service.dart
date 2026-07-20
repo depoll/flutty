@@ -1465,7 +1465,11 @@ class SecureTransferService {
   String? _importedPortProxyName(Object? value) {
     final normalized = normalizeOptionalPortProxyName(_optionalString(value));
     if (validatePortProxyName(normalized) != null) {
-      throw const FormatException('Invalid port proxy name');
+      _diagnosticsLogger.warning(
+        'secure_transfer',
+        'invalid_port_proxy_name_skipped',
+      );
+      return null;
     }
     return normalized;
   }

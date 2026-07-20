@@ -84,7 +84,7 @@ String? validatePortProxyName(String? value) {
   if (normalized == null) {
     return null;
   }
-  if (normalized.length > 243) {
+  if (normalized.length > 221) {
     return 'Proxy name is too long';
   }
   for (final label in normalized.split('.')) {
@@ -126,6 +126,13 @@ String hostPortProxyDomain({
       normalizedCustomName ?? generatedPortProxyName(hostLabel, hostId: hostId);
   return '$prefix.localhost';
 }
+
+/// Returns a cookie-isolated browser host for one detected remote [remotePort].
+String automaticPortForwardBrowserHost({
+  required String hostDomain,
+  required int hostId,
+  required int remotePort,
+}) => 'p$remotePort-h${hostId.toRadixString(36)}.$hostDomain';
 
 /// Rewrites a loopback [uri] for one forwarded service's browser-only relay.
 ///

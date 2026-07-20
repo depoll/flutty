@@ -113,14 +113,20 @@ class _SshSessionRuntime {
   // (Copilot, gh, ...) emit hyperlinks even though their capability probes don't
   // recognize this TERM/TERM_PROGRAM combination; MonkeySSH renders and opens
   // OSC 8 links, so advertising support is safe.
-  static const _terminalCapabilityEnvironment = {
+  static const _terminalCapabilityEnvironmentBase = {
     'COLORTERM': 'truecolor',
     'TERM_PROGRAM': 'kitty',
     'KITTY_WINDOW_ID': '1',
     'FORCE_HYPERLINK': '1',
   };
-  static const _trueColorLoginShellCommand =
-      r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+  Map<String, String> get _terminalCapabilityEnvironment => {
+    ..._terminalCapabilityEnvironmentBase,
+    'MONKEYSSH_CONNECTION_ID': '${_session.connectionId}',
+  };
+  String get _trueColorLoginShellCommand =>
+      'exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 '
+      'FORCE_HYPERLINK=1 MONKEYSSH_CONNECTION_ID=${_session.connectionId} '
+      r"""/bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
   static const _windowsShellDetectionTimeout = Duration(seconds: 2);
   static const _windowsShellDetectionCommand = r'''
 $ErrorActionPreference='SilentlyContinue'
@@ -306,7 +312,10 @@ if(!$__flResolved){$__flResolved='cmd'}
   Future<SSHSession> _openShell({SSHPtyConfig? pty, String? command}) async {
     final ptyConfig = pty ?? const SSHPtyConfig();
     if (command != null) {
-      return _session.client.execute(command, pty: ptyConfig);
+      final markedCommand = _session.remoteIsWindows
+          ? command
+          : 'export MONKEYSSH_CONNECTION_ID=${_session.connectionId}; $command';
+      return _session.client.execute(markedCommand, pty: ptyConfig);
     }
 
     if (_session.remoteIsWindows) {
@@ -437,7 +446,8 @@ if(!$__flResolved){$__flResolved='cmd'}
         return 'cmd.exe /d /k "set COLORTERM=truecolor&& '
             'set TERM_PROGRAM=kitty&& '
             'set KITTY_WINDOW_ID=1&& '
-            'set FORCE_HYPERLINK=1"';
+            'set FORCE_HYPERLINK=1&& '
+            'set MONKEYSSH_CONNECTION_ID=${_session.connectionId}"';
       case _WindowsShellKind.powershell:
         return _windowsPowerShellCapabilityShellCommand('powershell.exe');
       case _WindowsShellKind.pwsh:

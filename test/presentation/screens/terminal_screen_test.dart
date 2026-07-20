@@ -45,16 +45,22 @@ import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interfac
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
-const _trueColorLoginShellCommand =
-    r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+String _trueColorLoginShellCommand(int connectionId) =>
+    'exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 '
+    'FORCE_HYPERLINK=1 MONKEYSSH_CONNECTION_ID=$connectionId '
+    r"""/bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
 
 void _stubTrueColorLoginShell(
   SSHClient client,
   SSHSession shell, {
+  int connectionId = 7,
   VoidCallback? onOpen,
 }) {
   when(
-    () => client.execute(_trueColorLoginShellCommand, pty: any(named: 'pty')),
+    () => client.execute(
+      _trueColorLoginShellCommand(connectionId),
+      pty: any(named: 'pty'),
+    ),
   ).thenAnswer((_) async {
     onOpen?.call();
     return shell;
@@ -1530,7 +1536,11 @@ void main() {
         final reconnectCompleter = Completer<void>();
         addTearDown(reconnectStdoutController.close);
 
-        _stubTrueColorLoginShell(reconnectClient, reconnectShell);
+        _stubTrueColorLoginShell(
+          reconnectClient,
+          reconnectShell,
+          connectionId: 8,
+        );
         when(
           () => reconnectShell.stdout,
         ).thenAnswer((_) => reconnectStdoutController.stream);
@@ -1561,7 +1571,7 @@ void main() {
         await pumpScreen(tester, activeSessions: activeSessions);
         verify(
           () => sshClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(7),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1589,7 +1599,7 @@ void main() {
         expect(activeSessions.connectForceNewValues, <bool>[true]);
         verify(
           () => reconnectClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(8),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1611,7 +1621,11 @@ void main() {
         final reconnectCompleter = Completer<void>();
         addTearDown(reconnectStdoutController.close);
 
-        _stubTrueColorLoginShell(reconnectClient, reconnectShell);
+        _stubTrueColorLoginShell(
+          reconnectClient,
+          reconnectShell,
+          connectionId: 8,
+        );
         when(
           () => reconnectShell.stdout,
         ).thenAnswer((_) => reconnectStdoutController.stream);
@@ -1642,7 +1656,7 @@ void main() {
         await pumpScreen(tester, activeSessions: activeSessions);
         verify(
           () => sshClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(7),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1670,7 +1684,7 @@ void main() {
         expect(activeSessions.connectForceNewValues, <bool>[true]);
         verify(
           () => reconnectClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(8),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -2808,7 +2822,10 @@ void main() {
         final replacementShell = await replacementShellFuture;
 
         expect(executedCommands, hasLength(2));
-        expect(executedCommands.last, _trueColorLoginShellCommand);
+        expect(
+          executedCommands.last,
+          _trueColorLoginShellCommand(session.connectionId),
+        );
         expect(replacementShell, same(loginShell));
         terminalOutputHandler('echo ready\r');
         terminalResizeHandler(101, 33, 808, 528);
@@ -6910,7 +6927,9 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(executedCommands, <String>[
+          _trueColorLoginShellCommand(session.connectionId),
+        ]);
         expect(shellWrites, isEmpty);
         expect(find.text('Install MonkeyMux helper?'), findsNothing);
         expect(session.remoteMuxBackend, isNull);
@@ -6919,7 +6938,7 @@ void main() {
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[false]);
         verify(
           () => sshClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(session.connectionId),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -7004,7 +7023,9 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(executedCommands, <String>[
+          _trueColorLoginShellCommand(session.connectionId),
+        ]);
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(find.text('MonkeyMux is unavailable.'), findsOneWidget);
         verify(
