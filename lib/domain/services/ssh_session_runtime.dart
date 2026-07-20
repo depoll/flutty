@@ -178,6 +178,12 @@ if(!$__flResolved){$__flResolved='cmd'}
     required int pixelWidth,
     required int pixelHeight,
   }) {
+    _shellPty = SSHPtyConfig(
+      width: columns,
+      height: rows,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+    );
     _terminalWindowMetrics = (
       columns: columns,
       rows: rows,
@@ -213,6 +219,12 @@ if(!$__flResolved){$__flResolved='cmd'}
   }
 
   void resizeShell(int width, int height, int pixelWidth, int pixelHeight) {
+    updateTerminalWindowMetrics(
+      columns: width,
+      rows: height,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+    );
     if (_isReplacingShell) {
       return;
     }
@@ -247,6 +259,7 @@ if(!$__flResolved){$__flResolved='cmd'}
     if (_shell == null) {
       _isReplacingShell = true;
       final shellPty = pty ?? const SSHPtyConfig();
+      _shellPty = shellPty;
       final commandKind = command == null
           ? 'interactive_shell'
           : _diagnosticSshCommandKind(command);
@@ -261,9 +274,11 @@ if(!$__flResolved){$__flResolved='cmd'}
           'commandKind': commandKind,
         },
       );
+      SSHSession? openedShell;
       try {
-        _shell = await _openShell(pty: shellPty, command: command);
-        _shellPty = shellPty;
+        openedShell = await _openShell(pty: shellPty, command: command);
+        _applyLatestTerminalWindowMetrics(openedShell);
+        _shell = openedShell;
         _returnToLoginShell = command != null && returnToLoginShell;
         _shellGeneration += 1;
         DiagnosticsLogService.instance.info(
@@ -276,6 +291,9 @@ if(!$__flResolved){$__flResolved='cmd'}
           },
         );
       } on Object catch (error) {
+        if (openedShell != null) {
+          _closeShellBestEffort(openedShell);
+        }
         _isReplacingShell = false;
         _pendingReplacementInput.clear();
         DiagnosticsLogService.instance.error(
@@ -748,10 +766,14 @@ if(!$__flResolved){$__flResolved='cmd'}
     await stdoutSubscription?.cancel();
     await stderrSubscription?.cancel();
 
-    late final SSHSession loginShell;
+    SSHSession? loginShell;
     try {
       loginShell = await _openShell(pty: _shellPty);
+      _applyLatestTerminalWindowMetrics(loginShell);
     } on Object catch (error) {
+      if (loginShell != null) {
+        _closeShellBestEffort(loginShell);
+      }
       if (generation != _shellGeneration ||
           !identical(_shell, completedShell)) {
         return;
@@ -773,15 +795,16 @@ if(!$__flResolved){$__flResolved='cmd'}
       _emitShellDone(completedShell);
       return;
     }
+    final replacementShell = loginShell;
 
     if (generation != _shellGeneration || !identical(_shell, completedShell)) {
-      _closeShellBestEffort(loginShell);
+      _closeShellBestEffort(replacementShell);
       return;
     }
 
-    _shell = loginShell;
-    _attachShellStreamPipes(loginShell, getOrCreateTerminal());
-    _finishShellTransition(loginShell);
+    _shell = replacementShell;
+    _attachShellStreamPipes(replacementShell, getOrCreateTerminal());
+    _finishShellTransition(replacementShell);
     _closeShellBestEffort(completedShell);
     _refreshTerminalPreview();
     DiagnosticsLogService.instance.info(
@@ -799,6 +822,19 @@ if(!$__flResolved){$__flResolved='cmd'}
     final pendingInput = Uint8List.fromList(_pendingReplacementInput);
     _pendingReplacementInput.clear();
     shell.write(pendingInput);
+  }
+
+  void _applyLatestTerminalWindowMetrics(SSHSession shell) {
+    final metrics = _terminalWindowMetrics;
+    if (metrics == null) {
+      return;
+    }
+    shell.resizeTerminal(
+      metrics.columns,
+      metrics.rows,
+      metrics.pixelWidth,
+      metrics.pixelHeight,
+    );
   }
 
   void _resetShellChannelState() {
