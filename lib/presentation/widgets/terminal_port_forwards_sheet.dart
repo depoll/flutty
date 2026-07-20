@@ -63,11 +63,22 @@ class _TerminalPortForwardsSheetState
   @override
   Widget build(BuildContext context) {
     final portForwards = ref.watch(portForwardsForHostProvider(widget.hostId));
-    final isConnected = ref.watch(
-      activeSessionsProvider.select(
-        (states) => states[widget.connectionId] == SshConnectionState.connected,
-      ),
-    );
+    final activeSessionStates = ref.watch(activeSessionsProvider);
+    final isConnected =
+        activeSessionStates[widget.connectionId] ==
+        SshConnectionState.connected;
+    final automaticTunnels =
+        ref
+            .read(activeSessionsProvider.notifier)
+            .getActiveTunnelsForHost(widget.hostId)
+            .where((tunnel) => tunnel.isAutomatic)
+            .toList(growable: false)
+          ..sort((left, right) {
+            if (left.isShellRelated != right.isShellRelated) {
+              return left.isShellRelated ? -1 : 1;
+            }
+            return left.remotePort.compareTo(right.remotePort);
+          });
 
     return Column(
       children: [
@@ -93,7 +104,7 @@ class _TerminalPortForwardsSheetState
                     ),
                     const SizedBox(height: FluttyTheme.spacingXs),
                     Text(
-                      'Live controls for this SSH connection',
+                      'Live controls for this host',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
@@ -147,14 +158,6 @@ class _TerminalPortForwardsSheetState
                     ref.invalidate(portForwardsForHostProvider(widget.hostId)),
               ),
               data: (forwards) {
-                final automaticTunnels =
-                    widget.session.activeTunnels
-                        .where((tunnel) => tunnel.isAutomatic)
-                        .toList(growable: false)
-                      ..sort(
-                        (left, right) =>
-                            left.remotePort.compareTo(right.remotePort),
-                      );
                 if (forwards.isEmpty && automaticTunnels.isEmpty) {
                   return _buildEmptyState(context);
                 }
@@ -169,9 +172,7 @@ class _TerminalPortForwardsSheetState
           ),
         ),
         if ((portForwards.asData?.value.isNotEmpty ?? false) ||
-            widget.session.activeTunnels.any(
-              (tunnel) => tunnel.isAutomatic,
-            )) ...[
+            automaticTunnels.isNotEmpty) ...[
           const Divider(height: 1),
           SafeArea(
             top: false,
@@ -272,7 +273,10 @@ class _TerminalPortForwardsSheetState
         ),
       ),
       subtitle: Text(
-        'localhost:${tunnel.remotePort} → local proxy',
+        '${tunnel.remoteHost}:${tunnel.remotePort} → local proxy\n'
+        '${tunnel.isShellRelated ? 'Started from connected shell' : 'Detected on host'}',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
         style: FluttyTheme.monoStyle.copyWith(
           fontSize: 11,
           color: colorScheme.onSurfaceVariant,

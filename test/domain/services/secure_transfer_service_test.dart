@@ -366,7 +366,7 @@ void main() {
       expect(stored.skipJumpHostOnSsids, 'Home WiFi\nOffice WiFi');
     });
 
-    test('importHostPayload rejects invalid proxy domains', () {
+    test('importHostPayload drops invalid optional proxy domains', () async {
       final payload = TransferPayload(
         type: TransferPayloadType.host,
         schemaVersion: 1,
@@ -381,10 +381,9 @@ void main() {
         },
       );
 
-      expect(
-        transferService.importHostPayload(payload),
-        throwsA(isA<FormatException>()),
-      );
+      final imported = await transferService.importHostPayload(payload);
+
+      expect(imported.portProxyName, isNull);
     });
 
     test('importHostPayload preserves host CLI launch preferences', () async {

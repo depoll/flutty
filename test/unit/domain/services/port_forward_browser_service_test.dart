@@ -176,17 +176,46 @@ void main() {
         );
       });
 
+      test('isolates automatic services by host and remote port', () {
+        expect(
+          automaticPortForwardBrowserHost(
+            hostDomain: 'api.dev.localhost',
+            hostId: 1,
+            remotePort: 3000,
+          ),
+          'p3000-h1.api.dev.localhost',
+        );
+        expect(
+          automaticPortForwardBrowserHost(
+            hostDomain: 'api.dev.localhost',
+            hostId: 2,
+            remotePort: 3000,
+          ),
+          'p3000-h2.api.dev.localhost',
+        );
+        expect(
+          automaticPortForwardBrowserHost(
+            hostDomain: 'api.dev.localhost',
+            hostId: 1,
+            remotePort: 8080,
+          ),
+          'p8080-h1.api.dev.localhost',
+        );
+      });
+
       test('validates DNS labels and allows an empty generated-name field', () {
         final sixtyCharacterLabel = List.filled(60, 'a').join();
-        final maximumLengthPrefix = List.filled(
-          4,
+        final maximumLengthPrefix = [
           sixtyCharacterLabel,
-        ).join('.');
+          sixtyCharacterLabel,
+          sixtyCharacterLabel,
+          List.filled(38, 'a').join(),
+        ].join('.');
         final overlongPrefix = [
-          '${sixtyCharacterLabel}a',
           sixtyCharacterLabel,
           sixtyCharacterLabel,
           sixtyCharacterLabel,
+          List.filled(39, 'a').join(),
         ].join('.');
 
         expect(validatePortProxyName(''), isNull);

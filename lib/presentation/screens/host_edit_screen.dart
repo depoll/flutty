@@ -72,6 +72,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   final _agentTmuxFlagsFieldLocationKey = GlobalKey();
   final _customCommandFieldLocationKey = GlobalKey();
   final _snippetFieldLocationKey = GlobalKey();
+  final _portProxyNameFieldLocationKey = GlobalKey();
 
   late TextEditingController _labelController;
   late TextEditingController _hostnameController;
@@ -96,6 +97,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   late FocusNode _agentTmuxFlagsFocusNode;
   late FocusNode _customCommandFocusNode;
   late FocusNode _snippetFocusNode;
+  late FocusNode _portProxyNameFocusNode;
 
   int? _selectedKeyId;
   int? _selectedGroupId;
@@ -151,6 +153,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _agentTmuxFlagsFocusNode = FocusNode();
     _customCommandFocusNode = FocusNode();
     _snippetFocusNode = FocusNode();
+    _portProxyNameFocusNode = FocusNode();
 
     for (final c in [
       _labelController,
@@ -313,6 +316,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _agentTmuxFlagsFocusNode.dispose();
     _customCommandFocusNode.dispose();
     _snippetFocusNode.dispose();
+    _portProxyNameFocusNode.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -837,13 +841,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Future<void> _applySavedAutomaticPortForwarding(int hostId) async {
-    final hostRepository = ref.read(hostRepositoryProvider);
     final sessions = ref.read(activeSessionsProvider.notifier);
     try {
-      final savedHost = await hostRepository.getById(hostId);
-      if (savedHost != null) {
-        await sessions.configureAutomaticPortForwardingForHost(savedHost);
-      }
+      await sessions.reconfigureAutomaticPortForwardingForHost(hostId);
     } on Object catch (error, stackTrace) {
       FlutterError.reportError(
         FlutterErrorDetails(
@@ -1613,6 +1613,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         locationKey: _usernameFieldLocationKey,
         focusNode: _usernameFocusNode,
       ),
+      HostEditValidationTarget.portProxyName => (
+        locationKey: _portProxyNameFieldLocationKey,
+        focusNode: _portProxyNameFocusNode,
+      ),
       HostEditValidationTarget.tmuxSession => (
         locationKey: _tmuxSessionFieldLocationKey,
         focusNode: _tmuxSessionFocusNode,
@@ -2060,24 +2064,31 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ),
         if (_autoForwardPorts) ...[
           const SizedBox(height: 8),
-          TextFormField(
-            key: const Key('host-port-proxy-name-field'),
-            controller: _portProxyNameController,
-            decoration: InputDecoration(
-              labelText: 'Proxy domain (optional)',
-              hintText: generatedPortProxyName(
-                _labelController.text,
-                hostId: widget.hostId,
+          KeyedSubtree(
+            key: _portProxyNameFieldLocationKey,
+            child: ValueListenableBuilder<TextEditingValue>(
+              valueListenable: _labelController,
+              builder: (context, _, _) => TextFormField(
+                key: const Key('host-port-proxy-name-field'),
+                controller: _portProxyNameController,
+                focusNode: _portProxyNameFocusNode,
+                decoration: InputDecoration(
+                  labelText: 'Proxy domain (optional)',
+                  hintText: generatedPortProxyName(
+                    _labelController.text,
+                    hostId: widget.hostId,
+                  ),
+                  suffixText: '.localhost',
+                  prefixIcon: const Icon(Icons.language_rounded),
+                  helperText:
+                      'Leave blank to generate a stable name from the host label.',
+                  helperMaxLines: _hostFieldHelperMaxLines,
+                ),
+                autocorrect: false,
+                style: FluttyTheme.monoStyle,
+                validator: validatePortProxyName,
               ),
-              suffixText: '.localhost',
-              prefixIcon: const Icon(Icons.language_rounded),
-              helperText:
-                  'Leave blank to generate a stable name from the host label.',
-              helperMaxLines: _hostFieldHelperMaxLines,
             ),
-            autocorrect: false,
-            style: FluttyTheme.monoStyle,
-            validator: validatePortProxyName,
           ),
           const SizedBox(height: 16),
         ],
