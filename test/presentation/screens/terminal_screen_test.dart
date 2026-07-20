@@ -2509,7 +2509,10 @@ void main() {
           ),
         );
         when(
-          () => tmuxService.foregroundSessionNameOrThrow(session),
+          () => tmuxService.foregroundSessionNameFromClientAncestryOrThrow(
+            session,
+            extraFlags: any(named: 'extraFlags'),
+          ),
         ).thenAnswer((_) async {
           foregroundSessionCalls += 1;
           return foregroundSessionCalls == 1 ? null : tmuxSessionName;
@@ -2570,6 +2573,50 @@ void main() {
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         expect(foregroundSessionCalls, greaterThanOrEqualTo(2));
         expect(themeRefreshCount, greaterThanOrEqualTo(1));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'does not show another tmux client on an unconfigured raw shell',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        when(
+          () => tmuxService.foregroundSessionNameFromClientAncestryOrThrow(
+            session,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(
+            session,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => 'other-client');
+
+        await pumpScreen(tester, tmuxService: tmuxService);
+        await tester.pump(const Duration(seconds: 12));
+
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
+        verify(
+          () => tmuxService.foregroundSessionNameFromClientAncestryOrThrow(
+            session,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(greaterThanOrEqualTo(1));
+        verifyNever(
+          () => tmuxService.foregroundSessionNameOrThrow(
+            session,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        );
+        verifyNever(
+          () => tmuxService.listWindows(
+            session,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
