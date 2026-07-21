@@ -3332,6 +3332,7 @@ class _TmuxTerminalThemeRefreshRequest {
     required this.reason,
     required this.extraFlags,
     this.sendOuterFocusReport = false,
+    this.forceForegroundRedraw = false,
   });
 
   final TerminalThemeData theme;
@@ -3342,6 +3343,16 @@ class _TmuxTerminalThemeRefreshRequest {
   final String? extraFlags;
   final bool sendOuterFocusReport;
 
+  /// Whether the foreground TUI should be forced to fully repaint after the
+  /// theme hint is delivered.
+  ///
+  /// Set when the terminal theme colors actually change (e.g. a light/dark
+  /// switch). A DEC 2031 mode report plus a focus nudge alone are not enough
+  /// for some agents (notably Copilot CLI): they diff-repaint and leave
+  /// explicitly-colored regions such as header/footer bars painted in the old
+  /// theme ("black bars"). A synthetic PTY resize guarantees a full repaint.
+  final bool forceForegroundRedraw;
+
   _TmuxTerminalThemeRefreshRequest copyWith({
     TerminalThemeData? theme,
     SshSession? session,
@@ -3350,6 +3361,7 @@ class _TmuxTerminalThemeRefreshRequest {
     String? reason,
     String? extraFlags,
     bool? sendOuterFocusReport,
+    bool? forceForegroundRedraw,
   }) => _TmuxTerminalThemeRefreshRequest(
     theme: theme ?? this.theme,
     session: session ?? this.session,
@@ -3358,6 +3370,7 @@ class _TmuxTerminalThemeRefreshRequest {
     reason: reason ?? this.reason,
     extraFlags: extraFlags ?? this.extraFlags,
     sendOuterFocusReport: sendOuterFocusReport ?? this.sendOuterFocusReport,
+    forceForegroundRedraw: forceForegroundRedraw ?? this.forceForegroundRedraw,
   );
 }
 
@@ -4476,7 +4489,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     if (willRefresh) {
-      _refreshTerminalThemeForTui(theme, targetSession, reason: reason);
+      _refreshTerminalThemeForTui(
+        theme,
+        targetSession,
+        reason: reason,
+        forceForegroundRedraw: didThemeChange,
+      );
       return;
     }
   }
@@ -4485,6 +4503,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TerminalThemeData theme,
     SshSession session, {
     required String reason,
+    bool forceForegroundRedraw = false,
   }) {
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
@@ -4522,6 +4541,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           theme,
           session,
           reason: '${reason}_view_ready',
+          forceForegroundRedraw: forceForegroundRedraw,
         );
       });
     }
@@ -4544,6 +4564,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             refreshGeneration: refreshGeneration,
             reason: reason,
             extraFlags: _activeTmuxExtraFlags,
+            forceForegroundRedraw: forceForegroundRedraw,
           ),
         );
         return;
@@ -5299,15 +5320,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _TmuxTerminalThemeRefreshRequest request,
   ) {
     final pendingRequest = _pendingTmuxThemeRefreshRequest;
-    final preservePendingOuterFocus =
+    final pendingIsCurrent =
         pendingRequest != null &&
-        pendingRequest.sendOuterFocusReport &&
         _isCurrentTerminalThemeRefresh(
           theme: pendingRequest.theme,
           session: pendingRequest.session,
           refreshGeneration: pendingRequest.refreshGeneration,
         );
-    if (!preservePendingOuterFocus) {
+    final preservePendingOuterFocus =
+        pendingIsCurrent && pendingRequest.sendOuterFocusReport;
+    // A queued theme *change* must still force the foreground repaint even if a
+    // later refresh (e.g. an outer-focus nudge) coalesces on top of it.
+    final preservePendingForceRedraw =
+        pendingIsCurrent && pendingRequest.forceForegroundRedraw;
+    if (!preservePendingOuterFocus && !preservePendingForceRedraw) {
       return request;
     }
     return request.copyWith(
@@ -5316,6 +5342,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           : pendingRequest.reason,
       sendOuterFocusReport:
           request.sendOuterFocusReport || preservePendingOuterFocus,
+      forceForegroundRedraw:
+          request.forceForegroundRedraw || preservePendingForceRedraw,
     );
   }
 
@@ -5356,6 +5384,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     var outerRefreshReason = request.reason;
     var tmuxCommandDeferred = false;
+    var refreshApplied = false;
     try {
       final mux = _activeRemoteMultiplexerService;
       DiagnosticsLogService.instance.info(
@@ -5386,6 +5415,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           request.theme,
           extraFlags: request.extraFlags,
         );
+        refreshApplied = true;
         DiagnosticsLogService.instance.info(
           'terminal.theme',
           'tmux_refresh_complete',
@@ -5427,6 +5457,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         },
       );
       return;
+    }
+    // A DEC 2031 mode report plus a focus nudge alone do not reliably repaint
+    // every agent after a theme switch: Copilot CLI in particular diff-repaints
+    // and leaves its explicitly-colored header/footer bars in the previous
+    // theme ("black bars"). Once the theme hint has been delivered, force the
+    // foreground TUI to fully repaint with a synthetic PTY resize (the same
+    // mechanism used on attach/restore) so those cells are re-emitted.
+    if (request.forceForegroundRedraw &&
+        refreshApplied &&
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'monkeymux_force_redraw',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+        },
+      );
+      unawaited(
+        _syncActiveMonkeyMuxTerminalSize(
+          request.session,
+          refreshVisibleTerminal: true,
+        ),
+      );
     }
     if (request.sendOuterFocusReport) {
       if (!_isOuterTuiSignalingActive(request.session)) {
