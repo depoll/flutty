@@ -38,6 +38,9 @@ typedef _GraphicsDeletePosition = ({
   int scrollBack,
 });
 
+// MonkeySSH-private DEC mode used to make MonkeyMux redraws paint atomically.
+const _monkeyMuxSynchronizedOutputMode = 9002;
+
 /// [Terminal] is an interface to interact with command line applications. It
 /// translates escape sequences from the application into updates to the
 /// [buffer] and events such as [onTitleChange] or [onBell], as well as
@@ -76,6 +79,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool Function()? canResizeFromHost;
 
   int _hostResizeGeneration = 0;
+  bool _monkeyMuxSynchronizedOutput = false;
 
   /// Number of MonkeySSH-private host resizes parsed by this terminal.
   int get hostResizeGeneration => _hostResizeGeneration;
@@ -83,6 +87,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// Resets private host-resize negotiation before opening a new transport.
   void resetHostResizeState() {
     _hostResizeGeneration = 0;
+    final wasSynchronized = _monkeyMuxSynchronizedOutput;
+    _monkeyMuxSynchronizedOutput = false;
+    if (wasSynchronized) {
+      // A synchronized redraw (DEC mode 9002) was interrupted mid-transaction
+      // by a transport reset / reattach. The server always writes the begin and
+      // end markers together, so this only happens when the parse was cut off,
+      // e.g. a very large redraw split across parse turns. Flush the repaint we
+      // were holding so the parsed-so-far content is not stranded off-screen.
+      notifyListeners();
+    }
   }
 
   /// The [TerminalInputHandler] used by this terminal. [defaultInputHandler] is
@@ -341,8 +355,26 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// floods the raster thread with image-heavy frames it cannot keep up with,
   /// so frames queue and the switch appears to hang. Interactive writes should
   /// use [write], which repaints immediately.
+  ///
+  /// While a MonkeyMux synchronized redraw (DEC private mode 9002) is open this
+  /// method still advances the parser but the caller's [notifyListeners] is
+  /// suppressed, so the intermediate synthetic-resize frame captured mid-redraw
+  /// never paints. The single settled repaint is emitted by the caller's own
+  /// progress notification once the closing marker has been parsed.
   void writeSilently(String data) {
     _parser.write(data);
+  }
+
+  @override
+  void notifyListeners() {
+    // Hold repaints while a synchronized redraw transaction is open so the
+    // whole redraw (including the hidden synthetic-resize frame) is applied as
+    // one atomic paint. The server always emits the 9002 begin and end markers
+    // in the same write, so the transaction cannot be left open across writes.
+    if (_monkeyMuxSynchronizedOutput) {
+      return;
+    }
+    super.notifyListeners();
   }
 
   /// Sends a key event to the underlying program.
@@ -1138,7 +1170,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void setUnknownDecMode(int mode, bool enabled) {
-    // no-op
+    if (mode != _monkeyMuxSynchronizedOutputMode) {
+      return;
+    }
+    _monkeyMuxSynchronizedOutput = enabled;
   }
 
   @override
