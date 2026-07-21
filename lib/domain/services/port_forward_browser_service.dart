@@ -131,8 +131,26 @@ String hostPortProxyDomain({
 String automaticPortForwardBrowserHost({
   required String hostDomain,
   required int hostId,
+  required String remoteHost,
   required int remotePort,
-}) => 'p$remotePort-h${hostId.toRadixString(36)}.$hostDomain';
+}) {
+  final hostPrefix = hostDomain
+      .substring(0, hostDomain.length - '.localhost'.length)
+      .replaceAll(RegExp('[^a-z0-9]+'), '-')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
+  final remoteHostTag = remoteHost
+      .toLowerCase()
+      .replaceAll(RegExp('[^a-z0-9]+'), '-')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
+  final suffix =
+      '-p$remotePort-h${hostId.toRadixString(36)}-'
+      '${remoteHostTag.isEmpty ? 'loopback' : remoteHostTag}';
+  final maxPrefixLength = 63 - suffix.length;
+  final prefix = hostPrefix.length <= maxPrefixLength
+      ? hostPrefix
+      : hostPrefix.substring(0, maxPrefixLength);
+  return '$prefix$suffix.localhost';
+}
 
 /// Rewrites a loopback [uri] for one forwarded service's browser-only relay.
 ///

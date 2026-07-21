@@ -181,25 +181,28 @@ void main() {
           automaticPortForwardBrowserHost(
             hostDomain: 'api.dev.localhost',
             hostId: 1,
+            remoteHost: '127.0.0.1',
             remotePort: 3000,
           ),
-          'p3000-h1.api.dev.localhost',
+          'api-dev-p3000-h1-127-0-0-1.localhost',
         );
         expect(
           automaticPortForwardBrowserHost(
             hostDomain: 'api.dev.localhost',
             hostId: 2,
+            remoteHost: '127.0.0.1',
             remotePort: 3000,
           ),
-          'p3000-h2.api.dev.localhost',
+          'api-dev-p3000-h2-127-0-0-1.localhost',
         );
         expect(
           automaticPortForwardBrowserHost(
             hostDomain: 'api.dev.localhost',
             hostId: 1,
+            remoteHost: '::1',
             remotePort: 8080,
           ),
-          'p8080-h1.api.dev.localhost',
+          'api-dev-p8080-h1-1.localhost',
         );
       });
 
