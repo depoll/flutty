@@ -121,11 +121,11 @@ class _SshSessionRuntime {
   };
   Map<String, String> get _terminalCapabilityEnvironment => {
     ..._terminalCapabilityEnvironmentBase,
-    'MONKEYSSH_CONNECTION_ID': '${_session.connectionId}',
+    'MONKEYSSH_SHELL_TOKEN': _session.shellLineageToken,
   };
   String get _trueColorLoginShellCommand =>
       'exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 '
-      'FORCE_HYPERLINK=1 MONKEYSSH_CONNECTION_ID=${_session.connectionId} '
+      'FORCE_HYPERLINK=1 MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken} '
       r"""/bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
   static const _windowsShellDetectionTimeout = Duration(seconds: 2);
   static const _windowsShellDetectionCommand = r'''
@@ -332,7 +332,8 @@ if(!$__flResolved){$__flResolved='cmd'}
     if (command != null) {
       final markedCommand = _session.remoteIsWindows
           ? command
-          : 'export MONKEYSSH_CONNECTION_ID=${_session.connectionId}; $command';
+          : 'export MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken}; '
+                '$command';
       return _session.client.execute(markedCommand, pty: ptyConfig);
     }
 
@@ -465,7 +466,7 @@ if(!$__flResolved){$__flResolved='cmd'}
             'set TERM_PROGRAM=kitty&& '
             'set KITTY_WINDOW_ID=1&& '
             'set FORCE_HYPERLINK=1&& '
-            'set MONKEYSSH_CONNECTION_ID=${_session.connectionId}"';
+            'set MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken}"';
       case _WindowsShellKind.powershell:
         return _windowsPowerShellCapabilityShellCommand('powershell.exe');
       case _WindowsShellKind.pwsh:

@@ -173,7 +173,7 @@ void main() {
       portForwardId: -3000,
       localHost: '127.0.0.1',
       localPort: 49152,
-      browserHost: 'p3000-ha.dev-box.localhost',
+      browserHost: 'dev-box-p3000-ha-127-0-0-2.localhost',
       browserPort: 49152,
       remoteHost: '127.0.0.2',
       remotePort: 3000,
@@ -223,7 +223,10 @@ void main() {
 
     expect(find.text('Port Forwards'), findsOneWidget);
     expect(find.text('detected automatically'), findsOneWidget);
-    expect(find.text('p3000-ha.dev-box.localhost:49152'), findsOneWidget);
+    expect(
+      find.text('dev-box-p3000-ha-127-0-0-2.localhost:49152'),
+      findsOneWidget,
+    );
     expect(find.textContaining('Started from connected shell'), findsOneWidget);
     expect(find.text('Web preview'), findsOneWidget);
     expect(find.text('Stopped • Auto-start'), findsOneWidget);
