@@ -33,6 +33,17 @@ func replayPostHistorySuffixForTest(cursorVisible bool) string {
 		cursorVisibilityReplaySequence(cursorVisible)
 }
 
+func synchronizedTerminalOutputForTest(data string) string {
+	return terminalSynchronizedOutputBegin + data + terminalSynchronizedOutputEnd
+}
+
+func synchronizedTerminalOutputAfterPrefixForTest(
+	prefix string,
+	data string,
+) string {
+	return prefix + synchronizedTerminalOutputForTest(data)
+}
+
 func openTestPty(t *testing.T) muxPty {
 	t.Helper()
 	ptmx, tty, err := pty.Open()
@@ -1265,7 +1276,11 @@ func TestPausedRedrawFallbackPreservesQueryOrder(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", 1)
 
-	waitForRecordedOutput(t, secondaryConn, "before\x1b[>qafter")
+	waitForRecordedOutput(
+		t,
+		secondaryConn,
+		synchronizedTerminalOutputForTest("before\x1b[>qafter"),
+	)
 }
 
 func TestPausedRedrawQueryWaitDoesNotHoldAttachLock(t *testing.T) {
@@ -1366,7 +1381,11 @@ func TestPausedRedrawUsesFailoverBufferForReboundPrimary(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", 1)
 
-	waitForRecordedOutput(t, conn, "\x1b[>qright")
+	waitForRecordedOutput(
+		t,
+		conn,
+		synchronizedTerminalOutputForTest("\x1b[>qright"),
+	)
 }
 
 func TestPausedRedrawKeepsSplitQueryBoundToOriginalClient(t *testing.T) {
@@ -1409,8 +1428,17 @@ func TestPausedRedrawKeepsSplitQueryBoundToOriginalClient(t *testing.T) {
 		t.Fatal("redraw did not retain the split query's original client")
 	}
 	server.resumePausedAttachForwarding("@1", 1)
-	waitForRecordedOutput(t, originalConn, "\x1b[>qright")
-	waitForRecordedOutput(t, replacementConn, "right")
+	waitForRecordedOutput(
+		t,
+		originalConn,
+		"\x1b[>"+
+			synchronizedTerminalOutputForTest("qright"),
+	)
+	waitForRecordedOutput(
+		t,
+		replacementConn,
+		synchronizedTerminalOutputForTest("right"),
+	)
 }
 
 func TestPendingTerminalQueryFlushIsSingleFlight(t *testing.T) {
@@ -3766,10 +3794,11 @@ func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 	server.mu.Unlock()
 	server.resumePausedAttachForwarding("@2", generation)
 
-	want := wantReplay + "settled tui screen"
-	if got := attach.String(); got != want {
-		t.Fatalf("settled foreground replay = %q, want %q", got, want)
-	}
+	want := synchronizedTerminalOutputAfterPrefixForTest(
+		wantReplay,
+		"settled tui screen",
+	)
+	waitForRecordedOutput(t, attach, want)
 	if strings.Contains(attach.String(), "stale tui screen") {
 		t.Fatalf("settled foreground replay retained stale TUI history: %q", attach.String())
 	}
@@ -4093,7 +4122,7 @@ func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
 	}
 }
 
-func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
+func TestChangedSizeResizeDoesNotBounceForegroundTui(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
@@ -4138,8 +4167,12 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 
 	server.resize(120, 55)
 
-	if !reflect.DeepEqual(simulated, []string{"@1:120x55"}) {
-		t.Fatalf("simulated resizes = %#v, want [@1:120x55]", simulated)
+	// A genuine size change relies on the real PTY resize (SIGWINCH at the new
+	// size) to repaint the TUI. It must NOT drive the synthetic width-1 redraw
+	// dance, which would produce a visible one-cell bounce on every keyboard or
+	// pinch-zoom resize.
+	if len(simulated) != 0 {
+		t.Fatalf("changed-size resize performed synthetic dance = %#v, want none", simulated)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
@@ -4149,6 +4182,51 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 		if !strings.Contains(modeReplay, sequence) {
 			t.Fatalf("mode replay %q does not contain %q", modeReplay, sequence)
 		}
+	}
+}
+
+func TestChangedSizeResizeForwardsReflowImmediately(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	conn := &recordingConn{}
+	server.attachConn = conn
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {
+		t.Fatal("changed-size resize must not perform the synthetic redraw dance")
+	}
+
+	server.resize(120, 55)
+
+	// After a genuine resize the TUI's reflow must forward to attach clients
+	// immediately, not be buffered behind the synchronized-redraw tail that hides
+	// same-size dances. A held reflow is exactly the perceived "extra resize".
+	server.handleWindowOutput("@1", []byte("reflowed line"))
+	if got := conn.String(); !strings.Contains(got, "reflowed line") {
+		t.Fatalf("changed-size reflow was withheld from attach = %q", got)
+	}
+	server.mu.Lock()
+	paused := window.redrawForwardingPaused
+	server.mu.Unlock()
+	if paused {
+		t.Fatal("changed-size resize paused attach forwarding")
 	}
 }
 
@@ -4199,7 +4277,7 @@ func TestClosedUnixPtyUsesInvalidFileDescriptorSentinel(t *testing.T) {
 	}
 }
 
-func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
+func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
@@ -4211,6 +4289,9 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 	server.activeID = "@1"
 	server.width = 120
 	server.height = 40
+	// The published grid is already at the current size, so sizeChanged is false.
+	server.publishedWidth = 120
+	server.publishedHeight = 40
 
 	originalSignalForegroundResize := signalForegroundResize
 	originalSimulateForegroundResize := simulateForegroundResize
@@ -4239,10 +4320,23 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 		signaled = append(signaled, processGroup)
 	}
 
-	server.resizeWithRedraw(120, 40, true)
+	// A client "settle" forced redraw (syntheticRedraw=false) must not perform
+	// the synthetic width-1 dance: the size is already current and painted, so a
+	// dance would be a pure visible bounce. It still nudges the TUI via SIGWINCH.
+	server.resizeWithRedraw(120, 40, true, false)
+	if len(simulated) != 0 {
+		t.Fatalf("settle redraw performed synthetic dance = %#v, want none", simulated)
+	}
+	if !reflect.DeepEqual(signaled, []int{5151}) {
+		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
 
+	// A restore-style forced redraw (syntheticRedraw=true) must dance so a
+	// freshly relaunched agent repaints its screen.
+	signaled = nil
+	server.resizeWithRedraw(120, 40, true, true)
 	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
-		t.Fatalf("simulated resizes = %#v, want [@1:120x40]", simulated)
+		t.Fatalf("synthetic redraw dance = %#v, want [@1:120x40]", simulated)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
@@ -4334,9 +4428,67 @@ func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", generation)
 
-	if got := conn.String(); got != "temporary layoutfinal layout" {
-		t.Fatalf("attach output after redraw settled = %q, want buffered output", got)
+	want := synchronizedTerminalOutputForTest("temporary layoutfinal layout")
+	waitForRecordedOutput(t, conn, want)
+}
+
+func TestRedrawResizeWrapsBufferedRedrawAtomically(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
 	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("temporary layout"))
+
+	server.resumePausedAttachForwarding("@1", generation)
+	// Output that arrives after the redraw settles (the PTY is already back at
+	// full size, so this is normal steady-state output, not a resize frame) is
+	// forwarded verbatim after the closed transaction — the begin and end
+	// markers are always written together, never left open by a timer.
+	server.handleWindowOutput("@1", []byte("late canonical layout"))
+
+	want := synchronizedTerminalOutputForTest("temporary layout") +
+		"late canonical layout"
+	waitForRecordedOutput(t, conn, want)
+}
+
+func TestRedrawResizePreservesOneShotKittyTransmit(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	const transmit = "\x1b_Ga=t,f=24,s=1,v=1,i=7;AAAA\x1b\\"
+	const placeholder = "\U0010EEEE"
+	server.handleWindowOutput("@1", []byte(transmit))
+	server.handleWindowOutput("@1", []byte(placeholder))
+	server.resumePausedAttachForwarding("@1", generation)
+
+	want := synchronizedTerminalOutputForTest(transmit + placeholder)
+	waitForRecordedOutput(t, conn, want)
 }
 
 func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
@@ -4365,9 +4517,8 @@ func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", generation)
 
-	if got := conn.String(); got != "new settled layout" {
-		t.Fatalf("attach output after superseded redraw = %q, want latest output", got)
-	}
+	want := synchronizedTerminalOutputForTest("new settled layout")
+	waitForRecordedOutput(t, conn, want)
 }
 
 func TestRedrawResizePreservesBufferedTerminalQueries(t *testing.T) {
@@ -4400,9 +4551,8 @@ func TestRedrawResizePreservesBufferedTerminalQueries(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", generation)
 
-	if got := conn.String(); got != "\x1b[>q" {
-		t.Fatalf("terminal query after superseded redraw = %q", got)
-	}
+	want := synchronizedTerminalOutputForTest("\x1b[>q")
+	waitForRecordedOutput(t, conn, want)
 }
 
 func TestRedrawResizePreservesPendingReplay(t *testing.T) {
@@ -4446,10 +4596,11 @@ func TestRedrawResizePreservesPendingReplay(t *testing.T) {
 
 	wantReplay := replayPrefixForTest(window) +
 		replayPostHistorySuffixForTest(true)
-	want := wantReplay + "settled redraw"
-	if got := conn.String(); got != want {
-		t.Fatalf("settled replay after resize = %q, want %q", got, want)
-	}
+	want := synchronizedTerminalOutputAfterPrefixForTest(
+		wantReplay,
+		"settled redraw",
+	)
+	waitForRecordedOutput(t, conn, want)
 	if strings.Contains(conn.String(), "stale tui screen") ||
 		strings.Contains(conn.String(), "first redraw") {
 		t.Fatalf("settled replay retained stale output: %q", conn.String())
