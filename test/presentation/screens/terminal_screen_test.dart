@@ -3117,6 +3117,129 @@ void main() {
     );
 
     testWidgets(
+      'MonkeyMux theme change forces a foreground redraw resize',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        // A foreground agent enables focus reporting; this is the signal that
+        // gates theme hints toward a real TUI.
+        session.terminal!.write('\x1b[?1004h');
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+
+        // Drain any resize/redraw follow-up timers scheduled while the screen
+        // settled, then clear, so the only redraw resize observed below is the
+        // one the theme change itself forces.
+        await tester.pump(const Duration(milliseconds: 700));
+        await tester.pump();
+        monkeyMuxService.resizeTerminalCalls.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pump();
+
+        // The theme actually changed (light -> dark), so the foreground TUI
+        // must be forced to fully repaint via a redraw resize; otherwise
+        // Copilot CLI keeps its explicitly-colored bars in the old theme.
+        expect(
+          monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
+          isTrue,
+          reason: 'expected a redraw resize after the theme change',
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'MonkeyMux window switches wait for replay before following output',
       (tester) async {
         final tmuxService = _MockTmuxService();
