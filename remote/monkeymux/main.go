@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.118"
+	monkeyMuxVersion                  = "0.1.119"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -6172,8 +6172,25 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 		!window.closed &&
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
-		s.pauseAttachForwardingForRedrawLocked(window, width, height)
-		simulateForegroundResize(window, width, height)
+		if forceRedraw || !sizeChanged {
+			// A forced redraw (window switch, restore, or a client "settle"
+			// redraw) or a same-size redraw. The real SIGWINCH is a no-op for
+			// TUIs that ignore same-size changes, and a freshly restored process
+			// may not have painted yet, so drive a synthetic width-1 redraw. Its
+			// intermediate one-cell frame is hidden from attach clients by the
+			// synchronized redraw transaction in resumePausedAttachForwarding.
+			s.pauseAttachForwardingForRedrawLocked(window, width, height)
+			simulateForegroundResize(window, width, height)
+		}
+		// Otherwise this is a plain viewport size change (keyboard show/hide,
+		// pinch-zoom). resizeWindowLocked above already applied the new PTY size,
+		// delivering a real SIGWINCH at the new dimensions, so the foreground TUI
+		// repaints itself once at the correct size. Performing the synthetic
+		// width-1 dance here as well would resize the PTY smaller and immediately
+		// back, producing a visible one-cell "bounce" reflow on every resize (and
+		// holding the settled frame for the synchronized-redraw tail). Skip it and
+		// forward the single clean reflow immediately; the explicit SIGWINCH below
+		// still nudges TUIs whose kernel-delivered resize event was missed.
 		attach = s.attachConn
 		modeReplay = window.modeReplayForAttachedTerminalLocked()
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
