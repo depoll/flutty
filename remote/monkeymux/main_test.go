@@ -3198,6 +3198,31 @@ func TestResponseAfterPasteSeparatorInSameReadIsRouted(t *testing.T) {
 	}
 }
 
+func TestConsecutivePasteAfterCompletedPasteIsTracked(t *testing.T) {
+	client := &attachClient{}
+	firstPaste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	secondPasteStart := []byte("\x1b[200~/tmp/b")
+	input := append(
+		append([]byte(nil), firstPaste...),
+		secondPasteStart...,
+	)
+	first := client.routeInput(input)
+	if !bytes.Equal(first.passthrough, input) ||
+		len(first.responses) != 0 ||
+		!client.inputBracketedPasteActive {
+		t.Fatalf("consecutive paste start routing = %#v", first)
+	}
+
+	client.expectTerminalResponse("@1")
+	secondPasteEnd := []byte("\x1b[?62;4c.png\x1b[201~")
+	second := client.routeInput(secondPasteEnd)
+	if !bytes.Equal(second.passthrough, secondPasteEnd) ||
+		len(second.responses) != 0 ||
+		client.inputBracketedPasteActive {
+		t.Fatalf("consecutive paste completion routing = %#v", second)
+	}
+}
+
 func TestResponseAfterMultiReadPasteEndIsRouted(t *testing.T) {
 	client := &attachClient{}
 	client.expectTerminalResponse("@1")

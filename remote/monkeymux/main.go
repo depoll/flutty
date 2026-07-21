@@ -4908,20 +4908,7 @@ func (c *attachClient) routePostPasteInputLocked(
 		c.routeInputLocked(data, 0, result)
 		return
 	}
-	isResponseStart := data[0] == '\x1b' ||
-		data[0] == 0x90 ||
-		data[0] == 0x9b ||
-		data[0] == 0x9c ||
-		data[0] == 0x9d ||
-		data[0] == 0x9f ||
-		(c.terminalResponseContinuation == ']' && data[0] == '\a')
-	if isResponseStart &&
-		(c.hasExpectedTerminalResponseLocked() ||
-			c.terminalResponseContinuation != 0) {
-		c.routeInputLocked(data, 0, result)
-		return
-	}
-	c.routeUserInputLocked(data, result)
+	c.routeInputLocked(data, 0, result)
 }
 
 func (c *attachClient) routeUserInputLocked(
