@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.120"
+	monkeyMuxVersion                  = "0.1.121"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -74,7 +74,6 @@ const (
 	focusInputCarryDelay              = 75 * time.Millisecond
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
 	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
-	foregroundRedrawSynchronizedTail  = 80 * time.Millisecond
 	windowUpdateMinInterval           = 750 * time.Millisecond
 	windowHistoryLimitBytes           = 128 * 1024
 	windowFullReplayHistoryLimitBytes = 512 * 1024
@@ -445,26 +444,25 @@ type muxServer struct {
 	publishedWidth  int
 	publishedHeight int
 
-	mu                           sync.Mutex
-	resizeMu                     sync.Mutex
-	windows                      []*muxWindow
-	activeID                     string
-	lastActiveID                 string
-	nextID                       int
-	listener                     net.Listener
-	attachConn                   net.Conn
-	attachMu                     sync.Mutex
-	attachClients                map[net.Conn]*attachClient
-	nextAttachSequence           uint64
-	nextFocusSequence            uint64
-	synchronizedOutputGeneration uint64
-	pendingFocusRefreshConn      net.Conn
-	pendingResizeWidth           int
-	pendingResizeHeight          int
-	pendingResizeRedraw          bool
-	controls                     map[*controlClient]struct{}
-	themeHint                    []byte
-	closed                       bool
+	mu                      sync.Mutex
+	resizeMu                sync.Mutex
+	windows                 []*muxWindow
+	activeID                string
+	lastActiveID            string
+	nextID                  int
+	listener                net.Listener
+	attachConn              net.Conn
+	attachMu                sync.Mutex
+	attachClients           map[net.Conn]*attachClient
+	nextAttachSequence      uint64
+	nextFocusSequence       uint64
+	pendingFocusRefreshConn net.Conn
+	pendingResizeWidth      int
+	pendingResizeHeight     int
+	pendingResizeRedraw     bool
+	controls                map[*controlClient]struct{}
+	themeHint               []byte
+	closed                  bool
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -3936,18 +3934,32 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 }
 
-func beginSynchronizedTerminalOutput(prefix []byte, data []byte) []byte {
-	if len(prefix) == 0 && len(data) == 0 {
-		return nil
+// wrapSynchronizedTerminalOutput builds the resume write for one attach client.
+// prefix (the reattach replay) is emitted verbatim so it repaints immediately,
+// then the buffered foreground-redraw bytes are bracketed by MonkeySSH-private
+// DEC mode 9002 so the client applies them as a single atomic repaint and never
+// paints the synthetic width-1 dance frame captured mid-redraw. The begin and
+// end markers are written together in this one buffer (never via a separate
+// timer), so the close can never land mid-sequence and mode 9002 can never be
+// left open. When there is no buffered redraw there is no intermediate frame to
+// hide, so the replay is returned unwrapped.
+func wrapSynchronizedTerminalOutput(prefix []byte, data []byte) []byte {
+	if len(data) == 0 {
+		if len(prefix) == 0 {
+			return nil
+		}
+		return append([]byte(nil), prefix...)
 	}
 	output := make(
 		[]byte,
 		0,
-		len(prefix)+len(terminalSynchronizedOutputBegin)+len(data),
+		len(prefix)+len(terminalSynchronizedOutputBegin)+len(data)+
+			len(terminalSynchronizedOutputEnd),
 	)
 	output = append(output, prefix...)
 	output = append(output, terminalSynchronizedOutputBegin...)
 	output = append(output, data...)
+	output = append(output, terminalSynchronizedOutputEnd...)
 	return output
 }
 
@@ -6448,28 +6460,16 @@ func (s *muxServer) resumePausedAttachForwarding(
 			legacy = s.attachConn
 		}
 	}
-	var synchronizedGeneration uint64
-	if (len(clients) > 0 || legacy != nil) &&
-		(len(replay) > 0 ||
-			len(buffered) > 0 ||
-			len(failoverBuffered) > 0 ||
-			len(secondaryBuffered) > 0) {
-		s.synchronizedOutputGeneration++
-		synchronizedGeneration = s.synchronizedOutputGeneration
-	}
 	s.mu.Unlock()
-	if synchronizedGeneration > 0 {
-		s.scheduleSynchronizedOutputEnd(synchronizedGeneration)
-	}
-	primaryOutput := beginSynchronizedTerminalOutput(
+	primaryOutput := wrapSynchronizedTerminalOutput(
 		replay,
 		buffered,
 	)
-	failoverOutput := beginSynchronizedTerminalOutput(
+	failoverOutput := wrapSynchronizedTerminalOutput(
 		replay,
 		failoverBuffered,
 	)
-	secondaryOutput := beginSynchronizedTerminalOutput(
+	secondaryOutput := wrapSynchronizedTerminalOutput(
 		replay,
 		secondaryBuffered,
 	)
@@ -6619,22 +6619,6 @@ func (s *muxServer) resumePausedAttachForwarding(
 		)
 	}
 	s.attachMu.Unlock()
-}
-
-func (s *muxServer) scheduleSynchronizedOutputEnd(generation uint64) {
-	time.AfterFunc(foregroundRedrawSynchronizedTail, func() {
-		s.attachMu.Lock()
-		s.mu.Lock()
-		if s.synchronizedOutputGeneration != generation {
-			s.mu.Unlock()
-			s.attachMu.Unlock()
-			return
-		}
-		s.synchronizedOutputGeneration = 0
-		s.mu.Unlock()
-		s.writeAllAttachesLocked([]byte(terminalSynchronizedOutputEnd))
-		s.attachMu.Unlock()
-	})
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
