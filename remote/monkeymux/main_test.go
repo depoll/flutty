@@ -4122,7 +4122,7 @@ func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
 	}
 }
 
-func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
+func TestChangedSizeResizeDoesNotBounceForegroundTui(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
@@ -4167,8 +4167,12 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 
 	server.resize(120, 55)
 
-	if !reflect.DeepEqual(simulated, []string{"@1:120x55"}) {
-		t.Fatalf("simulated resizes = %#v, want [@1:120x55]", simulated)
+	// A genuine size change relies on the real PTY resize (SIGWINCH at the new
+	// size) to repaint the TUI. It must NOT drive the synthetic width-1 redraw
+	// dance, which would produce a visible one-cell bounce on every keyboard or
+	// pinch-zoom resize.
+	if len(simulated) != 0 {
+		t.Fatalf("changed-size resize performed synthetic dance = %#v, want none", simulated)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
@@ -4178,6 +4182,51 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 		if !strings.Contains(modeReplay, sequence) {
 			t.Fatalf("mode replay %q does not contain %q", modeReplay, sequence)
 		}
+	}
+}
+
+func TestChangedSizeResizeForwardsReflowImmediately(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	conn := &recordingConn{}
+	server.attachConn = conn
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {
+		t.Fatal("changed-size resize must not perform the synthetic redraw dance")
+	}
+
+	server.resize(120, 55)
+
+	// After a genuine resize the TUI's reflow must forward to attach clients
+	// immediately, not be buffered behind the synchronized-redraw tail that hides
+	// same-size dances. A held reflow is exactly the perceived "extra resize".
+	server.handleWindowOutput("@1", []byte("reflowed line"))
+	if got := conn.String(); !strings.Contains(got, "reflowed line") {
+		t.Fatalf("changed-size reflow was withheld from attach = %q", got)
+	}
+	server.mu.Lock()
+	paused := window.redrawForwardingPaused
+	server.mu.Unlock()
+	if paused {
+		t.Fatal("changed-size resize paused attach forwarding")
 	}
 }
 
@@ -4240,6 +4289,11 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 	server.activeID = "@1"
 	server.width = 120
 	server.height = 40
+	// A genuine forced same-size redraw already has the published grid at the
+	// current size, so sizeChanged is false and the synthetic width-1 dance is
+	// the only way to make a same-size-ignoring TUI repaint.
+	server.publishedWidth = 120
+	server.publishedHeight = 40
 
 	originalSignalForegroundResize := signalForegroundResize
 	originalSimulateForegroundResize := simulateForegroundResize
