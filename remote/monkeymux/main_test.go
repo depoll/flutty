@@ -2907,6 +2907,647 @@ func TestExpiredHeldResponsePrefixIsPassedThroughBeforeRenewal(t *testing.T) {
 	close(client.done)
 }
 
+func TestBracketedPasteStartIndex(t *testing.T) {
+	tests := []struct {
+		name              string
+		data              []byte
+		leadingUtf8Prefix int
+		want              int
+	}{
+		{name: "none", data: []byte("plain text"), want: -1},
+		{name: "seven bit", data: []byte("\x1b[200~x"), want: 0},
+		{
+			name: "seven bit with prefix",
+			data: []byte("ab\x1b[200~x"),
+			want: 2,
+		},
+		{name: "eight bit", data: []byte("\x9b200~x"), want: 0},
+		{
+			name: "partial is not a match",
+			data: []byte("\x1b[20"),
+			want: -1,
+		},
+		{
+			name: "end marker is not a start",
+			data: []byte("\x1b[201~"),
+			want: -1,
+		},
+		{
+			name: "eight bit byte inside UTF-8 is not a marker",
+			data: []byte("Û200~"),
+			want: -1,
+		},
+		{
+			name:              "leading UTF-8 continuation is not a marker",
+			data:              []byte("\x9b200~"),
+			leadingUtf8Prefix: 1,
+			want:              -1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := bracketedPasteStart(
+				test.data,
+				test.leadingUtf8Prefix,
+			).index; got != test.want {
+				t.Fatalf(
+					"bracketedPasteStart(%q) = %d, want %d",
+					test.data,
+					got,
+					test.want,
+				)
+			}
+		})
+	}
+}
+
+func enterStreamingTerminalResponseContinuation(
+	t *testing.T,
+	client *attachClient,
+) {
+	t.Helper()
+	prefix := append(
+		[]byte("\x1b]52;c;"),
+		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes+1)...,
+	)
+	routing := client.routeInput(prefix)
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, prefix) ||
+		len(routing.passthrough) != 0 {
+		t.Fatalf("streaming prefix routing = %#v", routing)
+	}
+	if client.terminalResponseContinuation != ']' {
+		t.Fatalf(
+			"response continuation = %q, want OSC",
+			client.terminalResponseContinuation,
+		)
+	}
+}
+
+// A bracketed paste that arrives while an incomplete query reply is held as
+// carry must reach the pane intact instead of being swallowed by the reply's
+// terminator search (which would strip the CSI 200~/201~ markers so an agent
+// CLI renders the pasted path as plain text instead of an attachment).
+func TestBracketedPastePassesThroughWhilePartialResponseHeld(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+
+	held := client.routeInput([]byte("\x1b]11;rgb:1234/5678/9abc"))
+	if len(held.passthrough) != 0 ||
+		len(held.responses) != 0 ||
+		held.claimsFocus {
+		t.Fatalf("partial reply routing = %#v, want held input", held)
+	}
+	client.activityMu.Lock()
+	heldCarry := len(client.terminalResponseCarry)
+	client.activityMu.Unlock()
+	if heldCarry == 0 {
+		t.Fatal("partial reply was not held as carry")
+	}
+
+	paste := []byte(
+		"\x1b[200~/home/u/.cache/monkeyssh/uploads/a.png\x1b[201~ ",
+	)
+	routing := client.routeInput(paste)
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
+	}
+	if len(routing.responses) != 0 {
+		t.Fatalf("paste routed as response = %#v", routing.responses)
+	}
+	client.activityMu.Lock()
+	remainingCarry := len(client.terminalResponseCarry)
+	client.activityMu.Unlock()
+	if remainingCarry != 0 {
+		t.Fatalf(
+			"aborted reply carry was not cleared: %d bytes",
+			remainingCarry,
+		)
+	}
+
+	// The window's reply expectation must survive the aborting paste: a real
+	// reply that arrives afterwards still routes to the querying window, and
+	// plain input keeps flowing through to the pane.
+	reply := []byte("\x1b[?62;4c")
+	replyRouting := client.routeInput(reply)
+	if len(replyRouting.responses) != 1 ||
+		replyRouting.responses[0].windowID != "@1" ||
+		!bytes.Equal(replyRouting.responses[0].data, reply) {
+		t.Fatalf("post-paste reply routing = %#v, want @1 reply", replyRouting)
+	}
+	if len(replyRouting.passthrough) != 0 {
+		t.Fatalf("post-paste reply leaked to pane: %q", replyRouting.passthrough)
+	}
+
+	typed := client.routeInput([]byte("ls\r"))
+	if !bytes.Equal(typed.passthrough, []byte("ls\r")) ||
+		len(typed.responses) != 0 {
+		t.Fatalf("post-paste typed input routing = %#v", typed)
+	}
+}
+
+func TestSplitBracketedPastePassesThroughStreamingResponse(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	first := client.routeInput([]byte("more-data\x1b[20"))
+	if len(first.responses) != 1 ||
+		first.responses[0].windowID != "@1" ||
+		!bytes.Equal(first.responses[0].data, []byte("more-data")) ||
+		len(first.passthrough) != 0 {
+		t.Fatalf("split paste prefix routing = %#v", first)
+	}
+
+	pasteRemainder := []byte("0~/tmp/a.png\x1b[201~ ")
+	second := client.routeInput(pasteRemainder)
+	wantPaste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	if !bytes.Equal(second.passthrough, wantPaste) ||
+		len(second.responses) != 0 {
+		t.Fatalf(
+			"split paste completion routing = %#v, want passthrough %q",
+			second,
+			wantPaste,
+		)
+	}
+
+	terminator := client.routeInput([]byte{'\a'})
+	if len(terminator.responses) != 1 ||
+		terminator.responses[0].windowID != "@1" ||
+		!bytes.Equal(terminator.responses[0].data, []byte{'\a'}) ||
+		len(terminator.passthrough) != 0 {
+		t.Fatalf("post-paste continuation routing = %#v", terminator)
+	}
+}
+
+func TestSplitBracketedPasteAtStreamingTransition(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	responsePrefix := append(
+		[]byte("\x1b]52;c;"),
+		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes+1)...,
+	)
+	input := append(append([]byte(nil), responsePrefix...), []byte("\x1b[20")...)
+
+	first := client.routeInput(input)
+	if len(first.responses) != 1 ||
+		first.responses[0].windowID != "@1" ||
+		!bytes.Equal(first.responses[0].data, responsePrefix) ||
+		len(first.passthrough) != 0 {
+		t.Fatalf("streaming transition routing = %#v", first)
+	}
+
+	remainder := []byte("0~/tmp/a.png\x1b[201~ ")
+	second := client.routeInput(remainder)
+	wantPaste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	if !bytes.Equal(second.passthrough, wantPaste) ||
+		len(second.responses) != 0 {
+		t.Fatalf(
+			"transition paste routing = %#v, want passthrough %q",
+			second,
+			wantPaste,
+		)
+	}
+}
+
+func TestStreamingResponseCompletesBeforePasteAndPreservesUserPrefix(
+	t *testing.T,
+) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	input := append([]byte("\ahello "), paste...)
+	routing := client.routeInput(input)
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, []byte{'\a'}) {
+		t.Fatalf("completed continuation routing = %#v", routing.responses)
+	}
+	wantPassthrough := append([]byte("hello "), paste...)
+	if !bytes.Equal(routing.passthrough, wantPassthrough) {
+		t.Fatalf(
+			"user prefix + paste passthrough = %q, want %q",
+			routing.passthrough,
+			wantPassthrough,
+		)
+	}
+}
+
+func TestStreamingResponseRoutesSecondReplyBeforePaste(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+	client.expectTerminalResponse("@2")
+
+	secondReply := []byte("\x1b[?62;4c")
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	input := append(append([]byte{'\a'}, secondReply...), paste...)
+	routing := client.routeInput(input)
+	if len(routing.responses) != 2 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, []byte{'\a'}) ||
+		routing.responses[1].windowID != "@2" ||
+		!bytes.Equal(routing.responses[1].data, secondReply) {
+		t.Fatalf("two-response routing = %#v", routing.responses)
+	}
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
+	}
+}
+
+func TestResponseAfterPasteInSameReadIsRoutedAfterUserInput(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~")
+	response := []byte("\x1b[?62;4c")
+	input := append(append([]byte(nil), paste...), response...)
+
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, paste) ||
+		len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, response) {
+		t.Fatalf("paste then response routing = %#v", routing)
+	}
+	if len(routing.actions) != 2 ||
+		!routing.actions[0].userInput ||
+		!bytes.Equal(routing.actions[0].data, paste) ||
+		routing.actions[1].userInput ||
+		routing.actions[1].windowID != "@1" ||
+		!bytes.Equal(routing.actions[1].data, response) {
+		t.Fatalf("ordered paste/response actions = %#v", routing.actions)
+	}
+}
+
+func TestResponseAfterPasteSeparatorInSameReadIsRouted(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	response := []byte("\x1b[?62;4c")
+	input := append(append([]byte(nil), paste...), response...)
+
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, paste) ||
+		len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, response) {
+		t.Fatalf("paste separator then response routing = %#v", routing)
+	}
+}
+
+func TestResponseAfterMultiReadPasteEndIsRouted(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	start := []byte("\x1b[200~/tmp/a")
+	if first := client.routeInput(start); !bytes.Equal(
+		first.passthrough,
+		start,
+	) || len(first.responses) != 0 {
+		t.Fatalf("paste start routing = %#v", first)
+	}
+
+	end := []byte(".png\x1b[201~")
+	response := []byte("\x1b[?62;4c")
+	second := client.routeInput(
+		append(append([]byte(nil), end...), response...),
+	)
+	if !bytes.Equal(second.passthrough, end) ||
+		len(second.responses) != 1 ||
+		second.responses[0].windowID != "@1" ||
+		!bytes.Equal(second.responses[0].data, response) {
+		t.Fatalf("paste end then response routing = %#v", second)
+	}
+}
+
+func TestStreamingResponseTerminatorAfterPasteEndIsRouted(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	start := []byte("\x1b[200~/tmp/a")
+	if first := client.routeInput(start); !bytes.Equal(
+		first.passthrough,
+		start,
+	) || len(first.responses) != 0 {
+		t.Fatalf("paste start routing = %#v", first)
+	}
+	end := []byte(".png\x1b[201~")
+	second := client.routeInput(append(append([]byte(nil), end...), '\a'))
+	if !bytes.Equal(second.passthrough, end) ||
+		len(second.responses) != 1 ||
+		second.responses[0].windowID != "@1" ||
+		!bytes.Equal(second.responses[0].data, []byte{'\a'}) {
+		t.Fatalf("paste end then continuation routing = %#v", second)
+	}
+}
+
+func TestStreamingResponsePayloadAfterPasteEndIsRouted(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	start := []byte("\x1b[200~/tmp/a")
+	if first := client.routeInput(start); !bytes.Equal(
+		first.passthrough,
+		start,
+	) || len(first.responses) != 0 {
+		t.Fatalf("paste start routing = %#v", first)
+	}
+	end := []byte(".png\x1b[201~ ")
+	responseTail := []byte("payload\a")
+	second := client.routeInput(
+		append(append([]byte(nil), end...), responseTail...),
+	)
+	if !bytes.Equal(second.passthrough, end) ||
+		len(second.responses) != 1 ||
+		second.responses[0].windowID != "@1" ||
+		!bytes.Equal(second.responses[0].data, responseTail) {
+		t.Fatalf("paste end then response payload routing = %#v", second)
+	}
+}
+
+func TestResponseLikeBytesInsideMultiReadPasteRemainOpaque(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	firstPaste := []byte("\x1b[200~/tmp/")
+	first := client.routeInput(firstPaste)
+	if !bytes.Equal(first.passthrough, firstPaste) ||
+		len(first.responses) != 0 {
+		t.Fatalf("first paste chunk routing = %#v", first)
+	}
+
+	secondPaste := []byte("aÛ201~\x1b[?62;4c.png\x1b[201~ ")
+	second := client.routeInput(secondPaste)
+	if !bytes.Equal(second.passthrough, secondPaste) ||
+		len(second.responses) != 0 {
+		t.Fatalf("second paste chunk routing = %#v", second)
+	}
+
+	terminator := client.routeInput([]byte{'\a'})
+	if len(terminator.responses) != 1 ||
+		terminator.responses[0].windowID != "@1" ||
+		!bytes.Equal(terminator.responses[0].data, []byte{'\a'}) {
+		t.Fatalf("reply after multi-read paste routing = %#v", terminator)
+	}
+}
+
+func TestCompletedCarriedReplyDoesNotLeakBeforePaste(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	client.expectTerminalResponse("@2")
+	if held := client.routeInput([]byte("\x1b[?6")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+
+	secondReplyPrefix := []byte("\x1b]11;rgb:12")
+	paste := []byte("\x1b[200~x\x1b[201~")
+	input := append([]byte("2;4c"), secondReplyPrefix...)
+	input = append(input, paste...)
+	routing := client.routeInput(input)
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, []byte("\x1b[?62;4c")) {
+		t.Fatalf("completed carry response routing = %#v", routing.responses)
+	}
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
+	}
+}
+
+func TestUserPrefixBeforePasteAfterHeldResponseIsPreserved(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	if held := client.routeInput([]byte("\x1b]11;rgb:12")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+
+	input := []byte("abc\x1b[200~/tmp/a.png\x1b[201~ ")
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, input) ||
+		len(routing.responses) != 0 {
+		t.Fatalf("user prefix + paste routing = %#v", routing)
+	}
+}
+
+func TestSplitUtf8BeforeC1LikeTextDoesNotStartPaste(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	first := client.routeInput([]byte{0xc5})
+	if !bytes.Equal(first.passthrough, []byte{0xc5}) {
+		t.Fatalf("UTF-8 lead passthrough = %x", first.passthrough)
+	}
+	second := client.routeInput([]byte{0x9b, '2', '0', '0'})
+	if !bytes.Equal(
+		second.passthrough,
+		[]byte{0x9b, '2', '0', '0'},
+	) {
+		t.Fatalf("UTF-8 continuation passthrough = %x", second.passthrough)
+	}
+	third := client.routeInput([]byte{'~'})
+	if !bytes.Equal(third.passthrough, []byte{'~'}) ||
+		client.inputBracketedPasteActive {
+		t.Fatalf("C1-like UTF-8 text activated paste: %#v", third)
+	}
+
+	response := []byte("\x1b[?62;4c")
+	routing := client.routeInput(response)
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, response) {
+		t.Fatalf("response after UTF-8 text routing = %#v", routing)
+	}
+}
+
+func TestSplitPasteStartAfterUserInputActivatesOpaquePaste(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+
+	first := []byte("abc\x1b[20")
+	firstRouting := client.routeInput(first)
+	if !bytes.Equal(firstRouting.passthrough, first) ||
+		len(firstRouting.responses) != 0 {
+		t.Fatalf("partial user paste start routing = %#v", firstRouting)
+	}
+	second := []byte("0~/tmp/a")
+	secondRouting := client.routeInput(second)
+	if !bytes.Equal(secondRouting.passthrough, second) ||
+		len(secondRouting.responses) != 0 {
+		t.Fatalf("completed user paste start routing = %#v", secondRouting)
+	}
+	fakeResponseAndEnd := []byte("\x1b[?62;4c.png\x1b[201~")
+	thirdRouting := client.routeInput(fakeResponseAndEnd)
+	if !bytes.Equal(thirdRouting.passthrough, fakeResponseAndEnd) ||
+		len(thirdRouting.responses) != 0 {
+		t.Fatalf("opaque split paste routing = %#v", thirdRouting)
+	}
+}
+
+func TestPasteStartCarryFlushesOnResponseDeadline(t *testing.T) {
+	passthrough := make(chan []byte, 1)
+	client := &attachClient{
+		done: make(chan struct{}),
+		inputPassthrough: func(data []byte) {
+			passthrough <- append([]byte(nil), data...)
+		},
+	}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+	client.activityMu.Lock()
+	generationBefore := client.terminalResponseCarryGeneration
+	client.activityMu.Unlock()
+	routing := client.routeInput([]byte("more\x1b[20"))
+	if len(routing.responses) != 1 ||
+		!bytes.Equal(routing.responses[0].data, []byte("more")) {
+		t.Fatalf("partial paste start routing = %#v", routing)
+	}
+	client.activityMu.Lock()
+	generation := client.terminalResponseCarryGeneration
+	client.terminalResponseUntil = time.Now().Add(-time.Second)
+	client.activityMu.Unlock()
+	if generation <= generationBefore {
+		t.Fatal("paste-start carry did not schedule a deadline resolver")
+	}
+
+	client.resolveAmbiguousTerminalResponseInput(generation, 0)
+	select {
+	case data := <-passthrough:
+		if !bytes.Equal(data, []byte("\x1b[20")) {
+			t.Fatalf("deadline passthrough = %q", data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("paste-start carry was not flushed")
+	}
+	close(client.done)
+}
+
+func TestExpiredCarryPreservesSplitBracketedPasteStart(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	if held := client.routeInput([]byte("\x1b]11;rgb:12\x1b[20")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+	client.activityMu.Lock()
+	client.terminalResponseUntil = time.Now().Add(-time.Second)
+	client.activityMu.Unlock()
+
+	remainder := []byte("0~/tmp/a.png\x1b[201~ ")
+	routing := client.routeInput(remainder)
+	want := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	if !bytes.Equal(routing.passthrough, want) ||
+		len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(
+			routing.responses[0].data,
+			[]byte("\x1b]11;rgb:12"),
+		) {
+		t.Fatalf(
+			"expired split paste routing = %#v, want passthrough %q",
+			routing,
+			want,
+		)
+	}
+}
+
+// Content that trails the paste in the same read (after CSI 201~) must survive
+// the abort and reach the pane along with the paste.
+func TestTrailingInputAfterAbortingPasteIsPreserved(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	if held := client.routeInput([]byte("\x1b]11;rgb:12")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+
+	input := []byte("\x1b[200~/tmp/a.png\x1b[201~ done\r")
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, input) {
+		t.Fatalf("passthrough = %q, want %q", routing.passthrough, input)
+	}
+	if len(routing.responses) != 0 {
+		t.Fatalf("input routed as response = %#v", routing.responses)
+	}
+}
+
+// A partial reply that expires while held must not prefix (and corrupt) a
+// bracketed paste that arrives afterwards.
+func TestBracketedPasteAfterExpiredCarryHasNoStalePrefix(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	if held := client.routeInput([]byte("\x1b]11;rgb:12")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+	client.activityMu.Lock()
+	client.terminalResponseUntil = time.Now().Add(-time.Second)
+	client.activityMu.Unlock()
+
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	routing := client.routeInput(paste)
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf(
+			"expired-carry paste passthrough = %q, want %q",
+			routing.passthrough,
+			paste,
+		)
+	}
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(
+			routing.responses[0].data,
+			[]byte("\x1b]11;rgb:12"),
+		) {
+		t.Fatalf("expired-carry response routing = %#v", routing.responses)
+	}
+}
+
+// A query reply that completes before a paste in the same read is still routed
+// to its window, and the paste passes through untouched.
+func TestCompleteResponseThenBracketedPasteRoutesBoth(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	response := []byte("\x1b[?62;4c")
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+
+	routing := client.routeInput(append(append([]byte(nil), response...), paste...))
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, response) {
+		t.Fatalf("response routing = %#v", routing.responses)
+	}
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
+	}
+}
+
+// Plain user input typed before a paste while a reply is expected must not be
+// dropped by the paste-abort handling.
+func TestUserInputBeforeBracketedPasteIsPreserved(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	input := []byte("abc\x1b[200~/tmp/a.png\x1b[201~ ")
+
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, input) {
+		t.Fatalf("passthrough = %q, want %q", routing.passthrough, input)
+	}
+	if len(routing.responses) != 0 {
+		t.Fatalf("user input routed as response = %#v", routing.responses)
+	}
+}
+
 func TestSplitTerminalResponseIntroducerIsRoutedOnce(t *testing.T) {
 	tests := []struct {
 		name     string
