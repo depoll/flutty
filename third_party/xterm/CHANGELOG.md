@@ -128,6 +128,11 @@ out of scope.
   `CSI 8 ; rows ; cols t` keeps its normal resize callback. This lets every
   attached client use the focused device's shared PTY grid while smaller
   viewports clip extra rows or columns locally.
+* MonkeyMux synchronized redraw mode (`CSI ? 9002 h` / `CSI ? 9002 l`) suppresses
+  listener notifications while a synthetic PTY resize transaction is parsed,
+  then repaints once at the end. The exact terminal stream remains intact
+  (including Kitty APC image transmissions and capability queries), while the
+  temporary one-column redraw never becomes a visible frame.
 * XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
   implements the kitty graphics + keyboard protocols, so it reports a
   kitty-family identity. CLIs such as the GitHub Copilot CLI gate their richer
