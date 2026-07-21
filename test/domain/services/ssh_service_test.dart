@@ -36,6 +36,12 @@ import 'package:xterm/xterm.dart';
 const _backgroundSshChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/ssh_service',
 );
+const _automaticPortWatcherSnapshotBeginMarker =
+    '__monkeyssh_port_snapshot_begin__';
+const _automaticPortWatcherSnapshotEndMarker =
+    '__monkeyssh_port_snapshot_end__';
+const _automaticPortDiscoveryUnavailableMarker =
+    '__monkeyssh_port_discovery_unavailable__';
 
 class _CapturingSshService extends SshService {
   _CapturingSshService({
@@ -139,6 +145,11 @@ class _AutomaticForwardTestSession extends SshSession {
   Duration get automaticPortForwardDiscoveryInterval => const Duration(days: 1);
 
   @override
+  Future<bool> startAutomaticPortForwardWatcher({
+    required int generation,
+  }) async => false;
+
+  @override
   Future<Map<int, RemoteTcpListener>?>
   discoverRemoteListeningTcpListeners() async => discoveries.removeAt(0);
 
@@ -189,6 +200,16 @@ Host _automaticForwardHost({
   portProxyName: portProxyName,
   sortOrder: 0,
 );
+
+Future<void> _waitUntil(bool Function() condition) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    if (condition()) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  fail('Timed out waiting for condition');
+}
 
 void _stubSessionStreams(_MockExecSession session, {String stdout = ''}) {
   when(() => session.stdout).thenAnswer(
@@ -424,6 +445,53 @@ LISTEN ::1:4201
       });
     });
 
+    test('builds a valid persistent POSIX watcher command', () async {
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 42,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'dev.example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+      final command = session.buildAutomaticPortForwardWatcherCommand();
+      final syntaxCheck = await Process.run('/bin/sh', ['-n', '-c', command]);
+
+      expect(syntaxCheck.exitCode, 0, reason: '${syntaxCheck.stderr}');
+      expect(command, contains('sleep 0.5'));
+      expect(command, contains(_automaticPortWatcherSnapshotBeginMarker));
+      expect(command, contains(_automaticPortWatcherSnapshotEndMarker));
+    });
+
+    test('builds a streaming Windows watcher command', () {
+      final client = _MockSshClient();
+      when(
+        () => client.remoteVersion,
+      ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 42,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'dev.example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+      final script = _decodePowerShellScriptFromCommand(
+        session.buildAutomaticPortForwardWatcherCommand(),
+      );
+
+      expect(script, contains('Start-Sleep -Milliseconds 500'));
+      expect(script, contains(_automaticPortWatcherSnapshotBeginMarker));
+      expect(script, contains(_automaticPortWatcherSnapshotEndMarker));
+      expect(script, contains(r'$__flStream.Flush()'));
+    });
+
     test('rejects listener scans that end without a completion marker', () {
       final client = _MockSshClient();
       final execSession = _MockExecSession();
@@ -472,11 +540,7 @@ LISTEN ::1:4201
         ),
       );
 
-      await session.configureAutomaticPortForwarding(
-        enabled: true,
-        proxyHost: 'dev-box.localhost',
-        shellConnectionIds: {7, 8},
-      );
+      await session.discoverRemoteListeningTcpListeners();
 
       final command =
           verify(
@@ -485,13 +549,11 @@ LISTEN ::1:4201
               as String;
       expect(
         command,
-        contains(r"marker_pattern='^MONKEYSSH_CONNECTION_ID=(7|8)$'"),
+        contains(r"marker_pattern='^MONKEYSSH_CONNECTION_ID=(7)$'"),
       );
       expect(command, contains('ss -H -ltnp'));
       expect(command, contains('lsof -nP -iTCP -sTCP:LISTEN -Fpfn'));
       expect(command, contains(r'if [ "$lsof_status" -gt 1 ]'));
-
-      await session.configureAutomaticPortForwarding(enabled: false);
     });
 
     test(
@@ -612,6 +674,225 @@ LISTEN ::1:4201
       expect(session.automaticPortForwardDiscoveryActive, isFalse);
       expect(session.automaticForwardedRemotePorts, isEmpty);
     });
+
+    test(
+      'streams changed listener snapshots over one watcher channel',
+      () async {
+        final client = _MockSshClient();
+        final watcher = _MockExecSession();
+        final stdout = StreamController<Uint8List>();
+        final done = Completer<void>();
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => watcher);
+        when(() => watcher.stdout).thenAnswer((_) => stdout.stream);
+        when(() => watcher.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => watcher.done).thenAnswer((_) => done.future);
+        when(watcher.close).thenAnswer((_) {});
+        final session = SshSession(
+          connectionId: 7,
+          hostId: 42,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'dev.example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        addTearDown(() async {
+          await session.configureAutomaticPortForwarding(enabled: false);
+          if (!stdout.isClosed) {
+            await stdout.close();
+          }
+          if (!done.isCompleted) {
+            done.complete();
+          }
+        });
+
+        final configured = session.configureAutomaticPortForwarding(
+          enabled: true,
+          proxyHost: 'dev-box.localhost',
+        );
+        await untilCalled(() => client.execute(any(), pty: any(named: 'pty')));
+        final watcherCommand =
+            verify(
+                  () => client.execute(captureAny(), pty: any(named: 'pty')),
+                ).captured.single
+                as String;
+        expect(watcherCommand, contains('while :; do'));
+        expect(watcherCommand, contains('sleep 0.5'));
+        expect(watcherCommand, contains('previous_set'));
+
+        stdout.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '$_automaticPortWatcherSnapshotBeginMarker\n'
+              'LISTEN 127.0.0.1:3000\n'
+              '$_automaticPortWatcherSnapshotEndMarker\n',
+            ),
+          ),
+        );
+        await configured;
+        await _waitUntil(
+          () => session.automaticForwardedRemotePorts.contains(3000),
+        );
+
+        expect(session.automaticPortForwardWatcherActive, isTrue);
+        expect(session.automaticPortForwardDiscoveryActive, isFalse);
+        expect(session.automaticForwardedRemotePorts, {3000});
+
+        stdout.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '$_automaticPortWatcherSnapshotBeginMarker\n'
+              'LISTEN 127.0.0.1:4000\n'
+              '$_automaticPortWatcherSnapshotEndMarker\n',
+            ),
+          ),
+        );
+        await _waitUntil(
+          () =>
+              session.automaticForwardedRemotePorts.length == 1 &&
+              session.automaticForwardedRemotePorts.contains(4000),
+        );
+
+        expect(session.automaticForwardedRemotePorts, {4000});
+        verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+      },
+    );
+
+    test('does not poll after watcher reports discovery unsupported', () async {
+      final client = _MockSshClient();
+      final watcher = _MockExecSession();
+      final stdout = StreamController<Uint8List>();
+      final done = Completer<void>();
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => watcher);
+      when(() => watcher.stdout).thenAnswer((_) => stdout.stream);
+      when(() => watcher.stderr).thenAnswer((_) => const Stream.empty());
+      when(() => watcher.done).thenAnswer((_) => done.future);
+      when(watcher.close).thenAnswer((_) {});
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 42,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'dev.example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      addTearDown(() async {
+        await session.configureAutomaticPortForwarding(enabled: false);
+        if (!stdout.isClosed) {
+          await stdout.close();
+        }
+        if (!done.isCompleted) {
+          done.complete();
+        }
+      });
+
+      final configured = session.configureAutomaticPortForwarding(
+        enabled: true,
+        proxyHost: 'dev-box.localhost',
+      );
+      await untilCalled(() => client.execute(any(), pty: any(named: 'pty')));
+      stdout.add(
+        Uint8List.fromList(
+          utf8.encode(
+            '$_automaticPortWatcherSnapshotBeginMarker\n'
+            '$_automaticPortDiscoveryUnavailableMarker\n'
+            '$_automaticPortWatcherSnapshotEndMarker\n',
+          ),
+        ),
+      );
+      await configured;
+      await stdout.close();
+      done.complete();
+      await pumpEventQueue();
+
+      expect(session.automaticPortForwardWatcherActive, isFalse);
+      expect(session.automaticPortForwardDiscoveryActive, isFalse);
+      verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
+    });
+
+    test(
+      'falls back to periodic scans if the watcher channel closes',
+      () async {
+        final client = _MockSshClient();
+        final watcher = _MockExecSession();
+        final watcherStdout = StreamController<Uint8List>();
+        final watcherDone = Completer<void>();
+        final scan = _MockExecSession();
+        _stubSessionStreams(
+          scan,
+          stdout:
+              'LISTEN 127.0.0.1:3000\n'
+              '__monkeyssh_port_discovery_done__\n',
+        );
+        var executeCount = 0;
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          executeCount++;
+          return executeCount == 1 ? watcher : scan;
+        });
+        when(() => watcher.stdout).thenAnswer((_) => watcherStdout.stream);
+        when(() => watcher.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => watcher.done).thenAnswer((_) => watcherDone.future);
+        when(watcher.close).thenAnswer((_) {});
+        final session = SshSession(
+          connectionId: 7,
+          hostId: 42,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'dev.example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        addTearDown(() async {
+          await session.configureAutomaticPortForwarding(enabled: false);
+          if (!watcherStdout.isClosed) {
+            await watcherStdout.close();
+          }
+          if (!watcherDone.isCompleted) {
+            watcherDone.complete();
+          }
+        });
+
+        final configured = session.configureAutomaticPortForwarding(
+          enabled: true,
+          proxyHost: 'dev-box.localhost',
+        );
+        await untilCalled(() => client.execute(any(), pty: any(named: 'pty')));
+        watcherStdout.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '$_automaticPortWatcherSnapshotBeginMarker\n'
+              'LISTEN 127.0.0.1:3000\n'
+              '$_automaticPortWatcherSnapshotEndMarker\n',
+            ),
+          ),
+        );
+        await configured;
+        await _waitUntil(
+          () => session.automaticForwardedRemotePorts.contains(3000),
+        );
+
+        await watcherStdout.close();
+        watcherDone.complete();
+        await _waitUntil(
+          () =>
+              session.automaticPortForwardDiscoveryActive && executeCount >= 2,
+        );
+
+        expect(session.automaticPortForwardWatcherActive, isFalse);
+        expect(session.automaticPortForwardDiscoveryActive, isTrue);
+        expect(executeCount, 2);
+      },
+    );
   });
 
   test('session keeps MonkeyMux host resize gating for terminal lifetime', () {
