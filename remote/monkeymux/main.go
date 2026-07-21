@@ -4424,6 +4424,7 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 			passthrough = c.inputPassthrough
 		}
 		c.resetTerminalResponseStateLocked()
+		c.rememberForwardedBracketedPasteStartSuffixLocked(expiredInput)
 	}
 	c.terminalResponseUntil = now.Add(terminalResponseFocusGrace)
 	for range count {
@@ -5059,6 +5060,7 @@ func (c *attachClient) resolveAmbiguousTerminalResponseInput(
 		time.Now().After(c.terminalResponseUntil) {
 		c.resetTerminalResponseStateLocked()
 	}
+	c.rememberForwardedBracketedPasteStartSuffixLocked(data)
 	claim := c.focusClaim
 	passthrough := c.inputPassthrough
 	c.activityMu.Unlock()
@@ -5075,6 +5077,19 @@ func (c *attachClient) resolveAmbiguousTerminalResponseInput(
 	if passthrough != nil {
 		passthrough(data)
 	}
+}
+
+func (c *attachClient) rememberForwardedBracketedPasteStartSuffixLocked(
+	data []byte,
+) {
+	suffixLength := bracketedPasteStartSuffixLength(data, 0)
+	if suffixLength == 0 {
+		return
+	}
+	c.inputBracketedPasteStartCarry = append(
+		c.inputBracketedPasteStartCarry[:0],
+		data[len(data)-suffixLength:]...,
+	)
 }
 
 func (c *attachClient) currentTerminalResponseWindowLocked() string {
