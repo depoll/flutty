@@ -2734,6 +2734,12 @@ String _diagnosticSshCommandKind(String command) {
   if (trimmed.contains('.copilot/session-state')) {
     return 'active_session_metadata';
   }
+  if (trimmed.contains(_automaticPortWatcherSnapshotBeginMarker)) {
+    return 'automatic_port_watcher';
+  }
+  if (trimmed.contains(_automaticPortDiscoveryDoneMarker)) {
+    return 'automatic_port_discovery';
+  }
   if (trimmed.contains('command -v')) {
     return 'command_detection';
   }
@@ -2959,6 +2965,10 @@ const _automaticPortDiscoveryUnavailableMarker =
     '__monkeyssh_port_discovery_unavailable__';
 const _automaticPortDiscoveryShellPidsMarker =
     '__monkeyssh_shell_descendant_pids__:';
+const _automaticPortWatcherSnapshotBeginMarker =
+    '__monkeyssh_port_snapshot_begin__';
+const _automaticPortWatcherSnapshotEndMarker =
+    '__monkeyssh_port_snapshot_end__';
 
 /// A reachable remote TCP listener discovered during automatic forwarding.
 typedef RemoteTcpListener = ({String host, int port, bool isShellRelated});
@@ -3090,6 +3100,7 @@ class SshSession {
   static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
   static const _defaultPortForwardStartTimeout = Duration(seconds: 10);
   static const _automaticPortDiscoveryTimeout = Duration(seconds: 8);
+  static const _automaticPortWatcherStartTimeout = Duration(seconds: 10);
   static const _sftpOpenRetryDelays = [
     Duration(milliseconds: 250),
     Duration(milliseconds: 750),
@@ -3357,9 +3368,18 @@ class SshSession {
   final _closeStarted = Completer<void>();
   bool _isClosing = false;
   Timer? _automaticPortForwardTimer;
+  SSHSession? _automaticPortForwardWatcherSession;
+  // Cancelled in _stopAutomaticPortForwardWatcher().
+  // ignore: cancel_subscriptions
+  StreamSubscription<String>? _automaticPortForwardWatcherStdoutSubscription;
+  StringBuffer? _automaticPortForwardWatcherSnapshot;
+  Completer<bool>? _automaticPortForwardWatcherReady;
+  bool _automaticPortForwardWatcherSnapshotUnavailable = false;
+  bool _automaticPortDiscoveryUnavailable = false;
   String? _automaticPortProxyHost;
   int _automaticPortForwardGeneration = 0;
   Future<void>? _automaticPortForwardRefresh;
+  Future<void>? _automaticPortForwardSnapshotQueue;
   Future<void> _automaticPortForwardConfiguration = Future<void>.value();
   final Map<int, int> _automaticPortForwardIdsByRemotePort = {};
   final Map<int, String> _automaticPortForwardHostsByRemotePort = {};
@@ -3407,6 +3427,11 @@ class SshSession {
   @visibleForTesting
   bool get automaticPortForwardDiscoveryActive =>
       _automaticPortForwardTimer != null;
+
+  /// Whether a persistent automatic listener watcher is active.
+  @visibleForTesting
+  bool get automaticPortForwardWatcherActive =>
+      _automaticPortForwardWatcherSession != null;
 
   /// Opens a local forwarding listener.
   @visibleForTesting
@@ -3997,15 +4022,37 @@ class SshSession {
         'Must be a valid .localhost domain',
       );
     }
+    final normalizedShellConnectionIds = Set<int>.unmodifiable(
+      shellConnectionIds.isEmpty ? {connectionId} : shellConnectionIds,
+    );
+    final sameProxyHost = _automaticPortProxyHost == normalizedProxyHost;
+    final shellConnectionsChanged = !setEquals(
+      _automaticPortForwardShellConnectionIds,
+      normalizedShellConnectionIds,
+    );
+    final hasActiveDiscovery =
+        _automaticPortForwardWatcherSession != null ||
+        _automaticPortForwardTimer != null;
     if (_automaticPortProxyHost == normalizedProxyHost &&
-        _automaticPortForwardTimer != null) {
+        hasActiveDiscovery &&
+        !shellConnectionsChanged) {
       _automaticPortForwardExcludedRemotePorts = Set.unmodifiable(
         excludedRemotePorts,
       );
-      _automaticPortForwardShellConnectionIds = Set.unmodifiable(
-        shellConnectionIds.isEmpty ? {connectionId} : shellConnectionIds,
-      );
       await refreshAutomaticPortForwards();
+      return;
+    }
+
+    if (sameProxyHost && hasActiveDiscovery && shellConnectionsChanged) {
+      _automaticPortForwardExcludedRemotePorts = Set.unmodifiable(
+        excludedRemotePorts,
+      );
+      _automaticPortForwardShellConnectionIds = normalizedShellConnectionIds;
+      final generation = ++_automaticPortForwardGeneration;
+      _automaticPortForwardTimer?.cancel();
+      _automaticPortForwardTimer = null;
+      await _stopAutomaticPortForwardWatcher();
+      await _startAutomaticPortDiscovery(generation);
       return;
     }
 
@@ -4013,31 +4060,30 @@ class SshSession {
     if (_isClosing) {
       return;
     }
-    _automaticPortForwardGeneration++;
+    final generation = ++_automaticPortForwardGeneration;
     _automaticPortProxyHost = normalizedProxyHost;
     _automaticPortForwardExcludedRemotePorts = Set.unmodifiable(
       excludedRemotePorts,
     );
-    _automaticPortForwardShellConnectionIds = Set.unmodifiable(
-      shellConnectionIds.isEmpty ? {connectionId} : shellConnectionIds,
-    );
-    _automaticPortForwardTimer = Timer.periodic(
-      automaticPortForwardDiscoveryInterval,
-      (_) => unawaited(refreshAutomaticPortForwards()),
-    );
-    await refreshAutomaticPortForwards();
+    _automaticPortForwardShellConnectionIds = normalizedShellConnectionIds;
+    await _startAutomaticPortDiscovery(generation);
   }
 
   Future<void> _stopAutomaticPortForwarding() async {
     _automaticPortForwardGeneration++;
     _automaticPortForwardTimer?.cancel();
     _automaticPortForwardTimer = null;
+    await _stopAutomaticPortForwardWatcher();
     _automaticPortProxyHost = null;
     _automaticPortForwardExcludedRemotePorts = const {};
     _automaticPortForwardShellConnectionIds = const {};
     final runningRefresh = _automaticPortForwardRefresh;
     if (runningRefresh != null) {
       await runningRefresh;
+    }
+    final pendingSnapshot = _automaticPortForwardSnapshotQueue;
+    if (pendingSnapshot != null) {
+      await pendingSnapshot;
     }
     final automaticIds = _automaticPortForwardIdsByRemotePort.values.toList(
       growable: false,
@@ -4049,6 +4095,37 @@ class SshSession {
     for (final id in automaticIds) {
       await stopForward(id);
     }
+  }
+
+  Future<void> _startAutomaticPortDiscovery(int generation) async {
+    _automaticPortDiscoveryUnavailable = false;
+    if (await startAutomaticPortForwardWatcher(generation: generation)) {
+      return;
+    }
+    if (_automaticPortDiscoveryUnavailable ||
+        _isClosing ||
+        generation != _automaticPortForwardGeneration) {
+      return;
+    }
+    await refreshAutomaticPortForwards();
+    if (!_automaticPortDiscoveryUnavailable &&
+        !_isClosing &&
+        generation == _automaticPortForwardGeneration) {
+      _startAutomaticPortForwardPolling(generation);
+    }
+  }
+
+  void _startAutomaticPortForwardPolling(int generation) {
+    if (_automaticPortForwardTimer != null ||
+        _automaticPortForwardWatcherSession != null ||
+        _isClosing ||
+        generation != _automaticPortForwardGeneration) {
+      return;
+    }
+    _automaticPortForwardTimer = Timer.periodic(
+      automaticPortForwardDiscoveryInterval,
+      (_) => unawaited(refreshAutomaticPortForwards()),
+    );
   }
 
   /// Immediately reconciles detected remote listeners with active forwards.
@@ -4106,6 +4183,7 @@ class SshSession {
       return;
     }
     if (detectedListeners == null) {
+      _automaticPortDiscoveryUnavailable = true;
       if (!_isClosing && generation == _automaticPortForwardGeneration) {
         _automaticPortForwardTimer?.cancel();
         _automaticPortForwardTimer = null;
@@ -4117,6 +4195,19 @@ class SshSession {
       }
       return;
     }
+    _automaticPortDiscoveryUnavailable = false;
+    await _reconcileAutomaticPortForwards(
+      detectedListeners,
+      generation: generation,
+      removeMissingImmediately: false,
+    );
+  }
+
+  Future<void> _reconcileAutomaticPortForwards(
+    Map<int, RemoteTcpListener> detectedListeners, {
+    required int generation,
+    required bool removeMissingImmediately,
+  }) async {
     if (_isClosing || generation != _automaticPortForwardGeneration) {
       return;
     }
@@ -4178,6 +4269,11 @@ class SshSession {
         await stopForward(entry.value);
         continue;
       }
+      if (removeMissingImmediately) {
+        _automaticPortForwardMisses.remove(entry.key);
+        await stopForward(entry.value);
+        continue;
+      }
       final misses = (_automaticPortForwardMisses[entry.key] ?? 0) + 1;
       if (misses < 2) {
         _automaticPortForwardMisses[entry.key] = misses;
@@ -4224,6 +4320,238 @@ class SshSession {
         }
       }
     }
+  }
+
+  /// Opens one long-lived remote watcher that emits changed listener snapshots.
+  @visibleForTesting
+  Future<bool> startAutomaticPortForwardWatcher({
+    required int generation,
+  }) async {
+    final command = buildAutomaticPortForwardWatcherCommand();
+    SSHSession watcher;
+    try {
+      watcher = await execute(command);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'automatic_watcher_open_failed',
+        fields: {
+          'connectionId': connectionId,
+          'hostId': hostId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return false;
+    }
+    if (_isClosing || generation != _automaticPortForwardGeneration) {
+      watcher.close();
+      return false;
+    }
+
+    final ready = Completer<bool>();
+    _automaticPortForwardWatcherSession = watcher;
+    _automaticPortForwardWatcherReady = ready;
+    _automaticPortForwardWatcherSnapshot = null;
+    _automaticPortForwardWatcherSnapshotUnavailable = false;
+    watcher.stderr.drain<void>().ignore();
+    _automaticPortForwardWatcherStdoutSubscription = watcher.stdout
+        .cast<List<int>>()
+        .transform(const Utf8Decoder(allowMalformed: true))
+        .transform(const LineSplitter())
+        .listen(
+          (line) => _handleAutomaticPortWatcherLine(
+            watcher,
+            line,
+            generation: generation,
+          ),
+          onError: (Object error, StackTrace _) =>
+              _handleAutomaticPortWatcherEnded(
+                watcher,
+                generation: generation,
+                error: error,
+              ),
+          onDone: () =>
+              _handleAutomaticPortWatcherEnded(watcher, generation: generation),
+          cancelOnError: true,
+        );
+    try {
+      final started = await ready.future.timeout(
+        _automaticPortWatcherStartTimeout,
+      );
+      if (started) {
+        DiagnosticsLogService.instance.info(
+          'ssh.forward',
+          'automatic_watcher_started',
+          fields: {'connectionId': connectionId, 'hostId': hostId},
+        );
+        return true;
+      }
+    } on TimeoutException {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'automatic_watcher_timed_out',
+        fields: {'connectionId': connectionId, 'hostId': hostId},
+      );
+    }
+    if (identical(_automaticPortForwardWatcherSession, watcher)) {
+      await _stopAutomaticPortForwardWatcher();
+    }
+    return false;
+  }
+
+  /// Builds the persistent remote listener-watcher command for this platform.
+  @visibleForTesting
+  String buildAutomaticPortForwardWatcherCommand() => remoteIsWindows
+      ? _windowsAutomaticPortWatcherCommand()
+      : _posixAutomaticPortWatcherCommand();
+
+  void _handleAutomaticPortWatcherLine(
+    SSHSession watcher,
+    String line, {
+    required int generation,
+  }) {
+    if (!identical(_automaticPortForwardWatcherSession, watcher) ||
+        generation != _automaticPortForwardGeneration) {
+      return;
+    }
+    if (line == _automaticPortWatcherSnapshotBeginMarker) {
+      _automaticPortForwardWatcherSnapshot = StringBuffer();
+      _automaticPortForwardWatcherSnapshotUnavailable = false;
+      return;
+    }
+    if (line == _automaticPortWatcherSnapshotEndMarker) {
+      final snapshot = _automaticPortForwardWatcherSnapshot?.toString() ?? '';
+      _automaticPortForwardWatcherSnapshot = null;
+      if (_automaticPortForwardWatcherSnapshotUnavailable) {
+        _automaticPortDiscoveryUnavailable = true;
+        final ready = _automaticPortForwardWatcherReady;
+        if (ready != null && !ready.isCompleted) {
+          ready.complete(false);
+        }
+        return;
+      }
+      _automaticPortDiscoveryUnavailable = false;
+      final ready = _automaticPortForwardWatcherReady;
+      final applied = _queueAutomaticPortWatcherSnapshot(
+        parseRemoteListeningTcpListeners(snapshot),
+        generation: generation,
+      );
+      if (ready != null && !ready.isCompleted) {
+        unawaited(
+          applied.then<void>(
+            (_) {
+              if (!ready.isCompleted) {
+                ready.complete(true);
+              }
+            },
+            onError: (Object _, StackTrace _) {
+              if (!ready.isCompleted) {
+                ready.complete(false);
+              }
+            },
+          ),
+        );
+      }
+      return;
+    }
+
+    final snapshot = _automaticPortForwardWatcherSnapshot;
+    if (snapshot == null) {
+      return;
+    }
+    if (line == _automaticPortDiscoveryUnavailableMarker) {
+      _automaticPortForwardWatcherSnapshotUnavailable = true;
+    }
+    snapshot.writeln(line);
+  }
+
+  Future<void> _queueAutomaticPortWatcherSnapshot(
+    Map<int, RemoteTcpListener> listeners, {
+    required int generation,
+  }) {
+    final previous = _automaticPortForwardSnapshotQueue ?? Future<void>.value();
+    final operation = previous.then(
+      (_) => _reconcileAutomaticPortForwards(
+        listeners,
+        generation: generation,
+        removeMissingImmediately: true,
+      ),
+    );
+    late final Future<void> trackedOperation;
+    trackedOperation = operation
+        .then<void>(
+          (_) {},
+          onError: (Object error, StackTrace _) {
+            DiagnosticsLogService.instance.warning(
+              'ssh.forward',
+              'automatic_watcher_reconcile_failed',
+              fields: {
+                'connectionId': connectionId,
+                'hostId': hostId,
+                'errorType': error.runtimeType,
+              },
+            );
+          },
+        )
+        .whenComplete(() {
+          if (identical(_automaticPortForwardSnapshotQueue, trackedOperation)) {
+            _automaticPortForwardSnapshotQueue = null;
+          }
+        });
+    _automaticPortForwardSnapshotQueue = trackedOperation;
+    return operation;
+  }
+
+  void _handleAutomaticPortWatcherEnded(
+    SSHSession watcher, {
+    required int generation,
+    Object? error,
+  }) {
+    if (!identical(_automaticPortForwardWatcherSession, watcher)) {
+      return;
+    }
+    _automaticPortForwardWatcherSession = null;
+    _automaticPortForwardWatcherStdoutSubscription = null;
+    _automaticPortForwardWatcherSnapshot = null;
+    watcher.close();
+    final ready = _automaticPortForwardWatcherReady;
+    _automaticPortForwardWatcherReady = null;
+    if (ready != null && !ready.isCompleted) {
+      ready.complete(false);
+    }
+    if (_isClosing ||
+        _automaticPortDiscoveryUnavailable ||
+        _automaticPortProxyHost == null ||
+        generation != _automaticPortForwardGeneration) {
+      return;
+    }
+    DiagnosticsLogService.instance.warning(
+      'ssh.forward',
+      'automatic_watcher_closed',
+      fields: {
+        'connectionId': connectionId,
+        'hostId': hostId,
+        if (error != null) 'errorType': error.runtimeType,
+      },
+    );
+    _startAutomaticPortForwardPolling(generation);
+    unawaited(refreshAutomaticPortForwards());
+  }
+
+  Future<void> _stopAutomaticPortForwardWatcher() async {
+    final watcher = _automaticPortForwardWatcherSession;
+    _automaticPortForwardWatcherSession = null;
+    final ready = _automaticPortForwardWatcherReady;
+    _automaticPortForwardWatcherReady = null;
+    if (ready != null && !ready.isCompleted) {
+      ready.complete(false);
+    }
+    final subscription = _automaticPortForwardWatcherStdoutSubscription;
+    _automaticPortForwardWatcherStdoutSubscription = null;
+    _automaticPortForwardWatcherSnapshot = null;
+    _automaticPortForwardWatcherSnapshotUnavailable = false;
+    await subscription?.cancel();
+    watcher?.close();
   }
 
   /// Discovers listening TCP ports and their loopback targets on the remote host.
@@ -4278,7 +4606,32 @@ class SshSession {
     );
   }
 
-  String _posixAutomaticPortDiscoveryCommand() {
+  String _posixAutomaticPortDiscoveryCommand() =>
+      '${_posixAutomaticPortShellPidsCommand()} '
+      '${_posixAutomaticPortListenerCommand()} '
+      'printf "$_automaticPortDiscoveryDoneMarker\\n"';
+
+  String _posixAutomaticPortWatcherCommand() {
+    final shellPidsCommand = _posixAutomaticPortShellPidsCommand();
+    final listenerCommand = _posixAutomaticPortListenerCommand();
+    return "previous_set=0; previous=''; "
+        'while :; do '
+        'snapshot=\$({ $listenerCommand }); '
+        r'if [ "$previous_set" -eq 0 ] || [ "$snapshot" != "$previous" ]; then '
+        "printf '%s\\n' '$_automaticPortWatcherSnapshotBeginMarker'; "
+        '$shellPidsCommand '
+        r'if [ -n "$snapshot" ]; then printf "%s\n" "$snapshot"; fi; '
+        "printf '%s\\n' '$_automaticPortWatcherSnapshotEndMarker'; "
+        r'previous=$snapshot; previous_set=1; '
+        'fi; '
+        r'case "$snapshot" in '
+        '*$_automaticPortDiscoveryUnavailableMarker*) exit 0 ;; '
+        'esac; '
+        'sleep 0.5 || exit 0; '
+        'done';
+  }
+
+  String _posixAutomaticPortShellPidsCommand() {
     final connectionIds =
         (_automaticPortForwardShellConnectionIds.isEmpty
                 ? {connectionId}
@@ -4298,20 +4651,22 @@ class SshSession {
         r'shell_pids="${shell_pids}${shell_pids:+,}${pid}"; '
         'fi; done; fi; '
         'printf "$_automaticPortDiscoveryShellPidsMarker%s\\n" '
-        r'"$shell_pids"; '
-        'if command -v ss >/dev/null 2>&1 && '
-        'ss -H -ltnp 2>/dev/null; then :; '
-        'elif command -v netstat >/dev/null 2>&1 && '
-        '{ netstat -an -p tcp 2>/dev/null || netstat -an 2>/dev/null; }; '
-        'then :; '
-        'elif command -v lsof >/dev/null 2>&1; then '
-        'lsof -nP -iTCP -sTCP:LISTEN -Fpfn 2>/dev/null; '
-        r'lsof_status=$?; '
-        r'if [ "$lsof_status" -gt 1 ]; then '
-        'printf "$_automaticPortDiscoveryUnavailableMarker\\n"; fi; '
-        'else printf "$_automaticPortDiscoveryUnavailableMarker\\n"; fi; '
-        'printf "$_automaticPortDiscoveryDoneMarker\\n"';
+        r'"$shell_pids";';
   }
+
+  String _posixAutomaticPortListenerCommand() =>
+      'LC_ALL=C; export LC_ALL; '
+      'if command -v ss >/dev/null 2>&1 && '
+      'ss -H -ltnp 2>/dev/null; then :; '
+      'elif command -v netstat >/dev/null 2>&1 && '
+      '{ netstat -an -p tcp 2>/dev/null || netstat -an 2>/dev/null; }; '
+      'then :; '
+      'elif command -v lsof >/dev/null 2>&1; then '
+      'lsof -nP -iTCP -sTCP:LISTEN -Fpfn 2>/dev/null; '
+      r'lsof_status=$?; '
+      r'if [ "$lsof_status" -gt 1 ]; then '
+      'printf "$_automaticPortDiscoveryUnavailableMarker\\n"; fi; '
+      'else printf "$_automaticPortDiscoveryUnavailableMarker\\n"; fi;';
 
   String _windowsAutomaticPortDiscoveryCommand() {
     const body =
@@ -4325,6 +4680,48 @@ class SshSession {
         r"[void]$__flOut.AppendLine('__monkeyssh_port_discovery_unavailable__')};"
         r"[void]$__flOut.AppendLine('__monkeyssh_port_discovery_done__');";
     return buildWindowsPowerShellCommand(powerShellUtf8OutputScript(body));
+  }
+
+  String _windowsAutomaticPortWatcherCommand() {
+    const script = r'''
+$ErrorActionPreference='SilentlyContinue'
+$ProgressPreference='SilentlyContinue'
+$__flUtf8=New-Object System.Text.UTF8Encoding($false)
+$__flStream=[System.Console]::OpenStandardOutput()
+function __flWrite([string]$value){
+  $bytes=$__flUtf8.GetBytes($value+"`n")
+  $__flStream.Write($bytes,0,$bytes.Length)
+  $__flStream.Flush()
+}
+$previous=$null
+while($true){
+  try{
+    $lines=@(
+      Get-NetTCPConnection -State Listen -ErrorAction Stop |
+      Where-Object {
+        $_.LocalAddress -eq '0.0.0.0' -or
+        $_.LocalAddress -eq '::' -or
+        $_.LocalAddress -eq '::1' -or
+        $_.LocalAddress -like '127.*'
+      } |
+      Sort-Object LocalPort,LocalAddress -Unique |
+      ForEach-Object { 'LISTEN ' + $_.LocalAddress + ':' + [string]$_.LocalPort }
+    )
+    $snapshot=[string]::Join("`n",$lines)
+  }catch{
+    $snapshot='__monkeyssh_port_discovery_unavailable__'
+  }
+  if($snapshot -ne $previous){
+    __flWrite '__monkeyssh_port_snapshot_begin__'
+    if($snapshot){__flWrite $snapshot}
+    __flWrite '__monkeyssh_port_snapshot_end__'
+    $previous=$snapshot
+  }
+  if($snapshot -eq '__monkeyssh_port_discovery_unavailable__'){break}
+  Start-Sleep -Milliseconds 500
+}
+''';
+    return buildWindowsPowerShellCommand(script);
   }
 
   Future<String> _readAutomaticPortDiscoveryOutput(
@@ -5031,6 +5428,11 @@ class SshSession {
     _automaticPortProxyHost = null;
     _automaticPortForwardExcludedRemotePorts = const {};
     _automaticPortForwardShellConnectionIds = const {};
+    await _stopAutomaticPortForwardWatcher();
+    final pendingSnapshot = _automaticPortForwardSnapshotQueue;
+    if (pendingSnapshot != null) {
+      await pendingSnapshot;
+    }
     if (!_closeStarted.isCompleted) {
       _closeStarted.complete();
     }
