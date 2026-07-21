@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.119"
+	monkeyMuxVersion                  = "0.1.120"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3496,7 +3496,7 @@ func (s *muxServer) redrawRestoredWindow(windowID string) {
 	}
 	width, height := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
-	s.resizeWithRedraw(width, height, true)
+	s.resizeWithRedraw(width, height, true, true)
 }
 
 func createWindowOptionsForRestore(
@@ -5008,7 +5008,7 @@ func (s *muxServer) applyFocusedClientViewport(
 		return
 	}
 	if sizeChanged {
-		s.resizeWithRedraw(width, height, false)
+		s.resizeWithRedraw(width, height, false, false)
 	}
 }
 
@@ -5100,7 +5100,7 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 	s.mu.Unlock()
 	client.close()
 	if sizeChanged {
-		s.resizeWithRedraw(width, height, false)
+		s.resizeWithRedraw(width, height, false, false)
 	}
 }
 
@@ -6089,7 +6089,7 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
-	s.resizeWithRedraw(width, height, false)
+	s.resizeWithRedraw(width, height, false, false)
 }
 
 func (s *muxServer) resizeForClient(
@@ -6104,7 +6104,7 @@ func (s *muxServer) resizeForClient(
 	if len(s.attachClients) == 0 {
 		s.mu.Unlock()
 		if strings.TrimSpace(clientID) == "" {
-			s.resizeWithRedraw(width, height, forceRedraw)
+			s.resizeWithRedraw(width, height, forceRedraw, false)
 		}
 		return
 	}
@@ -6120,11 +6120,16 @@ func (s *muxServer) resizeForClient(
 	targetWidth, targetHeight := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
 	if isPrimary {
-		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw)
+		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw, false)
 	}
 }
 
-func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
+func (s *muxServer) resizeWithRedraw(
+	width int,
+	height int,
+	forceRedraw bool,
+	syntheticRedraw bool,
+) {
 	var attach net.Conn
 	var modeReplay []byte
 	var foregroundProcessGroup int
@@ -6172,25 +6177,25 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 		!window.closed &&
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
-		if forceRedraw || !sizeChanged {
-			// A forced redraw (window switch, restore, or a client "settle"
-			// redraw) or a same-size redraw. The real SIGWINCH is a no-op for
-			// TUIs that ignore same-size changes, and a freshly restored process
-			// may not have painted yet, so drive a synthetic width-1 redraw. Its
-			// intermediate one-cell frame is hidden from attach clients by the
-			// synchronized redraw transaction in resumePausedAttachForwarding.
+		// The synthetic width-1 redraw dance is only for callers that genuinely
+		// need a foreground process to repaint content the real PTY SIGWINCH
+		// won't produce: a restored window whose agent just relaunched. Its
+		// intermediate one-cell frame is hidden from attach clients by the
+		// synchronized redraw transaction in resumePausedAttachForwarding.
+		//
+		// Viewport resizes (keyboard show/hide, pinch-zoom) and their trailing
+		// "settle" redraw never set syntheticRedraw: resizeWindowLocked above
+		// already applied the new PTY size, so a genuine size change delivers a
+		// real SIGWINCH and the TUI repaints once at the correct size, while an
+		// unchanged size is already painted. Performing the dance there resized
+		// the PTY smaller and immediately back, producing a visible one-cell
+		// "bounce" reflow on every resize (and holding the settled frame for the
+		// synchronized-redraw tail). Skip it and forward the single clean reflow
+		// immediately; the explicit SIGWINCH below still nudges the TUI.
+		if syntheticRedraw {
 			s.pauseAttachForwardingForRedrawLocked(window, width, height)
 			simulateForegroundResize(window, width, height)
 		}
-		// Otherwise this is a plain viewport size change (keyboard show/hide,
-		// pinch-zoom). resizeWindowLocked above already applied the new PTY size,
-		// delivering a real SIGWINCH at the new dimensions, so the foreground TUI
-		// repaints itself once at the correct size. Performing the synthetic
-		// width-1 dance here as well would resize the PTY smaller and immediately
-		// back, producing a visible one-cell "bounce" reflow on every resize (and
-		// holding the settled frame for the synchronized-redraw tail). Skip it and
-		// forward the single clean reflow immediately; the explicit SIGWINCH below
-		// still nudges TUIs whose kernel-delivered resize event was missed.
 		attach = s.attachConn
 		modeReplay = window.modeReplayForAttachedTerminalLocked()
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
@@ -6220,7 +6225,7 @@ func (s *muxServer) refreshPendingViewportResize() {
 	if width <= 0 || height <= 0 {
 		return
 	}
-	s.resizeWithRedraw(width, height, forceRedraw)
+	s.resizeWithRedraw(width, height, forceRedraw, false)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
