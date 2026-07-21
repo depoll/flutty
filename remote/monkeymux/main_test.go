@@ -4432,7 +4432,7 @@ func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
 	waitForRecordedOutput(t, conn, want)
 }
 
-func TestRedrawResizeKeepsLateOutputInsideSynchronizedTransaction(t *testing.T) {
+func TestRedrawResizeWrapsBufferedRedrawAtomically(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}
 	window := &muxWindow{
@@ -4452,11 +4452,14 @@ func TestRedrawResizeKeepsLateOutputInsideSynchronizedTransaction(t *testing.T) 
 	server.handleWindowOutput("@1", []byte("temporary layout"))
 
 	server.resumePausedAttachForwarding("@1", generation)
+	// Output that arrives after the redraw settles (the PTY is already back at
+	// full size, so this is normal steady-state output, not a resize frame) is
+	// forwarded verbatim after the closed transaction — the begin and end
+	// markers are always written together, never left open by a timer.
 	server.handleWindowOutput("@1", []byte("late canonical layout"))
 
-	want := synchronizedTerminalOutputForTest(
-		"temporary layoutlate canonical layout",
-	)
+	want := synchronizedTerminalOutputForTest("temporary layout") +
+		"late canonical layout"
 	waitForRecordedOutput(t, conn, want)
 }
 

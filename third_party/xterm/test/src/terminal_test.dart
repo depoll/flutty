@@ -65,16 +65,14 @@ void main() {
       var notifications = 0;
       terminal.addListener(() => notifications++);
 
+      // The whole redraw (begin marker, intermediate frame, settled frame, end
+      // marker) arrives in one buffer, mirroring how the server writes it. The
+      // caller (the parse pump) drives the notification.
       terminal.writeSilently(
-        '\x1b[?9002h\x1b[2J\x1b[Htemporary layout',
-      );
-      terminal.notifyListeners();
-
-      expect(notifications, 0);
-
-      terminal.writeSilently(
+        '\x1b[?9002h\x1b[2J\x1b[Htemporary layout'
         '\x1b[2J\x1b[Hfinal layout\x1b[?9002l',
       );
+      terminal.notifyListeners();
 
       expect(notifications, 1);
       expect(
@@ -83,14 +81,51 @@ void main() {
       );
     });
 
-    test('transport reset releases an incomplete synchronized redraw', () {
+    test('holds the repaint while the transaction is open', () {
+      final terminal = Terminal()..resize(20, 2);
+      var notifications = 0;
+      terminal.addListener(() => notifications++);
+
+      // A caller notification that lands mid-transaction (e.g. a chunk boundary
+      // between the begin and end markers) must not paint the hidden frame.
+      terminal.writeSilently('\x1b[?9002h\x1b[2J\x1b[Htemporary layout');
+      terminal.notifyListeners();
+      expect(notifications, 0);
+
+      terminal.writeSilently('\x1b[2J\x1b[Hfinal layout\x1b[?9002l');
+      terminal.notifyListeners();
+      expect(notifications, 1);
+      expect(
+        terminal.buffer.lines[0].toString().trimRight(),
+        'final layout',
+      );
+    });
+
+    test('writeSilently never notifies on its own', () {
+      final terminal = Terminal()..resize(20, 2);
+      var notifications = 0;
+      terminal.addListener(() => notifications++);
+
+      // writeSilently is always silent, including when it parses the closing
+      // marker; the caller owns the single settled repaint.
+      terminal.writeSilently(
+        '\x1b[?9002hhidden\x1b[?9002lfinal layout',
+      );
+      expect(notifications, 0);
+    });
+
+    test('transport reset flushes an interrupted synchronized redraw', () {
       final terminal = Terminal();
       var notifications = 0;
       terminal.addListener(() => notifications++);
 
       terminal.writeSilently('\x1b[?9002hpartial');
-      terminal.resetHostResizeState();
       terminal.notifyListeners();
+      expect(notifications, 0);
+
+      // Resetting the transport mid-transaction (reattach / reconnect) must not
+      // strand the held repaint: reset itself flushes it.
+      terminal.resetHostResizeState();
 
       expect(notifications, 1);
     });
@@ -104,11 +139,14 @@ void main() {
         ..addListener(() => notifications++);
 
       terminal.writeSilently('\x1b[?9002h\x1b[c');
+      terminal.notifyListeners();
 
+      // Device-attribute reply still fires while the repaint is held.
       expect(output, isNotEmpty);
       expect(notifications, 0);
 
       terminal.writeSilently('\x1b[?9002l');
+      terminal.notifyListeners();
 
       expect(notifications, 1);
     });
