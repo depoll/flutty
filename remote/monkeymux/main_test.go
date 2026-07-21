@@ -4277,7 +4277,7 @@ func TestClosedUnixPtyUsesInvalidFileDescriptorSentinel(t *testing.T) {
 	}
 }
 
-func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
+func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
@@ -4289,9 +4289,7 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 	server.activeID = "@1"
 	server.width = 120
 	server.height = 40
-	// A genuine forced same-size redraw already has the published grid at the
-	// current size, so sizeChanged is false and the synthetic width-1 dance is
-	// the only way to make a same-size-ignoring TUI repaint.
+	// The published grid is already at the current size, so sizeChanged is false.
 	server.publishedWidth = 120
 	server.publishedHeight = 40
 
@@ -4322,10 +4320,23 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 		signaled = append(signaled, processGroup)
 	}
 
-	server.resizeWithRedraw(120, 40, true)
+	// A client "settle" forced redraw (syntheticRedraw=false) must not perform
+	// the synthetic width-1 dance: the size is already current and painted, so a
+	// dance would be a pure visible bounce. It still nudges the TUI via SIGWINCH.
+	server.resizeWithRedraw(120, 40, true, false)
+	if len(simulated) != 0 {
+		t.Fatalf("settle redraw performed synthetic dance = %#v, want none", simulated)
+	}
+	if !reflect.DeepEqual(signaled, []int{5151}) {
+		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
 
+	// A restore-style forced redraw (syntheticRedraw=true) must dance so a
+	// freshly relaunched agent repaints its screen.
+	signaled = nil
+	server.resizeWithRedraw(120, 40, true, true)
 	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
-		t.Fatalf("simulated resizes = %#v, want [@1:120x40]", simulated)
+		t.Fatalf("synthetic redraw dance = %#v, want [@1:120x40]", simulated)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
