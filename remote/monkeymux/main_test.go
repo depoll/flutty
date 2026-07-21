@@ -3426,6 +3426,21 @@ func TestPasteStartCarryFlushesOnResponseDeadline(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("paste-start carry was not flushed")
 	}
+
+	client.expectTerminalResponse("@2")
+	remainder := []byte("0~payload\x1b[?62;4c\x1b[201~")
+	pasteRouting := client.routeInput(remainder)
+	if !bytes.Equal(pasteRouting.passthrough, remainder) ||
+		len(pasteRouting.responses) != 0 {
+		t.Fatalf("flushed split paste routing = %#v", pasteRouting)
+	}
+	response := []byte("\x1b[?62;4c")
+	responseRouting := client.routeInput(response)
+	if len(responseRouting.responses) != 1 ||
+		responseRouting.responses[0].windowID != "@2" ||
+		!bytes.Equal(responseRouting.responses[0].data, response) {
+		t.Fatalf("post-flush response routing = %#v", responseRouting)
+	}
 	close(client.done)
 }
 
