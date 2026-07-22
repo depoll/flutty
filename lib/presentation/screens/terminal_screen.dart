@@ -14234,7 +14234,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sourceUri: sourceUri,
             fallbackUri: fallbackUri,
             port: sourcePort,
-            title: tunnel.isAutomatic ? uri.authority : sourceUri.authority,
+            title: tunnel.isAutomatic
+                ? 'Port ${tunnel.remotePort}'
+                : sourceUri.authority,
           );
         })
         .toList(growable: false);

@@ -73,7 +73,9 @@ void main() {
     test('accepts explicit loopback addresses only', () {
       expect(isPortForwardLoopbackHost('localhost'), isTrue);
       expect(isPortForwardLoopbackHost('127.0.0.5'), isTrue);
+      expect(isPortForwardLoopbackHost('127.0.0.53%lo'), isTrue);
       expect(isPortForwardLoopbackHost('::1'), isTrue);
+      expect(isPortForwardLoopbackHost('::1%lo0'), isTrue);
       expect(isPortForwardLoopbackHost('monkeyssh.localhost'), isTrue);
       expect(isPortForwardLoopbackHost('127.example.com'), isFalse);
       expect(isPortForwardLoopbackHost('0.0.0.0'), isFalse);
@@ -88,6 +90,10 @@ void main() {
       );
       expect(
         isPortForwardBrowserEntryUri(Uri.parse('https://localhost')),
+        isTrue,
+      );
+      expect(
+        isPortForwardBrowserEntryUri(Uri.parse('http://127.0.0.53%25lo:53')),
         isTrue,
       );
       expect(
@@ -134,6 +140,12 @@ void main() {
         ).toString(),
         'http://127.0.0.5:8080',
       );
+      expect(
+        buildPortForwardBrowserUri(
+          _buildPortForward(localHost: '127.0.0.53%lo'),
+        ).toString(),
+        'http://127.0.0.53:8080',
+      );
     });
   });
 
@@ -168,7 +180,7 @@ void main() {
             hostLabel: 'OVH davidpollforlasd com production workspace',
             hostId: 57,
           ),
-          'ovh-davidpollforlasd-com-1l.localhost',
+          'ovh-davidpol-1l.localhost',
         );
       });
 

@@ -264,7 +264,7 @@ class _TerminalPortForwardsSheetState
       ),
       leading: Icon(Icons.radar_rounded, color: colorScheme.primary),
       title: Text(
-        endpoint,
+        'Port ${tunnel.remotePort}',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: FluttyTheme.monoStyle.copyWith(
@@ -273,7 +273,7 @@ class _TerminalPortForwardsSheetState
         ),
       ),
       subtitle: Text(
-        '${tunnel.remoteHost}:${tunnel.remotePort} → local proxy\n'
+        '${tunnel.remoteHost}:${tunnel.remotePort} → $endpoint\n'
         '${tunnel.isShellRelated ? 'Started from this saved host' : 'Shared host service (Docker/background)'}',
         maxLines: 2,
         overflow: TextOverflow.ellipsis,

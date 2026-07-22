@@ -3062,7 +3062,7 @@ Map<RemoteTcpListenerKey, RemoteTcpListener> parseRemoteListeningTcpListeners(
             isShellRelated &&
             !(currentListener?.isShellRelated ?? false))) {
       listeners[key] = (
-        host: target.host,
+        host: key.host,
         port: port,
         isShellRelated: isShellRelated,
       );
@@ -3088,16 +3088,20 @@ String _canonicalRemoteTcpListenerHost(String host) {
       .replaceFirst(RegExp(r'^\['), '')
       .replaceFirst(RegExp(r'\]$'), '')
       .toLowerCase();
-  if (normalized.isEmpty ||
-      normalized == 'localhost' ||
-      normalized == '0.0.0.0' ||
-      normalized == '127.0.0.1') {
+  final zoneIndex = normalized.indexOf('%');
+  final unscoped = zoneIndex < 0
+      ? normalized
+      : normalized.substring(0, zoneIndex);
+  if (unscoped.isEmpty ||
+      unscoped == 'localhost' ||
+      unscoped == '0.0.0.0' ||
+      unscoped == '127.0.0.1') {
     return InternetAddress.loopbackIPv4.address;
   }
-  if (normalized == '::' || normalized == '::1') {
+  if (unscoped == '::' || unscoped == '::1') {
     return InternetAddress.loopbackIPv6.address;
   }
-  return normalized;
+  return unscoped;
 }
 
 ({String host, int priority})? _automaticPortForwardTarget(
