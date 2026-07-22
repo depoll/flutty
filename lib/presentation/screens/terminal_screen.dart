@@ -3251,6 +3251,7 @@ class _PortForwardBrowserOption {
     required this.fallbackUri,
     required this.port,
     required this.title,
+    required this.group,
   });
 
   final Uri uri;
@@ -3258,6 +3259,7 @@ class _PortForwardBrowserOption {
   final Uri fallbackUri;
   final int port;
   final String title;
+  final PortForwardBrowserTabGroup group;
 }
 
 class _StoreDemoAutoConfirmDialogState {
@@ -14196,6 +14198,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             fallbackUri: targetOption.fallbackUri,
             port: targetOption.port,
             title: targetOption.title,
+            group: targetOption.group,
           ),
         );
         return;
@@ -14222,47 +14225,62 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final tunnels = hostTunnels.isNotEmpty
         ? hostTunnels
         : fallbackSession?.activeTunnels ?? const <ActiveTunnelInfo>[];
-    return tunnels
-        .where(
-          (tunnel) =>
-              tunnel.isLocal &&
-              isPortForwardBrowserHost(tunnel.localHost) &&
-              tunnel.localPort >= 1 &&
-              tunnel.localPort <= 65535 &&
-              tunnel.browserHost != null &&
-              tunnel.browserPort != null &&
-              tunnel.browserPort! >= 1 &&
-              tunnel.browserPort! <= 65535,
-        )
-        .map((tunnel) {
-          final sourcePort = tunnel.isAutomatic
-              ? tunnel.remotePort
-              : tunnel.localPort;
-          final sourceUri = buildPortForwardBrowserUriForBind(
-            localHost: tunnel.isAutomatic
-                ? tunnel.remoteHost
-                : tunnel.localHost,
-            localPort: sourcePort,
-          );
-          final uri = buildPortForwardBrowserUriForBind(
-            localHost: tunnel.browserHost!,
-            localPort: tunnel.browserPort!,
-          );
-          final fallbackUri = buildPortForwardBrowserUriForBind(
-            localHost: tunnel.localHost,
-            localPort: tunnel.localPort,
-          );
-          return _PortForwardBrowserOption(
-            uri: uri,
-            sourceUri: sourceUri,
-            fallbackUri: fallbackUri,
-            port: sourcePort,
-            title: tunnel.isAutomatic
-                ? 'Port ${tunnel.remotePort}'
-                : sourceUri.authority,
-          );
-        })
-        .toList(growable: false);
+    final options =
+        tunnels
+            .where(
+              (tunnel) =>
+                  tunnel.isLocal &&
+                  isPortForwardBrowserHost(tunnel.localHost) &&
+                  tunnel.localPort >= 1 &&
+                  tunnel.localPort <= 65535 &&
+                  tunnel.browserHost != null &&
+                  tunnel.browserPort != null &&
+                  tunnel.browserPort! >= 1 &&
+                  tunnel.browserPort! <= 65535,
+            )
+            .map((tunnel) {
+              final sourcePort = tunnel.isAutomatic
+                  ? tunnel.remotePort
+                  : tunnel.localPort;
+              final sourceUri = buildPortForwardBrowserUriForBind(
+                localHost: tunnel.isAutomatic
+                    ? tunnel.remoteHost
+                    : tunnel.localHost,
+                localPort: sourcePort,
+              );
+              final uri = buildPortForwardBrowserUriForBind(
+                localHost: tunnel.browserHost!,
+                localPort: tunnel.browserPort!,
+              );
+              final fallbackUri = buildPortForwardBrowserUriForBind(
+                localHost: tunnel.localHost,
+                localPort: tunnel.localPort,
+              );
+              return _PortForwardBrowserOption(
+                uri: uri,
+                sourceUri: sourceUri,
+                fallbackUri: fallbackUri,
+                port: sourcePort,
+                title: tunnel.isAutomatic
+                    ? 'Port ${tunnel.remotePort}'
+                    : sourceUri.authority,
+                group: tunnel.isAutomatic
+                    ? (tunnel.isShellRelated
+                          ? PortForwardBrowserTabGroup.savedHost
+                          : PortForwardBrowserTabGroup.sharedHost)
+                    : PortForwardBrowserTabGroup.savedForward,
+              );
+            })
+            .toList(growable: false)
+          ..sort((left, right) {
+            final groupComparison = left.group.index.compareTo(
+              right.group.index,
+            );
+            return groupComparison != 0
+                ? groupComparison
+                : left.port.compareTo(right.port);
+          });
+    return options;
   }
 
   Future<void> _openPortForwardBrowserFromTerminal() async {
@@ -14315,6 +14333,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               sourceUri: option.sourceUri,
               fallbackUri: option.fallbackUri,
               title: option.title,
+              group: option.group,
             ),
         ],
       ),

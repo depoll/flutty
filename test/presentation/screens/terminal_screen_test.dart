@@ -1830,6 +1830,29 @@ void main() {
           config: session.config,
           activeTunnels: const [
             ActiveTunnelInfo(
+              portForwardId: -1,
+              localHost: '127.0.0.1',
+              localPort: 49154,
+              browserHost: 'dev-box.localhost',
+              browserPort: 49154,
+              remoteHost: '127.0.0.1',
+              remotePort: 4000,
+              isLocal: true,
+              isAutomatic: true,
+            ),
+            ActiveTunnelInfo(
+              portForwardId: -2,
+              localHost: '127.0.0.1',
+              localPort: 49153,
+              browserHost: 'dev-box.localhost',
+              browserPort: 49153,
+              remoteHost: '127.0.0.1',
+              remotePort: 4898,
+              isLocal: true,
+              isAutomatic: true,
+              isShellRelated: true,
+            ),
+            ActiveTunnelInfo(
               portForwardId: 42,
               localHost: '127.0.0.1',
               localPort: 49152,
@@ -1922,16 +1945,28 @@ void main() {
         final launch = openedLaunches.last;
         expect(launch.selectedIndex, 0);
         expect(launch.tabs.map((tab) => tab.uri.toString()).toList(), [
-          'http://monkeyssh-16.localhost:49152',
+          'http://dev-box.localhost:49153',
           'http://monkeyssh-17.localhost:3000',
+          'http://monkeyssh-16.localhost:49152',
+          'http://dev-box.localhost:49154',
         ]);
         expect(launch.tabs.map((tab) => tab.sourceUri.toString()).toList(), [
-          'http://127.0.0.1:49152',
+          'http://127.0.0.1:4898',
           'http://127.0.0.1:3000',
+          'http://127.0.0.1:49152',
+          'http://127.0.0.1:4000',
         ]);
         expect(launch.tabs.map((tab) => tab.title).toList(), [
-          '127.0.0.1:49152',
+          'Port 4898',
           '127.0.0.1:3000',
+          '127.0.0.1:49152',
+          'Port 4000',
+        ]);
+        expect(launch.tabs.map((tab) => tab.group).toList(), [
+          PortForwardBrowserTabGroup.savedHost,
+          PortForwardBrowserTabGroup.savedForward,
+          PortForwardBrowserTabGroup.savedForward,
+          PortForwardBrowserTabGroup.sharedHost,
         ]);
 
         router.pop();
