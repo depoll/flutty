@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.116"
+	monkeyMuxVersion                  = "0.1.121"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -108,6 +108,11 @@ const (
 const terminalParserResetSequence = "\x1b\\"
 
 const terminalCharacterSetResetSequence = "\x0f\x1b(B\x1b)B"
+
+// MonkeySSH-private DEC mode: parse a redraw normally but repaint only on reset.
+const terminalSynchronizedOutputBegin = "\x1b[?9002h"
+
+const terminalSynchronizedOutputEnd = "\x1b[?9002l"
 
 const terminalScreenClearSequence = "\x1b[H\x1b[2J\x1b[3J"
 
@@ -3489,7 +3494,7 @@ func (s *muxServer) redrawRestoredWindow(windowID string) {
 	}
 	width, height := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
-	s.resizeWithRedraw(width, height, true)
+	s.resizeWithRedraw(width, height, true, true)
 }
 
 func createWindowOptionsForRestore(
@@ -3927,6 +3932,35 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	if refreshPendingFocus || refreshPendingResize {
 		s.refreshPendingClientViewport(refreshPendingFocus, refreshPendingResize)
 	}
+}
+
+// wrapSynchronizedTerminalOutput builds the resume write for one attach client.
+// prefix (the reattach replay) is emitted verbatim so it repaints immediately,
+// then the buffered foreground-redraw bytes are bracketed by MonkeySSH-private
+// DEC mode 9002 so the client applies them as a single atomic repaint and never
+// paints the synthetic width-1 dance frame captured mid-redraw. The begin and
+// end markers are written together in this one buffer (never via a separate
+// timer), so the close can never land mid-sequence and mode 9002 can never be
+// left open. When there is no buffered redraw there is no intermediate frame to
+// hide, so the replay is returned unwrapped.
+func wrapSynchronizedTerminalOutput(prefix []byte, data []byte) []byte {
+	if len(data) == 0 {
+		if len(prefix) == 0 {
+			return nil
+		}
+		return append([]byte(nil), prefix...)
+	}
+	output := make(
+		[]byte,
+		0,
+		len(prefix)+len(terminalSynchronizedOutputBegin)+len(data)+
+			len(terminalSynchronizedOutputEnd),
+	)
+	output = append(output, prefix...)
+	output = append(output, terminalSynchronizedOutputBegin...)
+	output = append(output, data...)
+	output = append(output, terminalSynchronizedOutputEnd...)
+	return output
 }
 
 func (s *muxServer) markWindowClosed(windowID string) {
@@ -4986,7 +5020,7 @@ func (s *muxServer) applyFocusedClientViewport(
 		return
 	}
 	if sizeChanged {
-		s.resizeWithRedraw(width, height, false)
+		s.resizeWithRedraw(width, height, false, false)
 	}
 }
 
@@ -5078,7 +5112,7 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 	s.mu.Unlock()
 	client.close()
 	if sizeChanged {
-		s.resizeWithRedraw(width, height, false)
+		s.resizeWithRedraw(width, height, false, false)
 	}
 }
 
@@ -6067,7 +6101,7 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
-	s.resizeWithRedraw(width, height, false)
+	s.resizeWithRedraw(width, height, false, false)
 }
 
 func (s *muxServer) resizeForClient(
@@ -6082,7 +6116,7 @@ func (s *muxServer) resizeForClient(
 	if len(s.attachClients) == 0 {
 		s.mu.Unlock()
 		if strings.TrimSpace(clientID) == "" {
-			s.resizeWithRedraw(width, height, forceRedraw)
+			s.resizeWithRedraw(width, height, forceRedraw, false)
 		}
 		return
 	}
@@ -6098,11 +6132,16 @@ func (s *muxServer) resizeForClient(
 	targetWidth, targetHeight := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
 	if isPrimary {
-		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw)
+		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw, false)
 	}
 }
 
-func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
+func (s *muxServer) resizeWithRedraw(
+	width int,
+	height int,
+	forceRedraw bool,
+	syntheticRedraw bool,
+) {
 	var attach net.Conn
 	var modeReplay []byte
 	var foregroundProcessGroup int
@@ -6150,8 +6189,25 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 		!window.closed &&
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
-		s.pauseAttachForwardingForRedrawLocked(window, width, height)
-		simulateForegroundResize(window, width, height)
+		// The synthetic width-1 redraw dance is only for callers that genuinely
+		// need a foreground process to repaint content the real PTY SIGWINCH
+		// won't produce: a restored window whose agent just relaunched. Its
+		// intermediate one-cell frame is hidden from attach clients by the
+		// synchronized redraw transaction in resumePausedAttachForwarding.
+		//
+		// Viewport resizes (keyboard show/hide, pinch-zoom) and their trailing
+		// "settle" redraw never set syntheticRedraw: resizeWindowLocked above
+		// already applied the new PTY size, so a genuine size change delivers a
+		// real SIGWINCH and the TUI repaints once at the correct size, while an
+		// unchanged size is already painted. Performing the dance there resized
+		// the PTY smaller and immediately back, producing a visible one-cell
+		// "bounce" reflow on every resize (and holding the settled frame for the
+		// synchronized-redraw tail). Skip it and forward the single clean reflow
+		// immediately; the explicit SIGWINCH below still nudges the TUI.
+		if syntheticRedraw {
+			s.pauseAttachForwardingForRedrawLocked(window, width, height)
+			simulateForegroundResize(window, width, height)
+		}
 		attach = s.attachConn
 		modeReplay = window.modeReplayForAttachedTerminalLocked()
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
@@ -6181,7 +6237,7 @@ func (s *muxServer) refreshPendingViewportResize() {
 	if width <= 0 || height <= 0 {
 		return
 	}
-	s.resizeWithRedraw(width, height, forceRedraw)
+	s.resizeWithRedraw(width, height, forceRedraw, false)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
@@ -6405,12 +6461,18 @@ func (s *muxServer) resumePausedAttachForwarding(
 		}
 	}
 	s.mu.Unlock()
-	primaryOutput := append(replay, buffered...)
-	failoverOutput := append(
-		append([]byte(nil), replay...),
-		failoverBuffered...,
+	primaryOutput := wrapSynchronizedTerminalOutput(
+		replay,
+		buffered,
 	)
-	secondaryOutput := append(append([]byte(nil), replay...), secondaryBuffered...)
+	failoverOutput := wrapSynchronizedTerminalOutput(
+		replay,
+		failoverBuffered,
+	)
+	secondaryOutput := wrapSynchronizedTerminalOutput(
+		replay,
+		secondaryBuffered,
+	)
 	if legacy != nil {
 		s.writeAttachLocked(legacy, primaryOutput)
 		s.attachMu.Unlock()
