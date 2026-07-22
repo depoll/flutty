@@ -2751,6 +2751,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -2921,6 +2922,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -3021,6 +3023,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((invocation) async {
           themeRefreshCount += 1;
@@ -3173,6 +3176,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -3228,26 +3232,32 @@ void main() {
         await tester.pump();
 
         // The theme actually changed (light -> dark), so the foreground TUI
-        // must be forced to fully repaint via a redraw resize; otherwise
-        // Copilot CLI keeps its explicitly-colored bars in the old theme.
-        expect(
-          monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
-          isTrue,
-          reason: 'expected a redraw resize after the theme change',
-        );
+        // must be forced to fully repaint: MonkeyMux is told to redraw via the
+        // theme_changed `redraw` flag; otherwise Copilot CLI keeps its
+        // explicitly-colored bars in the old theme.
+        verify(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: true,
+          ),
+        ).called(greaterThanOrEqualTo(1));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
     testWidgets(
-      'MonkeyMux forced redraw survives a superseding same-theme refresh',
+      'MonkeyMux forces a redraw on resume after a backgrounded theme change',
       (tester) async {
-        // Regression guard for the coalescing race: a theme *change* refresh
-        // (which wants a forced redraw) that is superseded mid-flight by a
-        // forced same-theme refresh (e.g. from a brightness/app-resume
-        // re-sync, which carries no redraw obligation of its own) must still
-        // repaint the foreground TUI. Brightness changes fire several applies
-        // in quick succession, so this is the common real-world path.
+        // Regression guard for the resume gap: a theme change that lands while
+        // the app is backgrounded (or the connection is down) updates the
+        // session theme before any repaint reaches the agent. On resume the
+        // re-sync applies the same theme (didThemeChange == false) with
+        // forceRemoteRefresh, so the redraw must still be forced from the
+        // forced-refresh signal, otherwise Copilot CLI stays painted in the
+        // previous theme.
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final windowEvents = StreamController<TmuxWindowChangeEvent>();
@@ -3262,11 +3272,6 @@ void main() {
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
         session.terminal!.write('\x1b[?1004h');
-
-        // Hold the first theme refresh in flight so a second, same-theme forced
-        // refresh can supersede it before it completes.
-        final firstRefresh = Completer<void>();
-        var themeRefreshCount = 0;
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
@@ -3305,13 +3310,9 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
-        ).thenAnswer((_) async {
-          themeRefreshCount += 1;
-          if (themeRefreshCount == 1) {
-            await firstRefresh.future;
-          }
-        });
+        ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
           ProviderScope(
@@ -3346,40 +3347,33 @@ void main() {
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         await tester.pump(const Duration(milliseconds: 700));
         await tester.pump();
-        monkeyMuxService.resizeTerminalCalls.clear();
 
-        final container = ProviderScope.containerOf(
-          tester.element(find.byType(TerminalScreen)),
+        // Ignore refreshes emitted while connecting; only the resume re-sync
+        // below should matter.
+        clearInteractions(monkeyMuxService);
+
+        // Background then foreground the app without a color change; the resume
+        // re-sync forces the repaint via the forced-refresh signal.
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
         );
-
-        // R1: a real light -> dark change wants a forced redraw. It starts and
-        // blocks on the completer, so it is still in flight below.
-        await container
-            .read(themeModeNotifierProvider.notifier)
-            .setThemeMode(ThemeMode.dark);
         await tester.pump();
-        expect(themeRefreshCount, 1);
-
-        // R2: a forced same-theme re-sync bumps the refresh generation while R1
-        // is in flight, so R1 becomes stale and skips its own redraw.
-        tester.binding.platformDispatcher.onPlatformBrightnessChanged?.call();
-        await tester.pump();
-        await tester.pump();
-
-        // Release R1. It completes but is stale; R2 then runs, and the latched
-        // redraw obligation must still repaint the foreground TUI.
-        firstRefresh.complete();
+        await tester.pump(const Duration(milliseconds: 75));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
         await tester.pump();
 
-        expect(
-          monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
-          isTrue,
-          reason:
-              'redraw must survive a same-theme refresh superseding the '
-              'theme-change refresh',
-        );
+        verify(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: true,
+          ),
+        ).called(greaterThanOrEqualTo(1));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -3457,6 +3451,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -3660,6 +3655,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -3821,6 +3817,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -3953,6 +3950,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -4275,6 +4273,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -7698,6 +7697,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
         when(

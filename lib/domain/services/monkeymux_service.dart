@@ -685,6 +685,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     TerminalThemeData theme, {
     String? extraFlags,
+    bool forceForegroundRedraw = false,
   }) async {
     if (isAppReviewDemoSession(session)) {
       return;
@@ -692,6 +693,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     await _runControlCommand(session, sessionName, {
       'type': 'theme_changed',
       'data': buildTerminalThemeHintReports(theme),
+      if (forceForegroundRedraw) 'redraw': true,
     }, priority: SshExecPriority.low);
   }
 
