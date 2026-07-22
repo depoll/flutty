@@ -4861,6 +4861,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           reason: 'monkeymux_active_window_changed',
         );
       }
+
       _refreshMuxPaneContextAfterWindowStateChange(
         session,
         sessionName,
@@ -4880,6 +4881,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session: session,
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
+    );
+  }
+
+  void _syncAutomaticPortForwardProcessRoots(
+    SshSession session,
+    Iterable<TmuxWindow>? windows,
+  ) {
+    final processRoots = windows
+        ?.map((window) => window.panePid)
+        .whereType<int>()
+        .where((pid) => pid > 0)
+        .toSet();
+    unawaited(
+      session.updateAutomaticPortForwardProcessRoots(
+        processRoots ?? const <int>{},
+      ),
     );
   }
 
@@ -9063,6 +9080,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _clearTmuxState() {
     final session = _observedSession ?? _activeSession();
+    if (session != null) {
+      unawaited(session.updateAutomaticPortForwardProcessRoots(const {}));
+    }
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux ||
         session?.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       _terminal.resetHostResizeState();
@@ -9424,6 +9444,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
           continue;
         }
+        _syncAutomaticPortForwardProcessRoots(session, windows);
 
         // Get the active window's working directory for SFTP/path resolution.
         var tmuxLaunchCwd = preferredWorkingDirectory;
@@ -9855,6 +9876,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
+      onWindowsChanged: (windows) =>
+          _syncAutomaticPortForwardProcessRoots(session, windows),
       onWindowStateChanged: _handleTmuxWindowStateChanged,
       onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
