@@ -428,7 +428,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(proxyNameDecoration().hintText, 'renamed-proxy-host');
+      expect(proxyNameDecoration().hintText, 'renamed-prox');
     });
 
     testWidgets('focuses an invalid automatic proxy domain on save', (

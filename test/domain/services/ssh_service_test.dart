@@ -486,6 +486,7 @@ LISTEN 0 4096 127.0.0.2:3000 0.0.0.0:* users:(("node",pid=42,fd=9))
 LISTEN 0 4096 127.0.0.1:3000 0.0.0.0:* users:(("vite",pid=43,fd=10))
 tcp4 0 0 127.0.0.1.8080 *.* LISTEN
 LISTEN 0 4096 192.168.1.20:9090 0.0.0.0:*
+LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:*
 tcp6 0 0 *.4300 *.* LISTEN
 p43
 tIPv6
@@ -501,6 +502,7 @@ LISTEN ::1:4201
         4200,
         4201,
         4300,
+        53,
       });
       expect(parseRemoteListeningTcpListeners(output), {
         remoteTcpListenerKey('127.0.0.2', 3000): (
@@ -536,6 +538,11 @@ LISTEN ::1:4201
         remoteTcpListenerKey('::1', 4300): (
           host: '::1',
           port: 4300,
+          isShellRelated: false,
+        ),
+        remoteTcpListenerKey('127.0.0.53', 53): (
+          host: '127.0.0.53',
+          port: 53,
           isShellRelated: false,
         ),
       });

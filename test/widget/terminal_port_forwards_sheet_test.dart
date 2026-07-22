@@ -223,7 +223,8 @@ void main() {
 
     expect(find.text('Port Forwards'), findsOneWidget);
     expect(find.text('detected automatically'), findsOneWidget);
-    expect(find.text('dev-box.localhost:49152'), findsOneWidget);
+    expect(find.text('Port 3000'), findsOneWidget);
+    expect(find.textContaining('dev-box.localhost:49152'), findsOneWidget);
     expect(find.textContaining('Started from this saved host'), findsOneWidget);
     expect(find.text('Web preview'), findsOneWidget);
     expect(find.text('Stopped • Auto-start'), findsOneWidget);

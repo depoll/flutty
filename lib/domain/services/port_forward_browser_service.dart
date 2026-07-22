@@ -101,7 +101,7 @@ String? validatePortProxyName(String? value) {
 String generatedPortProxyName(String hostLabel, {int? hostId}) {
   final suffix = hostId == null ? '' : '-${hostId.toRadixString(36)}';
   final dnsMaxBaseLength = 63 - suffix.length;
-  final maxBaseLength = dnsMaxBaseLength < 24 ? dnsMaxBaseLength : 24;
+  final maxBaseLength = dnsMaxBaseLength < 12 ? dnsMaxBaseLength : 12;
   var base = hostLabel
       .trim()
       .toLowerCase()
@@ -194,7 +194,7 @@ Uri normalizePortForwardBrowserUri(Uri uri) =>
 
 /// Returns whether [host] is a browser-safe local bind address.
 bool isPortForwardBrowserHost(String host) {
-  final normalized = host.trim().toLowerCase();
+  final normalized = _withoutAddressZone(host);
   return normalized.isEmpty ||
       normalized == 'localhost' ||
       normalized == '0.0.0.0' ||
@@ -208,7 +208,7 @@ bool isPortForwardBrowserHost(String host) {
 
 /// Returns whether [host] is an explicit loopback bind address.
 bool isPortForwardLoopbackHost(String host) {
-  final normalized = host.trim().toLowerCase();
+  final normalized = _withoutAddressZone(host);
   return normalized == 'localhost' ||
       normalized == '::1' ||
       normalized == '[::1]' ||
@@ -217,7 +217,7 @@ bool isPortForwardLoopbackHost(String host) {
 }
 
 String _browserHostForBindAddress(String localHost) {
-  final host = localHost.trim().toLowerCase();
+  final host = _withoutAddressZone(localHost);
   if (host.isEmpty || host == '0.0.0.0') {
     return '127.0.0.1';
   }
@@ -227,7 +227,17 @@ String _browserHostForBindAddress(String localHost) {
   if (host == '::' || host == '[::]' || host == '::1' || host == '[::1]') {
     return 'localhost';
   }
-  return localHost.trim();
+  return host;
+}
+
+String _withoutAddressZone(String host) {
+  final normalized = host
+      .trim()
+      .toLowerCase()
+      .replaceFirst(RegExp(r'^\['), '')
+      .replaceFirst(RegExp(r'\]$'), '');
+  final zoneIndex = normalized.indexOf('%');
+  return zoneIndex < 0 ? normalized : normalized.substring(0, zoneIndex);
 }
 
 bool _samePortForwardBrowserSourceHost(String left, String right) {
