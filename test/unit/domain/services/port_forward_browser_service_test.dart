@@ -163,6 +163,13 @@ void main() {
           hostPortProxyDomain(hostLabel: 'Dev Box!', hostId: 42),
           hostPortProxyDomain(hostLabel: 'Dev Box!', hostId: 42),
         );
+        expect(
+          hostPortProxyDomain(
+            hostLabel: 'OVH davidpollforlasd com production workspace',
+            hostId: 57,
+          ),
+          'ovh-davidpollforlasd-com-1l.localhost',
+        );
       });
 
       test('uses and normalizes a custom localhost prefix', () {
@@ -184,16 +191,16 @@ void main() {
             remoteHost: '127.0.0.1',
             remotePort: 3000,
           ),
-          'api-dev-p3000-h1-127-0-0-1.localhost',
+          'api.dev.localhost',
         );
         expect(
           automaticPortForwardBrowserHost(
-            hostDomain: 'api.dev.localhost',
+            hostDomain: 'other.localhost',
             hostId: 2,
             remoteHost: '127.0.0.1',
             remotePort: 3000,
           ),
-          'api-dev-p3000-h2-127-0-0-1.localhost',
+          'other.localhost',
         );
         expect(
           automaticPortForwardBrowserHost(
@@ -202,7 +209,7 @@ void main() {
             remoteHost: '::1',
             remotePort: 8080,
           ),
-          'api-dev-p8080-h1-1.localhost',
+          'api.dev.localhost',
         );
       });
 
@@ -242,6 +249,61 @@ void main() {
         ),
         Uri.parse('https://monkeyssh-42.localhost:8080/login?next=%2F'),
       );
+    });
+
+    group('shouldUsePortForwardBrowserFallback', () {
+      final browserUri = Uri.parse('http://dev-box.localhost:49152');
+
+      test('retries a failed friendly main-frame endpoint once', () {
+        expect(
+          shouldUsePortForwardBrowserFallback(
+            browserUri: browserUri,
+            failedUri: null,
+            isForMainFrame: true,
+            alreadyTried: false,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldUsePortForwardBrowserFallback(
+            browserUri: browserUri,
+            failedUri: browserUri,
+            isForMainFrame: true,
+            alreadyTried: false,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldUsePortForwardBrowserFallback(
+            browserUri: browserUri,
+            failedUri: browserUri,
+            isForMainFrame: true,
+            alreadyTried: true,
+          ),
+          isFalse,
+        );
+      });
+
+      test('ignores subresources and unrelated endpoints', () {
+        expect(
+          shouldUsePortForwardBrowserFallback(
+            browserUri: browserUri,
+            failedUri: browserUri,
+            isForMainFrame: false,
+            alreadyTried: false,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldUsePortForwardBrowserFallback(
+            browserUri: browserUri,
+            failedUri: Uri.parse('http://example.com:49152'),
+            isForMainFrame: true,
+            alreadyTried: false,
+          ),
+          isFalse,
+        );
+      });
     });
 
     test('rewrites a detected remote port to its ephemeral proxy port', () {

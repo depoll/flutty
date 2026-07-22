@@ -3138,14 +3138,22 @@ String _canonicalRemoteTcpListenerHost(String host) {
 }
 
 /// Builds a stable remote shell-lineage marker for one SSH endpoint.
-String buildSshShellLineageToken(SshConnectionConfig config) => sha256
-    .convert(
-      utf8.encode(
-        '${config.username}@${config.hostname.toLowerCase()}:${config.port}',
-      ),
-    )
-    .toString()
-    .substring(0, 24);
+String buildSshShellLineageToken(SshConnectionConfig config, {int? hostId}) =>
+    sha256
+        .convert(
+          utf8.encode(
+            '${hostId ?? 0}:${config.username}@'
+            '${config.hostname.toLowerCase()}:${config.port}',
+          ),
+        )
+        .toString()
+        .substring(0, 24);
+
+String _sshEndpointKey({
+  required String hostname,
+  required int port,
+  required String username,
+}) => '${username.toLowerCase()}@${hostname.toLowerCase()}:$port';
 
 /// An active SSH session.
 class SshSession {
@@ -3227,7 +3235,10 @@ class SshSession {
   final SshConnectionConfig config;
 
   /// Stable marker inherited by remote descendants from this host endpoint.
-  late final String shellLineageToken = buildSshShellLineageToken(config);
+  late final String shellLineageToken = buildSshShellLineageToken(
+    config,
+    hostId: hostId,
+  );
 
   /// Additional clients that should be closed with the session client.
   final List<SSHClient> dependentClients;
@@ -3460,6 +3471,7 @@ class SshSession {
   final Map<RemoteTcpListenerKey, int> _automaticPortForwardMisses = {};
   Set<RemoteTcpListenerKey> _automaticPortForwardExcludedListeners = const {};
   Set<String> _automaticPortForwardShellTokens = const {};
+  bool _automaticPortForwardIncludeHostLevelListeners = true;
   int _nextAutomaticPortForwardId = -1;
 
   /// Get active tunnel info for display.
@@ -4067,6 +4079,7 @@ class SshSession {
     String? proxyHost,
     Set<RemoteTcpListenerKey> excludedRemoteListeners = const {},
     Set<String> shellLineageTokens = const {},
+    bool includeHostLevelListeners = true,
   }) {
     final operation = _automaticPortForwardConfiguration.then(
       (_) => enabled
@@ -4074,6 +4087,7 @@ class SshSession {
               proxyHost,
               excludedRemoteListeners,
               shellLineageTokens,
+              includeHostLevelListeners,
             )
           : _stopAutomaticPortForwarding(),
     );
@@ -4088,6 +4102,7 @@ class SshSession {
     String? proxyHost,
     Set<RemoteTcpListenerKey> excludedRemoteListeners,
     Set<String> shellLineageTokens,
+    bool includeHostLevelListeners,
   ) async {
     if (_isClosing) {
       return;
@@ -4110,12 +4125,16 @@ class SshSession {
       _automaticPortForwardShellTokens,
       normalizedShellTokens,
     );
+    final hostLevelScopeChanged =
+        _automaticPortForwardIncludeHostLevelListeners !=
+        includeHostLevelListeners;
     final hasActiveDiscovery =
         _automaticPortForwardWatcherSession != null ||
         _automaticPortForwardTimer != null;
     if (_automaticPortProxyHost == normalizedProxyHost &&
         hasActiveDiscovery &&
-        !shellTokensChanged) {
+        !shellTokensChanged &&
+        !hostLevelScopeChanged) {
       _automaticPortForwardExcludedListeners = Set.unmodifiable(
         excludedRemoteListeners,
       );
@@ -4123,11 +4142,15 @@ class SshSession {
       return;
     }
 
-    if (sameProxyHost && hasActiveDiscovery && shellTokensChanged) {
+    if (sameProxyHost &&
+        hasActiveDiscovery &&
+        (shellTokensChanged || hostLevelScopeChanged)) {
       _automaticPortForwardExcludedListeners = Set.unmodifiable(
         excludedRemoteListeners,
       );
       _automaticPortForwardShellTokens = normalizedShellTokens;
+      _automaticPortForwardIncludeHostLevelListeners =
+          includeHostLevelListeners;
       final generation = ++_automaticPortForwardGeneration;
       _automaticPortForwardTimer?.cancel();
       _automaticPortForwardTimer = null;
@@ -4146,6 +4169,7 @@ class SshSession {
       excludedRemoteListeners,
     );
     _automaticPortForwardShellTokens = normalizedShellTokens;
+    _automaticPortForwardIncludeHostLevelListeners = includeHostLevelListeners;
     await _startAutomaticPortDiscovery(generation);
   }
 
@@ -4157,6 +4181,7 @@ class SshSession {
     _automaticPortProxyHost = null;
     _automaticPortForwardExcludedListeners = const {};
     _automaticPortForwardShellTokens = const {};
+    _automaticPortForwardIncludeHostLevelListeners = true;
     final runningRefresh = _automaticPortForwardRefresh;
     if (runningRefresh != null) {
       await runningRefresh;
@@ -4318,6 +4343,8 @@ class SshSession {
             (entry) =>
                 entry.value.port != 22 &&
                 entry.value.port != config.port &&
+                (entry.value.isShellRelated ||
+                    _automaticPortForwardIncludeHostLevelListeners) &&
                 !blockedListeners.contains(entry.key),
           ),
         );
@@ -5530,6 +5557,7 @@ while($true){
     _automaticPortProxyHost = null;
     _automaticPortForwardExcludedListeners = const {};
     _automaticPortForwardShellTokens = const {};
+    _automaticPortForwardIncludeHostLevelListeners = true;
     await _stopAutomaticPortForwardWatcher();
     final pendingSnapshot = _automaticPortForwardSnapshotQueue;
     if (pendingSnapshot != null) {
@@ -6593,7 +6621,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   final Map<int, StreamSubscription<void>> _portForwardChangeSubscriptions = {};
   final Map<int, Set<RemoteTcpListenerKey>>
   _automaticForwardDesiredExclusionsByHost = {};
-  final Map<int, Future<void>> _automaticForwardReconfigurationQueues = {};
+  final Map<String, Set<RemoteTcpListenerKey>>
+  _automaticForwardShellOwnedByEndpoint = {};
+  final Map<int, Future<void>> _automaticForwardHostReconfigurationQueues = {};
+  final Map<String, Future<void>> _automaticForwardReconfigurationQueues = {};
   Timer? _previewStateRefreshTimer;
   bool _previewStateRefreshQueued = false;
   Future<void> _backgroundStatusSyncQueue = Future<void>.value();
@@ -6622,6 +6653,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       }
       _portForwardChangeSubscriptions.clear();
       _automaticForwardDesiredExclusionsByHost.clear();
+      _automaticForwardShellOwnedByEndpoint.clear();
+      _automaticForwardHostReconfigurationQueues.clear();
       _automaticForwardReconfigurationQueues.clear();
     });
     _connectionHostIds.clear();
@@ -6803,6 +6836,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _connectionSessionTitles.clear();
     _connectionAttempts.clear();
     _automaticForwardDesiredExclusionsByHost.clear();
+    _automaticForwardShellOwnedByEndpoint.clear();
+    _automaticForwardHostReconfigurationQueues.clear();
+    _automaticForwardReconfigurationQueues.clear();
     state = {};
     await _queueBackgroundStatusSync();
   }
@@ -6827,7 +6863,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   ///
   /// Only the newest connection owns detected forwards so one host never creates
   /// duplicate local proxies when multiple terminals are open.
-  Future<void> _applyAutomaticPortForwardingForHost(Host host) async {
+  Future<void> _applyAutomaticPortForwardingForHost(
+    Host host, {
+    required bool includeHostLevelListeners,
+    Set<RemoteTcpListenerKey> additionalExcludedListeners = const {},
+  }) async {
     final sessions = getConnectionsForHost(host.id)
         .where((connectionId) {
           final connectionState = getState(connectionId);
@@ -6844,19 +6884,21 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         )
         .toList(growable: false);
     final owner = connectedSessions.isEmpty ? null : connectedSessions.last;
-    final excludedRemoteListeners = sessions
-        .expand((session) => session.activeTunnels)
-        .where(
-          (tunnel) =>
-              tunnel.isLocal &&
-              !tunnel.isAutomatic &&
-              isPortForwardLoopbackHost(tunnel.remoteHost),
-        )
-        .map(
-          (tunnel) =>
-              remoteTcpListenerKey(tunnel.remoteHost, tunnel.remotePort),
-        )
-        .toSet();
+    final excludedRemoteListeners =
+        sessions
+            .expand((session) => session.activeTunnels)
+            .where(
+              (tunnel) =>
+                  tunnel.isLocal &&
+                  !tunnel.isAutomatic &&
+                  isPortForwardLoopbackHost(tunnel.remoteHost),
+            )
+            .map(
+              (tunnel) =>
+                  remoteTcpListenerKey(tunnel.remoteHost, tunnel.remotePort),
+            )
+            .toSet()
+          ..addAll(additionalExcludedListeners);
     if (sessions.isEmpty) {
       _automaticForwardDesiredExclusionsByHost.remove(host.id);
       return;
@@ -6882,6 +6924,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           proxyHost: proxyHost,
           excludedRemoteListeners: excludedRemoteListeners,
           shellLineageTokens: shellLineageTokens,
+          includeHostLevelListeners: includeHostLevelListeners,
         );
       } on Object catch (error) {
         configurationFailed = true;
@@ -6917,26 +6960,140 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Reloads and serially reapplies automatic forwarding for [hostId].
   Future<void> reconfigureAutomaticPortForwardingForHost(int hostId) {
     final previous =
-        _automaticForwardReconfigurationQueues[hostId] ?? Future<void>.value();
+        _automaticForwardHostReconfigurationQueues[hostId] ??
+        Future<void>.value();
     late final Future<void> trackedOperation;
     final operation = previous.then((_) async {
       if (!ref.mounted) {
         return;
       }
-      final host = await _telemetryHostForConnection(hostId);
-      if (host != null && ref.mounted) {
-        await _applyAutomaticPortForwardingForHost(host);
+      final triggerHost = await _telemetryHostForConnection(hostId);
+      if (triggerHost != null && ref.mounted) {
+        await _reconfigureAutomaticPortForwardingEndpoint(triggerHost);
       }
     });
     trackedOperation = operation.whenComplete(() {
       if (identical(
-        _automaticForwardReconfigurationQueues[hostId],
+        _automaticForwardHostReconfigurationQueues[hostId],
         trackedOperation,
       )) {
-        _automaticForwardReconfigurationQueues.remove(hostId);
+        _automaticForwardHostReconfigurationQueues.remove(hostId);
       }
     });
-    _automaticForwardReconfigurationQueues[hostId] = trackedOperation;
+    _automaticForwardHostReconfigurationQueues[hostId] = trackedOperation;
+    return trackedOperation;
+  }
+
+  Future<void> _reconfigureAutomaticPortForwardingEndpoint(Host triggerHost) {
+    final endpointKey = _sshEndpointKey(
+      hostname: triggerHost.hostname,
+      port: triggerHost.port,
+      username: triggerHost.username,
+    );
+    final previous =
+        _automaticForwardReconfigurationQueues[endpointKey] ??
+        Future<void>.value();
+    late final Future<void> trackedOperation;
+    final operation = previous.then((_) async {
+      if (!ref.mounted) {
+        return;
+      }
+      final siblingHostIds = <int>{triggerHost.id};
+      final activeSessions = state.keys
+          .map(getSession)
+          .whereType<SshSession>()
+          .toList(growable: false);
+      for (final session in activeSessions) {
+        if (_sshEndpointKey(
+              hostname: session.config.hostname,
+              port: session.config.port,
+              username: session.config.username,
+            ) ==
+            endpointKey) {
+          siblingHostIds.add(session.hostId);
+        }
+      }
+      final siblingHosts = <Host>[];
+      for (final siblingHostId in siblingHostIds) {
+        final host = await _telemetryHostForConnection(siblingHostId);
+        if (host != null) {
+          siblingHosts.add(host);
+        }
+      }
+      siblingHosts.sort((left, right) => left.id.compareTo(right.id));
+      final connectedHostIds = activeSessions
+          .where(
+            (session) =>
+                _sshEndpointKey(
+                      hostname: session.config.hostname,
+                      port: session.config.port,
+                      username: session.config.username,
+                    ) ==
+                    endpointKey &&
+                getState(session.connectionId) == SshConnectionState.connected,
+          )
+          .map((session) => session.hostId)
+          .toSet();
+      final hostLevelOwnerCandidates = siblingHosts
+          .where(
+            (host) =>
+                host.autoForwardPorts && connectedHostIds.contains(host.id),
+          )
+          .map((host) => host.id)
+          .toList(growable: false);
+      final hostLevelOwnerId = hostLevelOwnerCandidates.isEmpty
+          ? null
+          : hostLevelOwnerCandidates.first;
+      siblingHosts.sort((left, right) {
+        if (left.id == hostLevelOwnerId) {
+          return 1;
+        }
+        if (right.id == hostLevelOwnerId) {
+          return -1;
+        }
+        return left.id.compareTo(right.id);
+      });
+      for (final host in siblingHosts) {
+        if (!ref.mounted) {
+          return;
+        }
+        final siblingShellOwnedListeners = activeSessions
+            .where(
+              (session) =>
+                  session.hostId != host.id &&
+                  _sshEndpointKey(
+                        hostname: session.config.hostname,
+                        port: session.config.port,
+                        username: session.config.username,
+                      ) ==
+                      endpointKey,
+            )
+            .expand((session) => session.activeTunnels)
+            .where(
+              (tunnel) =>
+                  tunnel.isAutomatic && tunnel.isShellRelated && tunnel.isLocal,
+            )
+            .map(
+              (tunnel) =>
+                  remoteTcpListenerKey(tunnel.remoteHost, tunnel.remotePort),
+            )
+            .toSet();
+        await _applyAutomaticPortForwardingForHost(
+          host,
+          includeHostLevelListeners: host.id == hostLevelOwnerId,
+          additionalExcludedListeners: siblingShellOwnedListeners,
+        );
+      }
+    });
+    trackedOperation = operation.whenComplete(() {
+      if (identical(
+        _automaticForwardReconfigurationQueues[endpointKey],
+        trackedOperation,
+      )) {
+        _automaticForwardReconfigurationQueues.remove(endpointKey);
+      }
+    });
+    _automaticForwardReconfigurationQueues[endpointKey] = trackedOperation;
     return trackedOperation;
   }
 
@@ -7270,9 +7427,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       return;
     }
     state = {...state};
-    final manualRemoteListeners = getConnectionsForHost(hostId)
-        .map(getSession)
-        .whereType<SshSession>()
+    final hostSessions = getConnectionsForHost(
+      hostId,
+    ).map(getSession).whereType<SshSession>().toList(growable: false);
+    final manualRemoteListeners = hostSessions
         .expand((session) => session.activeTunnels)
         .where(
           (tunnel) =>
@@ -7285,15 +7443,61 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
               remoteTcpListenerKey(tunnel.remoteHost, tunnel.remotePort),
         )
         .toSet();
-    if (setEquals(
+    final endpointSession = hostSessions.isEmpty ? null : hostSessions.first;
+    final endpointKey = endpointSession == null
+        ? null
+        : _sshEndpointKey(
+            hostname: endpointSession.config.hostname,
+            port: endpointSession.config.port,
+            username: endpointSession.config.username,
+          );
+    final shellOwnedListeners = endpointKey == null
+        ? const <RemoteTcpListenerKey>{}
+        : state.keys
+              .map(getSession)
+              .whereType<SshSession>()
+              .where(
+                (session) =>
+                    _sshEndpointKey(
+                      hostname: session.config.hostname,
+                      port: session.config.port,
+                      username: session.config.username,
+                    ) ==
+                    endpointKey,
+              )
+              .expand((session) => session.activeTunnels)
+              .where(
+                (tunnel) =>
+                    tunnel.isAutomatic &&
+                    tunnel.isShellRelated &&
+                    tunnel.isLocal,
+              )
+              .map(
+                (tunnel) =>
+                    remoteTcpListenerKey(tunnel.remoteHost, tunnel.remotePort),
+              )
+              .toSet();
+    final manualUnchanged = setEquals(
       _automaticForwardDesiredExclusionsByHost[hostId],
       manualRemoteListeners,
-    )) {
+    );
+    final shellOwnershipUnchanged =
+        endpointKey == null ||
+        setEquals(
+          _automaticForwardShellOwnedByEndpoint[endpointKey],
+          shellOwnedListeners,
+        );
+    if (manualUnchanged && shellOwnershipUnchanged) {
       return;
     }
     _automaticForwardDesiredExclusionsByHost[hostId] = Set.unmodifiable(
       manualRemoteListeners,
     );
+    if (endpointKey != null) {
+      _automaticForwardShellOwnedByEndpoint[endpointKey] = Set.unmodifiable(
+        shellOwnedListeners,
+      );
+    }
     unawaited(reconfigureAutomaticPortForwardingForHost(hostId));
   }
 

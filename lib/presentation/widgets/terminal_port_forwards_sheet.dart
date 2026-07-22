@@ -274,7 +274,7 @@ class _TerminalPortForwardsSheetState
       ),
       subtitle: Text(
         '${tunnel.remoteHost}:${tunnel.remotePort} → local proxy\n'
-        '${tunnel.isShellRelated ? 'Started from connected shell' : 'Detected on host'}',
+        '${tunnel.isShellRelated ? 'Started from this saved host' : 'Shared host service (Docker/background)'}',
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: FluttyTheme.monoStyle.copyWith(
