@@ -4343,6 +4343,106 @@ func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	}
 }
 
+func TestThemeChangedRedrawForcesForegroundRepaint(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "copilot",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+	server.mu.Lock()
+	// The published grid already matches the client, so sizeChanged is false and
+	// only the synthetic dance can force a repaint.
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", w.id, width, height),
+		)
+	}
+	signalForegroundResize = func(int) {}
+
+	// theme_changed with redraw must force the synthetic repaint dance even at
+	// an unchanged size, so an agent (Copilot CLI) re-emits its explicitly
+	// colored header/footer bars in the new theme.
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
+		t.Fatalf("theme_changed redraw dance = %#v, want [@1:120x40]", simulated)
+	}
+
+	// Without the redraw flag the theme hint is still delivered, but no repaint
+	// dance is forced (preserving the pre-existing behavior for callers that do
+	// not need a repaint).
+	simulated = nil
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type: "theme_changed",
+		Data: "\x1b[?997;1n",
+	})
+	if len(simulated) != 0 {
+		t.Fatalf(
+			"theme_changed without redraw performed dance = %#v, want none",
+			simulated,
+		)
+	}
+}
+
+func TestThemeChangedRedrawSkipsPlainShell(t *testing.T) {
+	server := newMuxServer("test")
+	// A plain shell (no agent, no alternate screen) is not a foreground-redraw
+	// window, so a theme redraw must not bounce its prompt with a resize dance.
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+	server.mu.Lock()
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(simulated, w.id)
+	}
+	signalForegroundResize = func(int) {}
+
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+	if len(simulated) != 0 {
+		t.Fatalf("plain shell theme redraw danced = %#v, want none", simulated)
+	}
+}
+
 func TestForegroundRedrawTemporarySize(t *testing.T) {
 	tests := []struct {
 		name       string

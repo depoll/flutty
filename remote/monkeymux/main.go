@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.121"
+	monkeyMuxVersion                  = "0.1.122"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3497,6 +3497,35 @@ func (s *muxServer) redrawRestoredWindow(windowID string) {
 	s.resizeWithRedraw(width, height, true, true)
 }
 
+// forceForegroundThemeRedraw makes the active foreground-redraw window fully
+// repaint after a theme change. A theme switch changes colors without changing
+// the PTY size, so a real same-size SIGWINCH will not make the TUI re-emit
+// explicitly-colored cells (e.g. Copilot CLI's header/footer bars). It therefore
+// uses the synthetic width-1 redraw dance — the same mechanism used to repaint a
+// restored window — whose intermediate one-cell frame is hidden from attach
+// clients by the synchronized-redraw transaction. It is a no-op for plain
+// shells and when no client is attached.
+func (s *muxServer) forceForegroundThemeRedraw() {
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
+	s.mu.Lock()
+	if s.attachCountLocked() == 0 {
+		s.mu.Unlock()
+		return
+	}
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed || !window.usesForegroundRedrawReplayLocked() {
+		s.mu.Unlock()
+		return
+	}
+	width, height := s.primaryAttachSizeLocked()
+	s.mu.Unlock()
+	if width <= 0 || height <= 0 {
+		return
+	}
+	s.resizeWithRedraw(width, height, true, true)
+}
+
 func createWindowOptionsForRestore(
 	state restoreWindowState,
 	startInYoloMode bool,
@@ -5464,6 +5493,13 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		client.send(controlResponse{ID: request.ID, Type: "focus_hint_sent", Status: "ok"})
 	case "theme_changed":
 		s.sendThemeHint(request.Data)
+		if request.Redraw {
+			// A theme switch changes colors without changing the PTY size, and
+			// a same-size SIGWINCH alone will not make a TUI re-emit its
+			// explicitly-colored regions (e.g. Copilot CLI's header/footer
+			// bars), so force a full repaint after the hint has been delivered.
+			s.forceForegroundThemeRedraw()
+		}
 		client.send(controlResponse{ID: request.ID, Type: "theme_hint_ack", Status: "ok"})
 	case "shutdown":
 		client.send(controlResponse{ID: request.ID, Type: "shutdown", Status: "ok"})
