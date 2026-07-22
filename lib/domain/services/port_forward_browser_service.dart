@@ -99,7 +99,7 @@ String? validatePortProxyName(String? value) {
 
 /// Builds a stable generated proxy prefix from a host label and database ID.
 String generatedPortProxyName(String hostLabel, {int? hostId}) {
-  final suffix = hostId == null ? '' : '-${hostId.toRadixString(36)}';
+  final suffix = hostId == null ? '' : '-$hostId';
   final dnsMaxBaseLength = 63 - suffix.length;
   final maxBaseLength = dnsMaxBaseLength < 12 ? dnsMaxBaseLength : 12;
   var base = hostLabel

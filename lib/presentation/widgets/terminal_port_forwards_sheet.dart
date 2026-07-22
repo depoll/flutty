@@ -213,9 +213,20 @@ class _TerminalPortForwardsSheetState
     controller: widget.scrollController,
     padding: const EdgeInsets.symmetric(vertical: FluttyTheme.spacingSm),
     children: [
-      if (automaticTunnels.isNotEmpty) ...[
-        _buildGroupLabel(context, 'Detected automatically'),
-        for (final tunnel in automaticTunnels) ...[
+      if (automaticTunnels.any((tunnel) => tunnel.isShellRelated)) ...[
+        _buildGroupLabel(context, 'This saved host'),
+        for (final tunnel in automaticTunnels.where(
+          (tunnel) => tunnel.isShellRelated,
+        )) ...[
+          _buildAutomaticForwardRow(context, tunnel),
+          const Divider(height: 1),
+        ],
+      ],
+      if (automaticTunnels.any((tunnel) => !tunnel.isShellRelated)) ...[
+        _buildGroupLabel(context, 'Shared host services'),
+        for (final tunnel in automaticTunnels.where(
+          (tunnel) => !tunnel.isShellRelated,
+        )) ...[
           _buildAutomaticForwardRow(context, tunnel),
           const Divider(height: 1),
         ],

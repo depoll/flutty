@@ -181,6 +181,17 @@ void main() {
       isAutomatic: true,
       isShellRelated: true,
     );
+    automaticOwner.tunnels[-4000] = const ActiveTunnelInfo(
+      portForwardId: -4000,
+      localHost: '127.0.0.1',
+      localPort: 49153,
+      browserHost: 'dev-box.localhost',
+      browserPort: 49153,
+      remoteHost: '127.0.0.1',
+      remotePort: 4000,
+      isLocal: true,
+      isAutomatic: true,
+    );
     addTearDown(session.changes.close);
     addTearDown(automaticOwner.changes.close);
     when(
@@ -222,8 +233,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Port Forwards'), findsOneWidget);
-    expect(find.text('detected automatically'), findsOneWidget);
+    expect(find.text('this saved host'), findsOneWidget);
+    expect(find.text('shared host services'), findsOneWidget);
     expect(find.text('Port 3000'), findsOneWidget);
+    expect(find.text('Port 4000'), findsOneWidget);
     expect(find.textContaining('dev-box.localhost:49152'), findsOneWidget);
     expect(find.textContaining('Started from this saved host'), findsOneWidget);
     expect(find.text('Web preview'), findsOneWidget);
