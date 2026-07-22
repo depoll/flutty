@@ -677,6 +677,7 @@ LISTEN ::1:4201
           username: 'tester',
         ),
       );
+      await session.updateAutomaticPortForwardProcessRoots({7300});
 
       await session.discoverRemoteListeningTcpListeners();
 
@@ -688,6 +689,10 @@ LISTEN ::1:4201
       expect(command, startsWith('/bin/sh -c '));
       expect(command, contains('MONKEYSSH_SHELL_TOKEN'));
       expect(command, contains(session.shellLineageToken));
+      expect(command, contains('root_pids='));
+      expect(command, contains('7300'));
+      expect(command, contains('ps -eo pid=,ppid='));
+      expect(command, contains(r'*",$ppid,"*'));
       expect(command, contains('ss -H -ltnp'));
       expect(command, contains('lsof -nP -iTCP -sTCP:LISTEN -Fpfnt'));
       expect(command, contains(r'if [ "$lsof_status" -gt 1 ]'));
@@ -964,6 +969,98 @@ LISTEN ::1:4201
         verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
       },
     );
+
+    test('reclassifies listeners after mux process roots arrive', () async {
+      final client = _MockSshClient();
+      final watchers = [_MockExecSession(), _MockExecSession()];
+      final stdoutControllers = [
+        StreamController<Uint8List>(),
+        StreamController<Uint8List>(),
+      ];
+      final doneCompleters = [Completer<void>(), Completer<void>()];
+      var watcherIndex = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        final index = watcherIndex++;
+        return watchers[index];
+      });
+      for (var index = 0; index < watchers.length; index++) {
+        when(
+          () => watchers[index].stdout,
+        ).thenAnswer((_) => stdoutControllers[index].stream);
+        when(
+          () => watchers[index].stderr,
+        ).thenAnswer((_) => const Stream.empty());
+        when(
+          () => watchers[index].done,
+        ).thenAnswer((_) => doneCompleters[index].future);
+        when(watchers[index].close).thenAnswer((_) {});
+      }
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 42,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'dev.example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      addTearDown(() async {
+        await session.configureAutomaticPortForwarding(enabled: false);
+        for (final controller in stdoutControllers) {
+          if (!controller.isClosed) {
+            await controller.close();
+          }
+        }
+        for (final completer in doneCompleters) {
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        }
+      });
+
+      final configured = session.configureAutomaticPortForwarding(
+        enabled: true,
+        proxyHost: 'dev-box.localhost',
+      );
+      await _waitUntil(() => watcherIndex == 1);
+      stdoutControllers[0].add(
+        Uint8List.fromList(
+          utf8.encode(
+            '$_automaticPortWatcherSnapshotBeginMarker\n'
+            'LISTEN 0 4096 127.0.0.1:4898 0.0.0.0:* '
+            'users:(("node",pid=42,fd=9))\n'
+            '$_automaticPortWatcherSnapshotEndMarker\n',
+          ),
+        ),
+      );
+      await configured;
+      await _waitUntil(() => session.activeTunnels.isNotEmpty);
+      expect(session.activeTunnels.single.isShellRelated, isFalse);
+
+      final rootsUpdated = session.updateAutomaticPortForwardProcessRoots({
+        7300,
+      });
+      await _waitUntil(() => watcherIndex == 2);
+      stdoutControllers[1].add(
+        Uint8List.fromList(
+          utf8.encode(
+            '$_automaticPortWatcherSnapshotBeginMarker\n'
+            '__monkeyssh_shell_descendant_pids__:42\n'
+            'LISTEN 0 4096 127.0.0.1:4898 0.0.0.0:* '
+            'users:(("node",pid=42,fd=9))\n'
+            '$_automaticPortWatcherSnapshotEndMarker\n',
+          ),
+        ),
+      );
+      await rootsUpdated;
+      await _waitUntil(() => session.activeTunnels.single.isShellRelated);
+
+      expect(session.activeTunnels.single.remotePort, 4898);
+      expect(session.activeTunnels.single.isShellRelated, isTrue);
+    });
 
     test('does not poll after watcher reports discovery unsupported', () async {
       final client = _MockSshClient();

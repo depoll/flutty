@@ -3475,6 +3475,7 @@ class SshSession {
   final Map<RemoteTcpListenerKey, int> _automaticPortForwardMisses = {};
   Set<RemoteTcpListenerKey> _automaticPortForwardExcludedListeners = const {};
   Set<String> _automaticPortForwardShellTokens = const {};
+  Set<int> _automaticPortForwardProcessRoots = const {};
   bool _automaticPortForwardIncludeHostLevelListeners = true;
   int _nextAutomaticPortForwardId = -1;
 
@@ -4102,6 +4103,38 @@ class SshSession {
     return operation;
   }
 
+  /// Updates persistent mux pane/process roots used for shell-owned detection.
+  Future<void> updateAutomaticPortForwardProcessRoots(Set<int> processRoots) {
+    final normalizedRoots = Set<int>.unmodifiable(
+      processRoots.where((pid) => pid > 0),
+    );
+    if (setEquals(_automaticPortForwardProcessRoots, normalizedRoots)) {
+      return Future<void>.value();
+    }
+    _automaticPortForwardProcessRoots = normalizedRoots;
+    if (_automaticPortProxyHost == null ||
+        (_automaticPortForwardWatcherSession == null &&
+            _automaticPortForwardTimer == null)) {
+      return Future<void>.value();
+    }
+
+    final operation = _automaticPortForwardConfiguration.then((_) async {
+      if (_isClosing || _automaticPortProxyHost == null) {
+        return;
+      }
+      final generation = ++_automaticPortForwardGeneration;
+      _automaticPortForwardTimer?.cancel();
+      _automaticPortForwardTimer = null;
+      await _stopAutomaticPortForwardWatcher();
+      await _startAutomaticPortDiscovery(generation);
+    });
+    _automaticPortForwardConfiguration = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
   Future<void> _startAutomaticPortForwarding(
     String? proxyHost,
     Set<RemoteTcpListenerKey> excludedRemoteListeners,
@@ -4185,6 +4218,7 @@ class SshSession {
     _automaticPortProxyHost = null;
     _automaticPortForwardExcludedListeners = const {};
     _automaticPortForwardShellTokens = const {};
+    _automaticPortForwardProcessRoots = const {};
     _automaticPortForwardIncludeHostLevelListeners = true;
     final runningRefresh = _automaticPortForwardRefresh;
     if (runningRefresh != null) {
@@ -4768,16 +4802,31 @@ class SshSession {
             .toList()
           ..sort();
     final markerPattern = '^MONKEYSSH_SHELL_TOKEN=(${shellTokens.join('|')})\$';
+    final processRoots = _automaticPortForwardProcessRoots.toList()..sort();
     return "marker_pattern='$markerPattern'; "
-        'shell_pids=""; '
+        "root_pids='${processRoots.join(',')}'; "
         'if [ -d /proc ]; then '
         'for env_path in /proc/[0-9]*/environ; do '
         r'[ -r "$env_path" ] || continue; '
         r'if tr "\000" "\n" < "$env_path" 2>/dev/null | '
         r'grep -Eq "$marker_pattern"; then '
         r'pid=${env_path#/proc/}; pid=${pid%/environ}; '
-        r'shell_pids="${shell_pids}${shell_pids:+,}${pid}"; '
+        r'root_pids="${root_pids}${root_pids:+,}${pid}"; '
         'fi; done; fi; '
+        r'shell_pids=$root_pids; '
+        r'ps_output=$(ps -eo pid=,ppid= 2>/dev/null || true); '
+        'changed=1; '
+        r'while [ "$changed" -eq 1 ]; do '
+        r'changed=0; set -- $ps_output; '
+        r'while [ "$#" -ge 2 ]; do '
+        r'pid=$1; ppid=$2; shift 2; '
+        r'case ",$shell_pids," in '
+        r'*",$pid,"*) ;; '
+        r'*",$ppid,"*) '
+        r'shell_pids="${shell_pids}${shell_pids:+,}${pid}"; changed=1 ;; '
+        'esac; '
+        'done; '
+        'done; '
         'printf "$_automaticPortDiscoveryShellPidsMarker%s\\n" '
         r'"$shell_pids";';
   }
@@ -5561,6 +5610,7 @@ while($true){
     _automaticPortProxyHost = null;
     _automaticPortForwardExcludedListeners = const {};
     _automaticPortForwardShellTokens = const {};
+    _automaticPortForwardProcessRoots = const {};
     _automaticPortForwardIncludeHostLevelListeners = true;
     await _stopAutomaticPortForwardWatcher();
     final pendingSnapshot = _automaticPortForwardSnapshotQueue;
