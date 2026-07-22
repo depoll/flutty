@@ -3564,6 +3564,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final List<Timer> _monkeyMuxSettledRedrawDisplayRefreshTimers = <Timer>[];
   int _monkeyMuxSettledRedrawDisplayRefreshGeneration = 0;
   int _monkeyMuxRefreshAndResizeGeneration = 0;
+  // Latched when a terminal theme *color* change needs the MonkeyMux foreground
+  // TUI to be forced to fully repaint (via a synthetic redraw resize). Kept as
+  // instance state rather than on a single refresh request so the obligation
+  // survives that request being superseded by a later same-theme forced
+  // refresh; cleared once a redraw is actually dispatched.
+  bool _monkeyMuxForcedThemeRedrawPending = false;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
   DateTime? _lastMuxWindowChangeAt;
@@ -4478,7 +4484,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     if (willRefresh) {
-      _refreshTerminalThemeForTui(theme, targetSession, reason: reason);
+      _refreshTerminalThemeForTui(
+        theme,
+        targetSession,
+        reason: reason,
+        forceForegroundRedraw: didThemeChange,
+      );
       return;
     }
   }
@@ -4487,6 +4498,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TerminalThemeData theme,
     SshSession session, {
     required String reason,
+    bool forceForegroundRedraw = false,
   }) {
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
@@ -4524,11 +4536,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           theme,
           session,
           reason: '${reason}_view_ready',
+          forceForegroundRedraw: forceForegroundRedraw,
         );
       });
     }
     if (_isTmuxActive && tmuxStateBelongsToSession) {
       if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+        if (forceForegroundRedraw) {
+          // Latch the repaint obligation so it survives this refresh request
+          // being superseded/coalesced by a later same-theme forced refresh
+          // (brightness changes fire several applies in quick succession, and
+          // preview -> "Use Theme" re-applies the same colors). It is cleared
+          // only once a redraw is actually dispatched.
+          _monkeyMuxForcedThemeRedrawPending = true;
+        }
         DiagnosticsLogService.instance.info(
           'terminal.theme',
           'monkeymux_refresh_requested',
@@ -5358,6 +5379,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     var outerRefreshReason = request.reason;
     var tmuxCommandDeferred = false;
+    var refreshApplied = false;
     try {
       final mux = _activeRemoteMultiplexerService;
       DiagnosticsLogService.instance.info(
@@ -5388,6 +5410,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           request.theme,
           extraFlags: request.extraFlags,
         );
+        refreshApplied = true;
         DiagnosticsLogService.instance.info(
           'terminal.theme',
           'tmux_refresh_complete',
@@ -5429,6 +5452,40 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         },
       );
       return;
+    }
+    // A DEC 2031 mode report plus a focus nudge alone do not reliably repaint
+    // every agent after a theme switch: Copilot CLI in particular diff-repaints
+    // and leaves its explicitly-colored header/footer bars in the previous
+    // theme ("black bars"). Once the theme hint has been delivered, force the
+    // foreground TUI to fully repaint with a synthetic PTY resize (the same
+    // mechanism used on attach/restore) so those cells are re-emitted.
+    //
+    // The obligation is latched (not carried on the request) so it survives a
+    // theme-change refresh being superseded by a later same-theme forced
+    // refresh whose request would not itself carry the flag.
+    if (_monkeyMuxForcedThemeRedrawPending &&
+        refreshApplied &&
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _monkeyMuxForcedThemeRedrawPending = false;
+      // A synthetic redraw resize already covers any repaint a recent size
+      // change scheduled, so drop that pending follow-up to avoid repainting
+      // twice for one visual update.
+      _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+      _monkeyMuxResizeRedrawFollowUpTimer = null;
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'monkeymux_force_redraw',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+        },
+      );
+      unawaited(
+        _syncActiveMonkeyMuxTerminalSize(
+          request.session,
+          refreshVisibleTerminal: true,
+        ),
+      );
     }
     if (request.sendOuterFocusReport) {
       if (!_isOuterTuiSignalingActive(request.session)) {
@@ -7744,6 +7801,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelMonkeyMuxSettledRedrawDisplayRefreshes();
     _pendingMonkeyMuxResizeSyncs.clear();
     _lastMonkeyMuxResizeSync = null;
+    _monkeyMuxForcedThemeRedrawPending = false;
   }
 
   void _refreshTerminalDisplayAfterMonkeyMuxRedraw({
