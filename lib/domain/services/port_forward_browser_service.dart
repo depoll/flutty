@@ -100,7 +100,8 @@ String? validatePortProxyName(String? value) {
 /// Builds a stable generated proxy prefix from a host label and database ID.
 String generatedPortProxyName(String hostLabel, {int? hostId}) {
   final suffix = hostId == null ? '' : '-${hostId.toRadixString(36)}';
-  final maxBaseLength = 63 - suffix.length;
+  final dnsMaxBaseLength = 63 - suffix.length;
+  final maxBaseLength = dnsMaxBaseLength < 24 ? dnsMaxBaseLength : 24;
   var base = hostLabel
       .trim()
       .toLowerCase()
@@ -127,30 +128,13 @@ String hostPortProxyDomain({
   return '$prefix.localhost';
 }
 
-/// Returns a cookie-isolated browser host for one detected remote [remotePort].
+/// Returns the one browser host used by all detected services for a saved host.
 String automaticPortForwardBrowserHost({
   required String hostDomain,
   required int hostId,
   required String remoteHost,
   required int remotePort,
-}) {
-  final hostPrefix = hostDomain
-      .substring(0, hostDomain.length - '.localhost'.length)
-      .replaceAll(RegExp('[^a-z0-9]+'), '-')
-      .replaceAll(RegExp(r'^-+|-+$'), '');
-  final remoteHostTag = remoteHost
-      .toLowerCase()
-      .replaceAll(RegExp('[^a-z0-9]+'), '-')
-      .replaceAll(RegExp(r'^-+|-+$'), '');
-  final suffix =
-      '-p$remotePort-h${hostId.toRadixString(36)}-'
-      '${remoteHostTag.isEmpty ? 'loopback' : remoteHostTag}';
-  final maxPrefixLength = 63 - suffix.length;
-  final prefix = hostPrefix.length <= maxPrefixLength
-      ? hostPrefix
-      : hostPrefix.substring(0, maxPrefixLength);
-  return '$prefix$suffix.localhost';
-}
+}) => hostDomain;
 
 /// Rewrites a loopback [uri] for one forwarded service's browser-only relay.
 ///
@@ -171,6 +155,20 @@ Uri? rewriteUriForPortForwardBrowser(
     port: portForwardBrowserUriPort(browserUri),
   );
 }
+
+/// Whether a failed friendly browser endpoint should retry through loopback.
+bool shouldUsePortForwardBrowserFallback({
+  required Uri browserUri,
+  required Uri? failedUri,
+  required bool? isForMainFrame,
+  required bool alreadyTried,
+}) =>
+    (isForMainFrame ?? true) &&
+    !alreadyTried &&
+    (failedUri == null ||
+        (failedUri.host.toLowerCase() == browserUri.host.toLowerCase() &&
+            portForwardBrowserUriPort(failedUri) ==
+                portForwardBrowserUriPort(browserUri)));
 
 /// Returns whether [uri] should stay inside the embedded browser.
 ///

@@ -45,10 +45,13 @@ import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interfac
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
-String _trueColorLoginShellCommand(SshConnectionConfig config) =>
+String _trueColorLoginShellCommand(
+  SshConnectionConfig config, {
+  int hostId = 1,
+}) =>
     'exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 '
     'FORCE_HYPERLINK=1 '
-    'MONKEYSSH_SHELL_TOKEN=${buildSshShellLineageToken(config)} '
+    'MONKEYSSH_SHELL_TOKEN=${buildSshShellLineageToken(config, hostId: hostId)} '
     r"""/bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
 
 void _stubTrueColorLoginShell(

@@ -17,6 +17,7 @@ class PortForwardBrowserInitialTab {
   const PortForwardBrowserInitialTab({
     required this.uri,
     this.sourceUri,
+    this.fallbackUri,
     this.title,
   });
 
@@ -25,6 +26,9 @@ class PortForwardBrowserInitialTab {
 
   /// Original local-forward URL represented by [uri].
   final Uri? sourceUri;
+
+  /// Explicit loopback URL used if the friendly `.localhost` host cannot load.
+  final Uri? fallbackUri;
 
   /// Optional label shown until the page title is available.
   final String? title;
@@ -155,6 +159,8 @@ class _PortForwardBrowserScreenState
         NavigationDelegate(
           onNavigationRequest: (request) =>
               _handleNavigationRequest(tab, request),
+          onWebResourceError: (error) =>
+              unawaited(_handleWebResourceError(tab, error)),
           onProgress: (progress) => _handleProgress(tab, progress),
           onPageStarted: (url) => _handlePageStarted(tab, url),
           onPageFinished: (url) => unawaited(_handlePageFinished(tab, url)),
@@ -167,6 +173,9 @@ class _PortForwardBrowserScreenState
       controller: controller,
       browserUri: initialUri,
       sourceUri: normalizePortForwardBrowserUri(seed.sourceUri ?? seed.uri),
+      fallbackUri: seed.fallbackUri == null
+          ? null
+          : normalizePortForwardBrowserUri(seed.fallbackUri!),
       currentUri: initialUri,
       initialTitle: seed.title,
     );
@@ -447,6 +456,35 @@ class _PortForwardBrowserScreenState
     });
   }
 
+  Future<void> _handleWebResourceError(
+    _PortForwardBrowserTabState tab,
+    WebResourceError error,
+  ) async {
+    final fallbackUri = tab.fallbackUri;
+    if (fallbackUri == null || !_tabs.contains(tab)) {
+      return;
+    }
+    final rawFailedUrl = error.url;
+    final failedUri = rawFailedUrl == null || rawFailedUrl.isEmpty
+        ? null
+        : Uri.tryParse(rawFailedUrl);
+    if (!shouldUsePortForwardBrowserFallback(
+      browserUri: tab.browserUri,
+      failedUri: failedUri,
+      isForMainFrame: error.isForMainFrame,
+      alreadyTried: tab.hasTriedLoopbackFallback,
+    )) {
+      return;
+    }
+
+    tab.hasTriedLoopbackFallback = true;
+    await tab.controller.loadRequest(fallbackUri);
+    if (!mounted || !_tabs.contains(tab)) {
+      return;
+    }
+    _showMessage('Friendly host unavailable; opened the local proxy directly.');
+  }
+
   void _handlePageStarted(_PortForwardBrowserTabState tab, String url) {
     if (!mounted) return;
     final uri = Uri.tryParse(url);
@@ -694,6 +732,7 @@ class _PortForwardBrowserTabState {
     required this.controller,
     required this.browserUri,
     required this.sourceUri,
+    required this.fallbackUri,
     required this.currentUri,
     this.initialTitle,
   });
@@ -702,12 +741,14 @@ class _PortForwardBrowserTabState {
   final WebViewController controller;
   final Uri browserUri;
   final Uri sourceUri;
+  final Uri? fallbackUri;
   final String? initialTitle;
   int progress = 0;
   bool canGoBack = false;
   bool canGoForward = false;
   bool isLoading = true;
   bool hasStartedLoading = false;
+  bool hasTriedLoopbackFallback = false;
   Uri currentUri;
   String? pageTitle;
 }

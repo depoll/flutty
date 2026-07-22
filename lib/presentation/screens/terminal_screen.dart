@@ -3248,12 +3248,14 @@ class _PortForwardBrowserOption {
   const _PortForwardBrowserOption({
     required this.uri,
     required this.sourceUri,
+    required this.fallbackUri,
     required this.port,
     required this.title,
   });
 
   final Uri uri;
   final Uri sourceUri;
+  final Uri fallbackUri;
   final int port;
   final String title;
 }
@@ -14110,6 +14112,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _PortForwardBrowserOption(
             uri: browserUri,
             sourceUri: targetOption.sourceUri,
+            fallbackUri: targetOption.fallbackUri,
             port: targetOption.port,
             title: targetOption.title,
           ),
@@ -14164,9 +14167,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             localHost: tunnel.browserHost!,
             localPort: tunnel.browserPort!,
           );
+          final fallbackUri = buildPortForwardBrowserUriForBind(
+            localHost: tunnel.localHost,
+            localPort: tunnel.localPort,
+          );
           return _PortForwardBrowserOption(
             uri: uri,
             sourceUri: sourceUri,
+            fallbackUri: fallbackUri,
             port: sourcePort,
             title: tunnel.isAutomatic ? uri.authority : sourceUri.authority,
           );
@@ -14222,6 +14230,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             PortForwardBrowserInitialTab(
               uri: option.uri,
               sourceUri: option.sourceUri,
+              fallbackUri: option.fallbackUri,
               title: option.title,
             ),
         ],
