@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.121"
+	monkeyMuxVersion                  = "0.1.122"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -647,10 +647,44 @@ type routedTerminalResponse struct {
 	data     []byte
 }
 
+type attachInputAction struct {
+	userInput bool
+	windowID  string
+	data      []byte
+}
+
 type attachInputRouting struct {
 	claimsFocus bool
 	passthrough []byte
 	responses   []routedTerminalResponse
+	actions     []attachInputAction
+}
+
+func (r *attachInputRouting) addResponse(windowID string, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	copied := append([]byte(nil), data...)
+	r.responses = append(
+		r.responses,
+		routedTerminalResponse{windowID: windowID, data: copied},
+	)
+	r.actions = append(
+		r.actions,
+		attachInputAction{windowID: windowID, data: copied},
+	)
+}
+
+func (r *attachInputRouting) addUserInput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	copied := append([]byte(nil), data...)
+	r.passthrough = append(r.passthrough, copied...)
+	r.actions = append(
+		r.actions,
+		attachInputAction{userInput: true, data: copied},
+	)
 }
 
 type attachClient struct {
@@ -673,10 +707,14 @@ type attachClient struct {
 	terminalResponseContinuation       byte
 	terminalResponseContinuationEscape bool
 	terminalResponseContinuationUtf8   int
+	terminalResponsePasteStartCarry    []byte
 	terminalResponseWindows            []string
 	terminalResponseActiveWindow       string
 	terminalResponseCarryGeneration    uint64
 	inputUtf8Remaining                 int
+	inputBracketedPasteStartCarry      []byte
+	inputBracketedPasteActive          bool
+	inputBracketedPasteEndCarry        []byte
 	focusInputCarry                    []byte
 	focusInputGeneration               uint64
 	focusSequenceSnapshot              func() uint64
@@ -4397,6 +4435,22 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 				expiredInput,
 				c.terminalResponseCarry...,
 			)
+			expiredInput = append(
+				expiredInput,
+				c.terminalResponsePasteStartCarry...,
+			)
+			if c.focusSequenceSnapshot != nil {
+				expiredFocusSequence = c.focusSequenceSnapshot()
+			}
+			claim = c.focusClaim
+			passthrough = c.inputPassthrough
+		} else if len(c.terminalResponsePasteStartCarry) > 0 {
+			c.inputMu.Lock()
+			inputLocked = true
+			expiredInput = append(
+				expiredInput,
+				c.terminalResponsePasteStartCarry...,
+			)
 			if c.focusSequenceSnapshot != nil {
 				expiredFocusSequence = c.focusSequenceSnapshot()
 			}
@@ -4404,6 +4458,7 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 			passthrough = c.inputPassthrough
 		}
 		c.resetTerminalResponseStateLocked()
+		c.rememberForwardedBracketedPasteStartSuffixLocked(expiredInput)
 	}
 	c.terminalResponseUntil = now.Add(terminalResponseFocusGrace)
 	for range count {
@@ -4412,7 +4467,8 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 			windowID,
 		)
 	}
-	if len(c.terminalResponseCarry) > 0 {
+	if len(c.terminalResponseCarry) > 0 ||
+		len(c.terminalResponsePasteStartCarry) > 0 {
 		c.scheduleTerminalResponseCarryLocked()
 	}
 	c.activityMu.Unlock()
@@ -4438,8 +4494,13 @@ func (c *attachClient) inputClaimsFocus(data []byte) bool {
 }
 
 func (c *attachClient) routeInput(data []byte) attachInputRouting {
-	result := attachInputRouting{passthrough: data}
-	if c == nil || len(data) == 0 {
+	result := attachInputRouting{}
+	if len(data) == 0 {
+		return result
+	}
+	if c == nil {
+		result.addUserInput(data)
+		result.claimsFocus = true
 		return result
 	}
 	c.activityMu.Lock()
@@ -4454,37 +4515,211 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		previousInputUtf8Remaining,
 		leadingInputUtf8Prefix,
 	)
+	c.routeInputLocked(data, leadingInputUtf8Prefix, &result)
+	return result
+}
+
+func (c *attachClient) routeInputLocked(
+	data []byte,
+	leadingInputUtf8Prefix int,
+	result *attachInputRouting,
+) {
+	if len(data) == 0 {
+		return
+	}
+	if len(c.inputBracketedPasteStartCarry) > 0 {
+		combined := make(
+			[]byte,
+			0,
+			len(c.inputBracketedPasteStartCarry)+len(data),
+		)
+		combined = append(combined, c.inputBracketedPasteStartCarry...)
+		combined = append(combined, data...)
+		paste := bracketedPasteStart(combined, 0)
+		if paste.index == 0 {
+			startRemainder := paste.length -
+				len(c.inputBracketedPasteStartCarry)
+			c.inputBracketedPasteStartCarry = nil
+			pastePayloadLength := c.beginBracketedPasteLocked(
+				data[startRemainder:],
+			)
+			pasteEnd := startRemainder + pastePayloadLength
+			if c.hasExpectedTerminalResponseLocked() {
+				c.renewTerminalResponseDeadlineLocked()
+			}
+			c.routeUserInputLocked(data[:pasteEnd], result)
+			c.routePostPasteInputLocked(data[pasteEnd:], result)
+			return
+		}
+		if suffixLength := bracketedPasteStartSuffixLength(
+			combined,
+			0,
+		); suffixLength == len(combined) {
+			c.routeUserInputLocked(data, result)
+			c.inputBracketedPasteStartCarry = append(
+				c.inputBracketedPasteStartCarry[:0],
+				combined...,
+			)
+			return
+		}
+		c.inputBracketedPasteStartCarry = nil
+	}
+	if c.inputBracketedPasteActive {
+		pasteLength := c.continueBracketedPasteLocked(
+			data,
+			leadingInputUtf8Prefix,
+		)
+		if c.hasExpectedTerminalResponseLocked() ||
+			len(c.terminalResponseCarry) > 0 ||
+			c.terminalResponseContinuation != 0 {
+			c.renewTerminalResponseDeadlineLocked()
+		}
+		c.routeUserInputLocked(data[:pasteLength], result)
+		c.routePostPasteInputLocked(data[pasteLength:], result)
+		return
+	}
 	now := time.Now()
 	if !c.terminalResponseUntil.IsZero() &&
 		now.After(c.terminalResponseUntil) {
-		userInput := data
-		if len(c.terminalResponseCarry) > 0 {
-			userInput = make(
-				[]byte,
-				0,
-				len(c.terminalResponseCarry)+len(data),
-			)
-			userInput = append(userInput, c.terminalResponseCarry...)
-			userInput = append(userInput, data...)
+		combined := make(
+			[]byte,
+			0,
+			len(c.terminalResponseCarry)+
+				len(c.terminalResponsePasteStartCarry)+
+				len(data),
+		)
+		combined = append(combined, c.terminalResponseCarry...)
+		freshStart := len(combined)
+		combined = append(combined, c.terminalResponsePasteStartCarry...)
+		combined = append(combined, data...)
+		userStart := 0
+		paste := bracketedPasteStart(combined, 0)
+		if paste.index >= 0 {
+			userStart = min(paste.index, freshStart)
+		} else if suffixLength := bracketedPasteStartSuffixLength(
+			combined,
+			0,
+		); suffixLength > 0 {
+			userStart = min(len(combined)-suffixLength, freshStart)
+		}
+		windowID := c.currentTerminalResponseWindowLocked()
+		if userStart > 0 && windowID != "" {
+			result.addResponse(windowID, combined[:userStart])
 		}
 		c.resetTerminalResponseStateLocked()
-		c.routeUserInputLocked(userInput, &result)
-		return result
+		userInput := combined[userStart:]
+		if paste = bracketedPasteStart(userInput, 0); paste.index >= 0 {
+			c.routeUserInputWithPasteLocked(
+				userInput,
+				paste.index,
+				paste.length,
+				result,
+			)
+			return
+		}
+		c.routeUserInputLocked(userInput, result)
+		return
 	}
 	if !c.hasExpectedTerminalResponseLocked() &&
-		len(c.terminalResponseCarry) == 0 {
-		c.routeUserInputLocked(data, &result)
-		return result
+		len(c.terminalResponseCarry) == 0 &&
+		c.terminalResponseContinuation == 0 &&
+		len(c.terminalResponsePasteStartCarry) == 0 {
+		if paste := bracketedPasteStart(
+			data,
+			leadingInputUtf8Prefix,
+		); paste.index >= 0 {
+			c.routeUserInputWithPasteLocked(
+				data,
+				paste.index,
+				paste.length,
+				result,
+			)
+			return
+		}
+		c.routeUserInputLockedWithUtf8Prefix(
+			data,
+			leadingInputUtf8Prefix,
+			result,
+		)
+		return
 	}
 
 	responseInput := data
 	combined := responseInput
 	responseLeadingUtf8Prefix := leadingInputUtf8Prefix
 	if c.terminalResponseContinuation != 0 {
-		responseLeadingUtf8Prefix = 0
+		if len(c.terminalResponsePasteStartCarry) > 0 {
+			responseInput = make(
+				[]byte,
+				0,
+				len(c.terminalResponsePasteStartCarry)+len(data),
+			)
+			responseInput = append(
+				responseInput,
+				c.terminalResponsePasteStartCarry...,
+			)
+			responseInput = append(responseInput, data...)
+			c.terminalResponsePasteStartCarry = nil
+			responseLeadingUtf8Prefix = 0
+		}
+		paste := bracketedPasteStart(
+			responseInput,
+			responseLeadingUtf8Prefix,
+		)
+		if paste.index >= 0 {
+			prefix := responseInput[:paste.index]
+			windowID := c.currentTerminalResponseWindowLocked()
+			if len(prefix) > 0 {
+				remaining, complete, trailingEscape, utf8Remaining :=
+					consumeTerminalResponseContinuation(
+						prefix,
+						c.terminalResponseContinuation,
+						c.terminalResponseContinuationEscape,
+						c.terminalResponseContinuationUtf8,
+					)
+				consumed := len(prefix) - len(remaining)
+				if consumed > 0 {
+					result.addResponse(windowID, prefix[:consumed])
+				}
+				if complete {
+					c.finishTerminalResponseLocked()
+					c.terminalResponseContinuation = 0
+					c.terminalResponseContinuationEscape = false
+					c.terminalResponseContinuationUtf8 = 0
+					c.routeInputLocked(
+						responseInput[consumed:],
+						0,
+						result,
+					)
+					return
+				}
+				c.terminalResponseContinuationEscape = trailingEscape
+				c.terminalResponseContinuationUtf8 = utf8Remaining
+			}
+			c.routeUserInputWithPasteLocked(
+				responseInput[paste.index:],
+				0,
+				paste.length,
+				result,
+			)
+			return
+		}
+		suffixLength := bracketedPasteStartSuffixLength(
+			responseInput,
+			responseLeadingUtf8Prefix,
+		)
+		processable := responseInput[:len(responseInput)-suffixLength]
+		if len(processable) == 0 {
+			c.terminalResponsePasteStartCarry = append(
+				c.terminalResponsePasteStartCarry[:0],
+				responseInput...,
+			)
+			c.renewTerminalResponseDeadlineLocked()
+			return
+		}
 		remaining, complete, trailingEscape, utf8Remaining :=
 			consumeTerminalResponseContinuation(
-				responseInput,
+				processable,
 				c.terminalResponseContinuation,
 				c.terminalResponseContinuationEscape,
 				c.terminalResponseContinuationUtf8,
@@ -4493,29 +4728,19 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		c.terminalResponseContinuationUtf8 = utf8Remaining
 		windowID := c.currentTerminalResponseWindowLocked()
 		if !complete {
+			if len(processable) > 0 {
+				result.addResponse(windowID, processable)
+			}
+			c.terminalResponsePasteStartCarry = append(
+				c.terminalResponsePasteStartCarry[:0],
+				responseInput[len(processable):]...,
+			)
 			c.renewTerminalResponseDeadlineLocked()
-			result.passthrough = nil
-			result.responses = append(
-				result.responses,
-				routedTerminalResponse{
-					windowID: windowID,
-					data:     append([]byte(nil), responseInput...),
-				},
-			)
-			return result
+			return
 		}
-		consumed := len(responseInput) - len(remaining)
+		consumed := len(processable) - len(remaining)
 		if consumed > 0 {
-			result.responses = append(
-				result.responses,
-				routedTerminalResponse{
-					windowID: windowID,
-					data: append(
-						[]byte(nil),
-						responseInput[:consumed]...,
-					),
-				},
-			)
+			result.addResponse(windowID, processable[:consumed])
 		}
 		c.finishTerminalResponseLocked()
 		if c.hasExpectedTerminalResponseLocked() {
@@ -4524,15 +4749,18 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		c.terminalResponseContinuation = 0
 		c.terminalResponseContinuationEscape = false
 		c.terminalResponseContinuationUtf8 = 0
-		if len(remaining) == 0 {
-			result.passthrough = nil
-			return result
+		c.terminalResponsePasteStartCarry = nil
+		combined = responseInput[consumed:]
+		if len(combined) == 0 {
+			return
 		}
-		combined = remaining
-		responseInput = remaining
+		responseInput = combined
+		responseLeadingUtf8Prefix = 0
 	}
+	currentInputStart := 0
 	if len(c.terminalResponseCarry) > 0 {
 		responseLeadingUtf8Prefix = 0
+		currentInputStart = len(c.terminalResponseCarry)
 		combined = make(
 			[]byte,
 			0,
@@ -4543,8 +4771,13 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		c.terminalResponseCarry = nil
 		c.terminalResponseCarryGeneration++
 	}
+	paste := bracketedPasteStart(combined, responseLeadingUtf8Prefix)
+	scanInput := combined
+	if paste.index >= 0 {
+		scanInput = combined[:paste.index]
+	}
 	responseEnds, incompleteStart, continuation, passthroughStart :=
-		scanTerminalResponseInput(combined, responseLeadingUtf8Prefix)
+		scanTerminalResponseInput(scanInput, responseLeadingUtf8Prefix)
 	responseStart := 0
 	for _, responseEnd := range responseEnds {
 		if !c.hasExpectedTerminalResponseLocked() {
@@ -4553,16 +4786,7 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 			break
 		}
 		windowID := c.currentTerminalResponseWindowLocked()
-		result.responses = append(
-			result.responses,
-			routedTerminalResponse{
-				windowID: windowID,
-				data: append(
-					[]byte(nil),
-					combined[responseStart:responseEnd]...,
-				),
-			},
-		)
+		result.addResponse(windowID, combined[responseStart:responseEnd])
 		c.finishTerminalResponseSequenceLocked(
 			windowID,
 			combined[responseStart:responseEnd],
@@ -4574,46 +4798,181 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 	}
 	if incompleteStart >= 0 {
 		if !c.hasExpectedTerminalResponseLocked() {
-			c.routeUserInputLocked(combined[responseStart:], &result)
-			return result
+			userInput := combined[responseStart:]
+			if paste.index >= 0 {
+				pasteOffset := paste.index - responseStart
+				c.routeUserInputWithPasteLocked(
+					userInput,
+					pasteOffset,
+					paste.length,
+					result,
+				)
+				return
+			}
+			c.routeUserInputLocked(userInput, result)
+			return
 		}
-		incomplete := combined[incompleteStart:]
+		incomplete := scanInput[incompleteStart:]
+		if paste.index >= 0 {
+			// A buffered reply has not reached the querying process yet, so it
+			// can be safely abandoned while preserving the expectation for a
+			// fresh complete reply after the paste. A streamed reply has already
+			// reached the process; keep that continuation alive and skip only
+			// the paste bytes from its stream.
+			if currentInputStart == 0 &&
+				len(incomplete) > terminalResponseCarryLimitBytes &&
+				continuation != 0 {
+				windowID := c.currentTerminalResponseWindowLocked()
+				c.terminalResponseContinuation = continuation
+				c.terminalResponseContinuationEscape =
+					incomplete[len(incomplete)-1] == '\x1b'
+				c.terminalResponseContinuationUtf8 =
+					trailingUtf8ContinuationCount(incomplete)
+				result.addResponse(windowID, incomplete)
+			}
+			userStart := paste.index
+			if currentInputStart > 0 {
+				if responseStart <= currentInputStart {
+					userStart = min(currentInputStart, paste.index)
+				}
+			}
+			userInput := combined[userStart:]
+			c.routeUserInputWithPasteLocked(
+				userInput,
+				paste.index-userStart,
+				paste.length,
+				result,
+			)
+			return
+		}
 		c.renewTerminalResponseDeadlineLocked()
 		if len(incomplete) <= terminalResponseCarryLimitBytes {
 			c.storeTerminalResponseCarryLocked(incomplete)
 		} else if continuation != 0 {
+			suffixLength := bracketedPasteStartSuffixLength(
+				incomplete,
+				0,
+			)
+			streamable := incomplete[:len(incomplete)-suffixLength]
 			windowID := c.currentTerminalResponseWindowLocked()
 			c.terminalResponseContinuation = continuation
 			c.terminalResponseContinuationEscape =
-				incomplete[len(incomplete)-1] == '\x1b'
+				len(streamable) > 0 &&
+					streamable[len(streamable)-1] == '\x1b'
 			c.terminalResponseContinuationUtf8 =
-				trailingUtf8ContinuationCount(incomplete)
-			result.responses = append(
-				result.responses,
-				routedTerminalResponse{
-					windowID: windowID,
-					data:     append([]byte(nil), incomplete...),
-				},
+				trailingUtf8ContinuationCount(streamable)
+			if len(streamable) > 0 {
+				result.addResponse(windowID, streamable)
+			}
+			c.terminalResponsePasteStartCarry = append(
+				c.terminalResponsePasteStartCarry[:0],
+				incomplete[len(streamable):]...,
 			)
+			c.renewTerminalResponseDeadlineLocked()
 		}
-		result.passthrough = nil
-		return result
+		return
 	}
-	if passthroughStart >= len(combined) {
-		result.passthrough = nil
-		return result
+	if paste.index >= 0 {
+		userStart := paste.index
+		if passthroughStart < len(scanInput) {
+			userStart = passthroughStart
+		}
+		userInput := combined[userStart:]
+		pasteOffset := paste.index - userStart
+		c.routeUserInputWithPasteLocked(
+			userInput,
+			pasteOffset,
+			paste.length,
+			result,
+		)
+		return
 	}
-	c.routeUserInputLocked(combined[passthroughStart:], &result)
-	return result
+	if passthroughStart >= len(scanInput) {
+		return
+	}
+	userLeadingUtf8Prefix := 0
+	if passthroughStart == 0 && currentInputStart == 0 {
+		userLeadingUtf8Prefix = responseLeadingUtf8Prefix
+	}
+	c.routeUserInputLockedWithUtf8Prefix(
+		combined[passthroughStart:],
+		userLeadingUtf8Prefix,
+		result,
+	)
+}
+
+func (c *attachClient) routeUserInputWithPasteLocked(
+	userInput []byte,
+	pasteOffset int,
+	pasteStartLength int,
+	result *attachInputRouting,
+) {
+	payloadStart := pasteOffset + pasteStartLength
+	pastePayloadLength := c.beginBracketedPasteLocked(
+		userInput[payloadStart:],
+	)
+	pasteEnd := payloadStart + pastePayloadLength
+	if c.hasExpectedTerminalResponseLocked() {
+		c.renewTerminalResponseDeadlineLocked()
+	}
+	c.routeUserInputLocked(userInput[:pasteEnd], result)
+	c.routePostPasteInputLocked(userInput[pasteEnd:], result)
+}
+
+func (c *attachClient) routePostPasteInputLocked(
+	data []byte,
+	result *attachInputRouting,
+) {
+	if len(data) == 0 {
+		return
+	}
+	// MonkeySSH appends one separator space outside CSI 201~ so multiple
+	// uploaded paths remain distinct shell arguments. Preserve it before
+	// checking whether the remaining bytes resume a pending machine reply.
+	if data[0] == ' ' &&
+		(c.hasExpectedTerminalResponseLocked() ||
+			c.terminalResponseContinuation != 0) {
+		c.routeUserInputLocked(data[:1], result)
+		data = data[1:]
+		if len(data) == 0 {
+			return
+		}
+	}
+	if c.terminalResponseContinuation != 0 {
+		c.routeInputLocked(data, 0, result)
+		return
+	}
+	c.routeInputLocked(data, 0, result)
 }
 
 func (c *attachClient) routeUserInputLocked(
 	data []byte,
 	result *attachInputRouting,
 ) {
-	result.passthrough = data
+	c.routeUserInputLockedWithUtf8Prefix(data, 0, result)
+}
+
+func (c *attachClient) routeUserInputLockedWithUtf8Prefix(
+	data []byte,
+	leadingUtf8Prefix int,
+	result *attachInputRouting,
+) {
 	if len(data) == 0 {
 		return
+	}
+	result.addUserInput(data)
+	if !c.inputBracketedPasteActive {
+		if suffixLength := bracketedPasteStartSuffixLength(
+			data,
+			leadingUtf8Prefix,
+		); suffixLength > 0 {
+			c.inputBracketedPasteStartCarry = append(
+				c.inputBracketedPasteStartCarry[:0],
+				data[len(data)-suffixLength:]...,
+			)
+		} else {
+			c.inputBracketedPasteStartCarry = nil
+		}
 	}
 	c.focusInputGeneration++
 	focusGeneration := c.focusInputGeneration
@@ -4639,7 +4998,7 @@ func (c *attachClient) routeUserInputLocked(
 			c.resolveAmbiguousFocusInput(focusGeneration, focusSequence)
 		})
 	}
-	result.claimsFocus = len(filteredInput) > 0
+	result.claimsFocus = result.claimsFocus || len(filteredInput) > 0
 }
 
 func (c *attachClient) hasExpectedTerminalResponseLocked() bool {
@@ -4653,6 +5012,7 @@ func (c *attachClient) resetTerminalResponseStateLocked() {
 	c.terminalResponseContinuation = 0
 	c.terminalResponseContinuationEscape = false
 	c.terminalResponseContinuationUtf8 = 0
+	c.terminalResponsePasteStartCarry = nil
 	c.terminalResponseWindows = nil
 	c.terminalResponseActiveWindow = ""
 	c.terminalResponseUntil = time.Time{}
@@ -4660,7 +5020,8 @@ func (c *attachClient) resetTerminalResponseStateLocked() {
 
 func (c *attachClient) renewTerminalResponseDeadlineLocked() {
 	c.terminalResponseUntil = time.Now().Add(terminalResponseFocusGrace)
-	if len(c.terminalResponseCarry) > 0 {
+	if len(c.terminalResponseCarry) > 0 ||
+		len(c.terminalResponsePasteStartCarry) > 0 {
 		c.scheduleTerminalResponseCarryLocked()
 	}
 }
@@ -4694,18 +5055,33 @@ func (c *attachClient) resolveAmbiguousTerminalResponseInput(
 ) {
 	c.activityMu.Lock()
 	if c.terminalResponseCarryGeneration != generation ||
-		len(c.terminalResponseCarry) == 0 {
+		(len(c.terminalResponseCarry) == 0 &&
+			len(c.terminalResponsePasteStartCarry) == 0) {
+		c.activityMu.Unlock()
+		return
+	}
+	if c.inputBracketedPasteActive {
+		c.renewTerminalResponseDeadlineLocked()
 		c.activityMu.Unlock()
 		return
 	}
 	c.inputMu.Lock()
-	data := append([]byte(nil), c.terminalResponseCarry...)
+	data := make(
+		[]byte,
+		0,
+		len(c.terminalResponseCarry)+
+			len(c.terminalResponsePasteStartCarry),
+	)
+	data = append(data, c.terminalResponseCarry...)
+	data = append(data, c.terminalResponsePasteStartCarry...)
 	c.terminalResponseCarry = nil
+	c.terminalResponsePasteStartCarry = nil
 	c.terminalResponseCarryGeneration++
 	if !c.terminalResponseUntil.IsZero() &&
 		time.Now().After(c.terminalResponseUntil) {
 		c.resetTerminalResponseStateLocked()
 	}
+	c.rememberForwardedBracketedPasteStartSuffixLocked(data)
 	claim := c.focusClaim
 	passthrough := c.inputPassthrough
 	c.activityMu.Unlock()
@@ -4722,6 +5098,19 @@ func (c *attachClient) resolveAmbiguousTerminalResponseInput(
 	if passthrough != nil {
 		passthrough(data)
 	}
+}
+
+func (c *attachClient) rememberForwardedBracketedPasteStartSuffixLocked(
+	data []byte,
+) {
+	suffixLength := bracketedPasteStartSuffixLength(data, 0)
+	if suffixLength == 0 {
+		return
+	}
+	c.inputBracketedPasteStartCarry = append(
+		c.inputBracketedPasteStartCarry[:0],
+		data[len(data)-suffixLength:]...,
+	)
 }
 
 func (c *attachClient) currentTerminalResponseWindowLocked() string {
@@ -5227,16 +5616,18 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 			if routing.claimsFocus {
 				s.promoteAttachClient(client)
 			}
-			for _, response := range routing.responses {
-				if response.windowID == "" {
-					s.writeActiveFromAttach(response.data)
+			for _, action := range routing.actions {
+				if action.userInput {
+					if s.handleAttachInputSerialized(client, action.data) {
+						return
+					}
 					continue
 				}
-				_ = s.writeWindow(response.windowID, response.data)
-			}
-			if len(routing.passthrough) > 0 &&
-				s.handleAttachInputSerialized(client, routing.passthrough) {
-				return
+				if action.windowID == "" {
+					s.writeActiveFromAttach(action.data)
+					continue
+				}
+				_ = s.writeWindow(action.windowID, action.data)
 			}
 		}
 		if err != nil {
@@ -9960,6 +10351,186 @@ func isReplayUnsafeCsiQuery(sequence []byte) bool {
 	default:
 		return false
 	}
+}
+
+// Bracketed-paste start/end markers in ESC-based and single-byte C1 forms.
+var (
+	bracketedPasteStart7Bit = []byte("\x1b[200~")
+	bracketedPasteStart8Bit = []byte("\x9b200~")
+	bracketedPasteEnd7Bit   = []byte("\x1b[201~")
+	bracketedPasteEnd8Bit   = []byte("\x9b201~")
+)
+
+type bracketedPasteStartMatch struct {
+	index  int
+	length int
+}
+
+func bracketedPasteStart(
+	data []byte,
+	leadingUtf8Prefix int,
+) bracketedPasteStartMatch {
+	match := bracketedPasteStartMatch{index: -1}
+	if index := bytes.Index(data, bracketedPasteStart7Bit); index >= 0 {
+		match = bracketedPasteStartMatch{
+			index:  index,
+			length: len(bracketedPasteStart7Bit),
+		}
+	}
+	for offset := 0; offset < len(data); {
+		index := bytes.Index(data[offset:], bracketedPasteStart8Bit)
+		if index < 0 {
+			break
+		}
+		index += offset
+		if (index >= leadingUtf8Prefix ||
+			data[index]&0xc0 != 0x80) &&
+			!isUtf8ContinuationAt(data, index) {
+			if match.index < 0 || index < match.index {
+				match = bracketedPasteStartMatch{
+					index:  index,
+					length: len(bracketedPasteStart8Bit),
+				}
+			}
+			break
+		}
+		offset = index + 1
+	}
+	return match
+}
+
+func bracketedPasteStartSuffixLength(
+	data []byte,
+	leadingUtf8Prefix int,
+) int {
+	longest := 0
+	for _, marker := range [][]byte{
+		bracketedPasteStart7Bit,
+		bracketedPasteStart8Bit,
+	} {
+		maximum := min(len(data), len(marker)-1)
+		for length := maximum; length > longest; length-- {
+			start := len(data) - length
+			if !bytes.Equal(data[start:], marker[:length]) {
+				continue
+			}
+			if marker[0] == 0x9b &&
+				((start < leadingUtf8Prefix &&
+					data[start]&0xc0 == 0x80) ||
+					isUtf8ContinuationAt(data, start)) {
+				continue
+			}
+			longest = length
+			break
+		}
+	}
+	return longest
+}
+
+func bracketedPasteEnd(
+	data []byte,
+	leadingUtf8Prefix int,
+) bracketedPasteStartMatch {
+	match := bracketedPasteStartMatch{index: -1}
+	if index := bytes.Index(data, bracketedPasteEnd7Bit); index >= 0 {
+		match = bracketedPasteStartMatch{
+			index:  index,
+			length: len(bracketedPasteEnd7Bit),
+		}
+	}
+	for offset := 0; offset < len(data); {
+		eightBit := bytes.Index(data[offset:], bracketedPasteEnd8Bit)
+		if eightBit < 0 {
+			break
+		}
+		eightBit += offset
+		if (eightBit >= leadingUtf8Prefix ||
+			data[eightBit]&0xc0 != 0x80) &&
+			!isUtf8ContinuationAt(data, eightBit) {
+			if match.index < 0 || eightBit < match.index {
+				match = bracketedPasteStartMatch{
+					index:  eightBit,
+					length: len(bracketedPasteEnd8Bit),
+				}
+			}
+			break
+		}
+		offset = eightBit + 1
+	}
+	return match
+}
+
+func bracketedPasteEndSuffix(
+	data []byte,
+	leadingUtf8Prefix int,
+) []byte {
+	longest := 0
+	for _, marker := range [][]byte{
+		bracketedPasteEnd7Bit,
+		bracketedPasteEnd8Bit,
+	} {
+		maximum := min(len(data), len(marker)-1)
+		for length := maximum; length > longest; length-- {
+			start := len(data) - length
+			if !bytes.Equal(data[start:], marker[:length]) {
+				continue
+			}
+			if marker[0] == 0x9b &&
+				((start < leadingUtf8Prefix &&
+					data[start]&0xc0 == 0x80) ||
+					isUtf8ContinuationAt(data, start)) {
+				continue
+			}
+			longest = length
+			break
+		}
+	}
+	if longest == 0 {
+		return nil
+	}
+	return append([]byte(nil), data[len(data)-longest:]...)
+}
+
+func (c *attachClient) beginBracketedPasteLocked(data []byte) int {
+	if end := bracketedPasteEnd(data, 0); end.index >= 0 {
+		c.inputBracketedPasteActive = false
+		c.inputBracketedPasteEndCarry = nil
+		return end.index + end.length
+	}
+	c.inputBracketedPasteActive = true
+	c.inputBracketedPasteEndCarry = bracketedPasteEndSuffix(data, 0)
+	return len(data)
+}
+
+func (c *attachClient) continueBracketedPasteLocked(
+	data []byte,
+	leadingUtf8Prefix int,
+) int {
+	combined := data
+	carryLength := len(c.inputBracketedPasteEndCarry)
+	if len(c.inputBracketedPasteEndCarry) > 0 {
+		combined = make(
+			[]byte,
+			0,
+			len(c.inputBracketedPasteEndCarry)+len(data),
+		)
+		combined = append(combined, c.inputBracketedPasteEndCarry...)
+		combined = append(combined, data...)
+		leadingUtf8Prefix = 0
+	}
+	if end := bracketedPasteEnd(
+		combined,
+		leadingUtf8Prefix,
+	); end.index >= 0 {
+		c.inputBracketedPasteActive = false
+		c.inputBracketedPasteEndCarry = nil
+		return end.index + end.length - carryLength
+	}
+	c.inputBracketedPasteEndCarry = bracketedPasteEndSuffix(
+		combined,
+		leadingUtf8Prefix,
+	)
+	return len(data)
 }
 
 func scanTerminalResponseInput(
