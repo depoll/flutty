@@ -249,6 +249,15 @@ void main() {
           );
         });
 
+        test('keeps host aliases outside the saved-forward namespace', () {
+          expect(
+            resolveGeneratedPortProxyNames([(id: 1, label: 'MonkeySSH 1')]),
+            {1: 'host-monkeys'},
+          );
+          expect(isReservedSavedForwardProxyName('monkeyssh-1'), isTrue);
+          expect(isReservedSavedForwardProxyName('host-monkeyssh-1'), isFalse);
+        });
+
         test('keeps duplicate-name IDs clear of reserved custom aliases', () {
           expect(
             resolveGeneratedPortProxyNames(
