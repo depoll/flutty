@@ -3767,11 +3767,14 @@ LISTEN ::1:4201
         () => hostRepository.getById(43),
       ).thenAnswer((_) async => _automaticForwardHost(enabled: true, id: 43));
       when(
-        () => hostRepository.hasDuplicateProxySlug(
+        () => hostRepository.resolveGeneratedProxyName(
           hostId: any(named: 'hostId'),
           label: any(named: 'label'),
         ),
-      ).thenAnswer((_) async => true);
+      ).thenAnswer((invocation) async {
+        final hostId = invocation.namedArguments[#hostId]! as int;
+        return 'dev-box-$hostId';
+      });
       final localContainer = ProviderContainer(
         overrides: [
           hostRepositoryProvider.overrideWithValue(hostRepository),

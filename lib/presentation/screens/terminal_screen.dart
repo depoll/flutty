@@ -14227,53 +14227,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         : fallbackSession?.activeTunnels ?? const <ActiveTunnelInfo>[];
     final options =
         tunnels
-            .where(
-              (tunnel) =>
-                  tunnel.isLocal &&
-                  isPortForwardBrowserHost(tunnel.localHost) &&
-                  tunnel.localPort >= 1 &&
-                  tunnel.localPort <= 65535 &&
-                  tunnel.browserHost != null &&
-                  tunnel.browserPort != null &&
-                  tunnel.browserPort! >= 1 &&
-                  tunnel.browserPort! <= 65535,
-            )
-            .map((tunnel) {
-              final sourcePort = tunnel.isAutomatic
-                  ? tunnel.remotePort
-                  : tunnel.localPort;
-              final sourceUri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.isAutomatic
-                    ? tunnel.remoteHost
-                    : tunnel.localHost,
-                localPort: sourcePort,
-              );
-              final uri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.browserHost!,
-                localPort: tunnel.browserPort!,
-              );
-              final fallbackHost = tunnel.browserFallbackHost;
-              final fallbackUri = fallbackHost == null
-                  ? null
-                  : buildPortForwardBrowserUriForBind(
-                      localHost: fallbackHost,
-                      localPort: tunnel.localPort,
-                    );
-              return _PortForwardBrowserOption(
-                uri: uri,
-                sourceUri: sourceUri,
-                fallbackUri: fallbackUri,
-                port: sourcePort,
-                title: tunnel.isAutomatic
-                    ? 'Port ${tunnel.remotePort}'
-                    : sourceUri.authority,
-                group: tunnel.isAutomatic
-                    ? (tunnel.isShellRelated
-                          ? PortForwardBrowserTabGroup.savedHost
-                          : PortForwardBrowserTabGroup.sharedHost)
-                    : PortForwardBrowserTabGroup.savedForward,
-              );
-            })
+            .map(_portForwardBrowserOptionForTunnel)
+            .whereType<_PortForwardBrowserOption>()
             .toList(growable: false)
           ..sort((left, right) {
             final groupComparison = left.group.index.compareTo(
@@ -14284,6 +14239,65 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 : left.port.compareTo(right.port);
           });
     return options;
+  }
+
+  _PortForwardBrowserOption? _portForwardBrowserOptionForTunnel(
+    ActiveTunnelInfo tunnel,
+  ) {
+    final browserHost = tunnel.browserHost;
+    final browserPort = tunnel.browserPort;
+    if (!tunnel.isLocal ||
+        !isPortForwardBrowserHost(tunnel.localHost) ||
+        tunnel.localPort < 1 ||
+        tunnel.localPort > 65535 ||
+        browserHost == null ||
+        browserPort == null ||
+        browserPort < 1 ||
+        browserPort > 65535) {
+      return null;
+    }
+
+    final sourcePort = tunnel.isAutomatic
+        ? tunnel.remotePort
+        : tunnel.localPort;
+    final sourceUri = buildPortForwardBrowserUriForBind(
+      localHost: tunnel.isAutomatic ? tunnel.remoteHost : tunnel.localHost,
+      localPort: sourcePort,
+    );
+    final uri = buildPortForwardBrowserUriForBind(
+      localHost: browserHost,
+      localPort: browserPort,
+    );
+    final fallbackHost = tunnel.browserFallbackHost;
+    final fallbackUri = fallbackHost == null
+        ? null
+        : buildPortForwardBrowserUriForBind(
+            localHost: fallbackHost,
+            localPort: tunnel.localPort,
+          );
+    return _PortForwardBrowserOption(
+      uri: uri,
+      sourceUri: sourceUri,
+      fallbackUri: fallbackUri,
+      port: sourcePort,
+      title: tunnel.isAutomatic
+          ? 'Port ${tunnel.remotePort}'
+          : sourceUri.authority,
+      group: tunnel.isAutomatic
+          ? (tunnel.isShellRelated
+                ? PortForwardBrowserTabGroup.savedHost
+                : PortForwardBrowserTabGroup.sharedHost)
+          : PortForwardBrowserTabGroup.savedForward,
+    );
+  }
+
+  Future<void> _openPortForwardBrowserTunnel(ActiveTunnelInfo tunnel) async {
+    final option = _portForwardBrowserOptionForTunnel(tunnel);
+    if (option == null) {
+      _showTerminalLinkMessage('This forward is not available in the browser');
+      return;
+    }
+    await _openPortForwardBrowserOption(option);
   }
 
   Future<void> _openPortForwardBrowserFromTerminal() async {
@@ -14313,6 +14327,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         hostId: widget.hostId,
         connectionId: connectionId,
         session: session,
+        onOpenInBrowser: _openPortForwardBrowserTunnel,
       );
     } finally {
       _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);

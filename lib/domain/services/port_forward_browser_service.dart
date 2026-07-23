@@ -121,16 +121,13 @@ String hostPortProxyDomain({
   required String hostLabel,
   required int hostId,
   String? customName,
-  bool disambiguateGeneratedName = false,
+  String? generatedName,
 }) {
   final normalizedCustomName = normalizeOptionalPortProxyName(customName);
   final prefix =
       normalizedCustomName ??
-      generatedPortProxyName(
-        hostLabel,
-        hostId: hostId,
-        includeHostId: disambiguateGeneratedName,
-      );
+      generatedName ??
+      generatedPortProxyName(hostLabel, hostId: hostId);
   return '$prefix.localhost';
 }
 

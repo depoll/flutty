@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
+import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_port_forwards_sheet.dart';
 
@@ -54,6 +55,8 @@ class _LiveTestSession extends SshSession {
       portForwardId: portForwardId,
       localHost: localHost,
       localPort: localPort,
+      browserHost: portForwardBrowserHostForPortForwardId(portForwardId),
+      browserPort: localPort,
       remoteHost: remoteHost,
       remotePort: remotePort,
       isLocal: true,
@@ -169,6 +172,7 @@ void main() {
       hostId: 10,
       client: _MockSshClient(),
     );
+    final openedTunnels = <ActiveTunnelInfo>[];
     automaticOwner.tunnels[-3000] = const ActiveTunnelInfo(
       portForwardId: -3000,
       localHost: '127.0.0.1',
@@ -219,6 +223,9 @@ void main() {
                     hostId: session.hostId,
                     connectionId: session.connectionId,
                     session: session,
+                    onOpenInBrowser: (tunnel) async {
+                      openedTunnels.add(tunnel);
+                    },
                   ),
                 ),
                 child: const Text('Open'),
@@ -242,11 +249,26 @@ void main() {
     expect(find.text('Web preview'), findsOneWidget);
     expect(find.text('Stopped • Auto-start'), findsOneWidget);
 
+    await tester.tap(find.text('Port 3000'));
+    await tester.pump();
+
+    expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000]);
+
+    await tester.tap(find.text('Web preview'));
+    await tester.pump();
+
+    expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000]);
+
     await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
 
     expect(session.starts, [1]);
     expect(find.text('Active now • Auto-start'), findsOneWidget);
+
+    await tester.tap(find.text('Web preview'));
+    await tester.pump();
+
+    expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000, 1]);
 
     await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
