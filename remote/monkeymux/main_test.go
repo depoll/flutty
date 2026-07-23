@@ -1283,6 +1283,59 @@ func TestPausedRedrawFallbackPreservesQueryOrder(t *testing.T) {
 	)
 }
 
+func TestEmptyForegroundRedrawFallbackPreservesQueryFailover(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                         "@1",
+		index:                      0,
+		agentTool:                  "copilot",
+		history:                    []byte("\x1b[Hlast known query frame"),
+		lastActivity:               time.Now(),
+		redrawForwardingPaused:     true,
+		redrawForwardingGeneration: 1,
+		redrawForwardingReplay:     []byte("clear-only replay"),
+		redrawForwardingBuffer:     []byte("\x1b[>q"),
+		redrawForwardingFailoverBuffer: []byte(
+			"\x1b[>q",
+		),
+		redrawForwardingQueryBuffer: []byte("\x1b[>q"),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.mu.Lock()
+	window.redrawForwardingFallbackReplay =
+		server.foregroundHistoryFallbackReplayLocked(window)
+	fallback := string(window.redrawForwardingFallbackReplay)
+	server.mu.Unlock()
+
+	secondaryConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		secondaryConn,
+		"secondary",
+		120,
+		40,
+	)
+	primary := registerTestAttachClient(
+		t,
+		server,
+		failingConn{},
+		"primary",
+		80,
+		24,
+	)
+	window.redrawForwardingPrimaryConn = primary.conn
+
+	server.resumePausedAttachForwarding("@1", 1)
+
+	waitForRecordedOutput(
+		t,
+		secondaryConn,
+		synchronizedTerminalOutputForTest(fallback+"\x1b[>q"),
+	)
+}
+
 func TestPausedRedrawQueryWaitDoesNotHoldAttachLock(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -2452,6 +2505,51 @@ func TestTerminalOutputGroundStateTracksSplitSequences(t *testing.T) {
 				)
 			}
 		}
+	}
+}
+
+func TestTerminalOutputHasVisibleContent(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{name: "empty", data: "", want: false},
+		{
+			name: "clear and title only",
+			data: "\x1b[H\x1b[2J\x1b]0;agent\x07",
+			want: false,
+		},
+		{name: "spaces only", data: "\x1b[44m   \x1b[0m", want: false},
+		{name: "ascii text", data: "\x1b[Hagent ready", want: true},
+		{name: "unicode text", data: "\x1b[H│", want: true},
+		{
+			name: "kitty store only",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA\x1b\\",
+			want: false,
+		},
+		{
+			name: "kitty transmit and display",
+			data: "\x1b_Ga=T,i=7,f=100;AAAA\x1b\\",
+			want: true,
+		},
+		{
+			name: "eight bit kitty store only",
+			data: "\x9fGa=t,i=7,f=100;AAAA\x9c",
+			want: false,
+		},
+		{
+			name: "eight bit kitty transmit and display",
+			data: "\x9fGa=T,i=7,f=100;AAAA\x9c",
+			want: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := terminalOutputHasVisibleContent([]byte(test.data)); got != test.want {
+				t.Fatalf("terminalOutputHasVisibleContent() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
@@ -4482,6 +4580,109 @@ func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 	waitForRecordedOutput(t, attach, want)
 	if strings.Contains(attach.String(), "stale tui screen") {
 		t.Fatalf("settled foreground replay retained stale TUI history: %q", attach.String())
+	}
+}
+
+func TestSelectWindowFallsBackToHistoryWhenForegroundRedrawIsEmpty(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hlast known tui screen"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(processGroup int) {}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+	// A TUI can acknowledge the resize with only reset/clear metadata while its
+	// two SIGWINCH notifications are coalesced. That is still not a usable frame.
+	server.handleWindowOutput(
+		"@2",
+		[]byte("\x1b[H\x1b[2J\x1b]0;agent\x07"),
+	)
+
+	server.mu.Lock()
+	generation := inactiveWindow.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@2", generation)
+
+	got := attach.String()
+	if !strings.Contains(got, "last known tui screen") {
+		t.Fatalf("empty foreground redraw left no visible fallback: %q", got)
+	}
+	if strings.Contains(got, "\x1b]0;agent\x07") {
+		t.Fatalf("failed redraw metadata contaminated the fallback frame: %q", got)
+	}
+	if !strings.HasPrefix(got, terminalSynchronizedOutputBegin) ||
+		!strings.HasSuffix(got, terminalSynchronizedOutputEnd) {
+		t.Fatalf("fallback replay was not painted atomically: %q", got)
+	}
+}
+
+func TestEmptyForegroundRedrawFallbackReachesEveryAttachClient(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hlast known shared frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	firstConn := &recordingConn{}
+	secondConn := &recordingConn{}
+	registerTestAttachClient(t, server, firstConn, "first", 120, 40)
+	registerTestAttachClient(t, server, secondConn, "second", 120, 40)
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(processGroup int) {}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+	server.mu.Lock()
+	generation := inactiveWindow.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@2", generation)
+
+	for name, conn := range map[string]*recordingConn{
+		"first":  firstConn,
+		"second": secondConn,
+	} {
+		waitForRecordedContains(t, conn, "last known shared frame")
+		got := conn.String()
+		if !strings.HasPrefix(got, terminalSynchronizedOutputBegin) ||
+			!strings.HasSuffix(got, terminalSynchronizedOutputEnd) {
+			t.Fatalf("%s client fallback was not atomic: %q", name, got)
+		}
 	}
 }
 
