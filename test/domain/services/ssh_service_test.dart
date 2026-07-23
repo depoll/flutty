@@ -3577,6 +3577,12 @@ LISTEN ::1:4201
       when(
         () => hostRepository.getById(43),
       ).thenAnswer((_) async => _automaticForwardHost(enabled: true, id: 43));
+      when(
+        () => hostRepository.hasDuplicateProxySlug(
+          hostId: any(named: 'hostId'),
+          label: any(named: 'label'),
+        ),
+      ).thenAnswer((_) async => true);
       final localContainer = ProviderContainer(
         overrides: [
           hostRepositoryProvider.overrideWithValue(hostRepository),
@@ -3608,6 +3614,14 @@ LISTEN ::1:4201
       expect(
         secondary.automaticConfigurations.last.includeHostLevelListeners,
         isFalse,
+      );
+      expect(
+        primary.automaticConfigurations.last.proxyHost,
+        'dev-box-42.localhost',
+      );
+      expect(
+        secondary.automaticConfigurations.last.proxyHost,
+        'dev-box-43.localhost',
       );
       expect(primary.shellLineageToken, isNot(secondary.shellLineageToken));
     });

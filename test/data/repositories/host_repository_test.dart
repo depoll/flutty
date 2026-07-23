@@ -112,6 +112,52 @@ void main() {
       expect(hosts.map((host) => host.label), ['First', 'Second']);
     });
 
+    test('hasDuplicateProxySlug matches generated slug collisions', () async {
+      final firstId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Dev Box',
+          hostname: 'first.example.com',
+          username: 'root',
+        ),
+      );
+      final secondId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Dev Box!',
+          hostname: 'second.example.com',
+          username: 'root',
+        ),
+      );
+      final uniqueId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Production',
+          hostname: 'prod.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        await repository.hasDuplicateProxySlug(
+          hostId: firstId,
+          label: 'Dev Box',
+        ),
+        isTrue,
+      );
+      expect(
+        await repository.hasDuplicateProxySlug(
+          hostId: secondId,
+          label: 'Dev Box!',
+        ),
+        isTrue,
+      );
+      expect(
+        await repository.hasDuplicateProxySlug(
+          hostId: uniqueId,
+          label: 'Production',
+        ),
+        isFalse,
+      );
+    });
+
     test('reorderByIds persists host order', () async {
       final firstId = await repository.insert(
         HostsCompanion.insert(

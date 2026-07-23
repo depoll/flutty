@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../data/database/database.dart';
+import '../models/port_proxy_name.dart';
 
 /// Returns whether the embedded WebView browser is available on [platform].
 bool isPortForwardBrowserSupported({TargetPlatform? platform}) {
@@ -98,22 +99,13 @@ String? validatePortProxyName(String? value) {
 }
 
 /// Builds a stable generated proxy prefix from a host label and database ID.
-String generatedPortProxyName(String hostLabel, {int? hostId}) {
-  final suffix = hostId == null ? '' : '-$hostId';
-  final dnsMaxBaseLength = 63 - suffix.length;
-  final maxBaseLength = dnsMaxBaseLength < 12 ? dnsMaxBaseLength : 12;
-  var base = hostLabel
-      .trim()
-      .toLowerCase()
-      .replaceAll(RegExp('[^a-z0-9]+'), '-')
-      .replaceAll(RegExp(r'^-+|-+$'), '');
-  if (base.isEmpty) {
-    base = 'host';
-  }
-  if (base.length > maxBaseLength) {
-    base = base.substring(0, maxBaseLength).replaceFirst(RegExp(r'-+$'), '');
-  }
-  return '$base$suffix';
+String generatedPortProxyName(
+  String hostLabel, {
+  int? hostId,
+  bool includeHostId = false,
+}) {
+  final suffix = includeHostId && hostId != null ? '-$hostId' : '';
+  return '${generatedPortProxySlug(hostLabel)}$suffix';
 }
 
 /// Resolves the full `.localhost` proxy domain for a host.
@@ -121,10 +113,16 @@ String hostPortProxyDomain({
   required String hostLabel,
   required int hostId,
   String? customName,
+  bool disambiguateGeneratedName = false,
 }) {
   final normalizedCustomName = normalizeOptionalPortProxyName(customName);
   final prefix =
-      normalizedCustomName ?? generatedPortProxyName(hostLabel, hostId: hostId);
+      normalizedCustomName ??
+      generatedPortProxyName(
+        hostLabel,
+        hostId: hostId,
+        includeHostId: disambiguateGeneratedName,
+      );
   return '$prefix.localhost';
 }
 

@@ -2,6 +2,7 @@ import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/models/port_proxy_name.dart';
 import '../../domain/services/auth_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
@@ -97,6 +98,22 @@ class HostRepository {
       return null;
     }
     return _decryptHost(host);
+  }
+
+  /// Whether another saved host generates the same default proxy slug.
+  Future<bool> hasDuplicateProxySlug({
+    required int hostId,
+    required String label,
+  }) async {
+    final proxySlug = generatedPortProxySlug(label);
+    final rows = await (_db.selectOnly(
+      _db.hosts,
+    )..addColumns([_db.hosts.id, _db.hosts.label])).get();
+    return rows.any(
+      (row) =>
+          row.read(_db.hosts.id) != hostId &&
+          generatedPortProxySlug(row.read(_db.hosts.label) ?? '') == proxySlug,
+    );
   }
 
   /// Search hosts by label, hostname, or tags.
