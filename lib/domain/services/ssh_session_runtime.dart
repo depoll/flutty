@@ -113,14 +113,20 @@ class _SshSessionRuntime {
   // (Copilot, gh, ...) emit hyperlinks even though their capability probes don't
   // recognize this TERM/TERM_PROGRAM combination; MonkeySSH renders and opens
   // OSC 8 links, so advertising support is safe.
-  static const _terminalCapabilityEnvironment = {
+  static const _terminalCapabilityEnvironmentBase = {
     'COLORTERM': 'truecolor',
     'TERM_PROGRAM': 'kitty',
     'KITTY_WINDOW_ID': '1',
     'FORCE_HYPERLINK': '1',
   };
-  static const _trueColorLoginShellCommand =
-      r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+  Map<String, String> get _terminalCapabilityEnvironment => {
+    ..._terminalCapabilityEnvironmentBase,
+    'MONKEYSSH_SHELL_TOKEN': _session.shellLineageToken,
+  };
+  String get _trueColorLoginShellCommand =>
+      'exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 '
+      'FORCE_HYPERLINK=1 MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken} '
+      r"""/bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
   static const _windowsShellDetectionTimeout = Duration(seconds: 2);
   static const _windowsShellDetectionCommand = r'''
 $ErrorActionPreference='SilentlyContinue'
@@ -324,7 +330,13 @@ if(!$__flResolved){$__flResolved='cmd'}
   Future<SSHSession> _openShell({SSHPtyConfig? pty, String? command}) async {
     final ptyConfig = pty ?? const SSHPtyConfig();
     if (command != null) {
-      return _session.client.execute(command, pty: ptyConfig);
+      final markedCommand = _session.remoteIsWindows
+          ? command
+          : 'env MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken} '
+                '/bin/sh -c '
+                '${_quotePosixShellArgument(r'if [ -n "$SHELL" ]; then exec "$SHELL" -c "$1"; else exec /bin/sh -c "$1"; fi')} '
+                'sh ${_quotePosixShellArgument(command)}';
+      return _session.client.execute(markedCommand, pty: ptyConfig);
     }
 
     if (_session.remoteIsWindows) {
@@ -348,6 +360,9 @@ if(!$__flResolved){$__flResolved='cmd'}
       return _session.client.shell(pty: ptyConfig);
     }
   }
+
+  static String _quotePosixShellArgument(String value) =>
+      "'${value.replaceAll("'", "'\"'\"'")}'";
 
   Future<SSHSession> _openWindowsCapabilityShell(SSHPtyConfig ptyConfig) async {
     try {
@@ -455,7 +470,8 @@ if(!$__flResolved){$__flResolved='cmd'}
         return 'cmd.exe /d /k "set COLORTERM=truecolor&& '
             'set TERM_PROGRAM=kitty&& '
             'set KITTY_WINDOW_ID=1&& '
-            'set FORCE_HYPERLINK=1"';
+            'set FORCE_HYPERLINK=1&& '
+            'set MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken}"';
       case _WindowsShellKind.powershell:
         return _windowsPowerShellCapabilityShellCommand('powershell.exe');
       case _WindowsShellKind.pwsh:

@@ -11,13 +11,44 @@ import '../../app/theme.dart';
 import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/settings_service.dart';
 
+/// Group used to prioritize and separate forwarded browser tabs.
+enum PortForwardBrowserTabGroup {
+  /// Automatically detected from this saved host's shell/mux process tree.
+  savedHost,
+
+  /// A user-configured saved port-forward rule.
+  savedForward,
+
+  /// A host-level service such as Docker or a background daemon.
+  sharedHost,
+}
+
+/// Presentation helpers for [PortForwardBrowserTabGroup].
+extension PortForwardBrowserTabGroupPresentation on PortForwardBrowserTabGroup {
+  /// Compact section label shown above grouped browser tabs.
+  String get label => switch (this) {
+    PortForwardBrowserTabGroup.savedHost => 'this saved host',
+    PortForwardBrowserTabGroup.savedForward => 'saved forwards',
+    PortForwardBrowserTabGroup.sharedHost => 'shared host services',
+  };
+
+  /// Icon identifying this group in the browser tab chip.
+  IconData get icon => switch (this) {
+    PortForwardBrowserTabGroup.savedHost => Icons.terminal_rounded,
+    PortForwardBrowserTabGroup.savedForward => Icons.swap_horiz_rounded,
+    PortForwardBrowserTabGroup.sharedHost => Icons.dns_rounded,
+  };
+}
+
 /// Initial tab configuration for the embedded browser.
 class PortForwardBrowserInitialTab {
   /// Creates an initial browser tab.
   const PortForwardBrowserInitialTab({
     required this.uri,
     this.sourceUri,
+    this.fallbackUri,
     this.title,
+    this.group = PortForwardBrowserTabGroup.savedForward,
   });
 
   /// URL loaded by the tab.
@@ -26,8 +57,14 @@ class PortForwardBrowserInitialTab {
   /// Original local-forward URL represented by [uri].
   final Uri? sourceUri;
 
+  /// Explicit loopback URL used if the friendly `.localhost` host cannot load.
+  final Uri? fallbackUri;
+
   /// Optional label shown until the page title is available.
   final String? title;
+
+  /// Presentation group used to order and separate tabs.
+  final PortForwardBrowserTabGroup group;
 }
 
 /// Launch configuration for the embedded port-forward browser.
@@ -155,6 +192,8 @@ class _PortForwardBrowserScreenState
         NavigationDelegate(
           onNavigationRequest: (request) =>
               _handleNavigationRequest(tab, request),
+          onWebResourceError: (error) =>
+              unawaited(_handleWebResourceError(tab, error)),
           onProgress: (progress) => _handleProgress(tab, progress),
           onPageStarted: (url) => _handlePageStarted(tab, url),
           onPageFinished: (url) => unawaited(_handlePageFinished(tab, url)),
@@ -167,8 +206,12 @@ class _PortForwardBrowserScreenState
       controller: controller,
       browserUri: initialUri,
       sourceUri: normalizePortForwardBrowserUri(seed.sourceUri ?? seed.uri),
+      fallbackUri: seed.fallbackUri == null
+          ? null
+          : normalizePortForwardBrowserUri(seed.fallbackUri!),
       currentUri: initialUri,
       initialTitle: seed.title,
+      group: seed.group,
     );
   }
 
@@ -360,22 +403,52 @@ class _PortForwardBrowserScreenState
 
   Widget _buildTabStrip(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
-      ),
-      child: SizedBox(
-        height: 48,
-        child: ListView.separated(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          scrollDirection: Axis.horizontal,
-          itemCount: _tabs.length,
-          separatorBuilder: (context, index) => const SizedBox(width: 8),
-          itemBuilder: (context, index) {
-            final tab = _tabs[index];
-            final selected = index == _selectedTabIndex;
-            return InputChip(
+    final groups = PortForwardBrowserTabGroup.values
+        .map(
+          (group) => (
+            group: group,
+            tabs: _tabs.indexed
+                .where((entry) => entry.$2.group == group)
+                .toList(growable: false),
+          ),
+        )
+        .where((entry) => entry.tabs.isNotEmpty)
+        .toList(growable: false);
+    final children = <Widget>[];
+    for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+      final groupEntry = groups[groupIndex];
+      if (groupIndex > 0) {
+        children.add(
+          VerticalDivider(
+            width: 20,
+            indent: 8,
+            endIndent: 8,
+            color: colorScheme.outlineVariant,
+          ),
+        );
+      }
+      children.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Center(
+            child: Text(
+              groupEntry.group.label,
+              style: FluttyTheme.displayMono(
+                fontSize: 11,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+      );
+      for (final indexedTab in groupEntry.tabs) {
+        final tabIndex = indexedTab.$1;
+        final tab = indexedTab.$2;
+        final selected = tabIndex == _selectedTabIndex;
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: InputChip(
               selected: selected,
               label: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 180),
@@ -386,14 +459,28 @@ class _PortForwardBrowserScreenState
                 ),
               ),
               avatar: Icon(
-                Icons.language,
+                tab.group.icon,
                 size: 18,
                 color: selected ? colorScheme.onSecondaryContainer : null,
               ),
-              onPressed: () => _selectTab(index),
-              onDeleted: _tabs.length > 1 ? () => _closeTab(index) : null,
-            );
-          },
+              onPressed: () => _selectTab(tabIndex),
+              onDeleted: _tabs.length > 1 ? () => _closeTab(tabIndex) : null,
+            ),
+          ),
+        );
+      }
+    }
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
+      ),
+      child: SizedBox(
+        height: 56,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          scrollDirection: Axis.horizontal,
+          children: children,
         ),
       ),
     );
@@ -445,6 +532,40 @@ class _PortForwardBrowserScreenState
         ..progress = progress
         ..isLoading = progress < 100;
     });
+  }
+
+  Future<void> _handleWebResourceError(
+    _PortForwardBrowserTabState tab,
+    WebResourceError error,
+  ) async {
+    final fallbackUri = tab.fallbackUri;
+    if (fallbackUri == null || !_tabs.contains(tab)) {
+      return;
+    }
+    final rawFailedUrl = error.url;
+    final failedUri = rawFailedUrl == null || rawFailedUrl.isEmpty
+        ? null
+        : Uri.tryParse(rawFailedUrl);
+    if (!shouldUsePortForwardBrowserFallback(
+      browserUri: tab.browserUri,
+      failedUri: failedUri,
+      isForMainFrame: error.isForMainFrame,
+      alreadyTried: tab.hasTriedLoopbackFallback,
+    )) {
+      return;
+    }
+
+    tab.hasTriedLoopbackFallback = true;
+    final fallbackRequestUri = buildPortForwardBrowserFallbackRequestUri(
+      browserUri: tab.browserUri,
+      fallbackUri: fallbackUri,
+      requestedUri: failedUri ?? tab.currentUri,
+    );
+    await tab.controller.loadRequest(fallbackRequestUri);
+    if (!mounted || !_tabs.contains(tab)) {
+      return;
+    }
+    _showMessage('Friendly host unavailable; opened the local proxy directly.');
   }
 
   void _handlePageStarted(_PortForwardBrowserTabState tab, String url) {
@@ -596,6 +717,13 @@ class _PortForwardBrowserScreenState
       return NavigationDecision.prevent;
     }
     if (uri.scheme == 'http' || uri.scheme == 'https') {
+      if (shouldLoadPortForwardBrowserFallbackDirectly(
+        requestedUri: uri,
+        fallbackUri: tab.fallbackUri,
+        fallbackActive: tab.hasTriedLoopbackFallback,
+      )) {
+        return NavigationDecision.navigate;
+      }
       final normalizedUri = _normalizeBrowserUri(uri);
       if (normalizedUri.toString() != uri.toString()) {
         unawaited(tab.controller.loadRequest(normalizedUri));
@@ -694,7 +822,9 @@ class _PortForwardBrowserTabState {
     required this.controller,
     required this.browserUri,
     required this.sourceUri,
+    required this.fallbackUri,
     required this.currentUri,
+    required this.group,
     this.initialTitle,
   });
 
@@ -702,12 +832,15 @@ class _PortForwardBrowserTabState {
   final WebViewController controller;
   final Uri browserUri;
   final Uri sourceUri;
+  final Uri? fallbackUri;
   final String? initialTitle;
+  final PortForwardBrowserTabGroup group;
   int progress = 0;
   bool canGoBack = false;
   bool canGoForward = false;
   bool isLoading = true;
   bool hasStartedLoading = false;
+  bool hasTriedLoopbackFallback = false;
   Uri currentUri;
   String? pageTitle;
 }

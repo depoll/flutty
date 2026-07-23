@@ -18,7 +18,9 @@ import 'diagnostics_log_service.dart';
 import 'host_cli_launch_preferences_service.dart';
 import 'host_key_verification.dart';
 import 'key_service.dart';
+import 'port_forward_browser_service.dart';
 import 'settings_service.dart';
+import 'ssh_service.dart';
 
 /// Supported transfer payload types.
 enum TransferPayloadType {
@@ -158,8 +160,10 @@ class SecureTransferService {
     this._hostRepository, {
     int isolateAssemblyThresholdBytes = _defaultIsolateAssemblyThresholdBytes,
     DiagnosticsLogger diagnosticsLogger = const NoopDiagnosticsLogger(),
+    Future<void> Function()? onHostsChanged,
   }) : _isolateAssemblyThresholdBytes = isolateAssemblyThresholdBytes,
-       _diagnosticsLogger = diagnosticsLogger;
+       _diagnosticsLogger = diagnosticsLogger,
+       _onHostsChanged = onHostsChanged;
 
   static const _defaultIsolateAssemblyThresholdBytes = 64 * 1024;
 
@@ -168,6 +172,7 @@ class SecureTransferService {
   final HostRepository _hostRepository;
   final int _isolateAssemblyThresholdBytes;
   final DiagnosticsLogger _diagnosticsLogger;
+  final Future<void> Function()? _onHostsChanged;
   final _random = Random.secure();
   final _aesGcm = AesGcm.with256bits();
   final _sha256 = Sha256();
@@ -420,7 +425,7 @@ class SecureTransferService {
       command: autoConnectCommand,
       snippetId: null,
     );
-    return _db.transaction(() async {
+    final importedHost = await _db.transaction(() async {
       int? keyId;
       final rawReferencedKey = payload.data['referencedKey'];
       if (rawReferencedKey is Map) {
@@ -468,6 +473,12 @@ class SecureTransferService {
           autoConnectCommand: Value(autoConnectCommand),
           autoConnectSnippetId: const Value(null),
           autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
+          autoForwardPorts: Value(
+            (hostData['autoForwardPorts'] as bool?) ?? false,
+          ),
+          portProxyName: Value(
+            _importedPortProxyName(hostData['portProxyName']),
+          ),
         ),
       );
       final rawCliLaunchPreferences = payload.data['hostCliLaunchPreferences'];
@@ -489,6 +500,8 @@ class SecureTransferService {
       }
       return createdHost;
     });
+    await _notifyHostsChanged();
+    return importedHost;
   }
 
   /// Imports a key payload and returns the created key.
@@ -619,6 +632,7 @@ class SecureTransferService {
           }
         }
       });
+      await _notifyHostsChanged();
       _diagnosticsLogger.info(
         'secure_transfer',
         'migration_import_completed',
@@ -634,6 +648,22 @@ class SecureTransferService {
         },
       );
       rethrow;
+    }
+  }
+
+  Future<void> _notifyHostsChanged() async {
+    final onHostsChanged = _onHostsChanged;
+    if (onHostsChanged == null) {
+      return;
+    }
+    try {
+      await onHostsChanged();
+    } on Object catch (error) {
+      _diagnosticsLogger.warning(
+        'secure_transfer',
+        'host_alias_reconfiguration_failed',
+        fields: {'errorType': error.runtimeType.toString()},
+      );
     }
   }
 
@@ -986,6 +1016,8 @@ class SecureTransferService {
           autoConnectCommand: Value(autoConnectCommand),
           autoConnectSnippetId: Value(mappedSnippetId),
           autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
+          autoForwardPorts: Value((item['autoForwardPorts'] as bool?) ?? false),
+          portProxyName: Value(_importedPortProxyName(item['portProxyName'])),
           sortOrder: Value(_optionalInt(item['sortOrder']) ?? 0),
         ),
       );
@@ -1453,6 +1485,18 @@ class SecureTransferService {
 
   String? _optionalString(Object? value) => value is String ? value : null;
 
+  String? _importedPortProxyName(Object? value) {
+    final normalized = normalizeOptionalPortProxyName(_optionalString(value));
+    if (validatePortProxyName(normalized) != null) {
+      _diagnosticsLogger.warning(
+        'secure_transfer',
+        'invalid_port_proxy_name_skipped',
+      );
+      return null;
+    }
+    return normalized;
+  }
+
   int? _optionalInt(Object? value) {
     if (value is int) {
       return value;
@@ -1689,6 +1733,9 @@ final secureTransferServiceProvider = Provider<SecureTransferService>(
     ref.watch(keyRepositoryProvider),
     ref.watch(hostRepositoryProvider),
     diagnosticsLogger: ref.watch(diagnosticsLoggerProvider),
+    onHostsChanged: () => ref
+        .read(activeSessionsProvider.notifier)
+        .reconfigureAutomaticPortForwardingForConnectedHosts(),
   ),
 );
 

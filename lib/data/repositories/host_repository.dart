@@ -2,6 +2,7 @@ import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/models/port_proxy_name.dart';
 import '../../domain/services/auth_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
@@ -99,6 +100,77 @@ class HostRepository {
     return _decryptHost(host);
   }
 
+  /// Resolves this host's collision-free custom or generated proxy name.
+  Future<String> resolveProxyName({
+    required int hostId,
+    required String label,
+    String? customName,
+  }) async {
+    final rows =
+        await (_db.selectOnly(_db.hosts)..addColumns([
+              _db.hosts.id,
+              _db.hosts.label,
+              _db.hosts.portProxyName,
+            ]))
+            .get();
+    final normalizedCustomName = normalizeOptionalStoredPortProxyName(
+      customName,
+    );
+    if (normalizedCustomName != null &&
+        isReservedSavedForwardProxyName(normalizedCustomName)) {
+      throw PortProxyNameConflictException(normalizedCustomName);
+    }
+    final customNamesById = <int, String>{};
+    final hosts = [
+      for (final row in rows)
+        (
+          id: row.read(_db.hosts.id)!,
+          label: row.read(_db.hosts.id) == hostId
+              ? label
+              : row.read(_db.hosts.label) ?? '',
+        ),
+    ];
+    if (!hosts.any((host) => host.id == hostId)) {
+      hosts.add((id: hostId, label: label));
+    }
+    for (final row in rows) {
+      final id = row.read(_db.hosts.id)!;
+      final name = normalizeOptionalStoredPortProxyName(
+        id == hostId ? customName : row.read(_db.hosts.portProxyName),
+      );
+      if (name != null) {
+        customNamesById[id] = name;
+      }
+    }
+    if (normalizedCustomName != null) {
+      customNamesById[hostId] = normalizedCustomName;
+      if (customNamesById.entries.any(
+        (entry) => entry.key != hostId && entry.value == normalizedCustomName,
+      )) {
+        throw PortProxyNameConflictException(normalizedCustomName);
+      }
+    }
+
+    final generatedHosts = hosts
+        .where((host) => !customNamesById.containsKey(host.id))
+        .toList(growable: false);
+    final existingGeneratedNames = resolveGeneratedPortProxyNames(
+      generatedHosts,
+      reservedNames: normalizedCustomName == null
+          ? customNamesById.values
+          : customNamesById.entries
+                .where((entry) => entry.key != hostId)
+                .map((entry) => entry.value),
+    );
+    if (normalizedCustomName != null) {
+      if (existingGeneratedNames.values.contains(normalizedCustomName)) {
+        throw PortProxyNameConflictException(normalizedCustomName);
+      }
+      return normalizedCustomName;
+    }
+    return existingGeneratedNames[hostId] ?? generatedPortProxySlug(label);
+  }
+
   /// Search hosts by label, hostname, or tags.
   ///
   /// The query is treated as a literal string: `%` and `_` are matched
@@ -125,6 +197,13 @@ class HostRepository {
 
   /// Insert a new host.
   Future<int> insert(HostsCompanion host) async {
+    if (host.portProxyName.present && host.portProxyName.value != null) {
+      await validateProxyName(
+        hostId: -1,
+        label: host.label.value,
+        customName: host.portProxyName.value,
+      );
+    }
     final encryptedHost = await _encryptHostCompanion(
       host.copyWith(
         sortOrder: host.sortOrder.present
@@ -133,6 +212,22 @@ class HostRepository {
       ),
     );
     return _db.into(_db.hosts).insert(encryptedHost);
+  }
+
+  /// Validates a custom proxy name against every saved alias.
+  Future<void> validateProxyName({
+    required int hostId,
+    required String label,
+    String? customName,
+  }) async {
+    if (normalizeOptionalStoredPortProxyName(customName) == null) {
+      return;
+    }
+    await resolveProxyName(
+      hostId: hostId,
+      label: label,
+      customName: customName,
+    );
   }
 
   /// Reorders all hosts to match [orderedIds].
