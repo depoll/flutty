@@ -5004,7 +5004,7 @@ func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	// A client "settle" forced redraw (syntheticRedraw=false) must not perform
 	// the synthetic width-1 dance: the size is already current and painted, so a
 	// dance would be a pure visible bounce. It still nudges the TUI via SIGWINCH.
-	server.resizeWithRedraw(120, 40, true, false)
+	server.resizeWithRedraw(120, 40, true, false, "")
 	if len(simulated) != 0 {
 		t.Fatalf("settle redraw performed synthetic dance = %#v, want none", simulated)
 	}
@@ -5015,7 +5015,7 @@ func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	// A restore-style forced redraw (syntheticRedraw=true) must dance so a
 	// freshly relaunched agent repaints its screen.
 	signaled = nil
-	server.resizeWithRedraw(120, 40, true, true)
+	server.resizeWithRedraw(120, 40, true, true, "")
 	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
 		t.Fatalf("synthetic redraw dance = %#v, want [@1:120x40]", simulated)
 	}
@@ -5121,6 +5121,64 @@ func TestThemeChangedRedrawSkipsPlainShell(t *testing.T) {
 	})
 	if len(simulated) != 0 {
 		t.Fatalf("plain shell theme redraw danced = %#v, want none", simulated)
+	}
+}
+
+// TestForceForegroundThemeRedrawPinsToHintWindow verifies the redraw is pinned
+// to the window that received the theme hint: if a concurrent window switch has
+// changed the active window, the redraw must not dance the (now different)
+// active window.
+func TestForceForegroundThemeRedrawPinsToHintWindow(t *testing.T) {
+	server := newMuxServer("test")
+	windowA := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "copilot",
+		lastActivity:      time.Now(),
+	}
+	windowB := &muxWindow{
+		id:                "@2",
+		index:             1,
+		foregroundCommand: "copilot",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{windowA, windowB}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+	server.mu.Lock()
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(simulated, w.id)
+	}
+	signalForegroundResize = func(int) {}
+
+	// The hint targeted @1, but the active window has since switched to @2.
+	// Pinning to @1 must skip the redraw rather than dance @2.
+	server.mu.Lock()
+	server.activeID = "@2"
+	server.mu.Unlock()
+	server.forceForegroundThemeRedraw("@1")
+	if len(simulated) != 0 {
+		t.Fatalf("redraw danced after active window changed = %#v, want none", simulated)
+	}
+
+	// When the pinned window is still active it dances normally.
+	server.mu.Lock()
+	server.activeID = "@1"
+	server.mu.Unlock()
+	server.forceForegroundThemeRedraw("@1")
+	if !reflect.DeepEqual(simulated, []string{"@1"}) {
+		t.Fatalf("pinned redraw dance = %#v, want [@1]", simulated)
 	}
 }
 
