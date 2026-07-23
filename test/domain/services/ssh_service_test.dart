@@ -755,6 +755,10 @@ LISTEN ::1:4201
       expect(command, contains(r'*",$ppid,"*'));
       expect(command, contains('ss -H -ltnp'));
       expect(command, contains('lsof -nP -iTCP -sTCP:LISTEN -Fpfnt'));
+      expect(
+        command.indexOf('lsof -nP'),
+        lessThan(command.indexOf('netstat -an')),
+      );
       expect(command, contains(r'if [ "$lsof_status" -gt 1 ]'));
     });
 
@@ -3767,9 +3771,10 @@ LISTEN ::1:4201
         () => hostRepository.getById(43),
       ).thenAnswer((_) async => _automaticForwardHost(enabled: true, id: 43));
       when(
-        () => hostRepository.resolveGeneratedProxyName(
+        () => hostRepository.resolveProxyName(
           hostId: any(named: 'hostId'),
           label: any(named: 'label'),
+          customName: any(named: 'customName'),
         ),
       ).thenAnswer((invocation) async {
         final hostId = invocation.namedArguments[#hostId]! as int;
@@ -4151,6 +4156,16 @@ LISTEN ::1:4201
       when(
         () => hostRepository.getById(42),
       ).thenAnswer((_) async => _automaticForwardHost(enabled: false));
+      when(
+        () => hostRepository.resolveProxyName(
+          hostId: any(named: 'hostId'),
+          label: any(named: 'label'),
+          customName: any(named: 'customName'),
+        ),
+      ).thenAnswer((invocation) async {
+        final customName = invocation.namedArguments[#customName] as String?;
+        return customName ?? 'dev-box-42';
+      });
       final localContainer = ProviderContainer(
         overrides: [
           sshServiceProvider.overrideWithValue(localSshService),

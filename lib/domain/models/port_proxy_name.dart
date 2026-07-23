@@ -1,6 +1,29 @@
 const _preferredGeneratedPortProxySlugLength = 12;
 const _maximumDnsLabelLength = 63;
 
+/// Error raised when a user-defined proxy name is already assigned.
+class PortProxyNameConflictException implements Exception {
+  /// Creates a conflict for [proxyName].
+  const PortProxyNameConflictException(this.proxyName);
+
+  /// Conflicting proxy name without the `.localhost` suffix.
+  final String proxyName;
+
+  @override
+  String toString() => 'Proxy name "$proxyName" is already in use';
+}
+
+/// Normalizes a stored custom proxy name without its `.localhost` suffix.
+String? normalizeOptionalStoredPortProxyName(String? value) {
+  final normalized = value?.trim().toLowerCase() ?? '';
+  if (normalized.isEmpty) {
+    return null;
+  }
+  return normalized.endsWith('.localhost')
+      ? normalized.substring(0, normalized.length - '.localhost'.length)
+      : normalized;
+}
+
 /// Builds the complete normalized base used by generated proxy aliases.
 String normalizedPortProxySlug(String hostLabel) {
   var base = hostLabel
@@ -26,8 +49,9 @@ String generatedPortProxySlug(String hostLabel) => _portProxySlugPrefix(
 /// far as needed. Numeric IDs are reserved for true duplicate normalized names
 /// or the rare case where names remain indistinguishable at the DNS limit.
 Map<int, String> resolveGeneratedPortProxyNames(
-  Iterable<({int id, String label})> hosts,
-) {
+  Iterable<({int id, String label})> hosts, {
+  Iterable<String> reservedNames = const [],
+}) {
   final normalizedById = <int, String>{
     for (final host in hosts) host.id: normalizedPortProxySlug(host.label),
   };
@@ -62,7 +86,11 @@ Map<int, String> resolveGeneratedPortProxyNames(
         ),
     };
     final candidateCounts = <String, int>{};
-    for (final name in [...resolved.values, ...candidates.values]) {
+    for (final name in [
+      ...reservedNames,
+      ...resolved.values,
+      ...candidates.values,
+    ]) {
       candidateCounts.update(name, (count) => count + 1, ifAbsent: () => 1);
     }
 
