@@ -4359,18 +4359,19 @@ class SshSession {
       );
       return;
     }
+    if (_isClosing || generation != _automaticPortForwardGeneration) {
+      return;
+    }
     if (detectedListeners == null) {
       _automaticPortDiscoveryUnavailable = true;
-      if (!_isClosing && generation == _automaticPortForwardGeneration) {
-        _automaticPortForwardTimer?.cancel();
-        _automaticPortForwardTimer = null;
-        await _stopAutomaticPortForwards();
-        DiagnosticsLogService.instance.info(
-          'ssh.forward',
-          'automatic_discovery_unsupported',
-          fields: {'connectionId': connectionId, 'hostId': hostId},
-        );
-      }
+      _automaticPortForwardTimer?.cancel();
+      _automaticPortForwardTimer = null;
+      await _stopAutomaticPortForwards();
+      DiagnosticsLogService.instance.info(
+        'ssh.forward',
+        'automatic_discovery_unsupported',
+        fields: {'connectionId': connectionId, 'hostId': hostId},
+      );
       return;
     }
     _automaticPortDiscoveryUnavailable = false;
