@@ -55,6 +55,7 @@ void main() {
           terminalThemeLightId: TerminalThemes.githubLightDefault.id,
           terminalThemeDarkId: TerminalThemes.nord.id,
           autoConnectRequiresConfirmation: false,
+          autoForwardPorts: false,
           sortOrder: 0,
         );
 
@@ -80,6 +81,7 @@ void main() {
           terminalThemeLightId: 'clean-white',
           terminalThemeDarkId: 'ocean-dark',
           autoConnectRequiresConfirmation: false,
+          autoForwardPorts: false,
           sortOrder: 0,
         );
 

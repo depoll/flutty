@@ -3248,14 +3248,18 @@ class _PortForwardBrowserOption {
   const _PortForwardBrowserOption({
     required this.uri,
     required this.sourceUri,
+    required this.fallbackUri,
     required this.port,
     required this.title,
+    required this.group,
   });
 
   final Uri uri;
   final Uri sourceUri;
+  final Uri? fallbackUri;
   final int port;
   final String title;
+  final PortForwardBrowserTabGroup group;
 }
 
 class _StoreDemoAutoConfirmDialogState {
@@ -3434,6 +3438,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
@@ -4859,6 +4864,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           reason: 'monkeymux_active_window_changed',
         );
       }
+
       _refreshMuxPaneContextAfterWindowStateChange(
         session,
         sessionName,
@@ -4879,6 +4885,65 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
     );
+  }
+
+  void _syncAutomaticPortForwardProcessRoots(
+    SshSession session,
+    Iterable<TmuxWindow>? windows, {
+    String? sessionName,
+    String? extraFlags,
+    bool queryTmuxPanePids = false,
+  }) {
+    final rootSyncGeneration = ++_automaticPortForwardRootSyncGeneration;
+    final processRoots = windows
+        ?.map((window) => window.panePid)
+        .whereType<int>()
+        .where((pid) => pid > 0)
+        .toSet();
+    unawaited(
+      session.updateAutomaticPortForwardProcessRoots(
+        processRoots ?? const <int>{},
+      ),
+    );
+    if (queryTmuxPanePids && sessionName != null) {
+      unawaited(
+        _syncAllAutomaticPortForwardProcessRoots(
+          session,
+          sessionName,
+          generation: rootSyncGeneration,
+          extraFlags: extraFlags,
+        ),
+      );
+    }
+  }
+
+  Future<void> _syncAllAutomaticPortForwardProcessRoots(
+    SshSession session,
+    String sessionName, {
+    required int generation,
+    String? extraFlags,
+  }) async {
+    try {
+      final panePids = await _tmuxService.listPanePids(
+        session,
+        sessionName,
+        extraFlags: extraFlags,
+      );
+      if (generation == _automaticPortForwardRootSyncGeneration &&
+          _connectionId == session.connectionId &&
+          _tmuxSessionName == sessionName) {
+        await session.updateAutomaticPortForwardProcessRoots(panePids);
+      }
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'mux_pane_roots_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
   }
 
   /// Syncs local terminal mode state when the active mux window's terminal-mode
@@ -9060,7 +9125,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   void _clearTmuxState() {
+    _automaticPortForwardRootSyncGeneration++;
     final session = _observedSession ?? _activeSession();
+    if (session != null) {
+      unawaited(session.updateAutomaticPortForwardProcessRoots(const {}));
+    }
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux ||
         session?.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       _terminal.resetHostResizeState();
@@ -9422,6 +9491,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
           continue;
         }
+        _syncAutomaticPortForwardProcessRoots(
+          session,
+          windows,
+          sessionName: sessionName,
+          extraFlags: muxBackend == RemoteMuxBackend.tmux
+              ? host?.tmuxExtraFlags
+              : null,
+          queryTmuxPanePids: muxBackend == RemoteMuxBackend.tmux,
+        );
 
         // Get the active window's working directory for SFTP/path resolution.
         var tmuxLaunchCwd = preferredWorkingDirectory;
@@ -9853,6 +9931,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
+      onWindowsChanged: (windows) => _syncAutomaticPortForwardProcessRoots(
+        session,
+        windows,
+        sessionName: _tmuxSessionName,
+        extraFlags: _activeTmuxExtraFlags,
+        queryTmuxPanePids: _activeMuxBackend == RemoteMuxBackend.tmux,
+      ),
       onWindowStateChanged: _handleTmuxWindowStateChanged,
       onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
@@ -14168,8 +14253,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _PortForwardBrowserOption(
             uri: browserUri,
             sourceUri: targetOption.sourceUri,
+            fallbackUri: targetOption.fallbackUri,
             port: targetOption.port,
             title: targetOption.title,
+            group: targetOption.group,
           ),
         );
         return;
@@ -14190,40 +14277,85 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   List<_PortForwardBrowserOption> _activePortForwardBrowserOptions() {
-    final connectionId = _connectionId;
-    final session = connectionId == null
-        ? _sessionController.observedSession
-        : ref.read(activeSessionsProvider.notifier).getSession(connectionId);
-    return session?.activeTunnels
-            .where(
-              (tunnel) =>
-                  tunnel.isLocal &&
-                  isPortForwardBrowserHost(tunnel.localHost) &&
-                  tunnel.localPort >= 1 &&
-                  tunnel.localPort <= 65535 &&
-                  tunnel.browserHost != null &&
-                  tunnel.browserPort != null &&
-                  tunnel.browserPort! >= 1 &&
-                  tunnel.browserPort! <= 65535,
-            )
-            .map((tunnel) {
-              final sourceUri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.localHost,
-                localPort: tunnel.localPort,
-              );
-              final uri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.browserHost!,
-                localPort: tunnel.browserPort!,
-              );
-              return _PortForwardBrowserOption(
-                uri: uri,
-                sourceUri: sourceUri,
-                port: tunnel.localPort,
-                title: sourceUri.authority,
-              );
-            })
-            .toList(growable: false) ??
-        const <_PortForwardBrowserOption>[];
+    final sessions = ref.read(activeSessionsProvider.notifier);
+    final hostTunnels = sessions.getActiveTunnelsForHost(widget.hostId);
+    final fallbackSession = _sessionController.observedSession;
+    final tunnels = hostTunnels.isNotEmpty
+        ? hostTunnels
+        : fallbackSession?.activeTunnels ?? const <ActiveTunnelInfo>[];
+    final options =
+        tunnels
+            .map(_portForwardBrowserOptionForTunnel)
+            .whereType<_PortForwardBrowserOption>()
+            .toList(growable: false)
+          ..sort((left, right) {
+            final groupComparison = left.group.index.compareTo(
+              right.group.index,
+            );
+            return groupComparison != 0
+                ? groupComparison
+                : left.port.compareTo(right.port);
+          });
+    return options;
+  }
+
+  _PortForwardBrowserOption? _portForwardBrowserOptionForTunnel(
+    ActiveTunnelInfo tunnel,
+  ) {
+    final browserHost = tunnel.browserHost;
+    final browserPort = tunnel.browserPort;
+    if (!tunnel.isLocal ||
+        !isPortForwardBrowserHost(tunnel.localHost) ||
+        tunnel.localPort < 1 ||
+        tunnel.localPort > 65535 ||
+        browserHost == null ||
+        browserPort == null ||
+        browserPort < 1 ||
+        browserPort > 65535) {
+      return null;
+    }
+
+    final sourcePort = tunnel.isAutomatic
+        ? tunnel.remotePort
+        : tunnel.localPort;
+    final sourceUri = buildPortForwardBrowserUriForBind(
+      localHost: tunnel.isAutomatic ? tunnel.remoteHost : tunnel.localHost,
+      localPort: sourcePort,
+    );
+    final uri = buildPortForwardBrowserUriForBind(
+      localHost: browserHost,
+      localPort: browserPort,
+    );
+    final fallbackHost = tunnel.browserFallbackHost;
+    final fallbackUri = fallbackHost == null
+        ? null
+        : buildPortForwardBrowserUriForBind(
+            localHost: fallbackHost,
+            localPort: tunnel.localPort,
+          );
+    return _PortForwardBrowserOption(
+      uri: uri,
+      sourceUri: sourceUri,
+      fallbackUri: fallbackUri,
+      port: sourcePort,
+      title: tunnel.isAutomatic
+          ? 'Port ${tunnel.remotePort}'
+          : sourceUri.authority,
+      group: tunnel.isAutomatic
+          ? (tunnel.isShellRelated
+                ? PortForwardBrowserTabGroup.savedHost
+                : PortForwardBrowserTabGroup.sharedHost)
+          : PortForwardBrowserTabGroup.savedForward,
+    );
+  }
+
+  Future<void> _openPortForwardBrowserTunnel(ActiveTunnelInfo tunnel) async {
+    final option = _portForwardBrowserOptionForTunnel(tunnel);
+    if (option == null) {
+      _showTerminalLinkMessage('This forward is not available in the browser');
+      return;
+    }
+    await _openPortForwardBrowserOption(option);
   }
 
   Future<void> _openPortForwardBrowserFromTerminal() async {
@@ -14253,6 +14385,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         hostId: widget.hostId,
         connectionId: connectionId,
         session: session,
+        onOpenInBrowser: _openPortForwardBrowserTunnel,
       );
     } finally {
       _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
@@ -14274,7 +14407,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             PortForwardBrowserInitialTab(
               uri: option.uri,
               sourceUri: option.sourceUri,
+              fallbackUri: option.fallbackUri,
               title: option.title,
+              group: option.group,
             ),
         ],
       ),

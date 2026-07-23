@@ -44,6 +44,7 @@ Host _buildHost({required int id, required String label}) => Host(
   port: 22,
   isFavorite: false,
   autoConnectRequiresConfirmation: false,
+  autoForwardPorts: false,
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
   sortOrder: 0,

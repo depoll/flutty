@@ -45,16 +45,30 @@ import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interfac
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
-const _trueColorLoginShellCommand =
-    r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+String _trueColorLoginShellCommand(
+  SshConnectionConfig config, {
+  int hostId = 1,
+}) =>
+    'exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 '
+    'FORCE_HYPERLINK=1 '
+    'MONKEYSSH_SHELL_TOKEN=${buildSshShellLineageToken(config, hostId: hostId)} '
+    r"""/bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
 
 void _stubTrueColorLoginShell(
   SSHClient client,
   SSHSession shell, {
+  SshConnectionConfig config = const SshConnectionConfig(
+    hostname: 'terminal.example.com',
+    port: 22,
+    username: 'root',
+  ),
   VoidCallback? onOpen,
 }) {
   when(
-    () => client.execute(_trueColorLoginShellCommand, pty: any(named: 'pty')),
+    () => client.execute(
+      _trueColorLoginShellCommand(config),
+      pty: any(named: 'pty'),
+    ),
   ).thenAnswer((_) async {
     onOpen?.call();
     return shell;
@@ -529,6 +543,7 @@ Host _buildHost({
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
   autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
+  autoForwardPorts: false,
   remoteMuxBackend: remoteMuxBackend?.storageValue,
   sortOrder: 0,
 );
@@ -1560,7 +1575,7 @@ void main() {
         await pumpScreen(tester, activeSessions: activeSessions);
         verify(
           () => sshClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(session.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1588,7 +1603,7 @@ void main() {
         expect(activeSessions.connectForceNewValues, <bool>[true]);
         verify(
           () => reconnectClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(reconnectSession.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1641,7 +1656,7 @@ void main() {
         await pumpScreen(tester, activeSessions: activeSessions);
         verify(
           () => sshClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(session.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1669,7 +1684,7 @@ void main() {
         expect(activeSessions.connectForceNewValues, <bool>[true]);
         verify(
           () => reconnectClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(reconnectSession.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1815,6 +1830,29 @@ void main() {
           config: session.config,
           activeTunnels: const [
             ActiveTunnelInfo(
+              portForwardId: -1,
+              localHost: '127.0.0.1',
+              localPort: 49154,
+              browserHost: 'dev-box.localhost',
+              browserPort: 49154,
+              remoteHost: '127.0.0.1',
+              remotePort: 4000,
+              isLocal: true,
+              isAutomatic: true,
+            ),
+            ActiveTunnelInfo(
+              portForwardId: -2,
+              localHost: '127.0.0.1',
+              localPort: 49153,
+              browserHost: 'dev-box.localhost',
+              browserPort: 49153,
+              remoteHost: '127.0.0.1',
+              remotePort: 4898,
+              isLocal: true,
+              isAutomatic: true,
+              isShellRelated: true,
+            ),
+            ActiveTunnelInfo(
               portForwardId: 42,
               localHost: '127.0.0.1',
               localPort: 49152,
@@ -1907,16 +1945,28 @@ void main() {
         final launch = openedLaunches.last;
         expect(launch.selectedIndex, 0);
         expect(launch.tabs.map((tab) => tab.uri.toString()).toList(), [
-          'http://monkeyssh-16.localhost:49152',
+          'http://dev-box.localhost:49153',
           'http://monkeyssh-17.localhost:3000',
+          'http://monkeyssh-16.localhost:49152',
+          'http://dev-box.localhost:49154',
         ]);
         expect(launch.tabs.map((tab) => tab.sourceUri.toString()).toList(), [
-          'http://127.0.0.1:49152',
+          'http://127.0.0.1:4898',
           'http://127.0.0.1:3000',
+          'http://127.0.0.1:49152',
+          'http://127.0.0.1:4000',
         ]);
         expect(launch.tabs.map((tab) => tab.title).toList(), [
-          '127.0.0.1:49152',
+          'Port 4898',
           '127.0.0.1:3000',
+          '127.0.0.1:49152',
+          'Port 4000',
+        ]);
+        expect(launch.tabs.map((tab) => tab.group).toList(), [
+          PortForwardBrowserTabGroup.savedHost,
+          PortForwardBrowserTabGroup.savedForward,
+          PortForwardBrowserTabGroup.savedForward,
+          PortForwardBrowserTabGroup.sharedHost,
         ]);
 
         router.pop();
@@ -2788,9 +2838,10 @@ void main() {
         await tester.pump();
 
         expect(executedCommands, hasLength(1));
-        expect(executedCommands.single, contains("'/tmp/monkeymux' attach"));
+        expect(executedCommands.single, contains('/tmp/monkeymux'));
+        expect(executedCommands.single, contains(' attach'));
         expect(executedCommands.single, contains('--update-policy never'));
-        expect(executedCommands.single, contains("'$sessionName'"));
+        expect(executedCommands.single, contains(sessionName));
         expect(
           shellWrites.map(utf8.decode).join(),
           isNot(contains('/tmp/monkeymux')),
@@ -2807,7 +2858,10 @@ void main() {
         final replacementShell = await replacementShellFuture;
 
         expect(executedCommands, hasLength(2));
-        expect(executedCommands.last, _trueColorLoginShellCommand);
+        expect(
+          executedCommands.last,
+          _trueColorLoginShellCommand(session.config),
+        );
         expect(replacementShell, same(loginShell));
         verify(() => loginShell.resizeTerminal(100, 32, 800, 512)).called(1);
         terminalOutputHandler('echo ready\r');
@@ -6644,11 +6698,15 @@ void main() {
 
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
-        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('/tmp/monkeymux'));
+        expect(startupCommand, contains(' attach'));
         expect(startupCommand, contains('--update-policy never'));
-        expect(startupCommand, contains("--cwd '/work/project'"));
-        expect(startupCommand, contains("--name 'Copilot CLI'"));
-        expect(startupCommand, contains("--command 'copilot --yolo'"));
+        expect(startupCommand, contains('--cwd'));
+        expect(startupCommand, contains('/work/project'));
+        expect(startupCommand, contains('--name'));
+        expect(startupCommand, contains('Copilot CLI'));
+        expect(startupCommand, contains('--command'));
+        expect(startupCommand, contains('copilot --yolo'));
         expect(startupCommand, contains('agents'));
         expect(
           shellWrites.map(utf8.decode).join(),
@@ -6779,9 +6837,10 @@ void main() {
 
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
-        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('/tmp/monkeymux'));
+        expect(startupCommand, contains(' attach'));
         expect(startupCommand, contains('--update-policy never'));
-        expect(startupCommand, contains("'$sessionName'"));
+        expect(startupCommand, contains(sessionName));
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
         expect(session.remoteMuxSessionName, sessionName);
@@ -6974,7 +7033,8 @@ void main() {
         expect(find.text('Update running MonkeyMux?'), findsNothing);
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
-        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('/tmp/monkeymux'));
+        expect(startupCommand, contains(' attach'));
         expect(
           startupCommand,
           contains('--update-policy ${testCase.updatePolicy.cliValue}'),
@@ -7178,7 +7238,9 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(executedCommands, <String>[
+          _trueColorLoginShellCommand(session.config),
+        ]);
         expect(shellWrites, isEmpty);
         expect(find.text('Install MonkeyMux helper?'), findsNothing);
         expect(session.remoteMuxBackend, isNull);
@@ -7187,7 +7249,7 @@ void main() {
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[false]);
         verify(
           () => sshClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(session.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -7272,7 +7334,9 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(executedCommands, <String>[
+          _trueColorLoginShellCommand(session.config),
+        ]);
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(find.text('MonkeyMux is unavailable.'), findsOneWidget);
         verify(

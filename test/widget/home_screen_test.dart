@@ -321,6 +321,7 @@ Host _buildHost({
   tags: tags,
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
+  autoForwardPorts: false,
   lastConnectedAt: null,
   terminalThemeLightId: null,
   terminalThemeDarkId: null,
