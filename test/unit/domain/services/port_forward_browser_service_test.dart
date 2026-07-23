@@ -368,6 +368,15 @@ void main() {
           ),
           isFalse,
         );
+        expect(
+          shouldUsePortForwardBrowserFallback(
+            browserUri: browserUri,
+            failedUri: browserUri,
+            isForMainFrame: null,
+            alreadyTried: false,
+          ),
+          isFalse,
+        );
       });
 
       test('ignores subresources and unrelated endpoints', () {

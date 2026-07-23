@@ -4246,7 +4246,6 @@ class SshSession {
     _automaticPortProxyHost = null;
     _automaticPortForwardExcludedListeners = const {};
     _automaticPortForwardShellTokens = const {};
-    _automaticPortForwardProcessRoots = const {};
     _automaticPortForwardIncludeHostLevelListeners = true;
     final runningRefresh = _automaticPortForwardRefresh;
     if (runningRefresh != null) {
