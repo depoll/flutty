@@ -6,6 +6,12 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
 void main() {
+  group('parseTmuxPanePids', () {
+    test('returns every valid unique pane process ID', () {
+      expect(parseTmuxPanePids('42\n73\n42\ninvalid\n0\n'), {42, 73});
+    });
+  });
+
   group('buildAgentToolDetectionCommand', () {
     test('runs an interactive instance of the user\'s shell', () {
       // The whole point of the rewrite: invoke `\$SHELL -ic`, falling
