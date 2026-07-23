@@ -550,7 +550,12 @@ class _PortForwardBrowserScreenState
     }
 
     tab.hasTriedLoopbackFallback = true;
-    await tab.controller.loadRequest(fallbackUri);
+    final fallbackRequestUri = buildPortForwardBrowserFallbackRequestUri(
+      browserUri: tab.browserUri,
+      fallbackUri: fallbackUri,
+      requestedUri: failedUri ?? tab.currentUri,
+    );
+    await tab.controller.loadRequest(fallbackRequestUri);
     if (!mounted || !_tabs.contains(tab)) {
       return;
     }
