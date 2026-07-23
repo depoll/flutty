@@ -3438,6 +3438,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
@@ -4892,6 +4893,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String? sessionName,
     String? extraFlags,
   }) {
+    final rootSyncGeneration = ++_automaticPortForwardRootSyncGeneration;
     final processRoots = windows
         ?.map((window) => window.panePid)
         .whereType<int>()
@@ -4907,6 +4909,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _syncAllAutomaticPortForwardProcessRoots(
           session,
           sessionName,
+          generation: rootSyncGeneration,
           extraFlags: extraFlags,
         ),
       );
@@ -4916,6 +4919,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _syncAllAutomaticPortForwardProcessRoots(
     SshSession session,
     String sessionName, {
+    required int generation,
     String? extraFlags,
   }) async {
     try {
@@ -4924,8 +4928,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sessionName,
         extraFlags: extraFlags,
       );
-      if (_connectionId == session.connectionId &&
-          (_tmuxSessionName == null || _tmuxSessionName == sessionName)) {
+      if (generation == _automaticPortForwardRootSyncGeneration &&
+          _connectionId == session.connectionId &&
+          _tmuxSessionName == sessionName) {
         await session.updateAutomaticPortForwardProcessRoots(panePids);
       }
     } on Object catch (error) {
@@ -9119,6 +9124,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   void _clearTmuxState() {
+    _automaticPortForwardRootSyncGeneration++;
     final session = _observedSession ?? _activeSession();
     if (session != null) {
       unawaited(session.updateAutomaticPortForwardProcessRoots(const {}));

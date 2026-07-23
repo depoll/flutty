@@ -116,6 +116,10 @@ class HostRepository {
     final normalizedCustomName = normalizeOptionalStoredPortProxyName(
       customName,
     );
+    if (normalizedCustomName != null &&
+        isReservedSavedForwardProxyName(normalizedCustomName)) {
+      throw PortProxyNameConflictException(normalizedCustomName);
+    }
     final customNamesById = <int, String>{};
     final hosts = [
       for (final row in rows)

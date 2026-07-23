@@ -1,5 +1,6 @@
 const _preferredGeneratedPortProxySlugLength = 12;
 const _maximumDnsLabelLength = 63;
+const _savedForwardProxyNamePrefix = 'monkeyssh-';
 
 /// Error raised when a user-defined proxy name is already assigned.
 class PortProxyNameConflictException extends FormatException {
@@ -32,8 +33,15 @@ String normalizedPortProxySlug(String hostLabel) {
   if (base.isEmpty) {
     base = 'host';
   }
+  if (base.startsWith(_savedForwardProxyNamePrefix)) {
+    base = 'host-$base';
+  }
   return base;
 }
+
+/// Whether [proxyName] belongs to the saved-forward browser namespace.
+bool isReservedSavedForwardProxyName(String proxyName) =>
+    proxyName.startsWith(_savedForwardProxyNamePrefix);
 
 /// Builds the short readable default used by generated proxy aliases.
 String generatedPortProxySlug(String hostLabel) => _portProxySlugPrefix(

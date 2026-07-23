@@ -259,6 +259,20 @@ void main() {
       );
     });
 
+    test('insert rejects the saved-forward alias namespace', () async {
+      expect(
+        repository.insert(
+          HostsCompanion.insert(
+            label: 'Custom',
+            hostname: 'custom.example.com',
+            username: 'root',
+            portProxyName: const Value('monkeyssh-1'),
+          ),
+        ),
+        throwsA(isA<PortProxyNameConflictException>()),
+      );
+    });
+
     test('reorderByIds persists host order', () async {
       final firstId = await repository.insert(
         HostsCompanion.insert(
