@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/domain/models/port_proxy_name.dart';
 import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
 
 PortForward _buildPortForward({
@@ -209,7 +210,7 @@ void main() {
           hostPortProxyDomain(
             hostLabel: 'Dev Box',
             hostId: 42,
-            disambiguateGeneratedName: true,
+            generatedName: 'dev-box-42',
           ),
           'dev-box-42.localhost',
         );
@@ -224,6 +225,29 @@ void main() {
           ),
           'api.dev.localhost',
         );
+      });
+
+      group('resolveGeneratedPortProxyNames', () {
+        test('extends colliding short slugs for different names', () {
+          expect(
+            resolveGeneratedPortProxyNames([
+              (id: 1, label: 'OVH Davidpollforlasd Production'),
+              (id: 2, label: 'OVH Davidpollforlasd Staging'),
+            ]),
+            {1: 'ovh-davidpollforlasd-p', 2: 'ovh-davidpollforlasd-s'},
+          );
+        });
+
+        test('uses IDs only for duplicate normalized names', () {
+          expect(
+            resolveGeneratedPortProxyNames([
+              (id: 42, label: 'Dev Box'),
+              (id: 43, label: 'Dev Box!'),
+              (id: 44, label: 'Production'),
+            ]),
+            {42: 'dev-box-42', 43: 'dev-box-43', 44: 'production'},
+          );
+        });
       });
 
       test('isolates automatic services by host and remote port', () {

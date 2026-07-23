@@ -100,20 +100,25 @@ class HostRepository {
     return _decryptHost(host);
   }
 
-  /// Whether another saved host generates the same default proxy slug.
-  Future<bool> hasDuplicateProxySlug({
+  /// Resolves this host's collision-free generated proxy name.
+  Future<String> resolveGeneratedProxyName({
     required int hostId,
     required String label,
   }) async {
-    final proxySlug = generatedPortProxySlug(label);
     final rows = await (_db.selectOnly(
       _db.hosts,
     )..addColumns([_db.hosts.id, _db.hosts.label])).get();
-    return rows.any(
-      (row) =>
-          row.read(_db.hosts.id) != hostId &&
-          generatedPortProxySlug(row.read(_db.hosts.label) ?? '') == proxySlug,
-    );
+    final hosts = [
+      for (final row in rows)
+        (
+          id: row.read(_db.hosts.id)!,
+          label: row.read(_db.hosts.id) == hostId
+              ? label
+              : row.read(_db.hosts.label) ?? '',
+        ),
+    ];
+    return resolveGeneratedPortProxyNames(hosts)[hostId] ??
+        generatedPortProxySlug(label);
   }
 
   /// Search hosts by label, hostname, or tags.

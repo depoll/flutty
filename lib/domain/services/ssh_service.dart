@@ -7070,24 +7070,31 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       ...additionalExcludedListeners,
     };
     var configurationFailed = false;
-    var hasDuplicateProxySlug = true;
-    try {
-      hasDuplicateProxySlug = await ref
-          .read(hostRepositoryProvider)
-          .hasDuplicateProxySlug(hostId: host.id, label: host.label);
-    } on Object catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.forward',
-        'proxy_label_check_failed',
-        fields: {'hostId': host.id, 'errorType': error.runtimeType},
+    String? generatedProxyName;
+    if (normalizeOptionalPortProxyName(host.portProxyName) == null) {
+      generatedProxyName = generatedPortProxyName(
+        host.label,
+        hostId: host.id,
+        includeHostId: true,
       );
+      try {
+        generatedProxyName = await ref
+            .read(hostRepositoryProvider)
+            .resolveGeneratedProxyName(hostId: host.id, label: host.label);
+      } on Object catch (error) {
+        DiagnosticsLogService.instance.warning(
+          'ssh.forward',
+          'proxy_label_check_failed',
+          fields: {'hostId': host.id, 'errorType': error.runtimeType},
+        );
+      }
     }
     final proxyHost = host.autoForwardPorts
         ? hostPortProxyDomain(
             hostLabel: host.label,
             hostId: host.id,
             customName: host.portProxyName,
-            disambiguateGeneratedName: hasDuplicateProxySlug,
+            generatedName: generatedProxyName,
           )
         : null;
     final shellLineageTokens = sessions

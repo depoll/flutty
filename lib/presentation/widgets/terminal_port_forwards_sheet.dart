@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,6 +20,7 @@ Future<void> showTerminalPortForwardsSheet({
   required int hostId,
   required int connectionId,
   required SshSession session,
+  required Future<void> Function(ActiveTunnelInfo tunnel) onOpenInBrowser,
 }) => showModalBottomSheet<void>(
   context: context,
   isScrollControlled: true,
@@ -33,6 +36,7 @@ Future<void> showTerminalPortForwardsSheet({
       hostId: hostId,
       connectionId: connectionId,
       session: session,
+      onOpenInBrowser: onOpenInBrowser,
       scrollController: scrollController,
     ),
   ),
@@ -43,12 +47,14 @@ class _TerminalPortForwardsSheet extends ConsumerStatefulWidget {
     required this.hostId,
     required this.connectionId,
     required this.session,
+    required this.onOpenInBrowser,
     required this.scrollController,
   });
 
   final int hostId;
   final int connectionId;
   final SshSession session;
+  final Future<void> Function(ActiveTunnelInfo tunnel) onOpenInBrowser;
   final ScrollController scrollController;
 
   @override
@@ -266,6 +272,8 @@ class _TerminalPortForwardsSheetState
     final proxyHost = tunnel.browserHost ?? tunnel.localHost;
     final proxyPort = tunnel.browserPort ?? tunnel.localPort;
     final endpoint = '$proxyHost:$proxyPort';
+    final canOpenInBrowser =
+        tunnel.browserHost != null && tunnel.browserPort != null;
     return ListTile(
       contentPadding: const EdgeInsets.fromLTRB(
         FluttyTheme.spacingMd,
@@ -274,6 +282,7 @@ class _TerminalPortForwardsSheetState
         FluttyTheme.spacingXs,
       ),
       leading: Icon(Icons.radar_rounded, color: colorScheme.primary),
+      onTap: canOpenInBrowser ? () => unawaited(_openInBrowser(tunnel)) : null,
       title: Text(
         'Port ${tunnel.remotePort}',
         maxLines: 1,
@@ -293,10 +302,23 @@ class _TerminalPortForwardsSheetState
           color: colorScheme.onSurfaceVariant,
         ),
       ),
-      trailing: IconButton(
-        tooltip: 'Copy $endpoint',
-        onPressed: () => _copyAutomaticEndpoint(endpoint),
-        icon: const Icon(Icons.copy_rounded),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (canOpenInBrowser)
+            ExcludeSemantics(
+              child: Icon(
+                Icons.open_in_browser_rounded,
+                size: 20,
+                color: colorScheme.primary,
+              ),
+            ),
+          IconButton(
+            tooltip: 'Copy $endpoint',
+            onPressed: () => _copyAutomaticEndpoint(endpoint),
+            icon: const Icon(Icons.copy_rounded),
+          ),
+        ],
       ),
     );
   }
@@ -318,99 +340,129 @@ class _TerminalPortForwardsSheetState
     final isActive = widget.session.isPortForwardActive(portForward.id);
     final isPending = _pendingPortForwardIds.contains(portForward.id);
     final isLocal = portForward.forwardType == 'local';
+    final activeTunnel = _activeTunnelForPortForward(portForward.id);
+    final canOpenInBrowser =
+        isLocal &&
+        activeTunnel?.browserHost != null &&
+        activeTunnel?.browserPort != null;
     final endpoint = isLocal
         ? '${portForward.localHost}:${portForward.localPort} → '
               '${portForward.remoteHost}:${portForward.remotePort}'
         : '${portForward.remoteHost}:${portForward.remotePort} → '
               '${portForward.localHost}:${portForward.localPort}';
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        FluttyTheme.spacingMd,
-        FluttyTheme.spacingSm,
-        FluttyTheme.spacingSm,
-        FluttyTheme.spacingSm,
-      ),
-      child: Row(
-        children: [
-          Icon(
-            isLocal ? Icons.arrow_forward_rounded : Icons.arrow_back_rounded,
-            color: isActive
-                ? colorScheme.primary
-                : colorScheme.onSurfaceVariant,
+    return Semantics(
+      button: canOpenInBrowser,
+      label: canOpenInBrowser
+          ? 'Open ${portForward.name} in the in-app browser'
+          : null,
+      child: InkWell(
+        onTap: canOpenInBrowser
+            ? () => unawaited(_openInBrowser(activeTunnel!))
+            : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+            FluttyTheme.spacingMd,
+            FluttyTheme.spacingSm,
+            FluttyTheme.spacingSm,
+            FluttyTheme.spacingSm,
           ),
-          const SizedBox(width: FluttyTheme.spacingMd),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  portForward.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.titleSmall,
-                ),
-                const SizedBox(height: FluttyTheme.spacingXs),
-                Text(
-                  endpoint,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: FluttyTheme.monoStyle.copyWith(
-                    fontSize: 11,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: FluttyTheme.spacingXs),
-                Text(
-                  [
-                    if (isActive) 'Active now' else 'Stopped',
-                    if (portForward.autoStart) 'Auto-start',
-                  ].join(' • '),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: isActive
-                        ? colorScheme.primary
-                        : colorScheme.onSurfaceVariant,
-                    fontWeight: isActive ? FontWeight.w600 : null,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          IconButton(
-            tooltip: 'Edit ${portForward.name}',
-            onPressed: () => _editForward(portForward),
-            icon: const Icon(Icons.edit_outlined),
-          ),
-          SizedBox(
-            width: 52,
-            height: 48,
-            child: Center(
-              child: isPending
-                  ? const SizedBox.square(
-                      dimension: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Semantics(
-                      label: isActive
-                          ? 'Stop ${portForward.name}'
-                          : 'Start ${portForward.name}',
-                      toggled: isActive,
-                      child: Switch(
-                        value: isActive,
-                        onChanged: !isConnected
-                            ? null
-                            : (enabled) => _setForwardActive(
-                                portForward,
-                                enabled: enabled,
-                              ),
+          child: Row(
+            children: [
+              Icon(
+                isLocal
+                    ? Icons.arrow_forward_rounded
+                    : Icons.arrow_back_rounded,
+                color: isActive
+                    ? colorScheme.primary
+                    : colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: FluttyTheme.spacingMd),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      portForward.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: FluttyTheme.spacingXs),
+                    Text(
+                      endpoint,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: FluttyTheme.monoStyle.copyWith(
+                        fontSize: 11,
+                        color: colorScheme.onSurfaceVariant,
                       ),
                     ),
-            ),
+                    const SizedBox(height: FluttyTheme.spacingXs),
+                    Text(
+                      [
+                        if (isActive) 'Active now' else 'Stopped',
+                        if (portForward.autoStart) 'Auto-start',
+                      ].join(' • '),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: isActive
+                            ? colorScheme.primary
+                            : colorScheme.onSurfaceVariant,
+                        fontWeight: isActive ? FontWeight.w600 : null,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Edit ${portForward.name}',
+                onPressed: () => _editForward(portForward),
+                icon: const Icon(Icons.edit_outlined),
+              ),
+              SizedBox(
+                width: 52,
+                height: 48,
+                child: Center(
+                  child: isPending
+                      ? const SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Semantics(
+                          label: isActive
+                              ? 'Stop ${portForward.name}'
+                              : 'Start ${portForward.name}',
+                          toggled: isActive,
+                          child: Switch(
+                            value: isActive,
+                            onChanged: !isConnected
+                                ? null
+                                : (enabled) => _setForwardActive(
+                                    portForward,
+                                    enabled: enabled,
+                                  ),
+                          ),
+                        ),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
+
+  ActiveTunnelInfo? _activeTunnelForPortForward(int portForwardId) {
+    for (final tunnel in widget.session.activeTunnels) {
+      if (tunnel.portForwardId == portForwardId) {
+        return tunnel;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _openInBrowser(ActiveTunnelInfo tunnel) =>
+      widget.onOpenInBrowser(tunnel);
 
   Future<void> _setForwardActive(
     PortForward portForward, {
