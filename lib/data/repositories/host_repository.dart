@@ -193,6 +193,13 @@ class HostRepository {
 
   /// Insert a new host.
   Future<int> insert(HostsCompanion host) async {
+    if (host.portProxyName.present && host.portProxyName.value != null) {
+      await validateProxyName(
+        hostId: -1,
+        label: host.label.value,
+        customName: host.portProxyName.value,
+      );
+    }
     final encryptedHost = await _encryptHostCompanion(
       host.copyWith(
         sortOrder: host.sortOrder.present
@@ -201,6 +208,22 @@ class HostRepository {
       ),
     );
     return _db.into(_db.hosts).insert(encryptedHost);
+  }
+
+  /// Validates a custom proxy name against every saved alias.
+  Future<void> validateProxyName({
+    required int hostId,
+    required String label,
+    String? customName,
+  }) async {
+    if (normalizeOptionalStoredPortProxyName(customName) == null) {
+      return;
+    }
+    await resolveProxyName(
+      hostId: hostId,
+      label: label,
+      customName: customName,
+    );
   }
 
   /// Reorders all hosts to match [orderedIds].
