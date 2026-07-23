@@ -393,7 +393,7 @@ void main() {
       expect(insertedHost.portProxyName.value, 'my.dev');
     });
 
-    testWidgets('updates the generated proxy hint with the host label', (
+    testWidgets('does not promise an unresolved generated proxy name', (
       tester,
     ) async {
       await _pumpHostCreateScreen(tester);
@@ -420,15 +420,11 @@ void main() {
             ),
           )
           .decoration;
-      expect(proxyNameDecoration().hintText, 'new-host');
-
-      await tester.enterText(
-        find.byKey(const Key('host-label-field')),
-        'Renamed Proxy Host',
+      expect(proxyNameDecoration().hintText, isNull);
+      expect(
+        proxyNameDecoration().helperText,
+        'Leave blank to generate a unique name from the host label.',
       );
-      await tester.pump();
-
-      expect(proxyNameDecoration().hintText, 'renamed-prox');
     });
 
     testWidgets('focuses an invalid automatic proxy domain on save', (

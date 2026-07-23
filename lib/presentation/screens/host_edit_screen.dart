@@ -2075,28 +2075,21 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           const SizedBox(height: 8),
           KeyedSubtree(
             key: _portProxyNameFieldLocationKey,
-            child: ValueListenableBuilder<TextEditingValue>(
-              valueListenable: _labelController,
-              builder: (context, _, _) => TextFormField(
-                key: const Key('host-port-proxy-name-field'),
-                controller: _portProxyNameController,
-                focusNode: _portProxyNameFocusNode,
-                decoration: InputDecoration(
-                  labelText: 'Proxy domain (optional)',
-                  hintText: generatedPortProxyName(
-                    _labelController.text,
-                    hostId: widget.hostId,
-                  ),
-                  suffixText: '.localhost',
-                  prefixIcon: const Icon(Icons.language_rounded),
-                  helperText:
-                      'Leave blank to generate a stable name from the host label.',
-                  helperMaxLines: _hostFieldHelperMaxLines,
-                ),
-                autocorrect: false,
-                style: FluttyTheme.monoStyle,
-                validator: validatePortProxyName,
+            child: TextFormField(
+              key: const Key('host-port-proxy-name-field'),
+              controller: _portProxyNameController,
+              focusNode: _portProxyNameFocusNode,
+              decoration: const InputDecoration(
+                labelText: 'Proxy domain (optional)',
+                suffixText: '.localhost',
+                prefixIcon: Icon(Icons.language_rounded),
+                helperText:
+                    'Leave blank to generate a unique name from the host label.',
+                helperMaxLines: _hostFieldHelperMaxLines,
               ),
+              autocorrect: false,
+              style: FluttyTheme.monoStyle,
+              validator: validatePortProxyName,
             ),
           ),
           const SizedBox(height: 16),
