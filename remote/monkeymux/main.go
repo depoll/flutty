@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -58,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.122"
+	monkeyMuxVersion                  = "0.1.124"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -527,6 +528,7 @@ type muxWindow struct {
 	redrawForwardingPaused               bool
 	redrawForwardingGeneration           int
 	redrawForwardingReplay               []byte
+	redrawForwardingFallbackReplay       []byte
 	redrawForwardingBuffer               []byte
 	redrawForwardingFailoverBuffer       []byte
 	redrawForwardingSecondaryBuffer      []byte
@@ -6693,6 +6695,8 @@ func (s *muxServer) deferAttachReplayForRedrawLocked(
 		window.redrawForwardingReplay[:0],
 		replay...,
 	)
+	window.redrawForwardingFallbackReplay =
+		s.foregroundHistoryFallbackReplayLocked(window)
 	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
 	return true
 }
@@ -6807,6 +6811,10 @@ func (s *muxServer) resumePausedAttachForwarding(
 		return
 	}
 	replay = append([]byte(nil), window.redrawForwardingReplay...)
+	fallbackReplay := append(
+		[]byte(nil),
+		window.redrawForwardingFallbackReplay...,
+	)
 	buffered = append([]byte(nil), window.redrawForwardingBuffer...)
 	failoverBuffered = append(
 		[]byte(nil),
@@ -6824,7 +6832,29 @@ func (s *muxServer) resumePausedAttachForwarding(
 	}
 	primaryNeedsFailover =
 		primaryNeedsFailover || window.redrawForwardingPrimaryNeedsFailover
+	hasVisibleRedraw := terminalOutputHasVisibleContent(secondaryBuffered)
+	if !hasVisibleRedraw {
+		// Some TUIs coalesce the temporary and restored SIGWINCH notifications
+		// and emit no redraw at all. Sending the normal foreground replay in
+		// that case would only clear the client, leaving it blank until future
+		// output. Fall back to the retained screen history and paint it inside
+		// one synchronized transaction so the user sees the last complete frame
+		// rather than an empty viewport.
+		if len(fallbackReplay) > 0 {
+			replay = nil
+			buffered = append(
+				append([]byte(nil), fallbackReplay...),
+				queryData...,
+			)
+			failoverBuffered = append(
+				append([]byte(nil), fallbackReplay...),
+				queryData...,
+			)
+			secondaryBuffered = append([]byte(nil), fallbackReplay...)
+		}
+	}
 	window.redrawForwardingReplay = nil
+	window.redrawForwardingFallbackReplay = nil
 	window.redrawForwardingBuffer = nil
 	window.redrawForwardingFailoverBuffer = nil
 	window.redrawForwardingSecondaryBuffer = nil
@@ -7068,6 +7098,29 @@ func (s *muxServer) replayBytesLockedWithSkip(
 		history = trimReplayHistoryForAttachWithParser(history, historyStart)
 		history = stripTerminalQueriesFromReplay(history)
 	}
+	return buildWindowReplay(window, history)
+}
+
+func (s *muxServer) foregroundHistoryFallbackReplayLocked(
+	window *muxWindow,
+) []byte {
+	if window == nil || !window.usesForegroundRedrawReplayLocked() {
+		return nil
+	}
+	history, historyStart := window.historyTailWithParserLocked()
+	history = trimReplayHistoryForAttachWithParser(history, historyStart)
+	history = stripTerminalQueriesFromReplay(history)
+	if len(history) == 0 {
+		return nil
+	}
+	images := window.kittyImageReplayLocked(nil)
+	replayHistory := make([]byte, 0, len(images)+len(history))
+	replayHistory = append(replayHistory, images...)
+	replayHistory = append(replayHistory, history...)
+	return buildWindowReplay(window, replayHistory)
+}
+
+func buildWindowReplay(window *muxWindow, history []byte) []byte {
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
 	preHistoryClear := terminalPreHistoryClearSequence(window)
@@ -8883,6 +8936,92 @@ func (p *terminalOutputParserSnapshot) observe(data []byte) {
 			}
 		}
 	}
+}
+
+func terminalOutputHasVisibleContent(data []byte) bool {
+	parser := terminalOutputParserSnapshot{}
+	for index := 0; index < len(data); {
+		if parser.state != terminalOutputParserGround ||
+			parser.utf8Remaining > 0 {
+			parser.observe(data[index : index+1])
+			index++
+			continue
+		}
+		end, control, kitty := kittyGraphicsControlAt(data, index)
+		if kitty {
+			if end < 0 {
+				return false
+			}
+			action := parseKittyControl(control)["a"]
+			if action == "T" || action == "p" || action == "a" || action == "c" {
+				return true
+			}
+			parser.observe(data[index:end])
+			index = end
+			continue
+		}
+		value := data[index]
+		if value < 0x20 || value == 0x7f || (value >= 0x80 && value < 0xa0) {
+			parser.observe(data[index : index+1])
+			index++
+			continue
+		}
+		r, size := utf8.DecodeRune(data[index:])
+		if r == utf8.RuneError && size == 1 {
+			parser.observe(data[index : index+1])
+			index++
+			continue
+		}
+		if !unicode.IsSpace(r) {
+			return true
+		}
+		parser.observe(data[index : index+size])
+		index += size
+	}
+	return false
+}
+
+func kittyGraphicsControlAt(
+	data []byte,
+	start int,
+) (end int, control string, recognized bool) {
+	if start+2 < len(data) &&
+		data[start] == '\x1b' &&
+		data[start+1] == '_' &&
+		data[start+2] == 'G' {
+		end = kittyApcEnd(data, start)
+		if end < 0 {
+			return -1, "", true
+		}
+		return end, kittyControl(data, start, end), true
+	}
+	if start+1 >= len(data) || data[start] != 0x9f || data[start+1] != 'G' {
+		return 0, "", false
+	}
+	from := start + 2
+	to := -1
+	for index := from; index < len(data); index++ {
+		switch {
+		case data[index] == 0x9c:
+			end = index + 1
+			to = index
+		case index+1 < len(data) &&
+			data[index] == '\x1b' &&
+			data[index+1] == '\\':
+			end = index + 2
+			to = index
+		}
+		if end > 0 {
+			break
+		}
+	}
+	if end == 0 {
+		return -1, "", true
+	}
+	if semi := bytes.IndexByte(data[from:to], ';'); semi >= 0 {
+		to = from + semi
+	}
+	return end, string(data[from:to]), true
 }
 
 func (p *terminalOutputParserSnapshot) reset() {
