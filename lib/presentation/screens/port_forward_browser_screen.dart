@@ -414,81 +414,73 @@ class _PortForwardBrowserScreenState
         )
         .where((entry) => entry.tabs.isNotEmpty)
         .toList(growable: false);
-    final maximumHeight = (MediaQuery.sizeOf(context).height * 0.28).clamp(
-      48.0,
-      160.0,
-    );
+    final children = <Widget>[];
+    for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+      final groupEntry = groups[groupIndex];
+      if (groupIndex > 0) {
+        children.add(
+          VerticalDivider(
+            width: 20,
+            indent: 8,
+            endIndent: 8,
+            color: colorScheme.outlineVariant,
+          ),
+        );
+      }
+      children.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Center(
+            child: Text(
+              groupEntry.group.label,
+              style: FluttyTheme.displayMono(
+                fontSize: 11,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+      );
+      for (final indexedTab in groupEntry.tabs) {
+        final tabIndex = indexedTab.$1;
+        final tab = indexedTab.$2;
+        final selected = tabIndex == _selectedTabIndex;
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: InputChip(
+              selected: selected,
+              label: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Text(
+                  _tabLabel(tab),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+              avatar: Icon(
+                tab.group.icon,
+                size: 18,
+                color: selected ? colorScheme.onSecondaryContainer : null,
+              ),
+              onPressed: () => _selectTab(tabIndex),
+              onDeleted: _tabs.length > 1 ? () => _closeTab(tabIndex) : null,
+            ),
+          ),
+        );
+      }
+    }
     return DecoratedBox(
       decoration: BoxDecoration(
         color: colorScheme.surface,
         border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
       ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: maximumHeight),
-        child: Scrollbar(
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final groupEntry in groups) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        groupEntry.group.label,
-                        style: FluttyTheme.displayMono(
-                          fontSize: 11,
-                          color: colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    height: 48,
-                    child: ListView.separated(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      scrollDirection: Axis.horizontal,
-                      itemCount: groupEntry.tabs.length,
-                      separatorBuilder: (context, index) =>
-                          const SizedBox(width: 8),
-                      itemBuilder: (context, index) {
-                        final indexedTab = groupEntry.tabs[index];
-                        final tabIndex = indexedTab.$1;
-                        final tab = indexedTab.$2;
-                        final selected = tabIndex == _selectedTabIndex;
-                        return InputChip(
-                          selected: selected,
-                          label: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 180),
-                            child: Text(
-                              _tabLabel(tab),
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
-                            ),
-                          ),
-                          avatar: Icon(
-                            tab.group.icon,
-                            size: 18,
-                            color: selected
-                                ? colorScheme.onSecondaryContainer
-                                : null,
-                          ),
-                          onPressed: () => _selectTab(tabIndex),
-                          onDeleted: _tabs.length > 1
-                              ? () => _closeTab(tabIndex)
-                              : null,
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
+      child: SizedBox(
+        height: 56,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          scrollDirection: Axis.horizontal,
+          children: children,
         ),
       ),
     );
