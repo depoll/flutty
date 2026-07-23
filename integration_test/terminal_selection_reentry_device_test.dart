@@ -62,6 +62,7 @@ Host _buildHost({required int id}) => Host(
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
   autoConnectRequiresConfirmation: false,
+  autoForwardPorts: false,
   sortOrder: 0,
 );
 

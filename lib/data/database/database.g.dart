@@ -2317,6 +2317,32 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _autoForwardPortsMeta = const VerificationMeta(
+    'autoForwardPorts',
+  );
+  @override
+  late final GeneratedColumn<bool> autoForwardPorts = GeneratedColumn<bool>(
+    'auto_forward_ports',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("auto_forward_ports" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _portProxyNameMeta = const VerificationMeta(
+    'portProxyName',
+  );
+  @override
+  late final GeneratedColumn<String> portProxyName = GeneratedColumn<String>(
+    'port_proxy_name',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _sortOrderMeta = const VerificationMeta(
     'sortOrder',
   );
@@ -2358,6 +2384,8 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     tmuxWorkingDirectory,
     tmuxExtraFlags,
     remoteMuxBackend,
+    autoForwardPorts,
+    portProxyName,
     sortOrder,
   ];
   @override
@@ -2576,6 +2604,24 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         ),
       );
     }
+    if (data.containsKey('auto_forward_ports')) {
+      context.handle(
+        _autoForwardPortsMeta,
+        autoForwardPorts.isAcceptableOrUnknown(
+          data['auto_forward_ports']!,
+          _autoForwardPortsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('port_proxy_name')) {
+      context.handle(
+        _portProxyNameMeta,
+        portProxyName.isAcceptableOrUnknown(
+          data['port_proxy_name']!,
+          _portProxyNameMeta,
+        ),
+      );
+    }
     if (data.containsKey('sort_order')) {
       context.handle(
         _sortOrderMeta,
@@ -2699,6 +2745,14 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         DriftSqlType.string,
         data['${effectivePrefix}remote_mux_backend'],
       ),
+      autoForwardPorts: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}auto_forward_ports'],
+      )!,
+      portProxyName: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}port_proxy_name'],
+      ),
       sortOrder: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}sort_order'],
@@ -2805,6 +2859,12 @@ class Host extends DataClass implements Insertable<Host> {
   /// populated.
   final String? remoteMuxBackend;
 
+  /// Whether newly opened remote TCP ports should be forwarded automatically.
+  final bool autoForwardPorts;
+
+  /// Optional user-defined prefix for this host's `.localhost` proxy domain.
+  final String? portProxyName;
+
   /// Display order within the hosts list.
   final int sortOrder;
   const Host({
@@ -2835,6 +2895,8 @@ class Host extends DataClass implements Insertable<Host> {
     this.tmuxWorkingDirectory,
     this.tmuxExtraFlags,
     this.remoteMuxBackend,
+    required this.autoForwardPorts,
+    this.portProxyName,
     required this.sortOrder,
   });
   @override
@@ -2905,6 +2967,10 @@ class Host extends DataClass implements Insertable<Host> {
     if (!nullToAbsent || remoteMuxBackend != null) {
       map['remote_mux_backend'] = Variable<String>(remoteMuxBackend);
     }
+    map['auto_forward_ports'] = Variable<bool>(autoForwardPorts);
+    if (!nullToAbsent || portProxyName != null) {
+      map['port_proxy_name'] = Variable<String>(portProxyName);
+    }
     map['sort_order'] = Variable<int>(sortOrder);
     return map;
   }
@@ -2972,6 +3038,10 @@ class Host extends DataClass implements Insertable<Host> {
       remoteMuxBackend: remoteMuxBackend == null && nullToAbsent
           ? const Value.absent()
           : Value(remoteMuxBackend),
+      autoForwardPorts: Value(autoForwardPorts),
+      portProxyName: portProxyName == null && nullToAbsent
+          ? const Value.absent()
+          : Value(portProxyName),
       sortOrder: Value(sortOrder),
     );
   }
@@ -3025,6 +3095,8 @@ class Host extends DataClass implements Insertable<Host> {
       ),
       tmuxExtraFlags: serializer.fromJson<String?>(json['tmuxExtraFlags']),
       remoteMuxBackend: serializer.fromJson<String?>(json['remoteMuxBackend']),
+      autoForwardPorts: serializer.fromJson<bool>(json['autoForwardPorts']),
+      portProxyName: serializer.fromJson<String?>(json['portProxyName']),
       sortOrder: serializer.fromJson<int>(json['sortOrder']),
     );
   }
@@ -3061,6 +3133,8 @@ class Host extends DataClass implements Insertable<Host> {
       'tmuxWorkingDirectory': serializer.toJson<String?>(tmuxWorkingDirectory),
       'tmuxExtraFlags': serializer.toJson<String?>(tmuxExtraFlags),
       'remoteMuxBackend': serializer.toJson<String?>(remoteMuxBackend),
+      'autoForwardPorts': serializer.toJson<bool>(autoForwardPorts),
+      'portProxyName': serializer.toJson<String?>(portProxyName),
       'sortOrder': serializer.toJson<int>(sortOrder),
     };
   }
@@ -3093,6 +3167,8 @@ class Host extends DataClass implements Insertable<Host> {
     Value<String?> tmuxWorkingDirectory = const Value.absent(),
     Value<String?> tmuxExtraFlags = const Value.absent(),
     Value<String?> remoteMuxBackend = const Value.absent(),
+    bool? autoForwardPorts,
+    Value<String?> portProxyName = const Value.absent(),
     int? sortOrder,
   }) => Host(
     id: id ?? this.id,
@@ -3145,6 +3221,10 @@ class Host extends DataClass implements Insertable<Host> {
     remoteMuxBackend: remoteMuxBackend.present
         ? remoteMuxBackend.value
         : this.remoteMuxBackend,
+    autoForwardPorts: autoForwardPorts ?? this.autoForwardPorts,
+    portProxyName: portProxyName.present
+        ? portProxyName.value
+        : this.portProxyName,
     sortOrder: sortOrder ?? this.sortOrder,
   );
   Host copyWithCompanion(HostsCompanion data) {
@@ -3205,6 +3285,12 @@ class Host extends DataClass implements Insertable<Host> {
       remoteMuxBackend: data.remoteMuxBackend.present
           ? data.remoteMuxBackend.value
           : this.remoteMuxBackend,
+      autoForwardPorts: data.autoForwardPorts.present
+          ? data.autoForwardPorts.value
+          : this.autoForwardPorts,
+      portProxyName: data.portProxyName.present
+          ? data.portProxyName.value
+          : this.portProxyName,
       sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
     );
   }
@@ -3241,6 +3327,8 @@ class Host extends DataClass implements Insertable<Host> {
           ..write('tmuxWorkingDirectory: $tmuxWorkingDirectory, ')
           ..write('tmuxExtraFlags: $tmuxExtraFlags, ')
           ..write('remoteMuxBackend: $remoteMuxBackend, ')
+          ..write('autoForwardPorts: $autoForwardPorts, ')
+          ..write('portProxyName: $portProxyName, ')
           ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
@@ -3275,6 +3363,8 @@ class Host extends DataClass implements Insertable<Host> {
     tmuxWorkingDirectory,
     tmuxExtraFlags,
     remoteMuxBackend,
+    autoForwardPorts,
+    portProxyName,
     sortOrder,
   ]);
   @override
@@ -3309,6 +3399,8 @@ class Host extends DataClass implements Insertable<Host> {
           other.tmuxWorkingDirectory == this.tmuxWorkingDirectory &&
           other.tmuxExtraFlags == this.tmuxExtraFlags &&
           other.remoteMuxBackend == this.remoteMuxBackend &&
+          other.autoForwardPorts == this.autoForwardPorts &&
+          other.portProxyName == this.portProxyName &&
           other.sortOrder == this.sortOrder);
 }
 
@@ -3340,6 +3432,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
   final Value<String?> tmuxWorkingDirectory;
   final Value<String?> tmuxExtraFlags;
   final Value<String?> remoteMuxBackend;
+  final Value<bool> autoForwardPorts;
+  final Value<String?> portProxyName;
   final Value<int> sortOrder;
   const HostsCompanion({
     this.id = const Value.absent(),
@@ -3369,6 +3463,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.tmuxWorkingDirectory = const Value.absent(),
     this.tmuxExtraFlags = const Value.absent(),
     this.remoteMuxBackend = const Value.absent(),
+    this.autoForwardPorts = const Value.absent(),
+    this.portProxyName = const Value.absent(),
     this.sortOrder = const Value.absent(),
   });
   HostsCompanion.insert({
@@ -3399,6 +3495,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.tmuxWorkingDirectory = const Value.absent(),
     this.tmuxExtraFlags = const Value.absent(),
     this.remoteMuxBackend = const Value.absent(),
+    this.autoForwardPorts = const Value.absent(),
+    this.portProxyName = const Value.absent(),
     this.sortOrder = const Value.absent(),
   }) : label = Value(label),
        hostname = Value(hostname),
@@ -3431,6 +3529,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Expression<String>? tmuxWorkingDirectory,
     Expression<String>? tmuxExtraFlags,
     Expression<String>? remoteMuxBackend,
+    Expression<bool>? autoForwardPorts,
+    Expression<String>? portProxyName,
     Expression<int>? sortOrder,
   }) {
     return RawValuesInsertable({
@@ -3469,6 +3569,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
         'tmux_working_directory': tmuxWorkingDirectory,
       if (tmuxExtraFlags != null) 'tmux_extra_flags': tmuxExtraFlags,
       if (remoteMuxBackend != null) 'remote_mux_backend': remoteMuxBackend,
+      if (autoForwardPorts != null) 'auto_forward_ports': autoForwardPorts,
+      if (portProxyName != null) 'port_proxy_name': portProxyName,
       if (sortOrder != null) 'sort_order': sortOrder,
     });
   }
@@ -3501,6 +3603,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Value<String?>? tmuxWorkingDirectory,
     Value<String?>? tmuxExtraFlags,
     Value<String?>? remoteMuxBackend,
+    Value<bool>? autoForwardPorts,
+    Value<String?>? portProxyName,
     Value<int>? sortOrder,
   }) {
     return HostsCompanion(
@@ -3533,6 +3637,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
       tmuxWorkingDirectory: tmuxWorkingDirectory ?? this.tmuxWorkingDirectory,
       tmuxExtraFlags: tmuxExtraFlags ?? this.tmuxExtraFlags,
       remoteMuxBackend: remoteMuxBackend ?? this.remoteMuxBackend,
+      autoForwardPorts: autoForwardPorts ?? this.autoForwardPorts,
+      portProxyName: portProxyName ?? this.portProxyName,
       sortOrder: sortOrder ?? this.sortOrder,
     );
   }
@@ -3633,6 +3739,12 @@ class HostsCompanion extends UpdateCompanion<Host> {
     if (remoteMuxBackend.present) {
       map['remote_mux_backend'] = Variable<String>(remoteMuxBackend.value);
     }
+    if (autoForwardPorts.present) {
+      map['auto_forward_ports'] = Variable<bool>(autoForwardPorts.value);
+    }
+    if (portProxyName.present) {
+      map['port_proxy_name'] = Variable<String>(portProxyName.value);
+    }
     if (sortOrder.present) {
       map['sort_order'] = Variable<int>(sortOrder.value);
     }
@@ -3671,6 +3783,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
           ..write('tmuxWorkingDirectory: $tmuxWorkingDirectory, ')
           ..write('tmuxExtraFlags: $tmuxExtraFlags, ')
           ..write('remoteMuxBackend: $remoteMuxBackend, ')
+          ..write('autoForwardPorts: $autoForwardPorts, ')
+          ..write('portProxyName: $portProxyName, ')
           ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
@@ -6776,6 +6890,8 @@ typedef $$HostsTableCreateCompanionBuilder =
       Value<String?> tmuxWorkingDirectory,
       Value<String?> tmuxExtraFlags,
       Value<String?> remoteMuxBackend,
+      Value<bool> autoForwardPorts,
+      Value<String?> portProxyName,
       Value<int> sortOrder,
     });
 typedef $$HostsTableUpdateCompanionBuilder =
@@ -6807,6 +6923,8 @@ typedef $$HostsTableUpdateCompanionBuilder =
       Value<String?> tmuxWorkingDirectory,
       Value<String?> tmuxExtraFlags,
       Value<String?> remoteMuxBackend,
+      Value<bool> autoForwardPorts,
+      Value<String?> portProxyName,
       Value<int> sortOrder,
     });
 
@@ -7023,6 +7141,16 @@ class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
 
   ColumnFilters<String> get remoteMuxBackend => $composableBuilder(
     column: $table.remoteMuxBackend,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get autoForwardPorts => $composableBuilder(
+    column: $table.autoForwardPorts,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get portProxyName => $composableBuilder(
+    column: $table.portProxyName,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -7274,6 +7402,16 @@ class $$HostsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<bool> get autoForwardPorts => $composableBuilder(
+    column: $table.autoForwardPorts,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get portProxyName => $composableBuilder(
+    column: $table.portProxyName,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get sortOrder => $composableBuilder(
     column: $table.sortOrder,
     builder: (column) => ColumnOrderings(column),
@@ -7475,6 +7613,16 @@ class $$HostsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<bool> get autoForwardPorts => $composableBuilder(
+    column: $table.autoForwardPorts,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get portProxyName => $composableBuilder(
+    column: $table.portProxyName,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<int> get sortOrder =>
       $composableBuilder(column: $table.sortOrder, builder: (column) => column);
 
@@ -7658,6 +7806,8 @@ class $$HostsTableTableManager
                 Value<String?> tmuxWorkingDirectory = const Value.absent(),
                 Value<String?> tmuxExtraFlags = const Value.absent(),
                 Value<String?> remoteMuxBackend = const Value.absent(),
+                Value<bool> autoForwardPorts = const Value.absent(),
+                Value<String?> portProxyName = const Value.absent(),
                 Value<int> sortOrder = const Value.absent(),
               }) => HostsCompanion(
                 id: id,
@@ -7688,6 +7838,8 @@ class $$HostsTableTableManager
                 tmuxWorkingDirectory: tmuxWorkingDirectory,
                 tmuxExtraFlags: tmuxExtraFlags,
                 remoteMuxBackend: remoteMuxBackend,
+                autoForwardPorts: autoForwardPorts,
+                portProxyName: portProxyName,
                 sortOrder: sortOrder,
               ),
           createCompanionCallback:
@@ -7720,6 +7872,8 @@ class $$HostsTableTableManager
                 Value<String?> tmuxWorkingDirectory = const Value.absent(),
                 Value<String?> tmuxExtraFlags = const Value.absent(),
                 Value<String?> remoteMuxBackend = const Value.absent(),
+                Value<bool> autoForwardPorts = const Value.absent(),
+                Value<String?> portProxyName = const Value.absent(),
                 Value<int> sortOrder = const Value.absent(),
               }) => HostsCompanion.insert(
                 id: id,
@@ -7750,6 +7904,8 @@ class $$HostsTableTableManager
                 tmuxWorkingDirectory: tmuxWorkingDirectory,
                 tmuxExtraFlags: tmuxExtraFlags,
                 remoteMuxBackend: remoteMuxBackend,
+                autoForwardPorts: autoForwardPorts,
+                portProxyName: portProxyName,
                 sortOrder: sortOrder,
               ),
           withReferenceMapper: (p0) => p0

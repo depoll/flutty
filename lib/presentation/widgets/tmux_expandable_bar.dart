@@ -24,6 +24,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.onSidebarDragOffsetChanged,
     this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
+    this.onWindowsChanged,
     this.onWindowStateChanged,
     this.onActiveWindowTerminalModeChanged,
     this.onWindowLoadStalled,
@@ -75,6 +76,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Called as the sidebar is dragged horizontally so the parent can resize.
   final ValueChanged<double> onSidebarDragOffsetChanged;
+
+  /// Called whenever the full remote window snapshot changes.
+  final ValueChanged<List<TmuxWindow>>? onWindowsChanged;
 
   final void Function(
     SshSession session,
@@ -521,6 +525,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       _isLoading = false;
       _pendingSelectedWindowIndex = nextPendingSelectedWindowIndex;
     });
+    widget.onWindowsChanged?.call(windows);
 
     // Terminal-mode toggles arrive as `window_updated` events that don't change
     // the active window or its theme identity, so they wouldn't otherwise

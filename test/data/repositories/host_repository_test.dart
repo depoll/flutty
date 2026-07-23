@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/port_proxy_name.dart';
 
 class _PausingSecretEncryptionService extends SecretEncryptionService {
   _PausingSecretEncryptionService({required this.pausePlaintext})
@@ -110,6 +111,166 @@ void main() {
       final hosts = await repository.getAll();
       expect(hosts.map((host) => host.sortOrder), [0, 1]);
       expect(hosts.map((host) => host.label), ['First', 'Second']);
+    });
+
+    test('resolveProxyName distinguishes names without IDs', () async {
+      final firstId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'OVH Davidpollforlasd Production',
+          hostname: 'first.example.com',
+          username: 'root',
+        ),
+      );
+      final secondId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'OVH Davidpollforlasd Staging',
+          hostname: 'second.example.com',
+          username: 'root',
+        ),
+      );
+      final uniqueId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Production',
+          hostname: 'prod.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        await repository.resolveProxyName(
+          hostId: firstId,
+          label: 'OVH Davidpollforlasd Production',
+        ),
+        'ovh-davidpollforlasd-p',
+      );
+      expect(
+        await repository.resolveProxyName(
+          hostId: secondId,
+          label: 'OVH Davidpollforlasd Staging',
+        ),
+        'ovh-davidpollforlasd-s',
+      );
+      expect(
+        await repository.resolveProxyName(
+          hostId: uniqueId,
+          label: 'Production',
+        ),
+        'production',
+      );
+    });
+
+    test('resolveProxyName suffixes true duplicate names', () async {
+      final firstId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Dev Box',
+          hostname: 'first.example.com',
+          username: 'root',
+        ),
+      );
+      final secondId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Dev Box!',
+          hostname: 'second.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        await repository.resolveProxyName(hostId: firstId, label: 'Dev Box'),
+        'dev-box-$firstId',
+      );
+      expect(
+        await repository.resolveProxyName(hostId: secondId, label: 'Dev Box!'),
+        'dev-box-$secondId',
+      );
+    });
+
+    test('resolveProxyName reserves stored custom aliases', () async {
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Custom',
+          hostname: 'custom.example.com',
+          username: 'root',
+          portProxyName: const Value('production'),
+        ),
+      );
+      final generatedId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Production',
+          hostname: 'generated.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        await repository.resolveProxyName(
+          hostId: generatedId,
+          label: 'Production',
+        ),
+        'production-$generatedId',
+      );
+    });
+
+    test('resolveProxyName rejects conflicting custom aliases', () async {
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Generated',
+          hostname: 'generated.example.com',
+          username: 'root',
+        ),
+      );
+      final customId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Custom',
+          hostname: 'custom.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        repository.resolveProxyName(
+          hostId: customId,
+          label: 'Custom',
+          customName: 'generated',
+        ),
+        throwsA(isA<PortProxyNameConflictException>()),
+      );
+    });
+
+    test('insert rejects a custom alias that collides with a host', () async {
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Production',
+          hostname: 'generated.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        repository.insert(
+          HostsCompanion.insert(
+            label: 'Custom',
+            hostname: 'custom.example.com',
+            username: 'root',
+            portProxyName: const Value('production'),
+          ),
+        ),
+        throwsA(isA<PortProxyNameConflictException>()),
+      );
+    });
+
+    test('insert rejects the saved-forward alias namespace', () async {
+      expect(
+        repository.insert(
+          HostsCompanion.insert(
+            label: 'Custom',
+            hostname: 'custom.example.com',
+            username: 'root',
+            portProxyName: const Value('monkeyssh-1'),
+          ),
+        ),
+        throwsA(isA<PortProxyNameConflictException>()),
+      );
     });
 
     test('reorderByIds persists host order', () async {
