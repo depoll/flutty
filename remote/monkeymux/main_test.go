@@ -5124,6 +5124,70 @@ func TestThemeChangedRedrawSkipsPlainShell(t *testing.T) {
 	}
 }
 
+// TestThemeChangedRedrawSurvivesViewportDeferral covers the case where a theme
+// redraw arrives while the active window is mid terminal-output-forwarding, so
+// the resize is deferred (all app attaches clip the viewport). The synthetic
+// redraw intent must be preserved so the replayed resize still dances; without
+// it the replay drops the repaint and the stale theme remains.
+func TestThemeChangedRedrawSurvivesViewportDeferral(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	window := &muxWindow{
+		id:                       "@1",
+		index:                    0,
+		foregroundCommand:        "copilot",
+		terminalOutputForwarding: true,
+		lastActivity:             time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := registerTestAttachClient(t, server, conn, "primary", 80, 24)
+	client.clipViewport = true
+	server.mu.Lock()
+	server.publishedWidth = 80
+	server.publishedHeight = 24
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", w.id, width, height),
+		)
+	}
+	signalForegroundResize = func(int) {}
+
+	// The window is forwarding output, so the theme redraw is deferred.
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+	if len(simulated) != 0 {
+		t.Fatalf("deferred theme redraw danced early = %#v, want none", simulated)
+	}
+	server.mu.Lock()
+	pendingSynthetic := server.pendingResizeSyntheticRedraw
+	window.terminalOutputForwarding = false
+	server.mu.Unlock()
+	if !pendingSynthetic {
+		t.Fatal("deferred theme redraw did not preserve the synthetic-redraw bit")
+	}
+
+	// Once the transition is safe again, the replayed resize must still perform
+	// the synthetic dance so the foreground TUI repaints in the new theme.
+	server.refreshPendingViewportResize()
+	if !reflect.DeepEqual(simulated, []string{"@1:80x24"}) {
+		t.Fatalf("replayed theme redraw dance = %#v, want [@1:80x24]", simulated)
+	}
+}
+
 func TestForegroundRedrawTemporarySize(t *testing.T) {
 	tests := []struct {
 		name       string

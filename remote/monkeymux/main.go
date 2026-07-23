@@ -460,9 +460,16 @@ type muxServer struct {
 	pendingResizeWidth      int
 	pendingResizeHeight     int
 	pendingResizeRedraw     bool
-	controls                map[*controlClient]struct{}
-	themeHint               []byte
-	closed                  bool
+	// pendingResizeSyntheticRedraw preserves, across a viewport-transition
+	// deferral, whether a deferred forced redraw needs the synthetic width-1
+	// dance (e.g. a theme change, whose SIGWINCH at an unchanged size would not
+	// otherwise repaint). Without it, refreshPendingViewportResize would replay
+	// the deferred redraw with syntheticRedraw=false and silently drop the
+	// repaint. Reset wherever pendingResizeRedraw is.
+	pendingResizeSyntheticRedraw bool
+	controls                     map[*controlClient]struct{}
+	themeHint                    []byte
+	closed                       bool
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -4072,6 +4079,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.pendingResizeWidth = 0
 				s.pendingResizeHeight = 0
 				s.pendingResizeRedraw = false
+				s.pendingResizeSyntheticRedraw = false
 				if resetViewportParser {
 					s.enqueueAttachViewportResizeAfterResetLocked(
 						s.width,
@@ -5517,6 +5525,7 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 		s.pendingResizeWidth = 0
 		s.pendingResizeHeight = 0
 		s.pendingResizeRedraw = false
+		s.pendingResizeSyntheticRedraw = false
 		if s.attachConn == nil {
 			width = s.publishedWidth
 			height = s.publishedHeight
@@ -5575,6 +5584,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.pendingResizeWidth = 0
 		s.pendingResizeHeight = 0
 		s.pendingResizeRedraw = false
+		s.pendingResizeSyntheticRedraw = false
 		s.width = width
 		s.height = height
 		s.enqueueAttachViewportResizeLocked(width, height)
@@ -6380,6 +6390,7 @@ func (s *muxServer) selectWindowWithSkip(
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
+	s.pendingResizeSyntheticRedraw = false
 	if resetViewportParser {
 		s.enqueueAttachViewportResizeAfterResetLocked(s.width, s.height)
 	} else {
@@ -6445,6 +6456,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.pendingResizeWidth = 0
 			s.pendingResizeHeight = 0
 			s.pendingResizeRedraw = false
+			s.pendingResizeSyntheticRedraw = false
 			if resetViewportParser {
 				s.enqueueAttachViewportResizeAfterResetLocked(
 					s.width,
@@ -6590,6 +6602,8 @@ func (s *muxServer) resizeWithRedraw(
 		s.pendingResizeWidth = width
 		s.pendingResizeHeight = height
 		s.pendingResizeRedraw = s.pendingResizeRedraw || forceRedraw
+		s.pendingResizeSyntheticRedraw =
+			s.pendingResizeSyntheticRedraw || (forceRedraw && syntheticRedraw)
 		s.mu.Unlock()
 		return
 	}
@@ -6598,6 +6612,7 @@ func (s *muxServer) resizeWithRedraw(
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
+	s.pendingResizeSyntheticRedraw = false
 	sizeChanged :=
 		s.width != width ||
 			s.height != height ||
@@ -6660,11 +6675,12 @@ func (s *muxServer) refreshPendingViewportResize() {
 	width := s.pendingResizeWidth
 	height := s.pendingResizeHeight
 	forceRedraw := s.pendingResizeRedraw
+	syntheticRedraw := s.pendingResizeSyntheticRedraw
 	s.mu.Unlock()
 	if width <= 0 || height <= 0 {
 		return
 	}
-	s.resizeWithRedraw(width, height, forceRedraw, false)
+	s.resizeWithRedraw(width, height, forceRedraw, syntheticRedraw)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
@@ -8173,6 +8189,7 @@ func (s *muxServer) replayFocusedWindowToClient(
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
+	s.pendingResizeSyntheticRedraw = false
 	s.width = width
 	s.height = height
 	s.enqueueAttachViewportResizeLocked(width, height)

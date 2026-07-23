@@ -3569,6 +3569,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // passed to MonkeyMux as the theme_changed `redraw` flag and cleared once that
   // flag has been delivered.
   bool _monkeyMuxForcedThemeRedrawPending = false;
+  // Bumped every time a redraw obligation is (re)latched. The consumer captures
+  // it before awaiting the refresh and only clears the latch if it is unchanged,
+  // so a newer obligation latched during the await (e.g. a coalesced theme that
+  // will be sent next) is not erased and still gets its redraw.
+  int _monkeyMuxForcedThemeRedrawGeneration = 0;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
   DateTime? _lastMuxWindowChangeAt;
@@ -4552,6 +4557,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           // "Use Theme" re-applies the same colors). It is passed to MonkeyMux
           // as the theme_changed `redraw` flag and cleared once delivered.
           _monkeyMuxForcedThemeRedrawPending = true;
+          _monkeyMuxForcedThemeRedrawGeneration += 1;
         }
         DiagnosticsLogService.instance.info(
           'terminal.theme',
@@ -5410,6 +5416,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         // obligation. Passing it with the theme hint makes the repaint atomic
         // and immune to this request being superseded/coalesced: MonkeyMux
         // performs the synthetic redraw right after delivering the hint.
+        final forcedRedrawGeneration = _monkeyMuxForcedThemeRedrawGeneration;
         final forceForegroundRedraw =
             _monkeyMuxForcedThemeRedrawPending &&
             _activeMuxBackend == RemoteMuxBackend.monkeyMux;
@@ -5420,7 +5427,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: request.extraFlags,
           forceForegroundRedraw: forceForegroundRedraw,
         );
-        if (forceForegroundRedraw) {
+        if (forceForegroundRedraw &&
+            _monkeyMuxForcedThemeRedrawGeneration == forcedRedrawGeneration) {
+          // Clear only if no newer obligation was latched while awaiting; a newer
+          // one bumps the generation and its own refresh will carry the redraw.
           _monkeyMuxForcedThemeRedrawPending = false;
         }
         DiagnosticsLogService.instance.info(
