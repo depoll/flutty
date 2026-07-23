@@ -5433,6 +5433,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           // one bumps the generation and its own refresh will carry the redraw.
           _monkeyMuxForcedThemeRedrawPending = false;
         }
+        if (forceForegroundRedraw) {
+          // The server repaints the foreground TUI as part of this theme change,
+          // so drop any resize-redraw follow-up a very recent viewport change
+          // armed to avoid a second, redundant synthetic repaint.
+          _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+          _monkeyMuxResizeRedrawFollowUpTimer = null;
+        }
         DiagnosticsLogService.instance.info(
           'terminal.theme',
           'tmux_refresh_complete',
