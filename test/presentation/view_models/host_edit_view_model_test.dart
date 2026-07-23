@@ -98,6 +98,10 @@ void main() {
             ),
       );
       expect(
+        viewModel.validateDraft(_draft(portProxyName: '-invalid')),
+        isNull,
+      );
+      expect(
         viewModel.validateDraft(
           _draft(
             startupMode: HostStartupMode.customCommand,
