@@ -169,7 +169,7 @@ void main() {
       test('generates a stable DNS-safe host-scoped name', () {
         expect(
           hostPortProxyDomain(hostLabel: 'Dev Box!', hostId: 42),
-          'dev-box-42.localhost',
+          'dev-box.localhost',
         );
         expect(
           hostPortProxyDomain(hostLabel: 'Dev Box!', hostId: 42),
@@ -180,7 +180,18 @@ void main() {
             hostLabel: 'OVH davidpollforlasd com production workspace',
             hostId: 57,
           ),
-          'ovh-davidpol-57.localhost',
+          'ovh-davidpol.localhost',
+        );
+      });
+
+      test('adds the saved host ID only for duplicate generated labels', () {
+        expect(
+          hostPortProxyDomain(
+            hostLabel: 'Dev Box',
+            hostId: 42,
+            disambiguateGeneratedName: true,
+          ),
+          'dev-box-42.localhost',
         );
       });
 
