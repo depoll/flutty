@@ -4888,8 +4888,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _syncAutomaticPortForwardProcessRoots(
     SshSession session,
-    Iterable<TmuxWindow>? windows,
-  ) {
+    Iterable<TmuxWindow>? windows, {
+    String? sessionName,
+    String? extraFlags,
+  }) {
     final processRoots = windows
         ?.map((window) => window.panePid)
         .whereType<int>()
@@ -4900,6 +4902,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         processRoots ?? const <int>{},
       ),
     );
+    if (sessionName != null) {
+      unawaited(
+        _syncAllAutomaticPortForwardProcessRoots(
+          session,
+          sessionName,
+          extraFlags: extraFlags,
+        ),
+      );
+    }
+  }
+
+  Future<void> _syncAllAutomaticPortForwardProcessRoots(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    try {
+      final panePids = await _tmuxService.listPanePids(
+        session,
+        sessionName,
+        extraFlags: extraFlags,
+      );
+      if (_connectionId == session.connectionId &&
+          (_tmuxSessionName == null || _tmuxSessionName == sessionName)) {
+        await session.updateAutomaticPortForwardProcessRoots(panePids);
+      }
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'mux_pane_roots_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
   }
 
   /// Syncs local terminal mode state when the active mux window's terminal-mode
@@ -9446,7 +9484,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
           continue;
         }
-        _syncAutomaticPortForwardProcessRoots(session, windows);
+        _syncAutomaticPortForwardProcessRoots(
+          session,
+          windows,
+          sessionName: sessionName,
+          extraFlags: muxBackend == RemoteMuxBackend.tmux
+              ? host?.tmuxExtraFlags
+              : null,
+        );
 
         // Get the active window's working directory for SFTP/path resolution.
         var tmuxLaunchCwd = preferredWorkingDirectory;
@@ -9878,8 +9923,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
-      onWindowsChanged: (windows) =>
-          _syncAutomaticPortForwardProcessRoots(session, windows),
+      onWindowsChanged: (windows) => _syncAutomaticPortForwardProcessRoots(
+        session,
+        windows,
+        sessionName: _tmuxSessionName,
+        extraFlags: _activeTmuxExtraFlags,
+      ),
       onWindowStateChanged: _handleTmuxWindowStateChanged,
       onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
