@@ -3084,6 +3084,28 @@ Set<int> parseRemoteListeningTcpPorts(String output) =>
 RemoteTcpListenerKey remoteTcpListenerKey(String host, int port) =>
     (host: _canonicalRemoteTcpListenerHost(host), port: port);
 
+/// Listener identities excluded by a saved loopback target.
+///
+/// `localhost` is ambiguous across platforms, so saved rules using it reserve
+/// both loopback families while concrete discovered addresses remain distinct.
+Set<RemoteTcpListenerKey> remoteTcpListenerExclusionKeys(
+  String host,
+  int port,
+) {
+  final normalized = host
+      .trim()
+      .replaceFirst(RegExp(r'^\['), '')
+      .replaceFirst(RegExp(r'\]$'), '')
+      .toLowerCase();
+  if (normalized == 'localhost') {
+    return {
+      remoteTcpListenerKey(InternetAddress.loopbackIPv4.address, port),
+      remoteTcpListenerKey(InternetAddress.loopbackIPv6.address, port),
+    };
+  }
+  return {remoteTcpListenerKey(host, port)};
+}
+
 String _canonicalRemoteTcpListenerHost(String host) {
   final normalized = host
       .trim()
@@ -4372,9 +4394,11 @@ class SshSession {
               !tunnel.isAutomatic &&
               isPortForwardLoopbackHost(tunnel.remoteHost),
         )
-        .map(
-          (tunnel) =>
-              remoteTcpListenerKey(tunnel.remoteHost, tunnel.remotePort),
+        .expand(
+          (tunnel) => remoteTcpListenerExclusionKeys(
+            tunnel.remoteHost,
+            tunnel.remotePort,
+          ),
         )
         .toSet();
     final blockedListeners = {
@@ -7016,9 +7040,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
               !tunnel.isAutomatic &&
               isPortForwardLoopbackHost(tunnel.remoteHost),
         )
-        .map(
-          (tunnel) =>
-              remoteTcpListenerKey(tunnel.remoteHost, tunnel.remotePort),
+        .expand(
+          (tunnel) => remoteTcpListenerExclusionKeys(
+            tunnel.remoteHost,
+            tunnel.remotePort,
+          ),
         )
         .toSet();
     if (sessions.isEmpty) {
@@ -7036,9 +7062,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
                 forward.forwardType == 'local' &&
                 isPortForwardLoopbackHost(forward.remoteHost),
           )
-          .map(
-            (forward) =>
-                remoteTcpListenerKey(forward.remoteHost, forward.remotePort),
+          .expand(
+            (forward) => remoteTcpListenerExclusionKeys(
+              forward.remoteHost,
+              forward.remotePort,
+            ),
           )
           .toSet();
     } on Object catch (error) {
@@ -7266,9 +7294,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
               (tunnel) =>
                   tunnel.isAutomatic && tunnel.isShellRelated && tunnel.isLocal,
             )
-            .map(
-              (tunnel) =>
-                  remoteTcpListenerKey(tunnel.remoteHost, tunnel.remotePort),
+            .expand(
+              (tunnel) => remoteTcpListenerExclusionKeys(
+                tunnel.remoteHost,
+                tunnel.remotePort,
+              ),
             )
             .toSet();
         await _applyAutomaticPortForwardingForHost(

@@ -237,6 +237,28 @@ void main() {
       );
     });
 
+    test('insert rejects a custom alias that collides with a host', () async {
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Production',
+          hostname: 'generated.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        repository.insert(
+          HostsCompanion.insert(
+            label: 'Custom',
+            hostname: 'custom.example.com',
+            username: 'root',
+            portProxyName: const Value('production'),
+          ),
+        ),
+        throwsA(isA<PortProxyNameConflictException>()),
+      );
+    });
+
     test('reorderByIds persists host order', () async {
       final firstId = await repository.insert(
         HostsCompanion.insert(

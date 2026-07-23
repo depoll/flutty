@@ -13,6 +13,7 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/port_proxy_name.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
@@ -1533,6 +1534,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             ),
           ),
         );
+      }
+    } on PortProxyNameConflictException catch (e) {
+      if (mounted) {
+        await _showValidationFailure((
+          locationKey: _portProxyNameFieldLocationKey,
+          focusNode: _portProxyNameFocusNode,
+          message: '${e.message}. Choose a different proxy domain.',
+        ));
       }
     } on Exception catch (e) {
       FlutterError.reportError(

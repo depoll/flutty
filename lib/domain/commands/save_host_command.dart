@@ -193,6 +193,11 @@ class SaveHostCommand {
     final int savedHostId;
 
     if (existingHostId != null && existingHost != null) {
+      await _hostRepository.validateProxyName(
+        hostId: existingHostId,
+        label: input.label,
+        customName: input.portProxyName,
+      );
       await _hostRepository.update(
         existingHost.copyWith(
           label: input.label,

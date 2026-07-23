@@ -2,15 +2,13 @@ const _preferredGeneratedPortProxySlugLength = 12;
 const _maximumDnsLabelLength = 63;
 
 /// Error raised when a user-defined proxy name is already assigned.
-class PortProxyNameConflictException implements Exception {
+class PortProxyNameConflictException extends FormatException {
   /// Creates a conflict for [proxyName].
-  const PortProxyNameConflictException(this.proxyName);
+  PortProxyNameConflictException(this.proxyName)
+    : super('Proxy domain "$proxyName.localhost" is already in use');
 
   /// Conflicting proxy name without the `.localhost` suffix.
   final String proxyName;
-
-  @override
-  String toString() => 'Proxy name "$proxyName" is already in use';
 }
 
 /// Normalizes a stored custom proxy name without its `.localhost` suffix.

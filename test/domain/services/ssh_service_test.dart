@@ -607,6 +607,16 @@ LISTEN ::1:4201
       });
     });
 
+    test('localhost saved targets exclude both loopback families', () {
+      expect(remoteTcpListenerExclusionKeys('localhost', 3000), {
+        remoteTcpListenerKey('127.0.0.1', 3000),
+        remoteTcpListenerKey('::1', 3000),
+      });
+      expect(remoteTcpListenerExclusionKeys('127.0.0.2', 3000), {
+        remoteTcpListenerKey('127.0.0.2', 3000),
+      });
+    });
+
     test('builds a valid persistent POSIX watcher command', () async {
       final session = SshSession(
         connectionId: 7,
@@ -4108,6 +4118,10 @@ LISTEN ::1:4201
       expect(
         primary.automaticConfigurations.last.excludedRemoteListeners,
         contains(remoteTcpListenerKey('localhost', 3000)),
+      );
+      expect(
+        primary.automaticConfigurations.last.excludedRemoteListeners,
+        contains(remoteTcpListenerKey('::1', 3000)),
       );
     });
 
