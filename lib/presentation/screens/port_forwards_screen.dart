@@ -197,6 +197,13 @@ class PortForwardsScreen extends ConsumerWidget {
       localHost: activeTunnel.localHost,
       localPort: activeTunnel.localPort,
     );
+    final fallbackHost = activeTunnel.browserFallbackHost;
+    final fallbackUri = fallbackHost == null
+        ? null
+        : buildPortForwardBrowserUriForBind(
+            localHost: fallbackHost,
+            localPort: activeTunnel.localPort,
+          );
 
     await context.pushNamed<void>(
       Routes.portForwardBrowser,
@@ -205,6 +212,7 @@ class PortForwardsScreen extends ConsumerWidget {
           PortForwardBrowserInitialTab(
             uri: browserUri,
             sourceUri: sourceUri,
+            fallbackUri: fallbackUri,
             title: portForward.name,
           ),
         ],

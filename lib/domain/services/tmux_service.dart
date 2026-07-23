@@ -831,6 +831,23 @@ class TmuxService {
     return request;
   }
 
+  /// Lists every pane process ID in the given tmux [sessionName].
+  Future<Set<int>> listPanePids(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    final quotedName = _shellQuote(sessionName);
+    final output = await _execTmuxCommand(
+      session,
+      sessionName,
+      'list-panes -s -t $quotedName -F ${_shellQuote('#{pane_pid}')}',
+      extraFlags: extraFlags,
+      forceUtf8: true,
+    );
+    return parseTmuxPanePids(output);
+  }
+
   Future<List<TmuxWindow>> _listWindows(
     SshSession session,
     String sessionName, {
@@ -870,6 +887,7 @@ class TmuxService {
         );
         _scheduleAgentSessionMetadataRefresh(session, windows);
       }
+
       DiagnosticsLogService.instance.info(
         'tmux.query',
         'list_windows_complete',
@@ -2756,6 +2774,12 @@ String? _nonEmptyTmuxPaneField(String value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
 }
+
+/// Parses pane process IDs emitted by `tmux list-panes`.
+Set<int> parseTmuxPanePids(String output) => {
+  for (final line in output.split('\n'))
+    if (int.tryParse(line.trim()) case final panePid? when panePid > 0) panePid,
+};
 
 /// Builds a command that redraws all non-control tmux clients for a session.
 @visibleForTesting

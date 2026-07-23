@@ -3250,14 +3250,18 @@ class _PortForwardBrowserOption {
   const _PortForwardBrowserOption({
     required this.uri,
     required this.sourceUri,
+    required this.fallbackUri,
     required this.port,
     required this.title,
+    required this.group,
   });
 
   final Uri uri;
   final Uri sourceUri;
+  final Uri? fallbackUri;
   final int port;
   final String title;
+  final PortForwardBrowserTabGroup group;
 }
 
 class _StoreDemoAutoConfirmDialogState {
@@ -3436,6 +3440,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
@@ -3564,12 +3569,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final List<Timer> _monkeyMuxSettledRedrawDisplayRefreshTimers = <Timer>[];
   int _monkeyMuxSettledRedrawDisplayRefreshGeneration = 0;
   int _monkeyMuxRefreshAndResizeGeneration = 0;
-  // Latched when a terminal theme *color* change needs the MonkeyMux foreground
-  // TUI to be forced to fully repaint (via a synthetic redraw resize). Kept as
-  // instance state rather than on a single refresh request so the obligation
-  // survives that request being superseded by a later same-theme forced
-  // refresh; cleared once a redraw is actually dispatched.
+  // Latched when a terminal theme *color* change (or a forced re-sync) needs
+  // the MonkeyMux foreground TUI to be forced to fully repaint. Kept as instance
+  // state rather than on a single refresh request so the obligation survives
+  // that request being superseded/coalesced by a later same-theme refresh; it is
+  // passed to MonkeyMux as the theme_changed `redraw` flag and cleared once that
+  // flag has been delivered.
   bool _monkeyMuxForcedThemeRedrawPending = false;
+  // Bumped every time a redraw obligation is (re)latched. The consumer captures
+  // it before awaiting the refresh and only clears the latch if it is unchanged,
+  // so a newer obligation latched during the await (e.g. a coalesced theme that
+  // will be sent next) is not erased and still gets its redraw.
+  int _monkeyMuxForcedThemeRedrawGeneration = 0;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
   DateTime? _lastMuxWindowChangeAt;
@@ -4567,7 +4578,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         theme,
         targetSession,
         reason: reason,
-        forceForegroundRedraw: didThemeChange,
+        // Force a foreground repaint when the colors actually changed, and also
+        // on a forced re-sync (resume/reconnect/brightness), which is when a
+        // theme change that happened while backgrounded or disconnected would
+        // otherwise leave the agent painted in the previous theme.
+        forceForegroundRedraw: didThemeChange || forceRemoteRefresh,
       );
       return;
     }
@@ -4623,11 +4638,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
         if (forceForegroundRedraw) {
           // Latch the repaint obligation so it survives this refresh request
-          // being superseded/coalesced by a later same-theme forced refresh
-          // (brightness changes fire several applies in quick succession, and
-          // preview -> "Use Theme" re-applies the same colors). It is cleared
-          // only once a redraw is actually dispatched.
+          // being superseded/coalesced by a later same-theme refresh (brightness
+          // changes fire several applies in quick succession, and preview ->
+          // "Use Theme" re-applies the same colors). It is passed to MonkeyMux
+          // as the theme_changed `redraw` flag and cleared once delivered.
           _monkeyMuxForcedThemeRedrawPending = true;
+          _monkeyMuxForcedThemeRedrawGeneration += 1;
         }
         DiagnosticsLogService.instance.info(
           'terminal.theme',
@@ -4940,6 +4956,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           reason: 'monkeymux_active_window_changed',
         );
       }
+
       _refreshMuxPaneContextAfterWindowStateChange(
         session,
         sessionName,
@@ -4960,6 +4977,65 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
     );
+  }
+
+  void _syncAutomaticPortForwardProcessRoots(
+    SshSession session,
+    Iterable<TmuxWindow>? windows, {
+    String? sessionName,
+    String? extraFlags,
+    bool queryTmuxPanePids = false,
+  }) {
+    final rootSyncGeneration = ++_automaticPortForwardRootSyncGeneration;
+    final processRoots = windows
+        ?.map((window) => window.panePid)
+        .whereType<int>()
+        .where((pid) => pid > 0)
+        .toSet();
+    unawaited(
+      session.updateAutomaticPortForwardProcessRoots(
+        processRoots ?? const <int>{},
+      ),
+    );
+    if (queryTmuxPanePids && sessionName != null) {
+      unawaited(
+        _syncAllAutomaticPortForwardProcessRoots(
+          session,
+          sessionName,
+          generation: rootSyncGeneration,
+          extraFlags: extraFlags,
+        ),
+      );
+    }
+  }
+
+  Future<void> _syncAllAutomaticPortForwardProcessRoots(
+    SshSession session,
+    String sessionName, {
+    required int generation,
+    String? extraFlags,
+  }) async {
+    try {
+      final panePids = await _tmuxService.listPanePids(
+        session,
+        sessionName,
+        extraFlags: extraFlags,
+      );
+      if (generation == _automaticPortForwardRootSyncGeneration &&
+          _connectionId == session.connectionId &&
+          _tmuxSessionName == sessionName) {
+        await session.updateAutomaticPortForwardProcessRoots(panePids);
+      }
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'mux_pane_roots_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
   }
 
   /// Syncs local terminal mode state when the active mux window's terminal-mode
@@ -5458,7 +5534,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     var outerRefreshReason = request.reason;
     var tmuxCommandDeferred = false;
-    var refreshApplied = false;
     try {
       final mux = _activeRemoteMultiplexerService;
       DiagnosticsLogService.instance.info(
@@ -5483,13 +5558,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         tmuxCommandDeferred = true;
         outerRefreshReason = '${request.reason}_tmux_deferred';
       } else {
+        // Drive the server-side foreground repaint from the latched theme-change
+        // obligation. Passing it with the theme hint makes the repaint atomic
+        // and immune to this request being superseded/coalesced: MonkeyMux
+        // performs the synthetic redraw right after delivering the hint.
+        final forcedRedrawGeneration = _monkeyMuxForcedThemeRedrawGeneration;
+        final forceForegroundRedraw =
+            _monkeyMuxForcedThemeRedrawPending &&
+            _activeMuxBackend == RemoteMuxBackend.monkeyMux;
         await mux.refreshTerminalTheme(
           request.session,
           request.sessionName,
           request.theme,
           extraFlags: request.extraFlags,
+          forceForegroundRedraw: forceForegroundRedraw,
         );
-        refreshApplied = true;
+        if (forceForegroundRedraw &&
+            _monkeyMuxForcedThemeRedrawGeneration == forcedRedrawGeneration) {
+          // Clear only if no newer obligation was latched while awaiting; a newer
+          // one bumps the generation and its own refresh will carry the redraw.
+          _monkeyMuxForcedThemeRedrawPending = false;
+        }
+        if (forceForegroundRedraw) {
+          // The server repaints the foreground TUI as part of this theme change,
+          // so drop any resize-redraw follow-up a very recent viewport change
+          // armed to avoid a second, redundant synthetic repaint.
+          _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+          _monkeyMuxResizeRedrawFollowUpTimer = null;
+        }
         DiagnosticsLogService.instance.info(
           'terminal.theme',
           'tmux_refresh_complete',
@@ -5497,6 +5593,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'reason': request.reason,
             'connectionId': request.session.connectionId,
             'sendOuterFocusReport': request.sendOuterFocusReport,
+            'forceForegroundRedraw': forceForegroundRedraw,
             'shellReady': _shell != null,
             'terminalViewReady': _terminalViewKey.currentState != null,
           },
@@ -5531,40 +5628,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         },
       );
       return;
-    }
-    // A DEC 2031 mode report plus a focus nudge alone do not reliably repaint
-    // every agent after a theme switch: Copilot CLI in particular diff-repaints
-    // and leaves its explicitly-colored header/footer bars in the previous
-    // theme ("black bars"). Once the theme hint has been delivered, force the
-    // foreground TUI to fully repaint with a synthetic PTY resize (the same
-    // mechanism used on attach/restore) so those cells are re-emitted.
-    //
-    // The obligation is latched (not carried on the request) so it survives a
-    // theme-change refresh being superseded by a later same-theme forced
-    // refresh whose request would not itself carry the flag.
-    if (_monkeyMuxForcedThemeRedrawPending &&
-        refreshApplied &&
-        _activeMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _monkeyMuxForcedThemeRedrawPending = false;
-      // A synthetic redraw resize already covers any repaint a recent size
-      // change scheduled, so drop that pending follow-up to avoid repainting
-      // twice for one visual update.
-      _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
-      _monkeyMuxResizeRedrawFollowUpTimer = null;
-      DiagnosticsLogService.instance.info(
-        'terminal.theme',
-        'monkeymux_force_redraw',
-        fields: {
-          'reason': request.reason,
-          'connectionId': request.session.connectionId,
-        },
-      );
-      unawaited(
-        _syncActiveMonkeyMuxTerminalSize(
-          request.session,
-          refreshVisibleTerminal: true,
-        ),
-      );
     }
     if (request.sendOuterFocusReport) {
       if (!_isOuterTuiSignalingActive(request.session)) {
@@ -9141,7 +9204,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   void _clearTmuxState() {
+    _automaticPortForwardRootSyncGeneration++;
     final session = _observedSession ?? _activeSession();
+    if (session != null) {
+      unawaited(session.updateAutomaticPortForwardProcessRoots(const {}));
+    }
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux ||
         session?.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       _terminal.resetHostResizeState();
@@ -9503,6 +9570,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
           continue;
         }
+        _syncAutomaticPortForwardProcessRoots(
+          session,
+          windows,
+          sessionName: sessionName,
+          extraFlags: muxBackend == RemoteMuxBackend.tmux
+              ? host?.tmuxExtraFlags
+              : null,
+          queryTmuxPanePids: muxBackend == RemoteMuxBackend.tmux,
+        );
 
         // Get the active window's working directory for SFTP/path resolution.
         var tmuxLaunchCwd = preferredWorkingDirectory;
@@ -9934,6 +10010,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
+      onWindowsChanged: (windows) => _syncAutomaticPortForwardProcessRoots(
+        session,
+        windows,
+        sessionName: _tmuxSessionName,
+        extraFlags: _activeTmuxExtraFlags,
+        queryTmuxPanePids: _activeMuxBackend == RemoteMuxBackend.tmux,
+      ),
       onWindowStateChanged: _handleTmuxWindowStateChanged,
       onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
@@ -14268,8 +14351,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _PortForwardBrowserOption(
             uri: browserUri,
             sourceUri: targetOption.sourceUri,
+            fallbackUri: targetOption.fallbackUri,
             port: targetOption.port,
             title: targetOption.title,
+            group: targetOption.group,
           ),
         );
         return;
@@ -14290,40 +14375,85 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   List<_PortForwardBrowserOption> _activePortForwardBrowserOptions() {
-    final connectionId = _connectionId;
-    final session = connectionId == null
-        ? _sessionController.observedSession
-        : ref.read(activeSessionsProvider.notifier).getSession(connectionId);
-    return session?.activeTunnels
-            .where(
-              (tunnel) =>
-                  tunnel.isLocal &&
-                  isPortForwardBrowserHost(tunnel.localHost) &&
-                  tunnel.localPort >= 1 &&
-                  tunnel.localPort <= 65535 &&
-                  tunnel.browserHost != null &&
-                  tunnel.browserPort != null &&
-                  tunnel.browserPort! >= 1 &&
-                  tunnel.browserPort! <= 65535,
-            )
-            .map((tunnel) {
-              final sourceUri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.localHost,
-                localPort: tunnel.localPort,
-              );
-              final uri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.browserHost!,
-                localPort: tunnel.browserPort!,
-              );
-              return _PortForwardBrowserOption(
-                uri: uri,
-                sourceUri: sourceUri,
-                port: tunnel.localPort,
-                title: sourceUri.authority,
-              );
-            })
-            .toList(growable: false) ??
-        const <_PortForwardBrowserOption>[];
+    final sessions = ref.read(activeSessionsProvider.notifier);
+    final hostTunnels = sessions.getActiveTunnelsForHost(widget.hostId);
+    final fallbackSession = _sessionController.observedSession;
+    final tunnels = hostTunnels.isNotEmpty
+        ? hostTunnels
+        : fallbackSession?.activeTunnels ?? const <ActiveTunnelInfo>[];
+    final options =
+        tunnels
+            .map(_portForwardBrowserOptionForTunnel)
+            .whereType<_PortForwardBrowserOption>()
+            .toList(growable: false)
+          ..sort((left, right) {
+            final groupComparison = left.group.index.compareTo(
+              right.group.index,
+            );
+            return groupComparison != 0
+                ? groupComparison
+                : left.port.compareTo(right.port);
+          });
+    return options;
+  }
+
+  _PortForwardBrowserOption? _portForwardBrowserOptionForTunnel(
+    ActiveTunnelInfo tunnel,
+  ) {
+    final browserHost = tunnel.browserHost;
+    final browserPort = tunnel.browserPort;
+    if (!tunnel.isLocal ||
+        !isPortForwardBrowserHost(tunnel.localHost) ||
+        tunnel.localPort < 1 ||
+        tunnel.localPort > 65535 ||
+        browserHost == null ||
+        browserPort == null ||
+        browserPort < 1 ||
+        browserPort > 65535) {
+      return null;
+    }
+
+    final sourcePort = tunnel.isAutomatic
+        ? tunnel.remotePort
+        : tunnel.localPort;
+    final sourceUri = buildPortForwardBrowserUriForBind(
+      localHost: tunnel.isAutomatic ? tunnel.remoteHost : tunnel.localHost,
+      localPort: sourcePort,
+    );
+    final uri = buildPortForwardBrowserUriForBind(
+      localHost: browserHost,
+      localPort: browserPort,
+    );
+    final fallbackHost = tunnel.browserFallbackHost;
+    final fallbackUri = fallbackHost == null
+        ? null
+        : buildPortForwardBrowserUriForBind(
+            localHost: fallbackHost,
+            localPort: tunnel.localPort,
+          );
+    return _PortForwardBrowserOption(
+      uri: uri,
+      sourceUri: sourceUri,
+      fallbackUri: fallbackUri,
+      port: sourcePort,
+      title: tunnel.isAutomatic
+          ? 'Port ${tunnel.remotePort}'
+          : sourceUri.authority,
+      group: tunnel.isAutomatic
+          ? (tunnel.isShellRelated
+                ? PortForwardBrowserTabGroup.savedHost
+                : PortForwardBrowserTabGroup.sharedHost)
+          : PortForwardBrowserTabGroup.savedForward,
+    );
+  }
+
+  Future<void> _openPortForwardBrowserTunnel(ActiveTunnelInfo tunnel) async {
+    final option = _portForwardBrowserOptionForTunnel(tunnel);
+    if (option == null) {
+      _showTerminalLinkMessage('This forward is not available in the browser');
+      return;
+    }
+    await _openPortForwardBrowserOption(option);
   }
 
   Future<void> _openPortForwardBrowserFromTerminal() async {
@@ -14353,6 +14483,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         hostId: widget.hostId,
         connectionId: connectionId,
         session: session,
+        onOpenInBrowser: _openPortForwardBrowserTunnel,
       );
     } finally {
       _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
@@ -14374,7 +14505,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             PortForwardBrowserInitialTab(
               uri: option.uri,
               sourceUri: option.sourceUri,
+              fallbackUri: option.fallbackUri,
               title: option.title,
+              group: option.group,
             ),
         ],
       ),

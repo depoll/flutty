@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
+import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_port_forwards_sheet.dart';
 
@@ -54,6 +55,8 @@ class _LiveTestSession extends SshSession {
       portForwardId: portForwardId,
       localHost: localHost,
       localPort: localPort,
+      browserHost: portForwardBrowserHostForPortForwardId(portForwardId),
+      browserPort: localPort,
       remoteHost: remoteHost,
       remotePort: remotePort,
       isLocal: true,
@@ -92,22 +95,31 @@ class _LiveTestSession extends SshSession {
 }
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
-  _TestActiveSessionsNotifier(this.session);
+  _TestActiveSessionsNotifier(this.sessions);
 
-  final SshSession session;
+  final List<SshSession> sessions;
 
   @override
   Map<int, SshConnectionState> build() => {
-    session.connectionId: SshConnectionState.connected,
+    for (final session in sessions)
+      session.connectionId: SshConnectionState.connected,
   };
 
   @override
-  SshSession? getSession(int connectionId) =>
-      connectionId == session.connectionId ? session : null;
+  SshSession? getSession(int connectionId) {
+    for (final session in sessions) {
+      if (session.connectionId == connectionId) {
+        return session;
+      }
+    }
+    return null;
+  }
 
   @override
-  List<int> getConnectionsForHost(int hostId) =>
-      hostId == session.hostId ? [session.connectionId] : const [];
+  List<int> getConnectionsForHost(int hostId) => sessions
+      .where((session) => session.hostId == hostId)
+      .map((session) => session.connectionId)
+      .toList(growable: false);
 }
 
 PortForward _portForward() => PortForward(
@@ -155,7 +167,37 @@ void main() {
       hostId: 10,
       client: _MockSshClient(),
     );
+    final automaticOwner = _LiveTestSession(
+      connectionId: 8,
+      hostId: 10,
+      client: _MockSshClient(),
+    );
+    final openedTunnels = <ActiveTunnelInfo>[];
+    automaticOwner.tunnels[-3000] = const ActiveTunnelInfo(
+      portForwardId: -3000,
+      localHost: '127.0.0.1',
+      localPort: 49152,
+      browserHost: 'dev-box.localhost',
+      browserPort: 49152,
+      remoteHost: '127.0.0.2',
+      remotePort: 3000,
+      isLocal: true,
+      isAutomatic: true,
+      isShellRelated: true,
+    );
+    automaticOwner.tunnels[-4000] = const ActiveTunnelInfo(
+      portForwardId: -4000,
+      localHost: '127.0.0.1',
+      localPort: 49153,
+      browserHost: 'dev-box.localhost',
+      browserPort: 49153,
+      remoteHost: '127.0.0.1',
+      remotePort: 4000,
+      isLocal: true,
+      isAutomatic: true,
+    );
     addTearDown(session.changes.close);
+    addTearDown(automaticOwner.changes.close);
     when(
       () => repository.watchByHostId(session.hostId),
     ).thenAnswer((_) => Stream.value([_portForward()]));
@@ -168,7 +210,7 @@ void main() {
         overrides: [
           portForwardRepositoryProvider.overrideWithValue(repository),
           activeSessionsProvider.overrideWith(
-            () => _TestActiveSessionsNotifier(session),
+            () => _TestActiveSessionsNotifier([session, automaticOwner]),
           ),
         ],
         child: MaterialApp(
@@ -181,6 +223,9 @@ void main() {
                     hostId: session.hostId,
                     connectionId: session.connectionId,
                     session: session,
+                    onOpenInBrowser: (tunnel) async {
+                      openedTunnels.add(tunnel);
+                    },
                   ),
                 ),
                 child: const Text('Open'),
@@ -195,14 +240,35 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Port Forwards'), findsOneWidget);
+    expect(find.text('this saved host'), findsOneWidget);
+    expect(find.text('shared host services'), findsOneWidget);
+    expect(find.text('Port 3000'), findsOneWidget);
+    expect(find.text('Port 4000'), findsOneWidget);
+    expect(find.textContaining('dev-box.localhost:49152'), findsOneWidget);
+    expect(find.textContaining('Started from this saved host'), findsOneWidget);
     expect(find.text('Web preview'), findsOneWidget);
     expect(find.text('Stopped • Auto-start'), findsOneWidget);
+
+    await tester.tap(find.text('Port 3000'));
+    await tester.pump();
+
+    expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000]);
+
+    await tester.tap(find.text('Web preview'));
+    await tester.pump();
+
+    expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000]);
 
     await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
 
     expect(session.starts, [1]);
     expect(find.text('Active now • Auto-start'), findsOneWidget);
+
+    await tester.tap(find.text('Web preview'));
+    await tester.pump();
+
+    expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000, 1]);
 
     await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
