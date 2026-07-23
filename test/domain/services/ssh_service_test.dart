@@ -773,6 +773,30 @@ LISTEN ::1:4201
     });
 
     test(
+      'keeps mux process roots while automatic forwarding is disabled',
+      () async {
+        final session = SshSession(
+          connectionId: 7,
+          hostId: 42,
+          client: _MockSshClient(),
+          config: const SshConnectionConfig(
+            hostname: 'dev.example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+
+        await session.updateAutomaticPortForwardProcessRoots({7300});
+        await session.configureAutomaticPortForwarding(enabled: false);
+
+        expect(
+          session.buildAutomaticPortForwardWatcherCommand(),
+          contains('7300'),
+        );
+      },
+    );
+
+    test(
       'adds new listeners and removes ports after two missed scans',
       () async {
         final session = _AutomaticForwardTestSession(

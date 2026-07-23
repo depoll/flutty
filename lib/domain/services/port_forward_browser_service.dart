@@ -162,7 +162,7 @@ bool shouldUsePortForwardBrowserFallback({
   required bool? isForMainFrame,
   required bool alreadyTried,
 }) =>
-    (isForMainFrame ?? true) &&
+    (isForMainFrame ?? false) &&
     !alreadyTried &&
     (failedUri == null ||
         (failedUri.host.toLowerCase() == browserUri.host.toLowerCase() &&
