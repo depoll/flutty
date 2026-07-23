@@ -470,7 +470,8 @@ class HostEditViewModel extends Notifier<HostEditState> {
     final port = int.parse(draft.port);
     final password = draft.password.isEmpty ? null : draft.password;
     final tags = draft.tags.trim().isEmpty ? null : draft.tags.trim();
-    final portProxyName = draft.portProxyName.trim().isEmpty
+    final portProxyName =
+        !draft.autoForwardPorts || draft.portProxyName.trim().isEmpty
         ? null
         : normalizePortProxyName(draft.portProxyName);
 
