@@ -16,6 +16,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../models/port_proxy_name.dart';
 import '../models/remote_multiplexer.dart';
 import '../models/terminal_preview.dart';
 import '../models/terminal_theme.dart';
@@ -4851,14 +4852,14 @@ class SshSession {
       'LC_ALL=C; export LC_ALL; '
       'if command -v ss >/dev/null 2>&1 && '
       'ss -H -ltnp 2>/dev/null; then :; '
-      'elif command -v netstat >/dev/null 2>&1 && '
-      '{ netstat -an -p tcp 2>/dev/null || netstat -an 2>/dev/null; }; '
-      'then :; '
       'elif command -v lsof >/dev/null 2>&1; then '
       'lsof -nP -iTCP -sTCP:LISTEN -Fpfnt 2>/dev/null; '
       r'lsof_status=$?; '
       r'if [ "$lsof_status" -gt 1 ]; then '
       'printf "$_automaticPortDiscoveryUnavailableMarker\\n"; fi; '
+      'elif command -v netstat >/dev/null 2>&1 && '
+      '{ netstat -an -p tcp 2>/dev/null || netstat -an 2>/dev/null; }; '
+      'then :; '
       'else printf "$_automaticPortDiscoveryUnavailableMarker\\n"; fi;';
 
   String _windowsAutomaticPortDiscoveryCommand() {
@@ -7070,32 +7071,42 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       ...additionalExcludedListeners,
     };
     var configurationFailed = false;
-    String? generatedProxyName;
-    if (normalizeOptionalPortProxyName(host.portProxyName) == null) {
-      generatedProxyName = generatedPortProxyName(
+    final customProxyName = normalizeOptionalPortProxyName(host.portProxyName);
+    var resolvedProxyName = customProxyName;
+    if (customProxyName == null) {
+      resolvedProxyName = generatedPortProxyName(
         host.label,
         hostId: host.id,
         includeHostId: true,
       );
-      try {
-        generatedProxyName = await ref
-            .read(hostRepositoryProvider)
-            .resolveGeneratedProxyName(hostId: host.id, label: host.label);
-      } on Object catch (error) {
-        DiagnosticsLogService.instance.warning(
-          'ssh.forward',
-          'proxy_label_check_failed',
-          fields: {'hostId': host.id, 'errorType': error.runtimeType},
-        );
-      }
     }
-    final proxyHost = host.autoForwardPorts
-        ? hostPortProxyDomain(
-            hostLabel: host.label,
+    try {
+      resolvedProxyName = await ref
+          .read(hostRepositoryProvider)
+          .resolveProxyName(
             hostId: host.id,
+            label: host.label,
             customName: host.portProxyName,
-            generatedName: generatedProxyName,
-          )
+          );
+    } on PortProxyNameConflictException catch (error) {
+      resolvedProxyName = null;
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'proxy_label_conflict',
+        fields: {'hostId': host.id, 'nameLength': error.proxyName.length},
+      );
+    } on Object catch (error) {
+      if (customProxyName != null) {
+        resolvedProxyName = null;
+      }
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'proxy_label_check_failed',
+        fields: {'hostId': host.id, 'errorType': error.runtimeType},
+      );
+    }
+    final proxyHost = host.autoForwardPorts && resolvedProxyName != null
+        ? '$resolvedProxyName.localhost'
         : null;
     final shellLineageTokens = sessions
         .map((session) => session.shellLineageToken)
@@ -7132,7 +7143,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       }
     }
     if (owner != null) {
-      await configureSession(owner, enabled: host.autoForwardPorts);
+      await configureSession(
+        owner,
+        enabled: host.autoForwardPorts && proxyHost != null,
+      );
     }
     if (configurationFailed) {
       _automaticForwardDesiredExclusionsByHost.remove(host.id);

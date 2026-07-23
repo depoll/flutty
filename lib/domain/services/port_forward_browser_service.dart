@@ -70,12 +70,8 @@ String portForwardBrowserFallbackHostForHostId(int hostId) {
 
 /// Normalizes a user-entered proxy name to the prefix stored before
 /// `.localhost`.
-String normalizePortProxyName(String value) {
-  final normalized = value.trim().toLowerCase();
-  return normalized.endsWith('.localhost')
-      ? normalized.substring(0, normalized.length - '.localhost'.length)
-      : normalized;
-}
+String normalizePortProxyName(String value) =>
+    normalizeOptionalStoredPortProxyName(value) ?? '';
 
 /// Normalizes an optional proxy name, returning null for an empty value.
 String? normalizeOptionalPortProxyName(String? value) {
