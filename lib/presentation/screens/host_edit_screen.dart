@@ -841,10 +841,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     );
   }
 
-  Future<void> _applySavedAutomaticPortForwarding(int hostId) async {
+  Future<void> _applySavedAutomaticPortForwarding() async {
     final sessions = ref.read(activeSessionsProvider.notifier);
     try {
-      await sessions.reconfigureAutomaticPortForwardingForHost(hostId);
+      await sessions.reconfigureAutomaticPortForwardingForConnectedHosts();
     } on Object catch (error, stackTrace) {
       FlutterError.reportError(
         FlutterErrorDetails(
@@ -1489,7 +1489,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       );
 
       final draft = _currentDraft();
-      final savedHostId = await ref
+      await ref
           .read(hostEditViewModelProvider(widget.hostId).notifier)
           .save(
             HostEditSaveRequest(
@@ -1498,7 +1498,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               hasAgentPresetAccess: hasAgentPresetAccess,
             ),
           );
-      unawaited(_applySavedAutomaticPortForwarding(savedHostId));
+      unawaited(_applySavedAutomaticPortForwarding());
       if (widget.hostId == null) {
         unawaited(
           ref

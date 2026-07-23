@@ -4892,6 +4892,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Iterable<TmuxWindow>? windows, {
     String? sessionName,
     String? extraFlags,
+    bool queryTmuxPanePids = false,
   }) {
     final rootSyncGeneration = ++_automaticPortForwardRootSyncGeneration;
     final processRoots = windows
@@ -4904,7 +4905,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         processRoots ?? const <int>{},
       ),
     );
-    if (sessionName != null) {
+    if (queryTmuxPanePids && sessionName != null) {
       unawaited(
         _syncAllAutomaticPortForwardProcessRoots(
           session,
@@ -9497,6 +9498,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: muxBackend == RemoteMuxBackend.tmux
               ? host?.tmuxExtraFlags
               : null,
+          queryTmuxPanePids: muxBackend == RemoteMuxBackend.tmux,
         );
 
         // Get the active window's working directory for SFTP/path resolution.
@@ -9934,6 +9936,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         windows,
         sessionName: _tmuxSessionName,
         extraFlags: _activeTmuxExtraFlags,
+        queryTmuxPanePids: _activeMuxBackend == RemoteMuxBackend.tmux,
       ),
       onWindowStateChanged: _handleTmuxWindowStateChanged,
       onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
