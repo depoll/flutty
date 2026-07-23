@@ -2838,9 +2838,10 @@ void main() {
         await tester.pump();
 
         expect(executedCommands, hasLength(1));
-        expect(executedCommands.single, contains("'/tmp/monkeymux' attach"));
+        expect(executedCommands.single, contains('/tmp/monkeymux'));
+        expect(executedCommands.single, contains(' attach'));
         expect(executedCommands.single, contains('--update-policy never'));
-        expect(executedCommands.single, contains("'$sessionName'"));
+        expect(executedCommands.single, contains(sessionName));
         expect(
           shellWrites.map(utf8.decode).join(),
           isNot(contains('/tmp/monkeymux')),
@@ -6697,11 +6698,15 @@ void main() {
 
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
-        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('/tmp/monkeymux'));
+        expect(startupCommand, contains(' attach'));
         expect(startupCommand, contains('--update-policy never'));
-        expect(startupCommand, contains("--cwd '/work/project'"));
-        expect(startupCommand, contains("--name 'Copilot CLI'"));
-        expect(startupCommand, contains("--command 'copilot --yolo'"));
+        expect(startupCommand, contains('--cwd'));
+        expect(startupCommand, contains('/work/project'));
+        expect(startupCommand, contains('--name'));
+        expect(startupCommand, contains('Copilot CLI'));
+        expect(startupCommand, contains('--command'));
+        expect(startupCommand, contains('copilot --yolo'));
         expect(startupCommand, contains('agents'));
         expect(
           shellWrites.map(utf8.decode).join(),
@@ -6832,9 +6837,10 @@ void main() {
 
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
-        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('/tmp/monkeymux'));
+        expect(startupCommand, contains(' attach'));
         expect(startupCommand, contains('--update-policy never'));
-        expect(startupCommand, contains("'$sessionName'"));
+        expect(startupCommand, contains(sessionName));
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
         expect(session.remoteMuxSessionName, sessionName);
@@ -7027,7 +7033,8 @@ void main() {
         expect(find.text('Update running MonkeyMux?'), findsNothing);
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
-        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('/tmp/monkeymux'));
+        expect(startupCommand, contains(' attach'));
         expect(
           startupCommand,
           contains('--update-policy ${testCase.updatePolicy.cliValue}'),

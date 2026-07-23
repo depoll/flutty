@@ -706,6 +706,13 @@ class _PortForwardBrowserScreenState
       return NavigationDecision.prevent;
     }
     if (uri.scheme == 'http' || uri.scheme == 'https') {
+      if (shouldLoadPortForwardBrowserFallbackDirectly(
+        requestedUri: uri,
+        fallbackUri: tab.fallbackUri,
+        fallbackActive: tab.hasTriedLoopbackFallback,
+      )) {
+        return NavigationDecision.navigate;
+      }
       final normalizedUri = _normalizeBrowserUri(uri);
       if (normalizedUri.toString() != uri.toString()) {
         unawaited(tab.controller.loadRequest(normalizedUri));
