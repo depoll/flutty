@@ -190,6 +190,25 @@ bool shouldLoadPortForwardBrowserFallbackDirectly({
           portForwardBrowserUriPort(normalizedFallbackUri);
 }
 
+/// Replaces only a failed friendly endpoint with its loopback fallback.
+Uri buildPortForwardBrowserFallbackRequestUri({
+  required Uri browserUri,
+  required Uri fallbackUri,
+  Uri? requestedUri,
+}) {
+  final candidate =
+      requestedUri != null &&
+          requestedUri.host.toLowerCase() == browserUri.host.toLowerCase() &&
+          portForwardBrowserUriPort(requestedUri) ==
+              portForwardBrowserUriPort(browserUri)
+      ? requestedUri
+      : browserUri;
+  return candidate.replace(
+    host: fallbackUri.host,
+    port: portForwardBrowserUriPort(fallbackUri),
+  );
+}
+
 /// Returns whether [uri] should stay inside the embedded browser.
 ///
 /// Only loopback web links whose port is owned by an active local forward are

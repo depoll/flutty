@@ -393,6 +393,19 @@ void main() {
       );
     });
 
+    test('preserves the failed route when building a fallback request', () {
+      expect(
+        buildPortForwardBrowserFallbackRequestUri(
+          browserUri: Uri.parse('http://dev-box.localhost:49152'),
+          fallbackUri: Uri.parse('http://127.0.0.44:49152'),
+          requestedUri: Uri.parse(
+            'https://dev-box.localhost:49152/dashboard?tab=1#logs',
+          ),
+        ),
+        Uri.parse('https://127.0.0.44:49152/dashboard?tab=1#logs'),
+      );
+    });
+
     test('rewrites a detected remote port to its ephemeral proxy port', () {
       expect(
         rewriteUriForPortForwardBrowser(
