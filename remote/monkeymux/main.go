@@ -467,9 +467,15 @@ type muxServer struct {
 	// the deferred redraw with syntheticRedraw=false and silently drop the
 	// repaint. Reset wherever pendingResizeRedraw is.
 	pendingResizeSyntheticRedraw bool
-	controls                     map[*controlClient]struct{}
-	themeHint                    []byte
-	closed                       bool
+	// pendingResizeThemeWindowID pins a deferred synthetic theme redraw to the
+	// window that received the theme hint, so that when refreshPendingViewportResize
+	// replays it a concurrent window switch cannot make the dance repaint a
+	// different window. Empty when the deferred redraw is not a pinned theme
+	// redraw. Reset wherever pendingResizeSyntheticRedraw is.
+	pendingResizeThemeWindowID string
+	controls                   map[*controlClient]struct{}
+	themeHint                  []byte
+	closed                     bool
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -4085,6 +4091,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.pendingResizeHeight = 0
 				s.pendingResizeRedraw = false
 				s.pendingResizeSyntheticRedraw = false
+				s.pendingResizeThemeWindowID = ""
 				if resetViewportParser {
 					s.enqueueAttachViewportResizeAfterResetLocked(
 						s.width,
@@ -5531,6 +5538,7 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 		s.pendingResizeHeight = 0
 		s.pendingResizeRedraw = false
 		s.pendingResizeSyntheticRedraw = false
+		s.pendingResizeThemeWindowID = ""
 		if s.attachConn == nil {
 			width = s.publishedWidth
 			height = s.publishedHeight
@@ -5590,6 +5598,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.pendingResizeHeight = 0
 		s.pendingResizeRedraw = false
 		s.pendingResizeSyntheticRedraw = false
+		s.pendingResizeThemeWindowID = ""
 		s.width = width
 		s.height = height
 		s.enqueueAttachViewportResizeLocked(width, height)
@@ -6397,6 +6406,7 @@ func (s *muxServer) selectWindowWithSkip(
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
 	s.pendingResizeSyntheticRedraw = false
+	s.pendingResizeThemeWindowID = ""
 	if resetViewportParser {
 		s.enqueueAttachViewportResizeAfterResetLocked(s.width, s.height)
 	} else {
@@ -6463,6 +6473,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.pendingResizeHeight = 0
 			s.pendingResizeRedraw = false
 			s.pendingResizeSyntheticRedraw = false
+			s.pendingResizeThemeWindowID = ""
 			if resetViewportParser {
 				s.enqueueAttachViewportResizeAfterResetLocked(
 					s.width,
@@ -6620,6 +6631,11 @@ func (s *muxServer) resizeWithRedraw(
 		s.pendingResizeRedraw = s.pendingResizeRedraw || forceRedraw
 		s.pendingResizeSyntheticRedraw =
 			s.pendingResizeSyntheticRedraw || (forceRedraw && syntheticRedraw)
+		if forceRedraw && syntheticRedraw && pinnedWindowID != "" {
+			// Preserve the pin so the replayed dance still targets the window
+			// that received the theme hint, not whatever is active at replay.
+			s.pendingResizeThemeWindowID = pinnedWindowID
+		}
 		s.mu.Unlock()
 		return
 	}
@@ -6629,6 +6645,7 @@ func (s *muxServer) resizeWithRedraw(
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
 	s.pendingResizeSyntheticRedraw = false
+	s.pendingResizeThemeWindowID = ""
 	sizeChanged :=
 		s.width != width ||
 			s.height != height ||
@@ -6692,11 +6709,12 @@ func (s *muxServer) refreshPendingViewportResize() {
 	height := s.pendingResizeHeight
 	forceRedraw := s.pendingResizeRedraw
 	syntheticRedraw := s.pendingResizeSyntheticRedraw
+	themeWindowID := s.pendingResizeThemeWindowID
 	s.mu.Unlock()
 	if width <= 0 || height <= 0 {
 		return
 	}
-	s.resizeWithRedraw(width, height, forceRedraw, syntheticRedraw, "")
+	s.resizeWithRedraw(width, height, forceRedraw, syntheticRedraw, themeWindowID)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
@@ -8206,6 +8224,7 @@ func (s *muxServer) replayFocusedWindowToClient(
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
 	s.pendingResizeSyntheticRedraw = false
+	s.pendingResizeThemeWindowID = ""
 	s.width = width
 	s.height = height
 	s.enqueueAttachViewportResizeLocked(width, height)

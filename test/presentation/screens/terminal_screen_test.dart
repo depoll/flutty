@@ -3213,11 +3213,12 @@ void main() {
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
 
         // Drain any resize/redraw follow-up timers scheduled while the screen
-        // settled, then clear, so the only redraw resize observed below is the
-        // one the theme change itself forces.
+        // settled, then clear recorded interactions, so the verification below
+        // only sees the refresh the theme change itself drives (forced re-syncs
+        // during connection setup can also request a redraw).
         await tester.pump(const Duration(milliseconds: 700));
         await tester.pump();
-        monkeyMuxService.resizeTerminalCalls.clear();
+        clearInteractions(monkeyMuxService);
 
         final container = ProviderScope.containerOf(
           tester.element(find.byType(TerminalScreen)),
