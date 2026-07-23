@@ -165,6 +165,26 @@ void main() {
       );
     });
 
+    group('portForwardBrowserFallbackHostForHostId', () {
+      test('assigns stable distinct numeric loopback hosts', () {
+        expect(portForwardBrowserFallbackHostForHostId(1), '127.0.0.3');
+        expect(
+          portForwardBrowserFallbackHostForHostId(1),
+          portForwardBrowserFallbackHostForHostId(1),
+        );
+        expect(
+          portForwardBrowserFallbackHostForHostId(1),
+          isNot(portForwardBrowserFallbackHostForHostId(2)),
+        );
+        expect(
+          isPortForwardLoopbackHost(
+            portForwardBrowserFallbackHostForHostId(42),
+          ),
+          isTrue,
+        );
+      });
+    });
+
     group('hostPortProxyDomain', () {
       test('generates a stable DNS-safe host-scoped name', () {
         expect(

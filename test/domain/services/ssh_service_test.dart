@@ -846,6 +846,11 @@ LISTEN ::1:4201
       expect(tunnel.localPort, greaterThan(0));
       expect(tunnel.browserHost, 'dev-box.localhost');
       expect(tunnel.browserPort, tunnel.localPort);
+      final expectedFallbackHost = portForwardBrowserFallbackHostForHostId(7);
+      expect(tunnel.browserFallbackHost, anyOf(isNull, expectedFallbackHost));
+      if (Platform.isLinux) {
+        expect(tunnel.browserFallbackHost, expectedFallbackHost);
+      }
       expect(tunnel.remoteHost, '127.0.0.2');
       expect(tunnel.remotePort, 3000);
       expect(tunnel.isShellRelated, isTrue);
