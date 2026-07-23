@@ -3567,12 +3567,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final List<Timer> _monkeyMuxSettledRedrawDisplayRefreshTimers = <Timer>[];
   int _monkeyMuxSettledRedrawDisplayRefreshGeneration = 0;
   int _monkeyMuxRefreshAndResizeGeneration = 0;
-  // Latched when a terminal theme *color* change needs the MonkeyMux foreground
-  // TUI to be forced to fully repaint (via a synthetic redraw resize). Kept as
-  // instance state rather than on a single refresh request so the obligation
-  // survives that request being superseded by a later same-theme forced
-  // refresh; cleared once a redraw is actually dispatched.
+  // Latched when a terminal theme *color* change (or a forced re-sync) needs
+  // the MonkeyMux foreground TUI to be forced to fully repaint. Kept as instance
+  // state rather than on a single refresh request so the obligation survives
+  // that request being superseded/coalesced by a later same-theme refresh; it is
+  // passed to MonkeyMux as the theme_changed `redraw` flag and cleared once that
+  // flag has been delivered.
   bool _monkeyMuxForcedThemeRedrawPending = false;
+  // Bumped every time a redraw obligation is (re)latched. The consumer captures
+  // it before awaiting the refresh and only clears the latch if it is unchanged,
+  // so a newer obligation latched during the await (e.g. a coalesced theme that
+  // will be sent next) is not erased and still gets its redraw.
+  int _monkeyMuxForcedThemeRedrawGeneration = 0;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
   DateTime? _lastMuxWindowChangeAt;
@@ -4491,7 +4497,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         theme,
         targetSession,
         reason: reason,
-        forceForegroundRedraw: didThemeChange,
+        // Force a foreground repaint when the colors actually changed, and also
+        // on a forced re-sync (resume/reconnect/brightness), which is when a
+        // theme change that happened while backgrounded or disconnected would
+        // otherwise leave the agent painted in the previous theme.
+        forceForegroundRedraw: didThemeChange || forceRemoteRefresh,
       );
       return;
     }
@@ -4547,11 +4557,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
         if (forceForegroundRedraw) {
           // Latch the repaint obligation so it survives this refresh request
-          // being superseded/coalesced by a later same-theme forced refresh
-          // (brightness changes fire several applies in quick succession, and
-          // preview -> "Use Theme" re-applies the same colors). It is cleared
-          // only once a redraw is actually dispatched.
+          // being superseded/coalesced by a later same-theme refresh (brightness
+          // changes fire several applies in quick succession, and preview ->
+          // "Use Theme" re-applies the same colors). It is passed to MonkeyMux
+          // as the theme_changed `redraw` flag and cleared once delivered.
           _monkeyMuxForcedThemeRedrawPending = true;
+          _monkeyMuxForcedThemeRedrawGeneration += 1;
         }
         DiagnosticsLogService.instance.info(
           'terminal.theme',
@@ -5442,7 +5453,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     var outerRefreshReason = request.reason;
     var tmuxCommandDeferred = false;
-    var refreshApplied = false;
     try {
       final mux = _activeRemoteMultiplexerService;
       DiagnosticsLogService.instance.info(
@@ -5467,13 +5477,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         tmuxCommandDeferred = true;
         outerRefreshReason = '${request.reason}_tmux_deferred';
       } else {
+        // Drive the server-side foreground repaint from the latched theme-change
+        // obligation. Passing it with the theme hint makes the repaint atomic
+        // and immune to this request being superseded/coalesced: MonkeyMux
+        // performs the synthetic redraw right after delivering the hint.
+        final forcedRedrawGeneration = _monkeyMuxForcedThemeRedrawGeneration;
+        final forceForegroundRedraw =
+            _monkeyMuxForcedThemeRedrawPending &&
+            _activeMuxBackend == RemoteMuxBackend.monkeyMux;
         await mux.refreshTerminalTheme(
           request.session,
           request.sessionName,
           request.theme,
           extraFlags: request.extraFlags,
+          forceForegroundRedraw: forceForegroundRedraw,
         );
-        refreshApplied = true;
+        if (forceForegroundRedraw &&
+            _monkeyMuxForcedThemeRedrawGeneration == forcedRedrawGeneration) {
+          // Clear only if no newer obligation was latched while awaiting; a newer
+          // one bumps the generation and its own refresh will carry the redraw.
+          _monkeyMuxForcedThemeRedrawPending = false;
+        }
+        if (forceForegroundRedraw) {
+          // The server repaints the foreground TUI as part of this theme change,
+          // so drop any resize-redraw follow-up a very recent viewport change
+          // armed to avoid a second, redundant synthetic repaint.
+          _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+          _monkeyMuxResizeRedrawFollowUpTimer = null;
+        }
         DiagnosticsLogService.instance.info(
           'terminal.theme',
           'tmux_refresh_complete',
@@ -5481,6 +5512,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'reason': request.reason,
             'connectionId': request.session.connectionId,
             'sendOuterFocusReport': request.sendOuterFocusReport,
+            'forceForegroundRedraw': forceForegroundRedraw,
             'shellReady': _shell != null,
             'terminalViewReady': _terminalViewKey.currentState != null,
           },
@@ -5515,40 +5547,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         },
       );
       return;
-    }
-    // A DEC 2031 mode report plus a focus nudge alone do not reliably repaint
-    // every agent after a theme switch: Copilot CLI in particular diff-repaints
-    // and leaves its explicitly-colored header/footer bars in the previous
-    // theme ("black bars"). Once the theme hint has been delivered, force the
-    // foreground TUI to fully repaint with a synthetic PTY resize (the same
-    // mechanism used on attach/restore) so those cells are re-emitted.
-    //
-    // The obligation is latched (not carried on the request) so it survives a
-    // theme-change refresh being superseded by a later same-theme forced
-    // refresh whose request would not itself carry the flag.
-    if (_monkeyMuxForcedThemeRedrawPending &&
-        refreshApplied &&
-        _activeMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _monkeyMuxForcedThemeRedrawPending = false;
-      // A synthetic redraw resize already covers any repaint a recent size
-      // change scheduled, so drop that pending follow-up to avoid repainting
-      // twice for one visual update.
-      _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
-      _monkeyMuxResizeRedrawFollowUpTimer = null;
-      DiagnosticsLogService.instance.info(
-        'terminal.theme',
-        'monkeymux_force_redraw',
-        fields: {
-          'reason': request.reason,
-          'connectionId': request.session.connectionId,
-        },
-      );
-      unawaited(
-        _syncActiveMonkeyMuxTerminalSize(
-          request.session,
-          refreshVisibleTerminal: true,
-        ),
-      );
     }
     if (request.sendOuterFocusReport) {
       if (!_isOuterTuiSignalingActive(request.session)) {
