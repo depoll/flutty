@@ -50,6 +50,7 @@ Map<int, String> resolveGeneratedPortProxyNames(
   Iterable<({int id, String label})> hosts, {
   Iterable<String> reservedNames = const [],
 }) {
+  final reservedNameSet = reservedNames.toSet();
   final normalizedById = <int, String>{
     for (final host in hosts) host.id: normalizedPortProxySlug(host.label),
   };
@@ -63,10 +64,19 @@ Map<int, String> resolveGeneratedPortProxyNames(
   }
 
   final resolved = <int, String>{};
+  final usedNames = {...reservedNameSet};
   final prefixLengths = <int, int>{};
-  for (final entry in normalizedById.entries) {
+  final normalizedEntries = normalizedById.entries.toList()
+    ..sort((left, right) => left.key.compareTo(right.key));
+  for (final entry in normalizedEntries) {
     if (normalizedCounts[entry.value]! > 1) {
-      resolved[entry.key] = _portProxySlugWithHostId(entry.value, entry.key);
+      final name = _uniquePortProxySlugWithHostId(
+        entry.value,
+        entry.key,
+        usedNames,
+      );
+      resolved[entry.key] = name;
+      usedNames.add(name);
     } else {
       prefixLengths[entry.key] = entry.value.length.clamp(
         1,
@@ -85,7 +95,7 @@ Map<int, String> resolveGeneratedPortProxyNames(
     };
     final candidateCounts = <String, int>{};
     for (final name in [
-      ...reservedNames,
+      ...reservedNameSet,
       ...resolved.values,
       ...candidates.values,
     ]) {
@@ -96,6 +106,7 @@ Map<int, String> resolveGeneratedPortProxyNames(
     for (final entry in candidates.entries) {
       if (candidateCounts[entry.value] == 1) {
         resolved[entry.key] = entry.value;
+        usedNames.add(entry.value);
         completedIds.add(entry.key);
         continue;
       }
@@ -107,7 +118,13 @@ Map<int, String> resolveGeneratedPortProxyNames(
         currentPrefix: entry.value,
       );
       if (nextLength == null) {
-        resolved[entry.key] = _portProxySlugWithHostId(entry.value, entry.key);
+        final name = _uniquePortProxySlugWithHostId(
+          entry.value,
+          entry.key,
+          usedNames,
+        );
+        resolved[entry.key] = name;
+        usedNames.add(name);
         completedIds.add(entry.key);
       } else {
         prefixLengths[entry.key] = nextLength;
@@ -135,8 +152,27 @@ int? _nextDistinctPrefixLength(
   return null;
 }
 
-String _portProxySlugWithHostId(String slug, int hostId) {
-  final suffix = '-$hostId';
+String _uniquePortProxySlugWithHostId(
+  String slug,
+  int hostId,
+  Set<String> usedNames,
+) {
+  var attempt = 0;
+  while (true) {
+    final suffix = switch (attempt) {
+      0 => '-$hostId',
+      1 => '-host-$hostId',
+      _ => '-host-$hostId-$attempt',
+    };
+    final candidate = _portProxySlugWithSuffix(slug, suffix);
+    if (!usedNames.contains(candidate)) {
+      return candidate;
+    }
+    attempt++;
+  }
+}
+
+String _portProxySlugWithSuffix(String slug, String suffix) {
   final maximumBaseLength = _maximumDnsLabelLength - suffix.length;
   return '${_portProxySlugPrefix(slug, maximumBaseLength)}$suffix';
 }

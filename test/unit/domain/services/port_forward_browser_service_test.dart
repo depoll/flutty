@@ -248,6 +248,16 @@ void main() {
             {42: 'dev-box-42', 43: 'dev-box-43', 44: 'production'},
           );
         });
+
+        test('keeps duplicate-name IDs clear of reserved custom aliases', () {
+          expect(
+            resolveGeneratedPortProxyNames(
+              [(id: 42, label: 'Dev Box'), (id: 43, label: 'Dev Box!')],
+              reservedNames: const ['dev-box-42'],
+            ),
+            {42: 'dev-box-host-42', 43: 'dev-box-43'},
+          );
+        });
       });
 
       test('isolates automatic services by host and remote port', () {
