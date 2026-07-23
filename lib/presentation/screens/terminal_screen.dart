@@ -3256,7 +3256,7 @@ class _PortForwardBrowserOption {
 
   final Uri uri;
   final Uri sourceUri;
-  final Uri fallbackUri;
+  final Uri? fallbackUri;
   final int port;
   final String title;
   final PortForwardBrowserTabGroup group;
@@ -14252,10 +14252,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 localHost: tunnel.browserHost!,
                 localPort: tunnel.browserPort!,
               );
-              final fallbackUri = buildPortForwardBrowserUriForBind(
-                localHost: tunnel.localHost,
-                localPort: tunnel.localPort,
-              );
+              final fallbackHost = tunnel.browserFallbackHost;
+              final fallbackUri = fallbackHost == null
+                  ? null
+                  : buildPortForwardBrowserUriForBind(
+                      localHost: fallbackHost,
+                      localPort: tunnel.localPort,
+                    );
               return _PortForwardBrowserOption(
                 uri: uri,
                 sourceUri: sourceUri,

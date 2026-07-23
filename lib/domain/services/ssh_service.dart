@@ -3492,6 +3492,7 @@ class SshSession {
           localPort: e.value.localPort,
           browserHost: e.value.browserHost,
           browserPort: e.value.browserPort,
+          browserFallbackHost: e.value.browserFallbackHost,
           remoteHost: e.value.remoteHost,
           remotePort: e.value.remotePort,
           isLocal: e.value.isLocal,
@@ -5133,9 +5134,16 @@ while($true){
       serverSocket = primaryServerSocket;
       final resolvedBrowserHost =
           browserHost ?? portForwardBrowserHostForPortForwardId(portForwardId);
-      final browserAddresses = [
+      final friendlyBrowserAddresses = [
         InternetAddress.loopbackIPv4,
         InternetAddress.loopbackIPv6,
+      ];
+      final fallbackBrowserAddress = InternetAddress(
+        portForwardBrowserFallbackHostForHostId(hostId),
+      );
+      final browserAddresses = [
+        ...friendlyBrowserAddresses,
+        fallbackBrowserAddress,
       ];
       for (final address in browserAddresses) {
         if (_listenerSupportsPortForwardBrowserAddress(
@@ -5154,13 +5162,31 @@ while($true){
         }
       }
       final hasBrowserEndpoint =
-          browserAddresses.any(
+          friendlyBrowserAddresses.any(
             (address) => _listenerSupportsPortForwardBrowserAddress(
               primaryServerSocket,
               address,
             ),
           ) ||
-          browserServerSockets.isNotEmpty;
+          browserServerSockets.any(
+            (serverSocket) => friendlyBrowserAddresses.any(
+              (address) => _listenerSupportsPortForwardBrowserAddress(
+                serverSocket,
+                address,
+              ),
+            ),
+          );
+      final hasBrowserFallbackEndpoint =
+          _listenerSupportsPortForwardBrowserAddress(
+            primaryServerSocket,
+            fallbackBrowserAddress,
+          ) ||
+          browserServerSockets.any(
+            (serverSocket) => _listenerSupportsPortForwardBrowserAddress(
+              serverSocket,
+              fallbackBrowserAddress,
+            ),
+          );
       if (_isClosing) {
         for (final browserServerSocket in browserServerSockets) {
           await browserServerSocket.close();
@@ -5173,6 +5199,9 @@ while($true){
         browserServerSockets: browserServerSockets,
         browserHost: hasBrowserEndpoint ? resolvedBrowserHost : null,
         browserPort: hasBrowserEndpoint ? primaryServerSocket.port : null,
+        browserFallbackHost: hasBrowserFallbackEndpoint
+            ? fallbackBrowserAddress.address
+            : null,
         localHost: localHost,
         localPort: primaryServerSocket.port,
         remoteHost: remoteHost,
@@ -5817,6 +5846,7 @@ class ActiveTunnelInfo {
     this.isShellRelated = false,
     this.browserHost,
     this.browserPort,
+    this.browserFallbackHost,
   });
 
   /// The port forward database ID.
@@ -5833,6 +5863,9 @@ class ActiveTunnelInfo {
 
   /// Port exposed through the browser-only loopback host.
   final int? browserPort;
+
+  /// DNS-independent, saved-host-scoped loopback fallback.
+  final String? browserFallbackHost;
 
   /// The remote host being forwarded to.
   final String remoteHost;
@@ -5856,6 +5889,7 @@ class _ActiveTunnel {
     required this.browserServerSockets,
     required this.browserHost,
     required this.browserPort,
+    required this.browserFallbackHost,
     required this.localHost,
     required this.localPort,
     required this.remoteHost,
@@ -5875,6 +5909,7 @@ class _ActiveTunnel {
        browserServerSockets = const [],
        browserHost = null,
        browserPort = null,
+       browserFallbackHost = null,
        isAutomatic = false,
        isShellRelated = false,
        isLocal = false;
@@ -5886,6 +5921,7 @@ class _ActiveTunnel {
   final int localPort;
   final String? browserHost;
   final int? browserPort;
+  final String? browserFallbackHost;
   final String remoteHost;
   final int remotePort;
   final bool isLocal;

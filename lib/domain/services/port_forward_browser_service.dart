@@ -60,6 +60,14 @@ Uri buildPortForwardBrowserUriForBind({
 String portForwardBrowserHostForPortForwardId(int portForwardId) =>
     'monkeyssh-${portForwardId.abs().toRadixString(36)}.localhost';
 
+/// Returns a DNS-independent loopback host dedicated to one saved host.
+String portForwardBrowserFallbackHostForHostId(int hostId) {
+  const usableLoopbackAddressCount = 0x00fffffd;
+  final addressValue = (hostId.abs() % usableLoopbackAddressCount) + 2;
+  return '127.${(addressValue >> 16) & 0xff}.'
+      '${(addressValue >> 8) & 0xff}.${addressValue & 0xff}';
+}
+
 /// Normalizes a user-entered proxy name to the prefix stored before
 /// `.localhost`.
 String normalizePortProxyName(String value) {
