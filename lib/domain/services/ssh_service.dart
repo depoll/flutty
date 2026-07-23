@@ -3242,6 +3242,9 @@ class SshSession {
   final _closeStarted = Completer<void>();
   bool _isClosing = false;
 
+  /// Completes when this SSH session begins closing.
+  Future<void> get closed => _closeStarted.future;
+
   /// Get active tunnel info for display.
   List<ActiveTunnelInfo> get activeTunnels => _activeTunnels.entries
       .map(
@@ -4638,7 +4641,7 @@ class ActiveTunnelInfo {
     this.browserPort,
   });
 
-  /// The port forward database ID.
+  /// The saved or internal runtime identifier for this port forward.
   final int portForwardId;
 
   /// The local host configured for the tunnel.
