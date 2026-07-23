@@ -3558,6 +3558,10 @@ class SshSession {
   bool get automaticPortForwardWatcherActive =>
       _automaticPortForwardWatcherSession != null;
 
+  /// Persistent mux pane roots used for shell-owned listener classification.
+  Set<int> get automaticPortForwardProcessRoots =>
+      Set.unmodifiable(_automaticPortForwardProcessRoots);
+
   /// Opens a local forwarding listener.
   @visibleForTesting
   Future<ServerSocket> bindPortForwardServerSocket(
@@ -7031,6 +7035,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         )
         .toList(growable: false);
     final owner = connectedSessions.isEmpty ? null : connectedSessions.last;
+    final processRoots = sessions
+        .expand((session) => session.automaticPortForwardProcessRoots)
+        .toSet();
     final activeManualRemoteListeners = sessions
         .expand((session) => session.activeTunnels)
         .where(
@@ -7143,6 +7150,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       required bool enabled,
     }) async {
       try {
+        if (enabled) {
+          await session.updateAutomaticPortForwardProcessRoots(processRoots);
+        }
         await session.configureAutomaticPortForwarding(
           enabled: enabled,
           proxyHost: proxyHost,
@@ -7219,6 +7229,21 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     });
     _automaticForwardHostReconfigurationQueues[hostId] = trackedOperation;
     return trackedOperation;
+  }
+
+  /// Reapplies automatic forwarding for every currently connected saved host.
+  Future<void> reconfigureAutomaticPortForwardingForConnectedHosts() async {
+    final hostIds =
+        state.keys
+            .map(getSession)
+            .whereType<SshSession>()
+            .map((session) => session.hostId)
+            .toSet()
+            .toList()
+          ..sort();
+    for (final hostId in hostIds) {
+      await reconfigureAutomaticPortForwardingForHost(hostId);
+    }
   }
 
   Future<void> _reconfigureAutomaticPortForwardingEndpoint(

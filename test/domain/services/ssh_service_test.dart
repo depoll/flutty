@@ -3675,6 +3675,7 @@ LISTEN ::1:4201
         name: 'newer',
         configurationLog: configurationLog,
       );
+      await older.updateAutomaticPortForwardProcessRoots({7300});
       final hostRepository = _MockHostRepository();
       when(
         () => hostRepository.getById(42),
@@ -3733,6 +3734,7 @@ LISTEN ::1:4201
         name: 'newer',
         configurationLog: configurationLog,
       );
+      await older.updateAutomaticPortForwardProcessRoots({7300});
       final hostRepository = _MockHostRepository();
       when(
         () => hostRepository.getById(42),
@@ -3761,6 +3763,7 @@ LISTEN ::1:4201
           .reconfigureAutomaticPortForwardingForHost(42);
 
       expect(configurationLog, ['older:false', 'newer:true']);
+      expect(newer.automaticPortForwardProcessRoots, contains(7300));
     });
 
     test('assigns shared host services to one duplicate saved host', () async {
