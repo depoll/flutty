@@ -104,13 +104,22 @@ void main() {
   late KeyRepository keyRepository;
   late SecretEncryptionService encryptionService;
   late SecureTransferService transferService;
+  late int hostsChangedCount;
 
   setUp(() {
     db = AppDatabase.forTesting(NativeDatabase.memory());
     encryptionService = SecretEncryptionService.forTesting();
     hostRepository = HostRepository(db, encryptionService);
     keyRepository = KeyRepository(db, encryptionService);
-    transferService = SecureTransferService(db, keyRepository, hostRepository);
+    hostsChangedCount = 0;
+    transferService = SecureTransferService(
+      db,
+      keyRepository,
+      hostRepository,
+      onHostsChanged: () async {
+        hostsChangedCount++;
+      },
+    );
   });
 
   tearDown(() async {
@@ -358,6 +367,7 @@ void main() {
       expect(imported.autoConnectRequiresConfirmation, isFalse);
       expect(imported.autoForwardPorts, isTrue);
       expect(imported.portProxyName, 'imported.dev');
+      expect(hostsChangedCount, 1);
 
       final stored = await (db.select(
         db.hosts,
