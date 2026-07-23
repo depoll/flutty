@@ -329,6 +329,26 @@ void main() {
       });
     });
 
+    test('keeps an active saved-forward fallback on loopback', () {
+      final fallbackUri = Uri.parse('http://127.0.0.1:8080');
+      expect(
+        shouldLoadPortForwardBrowserFallbackDirectly(
+          requestedUri: fallbackUri,
+          fallbackUri: fallbackUri,
+          fallbackActive: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldLoadPortForwardBrowserFallbackDirectly(
+          requestedUri: fallbackUri,
+          fallbackUri: fallbackUri,
+          fallbackActive: false,
+        ),
+        isFalse,
+      );
+    });
+
     test('rewrites a detected remote port to its ephemeral proxy port', () {
       expect(
         rewriteUriForPortForwardBrowser(

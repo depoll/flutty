@@ -168,6 +168,23 @@ bool shouldUsePortForwardBrowserFallback({
             portForwardBrowserUriPort(failedUri) ==
                 portForwardBrowserUriPort(browserUri)));
 
+/// Whether an active loopback fallback request must bypass friendly rewriting.
+bool shouldLoadPortForwardBrowserFallbackDirectly({
+  required Uri requestedUri,
+  required Uri? fallbackUri,
+  required bool fallbackActive,
+}) {
+  if (!fallbackActive || fallbackUri == null) {
+    return false;
+  }
+  final normalizedRequestedUri = normalizePortForwardBrowserUri(requestedUri);
+  final normalizedFallbackUri = normalizePortForwardBrowserUri(fallbackUri);
+  return normalizedRequestedUri.host.toLowerCase() ==
+          normalizedFallbackUri.host.toLowerCase() &&
+      portForwardBrowserUriPort(normalizedRequestedUri) ==
+          portForwardBrowserUriPort(normalizedFallbackUri);
+}
+
 /// Returns whether [uri] should stay inside the embedded browser.
 ///
 /// Only loopback web links whose port is owned by an active local forward are

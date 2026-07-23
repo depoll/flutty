@@ -332,8 +332,10 @@ if(!$__flResolved){$__flResolved='cmd'}
     if (command != null) {
       final markedCommand = _session.remoteIsWindows
           ? command
-          : 'export MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken}; '
-                '$command';
+          : 'env MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken} '
+                '/bin/sh -c '
+                '${_quotePosixShellArgument(r'if [ -n "$SHELL" ]; then exec "$SHELL" -c "$1"; else exec /bin/sh -c "$1"; fi')} '
+                'sh ${_quotePosixShellArgument(command)}';
       return _session.client.execute(markedCommand, pty: ptyConfig);
     }
 
@@ -358,6 +360,9 @@ if(!$__flResolved){$__flResolved='cmd'}
       return _session.client.shell(pty: ptyConfig);
     }
   }
+
+  static String _quotePosixShellArgument(String value) =>
+      "'${value.replaceAll("'", "'\"'\"'")}'";
 
   Future<SSHSession> _openWindowsCapabilityShell(SSHPtyConfig ptyConfig) async {
     try {
