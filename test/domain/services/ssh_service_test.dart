@@ -322,6 +322,9 @@ class _FakeHostKeySocket implements SSHSocket, HostKeySource {
   }
 
   @override
+  Future<void> flush() async {}
+
+  @override
   Future<void> get done async {}
 
   @override
@@ -349,6 +352,9 @@ class _FakeForwardHostKeySocket implements SSHForwardChannel, HostKeySource {
     unawaited(_streamController.close());
     unawaited(_sinkController.close());
   }
+
+  @override
+  Future<void> flush() async {}
 
   @override
   Future<void> get done async {}
@@ -491,6 +497,9 @@ class _SingleCloseForwardChannel implements SSHForwardChannel {
       await _sinkController.close();
     }
   }
+
+  @override
+  Future<void> flush() async {}
 
   @override
   Future<void> get done async {}
@@ -3035,7 +3044,7 @@ LISTEN ::1:4201
       );
 
       when(client.sftp).thenAnswer((_) async => sftp);
-      when(sftp.close).thenReturn(null);
+      when(sftp.close).thenAnswer((_) async {});
 
       final first = await session.sftp();
       final second = await session.sftp();
