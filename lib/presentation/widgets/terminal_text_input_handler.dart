@@ -352,6 +352,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   int _lastSentCursorOffset = 0;
   int _iosBackspaceRunwayLength = 0;
   ({bool ctrl, bool alt, bool shift})? _pendingComposingEnterModifiers;
+  String? _pendingComposingEnterText;
+  String? _pendingComposingEnterStalePrefix;
+  int? _pendingComposingEnterRevision;
+  bool _pendingComposingEnterMayBeInText = false;
+  bool _acceptNextPendingComposingEnterCommit = false;
+  TextEditingValue? _pendingComposingEnterFollowUp;
   String? _pendingPerformedEnterText;
   int _pendingEnterActionSuppressions = 0;
   int _latestEditingValueRevision = 0;
@@ -1113,7 +1119,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _lastSentText = '';
       _lastSentCursorOffset = 0;
       _iosBackspaceRunwayLength = 0;
-      _pendingComposingEnterModifiers = null;
+      _clearPendingComposingEnterAction();
       _pendingPerformedEnterText = null;
       _pendingEnterActionSuppressions = 0;
       _currentEditingState = _initEditingState.copyWith();
@@ -1166,7 +1172,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _iosBackspaceRunwayLength = 0;
-    _pendingComposingEnterModifiers = null;
+    _clearPendingComposingEnterAction();
     _pendingPerformedEnterText = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
@@ -1438,8 +1444,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   int _sendInputDelta(
     String currentText,
-    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
-  ) {
+    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta, {
+    ({bool ctrl, bool alt, bool shift})? enterModifiers,
+  }) {
     _moveTerminalCursorTo(delta.deleteCursorOffset);
 
     final deletedCount = delta.deletedCount;
@@ -1449,7 +1456,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final appendedText = delta.appendedText;
-    final newlineCount = _sendAppendedTerminalInput(appendedText);
+    final newlineCount = _sendAppendedTerminalInput(
+      appendedText,
+      enterModifiers: enterModifiers,
+    );
 
     _lastSentText = currentText;
     _lastSentCursorOffset =
@@ -1459,11 +1469,37 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return newlineCount;
   }
 
-  int _sendAppendedTerminalInput(String text) {
+  int _terminalNewlineSequenceCount(String text) {
+    var count = 0;
+    var index = 0;
+    while (index < text.length) {
+      final codeUnit = text.codeUnitAt(index);
+      if (codeUnit == 0x0D) {
+        count++;
+        index += index + 1 < text.length && text.codeUnitAt(index + 1) == 0x0A
+            ? 2
+            : 1;
+      } else {
+        if (codeUnit == 0x0A) {
+          count++;
+        }
+        index++;
+      }
+    }
+    return count;
+  }
+
+  int _sendAppendedTerminalInput(
+    String text, {
+    ({bool ctrl, bool alt, bool shift})? enterModifiers,
+  }) {
     if (text.isEmpty) {
       return 0;
     }
 
+    final modifierNewlineIndex = enterModifiers == null
+        ? -1
+        : _terminalNewlineSequenceCount(text) - 1;
     var newlineCount = 0;
     var segmentStart = 0;
     var index = 0;
@@ -1482,7 +1518,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
 
       _sendTerminalTextSegment(text.substring(segmentStart, index));
-      _sendTerminalEnterFromTextInput();
+      _sendTerminalEnterFromTextInput(
+        modifiers: newlineCount == modifierNewlineIndex ? enterModifiers : null,
+      );
       newlineCount++;
       index += newlineLength;
       segmentStart = index;
@@ -1499,15 +1537,20 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     widget.terminal.textInput(_applyTerminalTextInputModifiers(text));
   }
 
-  void _sendTerminalEnterFromTextInput() {
-    final modifiers = widget.resolveTerminalKeyModifiers?.call();
+  void _sendTerminalEnterFromTextInput({
+    ({bool ctrl, bool alt, bool shift})? modifiers,
+  }) {
+    final effectiveModifiers =
+        modifiers ?? widget.resolveTerminalKeyModifiers?.call();
     sendTerminalEnterInput(
       widget.terminal,
-      shiftActive: modifiers?.shift ?? false,
-      altActive: modifiers?.alt ?? false,
-      ctrlActive: modifiers?.ctrl ?? false,
+      shiftActive: effectiveModifiers?.shift ?? false,
+      altActive: effectiveModifiers?.alt ?? false,
+      ctrlActive: effectiveModifiers?.ctrl ?? false,
     );
-    widget.consumeTerminalKeyModifiers?.call();
+    if (modifiers == null) {
+      widget.consumeTerminalKeyModifiers?.call();
+    }
   }
 
   void _resetCommittedInputState({
@@ -1519,7 +1562,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _cancelDeferredTrailingBackspaceImeClear();
     _lastSentText = '';
     _lastSentCursorOffset = 0;
-    _pendingComposingEnterModifiers = null;
+    _clearPendingComposingEnterAction();
     if (clearPendingPerformedEnterText) {
       _pendingPerformedEnterText = null;
     }
@@ -2625,9 +2668,165 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   AutofillScope? get currentAutofillScope => null;
 
+  bool _capturePendingComposingEnterFollowUp(TextEditingValue value) {
+    final pendingText = _pendingComposingEnterText;
+    if (pendingText == null) {
+      return false;
+    }
+
+    final currentText = _canonicalPendingComposingEnterText(
+      _extractInputText(value.text),
+      stalePrefix: _pendingComposingEnterStalePrefix,
+    );
+    final isRedundantCommit = currentText == pendingText;
+    final pendingTextEndsWithNewline = _textEndsWithEnterSequence(pendingText);
+    final isSuffixAfterPendingNewline =
+        pendingTextEndsWithNewline && currentText.startsWith(pendingText);
+    final isNewlineFollowUp = _enterCommitNewlineSequences.any(
+      (newlineSequence) =>
+          currentText.startsWith('$pendingText$newlineSequence'),
+    );
+    if (!isRedundantCommit &&
+        !isSuffixAfterPendingNewline &&
+        !isNewlineFollowUp) {
+      return false;
+    }
+
+    _pendingComposingEnterFollowUp = _canonicalEditingStateForUserText(
+      value,
+      currentText,
+    );
+    return true;
+  }
+
+  TextEditingValue _canonicalEditingStateForUserText(
+    TextEditingValue sourceValue,
+    String userText,
+  ) {
+    final rawPrefixLength = _editingPrefixLength(sourceValue.text);
+    final rawUserText = _extractRawInputText(sourceValue.text);
+    final trimmedLeadingCharacters = rawUserText.length - userText.length;
+    return _editingStateForUserText(
+      userText: userText,
+      userSelection: _normalizeSelectionForUserText(
+        selection: sourceValue.selection,
+        rawPrefixLength: rawPrefixLength,
+        trimmedLeadingCharacters: trimmedLeadingCharacters,
+        userTextLength: userText.length,
+      ),
+      userComposing: _normalizeComposingForUserText(
+        composing: sourceValue.composing,
+        rawPrefixLength: rawPrefixLength,
+        trimmedLeadingCharacters: trimmedLeadingCharacters,
+        userTextLength: userText.length,
+      ),
+    );
+  }
+
+  bool _textEndsWithEnterSequence(String text) =>
+      _enterCommitNewlineSequences.any(text.endsWith);
+
+  String _canonicalPendingComposingEnterText(
+    String currentText, {
+    String? stalePrefix,
+  }) {
+    final previousEnterText = stalePrefix ?? _pendingPerformedEnterText;
+    if (previousEnterText == null) {
+      return currentText;
+    }
+    if (currentText == previousEnterText) {
+      return '';
+    }
+    for (final newlineSequence in _enterCommitNewlineSequences) {
+      final prefix = '$previousEnterText$newlineSequence';
+      if (currentText.startsWith(prefix)) {
+        return currentText.substring(prefix.length);
+      }
+    }
+    return currentText;
+  }
+
+  TextEditingValue? _pendingComposingEnterFollowUpSuffixValue() {
+    final pendingText = _pendingComposingEnterText;
+    final followUp = _pendingComposingEnterFollowUp;
+    if (pendingText == null || followUp == null) {
+      return null;
+    }
+
+    final currentText = _extractInputText(followUp.text);
+    final pendingTextEndsWithNewline = _enterCommitNewlineSequences.any(
+      pendingText.endsWith,
+    );
+    if (pendingTextEndsWithNewline && currentText.startsWith(pendingText)) {
+      final suffix = currentText.substring(pendingText.length);
+      return suffix.isEmpty
+          ? null
+          : _canonicalEditingStateForUserText(followUp, suffix);
+    }
+    for (final newlineSequence in _enterCommitNewlineSequences) {
+      final prefix = '$pendingText$newlineSequence';
+      if (currentText.startsWith(prefix)) {
+        final suffix = currentText.substring(prefix.length);
+        return suffix.isEmpty
+            ? null
+            : _canonicalEditingStateForUserText(followUp, suffix);
+      }
+    }
+    return null;
+  }
+
+  TextEditingValue _editingStateWithPrependedUserText(
+    TextEditingValue sourceValue,
+    String prefix,
+  ) {
+    final suffix = _extractInputText(sourceValue.text);
+    final userSelection = _userSelectionForEditingValue(suffix, sourceValue);
+    final rawPrefixLength = _editingPrefixLength(sourceValue.text);
+    final rawUserText = _extractRawInputText(sourceValue.text);
+    final trimmedLeadingCharacters = rawUserText.length - suffix.length;
+    final userComposing = _normalizeComposingForUserText(
+      composing: sourceValue.composing,
+      rawPrefixLength: rawPrefixLength,
+      trimmedLeadingCharacters: trimmedLeadingCharacters,
+      userTextLength: suffix.length,
+    );
+    final prefixLength = prefix.length;
+    return _editingStateForUserText(
+      userText: '$prefix$suffix',
+      userSelection: userSelection == null
+          ? null
+          : TextSelection(
+              baseOffset: prefixLength + userSelection.baseOffset,
+              extentOffset: prefixLength + userSelection.extentOffset,
+              affinity: userSelection.affinity,
+              isDirectional: userSelection.isDirectional,
+            ),
+      userComposing: userComposing.isValid && !userComposing.isCollapsed
+          ? TextRange(
+              start: prefixLength + userComposing.start,
+              end: prefixLength + userComposing.end,
+            )
+          : TextRange.empty,
+    );
+  }
+
+  void _restoreEditingValue(TextEditingValue value) {
+    _currentEditingState = value;
+    if (hasInputConnection) {
+      _connection!.setEditingState(value);
+    }
+    updateEditingValue(value);
+  }
+
   @override
   void updateEditingValue(TextEditingValue value) {
     if (widget.readOnly) {
+      return;
+    }
+
+    if (_acceptNextPendingComposingEnterCommit) {
+      _acceptNextPendingComposingEnterCommit = false;
+    } else if (_capturePendingComposingEnterFollowUp(value)) {
       return;
     }
 
@@ -2732,6 +2931,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (normalizedPendingEnter.ignored) {
         _cancelDeferredTrailingBackspaceImeClear();
         _syncEditingStateWithUserText('');
+        _completePendingComposingEnterAction(revision);
         _sawImeComposition = false;
         return;
       }
@@ -2802,7 +3002,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           sourceValue: value,
           forceResyncState: movedCollapsedCursor,
         );
-        _completePendingComposingEnterAction();
+        _completePendingComposingEnterAction(revision);
         _sawImeComposition = false;
         return;
       }
@@ -2826,9 +3026,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         previousTextOverride: deleteResetContinuation?.previousText,
         lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
       );
+      final pendingEnterActionOwnedBeforeReview =
+          revision == _pendingComposingEnterRevision;
       final hadActiveToolbarModifier =
           widget.hasActiveToolbarModifier?.call() ?? false;
-      if (hadActiveToolbarModifier && delta.appendedText.isNotEmpty) {
+      if (!pendingEnterActionOwnedBeforeReview &&
+          hadActiveToolbarModifier &&
+          delta.appendedText.isNotEmpty) {
         // One-shot terminal modifiers apply to a single key. Some IMEs can send
         // stale composing text in the same batch, so keep only the newest key.
         _cancelDeferredTrailingBackspaceImeClear();
@@ -2859,13 +3063,23 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       final review = _reviewForInsertedText(effectiveCurrentText, delta);
       if (review != null) {
         final shouldInsert = await widget.onReviewInsertedText!(review);
-        if (!mounted || revision != _latestEditingValueRevision) {
+        if (!mounted) {
+          return;
+        }
+        if (revision != _latestEditingValueRevision) {
+          _clearPendingComposingEnterAction(revision: revision);
           return;
         }
         if (!shouldInsert) {
           _cancelDeferredTrailingBackspaceImeClear();
-          _pendingComposingEnterModifiers = null;
+          final followUpSuffix = _pendingComposingEnterFollowUpSuffixValue();
+          _clearPendingComposingEnterAction(revision: revision);
           _syncEditingStateWithUserText(_lastSentText);
+          if (followUpSuffix != null) {
+            _restoreEditingValue(
+              _editingStateWithPrependedUserText(followUpSuffix, _lastSentText),
+            );
+          }
           _sawImeComposition = false;
           return;
         }
@@ -2880,10 +3094,43 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _lastSentText = deltaPreviousText;
         _lastSentCursorOffset = deltaPreviousCursorOffset;
       }
-      final newlineCount = _sendInputDelta(effectiveCurrentText, delta);
+      final pendingEnterActionOwnsRevision =
+          revision == _pendingComposingEnterRevision;
+      final pendingEnterActionArrived =
+          pendingEnterActionOwnsRevision &&
+          _pendingComposingEnterModifiers != null;
+      final pendingEnterRepresentedByPayloadNewline =
+          pendingEnterActionArrived &&
+          _pendingComposingEnterMayBeInText &&
+          _pendingComposingEnterText != null &&
+          _textEndsWithEnterSequence(_pendingComposingEnterText!);
+      final newlineCount = _sendInputDelta(
+        effectiveCurrentText,
+        delta,
+        enterModifiers: pendingEnterRepresentedByPayloadNewline
+            ? _pendingComposingEnterModifiers
+            : null,
+      );
       if (newlineCount > 0) {
-        _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
+        if (pendingEnterActionArrived &&
+            !pendingEnterRepresentedByPayloadNewline) {
+          _completePendingComposingEnterAction(revision);
+          _trimLeadingSuggestionSpaceAfterDelete = true;
+          _sawImeComposition = false;
+          return;
+        }
+        final followUpSuffix = pendingEnterActionArrived
+            ? _pendingComposingEnterFollowUpSuffixValue()
+            : null;
+        _resetCommittedInputState(
+          pendingEnterSuppressions: pendingEnterActionArrived
+              ? newlineCount - 1
+              : newlineCount,
+        );
         _trimLeadingSuggestionSpaceAfterDelete = true;
+        if (followUpSuffix != null) {
+          _restoreEditingValue(followUpSuffix);
+        }
         _sawImeComposition = false;
         return;
       }
@@ -2992,7 +3239,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
             ? null
             : value,
       );
-      _completePendingComposingEnterAction();
+      _completePendingComposingEnterAction(revision);
       _sawImeComposition = false;
     } finally {
       _lastProcessedUserSelectionWasValid = processedUserSelectionWasValid;
@@ -3015,13 +3262,35 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _sawImeComposition = false;
   }
 
-  void _completePendingComposingEnterAction() {
+  void _clearPendingComposingEnterAction({int? revision}) {
+    if (revision != null && revision != _pendingComposingEnterRevision) {
+      return;
+    }
+    _pendingComposingEnterModifiers = null;
+    _pendingComposingEnterText = null;
+    _pendingComposingEnterStalePrefix = null;
+    _pendingComposingEnterRevision = null;
+    _pendingComposingEnterMayBeInText = false;
+    _acceptNextPendingComposingEnterCommit = false;
+    _pendingComposingEnterFollowUp = null;
+  }
+
+  void _completePendingComposingEnterAction(int revision) {
+    if (revision != _pendingComposingEnterRevision) {
+      return;
+    }
     final modifiers = _pendingComposingEnterModifiers;
     if (modifiers == null) {
       return;
     }
-    _pendingComposingEnterModifiers = null;
+    final followUp = _pendingComposingEnterFollowUp;
+    final followUpSuffix = _pendingComposingEnterFollowUpSuffixValue();
+    _clearPendingComposingEnterAction();
     _sendPerformedEnter(modifiers);
+    final replayValue = followUpSuffix ?? followUp;
+    if (replayValue != null) {
+      _restoreEditingValue(replayValue);
+    }
   }
 
   @override
@@ -3041,15 +3310,33 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           (ctrl: false, alt: false, shift: false);
       _hasPendingPromptOutputImeReset = true;
       widget.consumeTerminalKeyModifiers?.call();
-      final currentText = _extractInputText(_currentEditingState.text);
+      final stalePrefix = _pendingPerformedEnterText;
+      final currentText = _canonicalPendingComposingEnterText(
+        _extractInputText(_currentEditingState.text),
+        stalePrefix: stalePrefix,
+      );
       final hasUncommittedComposition =
           !_currentEditingState.composing.isCollapsed &&
           currentText != _lastSentText;
-      if (hasUncommittedComposition) {
+      final hasPendingEditingValue =
+          currentText != _lastSentText &&
+          (_isProcessingEditingValue || _queuedEditingValue != null);
+      if (hasUncommittedComposition || hasPendingEditingValue) {
+        final pendingRevision = hasUncommittedComposition
+            ? _latestEditingValueRevision + 1
+            : _latestEditingValueRevision;
         _pendingComposingEnterModifiers = modifiers;
-        updateEditingValue(
-          _currentEditingState.copyWith(composing: TextRange.empty),
-        );
+        _pendingComposingEnterText = currentText;
+        _pendingComposingEnterStalePrefix = stalePrefix;
+        _pendingComposingEnterRevision = pendingRevision;
+        _pendingComposingEnterMayBeInText =
+            !hasUncommittedComposition && hasPendingEditingValue;
+        if (hasUncommittedComposition) {
+          _acceptNextPendingComposingEnterCommit = true;
+          updateEditingValue(
+            _currentEditingState.copyWith(composing: TextRange.empty),
+          );
+        }
         return;
       }
       _sendPerformedEnter(modifiers);
@@ -3077,7 +3364,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _iosBackspaceRunwayLength = 0;
-    _pendingComposingEnterModifiers = null;
+    _clearPendingComposingEnterAction();
     _pendingPerformedEnterText = null;
     _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;
