@@ -351,6 +351,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   int _iosBackspaceRunwayLength = 0;
+  ({bool ctrl, bool alt, bool shift})? _pendingComposingEnterModifiers;
   String? _pendingPerformedEnterText;
   int _pendingEnterActionSuppressions = 0;
   int _latestEditingValueRevision = 0;
@@ -1112,6 +1113,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _lastSentText = '';
       _lastSentCursorOffset = 0;
       _iosBackspaceRunwayLength = 0;
+      _pendingComposingEnterModifiers = null;
       _pendingPerformedEnterText = null;
       _pendingEnterActionSuppressions = 0;
       _currentEditingState = _initEditingState.copyWith();
@@ -1164,6 +1166,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _iosBackspaceRunwayLength = 0;
+    _pendingComposingEnterModifiers = null;
     _pendingPerformedEnterText = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
@@ -1516,6 +1519,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _cancelDeferredTrailingBackspaceImeClear();
     _lastSentText = '';
     _lastSentCursorOffset = 0;
+    _pendingComposingEnterModifiers = null;
     if (clearPendingPerformedEnterText) {
       _pendingPerformedEnterText = null;
     }
@@ -2798,6 +2802,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           sourceValue: value,
           forceResyncState: movedCollapsedCursor,
         );
+        _completePendingComposingEnterAction();
         _sawImeComposition = false;
         return;
       }
@@ -2859,6 +2864,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         }
         if (!shouldInsert) {
           _cancelDeferredTrailingBackspaceImeClear();
+          _pendingComposingEnterModifiers = null;
           _syncEditingStateWithUserText(_lastSentText);
           _sawImeComposition = false;
           return;
@@ -2986,11 +2992,36 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
             ? null
             : value,
       );
+      _completePendingComposingEnterAction();
       _sawImeComposition = false;
     } finally {
       _lastProcessedUserSelectionWasValid = processedUserSelectionWasValid;
       _lastProcessedSelectionWasCollapsed = processedUserSelection.isCollapsed;
     }
+  }
+
+  void _sendPerformedEnter(({bool ctrl, bool alt, bool shift}) modifiers) {
+    _hasPendingPromptOutputImeReset = true;
+    _notifyUserInput();
+    sendTerminalEnterInput(
+      widget.terminal,
+      shiftActive: modifiers.shift,
+      altActive: modifiers.alt,
+      ctrlActive: modifiers.ctrl,
+    );
+    _pendingPerformedEnterText = _lastSentText;
+    _resetCommittedInputState(clearPendingPerformedEnterText: false);
+    _trimLeadingSuggestionSpaceAfterDelete = true;
+    _sawImeComposition = false;
+  }
+
+  void _completePendingComposingEnterAction() {
+    final modifiers = _pendingComposingEnterModifiers;
+    if (modifiers == null) {
+      return;
+    }
+    _pendingComposingEnterModifiers = null;
+    _sendPerformedEnter(modifiers);
   }
 
   @override
@@ -3002,20 +3033,26 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _pendingEnterActionSuppressions--;
         return;
       }
-      final modifiers = widget.resolveTerminalKeyModifiers?.call();
+      if (_pendingComposingEnterModifiers != null) {
+        return;
+      }
+      final modifiers =
+          widget.resolveTerminalKeyModifiers?.call() ??
+          (ctrl: false, alt: false, shift: false);
       _hasPendingPromptOutputImeReset = true;
-      _notifyUserInput();
-      sendTerminalEnterInput(
-        widget.terminal,
-        shiftActive: modifiers?.shift ?? false,
-        altActive: modifiers?.alt ?? false,
-        ctrlActive: modifiers?.ctrl ?? false,
-      );
       widget.consumeTerminalKeyModifiers?.call();
-      _pendingPerformedEnterText = _lastSentText;
-      _resetCommittedInputState(clearPendingPerformedEnterText: false);
-      _trimLeadingSuggestionSpaceAfterDelete = true;
-      _sawImeComposition = false;
+      final currentText = _extractInputText(_currentEditingState.text);
+      final hasUncommittedComposition =
+          !_currentEditingState.composing.isCollapsed &&
+          currentText != _lastSentText;
+      if (hasUncommittedComposition) {
+        _pendingComposingEnterModifiers = modifiers;
+        updateEditingValue(
+          _currentEditingState.copyWith(composing: TextRange.empty),
+        );
+        return;
+      }
+      _sendPerformedEnter(modifiers);
     }
   }
 
@@ -3040,6 +3077,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _iosBackspaceRunwayLength = 0;
+    _pendingComposingEnterModifiers = null;
     _pendingPerformedEnterText = null;
     _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;
