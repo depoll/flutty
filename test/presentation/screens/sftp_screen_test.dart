@@ -708,6 +708,7 @@ void main() {
       when(
         () => staleSftp.listdir('/home/demo'),
       ).thenThrow(SSHStateError('Connection closed'));
+      when(staleSftp.close).thenAnswer((_) async {});
       when(() => freshSftp.listdir('/home/demo')).thenAnswer(
         (_) async => [
           SftpName(

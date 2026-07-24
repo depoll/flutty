@@ -32,6 +32,6 @@ echo 'Installing dependencies...'
 
 # Run code generation (when we add it)
 # echo "Running code generation..."
-# dart run build_runner build --delete-conflicting-outputs
+# dart run build_runner build
 
 echo "Setup complete! You can now run 'flutter run' to start the app."
