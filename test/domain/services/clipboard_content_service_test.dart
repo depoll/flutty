@@ -18,6 +18,20 @@ void main() {
   });
 
   group('ClipboardContentService', () {
+    test('readExplicitText returns uncoerced clipboard text', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(clipboardChannel, (call) async {
+            if (call.method == 'readExplicitText') {
+              return 'echo bracketed paste';
+            }
+            return null;
+          });
+
+      const service = ClipboardContentService();
+
+      expect(await service.readExplicitText(), 'echo bracketed paste');
+    });
+
     test(
       'readContentUri returns name and bytes from the platform channel',
       () async {

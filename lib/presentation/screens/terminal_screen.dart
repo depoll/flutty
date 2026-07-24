@@ -1463,6 +1463,79 @@ resolveTerminalUploadPickerRequest({required bool media}) => (
   failureContext: media ? 'Media picker upload' : 'File picker upload',
 );
 
+/// Clipboard data selected for one terminal paste action.
+typedef TerminalClipboardPastePayload = ({
+  String? text,
+  Uint8List? imageBytes,
+  List<String> files,
+});
+
+/// Reads clipboard representations in the order appropriate for terminal paste.
+///
+/// Android clipboard APIs can coerce an image or file URI into plain text. An
+/// explicit text item must therefore win before URI-backed image/file probes,
+/// while image-only clips retain the existing upload behavior.
+@visibleForTesting
+Future<TerminalClipboardPastePayload> resolveTerminalClipboardPastePayload({
+  required bool isAndroid,
+  required Future<String?> Function() readExplicitAndroidText,
+  required Future<Uint8List?> Function() readImage,
+  required Future<List<String>> Function() readFiles,
+  required Future<String?> Function() readText,
+}) async {
+  if (isAndroid) {
+    final explicitText = await readExplicitAndroidText();
+    if (explicitText != null && explicitText.isNotEmpty) {
+      final TerminalClipboardPastePayload payload = (
+        text: explicitText,
+        imageBytes: null,
+        files: const [],
+      );
+      return payload;
+    }
+
+    final imageBytes = await readImage();
+    if (imageBytes != null && imageBytes.isNotEmpty) {
+      final TerminalClipboardPastePayload payload = (
+        text: null,
+        imageBytes: imageBytes,
+        files: const [],
+      );
+      return payload;
+    }
+  }
+
+  final files = await readFiles();
+  if (files.isNotEmpty) {
+    final TerminalClipboardPastePayload payload = (
+      text: null,
+      imageBytes: null,
+      files: files,
+    );
+    return payload;
+  }
+
+  if (!isAndroid) {
+    final imageBytes = await readImage();
+    if (imageBytes != null && imageBytes.isNotEmpty) {
+      final TerminalClipboardPastePayload payload = (
+        text: null,
+        imageBytes: imageBytes,
+        files: const [],
+      );
+      return payload;
+    }
+  }
+
+  final text = await readText();
+  final TerminalClipboardPastePayload payload = (
+    text: text == null || text.isEmpty ? null : text,
+    imageBytes: null,
+    files: const [],
+  );
+  return payload;
+}
+
 /// Whether terminal media paste should use a native photo-library picker.
 @visibleForTesting
 bool shouldUsePhotoLibraryPickerForTerminalMedia({
@@ -15248,30 +15321,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _pasteClipboard() async {
     try {
-      if (_isAndroidPlatform) {
-        final imageBytes = await Pasteboard.image;
-        if (imageBytes != null && imageBytes.isNotEmpty) {
-          await _pasteClipboardImage(imageBytes);
-          return;
-        }
-      }
-
-      final clipboardFiles = await Pasteboard.files();
-      if (clipboardFiles.isNotEmpty) {
-        await _pasteClipboardFiles(clipboardFiles);
+      final payload = await resolveTerminalClipboardPastePayload(
+        isAndroid: _isAndroidPlatform,
+        readExplicitAndroidText: () =>
+            ref.read(clipboardContentServiceProvider).readExplicitText(),
+        readImage: () => Pasteboard.image,
+        readFiles: Pasteboard.files,
+        readText: _readSystemClipboardText,
+      );
+      final imageBytes = payload.imageBytes;
+      if (imageBytes != null) {
+        await _pasteClipboardImage(imageBytes);
         return;
       }
 
-      if (!_isAndroidPlatform) {
-        final imageBytes = await Pasteboard.image;
-        if (imageBytes != null && imageBytes.isNotEmpty) {
-          await _pasteClipboardImage(imageBytes);
-          return;
-        }
+      if (payload.files.isNotEmpty) {
+        await _pasteClipboardFiles(payload.files);
+        return;
       }
 
-      final text = await _readSystemClipboardText();
-      if (text == null || text.isEmpty) {
+      final text = payload.text;
+      if (text == null) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         _showClipboardMessage('Clipboard is empty');
         return;

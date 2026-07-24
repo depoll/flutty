@@ -1,13 +1,11 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// Reads Android content-URI clipboard entries via the platform channel.
+/// Reads Android clipboard metadata and content-URI entries.
 ///
 /// The native side handles the `xyz.depollsoft.monkeyssh/clipboard_content`
-/// channel and exposes a single `readContentUri` method that accepts a
-/// `content://` URI and returns the file name and raw bytes.  This service
-/// wraps that channel so the screen widget can be tested without a live
-/// platform channel.
+/// channel. This service wraps that channel so the screen widget can be tested
+/// without a live platform channel.
 class ClipboardContentService {
   /// Creates a [ClipboardContentService] backed by the given [channel].
   ///
@@ -20,6 +18,13 @@ class ClipboardContentService {
   }) : _channel = channel;
 
   final MethodChannel _channel;
+
+  /// Reads text stored directly on an Android clipboard item.
+  ///
+  /// Unlike Flutter's plain-text clipboard API, this does not coerce a
+  /// content URI into its string representation.
+  Future<String?> readExplicitText() =>
+      _channel.invokeMethod<String>('readExplicitText');
 
   /// Reads the content at [uri] and returns its file name and raw bytes.
   ///

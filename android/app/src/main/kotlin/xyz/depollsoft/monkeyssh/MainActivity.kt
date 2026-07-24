@@ -1,6 +1,7 @@
 package xyz.depollsoft.monkeyssh
 
 import android.Manifest
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -63,6 +64,9 @@ class MainActivity : FlutterFragmentActivity() {
         )
         clipboardMethodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
+                "readExplicitText" -> {
+                    result.success(readExplicitClipboardText())
+                }
                 "readContentUri" -> {
                     val uriString = call.argument<String>("uri")
                     if (uriString.isNullOrBlank()) {
@@ -98,6 +102,18 @@ class MainActivity : FlutterFragmentActivity() {
         }
 
         notifyIncomingTransferPayload()
+    }
+
+    private fun readExplicitClipboardText(): String? {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = clipboard.primaryClip ?: return null
+        for (index in 0 until clip.itemCount) {
+            val text = clip.getItemAt(index).text?.toString()
+            if (!text.isNullOrEmpty()) {
+                return text
+            }
+        }
+        return null
     }
 
     override fun onNewIntent(intent: Intent) {

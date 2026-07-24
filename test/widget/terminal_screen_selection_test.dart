@@ -14,6 +14,90 @@ import 'package:xterm/xterm.dart';
 class _FakeImagePickerPlatform extends ImagePickerPlatform {}
 
 void main() {
+  group('resolveTerminalClipboardPastePayload', () {
+    test(
+      'prefers explicit Android text over image and file variants',
+      () async {
+        var readImage = false;
+        var readFiles = false;
+        var readFallbackText = false;
+
+        final payload = await resolveTerminalClipboardPastePayload(
+          isAndroid: true,
+          readExplicitAndroidText: () async => 'echo bracketed paste',
+          readImage: () async {
+            readImage = true;
+            return Uint8List.fromList([1, 2, 3]);
+          },
+          readFiles: () async {
+            readFiles = true;
+            return const ['content://clipboard/image'];
+          },
+          readText: () async {
+            readFallbackText = true;
+            return 'content://clipboard/image';
+          },
+        );
+
+        expect(payload.text, 'echo bracketed paste');
+        expect(payload.imageBytes, isNull);
+        expect(payload.files, isEmpty);
+        expect(readImage, isFalse);
+        expect(readFiles, isFalse);
+        expect(readFallbackText, isFalse);
+      },
+    );
+
+    test(
+      'keeps Android image upload for clips without explicit text',
+      () async {
+        final imageBytes = Uint8List.fromList([1, 2, 3]);
+        var readFiles = false;
+        var readFallbackText = false;
+
+        final payload = await resolveTerminalClipboardPastePayload(
+          isAndroid: true,
+          readExplicitAndroidText: () async => null,
+          readImage: () async => imageBytes,
+          readFiles: () async {
+            readFiles = true;
+            return const ['content://clipboard/image'];
+          },
+          readText: () async {
+            readFallbackText = true;
+            return 'content://clipboard/image';
+          },
+        );
+
+        expect(payload.text, isNull);
+        expect(payload.imageBytes, same(imageBytes));
+        expect(payload.files, isEmpty);
+        expect(readFiles, isFalse);
+        expect(readFallbackText, isFalse);
+      },
+    );
+
+    test('uses Android clipboard files when no text or image exists', () async {
+      final payload = await resolveTerminalClipboardPastePayload(
+        isAndroid: true,
+        readExplicitAndroidText: () async => null,
+        readImage: () async => null,
+        readFiles: () async => const [
+          'content://clipboard/first',
+          'content://clipboard/second',
+        ],
+        readText: () async => 'content://clipboard/first',
+      );
+
+      expect(payload.text, isNull);
+      expect(payload.imageBytes, isNull);
+      expect(payload.files, const [
+        'content://clipboard/first',
+        'content://clipboard/second',
+      ]);
+    });
+  });
+
   group('trimTerminalSelectionText', () {
     test('trims trailing padding on each line only', () {
       expect(
