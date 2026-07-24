@@ -11,10 +11,12 @@ import 'app/app_metadata.dart';
 import 'app/host_key_prompt.dart';
 import 'app/interactive_auth_prompt.dart';
 import 'data/database/database.dart';
+import 'domain/services/diagnostics_log_service.dart';
 import 'domain/services/host_key_prompt_handler_provider.dart';
 import 'domain/services/interactive_auth_prompt.dart';
 import 'domain/services/performance_diagnostics_service.dart';
 import 'domain/services/settings_service.dart';
+import 'domain/services/ssh_error_policy.dart';
 import 'domain/services/telemetry_service.dart';
 
 /// Entry point for the MonkeySSH client.
@@ -91,6 +93,15 @@ void _installTelemetryErrorHandlers(TelemetryService telemetryService) {
 
   final previousPlatformErrorHandler = PlatformDispatcher.instance.onError;
   PlatformDispatcher.instance.onError = (error, stackTrace) {
+    if (isExpectedSshChannelTeardownError(error, stackTrace)) {
+      DiagnosticsLogService.instance.info(
+        'ssh.channel',
+        'late_write_ignored',
+        fields: {'errorType': error.runtimeType},
+      );
+      previousPlatformErrorHandler?.call(error, stackTrace);
+      return true;
+    }
     unawaited(
       telemetryService
           .recordError(error, stackTrace, fatal: true)
