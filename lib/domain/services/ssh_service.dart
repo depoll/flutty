@@ -2617,6 +2617,9 @@ class _KeepAliveSSHSocket implements SSHSocket {
   Future<void> close() async => _socket.close();
 
   @override
+  Future<void> flush() => _socket.flush();
+
+  @override
   Future<void> get done => _socket.done;
 
   @override
@@ -2638,6 +2641,9 @@ class _FiniteChunkSshSocket implements SSHSocket {
 
   @override
   Future<void> close() => _sinkController.close();
+
+  @override
+  Future<void> flush() async {}
 
   @override
   Future<void> get done async {}
@@ -2792,6 +2798,9 @@ class _HostKeyCapturingSocket implements SSHSocket, HostKeySource {
 
   @override
   Future<void> close() => _delegate.close();
+
+  @override
+  Future<void> flush() => _delegate.flush();
 
   @override
   Future<void> get done => _delegate.done;
@@ -5020,7 +5029,7 @@ while($true){
     final cachedSftp = _sftpClient;
     if (sftpClient != null) {
       if (cachedSftp == null) {
-        sftpClient.close();
+        unawaited(sftpClient.close());
         return;
       }
       if (!identical(sftpClient, cachedSftp)) {
@@ -5029,7 +5038,9 @@ while($true){
     }
     _sftpClient = null;
     _sftpClientFuture = null;
-    cachedSftp?.close();
+    if (cachedSftp != null) {
+      unawaited(cachedSftp.close());
+    }
   }
 
   Future<SftpClient> _openSftpClient() async {
@@ -6365,7 +6376,7 @@ class _AppReviewDemoSftpClient implements SftpClient {
   }
 
   @override
-  void close() {
+  Future<void> close() async {
     _closed = true;
   }
 

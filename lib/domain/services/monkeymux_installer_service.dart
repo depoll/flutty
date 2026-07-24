@@ -500,7 +500,7 @@ class MonkeyMuxInstallerService {
         installedDuringCall: true,
       );
     } finally {
-      sftp.close();
+      await sftp.close();
     }
   }
 
