@@ -7,7 +7,7 @@
 flutter pub get
 
 # Run code generator (Drift, Freezed, Riverpod)
-dart run build_runner build --delete-conflicting-outputs
+dart run build_runner build
 
 # Analyze code (treats warnings as errors in CI)
 flutter analyze --fatal-warnings
@@ -91,7 +91,7 @@ Uses **GoRouter** with named routes. Route names are constants in the `Routes` c
 ### Generated Files
 Files matching `*.g.dart`, `*.freezed.dart`, `*.mocks.dart` are generated. Never edit manually. Regenerate with:
 ```bash
-dart run build_runner build --delete-conflicting-outputs
+dart run build_runner build
 ```
 
 ### Linting
