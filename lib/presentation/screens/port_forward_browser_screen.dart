@@ -222,6 +222,12 @@ class _PortForwardBrowserScreenState
     }
     final tabs = widget.initialTabs.map(_createTab).toList(growable: true);
     final selectedTabIndex = widget.initialTabIndex;
+    // WebView does not replay its first window-insets dispatch when the listener
+    // changes, so configure every native view before WebViewWidget attaches.
+    await Future.wait(tabs.map((tab) => _configureController(tab.controller)));
+    if (!mounted) {
+      return;
+    }
     final addressController = TextEditingController(
       text: tabs[selectedTabIndex].currentUri.toString(),
     );
@@ -230,7 +236,7 @@ class _PortForwardBrowserScreenState
       _selectedTabIndex = selectedTabIndex;
       _addressController = addressController;
     });
-    _scheduleSelectedTabLoad();
+    unawaited(_ensureTabLoaded(tabs[selectedTabIndex]));
   }
 
   Future<void> _clearLegacySharedCookiesOnce() async {
@@ -249,27 +255,15 @@ class _PortForwardBrowserScreenState
     );
   }
 
-  void _scheduleSelectedTabLoad() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-      unawaited(_ensureTabLoaded(_selectedTab));
-    });
-  }
-
   Future<void> _ensureTabLoaded(_PortForwardBrowserTabState tab) async {
     if (tab.hasStartedLoading || !_tabs.contains(tab)) {
       return;
     }
     tab.hasStartedLoading = true;
-    await _configureAndLoadController(tab.controller, tab.currentUri);
+    await tab.controller.loadRequest(tab.currentUri);
   }
 
-  Future<void> _configureAndLoadController(
-    WebViewController controller,
-    Uri initialUri,
-  ) async {
+  Future<void> _configureController(WebViewController controller) async {
     await controller.enableZoom(false);
     final platformController = controller.platform;
     if (platformController is AndroidWebViewController) {
@@ -285,7 +279,6 @@ class _PortForwardBrowserScreenState
         AndroidWebViewInsets.tappableElement,
       ]);
     }
-    await controller.loadRequest(initialUri);
   }
 
   Widget _buildBottomChrome(
@@ -502,12 +495,13 @@ class _PortForwardBrowserScreenState
     if (index == _selectedTabIndex) {
       return;
     }
+    final tab = _tabs[index];
     setState(() {
       _selectedTabIndex = index;
-      _addressController?.text = _selectedTab.currentUri.toString();
+      _addressController?.text = tab.currentUri.toString();
     });
-    _scheduleSelectedTabLoad();
-    unawaited(_refreshNavigationState(_selectedTab));
+    unawaited(_ensureTabLoaded(tab));
+    unawaited(_refreshNavigationState(tab));
   }
 
   void _closeTab(int index) {
