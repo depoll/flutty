@@ -38,6 +38,7 @@ import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/screens/port_forward_browser_screen.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -7569,10 +7570,14 @@ void main() {
         tester.testTextInput.log.clear();
         tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
         await tester.pump();
-        tester.testTextInput.hide();
-        await tester.pump();
 
         expect(tester.testTextInput.isVisible, isFalse);
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.hide',
+          ),
+          isNotEmpty,
+        );
 
         tester.binding.handleAppLifecycleStateChanged(
           AppLifecycleState.resumed,
@@ -7681,6 +7686,7 @@ void main() {
         expect(tester.testTextInput.isVisible, isFalse);
         expect(find.byTooltip('Show system keyboard'), findsOneWidget);
         expect(find.byTooltip('Hide system keyboard'), findsNothing);
+        expect(tester.getBottomLeft(find.byType(KeyboardToolbar)).dy, 844);
 
         tester.testTextInput.log.clear();
         await tester.tap(find.byTooltip('Show system keyboard'));
@@ -7701,8 +7707,12 @@ void main() {
         await tester.pump();
         expect(find.byTooltip('Hide system keyboard'), findsOneWidget);
         expect(find.byTooltip('Show system keyboard'), findsNothing);
+        expect(tester.getBottomLeft(find.byType(KeyboardToolbar)).dy, 344);
       },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
     );
 
     testWidgets(
