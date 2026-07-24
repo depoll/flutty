@@ -2656,6 +2656,28 @@ class _PreparedHostKeySocket {
   final HostKeySource hostKeySource;
 }
 
+class _NonClosingStreamSink<T> implements StreamSink<T> {
+  const _NonClosingStreamSink(this._delegate);
+
+  final StreamSink<T> _delegate;
+
+  @override
+  void add(T data) => _delegate.add(data);
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) =>
+      _delegate.addError(error, stackTrace);
+
+  @override
+  Future<void> addStream(Stream<T> stream) => _delegate.addStream(stream);
+
+  @override
+  Future<void> close() async {}
+
+  @override
+  Future<void> get done => _delegate.done;
+}
+
 Map<String, Object?> _diagnosticSshExecErrorFields(Object error) => {
   'errorType': error.runtimeType,
   if (error is SSHChannelOpenError) ...{
@@ -5395,7 +5417,9 @@ while($true){
     try {
       forward = await client.forwardLocal(remoteHost, remotePort);
       final forwardToSocket = forward.stream.cast<List<int>>().pipe(socket);
-      final socketToForward = socket.cast<List<int>>().pipe(forward.sink);
+      final socketToForward = socket.cast<List<int>>().pipe(
+        _NonClosingStreamSink(forward.sink),
+      );
 
       await Future.any<void>([forwardToSocket, socketToForward]);
     } on SSHError catch (e) {
@@ -5521,7 +5545,9 @@ while($true){
         try {
           socket = await Socket.connect(localHost, localPort);
           final remoteToLocal = channel.stream.cast<List<int>>().pipe(socket);
-          final localToRemote = socket.cast<List<int>>().pipe(channel.sink);
+          final localToRemote = socket.cast<List<int>>().pipe(
+            _NonClosingStreamSink(channel.sink),
+          );
           await Future.any<void>([remoteToLocal, localToRemote]);
         } on Exception catch (e) {
           DiagnosticsLogService.instance.warning(

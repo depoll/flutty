@@ -26,7 +26,7 @@ dependencies:
   path: ^1.9.1
   
   # SSH
-  dartssh2: ^2.22.0
+  dartssh2: 2.22.1
   
   # Terminal
   # Vendored fork of xterm.dart 4.0.0 (upstream unmaintained since 2024-02).
