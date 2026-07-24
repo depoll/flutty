@@ -741,6 +741,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   bool deleteDetection = true,
   bool tapToShowKeyboard = true,
   bool sensitiveInput = false,
+  TerminalTextInputReviewCallback? onReviewInsertedText,
   String Function()? resolveTextBeforeCursor,
   TerminalKeyModifierResolver? resolveTerminalKeyModifiers,
   VoidCallback? consumeTerminalKeyModifiers,
@@ -765,6 +766,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
           readOnly: readOnly,
           tapToShowKeyboard: tapToShowKeyboard,
           sensitiveInput: sensitiveInput,
+          onReviewInsertedText: onReviewInsertedText,
           resolveTextBeforeCursor: resolveTextBeforeCursor,
           resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
           consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
@@ -5235,6 +5237,154 @@ void main() {
         );
 
         focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'commits active IME composition before an action-first newline',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
+        const committedPrefix = 'git reset --';
+        const command = '${committedPrefix}hard';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            committedPrefix,
+            selectionOffset: committedPrefix.length,
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(
+              start: committedPrefix.length,
+              end: command.length,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        expect(harness.terminalOutput.join(), committedPrefix);
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('$command\n', selectionOffset: command.length + 1),
+        );
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          '$command${_terminalKeyOutput(TerminalKey.enter)}',
+        );
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(
+              offset: _deleteDetectionMarker.length,
+            ),
+          ),
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'preserves action modifiers while committing active IME composition',
+      (tester) async {
+        var shiftActive = true;
+        var consumeCount = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: false, shift: shiftActive),
+          consumeTerminalKeyModifiers: () {
+            consumeCount++;
+            shiftActive = false;
+          },
+        );
+        const committedPrefix = 'echo ';
+        const command = '${committedPrefix}hi';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            committedPrefix,
+            selectionOffset: committedPrefix.length,
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(
+              start: committedPrefix.length,
+              end: command.length,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          '$command$_terminalAlternateEnterInput',
+        );
+        expect(consumeCount, 1);
+        expect(shiftActive, isFalse);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'does not submit when reviewed IME composition is rejected on Enter',
+      (tester) async {
+        var reviewCount = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          onReviewInsertedText: (_) async {
+            reviewCount++;
+            return false;
+          },
+        );
+        const command = r'echo $(id)';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(start: 0, end: command.length),
+          ),
+        );
+        await tester.pump();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+        await tester.pump();
+
+        expect(reviewCount, 1);
+        expect(harness.terminalOutput, isEmpty);
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(
+              offset: _deleteDetectionMarker.length,
+            ),
+          ),
+        );
+
+        await _disposeTerminalHarness(tester, harness);
       },
     );
 
