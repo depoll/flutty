@@ -18,9 +18,14 @@ class _MockExecChannel extends Mock implements SSHSession {}
 
 class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
   final endpoints = <AndroidAdbServiceKind, AndroidAdbEndpoint?>{};
+  bool wirelessDebuggingSupported = true;
 
   @override
   bool get supported => true;
+
+  @override
+  Future<bool> isWirelessDebuggingSupported() async =>
+      wirelessDebuggingSupported;
 
   @override
   Future<AndroidAdbEndpoint?> discoverEndpoint(
@@ -38,7 +43,9 @@ class _FakeRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
   RemoteListenerScope listenerScopeResult = RemoteListenerScope.loopback;
   DeviceDebugException? listenerScopeError;
   DeviceDebugException? connectError;
+  Exception? disconnectError;
   Completer<RemoteAdbCommandResult>? pendingConnect;
+  Completer<RemoteAdbCommandResult>? pendingPair;
   final connectResults = <RemoteAdbCommandResult>[];
   RemoteAdbCommandResult pairResult = const RemoteAdbCommandResult(
     exitCode: 0,
@@ -69,6 +76,9 @@ class _FakeRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
     required String address,
   }) async {
     disconnectAddresses.add(address);
+    if (disconnectError case final error?) {
+      throw error;
+    }
     return const RemoteAdbCommandResult(exitCode: 0, output: 'disconnected');
   }
 
@@ -96,6 +106,9 @@ class _FakeRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
     required String pairingCode,
   }) async {
     pairedCodes.add(pairingCode);
+    if (pendingPair case final pending?) {
+      return pending.future;
+    }
     return pairResult;
   }
 }
@@ -258,24 +271,69 @@ void main() {
     expect(
       classifyRemoteListenerScope(
         'LISTEN 0 128 127.0.0.1:41002 0.0.0.0:*\n'
-        'TCP [::1]:41002 [::]:0 LISTENING',
+        'TCP [::1]:41002 [::]:0 LISTENING\n'
+        '$remoteListenerProbeDoneMarker',
         41002,
       ),
       RemoteListenerScope.loopback,
     );
   });
 
+  test('treats truncated or unavailable listener probes as unknown', () {
+    expect(
+      classifyRemoteListenerScope(
+        'LISTEN 0 128 127.0.0.1:41002 0.0.0.0:*',
+        41002,
+      ),
+      RemoteListenerScope.unknown,
+      reason: 'output without the completion marker may be truncated',
+    );
+    expect(
+      classifyRemoteListenerScope(
+        '$remoteListenerProbeUnavailableMarker\n'
+        '$remoteListenerProbeDoneMarker',
+        41002,
+      ),
+      RemoteListenerScope.unknown,
+    );
+  });
+
+  test('builds locale-stable, port-filtered listener probes', () {
+    final posix = buildPosixListenerProbeCommand(41002);
+    expect(posix, contains('LC_ALL=C'));
+    expect(posix, contains('ss -ltn'));
+    expect(posix, contains('netstat -an'));
+    expect(posix, contains('41002'));
+    expect(posix, contains(remoteListenerProbeDoneMarker));
+    expect(posix, contains(remoteListenerProbeUnavailableMarker));
+
+    final windows = buildWindowsListenerProbeCommand(41002);
+    expect(windows, contains('-EncodedCommand'));
+    final encodedScript = windows.split('-EncodedCommand ').last.trim();
+    final decodedScript = String.fromCharCodes(
+      // PowerShell encodes the script as UTF-16LE before base64.
+      Uint8List.fromList(base64Decode(encodedScript)).buffer.asUint16List(),
+    );
+    expect(decodedScript, contains('Get-NetTCPConnection'));
+    expect(decodedScript, contains('-State Listen'));
+    expect(decodedScript, contains('41002'));
+    expect(decodedScript, isNot(contains('netstat')));
+    expect(decodedScript, contains(remoteListenerProbeDoneMarker));
+  });
+
   test('classifies wildcard and non-loopback listeners as exposed', () {
     expect(
       classifyRemoteListenerScope(
-        'LISTEN 0 128 0.0.0.0:41002 0.0.0.0:*',
+        'LISTEN 0 128 0.0.0.0:41002 0.0.0.0:*\n'
+        '$remoteListenerProbeDoneMarker',
         41002,
       ),
       RemoteListenerScope.exposed,
     );
     expect(
       classifyRemoteListenerScope(
-        'tcp4 0 0 192.0.2.20.41002 *.* LISTEN',
+        'tcp4 0 0 192.0.2.20.41002 *.* LISTEN\n'
+        '$remoteListenerProbeDoneMarker',
         41002,
       ),
       RemoteListenerScope.exposed,
@@ -605,6 +663,122 @@ void main() {
         );
       },
     );
+
+    test(
+      'offers pairing when adb reports a plain connection failure',
+      () async {
+        platform.endpoints[AndroidAdbServiceKind.connect] = connectEndpoint;
+        remoteRunner.connectResults.add(
+          const RemoteAdbCommandResult(
+            exitCode: 1,
+            output: "failed to connect to '127.0.0.1:41002'",
+          ),
+        );
+        final controller = DeviceDebugSessionController(
+          session: session,
+          platform: platform,
+          remoteRunner: remoteRunner,
+        );
+        addTearDown(controller.dispose);
+
+        await controller.enable();
+
+        expect(controller.state.phase, DeviceDebugPhase.waitingForPairingCode);
+        expect(controller.state.message, contains('not paired'));
+        expect(stoppedTunnelIds, contains(-2147483002));
+      },
+    );
+
+    test('reports Android versions without Wireless debugging', () async {
+      platform.wirelessDebuggingSupported = false;
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.enable();
+
+      expect(controller.state.phase, DeviceDebugPhase.error);
+      expect(controller.state.errorKind, DeviceDebugErrorKind.unsupported);
+      expect(controller.state.message, contains('Android 11'));
+      expect(remoteRunner.connectAddresses, isEmpty);
+    });
+
+    test('stops cleanly when the remote disconnect throws', () async {
+      platform.endpoints[AndroidAdbServiceKind.connect] = connectEndpoint;
+      remoteRunner.connectResults.add(
+        const RemoteAdbCommandResult(
+          exitCode: 0,
+          output: 'connected to 127.0.0.1:41002',
+        ),
+      );
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+      await controller.enable();
+      expect(controller.state.phase, DeviceDebugPhase.active);
+
+      remoteRunner.disconnectError = const FormatException('bad output');
+      await controller.stop();
+
+      expect(controller.state.phase, DeviceDebugPhase.off);
+      expect(stoppedTunnelIds, contains(-2147483002));
+      expect(activeTunnels, isEmpty);
+    });
+
+    test('does not reactivate when stopped during pairing', () async {
+      platform.endpoints
+        ..[AndroidAdbServiceKind.connect] = connectEndpoint
+        ..[AndroidAdbServiceKind.pairing] = pairingEndpoint;
+      remoteRunner.connectResults.add(
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: 'failed to authenticate to 127.0.0.1:41002',
+        ),
+      );
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+      await controller.enable();
+      expect(controller.state.phase, DeviceDebugPhase.waitingForPairingCode);
+
+      final pendingPair = Completer<RemoteAdbCommandResult>();
+      remoteRunner.pendingPair = pendingPair;
+      final pairFuture = controller.pair('123456');
+      await Future<void>.delayed(Duration.zero);
+
+      await controller.stop();
+      pendingPair.complete(
+        const RemoteAdbCommandResult(exitCode: 1, output: 'rejected'),
+      );
+      await pairFuture;
+
+      expect(controller.state.phase, DeviceDebugPhase.off);
+      expect(stoppedTunnelIds, contains(-2147483001));
+    });
+
+    test('publishes the off state when the SSH session closes', () async {
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      var notifications = 0;
+      controller
+        ..addListener(() => notifications++)
+        ..handleSessionClosed();
+
+      expect(notifications, 1);
+      expect(controller.state.phase, DeviceDebugPhase.off);
+    });
 
     test('rejects pairing codes that are not six digits', () async {
       final controller = DeviceDebugSessionController(

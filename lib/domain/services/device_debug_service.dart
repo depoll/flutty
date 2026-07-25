@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'diagnostics_log_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
+import 'windows_remote_powershell.dart';
 
 /// Native Android service used to discover Wireless ADB endpoints.
 final androidDeviceDebugPlatformProvider = Provider<AndroidDeviceDebugPlatform>(
@@ -31,6 +32,18 @@ final deviceDebugSessionServiceProvider = Provider<DeviceDebugSessionRegistry>((
   );
   ref.onDispose(service.dispose);
   return service;
+});
+
+/// Whether this device can expose Wireless ADB to an SSH host.
+///
+/// Secure Wireless debugging requires Android 11 (API 30), so older devices
+/// never see the terminal action.
+final deviceDebugSupportedProvider = FutureProvider<bool>((ref) async {
+  final platform = ref.watch(androidDeviceDebugPlatformProvider);
+  if (!platform.supported) {
+    return false;
+  }
+  return platform.isWirelessDebuggingSupported();
 });
 
 /// Wireless ADB endpoint category advertised over mDNS.
@@ -88,6 +101,9 @@ abstract interface class AndroidDeviceDebugPlatform {
   /// Whether Android device debugging is available on this platform.
   bool get supported;
 
+  /// Whether this Android version supports secure Wireless debugging.
+  Future<bool> isWirelessDebuggingSupported();
+
   /// Opens Android Developer options.
   Future<bool> openDeveloperOptions();
 
@@ -114,6 +130,23 @@ class MethodChannelAndroidDeviceDebugPlatform
   @override
   bool get supported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  @override
+  Future<bool> isWirelessDebuggingSupported() async {
+    if (!supported) {
+      return false;
+    }
+    try {
+      return await _channel.invokeMethod<bool>(
+            'isWirelessDebuggingSupported',
+          ) ??
+          false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
 
   @override
   Future<bool> openDeveloperOptions() async {
@@ -180,6 +213,14 @@ class MethodChannelAndroidDeviceDebugPlatform
         message: error.message,
       );
     } on PlatformException catch (error) {
+      if (error.code == 'unsupported_android_version') {
+        throw const DeviceDebugException(
+          kind: DeviceDebugErrorKind.unsupported,
+          message:
+              'Device debugging needs Wireless debugging, which requires '
+              'Android 11 or newer.',
+        );
+      }
       throw DeviceDebugException(
         kind: DeviceDebugErrorKind.discoveryFailed,
         message: error.message ?? 'Wireless ADB discovery failed.',
@@ -339,11 +380,80 @@ enum RemoteListenerScope {
   unknown,
 }
 
-/// Classifies the effective bind scope for [port] from `ss` or `netstat`.
+/// Marker printed after a successful remote listener probe.
+///
+/// Bounded command output can be truncated, so the classifier only trusts a
+/// probe that reported this marker.
+@visibleForTesting
+const remoteListenerProbeDoneMarker = '__monkeyssh_listener_done__';
+
+/// Marker printed when the remote host cannot enumerate listeners.
+@visibleForTesting
+const remoteListenerProbeUnavailableMarker =
+    '__monkeyssh_listener_unavailable__';
+
+/// Builds the POSIX probe that reports listeners bound to [port].
+///
+/// The probe forces `LC_ALL=C` so state columns stay in English, filters to
+/// the requested port so output cannot be truncated away, and always ends with
+/// a completion marker.
+@visibleForTesting
+String buildPosixListenerProbeCommand(int port) =>
+    'LC_ALL=C; export LC_ALL; '
+    'if command -v ss >/dev/null 2>&1; then '
+    r'__monkeyssh_listeners=$(ss -ltn 2>/dev/null); '
+    r'__monkeyssh_status=$?; '
+    'elif command -v netstat >/dev/null 2>&1; then '
+    r'__monkeyssh_listeners=$(netstat -an 2>/dev/null); '
+    r'__monkeyssh_status=$?; '
+    'else '
+    "printf '%s\\n' '$remoteListenerProbeUnavailableMarker'; "
+    "printf '%s\\n' '$remoteListenerProbeDoneMarker'; exit 0; fi; "
+    r'if [ "$__monkeyssh_status" -ne 0 ]; then '
+    "printf '%s\\n' '$remoteListenerProbeUnavailableMarker'; "
+    "printf '%s\\n' '$remoteListenerProbeDoneMarker'; exit 0; fi; "
+    r"printf '%s\n' "
+    r'"$__monkeyssh_listeners" | '
+    "grep -E '[:.]$port([^0-9]|\$)' || true; "
+    "printf '%s\\n' '$remoteListenerProbeDoneMarker'";
+
+/// Builds the Windows probe that reports listeners bound to [port].
+///
+/// `Get-NetTCPConnection` returns structured data, so the result does not
+/// depend on the host's display language the way `netstat` output does.
+@visibleForTesting
+String buildWindowsListenerProbeCommand(int port) {
+  final body =
+      'try{Get-NetTCPConnection -State Listen -LocalPort $port '
+      '-ErrorAction Stop | ForEach-Object { '
+      r"[void]$__flOut.AppendLine('LISTEN ' + $_.LocalAddress + ':' + "
+      r'[string]$_.LocalPort) }} catch { '
+      r'[void]$__flOut.AppendLine('
+      "'$remoteListenerProbeUnavailableMarker')}; "
+      r'[void]$__flOut.AppendLine('
+      "'$remoteListenerProbeDoneMarker');";
+  return buildWindowsPowerShellCommand(powerShellUtf8OutputScript(body));
+}
+
+/// Classifies the effective bind scope for [port] from a listener probe.
 @visibleForTesting
 RemoteListenerScope classifyRemoteListenerScope(String output, int port) {
+  final lines = const LineSplitter().convert(output);
+  final completed = lines.any(
+    (line) => line.trim() == remoteListenerProbeDoneMarker,
+  );
+  if (!completed) {
+    // Truncated or failed output cannot prove the listener is private.
+    return RemoteListenerScope.unknown;
+  }
+  if (lines.any(
+    (line) => line.trim() == remoteListenerProbeUnavailableMarker,
+  )) {
+    return RemoteListenerScope.unknown;
+  }
+
   var foundLoopback = false;
-  for (final line in const LineSplitter().convert(output)) {
+  for (final line in lines) {
     final normalizedLine = line.toUpperCase();
     if (!normalizedLine.contains('LISTEN')) {
       continue;
@@ -372,6 +482,32 @@ RemoteListenerScope classifyRemoteListenerScope(String output, int port) {
   return foundLoopback
       ? RemoteListenerScope.loopback
       : RemoteListenerScope.unknown;
+}
+
+/// Coarse outcome of an `adb connect` attempt, used for diagnostics only.
+@visibleForTesting
+String classifyAdbConnectOutcome(String output) {
+  final normalized = output.toLowerCase();
+  if (normalized.contains('connected to')) {
+    return 'connected';
+  }
+  if (normalized.contains('authenticate') ||
+      normalized.contains('unauthorized') ||
+      normalized.contains('pair')) {
+    return 'auth_required';
+  }
+  if (normalized.contains('refused')) {
+    return 'refused';
+  }
+  if (normalized.contains('timed out') || normalized.contains('timeout')) {
+    return 'timeout';
+  }
+  if (normalized.contains('unable to connect') ||
+      normalized.contains('failed to connect') ||
+      normalized.contains('no route')) {
+    return 'unreachable';
+  }
+  return normalized.isEmpty ? 'empty' : 'unknown';
 }
 
 String? _listenerHostForPort(String token, int port) {
@@ -571,11 +707,12 @@ class SshRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
     int port,
   ) async {
     final command = session.remoteIsWindows
-        ? 'netstat -an -p tcp'
-        : 'if command -v ss >/dev/null 2>&1; then ss -ltn; '
-              'elif command -v netstat >/dev/null 2>&1; then netstat -an; '
-              'else exit 127; fi';
+        ? buildWindowsListenerProbeCommand(port)
+        : buildPosixListenerProbeCommand(port);
     final result = await _run(session, command);
+    if (!result.succeeded) {
+      return RemoteListenerScope.unknown;
+    }
     return classifyRemoteListenerScope(result.output, port);
   }
 
@@ -660,6 +797,24 @@ class SshRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
         kind: DeviceDebugErrorKind.remoteCommandFailed,
         message: 'The SSH connection closed while running ADB.',
       );
+    } on Object catch (error) {
+      // Callers rely on every runner failure being a DeviceDebugException so
+      // reverse tunnels are always cleaned up on the fail-closed paths.
+      if (error is DeviceDebugException) {
+        rethrow;
+      }
+      DiagnosticsLogService.instance.warning(
+        'device_debug',
+        'remote_command_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+      throw const DeviceDebugException(
+        kind: DeviceDebugErrorKind.remoteCommandFailed,
+        message: 'The SSH host could not complete the ADB command.',
+      );
     } finally {
       execSession?.close();
     }
@@ -667,8 +822,9 @@ class SshRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
 
   Future<String> _collectOutput(Stream<Uint8List> stream) async {
     final output = StringBuffer();
+    // Remote tools can emit non-UTF-8 bytes; never fail the probe on decoding.
     await for (final chunk in stream.cast<List<int>>().transform(
-      utf8.decoder,
+      const Utf8Decoder(allowMalformed: true),
     )) {
       final remaining = _maxOutputCharacters - output.length;
       if (remaining <= 0) {
@@ -782,6 +938,17 @@ class DeviceDebugSessionController extends ChangeNotifier {
       ),
     );
     try {
+      if (!await _platform.isWirelessDebuggingSupported()) {
+        throw const DeviceDebugException(
+          kind: DeviceDebugErrorKind.unsupported,
+          message:
+              'Device debugging needs Wireless debugging, which requires '
+              'Android 11 or newer.',
+        );
+      }
+      if (!_owns(generation)) {
+        return;
+      }
       if (!await _remoteRunner.isAvailable(_session)) {
         throw const DeviceDebugException(
           kind: DeviceDebugErrorKind.adbUnavailable,
@@ -895,6 +1062,9 @@ class DeviceDebugSessionController extends ChangeNotifier {
           address: '127.0.0.1:$remotePairingPort',
           pairingCode: normalizedCode,
         );
+        if (!_owns(generation)) {
+          return;
+        }
         if (!result.succeeded || !_pairingSucceeded(result.output)) {
           _setState(
             const DeviceDebugState(
@@ -953,8 +1123,8 @@ class DeviceDebugSessionController extends ChangeNotifier {
       ),
     );
     final remoteSerial = _remoteSerial;
-    if (remoteSerial != null) {
-      try {
+    try {
+      if (remoteSerial != null) {
         final result = await _remoteRunner.disconnect(
           _session,
           address: remoteSerial,
@@ -966,23 +1136,28 @@ class DeviceDebugSessionController extends ChangeNotifier {
             fields: {'connectionId': _session.connectionId},
           );
         }
-      } on DeviceDebugException catch (error) {
-        DiagnosticsLogService.instance.warning(
-          'device_debug',
-          'adb_disconnect_failed',
-          fields: {
-            'connectionId': _session.connectionId,
-            'errorType': error.kind.name,
-          },
-        );
       }
-    }
-    await _session.stopForward(_pairingTunnelId);
-    await _session.stopForward(_connectTunnelId);
-    _connectEndpoint = null;
-    _remoteSerial = null;
-    if (!_disposed) {
-      _setState(DeviceDebugState.off);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'device_debug',
+        'adb_disconnect_failed',
+        fields: {
+          'connectionId': _session.connectionId,
+          'errorType': error is DeviceDebugException
+              ? error.kind.name
+              : error.runtimeType.toString(),
+        },
+      );
+    } finally {
+      // The tunnels must close even when the remote disconnect fails, so the
+      // controller never stays stuck in `stopping` with a live reverse forward.
+      await _session.stopForward(_pairingTunnelId);
+      await _session.stopForward(_connectTunnelId);
+      _connectEndpoint = null;
+      _remoteSerial = null;
+      if (!_disposed) {
+        _setState(DeviceDebugState.off);
+      }
     }
   }
 
@@ -1016,10 +1191,20 @@ class DeviceDebugSessionController extends ChangeNotifier {
     late final RemoteAdbCommandResult result;
     try {
       result = await _remoteRunner.connect(_session, address: remoteSerial);
-    } on DeviceDebugException {
+    } on Object {
       await _session.stopForward(_connectTunnelId);
       rethrow;
     }
+    DiagnosticsLogService.instance.info(
+      'device_debug',
+      'adb_connect_result',
+      fields: {
+        'connectionId': _session.connectionId,
+        'exitStatus': result.exitCode,
+        'outcome': classifyAdbConnectOutcome(result.output),
+        'canRequestPairing': canRequestPairing,
+      },
+    );
     if (!_owns(generation)) {
       await _session.stopForward(_connectTunnelId);
       return;
@@ -1036,13 +1221,16 @@ class DeviceDebugSessionController extends ChangeNotifier {
       return;
     }
     await _session.stopForward(_connectTunnelId);
-    if (canRequestPairing && _connectNeedsPairing(result.output)) {
+    if (canRequestPairing) {
+      // ADB reports an unpaired host in several ways depending on version and
+      // on whether the TLS handshake or the authentication step fails, so any
+      // first-attempt failure routes to pairing — the only in-app remedy.
       _setState(
         const DeviceDebugState(
           phase: DeviceDebugPhase.waitingForPairingCode,
           message:
-              'This SSH host is not paired yet. In Wireless debugging, tap '
-              '“Pair device with pairing code.”',
+              'This SSH host is not paired with the device yet. In Wireless '
+              'debugging, tap “Pair device with pairing code.”',
         ),
       );
       return;
@@ -1080,7 +1268,9 @@ class DeviceDebugSessionController extends ChangeNotifier {
         late final RemoteListenerScope scope;
         try {
           scope = await _remoteRunner.listenerScope(_session, remotePort);
-        } on DeviceDebugException {
+        } on Object {
+          // Listener verification is the fail-closed boundary: never leave an
+          // unverified reverse forward alive.
           await _session.stopForward(tunnelId);
           rethrow;
         }
@@ -1142,19 +1332,13 @@ class DeviceDebugSessionController extends ChangeNotifier {
         normalized.contains('already connected to');
   }
 
-  bool _connectNeedsPairing(String output) {
-    final normalized = output.toLowerCase();
-    return normalized.contains('authenticate') ||
-        normalized.contains('unauthorized') ||
-        normalized.contains('pair');
-  }
-
   /// Marks this controller closed after its SSH session begins shutting down.
   void handleSessionClosed() {
     if (_disposed) {
       return;
     }
-    _state = DeviceDebugState.off;
+    // Publish the off state before disposing so an open sheet can rebuild.
+    _setState(DeviceDebugState.off);
     dispose();
   }
 

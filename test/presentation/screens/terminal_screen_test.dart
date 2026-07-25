@@ -92,6 +92,9 @@ class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
   bool get supported => true;
 
   @override
+  Future<bool> isWirelessDebuggingSupported() async => true;
+
+  @override
   Future<AndroidAdbEndpoint?> discoverEndpoint(
     AndroidAdbServiceKind kind, {
     Duration timeout = const Duration(seconds: 6),
@@ -1367,10 +1370,9 @@ void main() {
               shellCompletionServiceProvider.overrideWithValue(
                 shellCompletionService,
               ),
-            if (deviceDebugPlatform != null)
-              androidDeviceDebugPlatformProvider.overrideWithValue(
-                deviceDebugPlatform,
-              ),
+            androidDeviceDebugPlatformProvider.overrideWithValue(
+              deviceDebugPlatform ?? _FakeAndroidDeviceDebugPlatform(),
+            ),
             if (remoteAdbCommandRunner != null)
               remoteAdbCommandRunnerProvider.overrideWithValue(
                 remoteAdbCommandRunner,

@@ -3973,28 +3973,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool loading,
     required String action,
     bool enabled = true,
-  }) => MenuItemButton(
-    style: TerminalMenuStyles.itemButtonStyle(context),
-    leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
-    trailingIcon: loading
-        ? const SizedBox.square(
-            dimension: 18,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          )
-        : IgnorePointer(
-            child: Transform.scale(
-              scale: 0.78,
-              child: Switch(
-                value: value,
-                onChanged: enabled ? (_) {} : null,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  }) => Semantics(
+    toggled: value,
+    child: MenuItemButton(
+      style: TerminalMenuStyles.itemButtonStyle(context),
+      leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
+      trailingIcon: loading
+          ? const SizedBox.square(
+              dimension: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          // The switch is a visual affordance only; the menu item owns both the
+          // activation and the toggled state exposed to assistive technology.
+          : ExcludeSemantics(
+              child: IgnorePointer(
+                child: Transform.scale(
+                  scale: 0.78,
+                  child: Switch(
+                    value: value,
+                    onChanged: enabled ? (_) {} : null,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
               ),
             ),
-          ),
-    onPressed: enabled && !loading
-        ? () => unawaited(_handleMenuAction(action))
-        : null,
-    child: _terminalOverflowMenuLabel(label),
+      onPressed: enabled && !loading
+          ? () => unawaited(_handleMenuAction(action))
+          : null,
+      child: _terminalOverflowMenuLabel(label),
+    ),
   );
 
   DeviceDebugSessionController? _deviceDebugControllerFor(SshSession? session) {
@@ -11358,6 +11365,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final deviceDebugController = _isAndroidPlatform
         ? _deviceDebugControllerFor(activeSession)
         : null;
+    final showsDeviceDebugAction =
+        _isAndroidPlatform &&
+        (ref.watch(deviceDebugSupportedProvider).asData?.value ?? false);
     final isConnectedThroughJumpHost =
         connectionState == SshConnectionState.connected &&
         (_observedSession ?? activeSession)?.config.jumpHost != null;
@@ -11550,7 +11560,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       _connectionId != null &&
                       connectionState == SshConnectionState.connected,
                 ),
-                if (_isAndroidPlatform)
+                if (showsDeviceDebugAction)
                   _terminalOverflowSwitchMenuItem(
                     context: context,
                     icon: Icons.bug_report_outlined,
