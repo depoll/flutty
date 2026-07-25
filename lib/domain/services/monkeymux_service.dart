@@ -770,6 +770,48 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
   }
 
+  /// Returns the version the installed helper binary reports for itself.
+  ///
+  /// [MonkeyMuxInstallation.version] is only the packaging label taken from the
+  /// bundled manifest, while `attach` decides whether to restart a running
+  /// server by comparing it against the version compiled into the binary. The
+  /// binary's own answer is therefore the authority on whether an update would
+  /// actually happen. Returns null when the probe fails.
+  Future<String?> installedHelperVersion(
+    SshSession session,
+    MonkeyMuxInstallation installation, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    final command =
+        '${_monkeyMuxQuoteArg(installation.executablePath, windows: installation.isWindows)} '
+        'version';
+    try {
+      final version = await session.runQueuedExec(
+        () => _readHelperVersion(session, command),
+        priority: priority,
+      );
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.status',
+        'helper_version_probed',
+        fields: {
+          'connectionId': session.connectionId,
+          'matchesManifest': version == installation.version.trim(),
+        },
+      );
+      return version;
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.status',
+        'helper_version_unavailable',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return null;
+    }
+  }
+
   /// Returns running server status using any already-installed helper version.
   Future<MonkeyMuxServerStatus?> runningServerStatusFromInstalledHelpers(
     SshSession session,
@@ -1201,6 +1243,33 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
       execSession,
       ownerSession: session,
       operation: 'server_status',
+    );
+  }
+  return null;
+}
+
+Future<String?> _readHelperVersion(SshSession session, String command) async {
+  final execSession = await session.execute(command);
+  try {
+    execSession.stderr.drain<void>().ignore();
+    await for (final line
+        in execSession.stdout
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .timeout(const Duration(seconds: 5))) {
+      final version = line.trim();
+      if (version.isNotEmpty) {
+        return version;
+      }
+    }
+  } on TimeoutException {
+    return null;
+  } finally {
+    await _closeMonkeyMuxExecSession(
+      execSession,
+      ownerSession: session,
+      operation: 'helper_version',
     );
   }
   return null;
