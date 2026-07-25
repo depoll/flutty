@@ -1,13 +1,20 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/services/device_debug_service.dart';
+import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
 class _MockSshSession extends Mock implements SshSession {}
+
+class _MockSshClient extends Mock implements SSHClient {}
+
+class _MockExecChannel extends Mock implements SSHSession {}
 
 class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
   final endpoints = <AndroidAdbServiceKind, AndroidAdbEndpoint?>{};
@@ -95,6 +102,134 @@ class _FakeRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('remote ADB resolution', () {
+    setUp(resetRemoteAdbPathCacheForTesting);
+    tearDown(() {
+      resetRemoteAdbPathCacheForTesting();
+      resetQueuedSshExecsForTesting();
+    });
+
+    test('never sources profiles inline, which would exit a POSIX shell', () {
+      final command = buildRemoteAdbResolutionCommand();
+
+      expect(command, isNot(contains('. ~/.profile')));
+      expect(command, isNot(contains('. ~/.zprofile')));
+      expect(command, contains('command -v adb'));
+      expect(command, contains('-lic'));
+      expect(command, contains('-ic'));
+      expect(
+        command,
+        contains(r'"$HOME/Library/Android/sdk/platform-tools/adb"'),
+      );
+      expect(command, contains('"/opt/homebrew/bin/adb"'));
+    });
+
+    test('parses the resolved path out of noisy login-shell output', () {
+      expect(
+        parseResolvedAdbPath(
+          'Welcome to macOS\n'
+          'MOTD greeting noise\n'
+          '/opt/homebrew/bin/adb\n',
+        ),
+        '/opt/homebrew/bin/adb',
+      );
+      expect(
+        parseResolvedAdbPath('/usr/bin/adb\n/Users/dev/Library/adb\n'),
+        '/Users/dev/Library/adb',
+      );
+      expect(parseResolvedAdbPath('adb: aliased to /opt/adb\n'), isNull);
+      expect(parseResolvedAdbPath('adb\nnot found\n'), isNull);
+      expect(parseResolvedAdbPath(''), isNull);
+    });
+
+    test('runs ADB through the resolved path and caches it', () async {
+      final client = _MockSshClient();
+      final executedCommands = <String>[];
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.6');
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.single as String;
+        executedCommands.add(command);
+        final channel = _MockExecChannel();
+        final output = command.contains('command -v adb')
+            ? 'MOTD greeting noise\n/opt/homebrew/bin/adb\n'
+            : 'Android Debug Bridge version 1.0.41';
+        when(() => channel.stdout).thenAnswer(
+          (_) =>
+              Stream<Uint8List>.value(Uint8List.fromList(utf8.encode(output))),
+        );
+        when(
+          () => channel.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(() => channel.done).thenAnswer((_) async {});
+        when(() => channel.exitCode).thenReturn(0);
+        when(channel.close).thenReturn(null);
+        return channel;
+      });
+      final session = SshSession(
+        connectionId: 91,
+        hostId: 3,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'mac-mini.example',
+          port: 22,
+          username: 'dev',
+        ),
+      );
+      const runner = SshRemoteAdbCommandRunner();
+
+      expect(await runner.isAvailable(session), isTrue);
+      await runner.connect(session, address: '127.0.0.1:41002');
+
+      expect(executedCommands, hasLength(3));
+      expect(executedCommands.first, contains('command -v adb'));
+      expect(executedCommands[1], "'/opt/homebrew/bin/adb' version");
+      expect(
+        executedCommands[2],
+        "'/opt/homebrew/bin/adb' connect 127.0.0.1:41002",
+      );
+    });
+
+    test('reports ADB as unavailable when resolution finds nothing', () async {
+      final client = _MockSshClient();
+      final executedCommands = <String>[];
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.6');
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        executedCommands.add(invocation.positionalArguments.single as String);
+        final channel = _MockExecChannel();
+        when(
+          () => channel.stdout,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(
+          () => channel.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(() => channel.done).thenAnswer((_) async {});
+        when(() => channel.exitCode).thenReturn(0);
+        when(channel.close).thenReturn(null);
+        return channel;
+      });
+      final session = SshSession(
+        connectionId: 92,
+        hostId: 3,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'mac-mini.example',
+          port: 22,
+          username: 'dev',
+        ),
+      );
+      const runner = SshRemoteAdbCommandRunner();
+
+      expect(await runner.isAvailable(session), isFalse);
+
+      expect(executedCommands, hasLength(1));
+      expect(executedCommands.single, contains('command -v adb'));
+    });
+  });
 
   test('parses a valid Android ADB endpoint', () {
     final endpoint = AndroidAdbEndpoint.fromPlatformValue(const {
