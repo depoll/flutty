@@ -583,6 +583,91 @@ void main() {
       },
     );
   });
+  group('MonkeyMuxService.installedHelperVersion', () {
+    setUpAll(() => registerFallbackValue(Uint8List(0)));
+
+    // `attach` restarts a running server only when its version differs from the
+    // version compiled into the helper binary, so the binary — not the bundled
+    // manifest label — decides whether an update would actually apply.
+    test('reads the version the installed binary reports', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 910);
+      final commands = <String>[];
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        commands.add(invocation.positionalArguments.single as String);
+        return _buildOutputSession('0.1.89\n');
+      });
+
+      final version = await MonkeyMuxService(
+        installer: installer,
+      ).installedHelperVersion(session, _fakeInstallation);
+
+      expect(version, '0.1.89');
+      expect(
+        commands.single,
+        "'/home/tester/.monkeyssh/bin/monkeymux' version",
+      );
+    });
+
+    test('quotes the helper path for Windows remotes', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 911);
+      final commands = <String>[];
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        commands.add(invocation.positionalArguments.single as String);
+        return _buildOutputSession('0.1.90\r\n');
+      });
+
+      final version = await MonkeyMuxService(installer: installer)
+          .installedHelperVersion(
+            session,
+            const MonkeyMuxInstallation(
+              executablePath: r'C:\Program Files\mm\monkeymux.exe',
+              platform: 'windows-amd64',
+              version: '0.1.90',
+            ),
+          );
+
+      expect(version, '0.1.90');
+      expect(commands.single, r'"C:\Program Files\mm\monkeymux.exe" version');
+    });
+
+    test('returns null when the probe produces no output', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 912);
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => _buildOutputSession(''));
+
+      final version = await MonkeyMuxService(
+        installer: installer,
+      ).installedHelperVersion(session, _fakeInstallation);
+
+      expect(version, isNull);
+    });
+
+    test('returns null when the probe fails', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 913);
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenThrow(SSHStateError('channel closed'));
+
+      final version = await MonkeyMuxService(
+        installer: installer,
+      ).installedHelperVersion(session, _fakeInstallation);
+
+      expect(version, isNull);
+    });
+  });
 }
 
 class _MockSshClient extends Mock implements SSHClient {}
@@ -619,6 +704,21 @@ SshSession _buildSession(SSHClient client, {int connectionId = 1}) =>
         username: 'tester',
       ),
     );
+
+/// Builds an exec session that emits [output] on stdout and then closes.
+SSHSession _buildOutputSession(String output) {
+  final session = _MockExecSession();
+  final stdinSink = _MockByteSink();
+  when(stdinSink.close).thenAnswer((_) async {});
+  when(() => session.stdout).thenAnswer(
+    (_) => Stream<Uint8List>.value(Uint8List.fromList(utf8.encode(output))),
+  );
+  when(() => session.stderr).thenAnswer((_) => const Stream<Uint8List>.empty());
+  when(() => session.done).thenAnswer((_) async {});
+  when(() => session.stdin).thenAnswer((_) => stdinSink);
+  when(session.close).thenAnswer((_) {});
+  return session;
+}
 
 SSHSession _buildSilentControlSession(
   StreamController<Uint8List> stdoutController,
