@@ -2617,6 +2617,9 @@ class _KeepAliveSSHSocket implements SSHSocket {
   Future<void> close() async => _socket.close();
 
   @override
+  Future<void> flush() => _socket.flush();
+
+  @override
   Future<void> get done => _socket.done;
 
   @override
@@ -2640,6 +2643,9 @@ class _FiniteChunkSshSocket implements SSHSocket {
   Future<void> close() => _sinkController.close();
 
   @override
+  Future<void> flush() async {}
+
+  @override
   Future<void> get done async {}
 
   @override
@@ -2654,6 +2660,28 @@ class _PreparedHostKeySocket {
 
   final SSHSocket socket;
   final HostKeySource hostKeySource;
+}
+
+class _NonClosingStreamSink<T> implements StreamSink<T> {
+  const _NonClosingStreamSink(this._delegate);
+
+  final StreamSink<T> _delegate;
+
+  @override
+  void add(T data) => _delegate.add(data);
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) =>
+      _delegate.addError(error, stackTrace);
+
+  @override
+  Future<void> addStream(Stream<T> stream) => _delegate.addStream(stream);
+
+  @override
+  Future<void> close() async {}
+
+  @override
+  Future<void> get done => _delegate.done;
 }
 
 Map<String, Object?> _diagnosticSshExecErrorFields(Object error) => {
@@ -2792,6 +2820,9 @@ class _HostKeyCapturingSocket implements SSHSocket, HostKeySource {
 
   @override
   Future<void> close() => _delegate.close();
+
+  @override
+  Future<void> flush() => _delegate.flush();
 
   @override
   Future<void> get done => _delegate.done;
@@ -5023,7 +5054,7 @@ while($true){
     final cachedSftp = _sftpClient;
     if (sftpClient != null) {
       if (cachedSftp == null) {
-        sftpClient.close();
+        unawaited(sftpClient.close());
         return;
       }
       if (!identical(sftpClient, cachedSftp)) {
@@ -5032,7 +5063,9 @@ while($true){
     }
     _sftpClient = null;
     _sftpClientFuture = null;
-    cachedSftp?.close();
+    if (cachedSftp != null) {
+      unawaited(cachedSftp.close());
+    }
   }
 
   Future<SftpClient> _openSftpClient() async {
@@ -5398,7 +5431,9 @@ while($true){
     try {
       forward = await client.forwardLocal(remoteHost, remotePort);
       final forwardToSocket = forward.stream.cast<List<int>>().pipe(socket);
-      final socketToForward = socket.cast<List<int>>().pipe(forward.sink);
+      final socketToForward = socket.cast<List<int>>().pipe(
+        _NonClosingStreamSink(forward.sink),
+      );
 
       await Future.any<void>([forwardToSocket, socketToForward]);
     } on SSHError catch (e) {
@@ -5524,7 +5559,9 @@ while($true){
         try {
           socket = await Socket.connect(localHost, localPort);
           final remoteToLocal = channel.stream.cast<List<int>>().pipe(socket);
-          final localToRemote = socket.cast<List<int>>().pipe(channel.sink);
+          final localToRemote = socket.cast<List<int>>().pipe(
+            _NonClosingStreamSink(channel.sink),
+          );
           await Future.any<void>([remoteToLocal, localToRemote]);
         } on Exception catch (e) {
           DiagnosticsLogService.instance.warning(
@@ -6368,7 +6405,7 @@ class _AppReviewDemoSftpClient implements SftpClient {
   }
 
   @override
-  void close() {
+  Future<void> close() async {
     _closed = true;
   }
 
