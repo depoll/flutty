@@ -419,6 +419,78 @@ abstract interface class RemoteAdbCommandRunner {
   });
 }
 
+/// Candidate ADB locations probed when the remote `PATH` does not resolve it.
+///
+/// SSH exec channels only see a minimal `PATH`, so Homebrew and Android SDK
+/// installs that an interactive shell resolves are otherwise invisible.
+const _adbFallbackPaths = <String>[
+  r'$ANDROID_HOME/platform-tools/adb',
+  r'$ANDROID_SDK_ROOT/platform-tools/adb',
+  r'$HOME/Library/Android/sdk/platform-tools/adb',
+  r'$HOME/Android/Sdk/platform-tools/adb',
+  r'$HOME/homebrew/bin/adb',
+  '/opt/homebrew/bin/adb',
+  '/usr/local/bin/adb',
+  '/usr/bin/adb',
+  '/opt/android-sdk/platform-tools/adb',
+];
+
+/// Builds the POSIX script that resolves the remote host's `adb` binary.
+///
+/// Resolution order mirrors how a developer's own shell finds ADB:
+/// the exec-channel `PATH`, then the user's login+interactive shell (where
+/// Homebrew and Android SDK exports usually live), then well-known SDK
+/// locations. The login shell is invoked as a child process rather than by
+/// sourcing profiles inline, because a missing or failing `.` (dot) command
+/// terminates a non-interactive POSIX shell outright.
+@visibleForTesting
+String buildRemoteAdbResolutionCommand() {
+  final candidates = _adbFallbackPaths
+      .map((candidate) => '"$candidate"')
+      .join(' ');
+  return r'__monkeyssh_adb=$(command -v adb 2>/dev/null || true); '
+      r'if [ -z "$__monkeyssh_adb" ]; then '
+      r'__monkeyssh_adb=$("${SHELL:-/bin/sh}" -lic '
+      "'command -v adb' 2>/dev/null || true); "
+      'fi; '
+      r'if [ -z "$__monkeyssh_adb" ]; then '
+      r'__monkeyssh_adb=$("${SHELL:-/bin/sh}" -ic '
+      "'command -v adb' 2>/dev/null || true); "
+      'fi; '
+      r'if [ -z "$__monkeyssh_adb" ]; then '
+      'for __monkeyssh_candidate in $candidates; do '
+      r'if [ -x "$__monkeyssh_candidate" ]; then '
+      r'__monkeyssh_adb=$__monkeyssh_candidate; break; fi; '
+      'done; fi; '
+      r'if [ -n "$__monkeyssh_adb" ]; then '
+      r"printf '%s\n' "
+      r'"$__monkeyssh_adb"; fi';
+}
+
+/// Extracts the resolved ADB path from [output].
+///
+/// Login profiles and interactive shells can print greetings, so only absolute
+/// paths that name an `adb` binary are accepted, and the last match wins.
+@visibleForTesting
+String? parseResolvedAdbPath(String output) {
+  String? resolved;
+  for (final line in const LineSplitter().convert(output)) {
+    final candidate = line.trim();
+    if (!candidate.startsWith('/') ||
+        candidate.contains(' ') ||
+        !(candidate.endsWith('/adb') || candidate.endsWith('/adb.exe'))) {
+      continue;
+    }
+    resolved = candidate;
+  }
+  return resolved;
+}
+
+/// Clears cached remote ADB binary paths.
+@visibleForTesting
+void resetRemoteAdbPathCacheForTesting() =>
+    SshRemoteAdbCommandRunner.debugAdbPathCache.clear();
+
 /// SSH exec implementation of [RemoteAdbCommandRunner].
 class SshRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
   /// Creates the remote command runner.
@@ -427,21 +499,71 @@ class SshRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
   static const _commandTimeout = Duration(seconds: 20);
   static const _maxOutputCharacters = 8192;
 
+  /// Resolved ADB binary paths keyed by SSH connection.
+  @visibleForTesting
+  static final Map<int, String> debugAdbPathCache = <int, String>{};
+
   @override
   Future<bool> isAvailable(SshSession session) async {
-    final result = await _run(session, 'adb version');
-    return result.succeeded &&
-        result.output.toLowerCase().contains('android debug bridge');
+    final binary = await _resolveAdbBinary(session);
+    if (binary == null) {
+      return false;
+    }
+    final result = await _run(session, '$binary version');
+    if (result.succeeded &&
+        result.output.toLowerCase().contains('android debug bridge')) {
+      return true;
+    }
+    debugAdbPathCache.remove(session.connectionId);
+    return false;
   }
 
   @override
   Future<bool> supportsPairing(SshSession session) async {
-    final result = await _run(session, 'adb help');
+    final binary = await _resolveAdbBinary(session);
+    if (binary == null) {
+      return false;
+    }
+    // `adb help` exits non-zero on some releases, so trust the usage text.
+    final result = await _run(session, '$binary help');
     final output = result.output.toLowerCase();
-    return result.succeeded &&
-        output.contains('pair host[:port]') &&
+    return output.contains('pair host[:port]') &&
         output.contains('secure tcp/ip communication');
   }
+
+  /// Resolves the remote ADB binary, quoted for the remote shell.
+  Future<String?> _resolveAdbBinary(SshSession session) async {
+    if (session.remoteIsWindows) {
+      // Windows exec channels inherit the system PATH, which is where the
+      // Android SDK installer puts platform-tools.
+      return 'adb';
+    }
+    final cached = debugAdbPathCache[session.connectionId];
+    if (cached != null) {
+      return cached;
+    }
+
+    final result = await _run(session, buildRemoteAdbResolutionCommand());
+    final resolvedPath = parseResolvedAdbPath(result.output);
+    DiagnosticsLogService.instance.info(
+      'device_debug',
+      'adb_resolution',
+      fields: {
+        'connectionId': session.connectionId,
+        'resolved': resolvedPath != null,
+        'exitStatus': result.exitCode,
+      },
+    );
+    if (resolvedPath == null) {
+      return null;
+    }
+    final quotedPath = _shellQuote(resolvedPath);
+    debugAdbPathCache[session.connectionId] = quotedPath;
+    return quotedPath;
+  }
+
+  static String _shellQuote(String value) =>
+      "'${value.replaceAll("'", "'\"'\"'")}'";
 
   @override
   Future<RemoteListenerScope> listenerScope(
@@ -462,19 +584,37 @@ class SshRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
     SshSession session, {
     required String address,
     required String pairingCode,
-  }) => _run(session, 'adb pair $address', input: pairingCode);
+  }) => _runAdb(session, 'pair $address', input: pairingCode);
 
   @override
   Future<RemoteAdbCommandResult> connect(
     SshSession session, {
     required String address,
-  }) => _run(session, 'adb connect $address');
+  }) => _runAdb(session, 'connect $address');
 
   @override
   Future<RemoteAdbCommandResult> disconnect(
     SshSession session, {
     required String address,
-  }) => _run(session, 'adb disconnect $address');
+  }) => _runAdb(session, 'disconnect $address');
+
+  Future<RemoteAdbCommandResult> _runAdb(
+    SshSession session,
+    String arguments, {
+    String? input,
+  }) async {
+    final binary = await _resolveAdbBinary(session);
+    if (binary == null) {
+      throw const DeviceDebugException(
+        kind: DeviceDebugErrorKind.adbUnavailable,
+        message:
+            'MonkeySSH could not run ADB on the SSH host. Install Android '
+            'platform tools, or add adb to the PATH your login shell sets, '
+            'then try again.',
+      );
+    }
+    return _run(session, '$binary $arguments', input: input);
+  }
 
   Future<RemoteAdbCommandResult> _run(
     SshSession session,
@@ -646,8 +786,9 @@ class DeviceDebugSessionController extends ChangeNotifier {
         throw const DeviceDebugException(
           kind: DeviceDebugErrorKind.adbUnavailable,
           message:
-              'ADB is not installed on the SSH host. Install Android platform '
-              'tools, then try again.',
+              'MonkeySSH could not run ADB on the SSH host. Install Android '
+              'platform tools, or add adb to the PATH your login shell sets, '
+              'then try again.',
         );
       }
       if (!await _remoteRunner.supportsPairing(_session)) {
