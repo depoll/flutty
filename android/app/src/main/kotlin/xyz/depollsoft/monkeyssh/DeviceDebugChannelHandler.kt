@@ -27,6 +27,11 @@ object DeviceDebugChannelHandler {
     private const val PAIRING_SERVICE_TYPE = "_adb-tls-pairing._tcp."
     private const val CONNECT_SERVICE_TYPE = "_adb-tls-connect._tcp."
 
+    /// Secure Wireless debugging (TLS pairing plus mDNS discovery) exists only
+    /// from Android 11.
+    private val isWirelessDebuggingSupported: Boolean
+        get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+
     private var methodChannel: MethodChannel? = null
 
     fun attachToEngine(flutterEngine: FlutterEngine, applicationContext: Context) {
@@ -54,10 +59,21 @@ object DeviceDebugChannelHandler {
         applicationContext: Context,
     ) {
         when (call.method) {
+            "isWirelessDebuggingSupported" -> result.success(
+                isWirelessDebuggingSupported,
+            )
             "openDeveloperOptions" -> result.success(
                 openDeveloperOptions(applicationContext),
             )
             "discoverAdbEndpoint" -> {
+                if (!isWirelessDebuggingSupported) {
+                    result.error(
+                        "unsupported_android_version",
+                        "Wireless debugging requires Android 11 or newer",
+                        null,
+                    )
+                    return
+                }
                 val serviceType = when (call.argument<String>("kind")) {
                     "pairing" -> PAIRING_SERVICE_TYPE
                     "connect" -> CONNECT_SERVICE_TYPE
