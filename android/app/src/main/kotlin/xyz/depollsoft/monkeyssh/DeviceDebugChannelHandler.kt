@@ -10,6 +10,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -38,6 +39,23 @@ object DeviceDebugChannelHandler {
     /// The "tap to return" prompt uses its own id so a late pairing-prompt
     /// cancellation cannot delete it.
     private const val RETURN_NOTIFICATION_ID = 3
+
+    private const val SETTINGS_PACKAGE = "com.android.settings"
+
+    /// Preference key of the Wireless debugging row in Developer options.
+    private const val WIRELESS_DEBUGGING_PREFERENCE_KEY = "toggle_adb_wireless"
+
+    /// Scrolls to and highlights a preference inside a Settings screen.
+    private const val EXTRA_FRAGMENT_ARG_KEY = ":settings:fragment_args_key"
+    private const val EXTRA_SHOW_FRAGMENT_ARGS = ":settings:show_fragment_args"
+
+    /// Activities some builds expose for Wireless debugging. AOSP exports none,
+    /// so these are attempted first and the Developer options screen is the
+    /// fallback.
+    private val WIRELESS_DEBUGGING_COMPONENTS = listOf(
+        "com.android.settings.Settings\$WirelessDebuggingActivity",
+        "com.android.settings.Settings\$AdbWirelessSettingsActivity",
+    )
 
     /** Result key carrying the code typed into the notification reply field. */
     const val PAIRING_CODE_RESULT_KEY = "monkeyssh_pairing_code"
@@ -319,23 +337,48 @@ object DeviceDebugChannelHandler {
         }
     }
 
+    /// Opens the Wireless debugging screen, or the closest reachable screen.
+    ///
+    /// AOSP exports no Wireless debugging activity, so this tries the component
+    /// names some builds do expose and otherwise falls back to Developer
+    /// options with the Wireless debugging row highlighted and scrolled into
+    /// view.
     private fun openDeveloperOptions(context: Context): Boolean {
-        val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+        for (className in WIRELESS_DEBUGGING_COMPONENTS) {
+            val direct = Intent()
+                .setClassName(SETTINGS_PACKAGE, className)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (direct.resolveActivity(context.packageManager) != null &&
+                launchSettingsIntent(context, direct)
+            ) {
+                return true
+            }
+        }
+
+        val highlightArgs = Bundle().apply {
+            putString(EXTRA_FRAGMENT_ARG_KEY, WIRELESS_DEBUGGING_PREFERENCE_KEY)
+        }
+        val developerOptions = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (intent.resolveActivity(context.packageManager) == null) {
+            .putExtra(EXTRA_FRAGMENT_ARG_KEY, WIRELESS_DEBUGGING_PREFERENCE_KEY)
+            .putExtra(EXTRA_SHOW_FRAGMENT_ARGS, highlightArgs)
+        if (developerOptions.resolveActivity(context.packageManager) == null) {
             return false
         }
-        return try {
+        return launchSettingsIntent(context, developerOptions)
+    }
+
+    private fun launchSettingsIntent(context: Context, intent: Intent): Boolean =
+        try {
             context.startActivity(intent)
             true
         } catch (error: SecurityException) {
-            Log.w(TAG, "Developer options launch denied", error)
+            Log.w(TAG, "Settings launch denied", error)
             false
         } catch (error: ActivityNotFoundException) {
-            Log.w(TAG, "Developer options activity missing", error)
+            Log.w(TAG, "Settings activity missing", error)
             false
         }
-    }
 
     private class AdbEndpointDiscovery(
         context: Context,
