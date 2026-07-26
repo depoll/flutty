@@ -104,6 +104,12 @@ class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
   Future<void> hidePairingCodePrompt() async {}
 
   @override
+  Future<bool> returnToApp({required String status}) async => true;
+
+  @override
+  Future<void> hideReturnPrompt() async {}
+
+  @override
   Future<bool> isWirelessDebuggingSupported() async => true;
 
   @override
