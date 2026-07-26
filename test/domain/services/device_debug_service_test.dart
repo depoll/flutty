@@ -1085,6 +1085,31 @@ void main() {
       expect(platform.returnPromptHiddenCount, greaterThan(0));
     });
 
+    test('ignores a stale reply once debugging is active', () async {
+      platform.endpoints[AndroidAdbServiceKind.connect] = connectEndpoint;
+      remoteRunner.connectResults.add(
+        const RemoteAdbCommandResult(
+          exitCode: 0,
+          output: 'connected to 127.0.0.1:41002',
+        ),
+      );
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+      await controller.enable();
+      expect(controller.state.phase, DeviceDebugPhase.active);
+
+      // A duplicate or malformed reply must not tear the UI out of the active
+      // state while the tunnel and serial are still live.
+      await controller.pair('not-a-code');
+
+      expect(controller.state.phase, DeviceDebugPhase.active);
+      expect(controller.state.remoteAddress, '127.0.0.1:41002');
+    });
+
     test('rejects pairing codes that are not six digits', () async {
       final controller = DeviceDebugSessionController(
         session: session,
