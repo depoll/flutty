@@ -104,6 +104,21 @@ abstract interface class AndroidDeviceDebugPlatform {
   /// Whether this Android version supports secure Wireless debugging.
   Future<bool> isWirelessDebuggingSupported();
 
+  /// Shows or updates the notification that collects the pairing code.
+  ///
+  /// Returns `false` when notifications are disabled, since the prompt is the
+  /// only way to type the code without pausing Android's pairing screen.
+  Future<bool> showPairingCodePrompt({
+    required String status,
+    bool busy = false,
+  });
+
+  /// Removes the pairing-code notification.
+  Future<void> hidePairingCodePrompt();
+
+  /// Pairing codes submitted from the notification reply field.
+  Stream<String> get submittedPairingCodes;
+
   /// Opens Android Developer options.
   Future<bool> openDeveloperOptions();
 
@@ -122,10 +137,61 @@ class MethodChannelAndroidDeviceDebugPlatform
     MethodChannel channel = const MethodChannel(
       'xyz.depollsoft.monkeyssh/device_debug',
     ),
-  }) : _channel = channel;
+  }) : _channel = channel {
+    _channel.setMethodCallHandler(_handlePlatformCall);
+  }
 
   final MethodChannel _channel;
   Future<void> _discoveryTail = Future<void>.value();
+  final _pairingCodes = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get submittedPairingCodes => _pairingCodes.stream;
+
+  Future<void> _handlePlatformCall(MethodCall call) async {
+    if (call.method != 'pairingCodeSubmitted') {
+      return;
+    }
+    final code = call.arguments;
+    if (code is String && code.isNotEmpty && !_pairingCodes.isClosed) {
+      _pairingCodes.add(code);
+    }
+  }
+
+  @override
+  Future<bool> showPairingCodePrompt({
+    required String status,
+    bool busy = false,
+  }) async {
+    if (!supported) {
+      return false;
+    }
+    try {
+      return await _channel.invokeMethod<bool>('showPairingCodePrompt', {
+            'status': status,
+            'busy': busy,
+          }) ??
+          false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  @override
+  Future<void> hidePairingCodePrompt() async {
+    if (!supported) {
+      return;
+    }
+    try {
+      await _channel.invokeMethod<void>('hidePairingCodePrompt');
+    } on PlatformException {
+      return;
+    } on MissingPluginException {
+      return;
+    }
+  }
 
   @override
   bool get supported =>
@@ -900,7 +966,15 @@ class DeviceDebugSessionController extends ChangeNotifier {
 
   static const _pairingTunnelId = -2147483001;
   static const _connectTunnelId = -2147483002;
+  static const _pairingWatchTimeout = Duration(minutes: 3);
   static final _pairingCodePattern = RegExp(r'^[0-9]{6}$');
+
+  /// Controller currently owning Android's single pairing prompt.
+  ///
+  /// Only one Settings pairing dialog can exist at a time, and the reply
+  /// notification carries no session identity, so exactly one controller may
+  /// consume submitted codes.
+  static DeviceDebugSessionController? _pairingPromptOwner;
 
   final SshSession _session;
   final AndroidDeviceDebugPlatform _platform;
@@ -910,10 +984,20 @@ class DeviceDebugSessionController extends ChangeNotifier {
   AndroidAdbEndpoint? _connectEndpoint;
   String? _remoteSerial;
   int _operationGeneration = 0;
+  int _pairingWatchGeneration = 0;
+  StreamSubscription<String>? _pairingCodeSubscription;
+  bool _pairingPromptVisible = false;
+  bool _pairingPromptUnavailable = false;
   bool _disposed = false;
 
   /// Current observable bridge state.
   DeviceDebugState get state => _state;
+
+  /// Whether the pairing-code notification could not be posted.
+  ///
+  /// Android cancels pairing when Settings pauses, so the notification is the
+  /// only way to type the code; without it the flow cannot complete.
+  bool get pairingPromptUnavailable => _pairingPromptUnavailable;
 
   /// Opens Android Developer options.
   Future<bool> openDeveloperOptions() async {
@@ -1321,6 +1405,136 @@ class DeviceDebugSessionController extends ChangeNotifier {
     }
     _state = state;
     notifyListeners();
+    _syncPairingCodeCapture(state);
+  }
+
+  /// Starts or stops the notification-based pairing-code capture.
+  ///
+  /// Android tears pairing down in `onPause`, so the code can only be typed
+  /// somewhere that keeps Settings resumed — an inline notification reply.
+  void _syncPairingCodeCapture(DeviceDebugState state) {
+    if (state.phase == DeviceDebugPhase.waitingForPairingCode) {
+      if (!identical(_pairingPromptOwner, this)) {
+        // Another session was collecting a code; Android only supports one
+        // pairing dialog, so the newest request takes over the prompt.
+        _pairingPromptOwner?._endPairingCodeCapture();
+        _pairingPromptOwner = this;
+      }
+      _pairingCodeSubscription ??= _platform.submittedPairingCodes.listen((
+        code,
+      ) {
+        if (identical(_pairingPromptOwner, this)) {
+          unawaited(pair(code));
+        }
+      });
+      if (_pairingPromptVisible) {
+        unawaited(
+          _showPairingPrompt(
+            _pairingPromptStatus(state),
+            _pairingWatchGeneration,
+          ),
+        );
+        return;
+      }
+      unawaited(_watchForPairingScreen(++_pairingWatchGeneration, state));
+      return;
+    }
+    if (state.phase == DeviceDebugPhase.pairing) {
+      return;
+    }
+    _endPairingCodeCapture();
+  }
+
+  /// Waits for Android's pairing screen, then posts the reply prompt.
+  Future<void> _watchForPairingScreen(
+    int watchGeneration,
+    DeviceDebugState state,
+  ) async {
+    final deadline = DateTime.now().add(_pairingWatchTimeout);
+    var backoff = const Duration(seconds: 1);
+    while (!_disposed &&
+        watchGeneration == _pairingWatchGeneration &&
+        _state.phase == DeviceDebugPhase.waitingForPairingCode) {
+      if (DateTime.now().isAfter(deadline)) {
+        // Bound the mDNS polling so an abandoned attempt cannot keep scanning
+        // for the life of the SSH session.
+        _endPairingCodeCapture();
+        _setError(
+          const DeviceDebugException(
+            kind: DeviceDebugErrorKind.pairingFailed,
+            message:
+                'MonkeySSH stopped waiting for the pairing screen. Try again '
+                'and keep Wireless debugging open.',
+          ),
+        );
+        return;
+      }
+      AndroidAdbEndpoint? pairingEndpoint;
+      try {
+        pairingEndpoint = await _platform.discoverEndpoint(
+          AndroidAdbServiceKind.pairing,
+          timeout: const Duration(seconds: 4),
+        );
+        backoff = const Duration(seconds: 1);
+      } on DeviceDebugException {
+        // Discovery can fail transiently (Wi-Fi change, NSD churn); keep
+        // watching with backoff instead of stranding the flow.
+        backoff = backoff * 2 > const Duration(seconds: 8)
+            ? const Duration(seconds: 8)
+            : backoff * 2;
+      }
+      if (_disposed || watchGeneration != _pairingWatchGeneration) {
+        return;
+      }
+      if (pairingEndpoint != null) {
+        await _showPairingPrompt(_pairingPromptStatus(_state), watchGeneration);
+        return;
+      }
+      await Future<void>.delayed(backoff);
+    }
+  }
+
+  Future<void> _showPairingPrompt(String status, int watchGeneration) async {
+    final shown = await _platform.showPairingCodePrompt(status: status);
+    if (_disposed || watchGeneration != _pairingWatchGeneration) {
+      if (shown) {
+        // Ownership changed while the prompt was posting; never leave an
+        // orphaned ongoing notification behind.
+        unawaited(_platform.hidePairingCodePrompt());
+      }
+      return;
+    }
+    _pairingPromptVisible = shown;
+    if (_pairingPromptUnavailable == !shown) {
+      return;
+    }
+    _pairingPromptUnavailable = !shown;
+    notifyListeners();
+  }
+
+  String _pairingPromptStatus(DeviceDebugState state) =>
+      switch (state.errorKind) {
+        DeviceDebugErrorKind.pairingFailed =>
+          'Android rejected that code. Reply with the code now on screen.',
+        DeviceDebugErrorKind.pairingCodeInvalid =>
+          'Reply with the six digits exactly as shown.',
+        _ =>
+          'Reply with the 6-digit code shown in Wireless debugging. Stay on '
+              'that screen — leaving it cancels pairing.',
+      };
+
+  void _endPairingCodeCapture() {
+    _pairingWatchGeneration++;
+    if (identical(_pairingPromptOwner, this)) {
+      _pairingPromptOwner = null;
+    }
+    unawaited(_pairingCodeSubscription?.cancel());
+    _pairingCodeSubscription = null;
+    _pairingPromptUnavailable = false;
+    if (_pairingPromptVisible) {
+      _pairingPromptVisible = false;
+      unawaited(_platform.hidePairingCodePrompt());
+    }
   }
 
   bool _pairingSucceeded(String output) =>
@@ -1345,6 +1559,7 @@ class DeviceDebugSessionController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _endPairingCodeCapture();
     super.dispose();
   }
 }
