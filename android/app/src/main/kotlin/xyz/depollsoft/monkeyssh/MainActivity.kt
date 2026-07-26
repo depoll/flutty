@@ -101,6 +101,12 @@ class MainActivity : FlutterFragmentActivity() {
         notifyIncomingTransferPayload()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // The "tap to return" prompt has done its job once the app is visible.
+        DeviceDebugChannelHandler.hideReturnPrompt(applicationContext)
+    }
+
     override fun onNewIntent(intent: Intent) {
         setIntent(intent)
         super.onNewIntent(intent)

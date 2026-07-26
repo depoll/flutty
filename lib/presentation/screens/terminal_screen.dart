@@ -38,6 +38,7 @@ import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/app_review_demo_service.dart';
 import '../../domain/services/clipboard_content_service.dart';
+import '../../domain/services/device_debug_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
@@ -65,6 +66,7 @@ import '../widgets/ai_session_picker.dart';
 import '../widgets/brand_error_state.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/cursor_block.dart';
+import '../widgets/device_debug_sheet.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
@@ -3667,6 +3669,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final MonkeyMuxService _monkeyMuxService;
   late final MonkeyMuxInstallerService _monkeyMuxInstallerService;
   late final TerminalConnectionBackendService _terminalBackendService;
+  late final DeviceDebugSessionRegistry _deviceDebugSessionRegistry;
+  DeviceDebugSessionController? _deviceDebugController;
+  int? _deviceDebugConnectionId;
   RemoteMuxBackend _activeMuxBackend = RemoteMuxBackend.tmux;
   AgentLaunchTool? _remoteMuxStartupTool;
 
@@ -3960,6 +3965,88 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     child: _terminalOverflowMenuLabel(label),
   );
 
+  Widget _terminalOverflowSwitchMenuItem({
+    required BuildContext context,
+    required IconData icon,
+    required String label,
+    required bool value,
+    required bool loading,
+    required String action,
+    bool enabled = true,
+  }) => Semantics(
+    toggled: value,
+    child: MenuItemButton(
+      style: TerminalMenuStyles.itemButtonStyle(context),
+      leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
+      trailingIcon: loading
+          ? const SizedBox.square(
+              dimension: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          // The switch is a visual affordance only; the menu item owns both the
+          // activation and the toggled state exposed to assistive technology.
+          : ExcludeSemantics(
+              child: IgnorePointer(
+                child: Transform.scale(
+                  scale: 0.78,
+                  child: Switch(
+                    value: value,
+                    onChanged: enabled ? (_) {} : null,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+              ),
+            ),
+      onPressed: enabled && !loading
+          ? () => unawaited(_handleMenuAction(action))
+          : null,
+      child: _terminalOverflowMenuLabel(label),
+    ),
+  );
+
+  DeviceDebugSessionController? _deviceDebugControllerFor(SshSession? session) {
+    if (session == null) {
+      _deviceDebugController?.removeListener(_handleDeviceDebugStateChanged);
+      _deviceDebugController = null;
+      _deviceDebugConnectionId = null;
+      return null;
+    }
+    if (_deviceDebugConnectionId == session.connectionId &&
+        _deviceDebugController != null) {
+      return _deviceDebugController;
+    }
+    _deviceDebugController?.removeListener(_handleDeviceDebugStateChanged);
+    final controller = _deviceDebugSessionRegistry.controllerFor(session)
+      ..addListener(_handleDeviceDebugStateChanged);
+    _deviceDebugController = controller;
+    _deviceDebugConnectionId = session.connectionId;
+    return controller;
+  }
+
+  void _handleDeviceDebugStateChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _toggleDeviceDebug() async {
+    final session = _activeSession();
+    final controller = _deviceDebugControllerFor(session);
+    if (controller == null) {
+      return;
+    }
+    if (controller.state.isActive) {
+      await controller.stop();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Device debugging turned off')),
+        );
+      }
+      return;
+    }
+    await showDeviceDebugSheet(context: context, controller: controller);
+  }
+
   Widget _terminalOverflowCheckboxMenuItem({
     required BuildContext context,
     required String label,
@@ -4184,6 +4271,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalBackendService = ref.read(
       terminalConnectionBackendServiceProvider,
     );
+    _deviceDebugSessionRegistry = ref.read(deviceDebugSessionServiceProvider);
     _isTmuxBarExpanded = widget.initiallyExpandTmuxWindows;
     _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
@@ -11109,6 +11197,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalTextInputController
       ..removeListener(_handleTerminalKeyboardVisibilityChanged)
       ..dispose();
+    _deviceDebugController?.removeListener(_handleDeviceDebugStateChanged);
     _toolbarController.dispose();
     super.dispose();
   }
@@ -11298,6 +11387,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final activeSession = _connectionId == null
         ? null
         : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
+    final deviceDebugController = _isAndroidPlatform
+        ? _deviceDebugControllerFor(activeSession)
+        : null;
+    final showsDeviceDebugAction =
+        _isAndroidPlatform &&
+        (ref.watch(deviceDebugSupportedProvider).asData?.value ?? false);
     final isConnectedThroughJumpHost =
         connectionState == SshConnectionState.connected &&
         (_observedSession ?? activeSession)?.config.jumpHost != null;
@@ -11490,6 +11585,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       _connectionId != null &&
                       connectionState == SshConnectionState.connected,
                 ),
+                if (showsDeviceDebugAction)
+                  _terminalOverflowSwitchMenuItem(
+                    context: context,
+                    icon: Icons.bug_report_outlined,
+                    label: 'Device debugging',
+                    value: deviceDebugController?.state.isActive ?? false,
+                    loading: deviceDebugController?.state.isBusy ?? false,
+                    action: 'toggle_device_debug',
+                    enabled:
+                        deviceDebugController != null &&
+                        connectionState == SshConnectionState.connected,
+                  ),
                 if (isPortForwardBrowserSupported())
                   _terminalOverflowMenuItem(
                     context: context,
@@ -12715,6 +12822,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'port_forwards':
         await _openPortForwardsFromTerminal();
+        break;
+      case 'toggle_device_debug':
+        await _toggleDeviceDebug();
         break;
       case 'toggle_terminal_info':
         setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
