@@ -1131,6 +1131,12 @@ class DeviceDebugSessionController extends ChangeNotifier {
 
   /// Pairs the SSH host using Android's six-digit [pairingCode].
   Future<void> pair(String pairingCode) async {
+    // Guard the state first: a delayed or duplicate notification reply must
+    // never rewrite an active session back into the pairing flow, which would
+    // leave the tunnel live while the UI showed debugging as off.
+    if (_disposed || _state.isBusy || _state.isActive) {
+      return;
+    }
     final normalizedCode = pairingCode.trim();
     if (!_pairingCodePattern.hasMatch(normalizedCode)) {
       _setState(
@@ -1140,9 +1146,6 @@ class DeviceDebugSessionController extends ChangeNotifier {
           errorKind: DeviceDebugErrorKind.pairingCodeInvalid,
         ),
       );
-      return;
-    }
-    if (_disposed || _state.isBusy || _state.isActive) {
       return;
     }
     final generation = ++_operationGeneration;

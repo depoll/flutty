@@ -4428,7 +4428,8 @@ class SshSession {
     final manualRemoteListeners = _activeTunnels.values
         .where(
           (tunnel) =>
-              tunnel.isLocal &&
+              // Reverse forwards listen on the SSH host, so their listener must
+              // never be auto-forwarded back to this device.
               !tunnel.isAutomatic &&
               isPortForwardLoopbackHost(tunnel.remoteHost),
         )
@@ -7083,7 +7084,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         .expand((session) => session.activeTunnels)
         .where(
           (tunnel) =>
-              tunnel.isLocal &&
+              // Reverse forwards listen on the SSH host, so their listener must
+              // never be auto-forwarded back to this device.
               !tunnel.isAutomatic &&
               isPortForwardLoopbackHost(tunnel.remoteHost),
         )
