@@ -11117,9 +11117,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
+      final shouldRestoreKeyboard = state == AppLifecycleState.paused
+          ? _dismissTerminalKeyboardForAppBackground()
+          : _shouldRestoreTerminalKeyboardAfterTemporaryDismissal;
       _restoreKeyboardAfterAppResume =
-          _restoreKeyboardAfterAppResume ||
-          _shouldRestoreTerminalKeyboardAfterTemporaryDismissal;
+          _restoreKeyboardAfterAppResume || shouldRestoreKeyboard;
       _wasBackgrounded = true;
       _stopSharedClipboardSync();
       _syncTerminalWakeLock();
@@ -11341,6 +11343,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _collapseTmuxBarIfExpanded();
       },
       child: Scaffold(
+        resizeToAvoidBottomInset: !isMobile || systemKeyboardVisible,
         backgroundColor: theme.colorScheme.surface,
         appBar: AppBar(
           titleSpacing: 8,
@@ -11708,6 +11711,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _restoreTerminalFocus(forceShowSystemKeyboard: true);
+  }
+
+  bool _dismissTerminalKeyboardForAppBackground() {
+    if (!_isMobilePlatform) {
+      return false;
+    }
+    final wasKeyboardVisible = _terminalTextInputController.isKeyboardVisible;
+    final shouldRestore = wasKeyboardVisible && _terminalFocusNode.hasFocus;
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    if (wasKeyboardVisible) {
+      _terminalFocusNode.unfocus();
+    }
+    return shouldRestore;
   }
 
   void _handleKeyboardToolbarKeyPressed() {

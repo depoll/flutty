@@ -96,7 +96,7 @@ void main() {
       final confirmationMayFinish = Completer<void>();
       final supersededProbeReachedShaCheck = Completer<void>();
       var sftpOpenCount = 0;
-      when(sftp.close).thenReturn(null);
+      when(sftp.close).thenAnswer((_) async {});
       when(client.sftp).thenAnswer((_) {
         sftpOpenCount += 1;
         if (sftpOpenCount == 1) {
@@ -201,7 +201,7 @@ void main() {
     final client = _MockSshClient();
     final sftp = _MockSftpClient();
     final commands = <String>[];
-    when(sftp.close).thenReturn(null);
+    when(sftp.close).thenAnswer((_) async {});
     when(client.sftp).thenAnswer((_) async => sftp);
     when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
       invocation,
@@ -272,7 +272,7 @@ void main() {
     const connectionId = 135791;
     final client = _MockSshClient();
     final sftp = _MockSftpClient();
-    when(sftp.close).thenReturn(null);
+    when(sftp.close).thenAnswer((_) async {});
     when(
       () => client.remoteVersion,
     ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
@@ -378,7 +378,7 @@ void main() {
     const connectionId = 975310;
     final client = _MockSshClient();
     final sftp = _MockSftpClient();
-    when(sftp.close).thenReturn(null);
+    when(sftp.close).thenAnswer((_) async {});
     when(client.sftp).thenAnswer((_) async => sftp);
     when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
       invocation,

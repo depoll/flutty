@@ -50,11 +50,11 @@ jobs:
       release-ios: ${{ steps.version.outputs.release-ios }}
       release-android: ${{ steps.version.outputs.release-android }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1.316.0
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         if: github.event_name == 'release' || (inputs.channel == 'production' && inputs.ios)
         with:
           ruby-version: '3.3'
@@ -209,7 +209,7 @@ jobs:
         run: shasum -a 256 android/*.aab ios/*.ipa > SHA256SUMS.txt
 
       - name: Upload to release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: |
             artifacts/android/*.aab

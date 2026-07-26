@@ -322,6 +322,9 @@ class _FakeHostKeySocket implements SSHSocket, HostKeySource {
   }
 
   @override
+  Future<void> flush() async {}
+
+  @override
   Future<void> get done async {}
 
   @override
@@ -349,6 +352,9 @@ class _FakeForwardHostKeySocket implements SSHForwardChannel, HostKeySource {
     unawaited(_streamController.close());
     unawaited(_sinkController.close());
   }
+
+  @override
+  Future<void> flush() async {}
 
   @override
   Future<void> get done async {}
@@ -435,6 +441,73 @@ class _OwnershipActiveSessionsNotifier extends ActiveSessionsNotifier {
   @override
   SshConnectionState getState(int connectionId) =>
       connectionStates[connectionId] ?? SshConnectionState.disconnected;
+}
+
+class _ThrowOnRepeatedCloseSink implements StreamSink<List<int>> {
+  _ThrowOnRepeatedCloseSink(this._delegate);
+
+  final StreamSink<List<int>> _delegate;
+  int closeAttempts = 0;
+
+  @override
+  void add(List<int> data) => _delegate.add(data);
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) =>
+      _delegate.addError(error, stackTrace);
+
+  @override
+  Future<void> addStream(Stream<List<int>> stream) =>
+      _delegate.addStream(stream);
+
+  @override
+  Future<void> close() {
+    closeAttempts++;
+    if (closeAttempts > 1) {
+      throw StateError('Sink already closed');
+    }
+    return _delegate.close();
+  }
+
+  @override
+  Future<void> get done => _delegate.done;
+}
+
+class _SingleCloseForwardChannel implements SSHForwardChannel {
+  _SingleCloseForwardChannel() {
+    sink = _ThrowOnRepeatedCloseSink(_sinkController.sink);
+  }
+
+  final _streamController = StreamController<Uint8List>();
+  final _sinkController = StreamController<List<int>>.broadcast();
+
+  @override
+  // ignore: close_sinks
+  late final _ThrowOnRepeatedCloseSink sink;
+
+  @override
+  Stream<Uint8List> get stream => _streamController.stream;
+
+  @override
+  Future<void> close() async {
+    if (!_streamController.isClosed) {
+      await _streamController.close();
+    }
+    if (!_sinkController.isClosed) {
+      await _sinkController.close();
+    }
+  }
+
+  @override
+  Future<void> flush() async {}
+
+  @override
+  Future<void> get done async {}
+
+  @override
+  void destroy() {
+    unawaited(close());
+  }
 }
 
 class _FakeActiveSessionsSshService extends SshService {
@@ -2971,7 +3044,7 @@ LISTEN ::1:4201
       );
 
       when(client.sftp).thenAnswer((_) async => sftp);
-      when(sftp.close).thenReturn(null);
+      when(sftp.close).thenAnswer((_) async {});
 
       final first = await session.sftp();
       final second = await session.sftp();
@@ -4452,6 +4525,51 @@ LISTEN ::1:4201
         );
       },
     );
+
+    test('local forward cleanup closes the SSH sink exactly once', () async {
+      final client = _MockSshClient();
+      final forward = _SingleCloseForwardChannel();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 42,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'host.example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      final localPort = await _unusedLoopbackPort();
+      when(
+        () => client.forwardLocal('remote.example.com', 80),
+      ).thenAnswer((_) async => forward);
+
+      addTearDown(() async {
+        await session.stopAllForwards();
+        await forward.close();
+      });
+
+      expect(
+        await session.startLocalForward(
+          portForwardId: 1,
+          localHost: InternetAddress.loopbackIPv4.address,
+          localPort: localPort,
+          remoteHost: 'remote.example.com',
+          remotePort: 80,
+        ),
+        isTrue,
+      );
+
+      final socket = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        localPort,
+      );
+      await socket.close();
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(forward.sink.closeAttempts, 1);
+    });
 
     test(
       'removes stale sessions when remote forwards report a closed transport',
