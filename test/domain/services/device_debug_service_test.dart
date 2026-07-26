@@ -20,6 +20,10 @@ class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
   final endpoints = <AndroidAdbServiceKind, AndroidAdbEndpoint?>{};
   bool wirelessDebuggingSupported = true;
   bool pairingPromptAllowed = true;
+  bool returnToAppSucceeds = true;
+  final returnToAppCalls = <String>[];
+  int returnPromptHiddenCount = 0;
+  final events = <String>[];
   final pairingPromptStatuses = <String>[];
   int pairingPromptHiddenCount = 0;
   // ignore: close_sinks
@@ -40,6 +44,20 @@ class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
   @override
   Future<void> hidePairingCodePrompt() async {
     pairingPromptHiddenCount++;
+    events.add('hide');
+  }
+
+  @override
+  Future<bool> returnToApp({required String status}) async {
+    events.add('return');
+    returnToAppCalls.add(status);
+    return returnToAppSucceeds;
+  }
+
+  @override
+  Future<void> hideReturnPrompt() async {
+    events.add('hideReturn');
+    returnPromptHiddenCount++;
   }
 
   @override
@@ -176,6 +194,11 @@ void main() {
       expect(parseResolvedAdbPath('adb: aliased to /opt/adb\n'), isNull);
       expect(parseResolvedAdbPath('adb\nnot found\n'), isNull);
       expect(parseResolvedAdbPath(''), isNull);
+      expect(
+        parseResolvedAdbPath('/Users/dev/Android Sdk/platform-tools/adb\n'),
+        '/Users/dev/Android Sdk/platform-tools/adb',
+        reason: 'SDK paths often contain spaces and are quoted before use',
+      );
     });
 
     test('runs ADB through the resolved path and caches it', () async {
@@ -683,6 +706,9 @@ void main() {
           activeTunnels.where((tunnel) => tunnel.portForwardId == -2147483002),
           isEmpty,
         );
+        // The connect landed after stop() snapshotted the serial, so the
+        // superseded serial must still be dropped from the remote ADB server.
+        expect(remoteRunner.disconnectAddresses, contains('127.0.0.1:41002'));
       },
     );
 
@@ -936,6 +962,127 @@ void main() {
       expect(remoteRunner.pairedCodes, ['123456']);
       expect(second.state.phase, DeviceDebugPhase.active);
       expect(first.state.phase, DeviceDebugPhase.waitingForPairingCode);
+    });
+
+    test('returns to the app after pairing from the notification', () async {
+      platform.endpoints
+        ..[AndroidAdbServiceKind.connect] = connectEndpoint
+        ..[AndroidAdbServiceKind.pairing] = pairingEndpoint;
+      remoteRunner.connectResults.addAll([
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: "failed to connect to '127.0.0.1:41002'",
+        ),
+        const RemoteAdbCommandResult(
+          exitCode: 0,
+          output: 'connected to 127.0.0.1:41002',
+        ),
+      ]);
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+      await controller.enable();
+      await Future<void>.delayed(Duration.zero);
+
+      platform.pairingCodes.add('123456');
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.state.phase, DeviceDebugPhase.active);
+      expect(platform.returnToAppCalls, hasLength(1));
+      // Cancelling the pairing prompt must land before the return prompt,
+      // otherwise it would cancel the notification the user taps.
+      expect(platform.events.last, 'return');
+    });
+
+    test('does not force the foreground when pairing was not needed', () async {
+      platform.endpoints[AndroidAdbServiceKind.connect] = connectEndpoint;
+      remoteRunner.connectResults.add(
+        const RemoteAdbCommandResult(
+          exitCode: 0,
+          output: 'connected to 127.0.0.1:41002',
+        ),
+      );
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.enable();
+
+      expect(controller.state.phase, DeviceDebugPhase.active);
+      expect(platform.returnToAppCalls, isEmpty);
+    });
+
+    test('returns to the app even when connecting later fails', () async {
+      platform.endpoints
+        ..[AndroidAdbServiceKind.connect] = connectEndpoint
+        ..[AndroidAdbServiceKind.pairing] = pairingEndpoint;
+      remoteRunner.connectResults.addAll([
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: "failed to connect to '127.0.0.1:41002'",
+        ),
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: "failed to connect to '127.0.0.1:41002'",
+        ),
+      ]);
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+      await controller.enable();
+      await Future<void>.delayed(Duration.zero);
+
+      platform.pairingCodes.add('123456');
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      // Pairing is the only step needing Settings, so the user must be brought
+      // back even though the follow-up connect failed.
+      expect(remoteRunner.pairedCodes, ['123456']);
+      expect(platform.returnToAppCalls, hasLength(1));
+      expect(controller.state.phase, DeviceDebugPhase.error);
+    });
+
+    test('cancels the return prompt when debugging stops', () async {
+      platform.endpoints
+        ..[AndroidAdbServiceKind.connect] = connectEndpoint
+        ..[AndroidAdbServiceKind.pairing] = pairingEndpoint;
+      remoteRunner.connectResults.addAll([
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: "failed to connect to '127.0.0.1:41002'",
+        ),
+        const RemoteAdbCommandResult(
+          exitCode: 0,
+          output: 'connected to 127.0.0.1:41002',
+        ),
+      ]);
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+      await controller.enable();
+      await Future<void>.delayed(Duration.zero);
+      platform.pairingCodes.add('123456');
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(platform.returnToAppCalls, hasLength(1));
+
+      await controller.stop();
+
+      expect(platform.returnPromptHiddenCount, greaterThan(0));
     });
 
     test('rejects pairing codes that are not six digits', () async {

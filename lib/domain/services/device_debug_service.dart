@@ -116,6 +116,15 @@ abstract interface class AndroidDeviceDebugPlatform {
   /// Removes the pairing-code notification.
   Future<void> hidePairingCodePrompt();
 
+  /// Brings MonkeySSH back to the foreground after pairing succeeds.
+  ///
+  /// Returns `false` when Android blocked the direct return; a tappable
+  /// notification is always posted as the reliable way back.
+  Future<bool> returnToApp({required String status});
+
+  /// Cancels the "tap to return" notification.
+  Future<void> hideReturnPrompt();
+
   /// Pairing codes submitted from the notification reply field.
   Stream<String> get submittedPairingCodes;
 
@@ -186,6 +195,37 @@ class MethodChannelAndroidDeviceDebugPlatform
     }
     try {
       await _channel.invokeMethod<void>('hidePairingCodePrompt');
+    } on PlatformException {
+      return;
+    } on MissingPluginException {
+      return;
+    }
+  }
+
+  @override
+  Future<bool> returnToApp({required String status}) async {
+    if (!supported) {
+      return false;
+    }
+    try {
+      return await _channel.invokeMethod<bool>('returnToApp', {
+            'status': status,
+          }) ??
+          false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  @override
+  Future<void> hideReturnPrompt() async {
+    if (!supported) {
+      return;
+    }
+    try {
+      await _channel.invokeMethod<void>('hideReturnPrompt');
     } on PlatformException {
       return;
     } on MissingPluginException {
@@ -673,13 +713,14 @@ String buildRemoteAdbResolutionCommand() {
 ///
 /// Login profiles and interactive shells can print greetings, so only absolute
 /// paths that name an `adb` binary are accepted, and the last match wins.
+/// Paths may contain spaces; the caller quotes them and validates the binary
+/// with an `adb version` probe.
 @visibleForTesting
 String? parseResolvedAdbPath(String output) {
   String? resolved;
   for (final line in const LineSplitter().convert(output)) {
     final candidate = line.trim();
     if (!candidate.startsWith('/') ||
-        candidate.contains(' ') ||
         !(candidate.endsWith('/adb') || candidate.endsWith('/adb.exe'))) {
       continue;
     }
@@ -988,6 +1029,9 @@ class DeviceDebugSessionController extends ChangeNotifier {
   StreamSubscription<String>? _pairingCodeSubscription;
   bool _pairingPromptVisible = false;
   bool _pairingPromptUnavailable = false;
+  bool _pairedFromNotification = false;
+  bool _returnPromptVisible = false;
+  Future<void>? _pairingPromptHide;
   bool _disposed = false;
 
   /// Current observable bridge state.
@@ -1162,8 +1206,15 @@ class DeviceDebugSessionController extends ChangeNotifier {
           return;
         }
       } finally {
-        await _session.stopForward(_pairingTunnelId);
+        await _stopTunnelQuietly(_pairingTunnelId);
       }
+      if (!_owns(generation)) {
+        return;
+      }
+      // Pairing is the only step that requires the user to stand in Android
+      // Settings, so bring MonkeySSH back now rather than after connecting;
+      // otherwise a connect failure would strand them in Settings.
+      await _returnToAppAfterPairing();
       if (!_owns(generation)) {
         return;
       }
@@ -1235,13 +1286,49 @@ class DeviceDebugSessionController extends ChangeNotifier {
     } finally {
       // The tunnels must close even when the remote disconnect fails, so the
       // controller never stays stuck in `stopping` with a live reverse forward.
-      await _session.stopForward(_pairingTunnelId);
-      await _session.stopForward(_connectTunnelId);
+      await _stopTunnelQuietly(_pairingTunnelId);
+      await _stopTunnelQuietly(_connectTunnelId);
+      await _hideReturnPrompt();
       _connectEndpoint = null;
       _remoteSerial = null;
+      _pairedFromNotification = false;
       if (!_disposed) {
         _setState(DeviceDebugState.off);
       }
+    }
+  }
+
+  /// Stops [tunnelId] without letting cleanup failures escape.
+  Future<void> _stopTunnelQuietly(int tunnelId) async {
+    try {
+      await _session.stopForward(tunnelId);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'device_debug',
+        'tunnel_cleanup_failed',
+        fields: {
+          'connectionId': _session.connectionId,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+    }
+  }
+
+  /// Drops a remote ADB serial that outlived the operation that created it.
+  Future<void> _disconnectSupersededSerial(String remoteSerial) async {
+    try {
+      await _remoteRunner.disconnect(_session, address: remoteSerial);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'device_debug',
+        'superseded_disconnect_failed',
+        fields: {
+          'connectionId': _session.connectionId,
+          'errorType': error is DeviceDebugException
+              ? error.kind.name
+              : error.runtimeType.toString(),
+        },
+      );
     }
   }
 
@@ -1290,7 +1377,12 @@ class DeviceDebugSessionController extends ChangeNotifier {
       },
     );
     if (!_owns(generation)) {
-      await _session.stopForward(_connectTunnelId);
+      // A stop raced this connect. The remote ADB server would otherwise keep
+      // a stale (offline) serial registered, so drop it before closing up.
+      if (result.succeeded && _connectSucceeded(result.output)) {
+        await _disconnectSupersededSerial(remoteSerial);
+      }
+      await _stopTunnelQuietly(_connectTunnelId);
       return;
     }
     if (result.succeeded && _connectSucceeded(result.output)) {
@@ -1302,9 +1394,10 @@ class DeviceDebugSessionController extends ChangeNotifier {
           remoteAddress: remoteSerial,
         ),
       );
+      await _returnToAppAfterPairing();
       return;
     }
-    await _session.stopForward(_connectTunnelId);
+    await _stopTunnelQuietly(_connectTunnelId);
     if (canRequestPairing) {
       // ADB reports an unpaired host in several ways depending on version and
       // on whether the TLS handshake or the authentication step fails, so any
@@ -1325,6 +1418,47 @@ class DeviceDebugSessionController extends ChangeNotifier {
           'Remote ADB could not connect through the tunnel. Keep Wireless '
           'debugging on and try again.',
     );
+  }
+
+  /// Brings MonkeySSH forward after a notification-driven pairing succeeds.
+  ///
+  /// Only runs when the code came from the notification, because that is the
+  /// case where the user is still standing in Android Settings.
+  Future<void> _returnToAppAfterPairing() async {
+    if (!_pairedFromNotification) {
+      return;
+    }
+    _pairedFromNotification = false;
+    final generation = _operationGeneration;
+    // Pairing is finished, so retire its prompt before posting the return one.
+    _endPairingCodeCapture();
+    await _pairingPromptHide;
+    _pairingPromptHide = null;
+    if (_disposed || generation != _operationGeneration) {
+      return;
+    }
+    final returned = await _platform.returnToApp(
+      status: 'Paired. Tap to return to MonkeySSH.',
+    );
+    _returnPromptVisible = true;
+    if (_disposed || generation != _operationGeneration) {
+      // A stop raced the return; never leave a stale prompt behind.
+      await _hideReturnPrompt();
+    }
+    DiagnosticsLogService.instance.info(
+      'device_debug',
+      'foreground_return',
+      fields: {'connectionId': _session.connectionId, 'returned': returned},
+    );
+  }
+
+  /// Cancels the "tap to return" notification when one is showing.
+  Future<void> _hideReturnPrompt() async {
+    if (!_returnPromptVisible) {
+      return;
+    }
+    _returnPromptVisible = false;
+    await _platform.hideReturnPrompt();
   }
 
   Future<int> _startReverseTunnel({
@@ -1424,6 +1558,9 @@ class DeviceDebugSessionController extends ChangeNotifier {
         code,
       ) {
         if (identical(_pairingPromptOwner, this)) {
+          // The user is standing in Android Settings, so a successful pair
+          // should pull MonkeySSH back to the front afterwards.
+          _pairedFromNotification = true;
           unawaited(pair(code));
         }
       });
@@ -1533,7 +1670,8 @@ class DeviceDebugSessionController extends ChangeNotifier {
     _pairingPromptUnavailable = false;
     if (_pairingPromptVisible) {
       _pairingPromptVisible = false;
-      unawaited(_platform.hidePairingCodePrompt());
+      _pairingPromptHide = _platform.hidePairingCodePrompt();
+      unawaited(_pairingPromptHide);
     }
   }
 
@@ -1560,6 +1698,7 @@ class DeviceDebugSessionController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _endPairingCodeCapture();
+    unawaited(_hideReturnPrompt());
     super.dispose();
   }
 }

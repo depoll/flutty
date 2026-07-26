@@ -35,6 +35,10 @@ object DeviceDebugChannelHandler {
     private const val PAIRING_CHANNEL_ID = "device_debug_pairing"
     private const val PAIRING_NOTIFICATION_ID = 2
 
+    /// The "tap to return" prompt uses its own id so a late pairing-prompt
+    /// cancellation cannot delete it.
+    private const val RETURN_NOTIFICATION_ID = 3
+
     /** Result key carrying the code typed into the notification reply field. */
     const val PAIRING_CODE_RESULT_KEY = "monkeyssh_pairing_code"
 
@@ -85,6 +89,16 @@ object DeviceDebugChannelHandler {
                     .cancel(PAIRING_NOTIFICATION_ID)
                 result.success(null)
             }
+            "hideReturnPrompt" -> {
+                hideReturnPrompt(applicationContext)
+                result.success(null)
+            }
+            "returnToApp" -> result.success(
+                returnToApp(
+                    context = applicationContext,
+                    status = call.argument<String>("status").orEmpty(),
+                ),
+            )
             "openDeveloperOptions" -> result.success(
                 openDeveloperOptions(applicationContext),
             )
@@ -120,6 +134,84 @@ object DeviceDebugChannelHandler {
                 ).start()
             }
             else -> result.notImplemented()
+        }
+    }
+
+    /// Returns MonkeySSH to the foreground once pairing succeeds.
+    ///
+    /// Pairing runs while Android Settings is in front, so the app has to pull
+    /// itself back afterwards. A direct `startActivity` from a notification
+    /// reply is a notification trampoline, which Android 12+ blocks and which
+    /// only ever had a ~10s grace window — shorter than pairing takes. Worse,
+    /// a blocked background launch is usually dropped silently instead of
+    /// throwing, so the direct attempt can never be trusted on its own.
+    ///
+    /// The tappable notification is therefore always posted, and MainActivity
+    /// cancels it once the app really reaches the foreground.
+    private fun returnToApp(context: Context, status: String): Boolean {
+        val launchIntent = context.packageManager
+            .getLaunchIntentForPackage(context.packageName)
+            ?.apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                )
+            }
+        showReturnPrompt(context, status, launchIntent)
+        if (launchIntent == null) {
+            return false
+        }
+        return try {
+            context.startActivity(launchIntent)
+            true
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Foreground return blocked; falling back to tap", error)
+            false
+        } catch (error: ActivityNotFoundException) {
+            Log.w(TAG, "Foreground return activity missing", error)
+            false
+        }
+    }
+
+    /// Cancels the "tap to return" prompt.
+    fun hideReturnPrompt(context: Context) {
+        NotificationManagerCompat.from(context).cancel(RETURN_NOTIFICATION_ID)
+    }
+
+    /// Posts the tappable "return to MonkeySSH" notification.
+    private fun showReturnPrompt(
+        context: Context,
+        status: String,
+        launchIntent: Intent?,
+    ) {
+        val manager = NotificationManagerCompat.from(context)
+        createPairingNotificationChannel(context)
+        if (!manager.areNotificationsEnabled() || isPairingChannelBlocked(context)) {
+            return
+        }
+        val contentIntent = launchIntent?.let {
+            PendingIntent.getActivity(
+                context,
+                1,
+                it,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+        val builder = NotificationCompat.Builder(context, PAIRING_CHANNEL_ID)
+            .setContentTitle("Device debugging is ready")
+            .setContentText(status)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(status))
+            .setSmallIcon(R.drawable.ic_notification_monkey)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(true)
+            .setContentIntent(contentIntent)
+        try {
+            manager.notify(RETURN_NOTIFICATION_ID, builder.build())
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Return prompt notification denied", error)
         }
     }
 

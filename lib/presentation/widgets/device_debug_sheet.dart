@@ -281,6 +281,7 @@ class _PairingSteps extends StatelessWidget {
     'Open Wireless debugging and tap “Pair device with pairing code.”',
     'Leave that screen open — Android cancels pairing if you switch apps.',
     'Swipe down and reply to the MonkeySSH notification with the code.',
+    'MonkeySSH reopens once pairing succeeds.',
   ];
 
   @override
