@@ -198,7 +198,7 @@ class _DeviceDebugSheetState extends State<_DeviceDebugSheet>
           FilledButton.icon(
             onPressed: _openDeveloperOptions,
             icon: const Icon(Icons.settings_outlined),
-            label: const Text('Open Developer options'),
+            label: const Text('Open Wireless debugging'),
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
@@ -240,7 +240,7 @@ class _DeviceDebugSheetState extends State<_DeviceDebugSheet>
             TextButton.icon(
               onPressed: _openDeveloperOptions,
               icon: const Icon(Icons.settings_outlined),
-              label: const Text('Open Developer options'),
+              label: const Text('Open Wireless debugging'),
             ),
           ],
         ];
@@ -278,7 +278,7 @@ class _PairingSteps extends StatelessWidget {
   const _PairingSteps();
 
   static const _steps = <String>[
-    'Open Wireless debugging and tap “Pair device with pairing code.”',
+    'Open Wireless debugging, then tap “Pair device with pairing code.”',
     'Leave that screen open — Android cancels pairing if you switch apps.',
     'Swipe down and reply to the MonkeySSH notification with the code.',
     'MonkeySSH reopens once pairing succeeds.',

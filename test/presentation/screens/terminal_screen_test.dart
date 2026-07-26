@@ -1960,7 +1960,7 @@ void main() {
           ),
           findsOneWidget,
         );
-        expect(find.text('Open Developer options'), findsOneWidget);
+        expect(find.text('Open Wireless debugging'), findsOneWidget);
         expect(find.text('Search again'), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
