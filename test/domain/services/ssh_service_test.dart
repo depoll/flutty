@@ -443,6 +443,17 @@ class _OwnershipActiveSessionsNotifier extends ActiveSessionsNotifier {
       connectionStates[connectionId] ?? SshConnectionState.disconnected;
 }
 
+/// Polls [condition] until it holds or [timeout] elapses.
+Future<void> _waitForCondition(
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition() && DateTime.now().isBefore(deadline)) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
 class _ThrowOnRepeatedCloseSink implements StreamSink<List<int>> {
   _ThrowOnRepeatedCloseSink(this._delegate);
 
@@ -4565,8 +4576,13 @@ LISTEN ::1:4201
         localPort,
       );
       await socket.close();
-      await Future<void>.delayed(Duration.zero);
-      await Future<void>.delayed(Duration.zero);
+      // The socket close travels through the real loopback listener, so the
+      // cleanup is not guaranteed to have run after a fixed number of event
+      // loop turns; a loaded machine reliably fails that assumption. Wait for
+      // the first close, then let the queue settle so a duplicate close would
+      // still be counted before asserting it happened exactly once.
+      await _waitForCondition(() => forward.sink.closeAttempts >= 1);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
       expect(forward.sink.closeAttempts, 1);
     });

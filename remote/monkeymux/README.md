@@ -113,6 +113,18 @@ best-effort so app updates do not silently discard in-progress windows. If the
 old helper predates safe shutdown support, the prompt says the update may
 abandon existing windows before starting the newer helper.
 
+`monkeyMuxVersion` in `main.go` is the single source of truth for that
+comparison: it is compiled into the binary, reported in the server `hello`
+frame, and checked by `attach` before it restarts anything.
+`monkeymux-version.sh` derives the packaging version from that same constant so
+`assets/monkeymux/manifest.json` always describes the binary it ships. Bump the
+constant and re-run `scripts/build_monkeymux_assets.sh`; never edit the version
+in the script or the manifest by hand. If the manifest ever claims a version the
+binary does not report, MonkeySSH offers an "update and restore" that `attach`
+then skips as a no-op, so the prompt returns on every connect without ever
+applying. `flutter test test/domain/services/monkeymux_assets_test.dart` and
+`go test ./remote/monkeymux/` both fail when they drift.
+
 The target matrix covers Linux and macOS on amd64 and arm64, plus Windows on
 amd64 and arm64. On Windows the foreground path is backed by a ConPTY
 (pseudo console) instead of a POSIX pty; window creation, switching, resize,
