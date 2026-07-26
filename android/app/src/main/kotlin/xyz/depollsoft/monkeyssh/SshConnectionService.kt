@@ -104,6 +104,12 @@ class SshConnectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        val status = Companion.latestStatus ?: ConnectionStatus(
+            connectionCount = 1,
+            connectedCount = 0
+        )
+        startForeground(NOTIFICATION_ID, buildNotification(status))
+        isPresenting = true
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -122,7 +128,7 @@ class SshConnectionService : Service() {
         }
 
         refreshPresentation()
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {

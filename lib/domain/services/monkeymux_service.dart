@@ -1248,6 +1248,12 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
   return null;
 }
 
+/// Matches the `major.minor.patch` line `monkeymux version` prints, allowing an
+/// optional pre-release or build suffix.
+final _monkeyMuxHelperVersionPattern = RegExp(
+  r'^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$',
+);
+
 Future<String?> _readHelperVersion(SshSession session, String command) async {
   final execSession = await session.execute(command);
   try {
@@ -1258,8 +1264,13 @@ Future<String?> _readHelperVersion(SshSession session, String command) async {
             .transform(utf8.decoder)
             .transform(const LineSplitter())
             .timeout(const Duration(seconds: 5))) {
+      // Login shells can print profile/banner text on stdout before the command
+      // output. Treating that as the version would make the comparison
+      // unparsable and silently suppress a legitimate update, so only accept
+      // lines that actually look like a version and otherwise fall through to
+      // the null result, which keeps the bundled manifest label as the answer.
       final version = line.trim();
-      if (version.isNotEmpty) {
+      if (_monkeyMuxHelperVersionPattern.hasMatch(version)) {
         return version;
       }
     }

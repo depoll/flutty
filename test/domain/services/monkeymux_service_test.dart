@@ -653,6 +653,53 @@ void main() {
       expect(version, isNull);
     });
 
+    test('skips login shell banner text before the version line', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 914);
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+        (_) async => _buildOutputSession(
+          'Welcome to Ubuntu 24.04 LTS\n\nLast login: Mon Jul 20\n0.1.89\n',
+        ),
+      );
+
+      final version = await MonkeyMuxService(
+        installer: installer,
+      ).installedHelperVersion(session, _fakeInstallation);
+
+      expect(version, '0.1.89');
+    });
+
+    test('returns null when no line looks like a version', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 915);
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+        (_) async => _buildOutputSession('monkeymux: command not found\n'),
+      );
+
+      final version = await MonkeyMuxService(
+        installer: installer,
+      ).installedHelperVersion(session, _fakeInstallation);
+
+      expect(version, isNull);
+    });
+
+    test('accepts a pre-release version suffix', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 916);
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => _buildOutputSession('0.1.90-dev.3\n'));
+
+      final version = await MonkeyMuxService(
+        installer: installer,
+      ).installedHelperVersion(session, _fakeInstallation);
+
+      expect(version, '0.1.90-dev.3');
+    });
+
     test('returns null when the probe fails', () async {
       final client = _MockSshClient();
       final installer = _MockMonkeyMuxInstaller();
