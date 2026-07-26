@@ -19,6 +19,28 @@ class _MockExecChannel extends Mock implements SSHSession {}
 class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
   final endpoints = <AndroidAdbServiceKind, AndroidAdbEndpoint?>{};
   bool wirelessDebuggingSupported = true;
+  bool pairingPromptAllowed = true;
+  final pairingPromptStatuses = <String>[];
+  int pairingPromptHiddenCount = 0;
+  // ignore: close_sinks
+  final pairingCodes = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get submittedPairingCodes => pairingCodes.stream;
+
+  @override
+  Future<bool> showPairingCodePrompt({
+    required String status,
+    bool busy = false,
+  }) async {
+    pairingPromptStatuses.add(status);
+    return pairingPromptAllowed;
+  }
+
+  @override
+  Future<void> hidePairingCodePrompt() async {
+    pairingPromptHiddenCount++;
+  }
 
   @override
   bool get supported => true;
@@ -778,6 +800,142 @@ void main() {
 
       expect(notifications, 1);
       expect(controller.state.phase, DeviceDebugPhase.off);
+    });
+
+    test('pairs from a code replied to the notification prompt', () async {
+      platform.endpoints
+        ..[AndroidAdbServiceKind.connect] = connectEndpoint
+        ..[AndroidAdbServiceKind.pairing] = pairingEndpoint;
+      remoteRunner.connectResults.addAll([
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: "failed to connect to '127.0.0.1:41002'",
+        ),
+        const RemoteAdbCommandResult(
+          exitCode: 0,
+          output: 'connected to 127.0.0.1:41002',
+        ),
+      ]);
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.enable();
+      expect(controller.state.phase, DeviceDebugPhase.waitingForPairingCode);
+
+      // The prompt only appears once Android's pairing screen is advertising.
+      await Future<void>.delayed(Duration.zero);
+      expect(platform.pairingPromptStatuses, isNotEmpty);
+      expect(platform.pairingPromptStatuses.last, contains('6-digit code'));
+      expect(controller.pairingPromptUnavailable, isFalse);
+
+      platform.pairingCodes.add('123456');
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(remoteRunner.pairedCodes, ['123456']);
+      expect(controller.state.phase, DeviceDebugPhase.active);
+      expect(platform.pairingPromptHiddenCount, greaterThan(0));
+    });
+
+    test('reports when the pairing notification cannot be posted', () async {
+      platform.endpoints
+        ..[AndroidAdbServiceKind.connect] = connectEndpoint
+        ..[AndroidAdbServiceKind.pairing] = pairingEndpoint;
+      platform.pairingPromptAllowed = false;
+      remoteRunner.connectResults.add(
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: "failed to connect to '127.0.0.1:41002'",
+        ),
+      );
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.enable();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.pairingPromptUnavailable, isTrue);
+    });
+
+    test('hides the pairing prompt when device debugging stops', () async {
+      platform.endpoints
+        ..[AndroidAdbServiceKind.connect] = connectEndpoint
+        ..[AndroidAdbServiceKind.pairing] = pairingEndpoint;
+      remoteRunner.connectResults.add(
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: "failed to connect to '127.0.0.1:41002'",
+        ),
+      );
+      final controller = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(controller.dispose);
+      await controller.enable();
+      await Future<void>.delayed(Duration.zero);
+      expect(platform.pairingPromptStatuses, isNotEmpty);
+
+      await controller.stop();
+
+      expect(platform.pairingPromptHiddenCount, greaterThan(0));
+      expect(controller.state.phase, DeviceDebugPhase.off);
+    });
+
+    test('routes a replied code to the newest waiting session only', () async {
+      platform.endpoints
+        ..[AndroidAdbServiceKind.connect] = connectEndpoint
+        ..[AndroidAdbServiceKind.pairing] = pairingEndpoint;
+      remoteRunner.connectResults.addAll([
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: "failed to connect to '127.0.0.1:41002'",
+        ),
+        const RemoteAdbCommandResult(
+          exitCode: 1,
+          output: "failed to connect to '127.0.0.1:41002'",
+        ),
+        const RemoteAdbCommandResult(
+          exitCode: 0,
+          output: 'connected to 127.0.0.1:41002',
+        ),
+      ]);
+      final first = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(first.dispose);
+      final second = DeviceDebugSessionController(
+        session: session,
+        platform: platform,
+        remoteRunner: remoteRunner,
+      );
+      addTearDown(second.dispose);
+
+      await first.enable();
+      await second.enable();
+      await Future<void>.delayed(Duration.zero);
+      expect(first.state.phase, DeviceDebugPhase.waitingForPairingCode);
+      expect(second.state.phase, DeviceDebugPhase.waitingForPairingCode);
+
+      platform.pairingCodes.add('123456');
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      // Only the session that owns Android's single pairing dialog may pair.
+      expect(remoteRunner.pairedCodes, ['123456']);
+      expect(second.state.phase, DeviceDebugPhase.active);
+      expect(first.state.phase, DeviceDebugPhase.waitingForPairingCode);
     });
 
     test('rejects pairing codes that are not six digits', () async {

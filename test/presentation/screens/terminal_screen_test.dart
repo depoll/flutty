@@ -92,6 +92,18 @@ class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
   bool get supported => true;
 
   @override
+  Stream<String> get submittedPairingCodes => const Stream<String>.empty();
+
+  @override
+  Future<bool> showPairingCodePrompt({
+    required String status,
+    bool busy = false,
+  }) async => true;
+
+  @override
+  Future<void> hidePairingCodePrompt() async {}
+
+  @override
   Future<bool> isWirelessDebuggingSupported() async => true;
 
   @override

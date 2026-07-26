@@ -29,8 +29,6 @@ class _DeviceDebugSheet extends StatefulWidget {
 
 class _DeviceDebugSheetState extends State<_DeviceDebugSheet>
     with WidgetsBindingObserver {
-  final _pairingCodeController = TextEditingController();
-  final _pairingCodeFocusNode = FocusNode();
   bool _refreshAfterSettings = false;
 
   DeviceDebugSessionController get _controller => widget.controller;
@@ -53,8 +51,6 @@ class _DeviceDebugSheetState extends State<_DeviceDebugSheet>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller.removeListener(_handleControllerChanged);
-    _pairingCodeController.dispose();
-    _pairingCodeFocusNode.dispose();
     super.dispose();
   }
 
@@ -74,16 +70,6 @@ class _DeviceDebugSheetState extends State<_DeviceDebugSheet>
       return;
     }
     setState(() {});
-    if (_controller.state.isActive) {
-      _pairingCodeController.clear();
-    }
-    if (_controller.state.phase == DeviceDebugPhase.waitingForPairingCode) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && !_pairingCodeFocusNode.hasFocus) {
-          _pairingCodeFocusNode.requestFocus();
-        }
-      });
-    }
   }
 
   @override
@@ -141,32 +127,17 @@ class _DeviceDebugSheetState extends State<_DeviceDebugSheet>
             ],
             if (state.phase == DeviceDebugPhase.waitingForPairingCode) ...[
               const SizedBox(height: 20),
-              Text(
-                'In Android, open Wireless debugging and tap '
-                '“Pair device with pairing code.” Keep that screen open.',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurface,
+              const _PairingSteps(),
+              if (_controller.pairingPromptUnavailable) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'MonkeySSH needs notification permission to collect the '
+                  'pairing code. Enable notifications, then try again.',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.error,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _pairingCodeController,
-                focusNode: _pairingCodeFocusNode,
-                enabled: !state.isBusy,
-                decoration: const InputDecoration(
-                  labelText: 'Pairing code',
-                  hintText: '123456',
-                  counterText: '',
-                ),
-                keyboardType: TextInputType.number,
-                autofillHints: const [AutofillHints.oneTimeCode],
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(6),
-                ],
-                maxLength: 6,
-                onSubmitted: (_) => _pairAndConnect(),
-              ),
+              ],
             ],
             if (state.remoteAddress case final address?
                 when state.isActive) ...[
@@ -239,15 +210,9 @@ class _DeviceDebugSheetState extends State<_DeviceDebugSheet>
       case DeviceDebugPhase.waitingForPairingCode:
         return [
           FilledButton.icon(
-            onPressed: _pairAndConnect,
-            icon: const Icon(Icons.link_rounded),
-            label: const Text('Pair and connect'),
-          ),
-          const SizedBox(height: 8),
-          TextButton.icon(
             onPressed: _openDeveloperOptions,
             icon: const Icon(Icons.settings_outlined),
-            label: const Text('Open Developer options'),
+            label: const Text('Open Wireless debugging'),
           ),
         ];
       case DeviceDebugPhase.active:
@@ -292,9 +257,6 @@ class _DeviceDebugSheetState extends State<_DeviceDebugSheet>
     }
   }
 
-  Future<void> _pairAndConnect() =>
-      _controller.pair(_pairingCodeController.text);
-
   Future<void> _turnOff() async {
     await _controller.stop();
     if (mounted) {
@@ -309,6 +271,53 @@ class _DeviceDebugSheetState extends State<_DeviceDebugSheet>
         context,
       ).showSnackBar(const SnackBar(content: Text('ADB serial copied')));
     }
+  }
+}
+
+class _PairingSteps extends StatelessWidget {
+  const _PairingSteps();
+
+  static const _steps = <String>[
+    'Open Wireless debugging and tap “Pair device with pairing code.”',
+    'Leave that screen open — Android cancels pairing if you switch apps.',
+    'Swipe down and reply to the MonkeySSH notification with the code.',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final (index, step) in _steps.indexed) ...[
+          if (index > 0) const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 24,
+                child: Text(
+                  '${index + 1}.',
+                  style: FluttyTheme.monoStyle.copyWith(
+                    color: colorScheme.primary,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  step,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
   }
 }
 

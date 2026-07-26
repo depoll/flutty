@@ -1,5 +1,8 @@
 package xyz.depollsoft.monkeyssh
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -11,6 +14,9 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.RemoteInput
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -26,6 +32,11 @@ object DeviceDebugChannelHandler {
     private const val TAG = "DeviceDebugChannel"
     private const val PAIRING_SERVICE_TYPE = "_adb-tls-pairing._tcp."
     private const val CONNECT_SERVICE_TYPE = "_adb-tls-connect._tcp."
+    private const val PAIRING_CHANNEL_ID = "device_debug_pairing"
+    private const val PAIRING_NOTIFICATION_ID = 2
+
+    /** Result key carrying the code typed into the notification reply field. */
+    const val PAIRING_CODE_RESULT_KEY = "monkeyssh_pairing_code"
 
     /// Secure Wireless debugging (TLS pairing plus mDNS discovery) exists only
     /// from Android 11.
@@ -62,6 +73,18 @@ object DeviceDebugChannelHandler {
             "isWirelessDebuggingSupported" -> result.success(
                 isWirelessDebuggingSupported,
             )
+            "showPairingCodePrompt" -> result.success(
+                showPairingCodePrompt(
+                    context = applicationContext,
+                    status = call.argument<String>("status").orEmpty(),
+                    busy = call.argument<Boolean>("busy") ?: false,
+                ),
+            )
+            "hidePairingCodePrompt" -> {
+                NotificationManagerCompat.from(applicationContext)
+                    .cancel(PAIRING_NOTIFICATION_ID)
+                result.success(null)
+            }
             "openDeveloperOptions" -> result.success(
                 openDeveloperOptions(applicationContext),
             )
@@ -97,6 +120,110 @@ object DeviceDebugChannelHandler {
                 ).start()
             }
             else -> result.notImplemented()
+        }
+    }
+
+    /// Posts (or updates) the reply notification used to collect the pairing
+    /// code without leaving the Wireless debugging screen.
+    ///
+    /// Android cancels pairing as soon as Settings pauses, and the notification
+    /// shade only takes window focus, so replying inline keeps pairing alive.
+    private fun showPairingCodePrompt(
+        context: Context,
+        status: String,
+        busy: Boolean,
+    ): Boolean {
+        val manager = NotificationManagerCompat.from(context)
+        createPairingNotificationChannel(context)
+        if (!manager.areNotificationsEnabled() || isPairingChannelBlocked(context)) {
+            return false
+        }
+
+        val builder = NotificationCompat.Builder(context, PAIRING_CHANNEL_ID)
+            .setContentTitle("Pair this device for debugging")
+            .setContentText(status)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(status))
+            .setSmallIcon(R.drawable.ic_notification_monkey)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setAutoCancel(false)
+
+        if (busy) {
+            builder.setProgress(0, 0, true)
+        } else {
+            val remoteInput = RemoteInput.Builder(PAIRING_CODE_RESULT_KEY)
+                .setLabel("6-digit pairing code")
+                .build()
+            val replyIntent = Intent(context, DevicePairingCodeReceiver::class.java)
+            val replyPendingIntent = PendingIntent.getBroadcast(
+                context,
+                0,
+                replyIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+            )
+            builder.addAction(
+                NotificationCompat.Action.Builder(
+                    R.drawable.ic_notification_monkey,
+                    "Enter pairing code",
+                    replyPendingIntent,
+                )
+                    .addRemoteInput(remoteInput)
+                    .setAllowGeneratedReplies(false)
+                    .build(),
+            )
+        }
+
+        return try {
+            manager.notify(PAIRING_NOTIFICATION_ID, builder.build())
+            true
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Pairing prompt notification denied", error)
+            false
+        }
+    }
+
+    /// Whether the user muted the pairing channel, which would post the prompt
+    /// without ever showing it.
+    private fun isPairingChannelBlocked(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return false
+        }
+        val channel = context.getSystemService(NotificationManager::class.java)
+            ?.getNotificationChannel(PAIRING_CHANNEL_ID)
+            ?: return false
+        return channel.importance == NotificationManager.IMPORTANCE_NONE
+    }
+
+    private fun createPairingNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        val channel = NotificationChannel(
+            PAIRING_CHANNEL_ID,
+            "Device debugging pairing",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "Collects the Wireless debugging pairing code"
+            setShowBadge(false)
+        }
+        context.getSystemService(NotificationManager::class.java)
+            .createNotificationChannel(channel)
+    }
+
+    /// Routes a pairing code typed into the notification back to Dart.
+    fun handleSubmittedPairingCode(context: Context, code: String) {
+        // The reply can arrive while MonkeySSH is backgrounded, so make sure the
+        // shared Flutter engine (and this channel) exists before delivering it.
+        MonkeySshApplication.from(context).ensureSharedFlutterEngine()
+        showPairingCodePrompt(
+            context = context,
+            status = "Pairing with the SSH host…",
+            busy = true,
+        )
+        Handler(Looper.getMainLooper()).post {
+            methodChannel?.invokeMethod("pairingCodeSubmitted", code)
         }
     }
 
