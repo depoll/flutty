@@ -26,6 +26,7 @@ import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
+import 'package:monkeyssh/domain/services/device_debug_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
@@ -85,6 +86,74 @@ class _MockShellChannel extends Mock implements SSHSession {}
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
+
+class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
+  @override
+  bool get supported => true;
+
+  @override
+  Stream<String> get submittedPairingCodes => const Stream<String>.empty();
+
+  @override
+  Future<bool> showPairingCodePrompt({
+    required String status,
+    bool busy = false,
+  }) async => true;
+
+  @override
+  Future<void> hidePairingCodePrompt() async {}
+
+  @override
+  Future<bool> returnToApp({required String status}) async => true;
+
+  @override
+  Future<void> hideReturnPrompt() async {}
+
+  @override
+  Future<bool> isWirelessDebuggingSupported() async => true;
+
+  @override
+  Future<AndroidAdbEndpoint?> discoverEndpoint(
+    AndroidAdbServiceKind kind, {
+    Duration timeout = const Duration(seconds: 6),
+  }) async => null;
+
+  @override
+  Future<bool> openDeveloperOptions() async => true;
+}
+
+class _FakeRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
+  @override
+  Future<RemoteAdbCommandResult> connect(
+    SshSession session, {
+    required String address,
+  }) async => const RemoteAdbCommandResult(exitCode: 1, output: '');
+
+  @override
+  Future<RemoteAdbCommandResult> disconnect(
+    SshSession session, {
+    required String address,
+  }) async => const RemoteAdbCommandResult(exitCode: 0, output: '');
+
+  @override
+  Future<bool> isAvailable(SshSession session) async => true;
+
+  @override
+  Future<RemoteListenerScope> listenerScope(
+    SshSession session,
+    int port,
+  ) async => RemoteListenerScope.loopback;
+
+  @override
+  Future<bool> supportsPairing(SshSession session) async => true;
+
+  @override
+  Future<RemoteAdbCommandResult> pair(
+    SshSession session, {
+    required String address,
+    required String pairingCode,
+  }) async => const RemoteAdbCommandResult(exitCode: 1, output: '');
+}
 
 class _MockTmuxService extends Mock implements TmuxService {
   @override
@@ -1306,6 +1375,8 @@ void main() {
       ActiveSessionsNotifier? activeSessions,
       TmuxService? tmuxService,
       ShellCompletionService? shellCompletionService,
+      AndroidDeviceDebugPlatform? deviceDebugPlatform,
+      RemoteAdbCommandRunner? remoteAdbCommandRunner,
     }) async {
       await tester.pumpWidget(
         ProviderScope(
@@ -1328,6 +1399,13 @@ void main() {
             if (shellCompletionService != null)
               shellCompletionServiceProvider.overrideWithValue(
                 shellCompletionService,
+              ),
+            androidDeviceDebugPlatformProvider.overrideWithValue(
+              deviceDebugPlatform ?? _FakeAndroidDeviceDebugPlatform(),
+            ),
+            if (remoteAdbCommandRunner != null)
+              remoteAdbCommandRunnerProvider.overrideWithValue(
+                remoteAdbCommandRunner,
               ),
           ],
           child: MaterialApp(
@@ -1832,6 +1910,61 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump(const Duration(milliseconds: 1));
     });
+
+    testWidgets(
+      'terminal overflow shows Android device debugging as a switch',
+      (tester) async {
+        await pumpScreen(tester);
+
+        await openTerminalOverflowMenu(tester);
+
+        final item = terminalMenuItemButton('Device debugging');
+        expect(item, findsOneWidget);
+        expect(
+          find.descendant(of: item, matching: find.byType(Switch)),
+          findsOneWidget,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'terminal overflow hides device debugging on iOS',
+      (tester) async {
+        await pumpScreen(tester);
+
+        await openTerminalOverflowMenu(tester);
+
+        expect(terminalMenuItemButton('Device debugging'), findsNothing);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'device debugging switch opens Wireless debugging setup',
+      (tester) async {
+        await pumpScreen(
+          tester,
+          deviceDebugPlatform: _FakeAndroidDeviceDebugPlatform(),
+          remoteAdbCommandRunner: _FakeRemoteAdbCommandRunner(),
+        );
+
+        await openTerminalOverflowMenu(tester);
+        await tester.tap(terminalMenuItemButton('Device debugging'));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text(
+            'Turn on Wireless debugging in Android Developer options, '
+            'then search again.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Open Wireless debugging'), findsOneWidget);
+        expect(find.text('Search again'), findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
 
     testWidgets(
       'terminal overflow opens active local forwards in browser tabs',

@@ -125,6 +125,8 @@ class _MockExecSession extends Mock implements SSHSession {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
 
+class _MockRemoteForward extends Mock implements SSHRemoteForward {}
+
 class _MockHostRepository extends Mock implements HostRepository {}
 
 class _MockPortForwardRepository extends Mock
@@ -937,6 +939,62 @@ LISTEN ::1:4201
         expect(session.automaticForwardedRemotePorts, isEmpty);
       },
     );
+
+    test('does not automatically forward an active reverse listener', () async {
+      final client = _MockSshClient();
+      final remoteForward = _MockRemoteForward();
+      when(() => remoteForward.host).thenReturn('127.0.0.1');
+      when(() => remoteForward.port).thenReturn(41002);
+      when(
+        () => remoteForward.connections,
+      ).thenAnswer((_) => const Stream<SSHForwardChannel>.empty());
+      when(remoteForward.close).thenReturn(null);
+      when(
+        () => client.forwardRemote(host: '127.0.0.1', port: 0),
+      ).thenAnswer((_) async => remoteForward);
+
+      final session = _AutomaticForwardTestSession(
+        connectionId: 1,
+        hostId: 7,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'dev.example.com',
+          port: 22,
+          username: 'tester',
+        ),
+        discoveries: [
+          _listenerSnapshot([
+            _remoteListener(41002),
+            _remoteListener(3000, host: '127.0.0.2'),
+          ]),
+        ],
+      );
+      addTearDown(session.stopAllForwards);
+
+      expect(
+        await session.startRemoteForward(
+          portForwardId: -2147483002,
+          remoteHost: '127.0.0.1',
+          remotePort: 0,
+          localHost: '192.0.2.10',
+          localPort: 37123,
+        ),
+        isTrue,
+      );
+
+      await session.configureAutomaticPortForwarding(
+        enabled: true,
+        proxyHost: 'dev-box.localhost',
+      );
+
+      // The reverse forward's own listener lives on the SSH host; forwarding it
+      // back to this device would loop the tunnel onto itself.
+      expect(session.automaticForwardedRemotePorts, {3000});
+      expect(
+        session.starts.map((start) => start.remotePort),
+        isNot(contains(41002)),
+      );
+    });
 
     test('binds detected ports under the host proxy domain', () async {
       final session = SshSession(
