@@ -8578,8 +8578,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (status == null || !status.needsUpdate(installation.version)) {
       return MonkeyMuxServerUpdatePolicy.never;
     }
+    // `installation.version` is only the packaging label from the bundled
+    // manifest; `attach` decides whether to restart a running server by
+    // comparing it against the version compiled into the helper binary. If the
+    // two ever drift, offering the update would show a dialog that the helper
+    // then treats as a no-op, so the prompt would reappear on every connect
+    // and never apply. Ask the binary what it really is before prompting.
+    final helperVersion = await _monkeyMuxService.installedHelperVersion(
+      session,
+      installation,
+    );
+    if (!mounted) {
+      return MonkeyMuxServerUpdatePolicy.never;
+    }
+    final bundledVersion = helperVersion ?? installation.version;
+    if (!status.needsUpdate(bundledVersion)) {
+      DiagnosticsLogService.instance.warning(
+        'monkeymux.install',
+        'upgrade_restore_skipped_helper_matches_server',
+        fields: {
+          'connectionId': session.connectionId,
+          'installedDuringCall': installation.installedDuringCall,
+        },
+      );
+      return MonkeyMuxServerUpdatePolicy.never;
+    }
     final versionComparison = _compareMonkeyMuxVersions(
-      installation.version,
+      bundledVersion,
       status.version,
     );
     final bundledVersionIsNewer =
@@ -8589,7 +8614,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           preferredUpdatePolicy ??
           await _confirmMonkeyMuxRunningServerUpdate(
             status: status,
-            bundledVersion: installation.version,
+            bundledVersion: bundledVersion,
           );
       DiagnosticsLogService.instance.info(
         'monkeymux.install',
@@ -8618,7 +8643,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       connectionId: session.connectionId,
       sessionName: sessionName,
       runningVersion: status.version,
-      bundledVersion: installation.version,
+      bundledVersion: bundledVersion,
       versionComparison: versionComparison,
     );
     return MonkeyMuxServerUpdatePolicy.never;
