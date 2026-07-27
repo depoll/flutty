@@ -38,6 +38,7 @@ Host _buildHost({
   autoConnectCommand: null,
   autoConnectSnippetId: null,
   autoConnectRequiresConfirmation: false,
+  autoForwardPorts: false,
   tmuxSessionName: null,
   tmuxWorkingDirectory: null,
   tmuxExtraFlags: null,

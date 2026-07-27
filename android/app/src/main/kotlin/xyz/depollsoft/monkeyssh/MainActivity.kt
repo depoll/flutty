@@ -1,7 +1,6 @@
 package xyz.depollsoft.monkeyssh
 
 import android.Manifest
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -37,8 +36,10 @@ class MainActivity : FlutterFragmentActivity() {
         handleTransferIntent(intent)
     }
 
-    override fun provideFlutterEngine(context: Context): FlutterEngine =
-        MonkeySshApplication.from(context).ensureSharedFlutterEngine()
+    override fun getCachedEngineId(): String {
+        MonkeySshApplication.from(this).ensureSharedFlutterEngine()
+        return MonkeySshApplication.SHARED_ENGINE_ID
+    }
 
     override fun shouldDestroyEngineWithHost(): Boolean = false
 
@@ -98,6 +99,12 @@ class MainActivity : FlutterFragmentActivity() {
         }
 
         notifyIncomingTransferPayload()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The "tap to return" prompt has done its job once the app is visible.
+        DeviceDebugChannelHandler.hideReturnPrompt(applicationContext)
     }
 
     override fun onNewIntent(intent: Intent) {

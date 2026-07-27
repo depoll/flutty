@@ -3155,19 +3155,19 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   }
 
   Future<bool> _loadHostAgentPreferences([int? hostId]) async {
+    if (!mounted) return false;
+    final activeSessions = ref.read(activeSessionsProvider.notifier);
+    final presetService = ref.read(agentLaunchPresetServiceProvider);
+    final cliLaunchPreferencesService = ref.read(
+      hostCliLaunchPreferencesServiceProvider,
+    );
     final resolvedHostId =
-        hostId ??
-        ref
-            .read(activeSessionsProvider.notifier)
-            .getSession(widget.connectionId)
-            ?.hostId;
+        hostId ?? activeSessions.getSession(widget.connectionId)?.hostId;
     if (resolvedHostId == null) return false;
 
-    final preset = await ref
-        .read(agentLaunchPresetServiceProvider)
-        .getPresetForHost(resolvedHostId);
-    final cliLaunchPreferences = await ref
-        .read(hostCliLaunchPreferencesServiceProvider)
+    final preset = await presetService.getPresetForHost(resolvedHostId);
+    if (!mounted) return false;
+    final cliLaunchPreferences = await cliLaunchPreferencesService
         .getPreferencesForHost(resolvedHostId);
     if (!mounted) return false;
 

@@ -106,6 +106,13 @@ class Hosts extends Table {
   /// populated.
   TextColumn get remoteMuxBackend => text().nullable()();
 
+  /// Whether newly opened remote TCP ports should be forwarded automatically.
+  BoolColumn get autoForwardPorts =>
+      boolean().withDefault(const Constant(false))();
+
+  /// Optional user-defined prefix for this host's `.localhost` proxy domain.
+  TextColumn get portProxyName => text().nullable()();
+
   /// Display order within the hosts list.
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
 }
@@ -326,7 +333,7 @@ class AppDatabase extends _$AppDatabase {
   final AppleDatabaseFilePolicyApplier _appleDatabaseFilePolicyApplier;
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -397,6 +404,15 @@ class AppDatabase extends _$AppDatabase {
         final hostColumnNames = await _readColumnNames('hosts');
         if (!hostColumnNames.contains(hosts.remoteMuxBackend.$name)) {
           await m.addColumn(hosts, hosts.remoteMuxBackend);
+        }
+      }
+      if (from < 10) {
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.autoForwardPorts.$name)) {
+          await m.addColumn(hosts, hosts.autoForwardPorts);
+        }
+        if (!hostColumnNames.contains(hosts.portProxyName.$name)) {
+          await m.addColumn(hosts, hosts.portProxyName);
         }
       }
     },
