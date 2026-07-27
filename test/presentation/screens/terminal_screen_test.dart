@@ -6547,6 +6547,52 @@ void main() {
     );
 
     testWidgets(
+      'new window completion after disposal does not read providers',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final createWindowCompleter = Completer<void>();
+        await pumpTmuxScreen(tester, tmuxService);
+        when(
+          () => tmuxService.createWindow(
+            session,
+            'work',
+            command: any(named: 'command'),
+            name: any(named: 'name'),
+            workingDirectory: any(named: 'workingDirectory'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => createWindowCompleter.future);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.tap(find.text('New Window'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Empty window'));
+        await tester.pump();
+
+        verify(
+          () => tmuxService.createWindow(
+            session,
+            'work',
+            command: any(named: 'command'),
+            name: any(named: 'name'),
+            workingDirectory: any(named: 'workingDirectory'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        createWindowCompleter.complete();
+        await tester.pump();
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'uses a collapsible tmux sidebar on wide terminal layouts',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 800));

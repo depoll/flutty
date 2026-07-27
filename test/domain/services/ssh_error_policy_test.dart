@@ -28,4 +28,20 @@ void main() {
       isFalse,
     );
   });
+
+  test('recognizes channel EOF writes after the transport closes', () {
+    final stackTrace = StackTrace.fromString(
+      '#0 SSHTransport.sendPacket\n'
+      '#1 SSHChannelController._sendEOFIfNeeded\n'
+      '#2 SSHChannelController.close\n',
+    );
+
+    expect(
+      isExpectedSshChannelTeardownError(
+        SSHStateError('Transport is closed'),
+        stackTrace,
+      ),
+      isTrue,
+    );
+  });
 }
