@@ -32,11 +32,11 @@ MonkeySSH is designed around the tools and workflows people use for remote AI-as
 | Area | What you get |
 | --- | --- |
 | **SSH connections** | Password and key auth, jump hosts, multiple concurrent sessions, host organization, search, favorites, home-screen shortcuts |
-| **Terminal** | xterm-256color, customizable themes, adjustable fonts, modifier keys, function keys, gestures, macros, bell, tap-to-show keyboard, and IME-friendly typing with autocorrect, swipe, keyboard dictation, and password-friendly prompt input |
-| **Coding workflow** | AI session picker, scoped recent session resume, MonkeyMux/tmux launch flows, window switcher, wide-screen sidebar, clickable file paths, shared clipboard, safer paste review |
+| **Terminal** | xterm-256color, customizable themes, adjustable fonts, modifier keys, function keys, gestures, macros, bell, inline images and animations, tap-to-show keyboard, and IME-friendly typing with autocorrect, swipe, keyboard dictation, and password-friendly prompt input |
+| **Coding workflow** | AI session picker, scoped recent session resume, MonkeyMux/tmux launch flows, multi-client MonkeyMux sessions shared with your desktop, window switcher, wide-screen sidebar, clickable file paths, shared clipboard, safer paste review |
 | **Files** | SFTP browser, upload/download, remote file creation, direct remote text editing, syntax highlighting, path-aware navigation from terminal output |
 | **Automation** | Snippets, variable-aware snippet insertion, host auto-connect commands, saved agent launch presets |
-| **Networking** | Local and remote port forwards for tunnels, dashboards, previews, and remote services |
+| **Networking** | Local and remote port forwards for tunnels, dashboards, previews, and remote services, live per-session forward controls, automatic proxying for detected remote listeners, an in-app browser for forwarded ports, and Android device debugging over the current SSH session |
 | **Keys and trust** | Generate/import/export Ed25519 and RSA keys, verify SSH host fingerprints, track trusted hosts locally |
 | **Security and portability** | PIN + biometrics, auto-lock, encrypted offline transfer bundles, encrypted full-app migration packages, no required cloud sync, telemetry sharing off by default |
 
