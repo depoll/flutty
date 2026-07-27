@@ -9301,6 +9301,13 @@ func kittyGraphicsControlExtent(
 ) (end int, control string, recognized bool) {
 	to := -1
 	for index := from; index < len(data); index++ {
+		if data[index] == 0x18 || data[index] == 0x1a {
+			// CAN/SUB cancel the APC. Report it as unresolved so the caller
+			// hands the bytes to the byte-wise parser, which models the
+			// cancellation; scanning on to a later ST would swallow the visible
+			// text that follows the cancelled sequence.
+			return -1, "", true
+		}
 		switch {
 		case data[index] == 0x9c:
 			end = index + 1
