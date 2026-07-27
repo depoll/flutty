@@ -541,7 +541,7 @@ type muxWindow struct {
 	redrawForwardingPaused               bool
 	redrawForwardingGeneration           int
 	redrawForwardingReplay               []byte
-	redrawForwardingFallbackReplay       []byte
+	redrawForwardingFallbackHistory      []byte
 	redrawForwardingBuffer               []byte
 	redrawForwardingFailoverBuffer       []byte
 	redrawForwardingSecondaryBuffer      []byte
@@ -4070,6 +4070,9 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	}
 	window.closed = true
 	window.alert = false
+	// See closeWindow: a pause in flight would otherwise retain its buffers on
+	// a window that is never removed from s.windows.
+	window.releaseRedrawForwardingStateLocked()
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -6498,6 +6501,12 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	}
 	window.closed = true
 	window.alert = false
+	// A window can be closed while a redraw pause is in flight, and
+	// resumePausedAttachForwarding bails out on closed windows before it
+	// reaches its own cleanup. Closed windows stay in s.windows for the life of
+	// the server, so release the retained frame and output buffers here or they
+	// leak for as long as the server runs.
+	window.releaseRedrawForwardingStateLocked()
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -6860,15 +6869,22 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 		len(preservedQueries) > 0 &&
 			!s.isAttachConnectionLocked(preservedPrimary)
 	if !window.redrawForwardingPaused ||
-		len(window.redrawForwardingFallbackReplay) == 0 {
+		len(window.redrawForwardingFallbackHistory) == 0 {
 		// Snapshot the pre-resize frame for every redraw pause, not just
 		// deferred window-switch replays: restore and theme redraws start the
 		// same transaction directly and hit the same coalesced-SIGWINCH
-		// failure. When a pause restarts while one is already in flight the
-		// existing snapshot is kept, because the history may already have been
-		// overwritten by the redraw that produced nothing.
-		window.redrawForwardingFallbackReplay =
-			s.foregroundHistoryFallbackReplayLocked(window)
+		// failure.
+		window.redrawForwardingFallbackHistory =
+			s.foregroundHistoryFallbackHistoryLocked(window)
+	} else if refreshed := s.foregroundHistoryFallbackHistoryLocked(
+		window,
+	); terminalOutputHasVisibleContent(refreshed) {
+		// A pause restarted while another is in flight only re-snapshots when
+		// the history still holds a complete frame. If the first (empty) redraw
+		// already cleared the screen, re-reading it would capture that blank
+		// frame and hand the user exactly the emptiness this fallback exists to
+		// avoid, so the original snapshot is kept instead.
+		window.redrawForwardingFallbackHistory = refreshed
 	}
 	window.redrawForwardingPaused = true
 	window.redrawForwardingGeneration += 1
@@ -6906,10 +6922,6 @@ func (s *muxServer) resumePausedAttachForwarding(
 		return
 	}
 	replay = append([]byte(nil), window.redrawForwardingReplay...)
-	fallbackReplay := append(
-		[]byte(nil),
-		window.redrawForwardingFallbackReplay...,
-	)
 	buffered = append([]byte(nil), window.redrawForwardingBuffer...)
 	failoverBuffered = append(
 		[]byte(nil),
@@ -6927,14 +6939,22 @@ func (s *muxServer) resumePausedAttachForwarding(
 	}
 	primaryNeedsFailover =
 		primaryNeedsFailover || window.redrawForwardingPrimaryNeedsFailover
-	hasVisibleRedraw := terminalOutputHasVisibleContent(secondaryBuffered)
-	if !hasVisibleRedraw {
+	// Substituting the fallback discards the buffered redraw, so it is only
+	// safe once that redraw has ended on a sequence boundary. Resuming mid
+	// escape sequence would drop the head of a sequence whose tail is still to
+	// come and corrupt the client, so leave those redraws to forward normally.
+	if !terminalOutputHasVisibleContent(secondaryBuffered) &&
+		window.terminalOutputIsGroundLocked() {
 		// Some TUIs coalesce the temporary and restored SIGWINCH notifications
 		// and emit no redraw at all. Sending the normal foreground replay in
 		// that case would only clear the client, leaving it blank until future
 		// output. Fall back to the retained screen history and paint it inside
 		// one synchronized transaction so the user sees the last complete frame
 		// rather than an empty viewport.
+		fallbackReplay := s.foregroundHistoryFallbackReplayLocked(
+			window,
+			window.redrawForwardingFallbackHistory,
+		)
 		if len(fallbackReplay) > 0 {
 			replay = nil
 			buffered = append(
@@ -6948,21 +6968,12 @@ func (s *muxServer) resumePausedAttachForwarding(
 			secondaryBuffered = append([]byte(nil), fallbackReplay...)
 		}
 	}
-	window.redrawForwardingReplay = nil
-	window.redrawForwardingFallbackReplay = nil
-	window.redrawForwardingBuffer = nil
-	window.redrawForwardingFailoverBuffer = nil
-	window.redrawForwardingSecondaryBuffer = nil
-	window.redrawForwardingQueryBuffer = nil
-	window.redrawForwardingPrimaryConn = nil
-	window.redrawForwardingPrimaryNeedsFailover = false
-	window.redrawForwardingPaused = false
-	refreshPendingFocus =
-		s.pendingFocusRefreshConn != nil &&
-			s.pendingFocusRefreshConn == s.attachConn &&
-			len(window.secondaryQueryCarry) == 0 &&
-			window.queryUtf8Remaining == 0 &&
-			window.terminalOutputIsGroundLocked()
+	window.releaseRedrawForwardingStateLocked()
+	refreshPendingFocus = s.pendingFocusRefreshConn != nil &&
+		s.pendingFocusRefreshConn == s.attachConn &&
+		len(window.secondaryQueryCarry) == 0 &&
+		window.queryUtf8Remaining == 0 &&
+		window.terminalOutputIsGroundLocked()
 	refreshPendingResize =
 		s.pendingResizeWidth > 0 &&
 			s.pendingResizeHeight > 0 &&
@@ -7196,7 +7207,24 @@ func (s *muxServer) replayBytesLockedWithSkip(
 	return buildWindowReplay(window, history)
 }
 
-func (s *muxServer) foregroundHistoryFallbackReplayLocked(
+// releaseRedrawForwardingStateLocked drops every buffer a redraw pause retains
+// and marks the pause finished.
+func (w *muxWindow) releaseRedrawForwardingStateLocked() {
+	if w == nil {
+		return
+	}
+	w.redrawForwardingPaused = false
+	w.redrawForwardingReplay = nil
+	w.redrawForwardingFallbackHistory = nil
+	w.redrawForwardingBuffer = nil
+	w.redrawForwardingFailoverBuffer = nil
+	w.redrawForwardingSecondaryBuffer = nil
+	w.redrawForwardingQueryBuffer = nil
+	w.redrawForwardingPrimaryConn = nil
+	w.redrawForwardingPrimaryNeedsFailover = false
+}
+
+func (s *muxServer) foregroundHistoryFallbackHistoryLocked(
 	window *muxWindow,
 ) []byte {
 	if window == nil || !window.usesForegroundRedrawReplayLocked() {
@@ -7204,8 +7232,20 @@ func (s *muxServer) foregroundHistoryFallbackReplayLocked(
 	}
 	history, historyStart := window.historyTailWithParserLocked()
 	history = trimReplayHistoryForAttachWithParser(history, historyStart)
-	history = stripTerminalQueriesFromReplay(history)
-	if len(history) == 0 {
+	return stripTerminalQueriesFromReplay(history)
+}
+
+// foregroundHistoryFallbackReplayLocked renders the snapshot taken when the
+// redraw pause began into a full replay. The frame bytes are the pre-resize
+// history, but the surrounding mode, cursor, and retained-image state is read
+// now, so state the window learned *during* the pause (a mode change, a new
+// image upload) is carried into the fallback instead of being dropped with the
+// discarded redraw.
+func (s *muxServer) foregroundHistoryFallbackReplayLocked(
+	window *muxWindow,
+	history []byte,
+) []byte {
+	if window == nil || len(history) == 0 {
 		return nil
 	}
 	images := window.kittyImageReplayLocked(nil)
@@ -9059,16 +9099,22 @@ func terminalOutputHasVisibleContent(data []byte) bool {
 			continue
 		}
 		end, control, kitty := kittyGraphicsControlAt(data, index)
-		if kitty {
-			if end < 0 {
-				return false
-			}
+		if kitty && end > 0 {
 			action := parseKittyControl(control)["a"]
 			if action == "T" || action == "p" || action == "a" || action == "c" {
 				return true
 			}
 			parser.observe(data[index:end])
 			index = end
+			continue
+		}
+		if kitty {
+			// The APC is truncated, or terminated in a way the Kitty scanner
+			// does not model (a CAN/SUB cancellation). Hand the bytes to the
+			// byte-wise parser, which does track those, instead of giving up on
+			// the rest of the buffer: text after a cancelled APC still paints.
+			parser.observe(data[index : index+1])
+			index++
 			continue
 		}
 		if csiEnd, params, final, ok := controlSequenceAt(data, index); ok {
@@ -9227,16 +9273,22 @@ func kittyGraphicsControlAt(
 		data[start] == '\x1b' &&
 		data[start+1] == '_' &&
 		data[start+2] == 'G' {
-		end = kittyApcEnd(data, start)
-		if end < 0 {
-			return -1, "", true
-		}
-		return end, kittyControl(data, start, end), true
+		return kittyGraphicsControlExtent(data, start, start+3)
 	}
 	if start+1 >= len(data) || data[start] != 0x9f || data[start+1] != 'G' {
 		return 0, "", false
 	}
-	from := start + 2
+	return kittyGraphicsControlExtent(data, start, start+2)
+}
+
+// kittyGraphicsControlExtent finds the ST that closes a Kitty APC sequence whose
+// payload begins at from, accepting both the 7-bit "ESC \" and 8-bit 0x9c
+// terminators, and returns the control (pre-payload) portion.
+func kittyGraphicsControlExtent(
+	data []byte,
+	start int,
+	from int,
+) (end int, control string, recognized bool) {
 	to := -1
 	for index := from; index < len(data); index++ {
 		switch {
