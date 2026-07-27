@@ -9,6 +9,7 @@ import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/services/port_forward_browser_service.dart';
+import '../../domain/services/port_forward_runtime_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/brand_empty_state.dart';
@@ -196,6 +197,13 @@ class PortForwardsScreen extends ConsumerWidget {
       localHost: activeTunnel.localHost,
       localPort: activeTunnel.localPort,
     );
+    final fallbackHost = activeTunnel.browserFallbackHost;
+    final fallbackUri = fallbackHost == null
+        ? null
+        : buildPortForwardBrowserUriForBind(
+            localHost: fallbackHost,
+            localPort: activeTunnel.localPort,
+          );
 
     await context.pushNamed<void>(
       Routes.portForwardBrowser,
@@ -204,6 +212,7 @@ class PortForwardsScreen extends ConsumerWidget {
           PortForwardBrowserInitialTab(
             uri: browserUri,
             sourceUri: sourceUri,
+            fallbackUri: fallbackUri,
             title: portForward.name,
           ),
         ],
@@ -246,11 +255,34 @@ class PortForwardsScreen extends ConsumerWidget {
     );
 
     if (confirmed ?? false) {
-      await ref.read(portForwardRepositoryProvider).delete(portForward.id);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted "${portForward.name}"')),
+      try {
+        await stopPortForwardOnConnectedSessions(
+          sessions: ref.read(activeSessionsProvider.notifier),
+          portForward: portForward,
         );
+        await ref.read(portForwardRepositoryProvider).delete(portForward.id);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Deleted "${portForward.name}"')),
+          );
+        }
+      } on Exception catch (error, stackTrace) {
+        restorePortForwardAfterFailedDeletion(portForward);
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'port forwards',
+            context: ErrorDescription('while deleting a port forward'),
+          ),
+        );
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not delete port forward. Try again.'),
+            ),
+          );
+        }
       }
     }
   }

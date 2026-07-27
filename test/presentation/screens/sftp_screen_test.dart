@@ -31,7 +31,13 @@ final _onePixelPngBytes = Uint8List.fromList(
 
 class _MockSshClient extends Mock implements SSHClient {}
 
-class _MockSftpClient extends Mock implements SftpClient {}
+Future<void> _completeSftpClose(Invocation _) async {}
+
+class _MockSftpClient extends Mock implements SftpClient {
+  _MockSftpClient() {
+    when(close).thenAnswer(_completeSftpClose);
+  }
+}
 
 class _MockSftpFile extends Mock implements SftpFile {}
 
@@ -1073,6 +1079,7 @@ void main() {
       when(
         () => staleSftp.listdir('/home/demo'),
       ).thenThrow(SSHStateError('Connection closed'));
+      when(staleSftp.close).thenAnswer((_) async {});
       when(() => freshSftp.listdir('/home/demo')).thenAnswer(
         (_) async => [
           SftpName(

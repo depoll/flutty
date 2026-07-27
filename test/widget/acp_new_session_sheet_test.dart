@@ -79,6 +79,7 @@ Host _host({
   tmuxWorkingDirectory: tmuxWorkingDirectory,
   tmuxExtraFlags: null,
   remoteMuxBackend: remoteMuxBackend,
+  autoForwardPorts: false,
   sortOrder: 0,
 );
 

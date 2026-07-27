@@ -16,6 +16,13 @@ class _SshSessionRuntime {
   StreamSubscription<String>? _shellStdoutSubscription;
   StreamSubscription<String>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
+  SSHPtyConfig _shellPty = const SSHPtyConfig();
+  bool _returnToLoginShell = false;
+  bool _isReplacingShell = false;
+  int _shellGeneration = 0;
+  Future<void>? _shellReplacement;
+  void Function(String)? _runtimeTerminalOutputHandler;
+  final List<int> _pendingReplacementInput = [];
   Timer? _previewRefreshTimer;
   Timer? _shellIoDiagnosticsTimer;
   Timer? _terminalOutputFlushTimer;
@@ -106,14 +113,20 @@ class _SshSessionRuntime {
   // (Copilot, gh, ...) emit hyperlinks even though their capability probes don't
   // recognize this TERM/TERM_PROGRAM combination; MonkeySSH renders and opens
   // OSC 8 links, so advertising support is safe.
-  static const _terminalCapabilityEnvironment = {
+  static const _terminalCapabilityEnvironmentBase = {
     'COLORTERM': 'truecolor',
     'TERM_PROGRAM': 'kitty',
     'KITTY_WINDOW_ID': '1',
     'FORCE_HYPERLINK': '1',
   };
-  static const _trueColorLoginShellCommand =
-      r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+  Map<String, String> get _terminalCapabilityEnvironment => {
+    ..._terminalCapabilityEnvironmentBase,
+    'MONKEYSSH_SHELL_TOKEN': _session.shellLineageToken,
+  };
+  String get _trueColorLoginShellCommand =>
+      'exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 '
+      'FORCE_HYPERLINK=1 MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken} '
+      r"""/bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
   static const _windowsShellDetectionTimeout = Duration(seconds: 2);
   static const _windowsShellDetectionCommand = r'''
 $ErrorActionPreference='SilentlyContinue'
@@ -165,6 +178,12 @@ if(!$__flResolved){$__flResolved='cmd'}
     required int pixelWidth,
     required int pixelHeight,
   }) {
+    _shellPty = SSHPtyConfig(
+      width: columns,
+      height: rows,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+    );
     _terminalWindowMetrics = (
       columns: columns,
       rows: rows,
@@ -186,7 +205,34 @@ if(!$__flResolved){$__flResolved='cmd'}
   }
 
   void writeToShell(String data) {
-    _shell?.write(utf8.encode(_encodeForWin32InputModeIfNeeded(data)));
+    final output = utf8.encode(_encodeForWin32InputModeIfNeeded(data));
+    _recordShellIo(stdinChars: output.length);
+    if (_isReplacingShell) {
+      _pendingReplacementInput.addAll(output);
+      return;
+    }
+    final shell = _shell;
+    if (shell == null) {
+      throw StateError('No active shell');
+    }
+    shell.write(output);
+  }
+
+  void resizeShell(int width, int height, int pixelWidth, int pixelHeight) {
+    updateTerminalWindowMetrics(
+      columns: width,
+      rows: height,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+    );
+    if (_isReplacingShell) {
+      return;
+    }
+    final shell = _shell;
+    if (shell == null) {
+      throw StateError('No active shell');
+    }
+    shell.resizeTerminal(width, height, pixelWidth, pixelHeight);
   }
 
   /// Encodes OSC/DCS responses as win32-input-mode key events when the remote
@@ -201,11 +247,19 @@ if(!$__flResolved){$__flResolved='cmd'}
     SSHPtyConfig? pty,
     bool forceNew = false,
     String? command,
+    bool returnToLoginShell = false,
   }) async {
+    final shellReplacement = _shellReplacement;
+    if (shellReplacement != null) {
+      await shellReplacement;
+    }
     if (forceNew) {
       await closeShell();
     }
     if (_shell == null) {
+      _isReplacingShell = true;
+      final shellPty = pty ?? const SSHPtyConfig();
+      _shellPty = shellPty;
       final commandKind = command == null
           ? 'interactive_shell'
           : _diagnosticSshCommandKind(command);
@@ -220,8 +274,13 @@ if(!$__flResolved){$__flResolved='cmd'}
           'commandKind': commandKind,
         },
       );
+      SSHSession? openedShell;
       try {
-        _shell = await _openShell(pty: pty, command: command);
+        openedShell = await _openShell(pty: shellPty, command: command);
+        _applyLatestTerminalWindowMetrics(openedShell);
+        _shell = openedShell;
+        _returnToLoginShell = command != null && returnToLoginShell;
+        _shellGeneration += 1;
         DiagnosticsLogService.instance.info(
           'ssh.shell',
           'open_success',
@@ -232,6 +291,11 @@ if(!$__flResolved){$__flResolved='cmd'}
           },
         );
       } on Object catch (error) {
+        if (openedShell != null) {
+          _closeShellBestEffort(openedShell);
+        }
+        _isReplacingShell = false;
+        _pendingReplacementInput.clear();
         DiagnosticsLogService.instance.error(
           'ssh.shell',
           'open_failed',
@@ -256,13 +320,23 @@ if(!$__flResolved){$__flResolved='cmd'}
       );
     }
     _ensureShellStreamPipes();
-    return _shell!;
+    final shell = _shell!;
+    if (_isReplacingShell) {
+      _finishShellTransition(shell);
+    }
+    return shell;
   }
 
   Future<SSHSession> _openShell({SSHPtyConfig? pty, String? command}) async {
     final ptyConfig = pty ?? const SSHPtyConfig();
     if (command != null) {
-      return _session.client.execute(command, pty: ptyConfig);
+      final markedCommand = _session.remoteIsWindows
+          ? command
+          : 'env MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken} '
+                '/bin/sh -c '
+                '${_quotePosixShellArgument(r'if [ -n "$SHELL" ]; then exec "$SHELL" -c "$1"; else exec /bin/sh -c "$1"; fi')} '
+                'sh ${_quotePosixShellArgument(command)}';
+      return _session.client.execute(markedCommand, pty: ptyConfig);
     }
 
     if (_session.remoteIsWindows) {
@@ -286,6 +360,9 @@ if(!$__flResolved){$__flResolved='cmd'}
       return _session.client.shell(pty: ptyConfig);
     }
   }
+
+  static String _quotePosixShellArgument(String value) =>
+      "'${value.replaceAll("'", "'\"'\"'")}'";
 
   Future<SSHSession> _openWindowsCapabilityShell(SSHPtyConfig ptyConfig) async {
     try {
@@ -393,7 +470,8 @@ if(!$__flResolved){$__flResolved='cmd'}
         return 'cmd.exe /d /k "set COLORTERM=truecolor&& '
             'set TERM_PROGRAM=kitty&& '
             'set KITTY_WINDOW_ID=1&& '
-            'set FORCE_HYPERLINK=1"';
+            'set FORCE_HYPERLINK=1&& '
+            'set MONKEYSSH_SHELL_TOKEN=${_session.shellLineageToken}"';
       case _WindowsShellKind.powershell:
         return _windowsPowerShellCapabilityShellCommand('powershell.exe');
       case _WindowsShellKind.pwsh:
@@ -415,6 +493,10 @@ if(!$__flResolved){$__flResolved='cmd'}
 
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell({bool waitForStreams = true}) async {
+    _shellGeneration += 1;
+    _returnToLoginShell = false;
+    _isReplacingShell = false;
+    _pendingReplacementInput.clear();
     _flushPendingShellOutput(drainAll: true);
     _drainTerminalParseBacklogNow();
     _terminalParsePumpTimer?.cancel();
@@ -481,21 +563,15 @@ if(!$__flResolved){$__flResolved='cmd'}
       _closeShellBestEffort(shell);
     }
     _shell = null;
-    _session._resetShellRuntimeMetadata();
+    _shellPty = const SSHPtyConfig();
+    final terminal = _terminal;
+    if (terminal != null &&
+        identical(terminal.onOutput, _runtimeTerminalOutputHandler)) {
+      terminal.onOutput = null;
+    }
+    _runtimeTerminalOutputHandler = null;
+    _resetShellChannelState();
     _terminalWindowMetrics = null;
-    _terminalWindowQueryPendingInput = '';
-    _terminalTmuxPassthroughPendingInput = '';
-    _terminalControlModeUpdatePendingInput = '';
-    _terminalInsertModePendingInput = '';
-    // Reset the paired scan offset with the pending input it indexes into.
-    // The drain above can end mid-escape-sequence, leaving a non-zero offset;
-    // clearing the input but not the offset would make the next shell's first
-    // replay slice resume parsing at a stale position and corrupt it.
-    _terminalInsertModePendingScanOffset = 0;
-    _terminalColorSchemeUpdatesMode = false;
-    _terminalWin32InputMode = false;
-    _terminalInsertMode = false;
-    _lastTerminalParseNotifyAtMs = null;
     _terminal = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
@@ -520,16 +596,20 @@ if(!$__flResolved){$__flResolved='cmd'}
   }
 
   void _ensureShellStreamPipes() {
-    if (_shell == null || _shellStdoutController != null) {
+    final shell = _shell;
+    if (shell == null || _shellStdoutSubscription != null) {
       return;
     }
 
-    final shell = _shell!;
     final terminal = getOrCreateTerminal();
-    _shellStdoutController = StreamController<String>.broadcast();
-    _shellStderrController = StreamController<String>.broadcast();
-    _shellDoneController = StreamController<void>.broadcast();
+    _shellStdoutController ??= StreamController<String>.broadcast();
+    _shellStderrController ??= StreamController<String>.broadcast();
+    _shellDoneController ??= StreamController<void>.broadcast();
+    _attachShellStreamPipes(shell, terminal);
+    _refreshTerminalPreview();
+  }
 
+  void _attachShellStreamPipes(SSHSession shell, Terminal terminal) {
     _shellStdoutSubscription = shell.stdout
         .cast<List<int>>()
         .transform(_shellStreamDecoder)
@@ -612,17 +692,31 @@ if(!$__flResolved){$__flResolved='cmd'}
     _shellDoneSubscription = shell.done.asStream().listen(
       (_) {
         _flushPendingShellOutput(drainAll: true);
+        final returnToLoginShell =
+            identical(_shell, shell) && _returnToLoginShell;
         DiagnosticsLogService.instance.info(
           'ssh.shell',
           'done',
-          fields: {'connectionId': _session.connectionId},
+          fields: {
+            'connectionId': _session.connectionId,
+            'returnToLoginShell': returnToLoginShell,
+          },
         );
-        final doneController = _shellDoneController;
-        if (identical(_shell, shell) &&
-            doneController != null &&
-            !doneController.isClosed) {
-          doneController.add(null);
+        if (returnToLoginShell) {
+          _returnToLoginShell = false;
+          _isReplacingShell = true;
+          final replacement = _replaceCompletedCommandWithLoginShell(shell);
+          _shellReplacement = replacement;
+          unawaited(
+            replacement.whenComplete(() {
+              if (identical(_shellReplacement, replacement)) {
+                _shellReplacement = null;
+              }
+            }),
+          );
+          return;
         }
+        _emitShellDone(shell);
       },
       onError: (Object error, StackTrace stackTrace) {
         DiagnosticsLogService.instance.error(
@@ -646,15 +740,127 @@ if(!$__flResolved){$__flResolved='cmd'}
       },
     );
 
-    // Wire terminal keyboard output → shell stdin (persistent).
-    terminal.onOutput = (data) {
-      final output = _encodeForWin32InputModeIfNeeded(
-        normalizeTerminalOutputForRemoteShell(data),
+    final previousRuntimeHandler = _runtimeTerminalOutputHandler;
+    void handleTerminalOutput(String data) {
+      writeToShell(normalizeTerminalOutputForRemoteShell(data));
+    }
+
+    _runtimeTerminalOutputHandler = handleTerminalOutput;
+    if (terminal.onOutput == null ||
+        identical(terminal.onOutput, previousRuntimeHandler)) {
+      terminal.onOutput = handleTerminalOutput;
+    }
+  }
+
+  Future<void> _replaceCompletedCommandWithLoginShell(
+    SSHSession completedShell,
+  ) async {
+    final generation = _shellGeneration;
+    DiagnosticsLogService.instance.info(
+      'ssh.shell',
+      'return_to_login_start',
+      fields: {'connectionId': _session.connectionId},
+    );
+    _drainTerminalParseBacklogNow();
+    _resetShellChannelState();
+
+    final stdoutSubscription = _shellStdoutSubscription;
+    final stderrSubscription = _shellStderrSubscription;
+    _shellStdoutSubscription = null;
+    _shellStderrSubscription = null;
+    _shellDoneSubscription = null;
+    await stdoutSubscription?.cancel();
+    await stderrSubscription?.cancel();
+
+    SSHSession? loginShell;
+    try {
+      loginShell = await _openShell(pty: _shellPty);
+      _applyLatestTerminalWindowMetrics(loginShell);
+    } on Object catch (error) {
+      if (loginShell != null) {
+        _closeShellBestEffort(loginShell);
+      }
+      if (generation != _shellGeneration ||
+          !identical(_shell, completedShell)) {
+        return;
+      }
+      DiagnosticsLogService.instance.error(
+        'ssh.shell',
+        'return_to_login_failed',
+        fields: {
+          'connectionId': _session.connectionId,
+          'errorType': error.runtimeType,
+        },
       );
-      _recordShellIo(stdinChars: output.length);
-      shell.write(utf8.encode(output));
-    };
+      _session._reportConnectionHealthFailureIfClosed(
+        error,
+        operation: 'shell_return_to_login',
+      );
+      _isReplacingShell = false;
+      _pendingReplacementInput.clear();
+      _emitShellDone(completedShell);
+      return;
+    }
+    final replacementShell = loginShell;
+
+    if (generation != _shellGeneration || !identical(_shell, completedShell)) {
+      _closeShellBestEffort(replacementShell);
+      return;
+    }
+
+    _shell = replacementShell;
+    _attachShellStreamPipes(replacementShell, getOrCreateTerminal());
+    _finishShellTransition(replacementShell);
+    _closeShellBestEffort(completedShell);
     _refreshTerminalPreview();
+    DiagnosticsLogService.instance.info(
+      'ssh.shell',
+      'return_to_login_success',
+      fields: {'connectionId': _session.connectionId},
+    );
+  }
+
+  void _finishShellTransition(SSHSession shell) {
+    _isReplacingShell = false;
+    if (_pendingReplacementInput.isEmpty) {
+      return;
+    }
+    final pendingInput = Uint8List.fromList(_pendingReplacementInput);
+    _pendingReplacementInput.clear();
+    shell.write(pendingInput);
+  }
+
+  void _applyLatestTerminalWindowMetrics(SSHSession shell) {
+    final metrics = _terminalWindowMetrics;
+    if (metrics == null) {
+      return;
+    }
+    shell.resizeTerminal(
+      metrics.columns,
+      metrics.rows,
+      metrics.pixelWidth,
+      metrics.pixelHeight,
+    );
+  }
+
+  void _resetShellChannelState() {
+    _clearPendingShellOutput();
+    _session._resetShellRuntimeMetadata();
+    _terminalWindowQueryPendingInput = '';
+    _terminalTmuxPassthroughPendingInput = '';
+    _terminalControlModeUpdatePendingInput = '';
+    _terminalColorSchemeUpdatesMode = false;
+    _terminalWin32InputMode = false;
+  }
+
+  void _emitShellDone(SSHSession shell) {
+    final doneController = _shellDoneController;
+    if (!identical(_shell, shell) ||
+        doneController == null ||
+        doneController.isClosed) {
+      return;
+    }
+    doneController.add(null);
   }
 
   void _recordShellIo({

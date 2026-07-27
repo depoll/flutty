@@ -58,7 +58,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.104"
+	monkeyMuxVersion                  = "0.1.125"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -69,6 +69,7 @@ const (
 	runCommandTimeout                 = 20 * time.Second
 	socketTimeout                     = 2 * time.Second
 	attachWriteTimeout                = time.Second
+	attachWriteChunkBytes             = 32 * 1024
 	terminalResponseFocusGrace        = 2 * time.Second
 	focusInputCarryDelay              = 75 * time.Millisecond
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
@@ -83,7 +84,6 @@ const (
 	themeHintLimitBytes               = 1024
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
-	attachWriteQueueCapacity          = 32
 	attachWriteQueueLimitBytes        = 16 * 1024 * 1024
 	// Per-window Kitty image retention, used to survive history eviction across
 	// reattaches and to back placeholder cells the foreground app re-emits.
@@ -91,6 +91,7 @@ const (
 	// screenshots); the byte cap is the binding limit and is per window, so peak
 	// server memory is this times the number of image-heavy windows.
 	maxRetainedKittyImages       = 128
+	maxRetainedKittyImageNumbers = maxRetainedKittyImages
 	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
 	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
 	// Caps for how many retained images are *replayed* on a window switch.
@@ -107,6 +108,11 @@ const (
 const terminalParserResetSequence = "\x1b\\"
 
 const terminalCharacterSetResetSequence = "\x0f\x1b(B\x1b)B"
+
+// MonkeySSH-private DEC mode: parse a redraw normally but repaint only on reset.
+const terminalSynchronizedOutputBegin = "\x1b[?9002h"
+
+const terminalSynchronizedOutputEnd = "\x1b[?9002l"
 
 const terminalScreenClearSequence = "\x1b[H\x1b[2J\x1b[3J"
 
@@ -422,6 +428,7 @@ type restoreWindowState struct {
 	AgentTool                string          `json:"agentTool,omitempty"`
 	AgentSessionID           string          `json:"agentSessionId,omitempty"`
 	HistoryBase64            string          `json:"historyBase64,omitempty"`
+	HistoryStartsAtGround    bool            `json:"historyStartsAtGround,omitempty"`
 	CursorVisible            bool            `json:"cursorVisible,omitempty"`
 	CursorVisibilityKnown    bool            `json:"cursorVisibilityKnown,omitempty"`
 	PrivateModes             map[string]bool `json:"privateModes,omitempty"`
@@ -455,9 +462,22 @@ type muxServer struct {
 	pendingResizeWidth      int
 	pendingResizeHeight     int
 	pendingResizeRedraw     bool
-	controls                map[*controlClient]struct{}
-	themeHint               []byte
-	closed                  bool
+	// pendingResizeSyntheticRedraw preserves, across a viewport-transition
+	// deferral, whether a deferred forced redraw needs the synthetic width-1
+	// dance (e.g. a theme change, whose SIGWINCH at an unchanged size would not
+	// otherwise repaint). Without it, refreshPendingViewportResize would replay
+	// the deferred redraw with syntheticRedraw=false and silently drop the
+	// repaint. Reset wherever pendingResizeRedraw is.
+	pendingResizeSyntheticRedraw bool
+	// pendingResizeThemeWindowID pins a deferred synthetic theme redraw to the
+	// window that received the theme hint, so that when refreshPendingViewportResize
+	// replays it a concurrent window switch cannot make the dance repaint a
+	// different window. Empty when the deferred redraw is not a pinned theme
+	// redraw. Reset wherever pendingResizeSyntheticRedraw is.
+	pendingResizeThemeWindowID string
+	controls                   map[*controlClient]struct{}
+	themeHint                  []byte
+	closed                     bool
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -492,6 +512,7 @@ type muxWindow struct {
 	terminalOutputState         terminalOutputParserState
 	terminalOutputBytes         int
 	terminalOutputUtf8Remaining int
+	historyStartTerminalOutput  terminalOutputParserSnapshot
 	terminalOutputForwarding    bool
 	lastActivity                time.Time
 	outputGeneration            uint64
@@ -547,12 +568,16 @@ type muxWindow struct {
 	// and thereafter only re-emit placeholder cells, so the one-time image
 	// bytes must survive independently of the rolling visible history (which
 	// evicts them once enough newer output arrives) or reattached placeholders
-	// render blank. Keyed by protocol image id; kittyImageOrder tracks recency.
-	kittyImages     map[string][]byte
-	kittyImageOrder []string
-	// kittyImageSeq records a global monotonic store sequence per image id so a
-	// machine-wide budget can evict the globally-oldest image across all
-	// windows. Protected by the server lock, like the maps above.
+	// render blank. Keyed by protocol image id; kittyImageOrder preserves root
+	// transmission order so replay reproduces image-number mapping semantics.
+	kittyImages          map[string][]byte
+	kittyImageAnimations map[string][]byte
+	kittyImageNumberToID map[string]string
+	kittyImageNumberSeq  map[string]uint64
+	kittyImageOrder      []string
+	// kittyImageSeq records mutation recency independently of root order so local
+	// replay selection and the machine-wide budget favor recently animated
+	// images. Protected by the server lock, like the maps above.
 	kittyImageSeq map[string]uint64
 	// kittyImageToken holds the FNV-1a-32 signature of each retained image's
 	// base64-decoded transmission payload, keyed by protocol image id. A client
@@ -586,6 +611,12 @@ const (
 	terminalOutputParserString
 	terminalOutputParserStringEscape
 )
+
+type terminalOutputParserSnapshot struct {
+	state         terminalOutputParserState
+	bytes         int
+	utf8Remaining int
+}
 
 type windowBroadcastIdentity struct {
 	name      string
@@ -631,10 +662,44 @@ type routedTerminalResponse struct {
 	data     []byte
 }
 
+type attachInputAction struct {
+	userInput bool
+	windowID  string
+	data      []byte
+}
+
 type attachInputRouting struct {
 	claimsFocus bool
 	passthrough []byte
 	responses   []routedTerminalResponse
+	actions     []attachInputAction
+}
+
+func (r *attachInputRouting) addResponse(windowID string, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	copied := append([]byte(nil), data...)
+	r.responses = append(
+		r.responses,
+		routedTerminalResponse{windowID: windowID, data: copied},
+	)
+	r.actions = append(
+		r.actions,
+		attachInputAction{windowID: windowID, data: copied},
+	)
+}
+
+func (r *attachInputRouting) addUserInput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	copied := append([]byte(nil), data...)
+	r.passthrough = append(r.passthrough, copied...)
+	r.actions = append(
+		r.actions,
+		attachInputAction{userInput: true, data: copied},
+	)
 }
 
 type attachClient struct {
@@ -657,10 +722,14 @@ type attachClient struct {
 	terminalResponseContinuation       byte
 	terminalResponseContinuationEscape bool
 	terminalResponseContinuationUtf8   int
+	terminalResponsePasteStartCarry    []byte
 	terminalResponseWindows            []string
 	terminalResponseActiveWindow       string
 	terminalResponseCarryGeneration    uint64
 	inputUtf8Remaining                 int
+	inputBracketedPasteStartCarry      []byte
+	inputBracketedPasteActive          bool
+	inputBracketedPasteEndCarry        []byte
 	focusInputCarry                    []byte
 	focusInputGeneration               uint64
 	focusSequenceSnapshot              func() uint64
@@ -670,7 +739,8 @@ type attachClient struct {
 	replayedWindowID                   string
 	replayedOutputGeneration           uint64
 
-	queue       chan attachWrite
+	queue       []attachWrite
+	queueReady  chan struct{}
 	done        chan struct{}
 	closeOnce   sync.Once
 	queueMu     sync.Mutex
@@ -3481,7 +3551,41 @@ func (s *muxServer) redrawRestoredWindow(windowID string) {
 	}
 	width, height := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
-	s.resizeWithRedraw(width, height, true)
+	s.resizeWithRedraw(width, height, true, true, windowID)
+}
+
+// forceForegroundThemeRedraw makes [windowID] fully repaint after a theme
+// change. A theme switch changes colors without changing the PTY size, so a real
+// same-size SIGWINCH will not make the TUI re-emit explicitly-colored cells (e.g.
+// Copilot CLI's header/footer bars). It therefore uses the synthetic width-1
+// redraw dance — the same mechanism used to repaint a restored window — whose
+// intermediate one-cell frame is hidden from attach clients by the
+// synchronized-redraw transaction. It is pinned to [windowID] (the window that
+// received the theme hint) and is a no-op if that window is no longer active
+// (a concurrent switch will refresh the new window separately), is not a
+// foreground-redraw window (plain shell), or when no client is attached.
+func (s *muxServer) forceForegroundThemeRedraw(windowID string) {
+	if windowID == "" {
+		return
+	}
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
+	s.mu.Lock()
+	if s.attachCountLocked() == 0 || s.activeID != windowID {
+		s.mu.Unlock()
+		return
+	}
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed || !window.usesForegroundRedrawReplayLocked() {
+		s.mu.Unlock()
+		return
+	}
+	width, height := s.primaryAttachSizeLocked()
+	s.mu.Unlock()
+	if width <= 0 || height <= 0 {
+		return
+	}
+	s.resizeWithRedraw(width, height, true, true, windowID)
 }
 
 func createWindowOptionsForRestore(
@@ -3506,6 +3610,13 @@ func createWindowOptionsForRestore(
 	history := []byte(nil)
 	if isShellRestoreWindow(state) {
 		history = decodeRestoreHistory(state.HistoryBase64)
+		if !state.HistoryStartsAtGround {
+			history = sanitizeLegacyRestoreHistory(history)
+		}
+		history = terminalHistoryAtGroundBoundaries(
+			history,
+			terminalOutputParserSnapshot{},
+		)
 	}
 	return createWindowOptions{
 		name:                     firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
@@ -3914,6 +4025,35 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 }
 
+// wrapSynchronizedTerminalOutput builds the resume write for one attach client.
+// prefix (the reattach replay) is emitted verbatim so it repaints immediately,
+// then the buffered foreground-redraw bytes are bracketed by MonkeySSH-private
+// DEC mode 9002 so the client applies them as a single atomic repaint and never
+// paints the synthetic width-1 dance frame captured mid-redraw. The begin and
+// end markers are written together in this one buffer (never via a separate
+// timer), so the close can never land mid-sequence and mode 9002 can never be
+// left open. When there is no buffered redraw there is no intermediate frame to
+// hide, so the replay is returned unwrapped.
+func wrapSynchronizedTerminalOutput(prefix []byte, data []byte) []byte {
+	if len(data) == 0 {
+		if len(prefix) == 0 {
+			return nil
+		}
+		return append([]byte(nil), prefix...)
+	}
+	output := make(
+		[]byte,
+		0,
+		len(prefix)+len(terminalSynchronizedOutputBegin)+len(data)+
+			len(terminalSynchronizedOutputEnd),
+	)
+	output = append(output, prefix...)
+	output = append(output, terminalSynchronizedOutputBegin...)
+	output = append(output, data...)
+	output = append(output, terminalSynchronizedOutputEnd...)
+	return output
+}
+
 func (s *muxServer) markWindowClosed(windowID string) {
 	var replay []byte
 	var activeChanged bool
@@ -3956,6 +4096,8 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.pendingResizeWidth = 0
 				s.pendingResizeHeight = 0
 				s.pendingResizeRedraw = false
+				s.pendingResizeSyntheticRedraw = false
+				s.pendingResizeThemeWindowID = ""
 				if resetViewportParser {
 					s.enqueueAttachViewportResizeAfterResetLocked(
 						s.width,
@@ -4059,7 +4201,7 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 		terminalHeight: terminalHeight,
 		clipViewport:   hello.ClipViewport,
 		prefixEnabled:  !hello.NoPrefix,
-		queue:          make(chan attachWrite, attachWriteQueueCapacity),
+		queueReady:     make(chan struct{}, 1),
 		done:           make(chan struct{}),
 	}
 	go client.writeLoop()
@@ -4069,36 +4211,61 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 func (c *attachClient) writeLoop() {
 	defer c.failQueuedWrites(io.ErrClosedPipe)
 	for {
-		select {
-		case write := <-c.queue:
-			if write.gate != nil {
-				select {
-				case <-write.gate.done:
-					if !write.gate.deliver.Load() {
-						c.finishQueuedWrite(write, nil)
-						continue
-					}
-				case <-c.done:
-					c.finishQueuedWrite(write, io.ErrClosedPipe)
-					return
+		write, ok := c.nextQueuedWrite()
+		if !ok {
+			return
+		}
+		if write.gate != nil {
+			select {
+			case <-write.gate.done:
+				if !write.gate.deliver.Load() {
+					c.finishQueuedWrite(write, nil)
+					continue
 				}
-			}
-			if write.responseWindowID != "" && write.responseCount > 0 {
-				c.expectTerminalResponses(
-					write.responseWindowID,
-					write.responseCount,
-				)
-			}
-			_ = c.conn.SetWriteDeadline(time.Now().Add(attachWriteTimeout))
-			err := writeConnection(c.conn, write.data)
-			_ = c.conn.SetWriteDeadline(time.Time{})
-			c.finishQueuedWrite(write, err)
-			if err != nil {
-				c.close()
+			case <-c.done:
+				c.finishQueuedWrite(write, io.ErrClosedPipe)
 				return
 			}
-		case <-c.done:
+		}
+		if write.responseWindowID != "" && write.responseCount > 0 {
+			c.expectTerminalResponses(
+				write.responseWindowID,
+				write.responseCount,
+			)
+		}
+		err := writeAttachConnection(c.conn, write.data)
+		_ = c.conn.SetWriteDeadline(time.Time{})
+		c.finishQueuedWrite(write, err)
+		if err != nil {
+			c.close()
 			return
+		}
+	}
+}
+
+func (c *attachClient) nextQueuedWrite() (attachWrite, bool) {
+	for {
+		c.queueMu.Lock()
+		if len(c.queue) > 0 {
+			write := c.queue[0]
+			if len(c.queue) == 1 {
+				c.queue = nil
+			} else {
+				c.queue[0] = attachWrite{}
+				c.queue = c.queue[1:]
+			}
+			c.queueMu.Unlock()
+			return write, true
+		}
+		if c.queueClosed {
+			c.queueMu.Unlock()
+			return attachWrite{}, false
+		}
+		c.queueMu.Unlock()
+		select {
+		case <-c.queueReady:
+		case <-c.done:
+			return attachWrite{}, false
 		}
 	}
 }
@@ -4115,11 +4282,20 @@ func (c *attachClient) finishQueuedWrite(write attachWrite, err error) {
 
 func (c *attachClient) failQueuedWrites(err error) {
 	for {
-		select {
-		case write := <-c.queue:
-			c.finishQueuedWrite(write, err)
-		default:
+		c.queueMu.Lock()
+		if len(c.queue) == 0 {
+			c.queue = nil
+			c.queueMu.Unlock()
 			return
+		}
+		write := c.queue[0]
+		c.queue[0] = attachWrite{}
+		c.queue = c.queue[1:]
+		c.queuedBytes -= len(write.data)
+		c.queueMu.Unlock()
+		if write.complete != nil {
+			write.complete <- err
+			close(write.complete)
 		}
 	}
 }
@@ -4134,6 +4310,18 @@ func writeConnection(conn net.Conn, data []byte) error {
 			return io.ErrUnexpectedEOF
 		}
 		data = data[written:]
+	}
+	return nil
+}
+
+func writeAttachConnection(conn net.Conn, data []byte) error {
+	for len(data) > 0 {
+		chunkSize := min(len(data), attachWriteChunkBytes)
+		_ = conn.SetWriteDeadline(time.Now().Add(attachWriteTimeout))
+		if err := writeConnection(conn, data[:chunkSize]); err != nil {
+			return err
+		}
+		data = data[chunkSize:]
 	}
 	return nil
 }
@@ -4195,16 +4383,32 @@ func (c *attachClient) enqueueWrite(
 		return nil, false
 	}
 	c.queuedBytes += len(write.data)
-	select {
-	case c.queue <- write:
-		c.queueMu.Unlock()
-		return write.complete, true
-	default:
-		c.queuedBytes -= len(write.data)
-		c.queueMu.Unlock()
-		c.close()
-		return nil, false
+	queueWasEmpty := len(c.queue) == 0
+	if attachWritesCanCoalesce(write) && len(c.queue) > 0 {
+		last := &c.queue[len(c.queue)-1]
+		if attachWritesCanCoalesce(*last) &&
+			len(last.data)+len(write.data) <= attachWriteChunkBytes {
+			last.data = append(last.data, write.data...)
+			c.queueMu.Unlock()
+			return nil, true
+		}
 	}
+	c.queue = append(c.queue, write)
+	c.queueMu.Unlock()
+	if queueWasEmpty {
+		select {
+		case c.queueReady <- struct{}{}:
+		default:
+		}
+	}
+	return write.complete, true
+}
+
+func attachWritesCanCoalesce(write attachWrite) bool {
+	return write.complete == nil &&
+		write.responseWindowID == "" &&
+		write.responseCount == 0 &&
+		write.gate == nil
 }
 
 func (c *attachClient) waitForWrite(completion <-chan error) bool {
@@ -4286,6 +4490,22 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 				expiredInput,
 				c.terminalResponseCarry...,
 			)
+			expiredInput = append(
+				expiredInput,
+				c.terminalResponsePasteStartCarry...,
+			)
+			if c.focusSequenceSnapshot != nil {
+				expiredFocusSequence = c.focusSequenceSnapshot()
+			}
+			claim = c.focusClaim
+			passthrough = c.inputPassthrough
+		} else if len(c.terminalResponsePasteStartCarry) > 0 {
+			c.inputMu.Lock()
+			inputLocked = true
+			expiredInput = append(
+				expiredInput,
+				c.terminalResponsePasteStartCarry...,
+			)
 			if c.focusSequenceSnapshot != nil {
 				expiredFocusSequence = c.focusSequenceSnapshot()
 			}
@@ -4293,6 +4513,7 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 			passthrough = c.inputPassthrough
 		}
 		c.resetTerminalResponseStateLocked()
+		c.rememberForwardedBracketedPasteStartSuffixLocked(expiredInput)
 	}
 	c.terminalResponseUntil = now.Add(terminalResponseFocusGrace)
 	for range count {
@@ -4301,7 +4522,8 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 			windowID,
 		)
 	}
-	if len(c.terminalResponseCarry) > 0 {
+	if len(c.terminalResponseCarry) > 0 ||
+		len(c.terminalResponsePasteStartCarry) > 0 {
 		c.scheduleTerminalResponseCarryLocked()
 	}
 	c.activityMu.Unlock()
@@ -4327,8 +4549,13 @@ func (c *attachClient) inputClaimsFocus(data []byte) bool {
 }
 
 func (c *attachClient) routeInput(data []byte) attachInputRouting {
-	result := attachInputRouting{passthrough: data}
-	if c == nil || len(data) == 0 {
+	result := attachInputRouting{}
+	if len(data) == 0 {
+		return result
+	}
+	if c == nil {
+		result.addUserInput(data)
+		result.claimsFocus = true
 		return result
 	}
 	c.activityMu.Lock()
@@ -4343,37 +4570,211 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		previousInputUtf8Remaining,
 		leadingInputUtf8Prefix,
 	)
+	c.routeInputLocked(data, leadingInputUtf8Prefix, &result)
+	return result
+}
+
+func (c *attachClient) routeInputLocked(
+	data []byte,
+	leadingInputUtf8Prefix int,
+	result *attachInputRouting,
+) {
+	if len(data) == 0 {
+		return
+	}
+	if len(c.inputBracketedPasteStartCarry) > 0 {
+		combined := make(
+			[]byte,
+			0,
+			len(c.inputBracketedPasteStartCarry)+len(data),
+		)
+		combined = append(combined, c.inputBracketedPasteStartCarry...)
+		combined = append(combined, data...)
+		paste := bracketedPasteStart(combined, 0)
+		if paste.index == 0 {
+			startRemainder := paste.length -
+				len(c.inputBracketedPasteStartCarry)
+			c.inputBracketedPasteStartCarry = nil
+			pastePayloadLength := c.beginBracketedPasteLocked(
+				data[startRemainder:],
+			)
+			pasteEnd := startRemainder + pastePayloadLength
+			if c.hasExpectedTerminalResponseLocked() {
+				c.renewTerminalResponseDeadlineLocked()
+			}
+			c.routeUserInputLocked(data[:pasteEnd], result)
+			c.routePostPasteInputLocked(data[pasteEnd:], result)
+			return
+		}
+		if suffixLength := bracketedPasteStartSuffixLength(
+			combined,
+			0,
+		); suffixLength == len(combined) {
+			c.routeUserInputLocked(data, result)
+			c.inputBracketedPasteStartCarry = append(
+				c.inputBracketedPasteStartCarry[:0],
+				combined...,
+			)
+			return
+		}
+		c.inputBracketedPasteStartCarry = nil
+	}
+	if c.inputBracketedPasteActive {
+		pasteLength := c.continueBracketedPasteLocked(
+			data,
+			leadingInputUtf8Prefix,
+		)
+		if c.hasExpectedTerminalResponseLocked() ||
+			len(c.terminalResponseCarry) > 0 ||
+			c.terminalResponseContinuation != 0 {
+			c.renewTerminalResponseDeadlineLocked()
+		}
+		c.routeUserInputLocked(data[:pasteLength], result)
+		c.routePostPasteInputLocked(data[pasteLength:], result)
+		return
+	}
 	now := time.Now()
 	if !c.terminalResponseUntil.IsZero() &&
 		now.After(c.terminalResponseUntil) {
-		userInput := data
-		if len(c.terminalResponseCarry) > 0 {
-			userInput = make(
-				[]byte,
-				0,
-				len(c.terminalResponseCarry)+len(data),
-			)
-			userInput = append(userInput, c.terminalResponseCarry...)
-			userInput = append(userInput, data...)
+		combined := make(
+			[]byte,
+			0,
+			len(c.terminalResponseCarry)+
+				len(c.terminalResponsePasteStartCarry)+
+				len(data),
+		)
+		combined = append(combined, c.terminalResponseCarry...)
+		freshStart := len(combined)
+		combined = append(combined, c.terminalResponsePasteStartCarry...)
+		combined = append(combined, data...)
+		userStart := 0
+		paste := bracketedPasteStart(combined, 0)
+		if paste.index >= 0 {
+			userStart = min(paste.index, freshStart)
+		} else if suffixLength := bracketedPasteStartSuffixLength(
+			combined,
+			0,
+		); suffixLength > 0 {
+			userStart = min(len(combined)-suffixLength, freshStart)
+		}
+		windowID := c.currentTerminalResponseWindowLocked()
+		if userStart > 0 && windowID != "" {
+			result.addResponse(windowID, combined[:userStart])
 		}
 		c.resetTerminalResponseStateLocked()
-		c.routeUserInputLocked(userInput, &result)
-		return result
+		userInput := combined[userStart:]
+		if paste = bracketedPasteStart(userInput, 0); paste.index >= 0 {
+			c.routeUserInputWithPasteLocked(
+				userInput,
+				paste.index,
+				paste.length,
+				result,
+			)
+			return
+		}
+		c.routeUserInputLocked(userInput, result)
+		return
 	}
 	if !c.hasExpectedTerminalResponseLocked() &&
-		len(c.terminalResponseCarry) == 0 {
-		c.routeUserInputLocked(data, &result)
-		return result
+		len(c.terminalResponseCarry) == 0 &&
+		c.terminalResponseContinuation == 0 &&
+		len(c.terminalResponsePasteStartCarry) == 0 {
+		if paste := bracketedPasteStart(
+			data,
+			leadingInputUtf8Prefix,
+		); paste.index >= 0 {
+			c.routeUserInputWithPasteLocked(
+				data,
+				paste.index,
+				paste.length,
+				result,
+			)
+			return
+		}
+		c.routeUserInputLockedWithUtf8Prefix(
+			data,
+			leadingInputUtf8Prefix,
+			result,
+		)
+		return
 	}
 
 	responseInput := data
 	combined := responseInput
 	responseLeadingUtf8Prefix := leadingInputUtf8Prefix
 	if c.terminalResponseContinuation != 0 {
-		responseLeadingUtf8Prefix = 0
+		if len(c.terminalResponsePasteStartCarry) > 0 {
+			responseInput = make(
+				[]byte,
+				0,
+				len(c.terminalResponsePasteStartCarry)+len(data),
+			)
+			responseInput = append(
+				responseInput,
+				c.terminalResponsePasteStartCarry...,
+			)
+			responseInput = append(responseInput, data...)
+			c.terminalResponsePasteStartCarry = nil
+			responseLeadingUtf8Prefix = 0
+		}
+		paste := bracketedPasteStart(
+			responseInput,
+			responseLeadingUtf8Prefix,
+		)
+		if paste.index >= 0 {
+			prefix := responseInput[:paste.index]
+			windowID := c.currentTerminalResponseWindowLocked()
+			if len(prefix) > 0 {
+				remaining, complete, trailingEscape, utf8Remaining :=
+					consumeTerminalResponseContinuation(
+						prefix,
+						c.terminalResponseContinuation,
+						c.terminalResponseContinuationEscape,
+						c.terminalResponseContinuationUtf8,
+					)
+				consumed := len(prefix) - len(remaining)
+				if consumed > 0 {
+					result.addResponse(windowID, prefix[:consumed])
+				}
+				if complete {
+					c.finishTerminalResponseLocked()
+					c.terminalResponseContinuation = 0
+					c.terminalResponseContinuationEscape = false
+					c.terminalResponseContinuationUtf8 = 0
+					c.routeInputLocked(
+						responseInput[consumed:],
+						0,
+						result,
+					)
+					return
+				}
+				c.terminalResponseContinuationEscape = trailingEscape
+				c.terminalResponseContinuationUtf8 = utf8Remaining
+			}
+			c.routeUserInputWithPasteLocked(
+				responseInput[paste.index:],
+				0,
+				paste.length,
+				result,
+			)
+			return
+		}
+		suffixLength := bracketedPasteStartSuffixLength(
+			responseInput,
+			responseLeadingUtf8Prefix,
+		)
+		processable := responseInput[:len(responseInput)-suffixLength]
+		if len(processable) == 0 {
+			c.terminalResponsePasteStartCarry = append(
+				c.terminalResponsePasteStartCarry[:0],
+				responseInput...,
+			)
+			c.renewTerminalResponseDeadlineLocked()
+			return
+		}
 		remaining, complete, trailingEscape, utf8Remaining :=
 			consumeTerminalResponseContinuation(
-				responseInput,
+				processable,
 				c.terminalResponseContinuation,
 				c.terminalResponseContinuationEscape,
 				c.terminalResponseContinuationUtf8,
@@ -4382,29 +4783,19 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		c.terminalResponseContinuationUtf8 = utf8Remaining
 		windowID := c.currentTerminalResponseWindowLocked()
 		if !complete {
+			if len(processable) > 0 {
+				result.addResponse(windowID, processable)
+			}
+			c.terminalResponsePasteStartCarry = append(
+				c.terminalResponsePasteStartCarry[:0],
+				responseInput[len(processable):]...,
+			)
 			c.renewTerminalResponseDeadlineLocked()
-			result.passthrough = nil
-			result.responses = append(
-				result.responses,
-				routedTerminalResponse{
-					windowID: windowID,
-					data:     append([]byte(nil), responseInput...),
-				},
-			)
-			return result
+			return
 		}
-		consumed := len(responseInput) - len(remaining)
+		consumed := len(processable) - len(remaining)
 		if consumed > 0 {
-			result.responses = append(
-				result.responses,
-				routedTerminalResponse{
-					windowID: windowID,
-					data: append(
-						[]byte(nil),
-						responseInput[:consumed]...,
-					),
-				},
-			)
+			result.addResponse(windowID, processable[:consumed])
 		}
 		c.finishTerminalResponseLocked()
 		if c.hasExpectedTerminalResponseLocked() {
@@ -4413,15 +4804,18 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		c.terminalResponseContinuation = 0
 		c.terminalResponseContinuationEscape = false
 		c.terminalResponseContinuationUtf8 = 0
-		if len(remaining) == 0 {
-			result.passthrough = nil
-			return result
+		c.terminalResponsePasteStartCarry = nil
+		combined = responseInput[consumed:]
+		if len(combined) == 0 {
+			return
 		}
-		combined = remaining
-		responseInput = remaining
+		responseInput = combined
+		responseLeadingUtf8Prefix = 0
 	}
+	currentInputStart := 0
 	if len(c.terminalResponseCarry) > 0 {
 		responseLeadingUtf8Prefix = 0
+		currentInputStart = len(c.terminalResponseCarry)
 		combined = make(
 			[]byte,
 			0,
@@ -4432,8 +4826,13 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		c.terminalResponseCarry = nil
 		c.terminalResponseCarryGeneration++
 	}
+	paste := bracketedPasteStart(combined, responseLeadingUtf8Prefix)
+	scanInput := combined
+	if paste.index >= 0 {
+		scanInput = combined[:paste.index]
+	}
 	responseEnds, incompleteStart, continuation, passthroughStart :=
-		scanTerminalResponseInput(combined, responseLeadingUtf8Prefix)
+		scanTerminalResponseInput(scanInput, responseLeadingUtf8Prefix)
 	responseStart := 0
 	for _, responseEnd := range responseEnds {
 		if !c.hasExpectedTerminalResponseLocked() {
@@ -4442,16 +4841,7 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 			break
 		}
 		windowID := c.currentTerminalResponseWindowLocked()
-		result.responses = append(
-			result.responses,
-			routedTerminalResponse{
-				windowID: windowID,
-				data: append(
-					[]byte(nil),
-					combined[responseStart:responseEnd]...,
-				),
-			},
-		)
+		result.addResponse(windowID, combined[responseStart:responseEnd])
 		c.finishTerminalResponseSequenceLocked(
 			windowID,
 			combined[responseStart:responseEnd],
@@ -4463,46 +4853,181 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 	}
 	if incompleteStart >= 0 {
 		if !c.hasExpectedTerminalResponseLocked() {
-			c.routeUserInputLocked(combined[responseStart:], &result)
-			return result
+			userInput := combined[responseStart:]
+			if paste.index >= 0 {
+				pasteOffset := paste.index - responseStart
+				c.routeUserInputWithPasteLocked(
+					userInput,
+					pasteOffset,
+					paste.length,
+					result,
+				)
+				return
+			}
+			c.routeUserInputLocked(userInput, result)
+			return
 		}
-		incomplete := combined[incompleteStart:]
+		incomplete := scanInput[incompleteStart:]
+		if paste.index >= 0 {
+			// A buffered reply has not reached the querying process yet, so it
+			// can be safely abandoned while preserving the expectation for a
+			// fresh complete reply after the paste. A streamed reply has already
+			// reached the process; keep that continuation alive and skip only
+			// the paste bytes from its stream.
+			if currentInputStart == 0 &&
+				len(incomplete) > terminalResponseCarryLimitBytes &&
+				continuation != 0 {
+				windowID := c.currentTerminalResponseWindowLocked()
+				c.terminalResponseContinuation = continuation
+				c.terminalResponseContinuationEscape =
+					incomplete[len(incomplete)-1] == '\x1b'
+				c.terminalResponseContinuationUtf8 =
+					trailingUtf8ContinuationCount(incomplete)
+				result.addResponse(windowID, incomplete)
+			}
+			userStart := paste.index
+			if currentInputStart > 0 {
+				if responseStart <= currentInputStart {
+					userStart = min(currentInputStart, paste.index)
+				}
+			}
+			userInput := combined[userStart:]
+			c.routeUserInputWithPasteLocked(
+				userInput,
+				paste.index-userStart,
+				paste.length,
+				result,
+			)
+			return
+		}
 		c.renewTerminalResponseDeadlineLocked()
 		if len(incomplete) <= terminalResponseCarryLimitBytes {
 			c.storeTerminalResponseCarryLocked(incomplete)
 		} else if continuation != 0 {
+			suffixLength := bracketedPasteStartSuffixLength(
+				incomplete,
+				0,
+			)
+			streamable := incomplete[:len(incomplete)-suffixLength]
 			windowID := c.currentTerminalResponseWindowLocked()
 			c.terminalResponseContinuation = continuation
 			c.terminalResponseContinuationEscape =
-				incomplete[len(incomplete)-1] == '\x1b'
+				len(streamable) > 0 &&
+					streamable[len(streamable)-1] == '\x1b'
 			c.terminalResponseContinuationUtf8 =
-				trailingUtf8ContinuationCount(incomplete)
-			result.responses = append(
-				result.responses,
-				routedTerminalResponse{
-					windowID: windowID,
-					data:     append([]byte(nil), incomplete...),
-				},
+				trailingUtf8ContinuationCount(streamable)
+			if len(streamable) > 0 {
+				result.addResponse(windowID, streamable)
+			}
+			c.terminalResponsePasteStartCarry = append(
+				c.terminalResponsePasteStartCarry[:0],
+				incomplete[len(streamable):]...,
 			)
+			c.renewTerminalResponseDeadlineLocked()
 		}
-		result.passthrough = nil
-		return result
+		return
 	}
-	if passthroughStart >= len(combined) {
-		result.passthrough = nil
-		return result
+	if paste.index >= 0 {
+		userStart := paste.index
+		if passthroughStart < len(scanInput) {
+			userStart = passthroughStart
+		}
+		userInput := combined[userStart:]
+		pasteOffset := paste.index - userStart
+		c.routeUserInputWithPasteLocked(
+			userInput,
+			pasteOffset,
+			paste.length,
+			result,
+		)
+		return
 	}
-	c.routeUserInputLocked(combined[passthroughStart:], &result)
-	return result
+	if passthroughStart >= len(scanInput) {
+		return
+	}
+	userLeadingUtf8Prefix := 0
+	if passthroughStart == 0 && currentInputStart == 0 {
+		userLeadingUtf8Prefix = responseLeadingUtf8Prefix
+	}
+	c.routeUserInputLockedWithUtf8Prefix(
+		combined[passthroughStart:],
+		userLeadingUtf8Prefix,
+		result,
+	)
+}
+
+func (c *attachClient) routeUserInputWithPasteLocked(
+	userInput []byte,
+	pasteOffset int,
+	pasteStartLength int,
+	result *attachInputRouting,
+) {
+	payloadStart := pasteOffset + pasteStartLength
+	pastePayloadLength := c.beginBracketedPasteLocked(
+		userInput[payloadStart:],
+	)
+	pasteEnd := payloadStart + pastePayloadLength
+	if c.hasExpectedTerminalResponseLocked() {
+		c.renewTerminalResponseDeadlineLocked()
+	}
+	c.routeUserInputLocked(userInput[:pasteEnd], result)
+	c.routePostPasteInputLocked(userInput[pasteEnd:], result)
+}
+
+func (c *attachClient) routePostPasteInputLocked(
+	data []byte,
+	result *attachInputRouting,
+) {
+	if len(data) == 0 {
+		return
+	}
+	// MonkeySSH appends one separator space outside CSI 201~ so multiple
+	// uploaded paths remain distinct shell arguments. Preserve it before
+	// checking whether the remaining bytes resume a pending machine reply.
+	if data[0] == ' ' &&
+		(c.hasExpectedTerminalResponseLocked() ||
+			c.terminalResponseContinuation != 0) {
+		c.routeUserInputLocked(data[:1], result)
+		data = data[1:]
+		if len(data) == 0 {
+			return
+		}
+	}
+	if c.terminalResponseContinuation != 0 {
+		c.routeInputLocked(data, 0, result)
+		return
+	}
+	c.routeInputLocked(data, 0, result)
 }
 
 func (c *attachClient) routeUserInputLocked(
 	data []byte,
 	result *attachInputRouting,
 ) {
-	result.passthrough = data
+	c.routeUserInputLockedWithUtf8Prefix(data, 0, result)
+}
+
+func (c *attachClient) routeUserInputLockedWithUtf8Prefix(
+	data []byte,
+	leadingUtf8Prefix int,
+	result *attachInputRouting,
+) {
 	if len(data) == 0 {
 		return
+	}
+	result.addUserInput(data)
+	if !c.inputBracketedPasteActive {
+		if suffixLength := bracketedPasteStartSuffixLength(
+			data,
+			leadingUtf8Prefix,
+		); suffixLength > 0 {
+			c.inputBracketedPasteStartCarry = append(
+				c.inputBracketedPasteStartCarry[:0],
+				data[len(data)-suffixLength:]...,
+			)
+		} else {
+			c.inputBracketedPasteStartCarry = nil
+		}
 	}
 	c.focusInputGeneration++
 	focusGeneration := c.focusInputGeneration
@@ -4528,7 +5053,7 @@ func (c *attachClient) routeUserInputLocked(
 			c.resolveAmbiguousFocusInput(focusGeneration, focusSequence)
 		})
 	}
-	result.claimsFocus = len(filteredInput) > 0
+	result.claimsFocus = result.claimsFocus || len(filteredInput) > 0
 }
 
 func (c *attachClient) hasExpectedTerminalResponseLocked() bool {
@@ -4542,6 +5067,7 @@ func (c *attachClient) resetTerminalResponseStateLocked() {
 	c.terminalResponseContinuation = 0
 	c.terminalResponseContinuationEscape = false
 	c.terminalResponseContinuationUtf8 = 0
+	c.terminalResponsePasteStartCarry = nil
 	c.terminalResponseWindows = nil
 	c.terminalResponseActiveWindow = ""
 	c.terminalResponseUntil = time.Time{}
@@ -4549,7 +5075,8 @@ func (c *attachClient) resetTerminalResponseStateLocked() {
 
 func (c *attachClient) renewTerminalResponseDeadlineLocked() {
 	c.terminalResponseUntil = time.Now().Add(terminalResponseFocusGrace)
-	if len(c.terminalResponseCarry) > 0 {
+	if len(c.terminalResponseCarry) > 0 ||
+		len(c.terminalResponsePasteStartCarry) > 0 {
 		c.scheduleTerminalResponseCarryLocked()
 	}
 }
@@ -4583,18 +5110,33 @@ func (c *attachClient) resolveAmbiguousTerminalResponseInput(
 ) {
 	c.activityMu.Lock()
 	if c.terminalResponseCarryGeneration != generation ||
-		len(c.terminalResponseCarry) == 0 {
+		(len(c.terminalResponseCarry) == 0 &&
+			len(c.terminalResponsePasteStartCarry) == 0) {
+		c.activityMu.Unlock()
+		return
+	}
+	if c.inputBracketedPasteActive {
+		c.renewTerminalResponseDeadlineLocked()
 		c.activityMu.Unlock()
 		return
 	}
 	c.inputMu.Lock()
-	data := append([]byte(nil), c.terminalResponseCarry...)
+	data := make(
+		[]byte,
+		0,
+		len(c.terminalResponseCarry)+
+			len(c.terminalResponsePasteStartCarry),
+	)
+	data = append(data, c.terminalResponseCarry...)
+	data = append(data, c.terminalResponsePasteStartCarry...)
 	c.terminalResponseCarry = nil
+	c.terminalResponsePasteStartCarry = nil
 	c.terminalResponseCarryGeneration++
 	if !c.terminalResponseUntil.IsZero() &&
 		time.Now().After(c.terminalResponseUntil) {
 		c.resetTerminalResponseStateLocked()
 	}
+	c.rememberForwardedBracketedPasteStartSuffixLocked(data)
 	claim := c.focusClaim
 	passthrough := c.inputPassthrough
 	c.activityMu.Unlock()
@@ -4611,6 +5153,19 @@ func (c *attachClient) resolveAmbiguousTerminalResponseInput(
 	if passthrough != nil {
 		passthrough(data)
 	}
+}
+
+func (c *attachClient) rememberForwardedBracketedPasteStartSuffixLocked(
+	data []byte,
+) {
+	suffixLength := bracketedPasteStartSuffixLength(data, 0)
+	if suffixLength == 0 {
+		return
+	}
+	c.inputBracketedPasteStartCarry = append(
+		c.inputBracketedPasteStartCarry[:0],
+		data[len(data)-suffixLength:]...,
+	)
 }
 
 func (c *attachClient) currentTerminalResponseWindowLocked() string {
@@ -4909,7 +5464,7 @@ func (s *muxServer) applyFocusedClientViewport(
 		return
 	}
 	if sizeChanged {
-		s.resizeWithRedraw(width, height, false)
+		s.resizeWithRedraw(width, height, false, false, "")
 	}
 }
 
@@ -4988,6 +5543,8 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 		s.pendingResizeWidth = 0
 		s.pendingResizeHeight = 0
 		s.pendingResizeRedraw = false
+		s.pendingResizeSyntheticRedraw = false
+		s.pendingResizeThemeWindowID = ""
 		if s.attachConn == nil {
 			width = s.publishedWidth
 			height = s.publishedHeight
@@ -5001,7 +5558,7 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 	s.mu.Unlock()
 	client.close()
 	if sizeChanged {
-		s.resizeWithRedraw(width, height, false)
+		s.resizeWithRedraw(width, height, false, false, "")
 	}
 }
 
@@ -5046,6 +5603,8 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.pendingResizeWidth = 0
 		s.pendingResizeHeight = 0
 		s.pendingResizeRedraw = false
+		s.pendingResizeSyntheticRedraw = false
+		s.pendingResizeThemeWindowID = ""
 		s.width = width
 		s.height = height
 		s.enqueueAttachViewportResizeLocked(width, height)
@@ -5116,16 +5675,18 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 			if routing.claimsFocus {
 				s.promoteAttachClient(client)
 			}
-			for _, response := range routing.responses {
-				if response.windowID == "" {
-					s.writeActiveFromAttach(response.data)
+			for _, action := range routing.actions {
+				if action.userInput {
+					if s.handleAttachInputSerialized(client, action.data) {
+						return
+					}
 					continue
 				}
-				_ = s.writeWindow(response.windowID, response.data)
-			}
-			if len(routing.passthrough) > 0 &&
-				s.handleAttachInputSerialized(client, routing.passthrough) {
-				return
+				if action.windowID == "" {
+					s.writeActiveFromAttach(action.data)
+					continue
+				}
+				_ = s.writeWindow(action.windowID, action.data)
 			}
 		}
 		if err != nil {
@@ -5352,7 +5913,15 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		s.sendThemeHint(request.Data)
 		client.send(controlResponse{ID: request.ID, Type: "focus_hint_sent", Status: "ok"})
 	case "theme_changed":
-		s.sendThemeHint(request.Data)
+		themeWindowID, _ := s.sendThemeHintToActiveWindow(request.Data)
+		if request.Redraw {
+			// A theme switch changes colors without changing the PTY size, and
+			// a same-size SIGWINCH alone will not make a TUI re-emit its
+			// explicitly-colored regions (e.g. Copilot CLI's header/footer
+			// bars), so force a full repaint of the window that received the
+			// hint after it has been delivered.
+			s.forceForegroundThemeRedraw(themeWindowID)
+		}
 		client.send(controlResponse{ID: request.ID, Type: "theme_hint_ack", Status: "ok"})
 	case "shutdown":
 		client.send(controlResponse{ID: request.ID, Type: "shutdown", Status: "ok"})
@@ -5578,7 +6147,12 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			Active:                   s.activeID == window.id,
 		}
 		if isShellRestoreWindow(state) && len(window.history) > 0 {
-			state.HistoryBase64 = base64.StdEncoding.EncodeToString(window.historyTailLocked())
+			history, historyStart := window.historyTailWithParserLocked()
+			history = terminalHistoryAtGroundBoundaries(history, historyStart)
+			if len(history) > 0 {
+				state.HistoryBase64 = base64.StdEncoding.EncodeToString(history)
+				state.HistoryStartsAtGround = true
+			}
 		}
 		restore.Windows = append(restore.Windows, state)
 	}
@@ -5837,6 +6411,8 @@ func (s *muxServer) selectWindowWithSkip(
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
+	s.pendingResizeSyntheticRedraw = false
+	s.pendingResizeThemeWindowID = ""
 	if resetViewportParser {
 		s.enqueueAttachViewportResizeAfterResetLocked(s.width, s.height)
 	} else {
@@ -5902,6 +6478,8 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.pendingResizeWidth = 0
 			s.pendingResizeHeight = 0
 			s.pendingResizeRedraw = false
+			s.pendingResizeSyntheticRedraw = false
+			s.pendingResizeThemeWindowID = ""
 			if resetViewportParser {
 				s.enqueueAttachViewportResizeAfterResetLocked(
 					s.width,
@@ -5985,7 +6563,7 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
-	s.resizeWithRedraw(width, height, false)
+	s.resizeWithRedraw(width, height, false, false, "")
 }
 
 func (s *muxServer) resizeForClient(
@@ -6000,7 +6578,7 @@ func (s *muxServer) resizeForClient(
 	if len(s.attachClients) == 0 {
 		s.mu.Unlock()
 		if strings.TrimSpace(clientID) == "" {
-			s.resizeWithRedraw(width, height, forceRedraw)
+			s.resizeWithRedraw(width, height, forceRedraw, false, "")
 		}
 		return
 	}
@@ -6016,11 +6594,17 @@ func (s *muxServer) resizeForClient(
 	targetWidth, targetHeight := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
 	if isPrimary {
-		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw)
+		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw, false, "")
 	}
 }
 
-func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
+func (s *muxServer) resizeWithRedraw(
+	width int,
+	height int,
+	forceRedraw bool,
+	syntheticRedraw bool,
+	pinnedWindowID string,
+) {
 	var attach net.Conn
 	var modeReplay []byte
 	var foregroundProcessGroup int
@@ -6035,6 +6619,15 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 	}
 
 	s.mu.Lock()
+	// A pinned caller (a theme redraw) targets one specific window. If a
+	// concurrent window switch changed the active window since the caller
+	// resolved it, skip: the hint went to the old window and the switch will
+	// drive its own theme refresh for the new one, so dancing here would repaint
+	// the wrong window.
+	if pinnedWindowID != "" && s.activeID != pinnedWindowID {
+		s.mu.Unlock()
+		return
+	}
 	window := s.windowByIDLocked(s.activeID)
 	if serializeViewport && !terminalViewportTransitionSafe(window) {
 		s.width = width
@@ -6042,6 +6635,13 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 		s.pendingResizeWidth = width
 		s.pendingResizeHeight = height
 		s.pendingResizeRedraw = s.pendingResizeRedraw || forceRedraw
+		s.pendingResizeSyntheticRedraw =
+			s.pendingResizeSyntheticRedraw || (forceRedraw && syntheticRedraw)
+		if forceRedraw && syntheticRedraw && pinnedWindowID != "" {
+			// Preserve the pin so the replayed dance still targets the window
+			// that received the theme hint, not whatever is active at replay.
+			s.pendingResizeThemeWindowID = pinnedWindowID
+		}
 		s.mu.Unlock()
 		return
 	}
@@ -6050,6 +6650,8 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
+	s.pendingResizeSyntheticRedraw = false
+	s.pendingResizeThemeWindowID = ""
 	sizeChanged :=
 		s.width != width ||
 			s.height != height ||
@@ -6068,8 +6670,25 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 		!window.closed &&
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
-		s.pauseAttachForwardingForRedrawLocked(window, width, height)
-		simulateForegroundResize(window, width, height)
+		// The synthetic width-1 redraw dance is only for callers that genuinely
+		// need a foreground process to repaint content the real PTY SIGWINCH
+		// won't produce: a restored window whose agent just relaunched. Its
+		// intermediate one-cell frame is hidden from attach clients by the
+		// synchronized redraw transaction in resumePausedAttachForwarding.
+		//
+		// Viewport resizes (keyboard show/hide, pinch-zoom) and their trailing
+		// "settle" redraw never set syntheticRedraw: resizeWindowLocked above
+		// already applied the new PTY size, so a genuine size change delivers a
+		// real SIGWINCH and the TUI repaints once at the correct size, while an
+		// unchanged size is already painted. Performing the dance there resized
+		// the PTY smaller and immediately back, producing a visible one-cell
+		// "bounce" reflow on every resize (and holding the settled frame for the
+		// synchronized-redraw tail). Skip it and forward the single clean reflow
+		// immediately; the explicit SIGWINCH below still nudges the TUI.
+		if syntheticRedraw {
+			s.pauseAttachForwardingForRedrawLocked(window, width, height)
+			simulateForegroundResize(window, width, height)
+		}
 		attach = s.attachConn
 		modeReplay = window.modeReplayForAttachedTerminalLocked()
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
@@ -6095,11 +6714,13 @@ func (s *muxServer) refreshPendingViewportResize() {
 	width := s.pendingResizeWidth
 	height := s.pendingResizeHeight
 	forceRedraw := s.pendingResizeRedraw
+	syntheticRedraw := s.pendingResizeSyntheticRedraw
+	themeWindowID := s.pendingResizeThemeWindowID
 	s.mu.Unlock()
 	if width <= 0 || height <= 0 {
 		return
 	}
-	s.resizeWithRedraw(width, height, forceRedraw)
+	s.resizeWithRedraw(width, height, forceRedraw, syntheticRedraw, themeWindowID)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
@@ -6323,12 +6944,18 @@ func (s *muxServer) resumePausedAttachForwarding(
 		}
 	}
 	s.mu.Unlock()
-	primaryOutput := append(replay, buffered...)
-	failoverOutput := append(
-		append([]byte(nil), replay...),
-		failoverBuffered...,
+	primaryOutput := wrapSynchronizedTerminalOutput(
+		replay,
+		buffered,
 	)
-	secondaryOutput := append(append([]byte(nil), replay...), secondaryBuffered...)
+	failoverOutput := wrapSynchronizedTerminalOutput(
+		replay,
+		failoverBuffered,
+	)
+	secondaryOutput := wrapSynchronizedTerminalOutput(
+		replay,
+		secondaryBuffered,
+	)
 	if legacy != nil {
 		s.writeAttachLocked(legacy, primaryOutput)
 		s.attachMu.Unlock()
@@ -6517,7 +7144,7 @@ func (s *muxServer) replayBytesLockedWithSkip(
 	window *muxWindow,
 	clientHas map[string]uint32,
 ) []byte {
-	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
+	history, historyStart := window.historyTailWithParserLocked()
 	if window.usesForegroundRedrawReplayLocked() {
 		// The foreground app redraws its own cells on reattach (driven by a
 		// resize), so we must not replay the visible history or it would draw
@@ -6530,7 +7157,8 @@ func (s *muxServer) replayBytesLockedWithSkip(
 		// (a=T downgraded to a=t) so they produce no visible output themselves.
 		history = window.kittyImageReplayLocked(clientHas)
 	} else {
-		history = trimReplayHistoryForAttach(history)
+		history = trimReplayHistoryForAttachWithParser(history, historyStart)
+		history = stripTerminalQueriesFromReplay(history)
 	}
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
@@ -7601,6 +8229,8 @@ func (s *muxServer) replayFocusedWindowToClient(
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
+	s.pendingResizeSyntheticRedraw = false
+	s.pendingResizeThemeWindowID = ""
 	s.width = width
 	s.height = height
 	s.enqueueAttachViewportResizeLocked(width, height)
@@ -7660,6 +8290,19 @@ func (s *muxServer) writeActiveFromAttach(data []byte) {
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {
+	_, ok := s.sendThemeHintToActiveWindow(data)
+	return ok
+}
+
+// sendThemeHintToActiveWindow delivers the theme hint to the active window and
+// returns the id of that window (empty only when there is no usable active
+// window). Callers that follow up with a forced repaint use the returned id to
+// pin the redraw to the same window, so a concurrent window switch cannot leave
+// the hint on one window while the synthetic resize repaints another. The bool
+// reports whether hint bytes / a focus nudge were actually delivered; the window
+// id is returned even when nothing was pushed so the caller can still repaint
+// the intended window.
+func (s *muxServer) sendThemeHintToActiveWindow(data string) (string, bool) {
 	themeHint := themeHintDataFromString(data)
 	var themeHintData []byte
 	s.mu.Lock()
@@ -7669,8 +8312,9 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	window := s.windowByIDLocked(s.activeID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
-		return false
+		return "", false
 	}
+	windowID := window.id
 	window.refreshProcessMetadataLocked(time.Now())
 	sendFocusTransition := window.themeHintFocusTransitionLocked()
 	sendFocusRefresh := false
@@ -7680,14 +8324,13 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	}
 	if len(themeHintData) == 0 && !sendFocusTransition && !sendFocusRefresh {
 		s.mu.Unlock()
-		return false
+		return windowID, false
 	}
-	windowID := window.id
 	s.mu.Unlock()
 
 	if len(themeHintData) > 0 {
 		if err := s.writeWindow(windowID, themeHintData); err != nil {
-			return false
+			return windowID, false
 		}
 	}
 	if sendFocusTransition {
@@ -7695,7 +8338,7 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	} else if sendFocusRefresh {
 		s.sendFocusRefresh(windowID)
 	}
-	return true
+	return windowID, true
 }
 
 func themeHintDataFromString(data string) []byte {
@@ -7923,6 +8566,10 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	}
 	limit := w.historyLimitLocked()
 	if len(chunk) >= limit {
+		parser := w.historyStartTerminalOutput
+		parser.observe(w.history)
+		parser.observe(chunk[:len(chunk)-limit])
+		w.historyStartTerminalOutput = parser
 		w.history = append(
 			w.history[:0],
 			chunk[len(chunk)-limit:]...,
@@ -7938,20 +8585,32 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	}
 	w.history = append(w.history, chunk...)
 	if len(w.history) > 2*limit {
+		start := len(w.history) - limit
+		w.historyStartTerminalOutput.observe(w.history[:start])
 		// copy() handles the overlap correctly because src is after dst.
-		n := copy(w.history, w.history[len(w.history)-limit:])
+		n := copy(w.history, w.history[start:])
 		w.history = w.history[:n]
 	}
 }
 
 func (w *muxWindow) historyTailLocked() []byte {
+	history, _ := w.historyTailWithParserLocked()
+	return history
+}
+
+func (w *muxWindow) historyTailWithParserLocked() (
+	[]byte,
+	terminalOutputParserSnapshot,
+) {
 	limit := w.historyLimitLocked()
 	if len(w.history) <= limit {
-		return w.history
+		return w.history, w.historyStartTerminalOutput
 	}
 	start := len(w.history) - limit
 	start = advanceToUtf8Boundary(w.history, start)
-	return w.history[start:]
+	parser := w.historyStartTerminalOutput
+	parser.observe(w.history[:start])
+	return w.history[start:], parser
 }
 
 func (w *muxWindow) historyLimitLocked() int {
@@ -7962,10 +8621,27 @@ func (w *muxWindow) historyLimitLocked() int {
 }
 
 func trimReplayHistoryForAttach(history []byte) []byte {
-	if len(history) <= windowReplayLimitBytes {
+	return trimReplayHistoryForAttachWithParser(
+		history,
+		terminalOutputParserSnapshot{},
+	)
+}
+
+func trimReplayHistoryForAttachWithParser(
+	history []byte,
+	historyStart terminalOutputParserSnapshot,
+) []byte {
+	if len(history) <= windowReplayLimitBytes && historyStart.isGround() {
 		return history
 	}
-	start := len(history) - windowReplayLimitBytes
+	start := 0
+	if len(history) > windowReplayLimitBytes {
+		start = len(history) - windowReplayLimitBytes
+	}
+	start = advanceReplayStartToTerminalGround(history, start, historyStart)
+	if start >= len(history) {
+		return nil
+	}
 	scanEnd := start + 2048
 	if scanEnd > len(history) {
 		scanEnd = len(history)
@@ -7978,6 +8654,97 @@ func trimReplayHistoryForAttach(history []byte) []byte {
 	}
 	start = advanceToUtf8Boundary(history, start)
 	return history[start:]
+}
+
+// advanceReplayStartToTerminalGround moves a size-based replay cut past any
+// escape sequence it bisects. In particular, starting inside a Kitty APC would
+// render its base64 payload as text and scroll the image away from its anchor.
+func advanceReplayStartToTerminalGround(
+	data []byte,
+	start int,
+	scanner terminalOutputParserSnapshot,
+) int {
+	if start >= len(data) {
+		return len(data)
+	}
+	scanner.observe(data[:start])
+	for start < len(data) && !scanner.isGround() {
+		scanner.observe(data[start : start+1])
+		start++
+	}
+	return advanceToUtf8Boundary(data, start)
+}
+
+func terminalHistoryAtGroundBoundaries(
+	data []byte,
+	startState terminalOutputParserSnapshot,
+) []byte {
+	start := advanceReplayStartToTerminalGround(data, 0, startState)
+	if start >= len(data) {
+		return nil
+	}
+	data = data[start:]
+	scanner := terminalOutputParserSnapshot{}
+	lastGround := 0
+	for i := range data {
+		scanner.observe(data[i : i+1])
+		if scanner.isGround() {
+			lastGround = i + 1
+		}
+	}
+	return data[:lastGround]
+}
+
+// sanitizeLegacyRestoreHistory discards a payload-like prefix from snapshots
+// written before parser-boundary state was recorded. Ordinary short shell text
+// is preserved, while a retained Kitty base64 tail is resumed at the first
+// trustworthy terminal boundary.
+func sanitizeLegacyRestoreHistory(data []byte) []byte {
+	boundary := -1
+	resume := -1
+	for i, value := range data {
+		switch value {
+		case '\n', '\r':
+			boundary = i
+		case '\a':
+			boundary = i
+			resume = i + 1
+		case '\x1b':
+			boundary = i
+			if i+1 < len(data) && data[i+1] == '\\' {
+				resume = i + 2
+			}
+		}
+		if boundary >= 0 {
+			break
+		}
+	}
+	prefixEnd := len(data)
+	if boundary >= 0 {
+		prefixEnd = boundary
+	}
+	if resume < 0 && !looksLikeKittyPayload(data[:prefixEnd]) {
+		return data
+	}
+	if boundary < 0 {
+		return nil
+	}
+	if resume >= 0 {
+		return data[resume:]
+	}
+	return data[boundary:]
+}
+
+func looksLikeKittyPayload(data []byte) bool {
+	if len(data) < 256 {
+		return false
+	}
+	for _, value := range data {
+		if base64DecodeValue[value] < 0 && value != '=' {
+			return false
+		}
+	}
+	return true
 }
 
 // advanceToUtf8Boundary moves start forward past any UTF-8 continuation bytes
@@ -8111,106 +8878,127 @@ func (w *muxWindow) resetTerminalBellParserLocked() {
 }
 
 func (w *muxWindow) observeTerminalOutputStateLocked(data []byte) {
+	parser := terminalOutputParserSnapshot{
+		state:         w.terminalOutputState,
+		bytes:         w.terminalOutputBytes,
+		utf8Remaining: w.terminalOutputUtf8Remaining,
+	}
+	parser.observe(data)
+	w.terminalOutputState = parser.state
+	w.terminalOutputBytes = parser.bytes
+	w.terminalOutputUtf8Remaining = parser.utf8Remaining
+}
+
+func (p *terminalOutputParserSnapshot) observe(data []byte) {
 	for _, value := range data {
-		if w.terminalOutputUtf8Remaining > 0 {
+		if p.utf8Remaining > 0 {
 			if value&0xc0 == 0x80 {
-				w.terminalOutputUtf8Remaining--
+				p.utf8Remaining--
 				continue
 			}
-			w.terminalOutputUtf8Remaining = 0
+			p.utf8Remaining = 0
 		}
 		if remaining := utf8ContinuationCount(value); remaining > 0 {
-			w.terminalOutputUtf8Remaining = remaining
+			p.utf8Remaining = remaining
 			continue
 		}
 		if value == 0x18 || value == 0x1a {
-			w.resetTerminalOutputParserLocked()
+			p.reset()
 			continue
 		}
-		switch w.terminalOutputState {
+		switch p.state {
 		case terminalOutputParserGround:
 			switch value {
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case 0x90, 0x98, 0x9e, 0x9f:
-				w.terminalOutputState = terminalOutputParserString
+				p.state = terminalOutputParserString
 			case 0x9b:
-				w.terminalOutputState = terminalOutputParserCsi
+				p.state = terminalOutputParserCsi
 			case 0x9d:
-				w.terminalOutputState = terminalOutputParserOsc
+				p.state = terminalOutputParserOsc
 			}
 		case terminalOutputParserEscape:
 			switch {
 			case value == '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case value == '[':
-				w.terminalOutputState = terminalOutputParserCsi
+				p.state = terminalOutputParserCsi
 			case value == ']':
-				w.terminalOutputState = terminalOutputParserOsc
+				p.state = terminalOutputParserOsc
 			case value == 'P' || value == 'X' || value == '^' || value == '_':
-				w.terminalOutputState = terminalOutputParserString
+				p.state = terminalOutputParserString
 			case value >= 0x20 && value <= 0x2f:
-				w.terminalOutputState = terminalOutputParserEscapeIntermediate
+				p.state = terminalOutputParserEscapeIntermediate
 			default:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			}
 		case terminalOutputParserEscapeIntermediate:
 			switch {
 			case value == '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case value >= 0x20 && value <= 0x2f:
 			case value >= 0x30 && value <= 0x7e:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			default:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			}
 		case terminalOutputParserCsi:
 			switch {
 			case value == '\x1b':
-				w.terminalOutputState = terminalOutputParserEscape
+				p.state = terminalOutputParserEscape
 			case value >= 0x40 && value <= 0x7e:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			}
 		case terminalOutputParserOsc:
 			switch value {
 			case '\a', 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserOscEscape
+				p.state = terminalOutputParserOscEscape
 			}
 		case terminalOutputParserOscEscape:
 			switch value {
 			case '\\', '\a', 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserOscEscape
+				p.state = terminalOutputParserOscEscape
 			default:
-				w.terminalOutputState = terminalOutputParserOsc
+				p.state = terminalOutputParserOsc
 			}
 		case terminalOutputParserString:
 			switch value {
 			case 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserStringEscape
+				p.state = terminalOutputParserStringEscape
 			}
 		case terminalOutputParserStringEscape:
 			switch value {
 			case '\\', 0x9c:
-				w.resetTerminalOutputParserLocked()
+				p.reset()
 			case '\x1b':
-				w.terminalOutputState = terminalOutputParserStringEscape
+				p.state = terminalOutputParserStringEscape
 			default:
-				w.terminalOutputState = terminalOutputParserString
+				p.state = terminalOutputParserString
 			}
 		}
-		if w.terminalOutputState != terminalOutputParserGround {
-			w.terminalOutputBytes++
-			if w.terminalOutputBytes > maxKittyGraphicsPendingBytes {
-				w.resetTerminalOutputParserLocked()
+		if p.state != terminalOutputParserGround {
+			p.bytes++
+			if p.bytes > maxKittyGraphicsPendingBytes {
+				p.reset()
 			}
 		}
 	}
+}
+
+func (p *terminalOutputParserSnapshot) reset() {
+	p.state = terminalOutputParserGround
+	p.bytes = 0
+}
+
+func (p terminalOutputParserSnapshot) isGround() bool {
+	return p.state == terminalOutputParserGround && p.utf8Remaining == 0
 }
 
 func (w *muxWindow) resetTerminalOutputParserLocked() {
@@ -8219,8 +9007,10 @@ func (w *muxWindow) resetTerminalOutputParserLocked() {
 }
 
 func (w *muxWindow) terminalOutputIsGroundLocked() bool {
-	return w.terminalOutputState == terminalOutputParserGround &&
-		w.terminalOutputUtf8Remaining == 0
+	return terminalOutputParserSnapshot{
+		state:         w.terminalOutputState,
+		utf8Remaining: w.terminalOutputUtf8Remaining,
+	}.isGround()
 }
 
 // stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
@@ -8596,22 +9386,29 @@ func (w *muxWindow) storeSecondaryQueryCarryLocked(data []byte) bool {
 	return true
 }
 
-// kittyTransmission is a single complete Kitty graphics image transmission in
-// store-only form (action downgraded to a=t), keyed by its protocol image id.
-type kittyTransmission struct {
-	id  string
-	buf []byte
+// kittyGraphicsEvent is a complete retained Kitty root, animation command, or
+// hard image-data delete in its original stream order.
+type kittyGraphicsEvent struct {
+	id          string
+	imageNumber string
+	buf         []byte
+	animation   bool
+	delete      bool
+	clearCache  bool
+	mappingOnly bool
 }
 
-// scanKittyTransmissions parses complete Kitty graphics image transmissions from
-// the front of data. It returns the store-only transmissions found (a=T rewritten
-// to a=t), any image ids deleted via a=d, and the number of leading bytes fully
-// consumed. data[consumed:] is the trailing remainder, which either is empty or
-// begins an incomplete transmission and must be prepended to the next chunk.
+// scanKittyTransmissions parses complete Kitty graphics events from the front of
+// data. It returns retained roots (a=T rewritten to a=t), animation commands and
+// hard deletes in stream order, plus the number of leading bytes fully consumed.
+// data[consumed:] is the trailing remainder, which either is empty or begins an
+// incomplete transmission and must be prepended to the next chunk.
 //
 // Non-graphics bytes are consumed and discarded; the remainder therefore never
 // accumulates ordinary terminal output.
-func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []string, consumed int) {
+func scanKittyTransmissions(
+	data []byte,
+) (events []kittyGraphicsEvent, consumed int) {
 	i := 0
 	for i < len(data) {
 		if data[i] != '\x1b' {
@@ -8628,29 +9425,47 @@ func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []str
 				consumed = i
 				continue
 			}
-			return txs, deletes, i
+			return events, i
 		}
 		if data[i+1] != '_' || data[i+2] != 'G' {
 			i++
 			consumed = i
 			continue
 		}
-		end, buf, id, isDelete, ok := assembleKittyTransmission(data, i)
+		end, buf, id, imageNumber, isDelete, isAnimation, ok :=
+			assembleKittyTransmission(data, i)
 		if !ok {
 			// Incomplete transmission: carry everything from here forward.
-			return txs, deletes, i
+			return events, i
 		}
 		if isDelete {
-			if id != "" {
-				deletes = append(deletes, id)
+			selector := parseKittyControl(kittyControl(data, i, end))["d"]
+			clearCache := selector == "A" ||
+				selector == "C" ||
+				selector == "P" ||
+				selector == "X" ||
+				selector == "Y"
+			if id != "" || imageNumber != "" || clearCache {
+				events = append(events, kittyGraphicsEvent{
+					id: id, imageNumber: imageNumber, delete: true, clearCache: clearCache,
+				})
 			}
 		} else if buf != nil {
-			txs = append(txs, kittyTransmission{id: id, buf: buf})
+			events = append(events, kittyGraphicsEvent{
+				id: id, imageNumber: imageNumber, buf: buf, animation: isAnimation,
+			})
+		} else {
+			args := parseKittyControl(kittyControl(data, i, end))
+			if args["a"] == "p" && args["i"] != "" && args["I"] != "" {
+				events = append(events, kittyGraphicsEvent{
+					id: args["i"], imageNumber: args["I"], mappingOnly: true,
+				})
+			}
 		}
 		i = end
 		consumed = end
 	}
-	return txs, deletes, consumed
+	return events, consumed
 }
 
 // assembleKittyTransmission parses a (possibly multi-chunk) Kitty graphics
@@ -8662,10 +9477,18 @@ func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []str
 func assembleKittyTransmission(
 	data []byte,
 	start int,
-) (end int, buf []byte, id string, isDelete bool, ok bool) {
+) (
+	end int,
+	buf []byte,
+	id string,
+	imageNumber string,
+	isDelete bool,
+	isAnimation bool,
+	ok bool,
+) {
 	apcEnd := kittyApcEnd(data, start)
 	if apcEnd < 0 {
-		return 0, nil, "", false, false
+		return 0, nil, "", "", false, false, false
 	}
 	args := parseKittyControl(kittyControl(data, start, apcEnd))
 	action := args["a"]
@@ -8674,32 +9497,49 @@ func assembleKittyTransmission(
 	}
 	switch action {
 	case "d":
-		return apcEnd, nil, args["i"], true, true
+		selector := args["d"]
+		freeImageData := selector == "A" ||
+			selector == "C" ||
+			selector == "I" ||
+			selector == "N" ||
+			selector == "P" ||
+			selector == "X" ||
+			selector == "Y"
+		return apcEnd, nil, args["i"], args["I"],
+			freeImageData, false, true
 	case "t", "T":
 		// An image transmission; assemble continuation chunks below.
+		buf = append(buf, rewriteKittyReplayCommand(data[start:apcEnd], true)...)
+	case "f":
+		// Animation frame payloads use the same continuation rules as roots.
+		buf = append(buf, rewriteKittyReplayCommand(data[start:apcEnd], false)...)
+		isAnimation = true
+	case "a", "c":
+		// Control/composition commands have no chunked payload.
+		return apcEnd, rewriteKittyReplayCommand(data[start:apcEnd], false),
+			args["i"], args["I"], false, true, true
 	default:
 		// Queries (a=q), placements (a=p) etc. are complete but not retained.
-		return apcEnd, nil, "", false, true
+		return apcEnd, nil, "", "", false, false, true
 	}
 
-	buf = append(buf, rewriteKittyTransmitAction(data[start:apcEnd])...)
 	more := args["m"] == "1"
 	next := apcEnd
 	for more {
 		if next+2 >= len(data) || data[next] != '\x1b' ||
 			data[next+1] != '_' || data[next+2] != 'G' {
-			return 0, nil, "", false, false
+			return 0, nil, "", "", false, false, false
 		}
 		chunkEnd := kittyApcEnd(data, next)
 		if chunkEnd < 0 {
-			return 0, nil, "", false, false
+			return 0, nil, "", "", false, false, false
 		}
 		chunkArgs := parseKittyControl(kittyControl(data, next, chunkEnd))
 		buf = append(buf, data[next:chunkEnd]...)
 		more = chunkArgs["m"] == "1"
 		next = chunkEnd
 	}
-	return next, buf, args["i"], false, true
+	return next, buf, args["i"], args["I"], false, isAnimation, true
 }
 
 // observeKittyGraphicsLocked retains the Kitty image transmissions seen in chunk
@@ -8718,18 +9558,73 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	}
 
 	changed := false
-	txs, deletes, consumed := scanKittyTransmissions(data)
-	for _, id := range deletes {
-		if w.removeKittyImageLocked(id) {
-			changed = true
+	events, consumed := scanKittyTransmissions(data)
+	for _, event := range events {
+		if event.delete {
+			if event.clearCache {
+				if w.clearKittyImagesLocked() {
+					changed = true
+				}
+				continue
+			}
+			id := event.id
+			if id == "" && event.imageNumber != "" {
+				id = w.kittyImageNumberToID[event.imageNumber]
+			}
+			if w.removeKittyImageLocked(id) {
+				changed = true
+			}
+			continue
 		}
-	}
-	for _, tx := range txs {
-		if tx.id == "" {
+		id := event.id
+		if event.imageNumber != "" {
+			if id == "" {
+				if event.animation {
+					id = w.kittyImageNumberToID[event.imageNumber]
+				} else {
+					id = fmt.Sprintf(
+						"I:%s:%d",
+						event.imageNumber,
+						kittyImageStoreSeq+1,
+					)
+					if _, exists := w.kittyImageNumberToID[event.imageNumber]; !exists &&
+						len(w.kittyImageNumberToID) >= maxRetainedKittyImageNumbers {
+						w.evictOldestKittyImageNumberMappingLocked()
+					}
+					w.recordKittyImageNumberMappingLocked(event.imageNumber, id)
+				}
+			} else {
+				if (event.mappingOnly || event.animation) &&
+					w.kittyImages[id] == nil {
+					continue
+				}
+				if w.kittyImageNumberToID == nil {
+					w.kittyImageNumberToID = map[string]string{}
+				}
+				if _, exists := w.kittyImageNumberToID[event.imageNumber]; !exists &&
+					len(w.kittyImageNumberToID) >= maxRetainedKittyImageNumbers {
+					w.evictOldestKittyImageNumberMappingLocked()
+				}
+				w.recordKittyImageNumberMappingLocked(event.imageNumber, id)
+			}
+		}
+		if event.mappingOnly {
+			kittyImageStoreSeq++
+			w.kittyImageSeq[id] = kittyImageStoreSeq
+			w.enforceKittyImageCapsLocked()
+			changed = true
+			continue
+		}
+		if id == "" {
 			continue // cannot dedupe or replay without an id
 		}
-		w.storeKittyImageLocked(tx.id, tx.buf)
-		changed = true
+		if event.animation {
+			animation := rewriteKittyImageReferenceToID(event.buf, id)
+			changed = w.appendKittyImageAnimationLocked(id, animation) || changed
+		} else {
+			w.storeKittyImageLocked(id, event.buf)
+			changed = true
+		}
 	}
 
 	remainder := data[consumed:]
@@ -8762,10 +9657,32 @@ func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
 	}
 	w.kittyImageOrder = append(w.kittyImageOrder, id)
 	w.kittyImages[id] = append([]byte(nil), buf...)
+	delete(w.kittyImageAnimations, id)
 	w.kittyImageToken[id] = kittyTransmissionPayloadSignature(buf)
 	kittyImageStoreSeq++
 	w.kittyImageSeq[id] = kittyImageStoreSeq
 	w.enforceKittyImageCapsLocked()
+}
+
+func (w *muxWindow) appendKittyImageAnimationLocked(id string, buf []byte) bool {
+	if len(buf) == 0 {
+		return false
+	}
+	if _, exists := w.kittyImages[id]; !exists {
+		return false
+	}
+	if w.kittyImageAnimations == nil {
+		w.kittyImageAnimations = map[string][]byte{}
+	}
+	if len(w.kittyImages[id])+len(w.kittyImageAnimations[id])+len(buf) >
+		kittyImagePerIDBudgetBytes {
+		return w.removeKittyImageLocked(id)
+	}
+	w.kittyImageAnimations[id] = append(w.kittyImageAnimations[id], buf...)
+	kittyImageStoreSeq++
+	w.kittyImageSeq[id] = kittyImageStoreSeq
+	w.enforceKittyImageCapsLocked()
+	return true
 }
 
 func (w *muxWindow) removeKittyImageLocked(id string) bool {
@@ -8773,33 +9690,88 @@ func (w *muxWindow) removeKittyImageLocked(id string) bool {
 		return false
 	}
 	delete(w.kittyImages, id)
+	delete(w.kittyImageAnimations, id)
 	delete(w.kittyImageSeq, id)
 	delete(w.kittyImageToken, id)
+	for number, mappedID := range w.kittyImageNumberToID {
+		if mappedID == id {
+			delete(w.kittyImageNumberToID, number)
+			delete(w.kittyImageNumberSeq, number)
+		}
+	}
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
 	return true
 }
 
+func (w *muxWindow) evictOldestKittyImageNumberMappingLocked() {
+	var oldestNumber string
+	var oldestSeq uint64
+	for number := range w.kittyImageNumberToID {
+		seq := w.kittyImageNumberSeq[number]
+		if oldestNumber == "" || seq < oldestSeq ||
+			(seq == oldestSeq && number < oldestNumber) {
+			oldestNumber = number
+			oldestSeq = seq
+		}
+	}
+	if oldestNumber != "" {
+		delete(w.kittyImageNumberToID, oldestNumber)
+		delete(w.kittyImageNumberSeq, oldestNumber)
+	}
+}
+
+func (w *muxWindow) recordKittyImageNumberMappingLocked(number, id string) {
+	if w.kittyImageNumberToID == nil {
+		w.kittyImageNumberToID = map[string]string{}
+	}
+	if w.kittyImageNumberSeq == nil {
+		w.kittyImageNumberSeq = map[string]uint64{}
+	}
+	kittyImageStoreSeq++
+	w.kittyImageNumberToID[number] = id
+	w.kittyImageNumberSeq[number] = kittyImageStoreSeq
+}
+
+func (w *muxWindow) clearKittyImagesLocked() bool {
+	changed := len(w.kittyImages) > 0
+	w.kittyImages = nil
+	w.kittyImageAnimations = nil
+	w.kittyImageNumberToID = nil
+	w.kittyImageNumberSeq = nil
+	w.kittyImageOrder = nil
+	w.kittyImageSeq = nil
+	w.kittyImageToken = nil
+	return changed
+}
+
 func (w *muxWindow) enforceKittyImageCapsLocked() {
 	total := 0
-	for _, b := range w.kittyImages {
-		total += len(b)
+	for id, b := range w.kittyImages {
+		total += len(b) + len(w.kittyImageAnimations[id])
 	}
 	for len(w.kittyImageOrder) > 0 &&
 		(len(w.kittyImageOrder) > maxRetainedKittyImages ||
 			(total > maxRetainedKittyImageBytes && len(w.kittyImageOrder) > 1)) {
 		oldest := w.kittyImageOrder[0]
-		w.kittyImageOrder = w.kittyImageOrder[1:]
-		total -= len(w.kittyImages[oldest])
-		delete(w.kittyImages, oldest)
-		delete(w.kittyImageSeq, oldest)
-		delete(w.kittyImageToken, oldest)
+		for _, id := range w.kittyImageOrder[1:] {
+			if w.kittyImageSeq[id] < w.kittyImageSeq[oldest] {
+				oldest = id
+			}
+		}
+		total -= len(w.kittyImages[oldest]) + len(w.kittyImageAnimations[oldest])
+		w.removeKittyImageLocked(oldest)
 	}
 }
 
-// kittyImageStoreSeq is a global monotonic counter assigning each stored image
-// a store order, used to evict the globally-oldest image under the machine-wide
-// budget. Mutated only while the server lock is held.
+// kittyImageStoreSeq is a global monotonic counter assigning each image mutation
+// an order, used to evict the least recently changed image under the local and
+// machine-wide budgets. Mutated only while the server lock is held.
 var kittyImageStoreSeq uint64
+
+// kittyImagePerIDBudgetBytes prevents one long-running animation from bypassing
+// the per-window/global "keep one image" policy and growing without bound.
+// Package-level so tests can exercise overflow without allocating 64 MiB.
+var kittyImagePerIDBudgetBytes = maxRetainedKittyImageBytes
 
 // kittyImageGlobalBudgetBytes bounds the total Kitty image bytes retained across
 // all windows so a busy multi-window session cannot exhaust memory on a small
@@ -8818,8 +9790,8 @@ func (s *muxServer) enforceGlobalKittyImageBudgetLocked() {
 	total := 0
 	count := 0
 	for _, w := range s.windows {
-		for _, b := range w.kittyImages {
-			total += len(b)
+		for id, b := range w.kittyImages {
+			total += len(b) + len(w.kittyImageAnimations[id])
 			count++
 		}
 	}
@@ -8847,7 +9819,8 @@ func (s *muxServer) enforceGlobalKittyImageBudgetLocked() {
 		if !found || victimWin == nil {
 			return
 		}
-		total -= len(victimWin.kittyImages[victimID])
+		total -= len(victimWin.kittyImages[victimID]) +
+			len(victimWin.kittyImageAnimations[victimID])
 		count--
 		victimWin.removeKittyImageLocked(victimID)
 	}
@@ -8891,32 +9864,74 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 	if len(w.kittyImageOrder) == 0 {
 		return nil
 	}
-	// Walk newest-first, keeping images until a cap is hit.
+	// Select by mutation recency so an actively changing older root is retained.
+	// Emission below still follows root order to preserve I= mapping semantics.
+	candidates := append([]string(nil), w.kittyImageOrder...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return w.kittyImageSeq[candidates[i]] > w.kittyImageSeq[candidates[j]]
+	})
 	selected := make([]string, 0, maxReplayedKittyImages)
 	total := 0
-	for i := len(w.kittyImageOrder) - 1; i >= 0; i-- {
-		id := w.kittyImageOrder[i]
-		buf := w.kittyImages[id]
+	for _, id := range candidates {
+		imageBytes := len(w.kittyImages[id]) +
+			len(w.kittyImageNumberReplayLocked(id)) +
+			len(w.kittyImageAnimations[id])
 		if len(selected) >= maxReplayedKittyImages {
 			break
 		}
-		if len(selected) > 0 && total+len(buf) > maxReplayedKittyImageBytes {
-			break
+		if imageBytes > maxReplayedKittyImageBytes ||
+			total+imageBytes > maxReplayedKittyImageBytes {
+			continue
 		}
 		selected = append(selected, id)
-		total += len(buf)
+		total += imageBytes
 	}
-	// Emit oldest-kept first so ids are established in chronological order,
-	// skipping any the client already holds with identical content.
+	selectedSet := make(map[string]struct{}, len(selected))
+	for _, id := range selected {
+		selectedSet[id] = struct{}{}
+	}
+	// Emit selected roots in original transmission order so repeated I= mappings
+	// end in the same state as the live stream.
 	var out []byte
-	for i := len(selected) - 1; i >= 0; i-- {
-		id := selected[i]
+	for _, id := range w.kittyImageOrder {
+		if _, ok := selectedSet[id]; !ok {
+			continue
+		}
+		clientHasRoot := false
 		if len(clientHas) > 0 {
-			if token, ok := clientHas[id]; ok && token == w.kittyImageToken[id] {
-				continue
+			if token, ok := clientHas[id]; ok &&
+				token == w.kittyImageToken[id] {
+				clientHasRoot = true
 			}
 		}
-		out = append(out, w.kittyImages[id]...)
+		if !clientHasRoot {
+			out = append(out, w.kittyImageRootReplayLocked(id)...)
+		}
+		out = append(out, w.kittyImageNumberReplayLocked(id)...)
+		out = append(out, w.kittyImageAnimations[id]...)
+	}
+	return out
+}
+
+func (w *muxWindow) kittyImageNumberReplayLocked(id string) []byte {
+	numericID, err := strconv.ParseUint(id, 10, 32)
+	if err != nil || numericID == 0 {
+		return nil
+	}
+	var numbers []string
+	for number, mappedID := range w.kittyImageNumberToID {
+		if mappedID == id {
+			numbers = append(numbers, number)
+		}
+	}
+	sort.Strings(numbers)
+	var out []byte
+	for _, number := range numbers {
+		out = append(out, "\x1b_Ga=a,i="...)
+		out = append(out, id...)
+		out = append(out, ",I="...)
+		out = append(out, number...)
+		out = append(out, ",q=2\x1b\\"...)
 	}
 	return out
 }
@@ -8948,8 +9963,12 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 		if !ok {
 			continue
 		}
-		if len(buf) > maxReplayedKittyImageBytes ||
-			len(out)+len(buf) > maxReplayedKittyImageBytes {
+		buf = w.kittyImageRootReplayLocked(id)
+		mappings := w.kittyImageNumberReplayLocked(id)
+		animation := w.kittyImageAnimations[id]
+		imageBytes := len(buf) + len(mappings) + len(animation)
+		if imageBytes > maxReplayedKittyImageBytes ||
+			len(out)+imageBytes > maxReplayedKittyImageBytes {
 			continue
 		}
 		if seen == nil {
@@ -8957,9 +9976,27 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 		}
 		seen[id] = struct{}{}
 		out = append(out, buf...)
+		out = append(out, mappings...)
+		out = append(out, animation...)
 		served = append(served, id)
 	}
 	return out, served
+}
+
+func (w *muxWindow) kittyImageRootReplayLocked(id string) []byte {
+	buf := w.kittyImages[id]
+	if len(buf) == 0 {
+		return buf
+	}
+	apcEnd := kittyApcEnd(buf, 0)
+	if apcEnd < 0 {
+		return buf
+	}
+	number := parseKittyControl(kittyControl(buf, 0, apcEnd))["I"]
+	if number == "" || w.kittyImageNumberToID[number] == id {
+		return buf
+	}
+	return rewriteKittyImageReferenceToID(buf, id)
 }
 
 func removeStringOnce(items []string, target string) []string {
@@ -9126,22 +10163,79 @@ func parseKittyControl(control string) map[string]string {
 	return args
 }
 
-// rewriteKittyTransmitAction returns a copy of a single Kitty APC sequence with
-// a display transmit (a=T) downgraded to a store-only transmit (a=t) so replay
-// never draws or moves the cursor. Other sequences are returned unchanged.
-func rewriteKittyTransmitAction(seq []byte) []byte {
-	from := 3 // past ESC _ G
-	to := len(seq)
-	if semi := bytes.IndexByte(seq, ';'); semi >= 0 && semi < to {
-		to = semi
+// rewriteKittyReplayCommand suppresses protocol responses during replay and,
+// for roots, downgrades a=T to store-only a=t so replay never draws or moves
+// the cursor before the foreground app redraws its placements.
+func rewriteKittyReplayCommand(seq []byte, storeOnly bool) []byte {
+	if len(seq) < 5 {
+		return append([]byte(nil), seq...)
 	}
-	idx := bytes.Index(seq[from:to], []byte("a=T"))
-	if idx < 0 {
+	controlEnd := len(seq) - 2 // before ST
+	if semi := bytes.IndexByte(seq, ';'); semi >= 0 && semi < controlEnd {
+		controlEnd = semi
+	}
+	parts := strings.Split(string(seq[3:controlEnd]), ",")
+	foundQuiet := false
+	for index, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		switch key {
+		case "a":
+			if storeOnly && part == "a=T" {
+				parts[index] = "a=t"
+			}
+		case "q":
+			parts[index] = "q=2"
+			foundQuiet = true
+		}
+	}
+	if !foundQuiet {
+		parts = append(parts, "q=2")
+	}
+	out := make([]byte, 0, len(seq)+4)
+	out = append(out, seq[:3]...)
+	out = append(out, strings.Join(parts, ",")...)
+	out = append(out, seq[controlEnd:]...)
+	return out
+}
+
+// rewriteKittyImageReferenceToID makes a retained command independent of an
+// image-number mapping that may change later. Synthetic I=-only roots have no
+// numeric id yet and are intentionally left unchanged.
+func rewriteKittyImageReferenceToID(seq []byte, imageID string) []byte {
+	numericID, err := strconv.ParseUint(imageID, 10, 32)
+	if err != nil || numericID == 0 || len(seq) < 5 {
 		return seq
 	}
-	out := make([]byte, len(seq))
-	copy(out, seq)
-	out[from+idx+2] = 't'
+	apcEnd := kittyApcEnd(seq, 0)
+	if apcEnd < 0 {
+		return seq
+	}
+	controlEnd := apcEnd - 2 // before ST
+	if semi := bytes.IndexByte(seq[:apcEnd], ';'); semi >= 0 {
+		controlEnd = semi
+	}
+	parts := strings.Split(string(seq[3:controlEnd]), ",")
+	rewritten := make([]string, 0, len(parts)+1)
+	foundID := false
+	for _, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		switch key {
+		case "I":
+			continue
+		case "i":
+			rewritten = append(rewritten, "i="+imageID)
+			foundID = true
+		default:
+			rewritten = append(rewritten, part)
+		}
+	}
+	if !foundID {
+		rewritten = append(rewritten, "i="+imageID)
+	}
+	out := make([]byte, 0, len(seq)+len(imageID)+3)
+	out = append(out, seq[:3]...)
+	out = append(out, strings.Join(rewritten, ",")...)
+	out = append(out, seq[controlEnd:]...)
 	return out
 }
 
@@ -9364,6 +10458,186 @@ func isReplayUnsafeCsiQuery(sequence []byte) bool {
 	default:
 		return false
 	}
+}
+
+// Bracketed-paste start/end markers in ESC-based and single-byte C1 forms.
+var (
+	bracketedPasteStart7Bit = []byte("\x1b[200~")
+	bracketedPasteStart8Bit = []byte("\x9b200~")
+	bracketedPasteEnd7Bit   = []byte("\x1b[201~")
+	bracketedPasteEnd8Bit   = []byte("\x9b201~")
+)
+
+type bracketedPasteStartMatch struct {
+	index  int
+	length int
+}
+
+func bracketedPasteStart(
+	data []byte,
+	leadingUtf8Prefix int,
+) bracketedPasteStartMatch {
+	match := bracketedPasteStartMatch{index: -1}
+	if index := bytes.Index(data, bracketedPasteStart7Bit); index >= 0 {
+		match = bracketedPasteStartMatch{
+			index:  index,
+			length: len(bracketedPasteStart7Bit),
+		}
+	}
+	for offset := 0; offset < len(data); {
+		index := bytes.Index(data[offset:], bracketedPasteStart8Bit)
+		if index < 0 {
+			break
+		}
+		index += offset
+		if (index >= leadingUtf8Prefix ||
+			data[index]&0xc0 != 0x80) &&
+			!isUtf8ContinuationAt(data, index) {
+			if match.index < 0 || index < match.index {
+				match = bracketedPasteStartMatch{
+					index:  index,
+					length: len(bracketedPasteStart8Bit),
+				}
+			}
+			break
+		}
+		offset = index + 1
+	}
+	return match
+}
+
+func bracketedPasteStartSuffixLength(
+	data []byte,
+	leadingUtf8Prefix int,
+) int {
+	longest := 0
+	for _, marker := range [][]byte{
+		bracketedPasteStart7Bit,
+		bracketedPasteStart8Bit,
+	} {
+		maximum := min(len(data), len(marker)-1)
+		for length := maximum; length > longest; length-- {
+			start := len(data) - length
+			if !bytes.Equal(data[start:], marker[:length]) {
+				continue
+			}
+			if marker[0] == 0x9b &&
+				((start < leadingUtf8Prefix &&
+					data[start]&0xc0 == 0x80) ||
+					isUtf8ContinuationAt(data, start)) {
+				continue
+			}
+			longest = length
+			break
+		}
+	}
+	return longest
+}
+
+func bracketedPasteEnd(
+	data []byte,
+	leadingUtf8Prefix int,
+) bracketedPasteStartMatch {
+	match := bracketedPasteStartMatch{index: -1}
+	if index := bytes.Index(data, bracketedPasteEnd7Bit); index >= 0 {
+		match = bracketedPasteStartMatch{
+			index:  index,
+			length: len(bracketedPasteEnd7Bit),
+		}
+	}
+	for offset := 0; offset < len(data); {
+		eightBit := bytes.Index(data[offset:], bracketedPasteEnd8Bit)
+		if eightBit < 0 {
+			break
+		}
+		eightBit += offset
+		if (eightBit >= leadingUtf8Prefix ||
+			data[eightBit]&0xc0 != 0x80) &&
+			!isUtf8ContinuationAt(data, eightBit) {
+			if match.index < 0 || eightBit < match.index {
+				match = bracketedPasteStartMatch{
+					index:  eightBit,
+					length: len(bracketedPasteEnd8Bit),
+				}
+			}
+			break
+		}
+		offset = eightBit + 1
+	}
+	return match
+}
+
+func bracketedPasteEndSuffix(
+	data []byte,
+	leadingUtf8Prefix int,
+) []byte {
+	longest := 0
+	for _, marker := range [][]byte{
+		bracketedPasteEnd7Bit,
+		bracketedPasteEnd8Bit,
+	} {
+		maximum := min(len(data), len(marker)-1)
+		for length := maximum; length > longest; length-- {
+			start := len(data) - length
+			if !bytes.Equal(data[start:], marker[:length]) {
+				continue
+			}
+			if marker[0] == 0x9b &&
+				((start < leadingUtf8Prefix &&
+					data[start]&0xc0 == 0x80) ||
+					isUtf8ContinuationAt(data, start)) {
+				continue
+			}
+			longest = length
+			break
+		}
+	}
+	if longest == 0 {
+		return nil
+	}
+	return append([]byte(nil), data[len(data)-longest:]...)
+}
+
+func (c *attachClient) beginBracketedPasteLocked(data []byte) int {
+	if end := bracketedPasteEnd(data, 0); end.index >= 0 {
+		c.inputBracketedPasteActive = false
+		c.inputBracketedPasteEndCarry = nil
+		return end.index + end.length
+	}
+	c.inputBracketedPasteActive = true
+	c.inputBracketedPasteEndCarry = bracketedPasteEndSuffix(data, 0)
+	return len(data)
+}
+
+func (c *attachClient) continueBracketedPasteLocked(
+	data []byte,
+	leadingUtf8Prefix int,
+) int {
+	combined := data
+	carryLength := len(c.inputBracketedPasteEndCarry)
+	if len(c.inputBracketedPasteEndCarry) > 0 {
+		combined = make(
+			[]byte,
+			0,
+			len(c.inputBracketedPasteEndCarry)+len(data),
+		)
+		combined = append(combined, c.inputBracketedPasteEndCarry...)
+		combined = append(combined, data...)
+		leadingUtf8Prefix = 0
+	}
+	if end := bracketedPasteEnd(
+		combined,
+		leadingUtf8Prefix,
+	); end.index >= 0 {
+		c.inputBracketedPasteActive = false
+		c.inputBracketedPasteEndCarry = nil
+		return end.index + end.length - carryLength
+	}
+	c.inputBracketedPasteEndCarry = bracketedPasteEndSuffix(
+		combined,
+		leadingUtf8Prefix,
+	)
+	return len(data)
 }
 
 func scanTerminalResponseInput(

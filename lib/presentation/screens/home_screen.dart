@@ -12,6 +12,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/commands/duplicate_host_command.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
@@ -1667,7 +1668,7 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _duplicateHost(BuildContext context, WidgetRef ref) async {
-    await ref.read(hostRepositoryProvider).duplicate(host);
+    await ref.read(duplicateHostCommandProvider).execute(host);
     if (context.mounted) {
       ScaffoldMessenger.of(
         context,
@@ -3177,19 +3178,19 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   }
 
   Future<bool> _loadHostAgentPreferences([int? hostId]) async {
+    if (!mounted) return false;
+    final activeSessions = ref.read(activeSessionsProvider.notifier);
+    final presetService = ref.read(agentLaunchPresetServiceProvider);
+    final cliLaunchPreferencesService = ref.read(
+      hostCliLaunchPreferencesServiceProvider,
+    );
     final resolvedHostId =
-        hostId ??
-        ref
-            .read(activeSessionsProvider.notifier)
-            .getSession(widget.connectionId)
-            ?.hostId;
+        hostId ?? activeSessions.getSession(widget.connectionId)?.hostId;
     if (resolvedHostId == null) return false;
 
-    final preset = await ref
-        .read(agentLaunchPresetServiceProvider)
-        .getPresetForHost(resolvedHostId);
-    final cliLaunchPreferences = await ref
-        .read(hostCliLaunchPreferencesServiceProvider)
+    final preset = await presetService.getPresetForHost(resolvedHostId);
+    if (!mounted) return false;
+    final cliLaunchPreferences = await cliLaunchPreferencesService
         .getPreferencesForHost(resolvedHostId);
     if (!mounted) return false;
 

@@ -33,6 +33,38 @@ func replayPostHistorySuffixForTest(cursorVisible bool) string {
 		cursorVisibilityReplaySequence(cursorVisible)
 }
 
+// orderRecordingPty is a write-only muxPty that appends "hint-write" to a shared
+// event log on every Write, so a test can assert the theme hint reaches the pty
+// before the synthetic redraw dance runs.
+type orderRecordingPty struct {
+	mu  *sync.Mutex
+	log *[]string
+}
+
+func (p *orderRecordingPty) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (p *orderRecordingPty) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	*p.log = append(*p.log, "hint-write")
+	p.mu.Unlock()
+	return len(b), nil
+}
+
+func (p *orderRecordingPty) Close() error          { return nil }
+func (p *orderRecordingPty) Resize(int, int) error { return nil }
+func (p *orderRecordingPty) Fd() uintptr           { return 0 }
+
+func synchronizedTerminalOutputForTest(data string) string {
+	return terminalSynchronizedOutputBegin + data + terminalSynchronizedOutputEnd
+}
+
+func synchronizedTerminalOutputAfterPrefixForTest(
+	prefix string,
+	data string,
+) string {
+	return prefix + synchronizedTerminalOutputForTest(data)
+}
+
 func openTestPty(t *testing.T) muxPty {
 	t.Helper()
 	ptmx, tty, err := pty.Open()
@@ -1265,7 +1297,11 @@ func TestPausedRedrawFallbackPreservesQueryOrder(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", 1)
 
-	waitForRecordedOutput(t, secondaryConn, "before\x1b[>qafter")
+	waitForRecordedOutput(
+		t,
+		secondaryConn,
+		synchronizedTerminalOutputForTest("before\x1b[>qafter"),
+	)
 }
 
 func TestPausedRedrawQueryWaitDoesNotHoldAttachLock(t *testing.T) {
@@ -1366,7 +1402,11 @@ func TestPausedRedrawUsesFailoverBufferForReboundPrimary(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", 1)
 
-	waitForRecordedOutput(t, conn, "\x1b[>qright")
+	waitForRecordedOutput(
+		t,
+		conn,
+		synchronizedTerminalOutputForTest("\x1b[>qright"),
+	)
 }
 
 func TestPausedRedrawKeepsSplitQueryBoundToOriginalClient(t *testing.T) {
@@ -1409,8 +1449,17 @@ func TestPausedRedrawKeepsSplitQueryBoundToOriginalClient(t *testing.T) {
 		t.Fatal("redraw did not retain the split query's original client")
 	}
 	server.resumePausedAttachForwarding("@1", 1)
-	waitForRecordedOutput(t, originalConn, "\x1b[>qright")
-	waitForRecordedOutput(t, replacementConn, "right")
+	waitForRecordedOutput(
+		t,
+		originalConn,
+		"\x1b[>"+
+			synchronizedTerminalOutputForTest("qright"),
+	)
+	waitForRecordedOutput(
+		t,
+		replacementConn,
+		synchronizedTerminalOutputForTest("right"),
+	)
 }
 
 func TestPendingTerminalQueryFlushIsSingleFlight(t *testing.T) {
@@ -1466,6 +1515,72 @@ func TestAttachQueueRejectsOversizedBacklog(t *testing.T) {
 	case <-client.done:
 	default:
 		t.Fatal("oversized attach write did not disconnect the client")
+	}
+}
+
+func TestAttachQueueAcceptsLiveOutputBurstDuringReplay(t *testing.T) {
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	conn := &gatedConn{
+		recordingConn: &recordingConn{},
+		gate:          gate,
+		started:       started,
+	}
+	client := newAttachClient(conn, controlMessage{ClientID: "replay"})
+	t.Cleanup(client.close)
+
+	if _, queued := client.enqueue(
+		bytes.Repeat([]byte{'R'}, attachWriteChunkBytes),
+		false,
+	); !queued {
+		t.Fatal("initial replay was not queued")
+	}
+	<-started
+
+	const liveWrites = 1024
+	for i := 0; i < liveWrites; i++ {
+		if _, queued := client.enqueue([]byte{'L'}, false); !queued {
+			t.Fatalf("live output write %d was rejected", i)
+		}
+	}
+	select {
+	case <-client.done:
+		t.Fatal("bounded live output burst disconnected the attach client")
+	default:
+	}
+	close(gate)
+}
+
+func TestAttachWriteRenewsDeadlineWhileReplayMakesProgress(t *testing.T) {
+	conn := &deadlineBudgetConn{
+		recordingConn:     &recordingConn{},
+		maxWriteBytes:     attachWriteChunkBytes / 2,
+		writesPerDeadline: 2,
+	}
+	client := newAttachClient(conn, controlMessage{ClientID: "paced"})
+	t.Cleanup(client.close)
+	payload := bytes.Repeat([]byte{'R'}, attachWriteChunkBytes*8+123)
+
+	completion, queued := client.enqueue(payload, true)
+	if !queued {
+		t.Fatal("replay was not queued")
+	}
+	if !client.waitForWrite(completion) {
+		t.Fatal("progressing replay write failed")
+	}
+	if got := conn.recordingConn.String(); got != string(payload) {
+		t.Fatalf("replay output length = %d, want %d", len(got), len(payload))
+	}
+	if conn.deadlineRefreshCount() < 9 {
+		t.Fatalf(
+			"write deadline refreshed %d times, want at least 9",
+			conn.deadlineRefreshCount(),
+		)
+	}
+	select {
+	case <-client.done:
+		t.Fatal("progressing replay disconnected the attach client")
+	default:
 	}
 }
 
@@ -2841,6 +2956,687 @@ func TestExpiredHeldResponsePrefixIsPassedThroughBeforeRenewal(t *testing.T) {
 	close(client.done)
 }
 
+func TestBracketedPasteStartIndex(t *testing.T) {
+	tests := []struct {
+		name              string
+		data              []byte
+		leadingUtf8Prefix int
+		want              int
+	}{
+		{name: "none", data: []byte("plain text"), want: -1},
+		{name: "seven bit", data: []byte("\x1b[200~x"), want: 0},
+		{
+			name: "seven bit with prefix",
+			data: []byte("ab\x1b[200~x"),
+			want: 2,
+		},
+		{name: "eight bit", data: []byte("\x9b200~x"), want: 0},
+		{
+			name: "partial is not a match",
+			data: []byte("\x1b[20"),
+			want: -1,
+		},
+		{
+			name: "end marker is not a start",
+			data: []byte("\x1b[201~"),
+			want: -1,
+		},
+		{
+			name: "eight bit byte inside UTF-8 is not a marker",
+			data: []byte("Û200~"),
+			want: -1,
+		},
+		{
+			name:              "leading UTF-8 continuation is not a marker",
+			data:              []byte("\x9b200~"),
+			leadingUtf8Prefix: 1,
+			want:              -1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := bracketedPasteStart(
+				test.data,
+				test.leadingUtf8Prefix,
+			).index; got != test.want {
+				t.Fatalf(
+					"bracketedPasteStart(%q) = %d, want %d",
+					test.data,
+					got,
+					test.want,
+				)
+			}
+		})
+	}
+}
+
+func enterStreamingTerminalResponseContinuation(
+	t *testing.T,
+	client *attachClient,
+) {
+	t.Helper()
+	prefix := append(
+		[]byte("\x1b]52;c;"),
+		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes+1)...,
+	)
+	routing := client.routeInput(prefix)
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, prefix) ||
+		len(routing.passthrough) != 0 {
+		t.Fatalf("streaming prefix routing = %#v", routing)
+	}
+	if client.terminalResponseContinuation != ']' {
+		t.Fatalf(
+			"response continuation = %q, want OSC",
+			client.terminalResponseContinuation,
+		)
+	}
+}
+
+// A bracketed paste that arrives while an incomplete query reply is held as
+// carry must reach the pane intact instead of being swallowed by the reply's
+// terminator search (which would strip the CSI 200~/201~ markers so an agent
+// CLI renders the pasted path as plain text instead of an attachment).
+func TestBracketedPastePassesThroughWhilePartialResponseHeld(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+
+	held := client.routeInput([]byte("\x1b]11;rgb:1234/5678/9abc"))
+	if len(held.passthrough) != 0 ||
+		len(held.responses) != 0 ||
+		held.claimsFocus {
+		t.Fatalf("partial reply routing = %#v, want held input", held)
+	}
+	client.activityMu.Lock()
+	heldCarry := len(client.terminalResponseCarry)
+	client.activityMu.Unlock()
+	if heldCarry == 0 {
+		t.Fatal("partial reply was not held as carry")
+	}
+
+	paste := []byte(
+		"\x1b[200~/home/u/.cache/monkeyssh/uploads/a.png\x1b[201~ ",
+	)
+	routing := client.routeInput(paste)
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
+	}
+	if len(routing.responses) != 0 {
+		t.Fatalf("paste routed as response = %#v", routing.responses)
+	}
+	client.activityMu.Lock()
+	remainingCarry := len(client.terminalResponseCarry)
+	client.activityMu.Unlock()
+	if remainingCarry != 0 {
+		t.Fatalf(
+			"aborted reply carry was not cleared: %d bytes",
+			remainingCarry,
+		)
+	}
+
+	// The window's reply expectation must survive the aborting paste: a real
+	// reply that arrives afterwards still routes to the querying window, and
+	// plain input keeps flowing through to the pane.
+	reply := []byte("\x1b[?62;4c")
+	replyRouting := client.routeInput(reply)
+	if len(replyRouting.responses) != 1 ||
+		replyRouting.responses[0].windowID != "@1" ||
+		!bytes.Equal(replyRouting.responses[0].data, reply) {
+		t.Fatalf("post-paste reply routing = %#v, want @1 reply", replyRouting)
+	}
+	if len(replyRouting.passthrough) != 0 {
+		t.Fatalf("post-paste reply leaked to pane: %q", replyRouting.passthrough)
+	}
+
+	typed := client.routeInput([]byte("ls\r"))
+	if !bytes.Equal(typed.passthrough, []byte("ls\r")) ||
+		len(typed.responses) != 0 {
+		t.Fatalf("post-paste typed input routing = %#v", typed)
+	}
+}
+
+func TestSplitBracketedPastePassesThroughStreamingResponse(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	first := client.routeInput([]byte("more-data\x1b[20"))
+	if len(first.responses) != 1 ||
+		first.responses[0].windowID != "@1" ||
+		!bytes.Equal(first.responses[0].data, []byte("more-data")) ||
+		len(first.passthrough) != 0 {
+		t.Fatalf("split paste prefix routing = %#v", first)
+	}
+
+	pasteRemainder := []byte("0~/tmp/a.png\x1b[201~ ")
+	second := client.routeInput(pasteRemainder)
+	wantPaste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	if !bytes.Equal(second.passthrough, wantPaste) ||
+		len(second.responses) != 0 {
+		t.Fatalf(
+			"split paste completion routing = %#v, want passthrough %q",
+			second,
+			wantPaste,
+		)
+	}
+
+	terminator := client.routeInput([]byte{'\a'})
+	if len(terminator.responses) != 1 ||
+		terminator.responses[0].windowID != "@1" ||
+		!bytes.Equal(terminator.responses[0].data, []byte{'\a'}) ||
+		len(terminator.passthrough) != 0 {
+		t.Fatalf("post-paste continuation routing = %#v", terminator)
+	}
+}
+
+func TestSplitBracketedPasteAtStreamingTransition(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	responsePrefix := append(
+		[]byte("\x1b]52;c;"),
+		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes+1)...,
+	)
+	input := append(append([]byte(nil), responsePrefix...), []byte("\x1b[20")...)
+
+	first := client.routeInput(input)
+	if len(first.responses) != 1 ||
+		first.responses[0].windowID != "@1" ||
+		!bytes.Equal(first.responses[0].data, responsePrefix) ||
+		len(first.passthrough) != 0 {
+		t.Fatalf("streaming transition routing = %#v", first)
+	}
+
+	remainder := []byte("0~/tmp/a.png\x1b[201~ ")
+	second := client.routeInput(remainder)
+	wantPaste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	if !bytes.Equal(second.passthrough, wantPaste) ||
+		len(second.responses) != 0 {
+		t.Fatalf(
+			"transition paste routing = %#v, want passthrough %q",
+			second,
+			wantPaste,
+		)
+	}
+}
+
+func TestStreamingResponseCompletesBeforePasteAndPreservesUserPrefix(
+	t *testing.T,
+) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	input := append([]byte("\ahello "), paste...)
+	routing := client.routeInput(input)
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, []byte{'\a'}) {
+		t.Fatalf("completed continuation routing = %#v", routing.responses)
+	}
+	wantPassthrough := append([]byte("hello "), paste...)
+	if !bytes.Equal(routing.passthrough, wantPassthrough) {
+		t.Fatalf(
+			"user prefix + paste passthrough = %q, want %q",
+			routing.passthrough,
+			wantPassthrough,
+		)
+	}
+}
+
+func TestStreamingResponseRoutesSecondReplyBeforePaste(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+	client.expectTerminalResponse("@2")
+
+	secondReply := []byte("\x1b[?62;4c")
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	input := append(append([]byte{'\a'}, secondReply...), paste...)
+	routing := client.routeInput(input)
+	if len(routing.responses) != 2 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, []byte{'\a'}) ||
+		routing.responses[1].windowID != "@2" ||
+		!bytes.Equal(routing.responses[1].data, secondReply) {
+		t.Fatalf("two-response routing = %#v", routing.responses)
+	}
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
+	}
+}
+
+func TestResponseAfterPasteInSameReadIsRoutedAfterUserInput(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~")
+	response := []byte("\x1b[?62;4c")
+	input := append(append([]byte(nil), paste...), response...)
+
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, paste) ||
+		len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, response) {
+		t.Fatalf("paste then response routing = %#v", routing)
+	}
+	if len(routing.actions) != 2 ||
+		!routing.actions[0].userInput ||
+		!bytes.Equal(routing.actions[0].data, paste) ||
+		routing.actions[1].userInput ||
+		routing.actions[1].windowID != "@1" ||
+		!bytes.Equal(routing.actions[1].data, response) {
+		t.Fatalf("ordered paste/response actions = %#v", routing.actions)
+	}
+}
+
+func TestResponseAfterPasteSeparatorInSameReadIsRouted(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	response := []byte("\x1b[?62;4c")
+	input := append(append([]byte(nil), paste...), response...)
+
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, paste) ||
+		len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, response) {
+		t.Fatalf("paste separator then response routing = %#v", routing)
+	}
+}
+
+func TestConsecutivePasteAfterCompletedPasteIsTracked(t *testing.T) {
+	client := &attachClient{}
+	firstPaste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	secondPasteStart := []byte("\x1b[200~/tmp/b")
+	input := append(
+		append([]byte(nil), firstPaste...),
+		secondPasteStart...,
+	)
+	first := client.routeInput(input)
+	if !bytes.Equal(first.passthrough, input) ||
+		len(first.responses) != 0 ||
+		!client.inputBracketedPasteActive {
+		t.Fatalf("consecutive paste start routing = %#v", first)
+	}
+
+	client.expectTerminalResponse("@1")
+	secondPasteEnd := []byte("\x1b[?62;4c.png\x1b[201~")
+	second := client.routeInput(secondPasteEnd)
+	if !bytes.Equal(second.passthrough, secondPasteEnd) ||
+		len(second.responses) != 0 ||
+		client.inputBracketedPasteActive {
+		t.Fatalf("consecutive paste completion routing = %#v", second)
+	}
+}
+
+func TestResponseAfterMultiReadPasteEndIsRouted(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	start := []byte("\x1b[200~/tmp/a")
+	if first := client.routeInput(start); !bytes.Equal(
+		first.passthrough,
+		start,
+	) || len(first.responses) != 0 {
+		t.Fatalf("paste start routing = %#v", first)
+	}
+
+	end := []byte(".png\x1b[201~")
+	response := []byte("\x1b[?62;4c")
+	second := client.routeInput(
+		append(append([]byte(nil), end...), response...),
+	)
+	if !bytes.Equal(second.passthrough, end) ||
+		len(second.responses) != 1 ||
+		second.responses[0].windowID != "@1" ||
+		!bytes.Equal(second.responses[0].data, response) {
+		t.Fatalf("paste end then response routing = %#v", second)
+	}
+}
+
+func TestStreamingResponseTerminatorAfterPasteEndIsRouted(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	start := []byte("\x1b[200~/tmp/a")
+	if first := client.routeInput(start); !bytes.Equal(
+		first.passthrough,
+		start,
+	) || len(first.responses) != 0 {
+		t.Fatalf("paste start routing = %#v", first)
+	}
+	end := []byte(".png\x1b[201~")
+	second := client.routeInput(append(append([]byte(nil), end...), '\a'))
+	if !bytes.Equal(second.passthrough, end) ||
+		len(second.responses) != 1 ||
+		second.responses[0].windowID != "@1" ||
+		!bytes.Equal(second.responses[0].data, []byte{'\a'}) {
+		t.Fatalf("paste end then continuation routing = %#v", second)
+	}
+}
+
+func TestStreamingResponsePayloadAfterPasteEndIsRouted(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	start := []byte("\x1b[200~/tmp/a")
+	if first := client.routeInput(start); !bytes.Equal(
+		first.passthrough,
+		start,
+	) || len(first.responses) != 0 {
+		t.Fatalf("paste start routing = %#v", first)
+	}
+	end := []byte(".png\x1b[201~ ")
+	responseTail := []byte("payload\a")
+	second := client.routeInput(
+		append(append([]byte(nil), end...), responseTail...),
+	)
+	if !bytes.Equal(second.passthrough, end) ||
+		len(second.responses) != 1 ||
+		second.responses[0].windowID != "@1" ||
+		!bytes.Equal(second.responses[0].data, responseTail) {
+		t.Fatalf("paste end then response payload routing = %#v", second)
+	}
+}
+
+func TestResponseLikeBytesInsideMultiReadPasteRemainOpaque(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+
+	firstPaste := []byte("\x1b[200~/tmp/")
+	first := client.routeInput(firstPaste)
+	if !bytes.Equal(first.passthrough, firstPaste) ||
+		len(first.responses) != 0 {
+		t.Fatalf("first paste chunk routing = %#v", first)
+	}
+
+	secondPaste := []byte("aÛ201~\x1b[?62;4c.png\x1b[201~ ")
+	second := client.routeInput(secondPaste)
+	if !bytes.Equal(second.passthrough, secondPaste) ||
+		len(second.responses) != 0 {
+		t.Fatalf("second paste chunk routing = %#v", second)
+	}
+
+	terminator := client.routeInput([]byte{'\a'})
+	if len(terminator.responses) != 1 ||
+		terminator.responses[0].windowID != "@1" ||
+		!bytes.Equal(terminator.responses[0].data, []byte{'\a'}) {
+		t.Fatalf("reply after multi-read paste routing = %#v", terminator)
+	}
+}
+
+func TestCompletedCarriedReplyDoesNotLeakBeforePaste(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	client.expectTerminalResponse("@2")
+	if held := client.routeInput([]byte("\x1b[?6")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+
+	secondReplyPrefix := []byte("\x1b]11;rgb:12")
+	paste := []byte("\x1b[200~x\x1b[201~")
+	input := append([]byte("2;4c"), secondReplyPrefix...)
+	input = append(input, paste...)
+	routing := client.routeInput(input)
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, []byte("\x1b[?62;4c")) {
+		t.Fatalf("completed carry response routing = %#v", routing.responses)
+	}
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
+	}
+}
+
+func TestUserPrefixBeforePasteAfterHeldResponseIsPreserved(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	if held := client.routeInput([]byte("\x1b]11;rgb:12")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+
+	input := []byte("abc\x1b[200~/tmp/a.png\x1b[201~ ")
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, input) ||
+		len(routing.responses) != 0 {
+		t.Fatalf("user prefix + paste routing = %#v", routing)
+	}
+}
+
+func TestSplitUtf8BeforeC1LikeTextDoesNotStartPaste(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	first := client.routeInput([]byte{0xc5})
+	if !bytes.Equal(first.passthrough, []byte{0xc5}) {
+		t.Fatalf("UTF-8 lead passthrough = %x", first.passthrough)
+	}
+	second := client.routeInput([]byte{0x9b, '2', '0', '0'})
+	if !bytes.Equal(
+		second.passthrough,
+		[]byte{0x9b, '2', '0', '0'},
+	) {
+		t.Fatalf("UTF-8 continuation passthrough = %x", second.passthrough)
+	}
+	third := client.routeInput([]byte{'~'})
+	if !bytes.Equal(third.passthrough, []byte{'~'}) ||
+		client.inputBracketedPasteActive {
+		t.Fatalf("C1-like UTF-8 text activated paste: %#v", third)
+	}
+
+	response := []byte("\x1b[?62;4c")
+	routing := client.routeInput(response)
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, response) {
+		t.Fatalf("response after UTF-8 text routing = %#v", routing)
+	}
+}
+
+func TestSplitPasteStartAfterUserInputActivatesOpaquePaste(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+
+	first := []byte("abc\x1b[20")
+	firstRouting := client.routeInput(first)
+	if !bytes.Equal(firstRouting.passthrough, first) ||
+		len(firstRouting.responses) != 0 {
+		t.Fatalf("partial user paste start routing = %#v", firstRouting)
+	}
+	second := []byte("0~/tmp/a")
+	secondRouting := client.routeInput(second)
+	if !bytes.Equal(secondRouting.passthrough, second) ||
+		len(secondRouting.responses) != 0 {
+		t.Fatalf("completed user paste start routing = %#v", secondRouting)
+	}
+	fakeResponseAndEnd := []byte("\x1b[?62;4c.png\x1b[201~")
+	thirdRouting := client.routeInput(fakeResponseAndEnd)
+	if !bytes.Equal(thirdRouting.passthrough, fakeResponseAndEnd) ||
+		len(thirdRouting.responses) != 0 {
+		t.Fatalf("opaque split paste routing = %#v", thirdRouting)
+	}
+}
+
+func TestPasteStartCarryFlushesOnResponseDeadline(t *testing.T) {
+	passthrough := make(chan []byte, 1)
+	client := &attachClient{
+		done: make(chan struct{}),
+		inputPassthrough: func(data []byte) {
+			passthrough <- append([]byte(nil), data...)
+		},
+	}
+	client.expectTerminalResponse("@1")
+	enterStreamingTerminalResponseContinuation(t, client)
+	client.activityMu.Lock()
+	generationBefore := client.terminalResponseCarryGeneration
+	client.activityMu.Unlock()
+	routing := client.routeInput([]byte("more\x1b[20"))
+	if len(routing.responses) != 1 ||
+		!bytes.Equal(routing.responses[0].data, []byte("more")) {
+		t.Fatalf("partial paste start routing = %#v", routing)
+	}
+	client.activityMu.Lock()
+	generation := client.terminalResponseCarryGeneration
+	client.terminalResponseUntil = time.Now().Add(-time.Second)
+	client.activityMu.Unlock()
+	if generation <= generationBefore {
+		t.Fatal("paste-start carry did not schedule a deadline resolver")
+	}
+
+	client.resolveAmbiguousTerminalResponseInput(generation, 0)
+	select {
+	case data := <-passthrough:
+		if !bytes.Equal(data, []byte("\x1b[20")) {
+			t.Fatalf("deadline passthrough = %q", data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("paste-start carry was not flushed")
+	}
+
+	client.expectTerminalResponse("@2")
+	remainder := []byte("0~payload\x1b[?62;4c\x1b[201~")
+	pasteRouting := client.routeInput(remainder)
+	if !bytes.Equal(pasteRouting.passthrough, remainder) ||
+		len(pasteRouting.responses) != 0 {
+		t.Fatalf("flushed split paste routing = %#v", pasteRouting)
+	}
+	response := []byte("\x1b[?62;4c")
+	responseRouting := client.routeInput(response)
+	if len(responseRouting.responses) != 1 ||
+		responseRouting.responses[0].windowID != "@2" ||
+		!bytes.Equal(responseRouting.responses[0].data, response) {
+		t.Fatalf("post-flush response routing = %#v", responseRouting)
+	}
+	close(client.done)
+}
+
+func TestExpiredCarryPreservesSplitBracketedPasteStart(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	if held := client.routeInput([]byte("\x1b]11;rgb:12\x1b[20")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+	client.activityMu.Lock()
+	client.terminalResponseUntil = time.Now().Add(-time.Second)
+	client.activityMu.Unlock()
+
+	remainder := []byte("0~/tmp/a.png\x1b[201~ ")
+	routing := client.routeInput(remainder)
+	want := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	if !bytes.Equal(routing.passthrough, want) ||
+		len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(
+			routing.responses[0].data,
+			[]byte("\x1b]11;rgb:12"),
+		) {
+		t.Fatalf(
+			"expired split paste routing = %#v, want passthrough %q",
+			routing,
+			want,
+		)
+	}
+}
+
+// Content that trails the paste in the same read (after CSI 201~) must survive
+// the abort and reach the pane along with the paste.
+func TestTrailingInputAfterAbortingPasteIsPreserved(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	if held := client.routeInput([]byte("\x1b]11;rgb:12")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+
+	input := []byte("\x1b[200~/tmp/a.png\x1b[201~ done\r")
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, input) {
+		t.Fatalf("passthrough = %q, want %q", routing.passthrough, input)
+	}
+	if len(routing.responses) != 0 {
+		t.Fatalf("input routed as response = %#v", routing.responses)
+	}
+}
+
+// A partial reply that expires while held must not prefix (and corrupt) a
+// bracketed paste that arrives afterwards.
+func TestBracketedPasteAfterExpiredCarryHasNoStalePrefix(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	if held := client.routeInput([]byte("\x1b]11;rgb:12")); len(
+		held.passthrough,
+	) != 0 {
+		t.Fatalf("partial reply passthrough = %q", held.passthrough)
+	}
+	client.activityMu.Lock()
+	client.terminalResponseUntil = time.Now().Add(-time.Second)
+	client.activityMu.Unlock()
+
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+	routing := client.routeInput(paste)
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf(
+			"expired-carry paste passthrough = %q, want %q",
+			routing.passthrough,
+			paste,
+		)
+	}
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(
+			routing.responses[0].data,
+			[]byte("\x1b]11;rgb:12"),
+		) {
+		t.Fatalf("expired-carry response routing = %#v", routing.responses)
+	}
+}
+
+// A query reply that completes before a paste in the same read is still routed
+// to its window, and the paste passes through untouched.
+func TestCompleteResponseThenBracketedPasteRoutesBoth(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	response := []byte("\x1b[?62;4c")
+	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
+
+	routing := client.routeInput(append(append([]byte(nil), response...), paste...))
+	if len(routing.responses) != 1 ||
+		routing.responses[0].windowID != "@1" ||
+		!bytes.Equal(routing.responses[0].data, response) {
+		t.Fatalf("response routing = %#v", routing.responses)
+	}
+	if !bytes.Equal(routing.passthrough, paste) {
+		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
+	}
+}
+
+// Plain user input typed before a paste while a reply is expected must not be
+// dropped by the paste-abort handling.
+func TestUserInputBeforeBracketedPasteIsPreserved(t *testing.T) {
+	client := &attachClient{}
+	client.expectTerminalResponse("@1")
+	input := []byte("abc\x1b[200~/tmp/a.png\x1b[201~ ")
+
+	routing := client.routeInput(input)
+	if !bytes.Equal(routing.passthrough, input) {
+		t.Fatalf("passthrough = %q, want %q", routing.passthrough, input)
+	}
+	if len(routing.responses) != 0 {
+		t.Fatalf("user input routed as response = %#v", routing.responses)
+	}
+}
+
 func TestSplitTerminalResponseIntroducerIsRoutedOnce(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -3700,10 +4496,11 @@ func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 	server.mu.Unlock()
 	server.resumePausedAttachForwarding("@2", generation)
 
-	want := wantReplay + "settled tui screen"
-	if got := attach.String(); got != want {
-		t.Fatalf("settled foreground replay = %q, want %q", got, want)
-	}
+	want := synchronizedTerminalOutputAfterPrefixForTest(
+		wantReplay,
+		"settled tui screen",
+	)
+	waitForRecordedOutput(t, attach, want)
 	if strings.Contains(attach.String(), "stale tui screen") {
 		t.Fatalf("settled foreground replay retained stale TUI history: %q", attach.String())
 	}
@@ -4027,7 +4824,7 @@ func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
 	}
 }
 
-func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
+func TestChangedSizeResizeDoesNotBounceForegroundTui(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
@@ -4072,8 +4869,12 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 
 	server.resize(120, 55)
 
-	if !reflect.DeepEqual(simulated, []string{"@1:120x55"}) {
-		t.Fatalf("simulated resizes = %#v, want [@1:120x55]", simulated)
+	// A genuine size change relies on the real PTY resize (SIGWINCH at the new
+	// size) to repaint the TUI. It must NOT drive the synthetic width-1 redraw
+	// dance, which would produce a visible one-cell bounce on every keyboard or
+	// pinch-zoom resize.
+	if len(simulated) != 0 {
+		t.Fatalf("changed-size resize performed synthetic dance = %#v, want none", simulated)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
@@ -4083,6 +4884,51 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 		if !strings.Contains(modeReplay, sequence) {
 			t.Fatalf("mode replay %q does not contain %q", modeReplay, sequence)
 		}
+	}
+}
+
+func TestChangedSizeResizeForwardsReflowImmediately(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	conn := &recordingConn{}
+	server.attachConn = conn
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {
+		t.Fatal("changed-size resize must not perform the synthetic redraw dance")
+	}
+
+	server.resize(120, 55)
+
+	// After a genuine resize the TUI's reflow must forward to attach clients
+	// immediately, not be buffered behind the synchronized-redraw tail that hides
+	// same-size dances. A held reflow is exactly the perceived "extra resize".
+	server.handleWindowOutput("@1", []byte("reflowed line"))
+	if got := conn.String(); !strings.Contains(got, "reflowed line") {
+		t.Fatalf("changed-size reflow was withheld from attach = %q", got)
+	}
+	server.mu.Lock()
+	paused := window.redrawForwardingPaused
+	server.mu.Unlock()
+	if paused {
+		t.Fatal("changed-size resize paused attach forwarding")
 	}
 }
 
@@ -4133,7 +4979,7 @@ func TestClosedUnixPtyUsesInvalidFileDescriptorSentinel(t *testing.T) {
 	}
 }
 
-func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
+func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
@@ -4145,6 +4991,9 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 	server.activeID = "@1"
 	server.width = 120
 	server.height = 40
+	// The published grid is already at the current size, so sizeChanged is false.
+	server.publishedWidth = 120
+	server.publishedHeight = 40
 
 	originalSignalForegroundResize := signalForegroundResize
 	originalSimulateForegroundResize := simulateForegroundResize
@@ -4173,13 +5022,347 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 		signaled = append(signaled, processGroup)
 	}
 
-	server.resizeWithRedraw(120, 40, true)
-
-	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
-		t.Fatalf("simulated resizes = %#v, want [@1:120x40]", simulated)
+	// A client "settle" forced redraw (syntheticRedraw=false) must not perform
+	// the synthetic width-1 dance: the size is already current and painted, so a
+	// dance would be a pure visible bounce. It still nudges the TUI via SIGWINCH.
+	server.resizeWithRedraw(120, 40, true, false, "")
+	if len(simulated) != 0 {
+		t.Fatalf("settle redraw performed synthetic dance = %#v, want none", simulated)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+
+	// A restore-style forced redraw (syntheticRedraw=true) must dance so a
+	// freshly relaunched agent repaints its screen.
+	signaled = nil
+	server.resizeWithRedraw(120, 40, true, true, "")
+	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
+		t.Fatalf("synthetic redraw dance = %#v, want [@1:120x40]", simulated)
+	}
+	if !reflect.DeepEqual(signaled, []int{5151}) {
+		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
+func TestThemeChangedRedrawForcesForegroundRepaint(t *testing.T) {
+	server := newMuxServer("test")
+	var logMu sync.Mutex
+	var events []string
+	// A focus-enabled Copilot window receives a synchronous DEC 2031 mode report
+	// as its theme hint, written to the pty before the redraw.
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "copilot",
+		focusModeEnabled:  true,
+		pty:               &orderRecordingPty{mu: &logMu, log: &events},
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+	server.mu.Lock()
+	// The published grid already matches the client, so sizeChanged is false and
+	// only the synthetic dance can force a repaint.
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		logMu.Lock()
+		events = append(events, fmt.Sprintf("dance:%s:%dx%d", w.id, width, height))
+		logMu.Unlock()
+	}
+	signalForegroundResize = func(int) {}
+
+	// theme_changed with redraw must deliver the hint to the pty AND force the
+	// synthetic repaint dance even at an unchanged size, so an agent (Copilot
+	// CLI) re-emits its explicitly colored header/footer bars in the new theme.
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+
+	logMu.Lock()
+	recorded := append([]string(nil), events...)
+	logMu.Unlock()
+	firstWrite := indexOfString(recorded, "hint-write")
+	danceIndex := indexOfString(recorded, "dance:@1:120x40")
+	if firstWrite < 0 {
+		t.Fatalf("theme hint was not written to the pty; events = %#v", recorded)
+	}
+	if danceIndex < 0 {
+		t.Fatalf("theme_changed redraw did not dance; events = %#v", recorded)
+	}
+	if firstWrite > danceIndex {
+		t.Fatalf(
+			"redraw dance ran before the theme hint was delivered; events = %#v",
+			recorded,
+		)
+	}
+
+	// Without the redraw flag the theme hint is still delivered, but no repaint
+	// dance is forced (preserving the pre-existing behavior for callers that do
+	// not need a repaint).
+	logMu.Lock()
+	events = nil
+	logMu.Unlock()
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type: "theme_changed",
+		Data: "\x1b[?997;1n",
+	})
+	logMu.Lock()
+	recorded = append([]string(nil), events...)
+	logMu.Unlock()
+	for _, e := range recorded {
+		if strings.HasPrefix(e, "dance:") {
+			t.Fatalf(
+				"theme_changed without redraw performed dance; events = %#v",
+				recorded,
+			)
+		}
+	}
+}
+
+func indexOfString(values []string, target string) int {
+	for i, v := range values {
+		if v == target {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestThemeChangedRedrawSkipsPlainShell(t *testing.T) {
+	server := newMuxServer("test")
+	// A plain shell (no agent, no alternate screen) is not a foreground-redraw
+	// window, so a theme redraw must not bounce its prompt with a resize dance.
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+	server.mu.Lock()
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(simulated, w.id)
+	}
+	signalForegroundResize = func(int) {}
+
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+	if len(simulated) != 0 {
+		t.Fatalf("plain shell theme redraw danced = %#v, want none", simulated)
+	}
+}
+
+// TestForceForegroundThemeRedrawPinsToHintWindow verifies the redraw is pinned
+// to the window that received the theme hint: if a concurrent window switch has
+// changed the active window, the redraw must not dance the (now different)
+// active window.
+func TestForceForegroundThemeRedrawPinsToHintWindow(t *testing.T) {
+	server := newMuxServer("test")
+	windowA := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "copilot",
+		lastActivity:      time.Now(),
+	}
+	windowB := &muxWindow{
+		id:                "@2",
+		index:             1,
+		foregroundCommand: "copilot",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{windowA, windowB}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+	server.mu.Lock()
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(simulated, w.id)
+	}
+	signalForegroundResize = func(int) {}
+
+	// The hint targeted @1, but the active window has since switched to @2.
+	// Pinning to @1 must skip the redraw rather than dance @2.
+	server.mu.Lock()
+	server.activeID = "@2"
+	server.mu.Unlock()
+	server.forceForegroundThemeRedraw("@1")
+	if len(simulated) != 0 {
+		t.Fatalf("redraw danced after active window changed = %#v, want none", simulated)
+	}
+
+	// When the pinned window is still active it dances normally.
+	server.mu.Lock()
+	server.activeID = "@1"
+	server.mu.Unlock()
+	server.forceForegroundThemeRedraw("@1")
+	if !reflect.DeepEqual(simulated, []string{"@1"}) {
+		t.Fatalf("pinned redraw dance = %#v, want [@1]", simulated)
+	}
+}
+
+// TestThemeChangedRedrawSurvivesViewportDeferral covers the case where a theme
+// redraw arrives while the active window is mid terminal-output-forwarding, so
+// the resize is deferred (all app attaches clip the viewport). The synthetic
+// redraw intent must be preserved so the replayed resize still dances; without
+// it the replay drops the repaint and the stale theme remains.
+func TestThemeChangedRedrawSurvivesViewportDeferral(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	window := &muxWindow{
+		id:                       "@1",
+		index:                    0,
+		foregroundCommand:        "copilot",
+		terminalOutputForwarding: true,
+		lastActivity:             time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := registerTestAttachClient(t, server, conn, "primary", 80, 24)
+	client.clipViewport = true
+	server.mu.Lock()
+	server.publishedWidth = 80
+	server.publishedHeight = 24
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", w.id, width, height),
+		)
+	}
+	signalForegroundResize = func(int) {}
+
+	// The window is forwarding output, so the theme redraw is deferred.
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+	if len(simulated) != 0 {
+		t.Fatalf("deferred theme redraw danced early = %#v, want none", simulated)
+	}
+	server.mu.Lock()
+	pendingSynthetic := server.pendingResizeSyntheticRedraw
+	window.terminalOutputForwarding = false
+	server.mu.Unlock()
+	if !pendingSynthetic {
+		t.Fatal("deferred theme redraw did not preserve the synthetic-redraw bit")
+	}
+
+	// Once the transition is safe again, the replayed resize must still perform
+	// the synthetic dance so the foreground TUI repaints in the new theme.
+	server.refreshPendingViewportResize()
+	if !reflect.DeepEqual(simulated, []string{"@1:80x24"}) {
+		t.Fatalf("replayed theme redraw dance = %#v, want [@1:80x24]", simulated)
+	}
+}
+
+// TestThemeChangedRedrawDeferralPinsToHintWindow verifies the pin survives the
+// viewport deferral: if the active window changes before the deferred redraw is
+// replayed, the replay must not dance the new window.
+func TestThemeChangedRedrawDeferralPinsToHintWindow(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	windowA := &muxWindow{
+		id:                       "@1",
+		index:                    0,
+		foregroundCommand:        "copilot",
+		terminalOutputForwarding: true,
+		lastActivity:             time.Now(),
+	}
+	windowB := &muxWindow{
+		id:                "@2",
+		index:             1,
+		foregroundCommand: "copilot",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{windowA, windowB}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := registerTestAttachClient(t, server, conn, "primary", 80, 24)
+	client.clipViewport = true
+	server.mu.Lock()
+	server.publishedWidth = 80
+	server.publishedHeight = 24
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(simulated, w.id)
+	}
+	signalForegroundResize = func(int) {}
+
+	// Defer a theme redraw pinned to @1.
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+	server.mu.Lock()
+	if server.pendingResizeThemeWindowID != "@1" {
+		got := server.pendingResizeThemeWindowID
+		server.mu.Unlock()
+		t.Fatalf("pending theme window id = %q, want @1", got)
+	}
+	// Simulate the active window changing (a switch that raced the replay) while
+	// the pending redraw still targets @1, and make @1's transition safe again.
+	windowA.terminalOutputForwarding = false
+	server.activeID = "@2"
+	server.mu.Unlock()
+
+	server.refreshPendingViewportResize()
+	if len(simulated) != 0 {
+		t.Fatalf("deferred redraw danced the wrong window = %#v, want none", simulated)
 	}
 }
 
@@ -4268,9 +5451,67 @@ func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", generation)
 
-	if got := conn.String(); got != "temporary layoutfinal layout" {
-		t.Fatalf("attach output after redraw settled = %q, want buffered output", got)
+	want := synchronizedTerminalOutputForTest("temporary layoutfinal layout")
+	waitForRecordedOutput(t, conn, want)
+}
+
+func TestRedrawResizeWrapsBufferedRedrawAtomically(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
 	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("temporary layout"))
+
+	server.resumePausedAttachForwarding("@1", generation)
+	// Output that arrives after the redraw settles (the PTY is already back at
+	// full size, so this is normal steady-state output, not a resize frame) is
+	// forwarded verbatim after the closed transaction — the begin and end
+	// markers are always written together, never left open by a timer.
+	server.handleWindowOutput("@1", []byte("late canonical layout"))
+
+	want := synchronizedTerminalOutputForTest("temporary layout") +
+		"late canonical layout"
+	waitForRecordedOutput(t, conn, want)
+}
+
+func TestRedrawResizePreservesOneShotKittyTransmit(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	const transmit = "\x1b_Ga=t,f=24,s=1,v=1,i=7;AAAA\x1b\\"
+	const placeholder = "\U0010EEEE"
+	server.handleWindowOutput("@1", []byte(transmit))
+	server.handleWindowOutput("@1", []byte(placeholder))
+	server.resumePausedAttachForwarding("@1", generation)
+
+	want := synchronizedTerminalOutputForTest(transmit + placeholder)
+	waitForRecordedOutput(t, conn, want)
 }
 
 func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
@@ -4299,9 +5540,8 @@ func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", generation)
 
-	if got := conn.String(); got != "new settled layout" {
-		t.Fatalf("attach output after superseded redraw = %q, want latest output", got)
-	}
+	want := synchronizedTerminalOutputForTest("new settled layout")
+	waitForRecordedOutput(t, conn, want)
 }
 
 func TestRedrawResizePreservesBufferedTerminalQueries(t *testing.T) {
@@ -4334,9 +5574,8 @@ func TestRedrawResizePreservesBufferedTerminalQueries(t *testing.T) {
 
 	server.resumePausedAttachForwarding("@1", generation)
 
-	if got := conn.String(); got != "\x1b[>q" {
-		t.Fatalf("terminal query after superseded redraw = %q", got)
-	}
+	want := synchronizedTerminalOutputForTest("\x1b[>q")
+	waitForRecordedOutput(t, conn, want)
 }
 
 func TestRedrawResizePreservesPendingReplay(t *testing.T) {
@@ -4380,10 +5619,11 @@ func TestRedrawResizePreservesPendingReplay(t *testing.T) {
 
 	wantReplay := replayPrefixForTest(window) +
 		replayPostHistorySuffixForTest(true)
-	want := wantReplay + "settled redraw"
-	if got := conn.String(); got != want {
-		t.Fatalf("settled replay after resize = %q, want %q", got, want)
-	}
+	want := synchronizedTerminalOutputAfterPrefixForTest(
+		wantReplay,
+		"settled redraw",
+	)
+	waitForRecordedOutput(t, conn, want)
 	if strings.Contains(conn.String(), "stale tui screen") ||
 		strings.Contains(conn.String(), "first redraw") {
 		t.Fatalf("settled replay retained stale output: %q", conn.String())
@@ -5086,18 +6326,351 @@ func TestObserveKittyGraphicsReassemblesSplitTransmission(t *testing.T) {
 	}
 }
 
-func TestObserveKittyGraphicsDeleteRemovesRetainedImage(t *testing.T) {
+func TestObserveKittyGraphicsRetainsAnimationCommandsInOrder(t *testing.T) {
+	window := &muxWindow{}
+	stream := []byte(
+		"\x1b_Ga=T,U=1,i=7,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100,m=1;FRAME-A\x1b\\" +
+			"\x1b_Gm=0;FRAME-B\x1b\\" +
+			"\x1b_Ga=c,i=7,r=2,c=1,w=1,h=1\x1b\\" +
+			"\x1b_Ga=a,i=7,r=1,z=80,s=3,v=1\x1b\\")
+
+	window.observeKittyGraphicsLocked(stream)
+	replay := string(window.kittyImageReplayLocked(nil))
+
+	parts := []string{"ROOT", "FRAME-A", "FRAME-B", "a=c", "a=a"}
+	last := -1
+	for _, part := range parts {
+		index := strings.Index(replay, part)
+		if index <= last {
+			t.Fatalf("animation replay order lost at %q: %q", part, replay)
+		}
+		last = index
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("root transmit must be replayed store-only: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsResolvesImageNumberAnimations(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME\x1b\\" +
+			"\x1b_Ga=a,I=5,s=3,v=1\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	for _, want := range []string{"i=7,I=5", "a=f,f=100", "a=a,s=3", "i=7"} {
+		if !strings.Contains(replay, want) {
+			t.Fatalf("image-number animation missing %q: %q", want, replay)
+		}
+	}
+	if strings.Count(replay, "I=5") != 2 {
+		t.Fatalf("animation commands were not canonicalized to id 7: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsRetainsPlacementAndAnimationMappings(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=p,i=7,I=9,c=1,r=1\x1b\\" +
+			"\x1b_Ga=f,i=8,I=9,f=100;FRAME8\x1b\\" +
+			"\x1b_Ga=a,I=9,s=3,v=1\x1b\\"))
+
+	if got := window.kittyImageNumberToID["9"]; got != "8" {
+		t.Fatalf("image number 9 maps to %q, want 8", got)
+	}
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "a=p") {
+		t.Fatalf("placement command must not be replayed: %q", replay)
+	}
+	if !strings.Contains(replay, "FRAME8") ||
+		!strings.Contains(replay, "a=a") ||
+		!strings.Contains(replay, "i=8") {
+		t.Fatalf("mapped animation history missing from image 8: %q", replay)
+	}
+	if !strings.Contains(replay, "i=8,I=9,q=2") {
+		t.Fatalf("current image-number mapping missing from replay: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsRetainsImageNumberOnlyRoot(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,I=5,f=100;ROOT1\x1b\\" +
+			"\x1b_Ga=t,I=5,f=100;ROOT2\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME2\x1b\\" +
+			"\x1b_Ga=a,I=5,s=3,v=1\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	for _, want := range []string{
+		"ROOT1",
+		"ROOT2",
+		"a=f,I=5",
+		"FRAME2",
+		"a=a,I=5",
+	} {
+		if !strings.Contains(replay, want) {
+			t.Fatalf("image-number-only replay missing %q: %q", want, replay)
+		}
+	}
+	if len(window.kittyImages) != 2 {
+		t.Fatalf("retained %d I-only roots, want 2", len(window.kittyImages))
+	}
+	if strings.Index(replay, "ROOT1") > strings.Index(replay, "ROOT2") {
+		t.Fatalf("I-only root order changed: %q", replay)
+	}
+	latestID := window.kittyImageNumberToID["5"]
+	if !strings.Contains(string(window.kittyImageAnimations[latestID]), "FRAME2") {
+		t.Fatalf("latest I-only root did not retain its animation")
+	}
+}
+
+func TestObserveKittyGraphicsKeepsImageNumberOnZeroIDAnimations(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=0,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,I=5,f=100;FRAME\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "a=f,I=5") {
+		t.Fatalf("zero-id animation lost its image-number reference: %q", replay)
+	}
+	if strings.Contains(replay, "a=f,i=0") {
+		t.Fatalf("zero id was treated as canonical during replay: %q", replay)
+	}
+}
+
+func TestKittyAnimationReplaySuppressesProtocolResponses(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=T,i=7,I=5,f=100,q=0;ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100,q=0;FRAME\x1b\\" +
+			"\x1b_Ga=a,i=7,s=3,v=1,q=0\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "q=0") {
+		t.Fatalf("replay retained response-producing quiet mode: %q", replay)
+	}
+	if got := strings.Count(replay, "q=2"); got != 4 {
+		t.Fatalf("replay q=2 count = %d, want 4: %q", got, replay)
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("root replay was not downgraded to store-only: %q", replay)
+	}
+}
+
+func TestKittyAnimationDoesNotReorderImageNumberRoots(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=5,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100;FRAME7\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	root8 := strings.Index(replay, "ROOT8")
+	frame7 := strings.Index(replay, "FRAME7")
+	if root8 < 0 || frame7 < 0 || frame7 > root8 {
+		t.Fatalf("animation mutation reordered root mapping: %q", replay)
+	}
+	if got := window.kittyImageNumberToID["5"]; got != "8" {
+		t.Fatalf("image number 5 maps to %q, want 8", got)
+	}
+}
+
+func TestKittyReplayDoesNotRestoreStaleImageNumberMapping(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=5,f=100;ROOT8\x1b\\"))
+	for i := 0; i < maxReplayedKittyImages; i++ {
+		window.observeKittyGraphicsLocked([]byte(fmt.Sprintf(
+			"\x1b_Ga=t,i=%d,f=100;OTHER%d\x1b\\",
+			100+i,
+			i,
+		)))
+	}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=7,f=100;FRAME7\x1b\\"),
+	)
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "ROOT7") || strings.Contains(replay, "ROOT8") {
+		t.Fatalf("test precondition did not select only the older mapped root: %q", replay)
+	}
+	if strings.Contains(replay, "i=7,I=5") {
+		t.Fatalf("older root restored stale image-number mapping: %q", replay)
+	}
+	if !strings.Contains(replay, "a=f,i=7") ||
+		strings.Contains(replay, "a=f,I=5") {
+		t.Fatalf("older animation was not canonicalized to image id 7: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsDropsAnimationThatExceedsPerIDBudget(t *testing.T) {
+	originalBudget := kittyImagePerIDBudgetBytes
+	kittyImagePerIDBudgetBytes = 160
+	t.Cleanup(func() { kittyImagePerIDBudgetBytes = originalBudget })
+
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,I=5,f=100;ROOT\x1b\\"),
+	)
+	for i := 0; i < 20 && len(window.kittyImages) > 0; i++ {
+		window.observeKittyGraphicsLocked(
+			[]byte("\x1b_Ga=a,I=5,s=3,v=1,q=2\x1b\\"),
+		)
+	}
+
+	if len(window.kittyImages) != 0 ||
+		len(window.kittyImageAnimations) != 0 ||
+		len(window.kittyImageReplayLocked(nil)) != 0 {
+		t.Fatalf("oversized animation replay cache was not dropped")
+	}
+	if _, ok := window.kittyImageNumberToID["5"]; ok {
+		t.Fatalf("image-number mapping survived cache eviction")
+	}
+}
+
+func TestObserveKittyGraphicsNewRootResetsRetainedAnimation(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,f=100;OLD-ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100;OLD-FRAME\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,f=100;NEW-ROOT\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "NEW-ROOT") {
+		t.Fatalf("replacement root missing: %q", replay)
+	}
+	if strings.Contains(replay, "OLD-ROOT") || strings.Contains(replay, "OLD-FRAME") {
+		t.Fatalf("replacement root retained stale animation state: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsSoftDeleteKeepsRetainedImage(t *testing.T) {
 	window := &muxWindow{}
 
 	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
+	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,d=i,i=7\x1b\\"))
 	if got := window.kittyImageReplayLocked(nil); !strings.Contains(string(got), "PAYLOAD") {
-		t.Fatalf("image id=7 not retained: %q", got)
+		t.Fatalf("soft-deleted image data was not retained: %q", got)
 	}
+}
 
-	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,i=7;\x1b\\"))
+func TestObserveKittyGraphicsHardDeleteRemovesRetainedImage(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
+
+	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,d=I,i=7\x1b\\"))
 	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
-		t.Fatalf("deleted image id=7 still retained: %q", got)
+		t.Fatalf("hard-deleted image id=7 still retained: %q", got)
+	}
+}
+
+func TestObserveKittyGraphicsPreservesSameChunkHardDeleteOrder(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=T,U=1,i=7,I=5,f=100;ROOT\x1b\\" +
+			"\x1b_Ga=f,i=7,f=100;FRAME\x1b\\" +
+			"\x1b_Ga=d,d=I,i=7\x1b\\"))
+
+	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
+		t.Fatalf("same-chunk hard delete resurrected retained image: %q", got)
+	}
+	if _, ok := window.kittyImageNumberToID["5"]; ok {
+		t.Fatalf("same-chunk hard delete retained image-number mapping")
+	}
+}
+
+func TestObserveKittyGraphicsAppliesDeleteAllInStreamOrder(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=6,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=d,d=A\x1b\\" +
+			"\x1b_Ga=t,i=9,I=7,f=100;ROOT9\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "ROOT7") || strings.Contains(replay, "ROOT8") {
+		t.Fatalf("d=A retained image data transmitted before it: %q", replay)
+	}
+	if !strings.Contains(replay, "ROOT9") {
+		t.Fatalf("d=A removed image data transmitted after it: %q", replay)
+	}
+	if len(window.kittyImageNumberToID) != 1 ||
+		window.kittyImageNumberToID["7"] != "9" {
+		t.Fatalf("d=A left stale image-number mappings: %#v", window.kittyImageNumberToID)
+	}
+}
+
+func TestObserveKittyGraphicsInvalidatesForPositionalHardDeletes(t *testing.T) {
+	for _, selector := range []string{"C", "P", "X", "Y"} {
+		t.Run(selector, func(t *testing.T) {
+			window := &muxWindow{}
+			window.observeKittyGraphicsLocked([]byte(
+				"\x1b_Ga=t,i=7,I=5,f=100;ROOT\x1b\\" +
+					"\x1b_Ga=d,d=" + selector + ",x=1,y=1\x1b\\"))
+
+			if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
+				t.Fatalf("d=%s retained conservatively matched image data: %q", selector, got)
+			}
+			if len(window.kittyImageNumberToID) != 0 {
+				t.Fatalf("d=%s retained image-number mappings", selector)
+			}
+		})
+	}
+}
+
+func TestObserveKittyGraphicsDeleteByNumberRemovesRetainedImage(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,I=5,f=100;PAYLOAD\x1b\\"),
+	)
+
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=d,d=N,I=5\x1b\\"),
+	)
+
+	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
+		t.Fatalf("image deleted by number still retained: %q", got)
+	}
+	if _, ok := window.kittyImageNumberToID["5"]; ok {
+		t.Fatalf("deleted image-number mapping still retained")
+	}
+}
+
+func TestObserveKittyGraphicsHardDeleteByNumberKeepsUnrelatedImages(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=6,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=d,d=I,I=5\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, "ROOT7") {
+		t.Fatalf("d=I,I=5 retained targeted image: %q", replay)
+	}
+	if !strings.Contains(replay, "ROOT8") {
+		t.Fatalf("d=I,I=5 removed unrelated image: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsUnaddressedIDDeleteKeepsAllImages(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked([]byte(
+		"\x1b_Ga=t,i=7,I=5,f=100;ROOT7\x1b\\" +
+			"\x1b_Ga=t,i=8,I=6,f=100;ROOT8\x1b\\" +
+			"\x1b_Ga=d,d=I\x1b\\"))
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "ROOT7") || !strings.Contains(replay, "ROOT8") {
+		t.Fatalf("unaddressed d=I removed retained images: %q", replay)
 	}
 }
 
@@ -5105,7 +6678,10 @@ func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 	window := &muxWindow{}
 
 	for i := 0; i < maxRetainedKittyImages+5; i++ {
-		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;DATA%d\x1b\\", i, i)
+		seq := fmt.Sprintf(
+			"\x1b_Ga=T,U=1,i=%d,I=%d,f=100;DATA%d\x1b\\",
+			i, i, i,
+		)
 		window.observeKittyGraphicsLocked([]byte(seq))
 	}
 
@@ -5118,9 +6694,52 @@ func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 	if strings.Contains(replay, "DATA0") {
 		t.Fatalf("oldest image should have been evicted: %q", replay)
 	}
+	if _, ok := window.kittyImageNumberToID["0"]; ok {
+		t.Fatalf("evicted image-number mapping should be removed")
+	}
 	newest := fmt.Sprintf("DATA%d", maxRetainedKittyImages+4)
 	if !strings.Contains(replay, newest) {
 		t.Fatalf("newest image %q missing: %q", newest, replay)
+	}
+}
+
+func TestObserveKittyGraphicsCapsMappingOnlyImageNumbers(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=7,f=100;ROOT\x1b\\"),
+	)
+	for i := 0; i < maxRetainedKittyImageNumbers+20; i++ {
+		window.observeKittyGraphicsLocked([]byte(fmt.Sprintf(
+			"\x1b_Ga=p,i=7,I=%d,c=1,r=1\x1b\\",
+			i+1,
+		)))
+	}
+
+	if got := len(window.kittyImageNumberToID); got > maxRetainedKittyImageNumbers {
+		t.Fatalf("retained %d image-number mappings, want <= %d",
+			got, maxRetainedKittyImageNumbers)
+	}
+	if _, ok := window.kittyImageNumberToID["1"]; ok {
+		t.Fatalf("oldest image-number mapping survived bounded insertion")
+	}
+	if got := window.kittyImageNumberToID[fmt.Sprintf("%d", maxRetainedKittyImageNumbers+20)]; got != "7" {
+		t.Fatalf("recent image-number mapping = %q, want 7", got)
+	}
+	if !strings.Contains(string(window.kittyImageReplayLocked(nil)), "i=7,I=") {
+		t.Fatalf("bounded image-number mappings were not replayed")
+	}
+
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=t,i=8,I=999,f=100;NEWROOT\x1b\\"),
+	)
+	if got := window.kittyImageNumberToID["999"]; got != "8" {
+		t.Fatalf("new root mapping at cap = %q, want 8", got)
+	}
+	if got := len(window.kittyImageNumberToID); got > maxRetainedKittyImageNumbers {
+		t.Fatalf("new root grew mapping table to %d", got)
+	}
+	if !strings.Contains(string(window.kittyImageReplayLocked(nil)), "NEWROOT") {
+		t.Fatalf("new root at mapping cap was not retained")
 	}
 }
 
@@ -5147,6 +6766,17 @@ func TestKittyImageReplayCapsCount(t *testing.T) {
 	tooOld := fmt.Sprintf("i=%d,", oldestKept-1)
 	if strings.Contains(replay, tooOld) {
 		t.Fatalf("image %q older than the replay cap should be omitted", tooOld)
+	}
+
+	// Mutating that older root makes it recent for selection without changing
+	// the root transmission order used to preserve image-number mappings.
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=0,f=100;RECENT_FRAME\x1b\\"),
+	)
+	replay = string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(replay, "i=0,") ||
+		!strings.Contains(replay, "RECENT_FRAME") {
+		t.Fatalf("recently animated older root missing from replay: %q", replay)
 	}
 }
 
@@ -5231,8 +6861,8 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 	}
 
 	replay := window.kittyImageReplayLocked(nil)
-	if len(replay) > maxReplayedKittyImageBytes+len(big) {
-		t.Fatalf("replay %d bytes exceeds budget %d (+one image slack)",
+	if len(replay) > maxReplayedKittyImageBytes {
+		t.Fatalf("replay %d bytes exceeds budget %d",
 			len(replay), maxReplayedKittyImageBytes)
 	}
 	// At least one image (the most recent) is always replayed.
@@ -5242,30 +6872,69 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 	}
 }
 
+func TestKittyImageReplaySkipsOversizedImageAndKeepsSmallerCandidate(t *testing.T) {
+	window := &muxWindow{
+		kittyImages: map[string][]byte{
+			"1": []byte("\x1b_Ga=t,i=1,f=100;SMALL\x1b\\"),
+			"2": bytes.Repeat([]byte{'X'}, maxReplayedKittyImageBytes+1),
+		},
+		kittyImageOrder: []string{"1", "2"},
+		kittyImageSeq:   map[string]uint64{"1": 1, "2": 2},
+	}
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if strings.Contains(replay, strings.Repeat("X", 1024)) {
+		t.Fatalf("oversized image was included in replay")
+	}
+	if !strings.Contains(replay, "SMALL") {
+		t.Fatalf("smaller candidate was not replayed after oversized image")
+	}
+	if len(replay) > maxReplayedKittyImageBytes {
+		t.Fatalf("replay exceeded attach-safe byte budget: %d", len(replay))
+	}
+}
+
 func TestKittyImageReplaySkipsImagesClientAlreadyHolds(t *testing.T) {
 	window := &muxWindow{}
 	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=101,f=100;AAAABBBBCCCC\x1b\\"))
 	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=101,f=100;FRAME101\x1b\\"))
+	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=202,f=100;DDDDEEEEFFFF\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=303,I=5,f=100;ROOT303\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=f,i=303,f=100;FRAME303\x1b\\"))
 
 	// The client reports holding image 101 with its true signature and image
 	// 202 with a stale signature (different content). Only 101 may be skipped.
 	clientHas := map[string]uint32{
 		"101": window.kittyImageToken["101"],
 		"202": window.kittyImageToken["202"] ^ 0x1,
+		"303": window.kittyImageToken["303"],
 	}
 	replay := string(window.kittyImageReplayLocked(clientHas))
-	if strings.Contains(replay, "i=101") {
-		t.Fatalf("image 101 should be skipped; client holds it: %q", replay)
+	if strings.Contains(replay, "AAAABBBBCCCC") {
+		t.Fatalf("image 101 root should be skipped; client holds it: %q", replay)
+	}
+	if !strings.Contains(replay, "FRAME101") {
+		t.Fatalf("image 101 animation updates must still be replayed: %q", replay)
 	}
 	if !strings.Contains(replay, "i=202") {
 		t.Fatalf("image 202 has a stale client signature and must be re-sent: %q",
 			replay)
 	}
+	if strings.Contains(replay, "ROOT303") ||
+		!strings.Contains(replay, "i=303,I=5,q=2") ||
+		!strings.Contains(replay, "FRAME303") {
+		t.Fatalf("held root should replay mapping and animation only: %q", replay)
+	}
 	// A nil skip-set (fresh attach) still replays everything.
 	full := string(window.kittyImageReplayLocked(nil))
-	if !strings.Contains(full, "i=101") || !strings.Contains(full, "i=202") {
+	if !strings.Contains(full, "AAAABBBBCCCC") ||
+		!strings.Contains(full, "DDDDEEEEFFFF") ||
+		!strings.Contains(full, "ROOT303") {
 		t.Fatalf("nil skip-set must replay every image: %q", full)
 	}
 }
@@ -6112,6 +7781,71 @@ func TestTrimReplayHistoryAlignsToUtf8WhenNoControlChars(t *testing.T) {
 	}
 	if len(trimmed) > windowReplayLimitBytes {
 		t.Fatalf("trimmed length = %d, want <= %d", len(trimmed), windowReplayLimitBytes)
+	}
+}
+
+func TestTrimReplayHistorySkipsPartialKittyPayload(t *testing.T) {
+	payload := bytes.Repeat([]byte("A"), windowReplayLimitBytes+4096)
+	history := append(
+		[]byte("before\x1b_Ga=f,i=7,f=32,m=0;"),
+		payload...,
+	)
+	history = append(history, "\x1b\\\r\nprompt"...)
+
+	rawStart := len(history) - windowReplayLimitBytes
+	if history[rawStart] != 'A' {
+		t.Fatalf("setup error: raw replay cut = 0x%02x, want payload", history[rawStart])
+	}
+	if bytes.Contains(history[rawStart:rawStart+2048], []byte{'\x1b'}) {
+		t.Fatal("setup error: old scan window unexpectedly reaches APC terminator")
+	}
+
+	trimmed := trimReplayHistoryForAttach(history)
+	if got, want := string(trimmed), "\r\nprompt"; got != want {
+		t.Fatalf("trimmed replay = %q, want %q", got, want)
+	}
+}
+
+func TestReplayHistoryRetainsParserStateAcrossKittyPayloadEviction(t *testing.T) {
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		name:              "zsh",
+		command:           "zsh",
+		foregroundCommand: "zsh",
+		lastActivity:      time.Now(),
+	}
+	payload := bytes.Repeat([]byte("A"), windowHistoryLimitBytes+4096)
+	stream := append(
+		[]byte("before\x1b_Ga=f,i=7,f=32,m=0;"),
+		payload...,
+	)
+	stream = append(stream, "\x1b\\\r\nprompt"...)
+	window.appendHistoryLocked(stream)
+
+	if window.historyStartTerminalOutput.isGround() {
+		t.Fatal("setup error: retained history should begin inside the Kitty APC")
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
+
+	replay := server.replayBytesLocked(window)
+	if bytes.Contains(replay, bytes.Repeat([]byte("A"), 128)) {
+		t.Fatal("replay leaked evicted Kitty payload as terminal text")
+	}
+	if !bytes.Contains(replay, []byte("\r\nprompt")) {
+		t.Fatalf("replay dropped settled shell output: %q", replay)
+	}
+	restore := server.restoreSnapshot()
+	if len(restore.Windows) != 1 {
+		t.Fatalf("restore window count = %d, want 1", len(restore.Windows))
+	}
+	if !restore.Windows[0].HistoryStartsAtGround {
+		t.Fatal("restore history was not marked as parser-ground aligned")
+	}
+	if got, want := string(decodeRestoreHistory(restore.Windows[0].HistoryBase64)), "\r\nprompt"; got != want {
+		t.Fatalf("restored history = %q, want %q", got, want)
 	}
 }
 
@@ -7619,6 +9353,36 @@ func TestCreateWindowOptionsForRestorePreservesShellHistory(t *testing.T) {
 	}
 }
 
+func TestCreateWindowOptionsForRestoreSanitizesLegacyKittyPayload(t *testing.T) {
+	history := append(bytes.Repeat([]byte("A"), 512), "\x1b\\\r\nprompt"...)
+	state := restoreWindowState{
+		Name:           "Project shell",
+		CurrentCommand: "zsh",
+		HistoryBase64:  base64.StdEncoding.EncodeToString(history),
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if got, want := string(options.history), "\r\nprompt"; got != want {
+		t.Fatalf("legacy restore history = %q, want %q", got, want)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreDropsIncompleteTrailingAPC(t *testing.T) {
+	state := restoreWindowState{
+		Name:                  "Project shell",
+		CurrentCommand:        "zsh",
+		HistoryBase64:         base64.StdEncoding.EncodeToString([]byte("prompt\r\n\x1b_Ga=f,i=7;AAAA")),
+		HistoryStartsAtGround: true,
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if got, want := string(options.history), "prompt\r\n"; got != want {
+		t.Fatalf("restore history = %q, want %q", got, want)
+	}
+}
+
 func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
 	state := restoreWindowState{
 		Name:           "Copilot CLI",
@@ -8864,6 +10628,17 @@ type gatedConn struct {
 	once    sync.Once
 }
 
+type deadlineBudgetConn struct {
+	*recordingConn
+	mu                sync.Mutex
+	maxWriteBytes     int
+	writesPerDeadline int
+	writesRemaining   int
+	deadlineRefreshes int
+}
+
+type deadlineBudgetTimeoutError struct{}
+
 type responseCheckConn struct {
 	discardConn
 	client               *attachClient
@@ -8900,6 +10675,42 @@ func (c *gatedConn) Write(data []byte) (int, error) {
 	<-c.gate
 	return c.recordingConn.Write(data)
 }
+
+func (c *deadlineBudgetConn) Write(data []byte) (int, error) {
+	c.mu.Lock()
+	if c.writesRemaining == 0 {
+		c.mu.Unlock()
+		return 0, deadlineBudgetTimeoutError{}
+	}
+	c.writesRemaining--
+	maxWriteBytes := c.maxWriteBytes
+	c.mu.Unlock()
+	if maxWriteBytes <= 0 || maxWriteBytes > len(data) {
+		maxWriteBytes = len(data)
+	}
+	return c.recordingConn.Write(data[:maxWriteBytes])
+}
+
+func (c *deadlineBudgetConn) SetWriteDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		return nil
+	}
+	c.mu.Lock()
+	c.writesRemaining = c.writesPerDeadline
+	c.deadlineRefreshes++
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *deadlineBudgetConn) deadlineRefreshCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.deadlineRefreshes
+}
+
+func (deadlineBudgetTimeoutError) Error() string   { return "write deadline exceeded" }
+func (deadlineBudgetTimeoutError) Timeout() bool   { return true }
+func (deadlineBudgetTimeoutError) Temporary() bool { return true }
 
 func (c *responseCheckConn) Write(data []byte) (int, error) {
 	c.responseClaimedFocus = c.client.inputClaimsFocus([]byte("\x1b[?62;4c"))

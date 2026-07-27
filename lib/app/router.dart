@@ -374,7 +374,9 @@ bool _portForwardBrowserLaunchIsValid(PortForwardBrowserLaunch launch) =>
       (tab) =>
           isPortForwardBrowserEntryUri(tab.uri) &&
           (tab.sourceUri == null ||
-              isPortForwardBrowserEntryUri(tab.sourceUri!)),
+              isPortForwardBrowserEntryUri(tab.sourceUri!)) &&
+          (tab.fallbackUri == null ||
+              isPortForwardBrowserEntryUri(tab.fallbackUri!)),
     );
 
 HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {

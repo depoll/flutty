@@ -104,13 +104,22 @@ void main() {
   late KeyRepository keyRepository;
   late SecretEncryptionService encryptionService;
   late SecureTransferService transferService;
+  late int hostsChangedCount;
 
   setUp(() {
     db = AppDatabase.forTesting(NativeDatabase.memory());
     encryptionService = SecretEncryptionService.forTesting();
     hostRepository = HostRepository(db, encryptionService);
     keyRepository = KeyRepository(db, encryptionService);
-    transferService = SecureTransferService(db, keyRepository, hostRepository);
+    hostsChangedCount = 0;
+    transferService = SecureTransferService(
+      db,
+      keyRepository,
+      hostRepository,
+      onHostsChanged: () async {
+        hostsChangedCount++;
+      },
+    );
   });
 
   tearDown(() async {
@@ -138,6 +147,8 @@ void main() {
               skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
               autoConnectCommand: const Value('tmux new -As MonkeySSH'),
               autoConnectSnippetId: Value(snippetId),
+              autoForwardPorts: const Value(true),
+              portProxyName: const Value('production'),
             ),
           );
       final host = await (db.select(
@@ -160,6 +171,8 @@ void main() {
       expect(hostData['autoConnectCommand'], 'tmux new -As MonkeySSH');
       expect(hostData['autoConnectSnippetId'], isNull);
       expect(hostData['skipJumpHostOnSsids'], 'Home WiFi\nOffice WiFi');
+      expect(hostData['autoForwardPorts'], isTrue);
+      expect(hostData['portProxyName'], 'production');
     });
 
     test(
@@ -342,6 +355,8 @@ void main() {
             'password': 'host-pass',
             'skipJumpHostOnSsids': 'Home WiFi\nOffice WiFi',
             'isFavorite': false,
+            'autoForwardPorts': true,
+            'portProxyName': 'Imported.Dev.LocalHost',
           },
         },
       );
@@ -350,12 +365,35 @@ void main() {
       expect(imported.password, 'host-pass');
       expect(imported.skipJumpHostOnSsids, 'Home WiFi\nOffice WiFi');
       expect(imported.autoConnectRequiresConfirmation, isFalse);
+      expect(imported.autoForwardPorts, isTrue);
+      expect(imported.portProxyName, 'imported.dev');
+      expect(hostsChangedCount, 1);
 
       final stored = await (db.select(
         db.hosts,
       )..where((h) => h.id.equals(imported.id))).getSingle();
       expect(stored.password, startsWith('ENCv1:'));
       expect(stored.skipJumpHostOnSsids, 'Home WiFi\nOffice WiFi');
+    });
+
+    test('importHostPayload drops invalid optional proxy domains', () async {
+      final payload = TransferPayload(
+        type: TransferPayloadType.host,
+        schemaVersion: 1,
+        createdAt: DateTime.now().toUtc(),
+        data: {
+          'host': {
+            'label': 'Imported Host',
+            'hostname': 'imported.example.com',
+            'username': 'root',
+            'portProxyName': '-invalid',
+          },
+        },
+      );
+
+      final imported = await transferService.importHostPayload(payload);
+
+      expect(imported.portProxyName, isNull);
     });
 
     test('importHostPayload preserves host CLI launch preferences', () async {

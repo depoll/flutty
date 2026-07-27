@@ -13,12 +13,14 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_preview.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
@@ -47,6 +49,12 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {}
 
 class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
+
+class _MockAgentLaunchPresetService extends Mock
+    implements AgentLaunchPresetService {}
+
+class _MockHostCliLaunchPreferencesService extends Mock
+    implements HostCliLaunchPreferencesService {}
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
@@ -321,6 +329,7 @@ Host _buildHost({
   tags: tags,
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
+  autoForwardPorts: false,
   lastConnectedAt: null,
   terminalThemeLightId: null,
   terminalThemeDarkId: null,
@@ -1124,6 +1133,81 @@ void main() {
 
     expect(find.text('correct-session · 1 windows'), findsOneWidget);
     expect(find.text('wrong-session · 1 windows'), findsNothing);
+  });
+
+  testWidgets('stops loading tmux preferences after badge disposal', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final presetService = _MockAgentLaunchPresetService();
+    final cliLaunchPreferencesService = _MockHostCliLaunchPreferencesService();
+    final tmuxService = _MockTmuxService();
+    final presetCompleter = Completer<AgentLaunchPreset?>();
+    final sshClient = _MockSshClient();
+    var presetLoadStarted = false;
+    final session = SshSession(
+      connectionId: 7,
+      hostId: 1,
+      client: sshClient,
+      config: const SshConnectionConfig(
+        hostname: 'alpha.example.com',
+        port: 22,
+        username: 'root',
+      ),
+    );
+    final sessionsNotifier = _MutableActiveSessionsNotifier(
+      initialConnections: [_buildActiveConnection(connectionId: 7, hostId: 1)],
+      initialSessions: [session],
+    );
+
+    when(() => presetService.getPresetForHost(1)).thenAnswer((_) {
+      presetLoadStarted = true;
+      return presetCompleter.future;
+    });
+    when(
+      () => cliLaunchPreferencesService.getPreferencesForHost(1),
+    ).thenAnswer((_) async => const HostCliLaunchPreferences());
+    when(() => tmuxService.isTmuxActive(session)).thenAnswer((_) async => true);
+    when(
+      () => tmuxService.currentSessionName(session),
+    ).thenAnswer((_) async => 'work');
+    when(
+      () => tmuxService.watchWindowChanges(session, 'work'),
+    ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+    when(
+      () => tmuxService.listWindows(session, 'work'),
+    ).thenAnswer((_) async => const <TmuxWindow>[]);
+
+    await tester.pumpWidget(
+      buildMobileHomeScreen(
+        db: db,
+        overrides: [
+          activeSessionsProvider.overrideWith(() => sessionsNotifier),
+          allHostsProvider.overrideWith(
+            (ref) =>
+                Stream.value([_buildHost(id: 1, label: 'Alpha', sortOrder: 0)]),
+          ),
+          agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+          hostCliLaunchPreferencesServiceProvider.overrideWithValue(
+            cliLaunchPreferencesService,
+          ),
+          tmuxServiceProvider.overrideWithValue(tmuxService),
+        ],
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('Connections').first);
+    await tester.pump();
+    expect(presetLoadStarted, isTrue);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    presetCompleter.complete(null);
+    await tester.pump();
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    verifyNever(() => cliLaunchPreferencesService.getPreferencesForHost(any()));
   });
 
   testWidgets(

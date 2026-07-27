@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/port_proxy_name.dart';
 
 class _PausingSecretEncryptionService extends SecretEncryptionService {
   _PausingSecretEncryptionService({required this.pausePlaintext})
@@ -35,6 +36,21 @@ class _PausingSecretEncryptionService extends SecretEncryptionService {
     return super.encryptNullable(plaintext);
   }
 }
+
+Map<String, dynamic> _hostConfiguration(Host host) =>
+    Map<String, dynamic>.from(host.toJson())
+      ..remove('id')
+      ..remove('label')
+      ..remove('createdAt')
+      ..remove('updatedAt')
+      ..remove('lastConnectedAt')
+      ..remove('sortOrder');
+
+Map<String, dynamic> _portForwardConfiguration(PortForward portForward) =>
+    Map<String, dynamic>.from(portForward.toJson())
+      ..remove('id')
+      ..remove('hostId')
+      ..remove('createdAt');
 
 void main() {
   late AppDatabase db;
@@ -95,6 +111,166 @@ void main() {
       final hosts = await repository.getAll();
       expect(hosts.map((host) => host.sortOrder), [0, 1]);
       expect(hosts.map((host) => host.label), ['First', 'Second']);
+    });
+
+    test('resolveProxyName distinguishes names without IDs', () async {
+      final firstId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'OVH Davidpollforlasd Production',
+          hostname: 'first.example.com',
+          username: 'root',
+        ),
+      );
+      final secondId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'OVH Davidpollforlasd Staging',
+          hostname: 'second.example.com',
+          username: 'root',
+        ),
+      );
+      final uniqueId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Production',
+          hostname: 'prod.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        await repository.resolveProxyName(
+          hostId: firstId,
+          label: 'OVH Davidpollforlasd Production',
+        ),
+        'ovh-davidpollforlasd-p',
+      );
+      expect(
+        await repository.resolveProxyName(
+          hostId: secondId,
+          label: 'OVH Davidpollforlasd Staging',
+        ),
+        'ovh-davidpollforlasd-s',
+      );
+      expect(
+        await repository.resolveProxyName(
+          hostId: uniqueId,
+          label: 'Production',
+        ),
+        'production',
+      );
+    });
+
+    test('resolveProxyName suffixes true duplicate names', () async {
+      final firstId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Dev Box',
+          hostname: 'first.example.com',
+          username: 'root',
+        ),
+      );
+      final secondId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Dev Box!',
+          hostname: 'second.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        await repository.resolveProxyName(hostId: firstId, label: 'Dev Box'),
+        'dev-box-$firstId',
+      );
+      expect(
+        await repository.resolveProxyName(hostId: secondId, label: 'Dev Box!'),
+        'dev-box-$secondId',
+      );
+    });
+
+    test('resolveProxyName reserves stored custom aliases', () async {
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Custom',
+          hostname: 'custom.example.com',
+          username: 'root',
+          portProxyName: const Value('production'),
+        ),
+      );
+      final generatedId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Production',
+          hostname: 'generated.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        await repository.resolveProxyName(
+          hostId: generatedId,
+          label: 'Production',
+        ),
+        'production-$generatedId',
+      );
+    });
+
+    test('resolveProxyName rejects conflicting custom aliases', () async {
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Generated',
+          hostname: 'generated.example.com',
+          username: 'root',
+        ),
+      );
+      final customId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Custom',
+          hostname: 'custom.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        repository.resolveProxyName(
+          hostId: customId,
+          label: 'Custom',
+          customName: 'generated',
+        ),
+        throwsA(isA<PortProxyNameConflictException>()),
+      );
+    });
+
+    test('insert rejects a custom alias that collides with a host', () async {
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Production',
+          hostname: 'generated.example.com',
+          username: 'root',
+        ),
+      );
+
+      expect(
+        repository.insert(
+          HostsCompanion.insert(
+            label: 'Custom',
+            hostname: 'custom.example.com',
+            username: 'root',
+            portProxyName: const Value('production'),
+          ),
+        ),
+        throwsA(isA<PortProxyNameConflictException>()),
+      );
+    });
+
+    test('insert rejects the saved-forward alias namespace', () async {
+      expect(
+        repository.insert(
+          HostsCompanion.insert(
+            label: 'Custom',
+            hostname: 'custom.example.com',
+            username: 'root',
+            portProxyName: const Value('monkeyssh-1'),
+          ),
+        ),
+        throwsA(isA<PortProxyNameConflictException>()),
+      );
     });
 
     test('reorderByIds persists host order', () async {
@@ -270,7 +446,7 @@ void main() {
       expect(host.autoConnectRequiresConfirmation, isTrue);
     });
 
-    test('duplicate copies skip-jump SSIDs', () async {
+    test('duplicate copies all host configuration and port forwards', () async {
       final keyId = await db
           .into(db.sshKeys)
           .insert(
@@ -324,6 +500,10 @@ void main() {
           autoConnectCommand: const Value('tmux attach'),
           autoConnectSnippetId: Value(snippetId),
           autoConnectRequiresConfirmation: const Value(true),
+          tmuxSessionName: const Value('production'),
+          tmuxWorkingDirectory: const Value('~/src/service'),
+          tmuxExtraFlags: const Value('-x 160 -y 48'),
+          remoteMuxBackend: const Value('monkey_mux'),
         ),
       );
 
@@ -339,6 +519,7 @@ void main() {
               remoteHost: 'db.internal',
               remotePort: 5432,
               autoStart: const Value(true),
+              createdAt: Value(DateTime(2020, 4, 5, 6, 7, 8)),
             ),
           );
       await db
@@ -353,6 +534,7 @@ void main() {
               remoteHost: 'redis.internal',
               remotePort: 6379,
               autoStart: const Value(false),
+              createdAt: Value(DateTime(2021, 5, 6, 7, 8, 9)),
             ),
           );
 
@@ -393,9 +575,18 @@ void main() {
         duplicateHost.autoConnectRequiresConfirmation,
         sourceHost.autoConnectRequiresConfirmation,
       );
+      expect(duplicateHost.tmuxSessionName, sourceHost.tmuxSessionName);
+      expect(
+        duplicateHost.tmuxWorkingDirectory,
+        sourceHost.tmuxWorkingDirectory,
+      );
+      expect(duplicateHost.tmuxExtraFlags, sourceHost.tmuxExtraFlags);
+      expect(duplicateHost.remoteMuxBackend, sourceHost.remoteMuxBackend);
+      expect(_hostConfiguration(duplicateHost), _hostConfiguration(sourceHost));
       expect(duplicateHost.lastConnectedAt, isNull);
       expect(duplicateHost.createdAt, isNot(sourceHost.createdAt));
       expect(duplicateHost.updatedAt, isNot(sourceHost.updatedAt));
+      expect(duplicateHost.sortOrder, greaterThan(sourceHost.sortOrder));
 
       final duplicatePortForwards =
           await (db.select(db.portForwards)..where(
@@ -419,6 +610,7 @@ void main() {
       expect(databaseTunnel.remoteHost, 'db.internal');
       expect(databaseTunnel.remotePort, 5432);
       expect(databaseTunnel.autoStart, isTrue);
+      expect(databaseTunnel.createdAt, isNot(DateTime(2020, 4, 5, 6, 7, 8)));
 
       final redisTunnel = duplicatePortForwards.singleWhere(
         (portForward) => portForward.name == 'Redis Tunnel',
@@ -430,6 +622,20 @@ void main() {
       expect(redisTunnel.remoteHost, 'redis.internal');
       expect(redisTunnel.remotePort, 6379);
       expect(redisTunnel.autoStart, isFalse);
+      expect(redisTunnel.createdAt, isNot(DateTime(2021, 5, 6, 7, 8, 9)));
+
+      final sourcePortForwards = await (db.select(
+        db.portForwards,
+      )..where((portForward) => portForward.hostId.equals(sourceHostId))).get();
+      for (final sourcePortForward in sourcePortForwards) {
+        final duplicatePortForward = duplicatePortForwards.singleWhere(
+          (portForward) => portForward.name == sourcePortForward.name,
+        );
+        expect(
+          _portForwardConfiguration(duplicatePortForward),
+          _portForwardConfiguration(sourcePortForward),
+        );
+      }
     });
 
     test('getById returns host when exists', () async {

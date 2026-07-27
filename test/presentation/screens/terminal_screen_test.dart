@@ -26,6 +26,7 @@ import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
+import 'package:monkeyssh/domain/services/device_debug_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
@@ -38,6 +39,7 @@ import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/screens/port_forward_browser_screen.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -45,16 +47,30 @@ import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interfac
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
-const _trueColorLoginShellCommand =
-    r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+String _trueColorLoginShellCommand(
+  SshConnectionConfig config, {
+  int hostId = 1,
+}) =>
+    'exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 '
+    'FORCE_HYPERLINK=1 '
+    'MONKEYSSH_SHELL_TOKEN=${buildSshShellLineageToken(config, hostId: hostId)} '
+    r"""/bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
 
 void _stubTrueColorLoginShell(
   SSHClient client,
   SSHSession shell, {
+  SshConnectionConfig config = const SshConnectionConfig(
+    hostname: 'terminal.example.com',
+    port: 22,
+    username: 'root',
+  ),
   VoidCallback? onOpen,
 }) {
   when(
-    () => client.execute(_trueColorLoginShellCommand, pty: any(named: 'pty')),
+    () => client.execute(
+      _trueColorLoginShellCommand(config),
+      pty: any(named: 'pty'),
+    ),
   ).thenAnswer((_) async {
     onOpen?.call();
     return shell;
@@ -69,7 +85,81 @@ class _MockShellChannel extends Mock implements SSHSession {}
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
-class _MockSftpClient extends Mock implements SftpClient {}
+Future<void> _completeSftpClose(Invocation _) async {}
+
+class _MockSftpClient extends Mock implements SftpClient {
+  _MockSftpClient() {
+    when(close).thenAnswer(_completeSftpClose);
+  }
+}
+
+class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
+  @override
+  bool get supported => true;
+
+  @override
+  Stream<String> get submittedPairingCodes => const Stream<String>.empty();
+
+  @override
+  Future<bool> showPairingCodePrompt({
+    required String status,
+    bool busy = false,
+  }) async => true;
+
+  @override
+  Future<void> hidePairingCodePrompt() async {}
+
+  @override
+  Future<bool> returnToApp({required String status}) async => true;
+
+  @override
+  Future<void> hideReturnPrompt() async {}
+
+  @override
+  Future<bool> isWirelessDebuggingSupported() async => true;
+
+  @override
+  Future<AndroidAdbEndpoint?> discoverEndpoint(
+    AndroidAdbServiceKind kind, {
+    Duration timeout = const Duration(seconds: 6),
+  }) async => null;
+
+  @override
+  Future<bool> openDeveloperOptions() async => true;
+}
+
+class _FakeRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
+  @override
+  Future<RemoteAdbCommandResult> connect(
+    SshSession session, {
+    required String address,
+  }) async => const RemoteAdbCommandResult(exitCode: 1, output: '');
+
+  @override
+  Future<RemoteAdbCommandResult> disconnect(
+    SshSession session, {
+    required String address,
+  }) async => const RemoteAdbCommandResult(exitCode: 0, output: '');
+
+  @override
+  Future<bool> isAvailable(SshSession session) async => true;
+
+  @override
+  Future<RemoteListenerScope> listenerScope(
+    SshSession session,
+    int port,
+  ) async => RemoteListenerScope.loopback;
+
+  @override
+  Future<bool> supportsPairing(SshSession session) async => true;
+
+  @override
+  Future<RemoteAdbCommandResult> pair(
+    SshSession session, {
+    required String address,
+    required String pairingCode,
+  }) async => const RemoteAdbCommandResult(exitCode: 1, output: '');
+}
 
 class _MockTmuxService extends Mock implements TmuxService {
   @override
@@ -80,6 +170,8 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   MonkeyMuxServerStatus? runningStatus;
   Future<MonkeyMuxServerStatus?>? runningStatusFuture;
   MonkeyMuxServerStatus? installedHelpersStatus;
+  String? helperVersion;
+  int installedHelperVersionCalls = 0;
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
   bool hasLiveControlChannelValue = false;
@@ -125,6 +217,16 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   }) async {
     runningServerStatusFromInstalledHelpersCalls++;
     return installedHelpersStatus;
+  }
+
+  @override
+  Future<String?> installedHelperVersion(
+    SshSession session,
+    MonkeyMuxInstallation installation, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    installedHelperVersionCalls++;
+    return helperVersion ?? installation.version;
   }
 
   @override
@@ -529,6 +631,7 @@ Host _buildHost({
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
   autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
+  autoForwardPorts: false,
   remoteMuxBackend: remoteMuxBackend?.storageValue,
   sortOrder: 0,
 );
@@ -1278,6 +1381,8 @@ void main() {
       ActiveSessionsNotifier? activeSessions,
       TmuxService? tmuxService,
       ShellCompletionService? shellCompletionService,
+      AndroidDeviceDebugPlatform? deviceDebugPlatform,
+      RemoteAdbCommandRunner? remoteAdbCommandRunner,
     }) async {
       await tester.pumpWidget(
         ProviderScope(
@@ -1300,6 +1405,13 @@ void main() {
             if (shellCompletionService != null)
               shellCompletionServiceProvider.overrideWithValue(
                 shellCompletionService,
+              ),
+            androidDeviceDebugPlatformProvider.overrideWithValue(
+              deviceDebugPlatform ?? _FakeAndroidDeviceDebugPlatform(),
+            ),
+            if (remoteAdbCommandRunner != null)
+              remoteAdbCommandRunnerProvider.overrideWithValue(
+                remoteAdbCommandRunner,
               ),
           ],
           child: MaterialApp(
@@ -1560,7 +1672,7 @@ void main() {
         await pumpScreen(tester, activeSessions: activeSessions);
         verify(
           () => sshClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(session.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1588,7 +1700,7 @@ void main() {
         expect(activeSessions.connectForceNewValues, <bool>[true]);
         verify(
           () => reconnectClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(reconnectSession.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1641,7 +1753,7 @@ void main() {
         await pumpScreen(tester, activeSessions: activeSessions);
         verify(
           () => sshClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(session.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1669,7 +1781,7 @@ void main() {
         expect(activeSessions.connectForceNewValues, <bool>[true]);
         verify(
           () => reconnectClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(reconnectSession.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -1785,6 +1897,81 @@ void main() {
       expect(terminalMenuItemButton('Paste Files'), findsOneWidget);
     });
 
+    testWidgets('terminal overflow opens live port forward controls', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+
+      await openTerminalOverflowMenu(tester);
+      expect(terminalMenuItemButton('Port Forwards'), findsOneWidget);
+
+      await tester.tap(terminalMenuItemButton('Port Forwards'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('no forwards for this host'), findsOneWidget);
+      expect(find.text('Add Forward'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.close));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 1));
+    });
+
+    testWidgets(
+      'terminal overflow shows Android device debugging as a switch',
+      (tester) async {
+        await pumpScreen(tester);
+
+        await openTerminalOverflowMenu(tester);
+
+        final item = terminalMenuItemButton('Device debugging');
+        expect(item, findsOneWidget);
+        expect(
+          find.descendant(of: item, matching: find.byType(Switch)),
+          findsOneWidget,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'terminal overflow hides device debugging on iOS',
+      (tester) async {
+        await pumpScreen(tester);
+
+        await openTerminalOverflowMenu(tester);
+
+        expect(terminalMenuItemButton('Device debugging'), findsNothing);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'device debugging switch opens Wireless debugging setup',
+      (tester) async {
+        await pumpScreen(
+          tester,
+          deviceDebugPlatform: _FakeAndroidDeviceDebugPlatform(),
+          remoteAdbCommandRunner: _FakeRemoteAdbCommandRunner(),
+        );
+
+        await openTerminalOverflowMenu(tester);
+        await tester.tap(terminalMenuItemButton('Device debugging'));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text(
+            'Turn on Wireless debugging in Android Developer options, '
+            'then search again.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Open Wireless debugging'), findsOneWidget);
+        expect(find.text('Search again'), findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
     testWidgets(
       'terminal overflow opens active local forwards in browser tabs',
       (tester) async {
@@ -1795,11 +1982,34 @@ void main() {
           config: session.config,
           activeTunnels: const [
             ActiveTunnelInfo(
+              portForwardId: -1,
+              localHost: '127.0.0.1',
+              localPort: 49154,
+              browserHost: 'dev-box.localhost',
+              browserPort: 49154,
+              remoteHost: '127.0.0.1',
+              remotePort: 4000,
+              isLocal: true,
+              isAutomatic: true,
+            ),
+            ActiveTunnelInfo(
+              portForwardId: -2,
+              localHost: '127.0.0.1',
+              localPort: 49153,
+              browserHost: 'dev-box.localhost',
+              browserPort: 49153,
+              remoteHost: '127.0.0.1',
+              remotePort: 4898,
+              isLocal: true,
+              isAutomatic: true,
+              isShellRelated: true,
+            ),
+            ActiveTunnelInfo(
               portForwardId: 42,
               localHost: '127.0.0.1',
               localPort: 49152,
               browserHost: 'monkeyssh-16.localhost',
-              browserPort: 60142,
+              browserPort: 49152,
               remoteHost: 'example.com',
               remotePort: 80,
               isLocal: true,
@@ -1809,7 +2019,7 @@ void main() {
               localHost: '0.0.0.0',
               localPort: 3000,
               browserHost: 'monkeyssh-17.localhost',
-              browserPort: 60143,
+              browserPort: 3000,
               remoteHost: 'localhost',
               remotePort: 3000,
               isLocal: true,
@@ -1887,16 +2097,28 @@ void main() {
         final launch = openedLaunches.last;
         expect(launch.selectedIndex, 0);
         expect(launch.tabs.map((tab) => tab.uri.toString()).toList(), [
-          'http://monkeyssh-16.localhost:60142',
-          'http://monkeyssh-17.localhost:60143',
+          'http://dev-box.localhost:49153',
+          'http://monkeyssh-17.localhost:3000',
+          'http://monkeyssh-16.localhost:49152',
+          'http://dev-box.localhost:49154',
         ]);
         expect(launch.tabs.map((tab) => tab.sourceUri.toString()).toList(), [
-          'http://127.0.0.1:49152',
+          'http://127.0.0.1:4898',
           'http://127.0.0.1:3000',
+          'http://127.0.0.1:49152',
+          'http://127.0.0.1:4000',
         ]);
         expect(launch.tabs.map((tab) => tab.title).toList(), [
-          '127.0.0.1:49152',
+          'Port 4898',
           '127.0.0.1:3000',
+          '127.0.0.1:49152',
+          'Port 4000',
+        ]);
+        expect(launch.tabs.map((tab) => tab.group).toList(), [
+          PortForwardBrowserTabGroup.savedHost,
+          PortForwardBrowserTabGroup.savedForward,
+          PortForwardBrowserTabGroup.savedForward,
+          PortForwardBrowserTabGroup.sharedHost,
         ]);
 
         router.pop();
@@ -2619,7 +2841,18 @@ void main() {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final loginShell = _MockShellChannel();
+        final loginStdout = StreamController<Uint8List>.broadcast();
+        final loginDone = Completer<void>();
+        final loginOpen = Completer<SSHSession>();
+        final loginWrites = <List<int>>[];
         final executedCommands = <String>[];
+        addTearDown(() async {
+          await loginStdout.close();
+          if (!loginDone.isCompleted) {
+            loginDone.complete();
+          }
+        });
 
         host = _buildHost(
           id: host.id,
@@ -2639,12 +2872,29 @@ void main() {
         when(
           () => shellChannel.resizeTerminal(any(), any(), any(), any()),
         ).thenAnswer((_) {});
+        when(() => sshClient.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (invocation) {
+            final command = invocation.positionalArguments.single as String;
+            executedCommands.add(command);
+            return command.contains('COLORTERM=truecolor')
+                ? loginOpen.future
+                : Future.value(shellChannel);
+          },
+        );
+        when(() => loginShell.stdout).thenAnswer((_) => loginStdout.stream);
         when(
-          () => sshClient.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((invocation) async {
-          executedCommands.add(invocation.positionalArguments.single as String);
-          return shellChannel;
+          () => loginShell.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(() => loginShell.done).thenAnswer((_) => loginDone.future);
+        when(() => loginShell.write(any())).thenAnswer((invocation) {
+          loginWrites.add(
+            List<int>.from(invocation.positionalArguments.single as List<int>),
+          );
         });
+        when(
+          () => loginShell.resizeTerminal(any(), any(), any(), any()),
+        ).thenAnswer((_) {});
+        when(loginShell.close).thenAnswer((_) {});
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
@@ -2703,9 +2953,11 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
+        final activeSessions = _TestActiveSessionsNotifier(session);
         await tester.pumpWidget(
           ProviderScope(
             overrides: [
@@ -2718,9 +2970,7 @@ void main() {
                 (ref) => Stream.value(_proMonetizationState),
               ),
               sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
+              activeSessionsProvider.overrideWith(() => activeSessions),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
@@ -2741,13 +2991,42 @@ void main() {
         await tester.pump();
 
         expect(executedCommands, hasLength(1));
-        expect(executedCommands.single, contains("'/tmp/monkeymux' attach"));
+        expect(executedCommands.single, contains('/tmp/monkeymux'));
+        expect(executedCommands.single, contains(' attach'));
         expect(executedCommands.single, contains('--update-policy never'));
-        expect(executedCommands.single, contains("'$sessionName'"));
+        expect(executedCommands.single, contains(sessionName));
         expect(
           shellWrites.map(utf8.decode).join(),
           isNot(contains('/tmp/monkeymux')),
         );
+
+        final terminalOutputHandler = session.terminal!.onOutput!;
+        final terminalResizeHandler = session.terminal!.onResize!;
+        await session.closeShell(waitForStreams: false);
+        final replacementShellFuture = session.getShell();
+        terminalOutputHandler('echo queued\r');
+        terminalResizeHandler(100, 32, 800, 512);
+        expect(loginWrites, isEmpty);
+        loginOpen.complete(loginShell);
+        final replacementShell = await replacementShellFuture;
+
+        expect(executedCommands, hasLength(2));
+        expect(
+          executedCommands.last,
+          _trueColorLoginShellCommand(session.config),
+        );
+        expect(replacementShell, same(loginShell));
+        verify(() => loginShell.resizeTerminal(100, 32, 800, 512)).called(1);
+        terminalOutputHandler('echo ready\r');
+        terminalResizeHandler(101, 33, 808, 528);
+        expect(loginWrites.map(utf8.decode), contains('echo queued\r'));
+        expect(loginWrites.map(utf8.decode), contains('echo ready\r'));
+        verify(() => loginShell.resizeTerminal(101, 33, 808, 528)).called(1);
+        expect(activeSessions.disconnectedConnectionIds, isEmpty);
+        expect(find.text('Disconnected'), findsNothing);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -2849,6 +3128,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -2949,6 +3229,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((invocation) async {
           themeRefreshCount += 1;
@@ -3045,6 +3326,421 @@ void main() {
     );
 
     testWidgets(
+      'MonkeyMux theme change forces a foreground redraw resize',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        // A foreground agent enables focus reporting; this is the signal that
+        // gates theme hints toward a real TUI.
+        session.terminal!.write('\x1b[?1004h');
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+
+        // Drain any resize/redraw follow-up timers scheduled while the screen
+        // settled, then clear recorded interactions, so the verification below
+        // only sees the refresh the theme change itself drives (forced re-syncs
+        // during connection setup can also request a redraw).
+        await tester.pump(const Duration(milliseconds: 700));
+        await tester.pump();
+        clearInteractions(monkeyMuxService);
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pump();
+
+        // The theme actually changed (light -> dark), so the foreground TUI
+        // must be forced to fully repaint: MonkeyMux is told to redraw via the
+        // theme_changed `redraw` flag; otherwise Copilot CLI keeps its
+        // explicitly-colored bars in the old theme.
+        verify(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: true,
+          ),
+        ).called(greaterThanOrEqualTo(1));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'MonkeyMux forces a redraw on resume after a backgrounded theme change',
+      (tester) async {
+        // Regression guard for the resume gap: a theme change that lands while
+        // the app is backgrounded (or the connection is down) updates the
+        // session theme before any repaint reaches the agent. On resume the
+        // re-sync applies the same theme (didThemeChange == false) with
+        // forceRemoteRefresh, so the redraw must still be forced from the
+        // forced-refresh signal, otherwise Copilot CLI stays painted in the
+        // previous theme.
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        session.terminal!.write('\x1b[?1004h');
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 700));
+        await tester.pump();
+
+        // Ignore refreshes emitted while connecting; only the resume re-sync
+        // below should matter.
+        clearInteractions(monkeyMuxService);
+
+        // Background then foreground the app without a color change; the resume
+        // re-sync forces the repaint via the forced-refresh signal.
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pump();
+
+        verify(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: true,
+          ),
+        ).called(greaterThanOrEqualTo(1));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'MonkeyMux redraw obligation survives a refresh superseding it in flight',
+      (tester) async {
+        // Regression guard for the token-guarded latch clear: while a
+        // theme-change refresh is awaiting the remote, a newer forced refresh
+        // re-latches the redraw obligation and queues behind it. When the first
+        // refresh returns it must NOT clear that newer obligation, so the queued
+        // refresh still sends redraw:true (otherwise the newer theme repaints
+        // stale).
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        session.terminal!.write('\x1b[?1004h');
+
+        final refreshForceFlags = <bool>[];
+        final firstRefresh = Completer<void>();
+        var trapIndex = -1;
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        ).thenAnswer((invocation) async {
+          final index = refreshForceFlags.length;
+          refreshForceFlags.add(
+            invocation.namedArguments[#forceForegroundRedraw] as bool,
+          );
+          if (index == trapIndex) {
+            await firstRefresh.future;
+          }
+        });
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 700));
+        await tester.pump();
+
+        // Arm the trap so the next refresh (request A) blocks in flight.
+        trapIndex = refreshForceFlags.length;
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+
+        // A: a real light -> dark change latches the redraw obligation and
+        // blocks awaiting the remote.
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        expect(refreshForceFlags.length, trapIndex + 1);
+        expect(refreshForceFlags[trapIndex], isTrue);
+
+        // B: a forced re-sync (brightness) re-latches the obligation while A is
+        // still in flight and queues behind it.
+        tester.binding.platformDispatcher.onPlatformBrightnessChanged?.call();
+        await tester.pump();
+        await tester.pump();
+
+        // Release A. When it returns it must not clear B's newer obligation.
+        firstRefresh.complete();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pump();
+
+        // The refresh queued while A was in flight must still carry the redraw.
+        expect(
+          refreshForceFlags.length,
+          greaterThanOrEqualTo(trapIndex + 2),
+          reason: 'expected the superseding refresh to run',
+        );
+        expect(
+          refreshForceFlags[trapIndex + 1],
+          isTrue,
+          reason:
+              'a refresh superseding an in-flight one must keep redraw:true',
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'MonkeyMux window switches wait for replay before following output',
       (tester) async {
         final tmuxService = _MockTmuxService();
@@ -3117,6 +3813,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -3320,6 +4017,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -3481,6 +4179,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -3613,6 +4312,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -3935,6 +4635,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
 
@@ -6304,11 +7005,15 @@ void main() {
 
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
-        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('/tmp/monkeymux'));
+        expect(startupCommand, contains(' attach'));
         expect(startupCommand, contains('--update-policy never'));
-        expect(startupCommand, contains("--cwd '/work/project'"));
-        expect(startupCommand, contains("--name 'Copilot CLI'"));
-        expect(startupCommand, contains("--command 'copilot --yolo'"));
+        expect(startupCommand, contains('--cwd'));
+        expect(startupCommand, contains('/work/project'));
+        expect(startupCommand, contains('--name'));
+        expect(startupCommand, contains('Copilot CLI'));
+        expect(startupCommand, contains('--command'));
+        expect(startupCommand, contains('copilot --yolo'));
         expect(startupCommand, contains('agents'));
         expect(
           shellWrites.map(utf8.decode).join(),
@@ -6439,9 +7144,10 @@ void main() {
 
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
-        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('/tmp/monkeymux'));
+        expect(startupCommand, contains(' attach'));
         expect(startupCommand, contains('--update-policy never'));
-        expect(startupCommand, contains("'$sessionName'"));
+        expect(startupCommand, contains(sessionName));
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
         expect(session.remoteMuxSessionName, sessionName);
@@ -6457,16 +7163,32 @@ void main() {
 
     for (final testCase in const [
       (
-        name: 'installs helper without restarting an older MonkeyMux server',
+        name: 'updates and restores an older MonkeyMux server',
         runningVersion: '0.1.13',
-        dialogTitle: 'Update MonkeyMux helper?',
-        confirmLabel: 'Update',
+        dialogTitle: 'Update running MonkeyMux?',
+        confirmLabel: 'Update and restore',
         dialogMessage:
-            'MonkeySSH will upload helper 0.1.14 without interrupting its windows.',
-        notice:
-            'MonkeyMux 0.1.14 is installed, but this workspace is still running '
-            '0.1.13. Close all MonkeyMux windows, then reconnect to finish '
-            'updating.',
+            'MonkeySSH will upload helper 0.1.14. It can then restart this '
+            'workspace',
+        capabilities: <String>{},
+        showsUpgradeDecision: true,
+        warningMessage: 'The running helper cannot stop itself cleanly',
+        updatePolicy: MonkeyMuxServerUpdatePolicy.always,
+        notice: null,
+      ),
+      (
+        name: 'connects to an older MonkeyMux server when update is deferred',
+        runningVersion: '0.1.13',
+        dialogTitle: 'Update running MonkeyMux?',
+        confirmLabel: 'Use 0.1.13 for now',
+        dialogMessage:
+            'MonkeySSH will upload helper 0.1.14. It can then restart this '
+            'workspace',
+        capabilities: {'shutdown'},
+        showsUpgradeDecision: true,
+        warningMessage: 'Updating may briefly interrupt running programs',
+        updatePolicy: MonkeyMuxServerUpdatePolicy.never,
+        notice: null,
       ),
       (
         name: 'keeps a newer MonkeyMux server without downgrade guidance',
@@ -6474,6 +7196,10 @@ void main() {
         dialogTitle: 'Install bundled MonkeyMux helper?',
         confirmLabel: 'Install',
         dialogMessage: 'newer than bundled 0.1.14',
+        capabilities: {'shutdown'},
+        showsUpgradeDecision: false,
+        warningMessage: null,
+        updatePolicy: MonkeyMuxServerUpdatePolicy.never,
         notice:
             'This workspace is running MonkeyMux 0.1.15, newer than bundled '
             '0.1.14. Keeping the running server.',
@@ -6484,6 +7210,10 @@ void main() {
         dialogTitle: 'Install bundled MonkeyMux helper?',
         confirmLabel: 'Install',
         dialogMessage: 'running a different MonkeyMux version',
+        capabilities: {'shutdown'},
+        showsUpgradeDecision: false,
+        warningMessage: null,
+        updatePolicy: MonkeyMuxServerUpdatePolicy.never,
         notice:
             'This workspace is running a different MonkeyMux version. Keeping '
             'the running server to avoid interrupting its windows.',
@@ -6500,11 +7230,11 @@ void main() {
         final monkeyMuxService = _MockMonkeyMuxService()
           ..installedHelpersStatus = MonkeyMuxServerStatus(
             version: testCase.runningVersion,
-            capabilities: const {'shutdown'},
+            capabilities: testCase.capabilities,
           )
           ..runningStatus = MonkeyMuxServerStatus(
             version: testCase.runningVersion,
-            capabilities: const {'shutdown'},
+            capabilities: testCase.capabilities,
           );
         final tmuxService = _MockTmuxService();
         const sessionName = 'work';
@@ -6586,22 +7316,36 @@ void main() {
           find.text('Running version: ${testCase.runningVersion ?? 'unknown'}'),
           findsOneWidget,
         );
-        expect(find.text('Update MonkeyMux?'), findsNothing);
         expect(find.textContaining(testCase.dialogMessage), findsOneWidget);
+        if (testCase.showsUpgradeDecision) {
+          expect(
+            find.textContaining('automatically restore its existing windows'),
+            findsOneWidget,
+          );
+          expect(find.textContaining(testCase.warningMessage!), findsOneWidget);
+          expect(find.text('Use 0.1.13 for now'), findsOneWidget);
+          expect(find.text('Update and restore'), findsOneWidget);
+          expect(
+            find.textContaining('Close all MonkeyMux windows'),
+            findsNothing,
+          );
+        }
         expect(executedCommands, isEmpty);
 
-        await tester.tap(
-          find.widgetWithText(FilledButton, testCase.confirmLabel),
-        );
+        await tester.tap(find.text(testCase.confirmLabel));
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pump(const Duration(milliseconds: 300));
 
         expect(find.text(testCase.dialogTitle), findsNothing);
-        expect(find.text('Update MonkeyMux?'), findsNothing);
+        expect(find.text('Update running MonkeyMux?'), findsNothing);
         expect(executedCommands, hasLength(1));
         final startupCommand = executedCommands.single;
-        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
-        expect(startupCommand, contains('--update-policy never'));
+        expect(startupCommand, contains('/tmp/monkeymux'));
+        expect(startupCommand, contains(' attach'));
+        expect(
+          startupCommand,
+          contains('--update-policy ${testCase.updatePolicy.cliValue}'),
+        );
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[true]);
         expect(
@@ -6609,11 +7353,132 @@ void main() {
           1,
         );
         expect(monkeyMuxService.runningServerStatusCalls, 1);
-        expect(find.text(testCase.notice), findsOneWidget);
+        if (testCase.notice case final notice?) {
+          expect(find.text(notice), findsOneWidget);
+        } else {
+          expect(find.byType(SnackBar), findsNothing);
+        }
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
       }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
     }
+
+    // The bundled manifest version is only a packaging label. `attach` decides
+    // whether to restart a running server by comparing it against the version
+    // compiled into the helper binary, so when the two drift the update dialog
+    // would be offered for an upgrade the helper then skips, and it would come
+    // back on every connect without ever applying.
+    testWidgets(
+      'skips the update prompt when the helper binary matches the server',
+      (tester) async {
+        final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final monkeyMuxService = _MockMonkeyMuxService()
+          ..helperVersion = '0.1.13'
+          ..runningStatus = const MonkeyMuxServerStatus(
+            version: '0.1.13',
+            capabilities: {'shutdown'},
+          );
+        final tmuxService = _MockTmuxService();
+        const sessionName = 'work';
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        final executedCommands = <String>[];
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return shellChannel;
+        });
+        when(
+          () => monkeyMuxInstallerService.ensureInstalled(
+            session,
+            priority: any(named: 'priority'),
+            confirmInstall: any(named: 'confirmInstall'),
+          ),
+          // The manifest labels this install 0.1.14 while the binary it
+          // shipped still reports 0.1.13.
+        ).thenAnswer(
+          (_) async => const MonkeyMuxInstallation(
+            executablePath: '/tmp/monkeymux',
+            platform: 'darwin-arm64',
+            version: '0.1.14',
+          ),
+        );
+        when(
+          () =>
+              monkeyMuxService.hasForegroundClientOrThrow(session, sessionName),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, sessionName),
+        ).thenAnswer(
+          (_) async => const <TmuxWindow>[
+            TmuxWindow(index: 0, name: 'shell', isActive: true),
+          ],
+        );
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, sessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monkeyMuxInstallerServiceProvider.overrideWithValue(
+                monkeyMuxInstallerService,
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(find.text('Update running MonkeyMux?'), findsNothing);
+        expect(monkeyMuxService.installedHelperVersionCalls, 1);
+        expect(executedCommands, hasLength(1));
+        expect(executedCommands.single, contains('--update-policy never'));
+        expect(find.byType(SnackBar), findsNothing);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
 
     testWidgets(
       'does not use the update UI after disposal during the status probe',
@@ -6797,7 +7662,9 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(executedCommands, <String>[
+          _trueColorLoginShellCommand(session.config),
+        ]);
         expect(shellWrites, isEmpty);
         expect(find.text('Install MonkeyMux helper?'), findsNothing);
         expect(session.remoteMuxBackend, isNull);
@@ -6806,7 +7673,7 @@ void main() {
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[false]);
         verify(
           () => sshClient.execute(
-            _trueColorLoginShellCommand,
+            _trueColorLoginShellCommand(session.config),
             pty: any(named: 'pty'),
           ),
         ).called(1);
@@ -6891,7 +7758,9 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(executedCommands, <String>[
+          _trueColorLoginShellCommand(session.config),
+        ]);
         expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(find.text('MonkeyMux is unavailable.'), findsOneWidget);
         verify(
@@ -6969,10 +7838,14 @@ void main() {
         tester.testTextInput.log.clear();
         tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
         await tester.pump();
-        tester.testTextInput.hide();
-        await tester.pump();
 
         expect(tester.testTextInput.isVisible, isFalse);
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.hide',
+          ),
+          isNotEmpty,
+        );
 
         tester.binding.handleAppLifecycleStateChanged(
           AppLifecycleState.resumed,
@@ -7081,6 +7954,7 @@ void main() {
         expect(tester.testTextInput.isVisible, isFalse);
         expect(find.byTooltip('Show system keyboard'), findsOneWidget);
         expect(find.byTooltip('Hide system keyboard'), findsNothing);
+        expect(tester.getBottomLeft(find.byType(KeyboardToolbar)).dy, 844);
 
         tester.testTextInput.log.clear();
         await tester.tap(find.byTooltip('Show system keyboard'));
@@ -7101,8 +7975,12 @@ void main() {
         await tester.pump();
         expect(find.byTooltip('Hide system keyboard'), findsOneWidget);
         expect(find.byTooltip('Show system keyboard'), findsNothing);
+        expect(tester.getBottomLeft(find.byType(KeyboardToolbar)).dy, 344);
       },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
     );
 
     testWidgets(
@@ -7317,6 +8195,7 @@ void main() {
             sessionName,
             any(),
             extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
           ),
         ).thenAnswer((_) async {});
         when(
