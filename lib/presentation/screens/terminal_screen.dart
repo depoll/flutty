@@ -10203,6 +10203,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       switch (action) {
         case TmuxSwitchWindowAction(:final windowIndex):
           await _switchTmuxWindow(session, windowIndex);
+          if (!mounted) return;
           unawaited(
             ref
                 .read(telemetryServiceProvider)
@@ -10212,6 +10213,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
         case TmuxNewWindowAction(:final command, :final windowName):
           await _createTmuxWindow(session, command: command, name: windowName);
+          if (!mounted) return;
           unawaited(
             ref
                 .read(telemetryServiceProvider)
@@ -10229,6 +10231,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             command: resumeCommand,
             workingDirectory: workingDirectory,
           );
+          if (!mounted) return;
           final tool = agentLaunchToolForCommandText(resumeCommand);
           unawaited(
             ref
@@ -10535,12 +10538,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session,
         refreshVisibleTerminal: true,
       );
+      if (!mounted) return;
     }
     await backend.createWindow(
       command: command,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
     );
+    if (!mounted) return;
     final tool = agentLaunchToolForCommandText(command);
     if (tool != null) {
       unawaited(

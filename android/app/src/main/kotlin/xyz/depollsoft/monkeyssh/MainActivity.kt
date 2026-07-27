@@ -31,6 +31,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var hasRequestedNotificationPermission = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        MonkeySshApplication.from(this).ensureSharedFlutterEngine()
         super.onCreate(savedInstanceState)
         SshServiceChannelHandler.attachActivity(this)
         handleTransferIntent(intent)
