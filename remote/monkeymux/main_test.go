@@ -2658,6 +2658,16 @@ func TestTerminalOutputHasVisibleContent(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "text after a cancelled kitty transmission before a later st",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA\x18agent ready\x1b\\",
+			want: true,
+		},
+		{
+			name: "text after a substituted kitty transmission",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA\x1aagent ready\x1b\\",
+			want: true,
+		},
+		{
 			name: "truncated kitty transmission",
 			data: "\x1b_Ga=t,i=7,f=100;AAAA",
 			want: false,
