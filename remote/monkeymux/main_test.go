@@ -1324,9 +1324,14 @@ func TestEmptyForegroundRedrawFallbackPreservesQueryFailover(t *testing.T) {
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	server.mu.Lock()
-	window.redrawForwardingFallbackReplay =
-		server.foregroundHistoryFallbackReplayLocked(window)
-	fallback := string(window.redrawForwardingFallbackReplay)
+	window.redrawForwardingFallbackHistory =
+		server.foregroundHistoryFallbackHistoryLocked(window)
+	fallback := string(
+		server.foregroundHistoryFallbackReplayLocked(
+			window,
+			window.redrawForwardingFallbackHistory,
+		),
+	)
 	server.mu.Unlock()
 
 	secondaryConn := &recordingConn{}
@@ -2558,6 +2563,34 @@ func TestTerminalOutputHasVisibleContent(t *testing.T) {
 			want: true,
 		},
 		{
+			// 44 would be read as "blue background" if the 256-color parameters
+			// were not skipped, so this pins the skip rather than the outcome.
+			name: "spaces under a 256 color foreground only",
+			data: "\x1b[38;5;44m   \x1b[0m",
+			want: false,
+		},
+		{
+			name: "spaces under a truecolor foreground only",
+			data: "\x1b[38;2;44;7;41m   \x1b[0m",
+			want: false,
+		},
+		{
+			name: "spaces under a colon form truecolor foreground only",
+			data: "\x1b[38:2::44:7:41m   \x1b[0m",
+			want: false,
+		},
+		{
+			name: "spaces under a colon form 256 color background",
+			data: "\x1b[48:5:236m   \x1b[0m",
+			want: true,
+		},
+		{
+			// A foreground color must not mask a background set afterwards.
+			name: "spaces under a foreground then a background",
+			data: "\x1b[38;5;44;48;5;236m   \x1b[0m",
+			want: true,
+		},
+		{
 			name: "spaces under reverse video",
 			data: "\x1b[7m   \x1b[27m",
 			want: true,
@@ -2613,6 +2646,26 @@ func TestTerminalOutputHasVisibleContent(t *testing.T) {
 			name: "eight bit kitty transmit and display",
 			data: "\x9fGa=T,i=7,f=100;AAAA\x9c",
 			want: true,
+		},
+		{
+			name: "seven bit kitty transmit and display with eight bit terminator",
+			data: "\x1b_Ga=T,i=7,f=100;AAAA\x9c",
+			want: true,
+		},
+		{
+			name: "text after a cancelled kitty transmission",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA\x18agent ready",
+			want: true,
+		},
+		{
+			name: "truncated kitty transmission",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA",
+			want: false,
+		},
+		{
+			name: "kitty transmission with an implicit store only action",
+			data: "\x1b_Gi=7,f=100;AAAA\x1b\\",
+			want: false,
 		},
 	}
 	for _, test := range tests {
@@ -4699,8 +4752,14 @@ func TestSelectWindowFallsBackToHistoryWhenForegroundRedrawIsEmpty(t *testing.T)
 	if !strings.Contains(got, "last known tui screen") {
 		t.Fatalf("empty foreground redraw left no visible fallback: %q", got)
 	}
-	if strings.Contains(got, "\x1b]0;agent\x07") {
-		t.Fatalf("failed redraw metadata contaminated the fallback frame: %q", got)
+	if strings.Contains(got, "\x1b[H\x1b[2J\x1b]0;agent\x07") {
+		t.Fatalf("failed redraw was replayed verbatim: %q", got)
+	}
+	// The title the TUI set during the failed redraw is real window state, so
+	// the rebuilt frame carries it as a structured title replay rather than as
+	// the raw redraw bytes rejected above.
+	if !strings.Contains(got, "\x1b]0;agent\x07\x1b]1;agent\x07\x1b]2;agent\x07") {
+		t.Fatalf("fallback frame dropped the window title: %q", got)
 	}
 	if !strings.HasPrefix(got, terminalSynchronizedOutputBegin) ||
 		!strings.HasSuffix(got, terminalSynchronizedOutputEnd) {
@@ -4802,8 +4861,8 @@ func TestEmptyThemeRedrawFallsBackToHistory(t *testing.T) {
 
 	waitForRecordedContains(t, conn, "last known themed frame")
 	got := conn.String()
-	if strings.Contains(got, "\x1b]0;agent\x07") {
-		t.Fatalf("failed redraw metadata contaminated the fallback frame: %q", got)
+	if strings.Contains(got, "\x1b[H\x1b[2J\x1b]0;agent\x07") {
+		t.Fatalf("failed redraw was replayed verbatim: %q", got)
 	}
 	// The dance writes its mode replay first, so the transaction starts partway
 	// through the stream; the fallback frame must sit entirely inside it.
@@ -4821,9 +4880,9 @@ func TestEmptyThemeRedrawFallsBackToHistory(t *testing.T) {
 }
 
 // TestRestartedRedrawPauseKeepsOriginalFallback verifies a second pause started
-// while the first is still in flight does not re-snapshot the history: by then
-// the first (empty) redraw may already have cleared it, so re-capturing would
-// hand back a blank frame instead of the last complete one.
+// while the first is still in flight does not re-snapshot a history the first
+// (empty) redraw already cleared, which would hand back a blank frame instead of
+// the last complete one.
 func TestRestartedRedrawPauseKeepsOriginalFallback(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -4845,10 +4904,12 @@ func TestRestartedRedrawPauseKeepsOriginalFallback(t *testing.T) {
 
 	server.mu.Lock()
 	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
-	first := string(window.redrawForwardingFallbackReplay)
-	window.history = []byte("\x1b[H")
+	first := string(window.redrawForwardingFallbackHistory)
+	// The first redraw produced only a clear, so the history no longer holds a
+	// usable frame.
+	window.history = []byte("\x1b[H\x1b[2J")
 	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
-	second := string(window.redrawForwardingFallbackReplay)
+	second := string(window.redrawForwardingFallbackHistory)
 	server.mu.Unlock()
 
 	if !strings.Contains(first, "oldest complete frame") {
@@ -4856,6 +4917,146 @@ func TestRestartedRedrawPauseKeepsOriginalFallback(t *testing.T) {
 	}
 	if second != first {
 		t.Fatalf("restarted pause re-snapshotted fallback = %q, want %q", second, first)
+	}
+}
+
+// TestRestartedRedrawPauseRefreshesUsableFallback is the complement: when the
+// redraw during the first pause did paint a real frame, the restarted pause must
+// adopt it rather than pinning the user to the older screen.
+func TestRestartedRedrawPauseRefreshesUsableFallback(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Holdest complete frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	window.history = []byte("\x1b[Hnewer complete frame")
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	second := string(window.redrawForwardingFallbackHistory)
+	server.mu.Unlock()
+
+	if !strings.Contains(second, "newer complete frame") {
+		t.Fatalf("restarted pause kept a stale fallback = %q", second)
+	}
+}
+
+// TestClosedWindowReleasesRedrawFallback verifies a window closed mid-pause does
+// not retain its snapshot: closed windows stay in s.windows for the life of the
+// server, and resumePausedAttachForwarding returns early on them, so nothing
+// else would ever free the buffers.
+func TestClosedWindowReleasesRedrawFallback(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hretained frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	originalSignalForegroundResize := signalForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+		signalForegroundResize = originalSignalForegroundResize
+	}()
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+	signalForegroundResize = func(int) {}
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	window.redrawForwardingBuffer = []byte("buffered")
+	captured := len(window.redrawForwardingFallbackHistory)
+	server.mu.Unlock()
+	if captured == 0 {
+		t.Fatal("pause captured no fallback history to release")
+	}
+
+	server.markWindowClosed("@1")
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if window.redrawForwardingFallbackHistory != nil ||
+		window.redrawForwardingBuffer != nil ||
+		window.redrawForwardingPaused {
+		t.Fatalf(
+			"closed window retained redraw state: history=%d buffer=%d paused=%v",
+			len(window.redrawForwardingFallbackHistory),
+			len(window.redrawForwardingBuffer),
+			window.redrawForwardingPaused,
+		)
+	}
+}
+
+// TestPartialSequenceRedrawKeepsNormalForwarding verifies the fallback does not
+// replace a redraw that ended mid escape sequence. Discarding it would drop the
+// head of a sequence whose tail is still to come and corrupt the client, so such
+// a redraw must forward normally even though it has no visible content yet.
+func TestPartialSequenceRedrawKeepsNormalForwarding(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hlast known tui screen"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+	// The chunk ends inside an unterminated OSC, so its tail arrives later.
+	server.handleWindowOutput("@2", []byte("\x1b[H\x1b]0;partial"))
+
+	server.mu.Lock()
+	generation := inactiveWindow.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@2", generation)
+
+	got := attach.String()
+	if strings.Contains(got, "last known tui screen") {
+		t.Fatalf("fallback replaced a redraw that ended mid sequence: %q", got)
+	}
+	// The complete prefix still forwards normally; the unterminated OSC tail is
+	// carried until the rest of it arrives.
+	if !strings.HasSuffix(
+		got,
+		terminalSynchronizedOutputBegin+"\x1b[H"+terminalSynchronizedOutputEnd,
+	) {
+		t.Fatalf("buffered redraw prefix was not forwarded normally: %q", got)
 	}
 }
 
