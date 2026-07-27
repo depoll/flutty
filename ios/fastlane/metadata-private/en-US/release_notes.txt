@@ -1,9 +1,11 @@
-What's new in this 0.2.0 beta
+What's new in this 0.3.0 beta
 
-- Windows remotes: connect to Windows OpenSSH hosts and switch windows with MonkeyMux over ConPTY, with agent-session discovery and shell completion.
-- Cursor Agent CLI joins the launch presets alongside Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, and Antigravity.
-- In-app browser to preview forwarded ports without leaving the app.
-- Sharper terminal rendering, including inline Kitty graphics and images.
-- Smoother on-screen keyboard handling and terminal input fixes.
+- Automatic port proxying: remote services are discovered while you work and forwarded over SSH, so localhost links in the terminal open straight into the in-app browser.
+- Live port forwarding controls: start, stop, add, and edit tunnels for the current session from the terminal without reconnecting.
+- Multi-client MonkeyMux sessions: attach from your phone and your desktop at the same time, with the shared window following whichever client you are using and tmux-style Ctrl-B window controls.
+- Animated terminal graphics: inline GIF and APNG playback with Kitty animation support, paused when Reduce Motion is on.
+- Home-screen shortcuts now use per-host themed icons.
+- MonkeyMux restores your session automatically after helper upgrades, with steadier theme changes, resizes, and image pastes.
+- On-screen keyboard and IME fixes, tappable Copilot CLI links, and a long list of terminal and stability improvements.
 
 Thanks for testing the beta — please report anything that feels off.
