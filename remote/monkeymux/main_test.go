@@ -5060,6 +5060,53 @@ func TestPartialSequenceRedrawKeepsNormalForwarding(t *testing.T) {
 	}
 }
 
+// TestRedrawFallbackSnapshotSurvivesHistoryRewrite pins the snapshot against
+// aliasing: the history helpers can return slices backed by window.history, and
+// appendHistoryLocked rewrites that buffer in place as the redraw arrives, so an
+// aliased snapshot would mutate into the redraw it exists to recover from.
+func TestRedrawFallbackSnapshotSurvivesHistoryRewrite(t *testing.T) {
+	server := newMuxServer("test")
+	// A real window's history buffer is grown to twice the limit so trims are
+	// amortized; that spare capacity is what lets later appends rewrite the
+	// buffer in place rather than reallocating.
+	history := make([]byte, 0, 2*windowFullReplayHistoryLimitBytes)
+	history = append(history, "\x1b[Hlast known tui screen"...)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      history,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	snapshot := string(window.redrawForwardingFallbackHistory)
+	// Output landing while the pause is in flight rewrites the history buffer
+	// starting at index 0, over the bytes an aliased snapshot would point at.
+	window.appendHistoryLocked(
+		bytes.Repeat([]byte("x"), windowFullReplayHistoryLimitBytes),
+	)
+	after := string(window.redrawForwardingFallbackHistory)
+	server.mu.Unlock()
+
+	if !strings.Contains(snapshot, "last known tui screen") {
+		t.Fatalf("pause captured no fallback frame: %q", snapshot)
+	}
+	if after != snapshot {
+		t.Fatal("history rewrite mutated the retained fallback snapshot")
+	}
+}
+
 func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
