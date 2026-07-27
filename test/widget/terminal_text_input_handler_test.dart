@@ -741,6 +741,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   bool deleteDetection = true,
   bool tapToShowKeyboard = true,
   bool sensitiveInput = false,
+  TerminalTextInputReviewCallback? onReviewInsertedText,
   String Function()? resolveTextBeforeCursor,
   TerminalKeyModifierResolver? resolveTerminalKeyModifiers,
   VoidCallback? consumeTerminalKeyModifiers,
@@ -765,6 +766,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
           readOnly: readOnly,
           tapToShowKeyboard: tapToShowKeyboard,
           sensitiveInput: sensitiveInput,
+          onReviewInsertedText: onReviewInsertedText,
           resolveTextBeforeCursor: resolveTextBeforeCursor,
           resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
           consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
@@ -5235,6 +5237,897 @@ void main() {
         );
 
         focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'commits active IME composition before an action-first newline',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
+        const committedPrefix = 'git reset --';
+        const command = '${committedPrefix}hard';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            committedPrefix,
+            selectionOffset: committedPrefix.length,
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(
+              start: committedPrefix.length,
+              end: command.length,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        expect(harness.terminalOutput.join(), committedPrefix);
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('$command\n', selectionOffset: command.length + 1),
+        );
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          '$command${_terminalKeyOutput(TerminalKey.enter)}',
+        );
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(
+              offset: _deleteDetectionMarker.length,
+            ),
+          ),
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'preserves action modifiers while committing active IME composition',
+      (tester) async {
+        var shiftActive = true;
+        var consumeCount = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: false, shift: shiftActive),
+          consumeTerminalKeyModifiers: () {
+            consumeCount++;
+            shiftActive = false;
+          },
+        );
+        const committedPrefix = 'echo ';
+        const command = '${committedPrefix}hi';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            committedPrefix,
+            selectionOffset: committedPrefix.length,
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(
+              start: committedPrefix.length,
+              end: command.length,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          '$command$_terminalAlternateEnterInput',
+        );
+        expect(consumeCount, 1);
+        expect(shiftActive, isFalse);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'does not submit when reviewed IME composition is rejected on Enter',
+      (tester) async {
+        final decision = Completer<bool>();
+        var reviewCount = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          onReviewInsertedText: (_) {
+            reviewCount++;
+            return decision.future;
+          },
+        );
+        const command = r'echo $(id)';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(start: 0, end: command.length),
+          ),
+        );
+        await tester.pump();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('$command\n', selectionOffset: command.length + 1),
+        );
+        await tester.pump();
+
+        expect(reviewCount, 1);
+        expect(harness.terminalOutput, isEmpty);
+
+        decision.complete(false);
+        await tester.pump();
+        await tester.pump();
+
+        expect(reviewCount, 1);
+        expect(harness.terminalOutput, isEmpty);
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(
+              offset: _deleteDetectionMarker.length,
+            ),
+          ),
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'preserves reviewed Enter while coalescing the IME newline follow-up',
+      (tester) async {
+        final decision = Completer<bool>();
+        var reviewCount = 0;
+        var shiftActive = true;
+        var consumeCount = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          onReviewInsertedText: (_) {
+            reviewCount++;
+            return decision.future;
+          },
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: false, shift: shiftActive),
+          consumeTerminalKeyModifiers: () {
+            consumeCount++;
+            shiftActive = false;
+          },
+        );
+        const command = r'echo $(id)';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(start: 0, end: command.length),
+          ),
+        );
+        await tester.pump();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('$command\n', selectionOffset: command.length + 1),
+        );
+        await tester.pump();
+
+        expect(reviewCount, 1);
+        expect(harness.terminalOutput, isEmpty);
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(reviewCount, 1);
+        expect(
+          harness.terminalOutput.join(),
+          '$command$_terminalAlternateEnterInput',
+        );
+        expect(consumeCount, 1);
+        expect(shiftActive, isFalse);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets('defers edit-first Enter until command review approves', (
+      tester,
+    ) async {
+      final decision = Completer<bool>();
+      var reviewCount = 0;
+      final harness = await _pumpTerminalHarness(
+        tester,
+        onReviewInsertedText: (_) {
+          reviewCount++;
+          return decision.future;
+        },
+      );
+      const command = r'echo $(id)';
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(command, selectionOffset: command.length),
+      );
+      await tester.pump();
+
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue('$command\n', selectionOffset: command.length + 1),
+      );
+      await tester.pump();
+
+      expect(reviewCount, 1);
+      expect(harness.terminalOutput, isEmpty);
+
+      decision.complete(true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(reviewCount, 1);
+      expect(
+        harness.terminalOutput.join(),
+        '$command${_terminalKeyOutput(TerminalKey.enter)}',
+      );
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets(
+      'does not submit edit-first Enter when command review rejects',
+      (tester) async {
+        final decision = Completer<bool>();
+        var reviewCount = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          onReviewInsertedText: (_) {
+            reviewCount++;
+            return decision.future;
+          },
+        );
+        const command = r'echo $(id)';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(command, selectionOffset: command.length),
+        );
+        await tester.pump();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('$command\n', selectionOffset: command.length + 1),
+        );
+        await tester.pump();
+
+        decision.complete(false);
+        await tester.pump();
+        await tester.pump();
+
+        expect(reviewCount, 1);
+        expect(harness.terminalOutput, isEmpty);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets('stale review does not clear a newer composing Enter action', (
+      tester,
+    ) async {
+      final decisions = <Completer<bool>>[];
+      var shiftActive = true;
+      var consumeCount = 0;
+      final harness = await _pumpTerminalHarness(
+        tester,
+        onReviewInsertedText: (_) {
+          final decision = Completer<bool>();
+          decisions.add(decision);
+          return decision.future;
+        },
+        resolveTerminalKeyModifiers: () =>
+            (ctrl: false, alt: false, shift: shiftActive),
+        consumeTerminalKeyModifiers: () {
+          consumeCount++;
+          shiftActive = false;
+        },
+      );
+      const staleCommand = r'echo $(id)';
+      const currentCommand = r'printf $(pwd)';
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(staleCommand, selectionOffset: staleCommand.length),
+      );
+      await tester.pump();
+      expect(decisions, hasLength(1));
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(
+          currentCommand,
+          selectionOffset: currentCommand.length,
+          composing: const TextRange(start: 0, end: currentCommand.length),
+        ),
+      );
+      await tester.pump();
+
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
+
+      decisions.first.complete(true);
+      await tester.pump();
+      await tester.pump();
+      expect(decisions, hasLength(2));
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(
+          '$currentCommand\n',
+          selectionOffset: currentCommand.length + 1,
+        ),
+      );
+      await tester.pump();
+
+      decisions.last.complete(true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        harness.terminalOutput.join(),
+        '$currentCommand$_terminalAlternateEnterInput',
+      );
+      expect(consumeCount, 1);
+      expect(shiftActive, isFalse);
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets(
+      'reviewed newline uses captured modifiers without suppressing next Enter',
+      (tester) async {
+        final decision = Completer<bool>();
+        var shiftActive = true;
+        var consumeCount = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          onReviewInsertedText: (_) => decision.future,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: false, shift: shiftActive),
+          consumeTerminalKeyModifiers: () {
+            consumeCount++;
+            shiftActive = false;
+          },
+        );
+        const command = r'echo $(id)';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('$command\n', selectionOffset: command.length + 1),
+        );
+        await tester.pump();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          '$command$_terminalAlternateEnterInput',
+        );
+        expect(consumeCount, 1);
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          '$command$_terminalAlternateEnterInput'
+          '${_terminalKeyOutput(TerminalKey.enter)}',
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets('rejection preserves text typed after the pending newline', (
+      tester,
+    ) async {
+      final decision = Completer<bool>();
+      final harness = await _pumpTerminalHarness(
+        tester,
+        onReviewInsertedText: (_) => decision.future,
+      );
+      const command = r'echo $(id)';
+      const followUpText = 'next';
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(
+          command,
+          selectionOffset: command.length,
+          composing: const TextRange(start: 0, end: command.length),
+        ),
+      );
+      await tester.pump();
+
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(
+          '$command\n$followUpText',
+          selectionOffset: command.length + 1 + followUpText.length,
+          composing: const TextRange(
+            start: command.length + 1,
+            end: command.length + 1 + followUpText.length,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      decision.complete(false);
+      await tester.pump();
+      await tester.pump();
+
+      expect(harness.terminalOutput, isEmpty);
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(followUpText, selectionOffset: followUpText.length),
+      );
+      await tester.pump();
+
+      expect(harness.terminalOutput.join(), followUpText);
+      expect(
+        _terminalTextInputClient(tester).currentTextEditingValue,
+        const TextEditingValue(
+          text: '$_deleteDetectionMarker$followUpText',
+          selection: TextSelection.collapsed(
+            offset: _deleteDetectionMarker.length + followUpText.length,
+          ),
+        ),
+      );
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets(
+      'canonicalizes a previous stale Enter prefix before replaying follow-up',
+      (tester) async {
+        final decision = Completer<bool>();
+        var reviewCount = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          onReviewInsertedText: (_) {
+            reviewCount++;
+            return decision.future;
+          },
+        );
+        const previousCommand = 'echo ready';
+        const currentCommand = r'echo $(id)';
+        const stalePrefix = '$previousCommand\n';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            previousCommand,
+            selectionOffset: previousCommand.length,
+          ),
+        );
+        await tester.pump();
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            '$stalePrefix$currentCommand',
+            selectionOffset: stalePrefix.length + currentCommand.length,
+            composing: const TextRange(
+              start: stalePrefix.length,
+              end: stalePrefix.length + currentCommand.length,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            '$stalePrefix$currentCommand\n',
+            selectionOffset: stalePrefix.length + currentCommand.length + 1,
+          ),
+        );
+        await tester.pump();
+
+        expect(reviewCount, 1);
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          '$previousCommand${_terminalKeyOutput(TerminalKey.enter)}'
+          '$currentCommand${_terminalKeyOutput(TerminalKey.enter)}',
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets('locked Alt preserves composed input and deferred Enter', (
+      tester,
+    ) async {
+      final toolbarController = KeyboardToolbarController()..lockAlt();
+      addTearDown(toolbarController.dispose);
+      final harness = await _pumpTerminalHarness(
+        tester,
+        resolveTerminalKeyModifiers: () => (
+          ctrl: toolbarController.isCtrlActive,
+          alt: toolbarController.isAltActive,
+          shift: toolbarController.isShiftActive,
+        ),
+        consumeTerminalKeyModifiers: toolbarController.consumeOneShot,
+        applyTerminalTextInputModifiers:
+            toolbarController.applySystemKeyboardModifiers,
+        hasActiveToolbarModifier: () =>
+            toolbarController.isCtrlActive || toolbarController.isAltActive,
+      );
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(
+          'x',
+          selectionOffset: 1,
+          composing: const TextRange(start: 0, end: 1),
+        ),
+      );
+      await tester.pump();
+
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
+
+      expect(
+        harness.terminalOutput.join(),
+        '\x1bx$_terminalAlternateEnterInput',
+      );
+      expect(toolbarController.isAltActive, isTrue);
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets('edit-first approval preserves next-line suffix input', (
+      tester,
+    ) async {
+      final decision = Completer<bool>();
+      var reviewCount = 0;
+      final harness = await _pumpTerminalHarness(
+        tester,
+        onReviewInsertedText: (_) {
+          reviewCount++;
+          return decision.future;
+        },
+      );
+      const command = r'echo $(id)';
+      const followUpText = 'next';
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue('$command\n', selectionOffset: command.length + 1),
+      );
+      await tester.pump();
+
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(
+          '$command\n$followUpText',
+          selectionOffset: command.length + 1 + followUpText.length,
+          composing: const TextRange(
+            start: command.length + 1,
+            end: command.length + 1 + followUpText.length,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(reviewCount, 1);
+      decision.complete(true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        harness.terminalOutput.join(),
+        '$command${_terminalKeyOutput(TerminalKey.enter)}',
+      );
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(followUpText, selectionOffset: followUpText.length),
+      );
+      await tester.pump();
+
+      expect(
+        harness.terminalOutput.join(),
+        '$command${_terminalKeyOutput(TerminalKey.enter)}$followUpText',
+      );
+      expect(
+        _terminalTextInputClient(tester).currentTextEditingValue,
+        const TextEditingValue(
+          text: '$_deleteDetectionMarker$followUpText',
+          selection: TextSelection.collapsed(
+            offset: _deleteDetectionMarker.length + followUpText.length,
+          ),
+        ),
+      );
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets(
+      'exact stale composing text does not block later Enter actions',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
+        const command = 'echo ready';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(command, selectionOffset: command.length),
+        );
+        await tester.pump();
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(start: 0, end: command.length),
+          ),
+        );
+        await tester.pump();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          '$command${_terminalKeyOutput(TerminalKey.enter)}'
+          '${_terminalKeyOutput(TerminalKey.enter)}'
+          '${_terminalKeyOutput(TerminalKey.enter)}',
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'captures composing next-line input while command review is pending',
+      (tester) async {
+        final decision = Completer<bool>();
+        var reviewCount = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          onReviewInsertedText: (_) {
+            reviewCount++;
+            return decision.future;
+          },
+        );
+        const command = r'echo $(id)';
+        const followUpText = 'next';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(start: 0, end: command.length),
+          ),
+        );
+        await tester.pump();
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            '$command\n$followUpText',
+            selectionOffset: command.length + 1 + followUpText.length,
+            composing: const TextRange(
+              start: command.length + 1,
+              end: command.length + 1 + followUpText.length,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.log.clear();
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(reviewCount, 1);
+        expect(
+          harness.terminalOutput.join(),
+          '$command${_terminalKeyOutput(TerminalKey.enter)}',
+        );
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(followUpText, selectionOffset: followUpText.length),
+        );
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          '$command${_terminalKeyOutput(TerminalKey.enter)}$followUpText',
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets('multiline composition still sends the final deferred Enter', (
+      tester,
+    ) async {
+      final decision = Completer<bool>();
+      var shiftActive = true;
+      final harness = await _pumpTerminalHarness(
+        tester,
+        onReviewInsertedText: (_) => decision.future,
+        resolveTerminalKeyModifiers: () =>
+            (ctrl: false, alt: false, shift: shiftActive),
+        consumeTerminalKeyModifiers: () => shiftActive = false,
+      );
+      const command = 'printf one\nprintf two';
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(
+          command,
+          selectionOffset: command.length,
+          composing: const TextRange(start: 0, end: command.length),
+        ),
+      );
+      await tester.pump();
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
+
+      decision.complete(true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        harness.terminalOutput.join(),
+        'printf one${_terminalKeyOutput(TerminalKey.enter)}'
+        'printf two$_terminalAlternateEnterInput',
+      );
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets(
+      'trailing composed newline does not consume the deferred Enter',
+      (tester) async {
+        var shiftActive = true;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: false, shift: shiftActive),
+          consumeTerminalKeyModifiers: () => shiftActive = false,
+        );
+        const command = 'printf one\n';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(start: 0, end: command.length),
+          ),
+        );
+        await tester.pump();
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          'printf one${_terminalKeyOutput(TerminalKey.enter)}'
+          '$_terminalAlternateEnterInput',
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'trailing-newline composition replays only next-line suffix input',
+      (tester) async {
+        final decision = Completer<bool>();
+        final harness = await _pumpTerminalHarness(
+          tester,
+          onReviewInsertedText: (_) => decision.future,
+        );
+        const command = 'printf one\n';
+        const followUpText = 'next';
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            command,
+            selectionOffset: command.length,
+            composing: const TextRange(start: 0, end: command.length),
+          ),
+        );
+        await tester.pump();
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            '$command$followUpText',
+            selectionOffset: command.length + followUpText.length,
+            composing: const TextRange(
+              start: command.length,
+              end: command.length + followUpText.length,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          'printf one${_terminalKeyOutput(TerminalKey.enter)}'
+          '${_terminalKeyOutput(TerminalKey.enter)}',
+        );
+        expect(
+          _setEditingStateStates(
+            tester.testTextInput.log,
+            stripTerminalMarker: true,
+          ).last,
+          const (
+            text: followUpText,
+            selectionBase: followUpText.length,
+            selectionExtent: followUpText.length,
+            composingBase: 0,
+            composingExtent: followUpText.length,
+          ),
+        );
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(followUpText, selectionOffset: followUpText.length),
+        );
+        await tester.pump();
+
+        expect(
+          harness.terminalOutput.join(),
+          'printf one${_terminalKeyOutput(TerminalKey.enter)}'
+          '${_terminalKeyOutput(TerminalKey.enter)}$followUpText',
+        );
+
+        await _disposeTerminalHarness(tester, harness);
       },
     );
 

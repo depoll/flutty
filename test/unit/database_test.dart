@@ -628,6 +628,9 @@ void main() {
         'tmux_session_name',
         'tmux_working_directory',
         'tmux_extra_flags',
+        'remote_mux_backend',
+        'auto_forward_ports',
+        'port_proxy_name',
       ]) {
         expect(
           columns,
@@ -826,11 +829,11 @@ void main() {
       () async {
         final dbFile = await createTestDbFile('idempotent-v3');
 
-        // Initialise a fresh v8 database so onCreate runs and all columns exist.
+        // Initialise a fresh database so onCreate runs and all columns exist.
         final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
         await db1.select(db1.settings).get();
-        // Roll user_version back to 3 so the next open runs onUpgrade(m, 3, 8).
-        // Migrations for v4-v8 all use _readColumnNames guards, so they must
+        // Roll user_version back so the next open reruns all guarded upgrades.
+        // Migrations from v4 onward use _readColumnNames guards, so they must
         // tolerate existing columns without error.
         await db1.customStatement('PRAGMA user_version = 3');
         await db1.close();
@@ -841,7 +844,7 @@ void main() {
         await expectLater(
           db2.select(db2.hosts).get(),
           completes,
-          reason: 'v4-v8 guarded migrations must be idempotent',
+          reason: 'guarded migrations must be idempotent',
         );
 
         // Confirm the guarded columns are still present and accessible.
@@ -857,6 +860,9 @@ void main() {
             'sort_order',
             'tmux_session_name',
             'skip_jump_host_on_ssids',
+            'remote_mux_backend',
+            'auto_forward_ports',
+            'port_proxy_name',
           ]),
         );
       },
@@ -880,6 +886,9 @@ void main() {
           'tmux_working_directory',
           'tmux_extra_flags',
           'skip_jump_host_on_ssids',
+          'remote_mux_backend',
+          'auto_forward_ports',
+          'port_proxy_name',
         ]) {
           expect(
             names,

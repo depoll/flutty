@@ -100,6 +100,8 @@ void main() {
         tmuxSessionName: 'workspace',
         tmuxWorkingDirectory: '~/src',
         tmuxExtraFlags: '-f ~/.tmux.conf',
+        autoForwardPorts: true,
+        portProxyName: 'database',
       );
       final id = await command.execute(input: input);
 
@@ -113,6 +115,8 @@ void main() {
       expect(host.tmuxSessionName, 'workspace');
       expect(host.tmuxWorkingDirectory, '~/src');
       expect(host.tmuxExtraFlags, '-f ~/.tmux.conf');
+      expect(host.autoForwardPorts, isTrue);
+      expect(host.portProxyName, 'database');
     });
 
     test('saves agent preset when action is SaveAgentPreset', () async {

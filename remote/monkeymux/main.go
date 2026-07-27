@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.124"
+	monkeyMuxVersion                  = "0.1.125"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -461,9 +461,22 @@ type muxServer struct {
 	pendingResizeWidth      int
 	pendingResizeHeight     int
 	pendingResizeRedraw     bool
-	controls                map[*controlClient]struct{}
-	themeHint               []byte
-	closed                  bool
+	// pendingResizeSyntheticRedraw preserves, across a viewport-transition
+	// deferral, whether a deferred forced redraw needs the synthetic width-1
+	// dance (e.g. a theme change, whose SIGWINCH at an unchanged size would not
+	// otherwise repaint). Without it, refreshPendingViewportResize would replay
+	// the deferred redraw with syntheticRedraw=false and silently drop the
+	// repaint. Reset wherever pendingResizeRedraw is.
+	pendingResizeSyntheticRedraw bool
+	// pendingResizeThemeWindowID pins a deferred synthetic theme redraw to the
+	// window that received the theme hint, so that when refreshPendingViewportResize
+	// replays it a concurrent window switch cannot make the dance repaint a
+	// different window. Empty when the deferred redraw is not a pinned theme
+	// redraw. Reset wherever pendingResizeSyntheticRedraw is.
+	pendingResizeThemeWindowID string
+	controls                   map[*controlClient]struct{}
+	themeHint                  []byte
+	closed                     bool
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -3534,7 +3547,41 @@ func (s *muxServer) redrawRestoredWindow(windowID string) {
 	}
 	width, height := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
-	s.resizeWithRedraw(width, height, true, true)
+	s.resizeWithRedraw(width, height, true, true, windowID)
+}
+
+// forceForegroundThemeRedraw makes [windowID] fully repaint after a theme
+// change. A theme switch changes colors without changing the PTY size, so a real
+// same-size SIGWINCH will not make the TUI re-emit explicitly-colored cells (e.g.
+// Copilot CLI's header/footer bars). It therefore uses the synthetic width-1
+// redraw dance — the same mechanism used to repaint a restored window — whose
+// intermediate one-cell frame is hidden from attach clients by the
+// synchronized-redraw transaction. It is pinned to [windowID] (the window that
+// received the theme hint) and is a no-op if that window is no longer active
+// (a concurrent switch will refresh the new window separately), is not a
+// foreground-redraw window (plain shell), or when no client is attached.
+func (s *muxServer) forceForegroundThemeRedraw(windowID string) {
+	if windowID == "" {
+		return
+	}
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
+	s.mu.Lock()
+	if s.attachCountLocked() == 0 || s.activeID != windowID {
+		s.mu.Unlock()
+		return
+	}
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed || !window.usesForegroundRedrawReplayLocked() {
+		s.mu.Unlock()
+		return
+	}
+	width, height := s.primaryAttachSizeLocked()
+	s.mu.Unlock()
+	if width <= 0 || height <= 0 {
+		return
+	}
+	s.resizeWithRedraw(width, height, true, true, windowID)
 }
 
 func createWindowOptionsForRestore(
@@ -4045,6 +4092,8 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.pendingResizeWidth = 0
 				s.pendingResizeHeight = 0
 				s.pendingResizeRedraw = false
+				s.pendingResizeSyntheticRedraw = false
+				s.pendingResizeThemeWindowID = ""
 				if resetViewportParser {
 					s.enqueueAttachViewportResizeAfterResetLocked(
 						s.width,
@@ -5411,7 +5460,7 @@ func (s *muxServer) applyFocusedClientViewport(
 		return
 	}
 	if sizeChanged {
-		s.resizeWithRedraw(width, height, false, false)
+		s.resizeWithRedraw(width, height, false, false, "")
 	}
 }
 
@@ -5490,6 +5539,8 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 		s.pendingResizeWidth = 0
 		s.pendingResizeHeight = 0
 		s.pendingResizeRedraw = false
+		s.pendingResizeSyntheticRedraw = false
+		s.pendingResizeThemeWindowID = ""
 		if s.attachConn == nil {
 			width = s.publishedWidth
 			height = s.publishedHeight
@@ -5503,7 +5554,7 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 	s.mu.Unlock()
 	client.close()
 	if sizeChanged {
-		s.resizeWithRedraw(width, height, false, false)
+		s.resizeWithRedraw(width, height, false, false, "")
 	}
 }
 
@@ -5548,6 +5599,8 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.pendingResizeWidth = 0
 		s.pendingResizeHeight = 0
 		s.pendingResizeRedraw = false
+		s.pendingResizeSyntheticRedraw = false
+		s.pendingResizeThemeWindowID = ""
 		s.width = width
 		s.height = height
 		s.enqueueAttachViewportResizeLocked(width, height)
@@ -5856,7 +5909,15 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		s.sendThemeHint(request.Data)
 		client.send(controlResponse{ID: request.ID, Type: "focus_hint_sent", Status: "ok"})
 	case "theme_changed":
-		s.sendThemeHint(request.Data)
+		themeWindowID, _ := s.sendThemeHintToActiveWindow(request.Data)
+		if request.Redraw {
+			// A theme switch changes colors without changing the PTY size, and
+			// a same-size SIGWINCH alone will not make a TUI re-emit its
+			// explicitly-colored regions (e.g. Copilot CLI's header/footer
+			// bars), so force a full repaint of the window that received the
+			// hint after it has been delivered.
+			s.forceForegroundThemeRedraw(themeWindowID)
+		}
 		client.send(controlResponse{ID: request.ID, Type: "theme_hint_ack", Status: "ok"})
 	case "shutdown":
 		client.send(controlResponse{ID: request.ID, Type: "shutdown", Status: "ok"})
@@ -6346,6 +6407,8 @@ func (s *muxServer) selectWindowWithSkip(
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
+	s.pendingResizeSyntheticRedraw = false
+	s.pendingResizeThemeWindowID = ""
 	if resetViewportParser {
 		s.enqueueAttachViewportResizeAfterResetLocked(s.width, s.height)
 	} else {
@@ -6411,6 +6474,8 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.pendingResizeWidth = 0
 			s.pendingResizeHeight = 0
 			s.pendingResizeRedraw = false
+			s.pendingResizeSyntheticRedraw = false
+			s.pendingResizeThemeWindowID = ""
 			if resetViewportParser {
 				s.enqueueAttachViewportResizeAfterResetLocked(
 					s.width,
@@ -6494,7 +6559,7 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
-	s.resizeWithRedraw(width, height, false, false)
+	s.resizeWithRedraw(width, height, false, false, "")
 }
 
 func (s *muxServer) resizeForClient(
@@ -6509,7 +6574,7 @@ func (s *muxServer) resizeForClient(
 	if len(s.attachClients) == 0 {
 		s.mu.Unlock()
 		if strings.TrimSpace(clientID) == "" {
-			s.resizeWithRedraw(width, height, forceRedraw, false)
+			s.resizeWithRedraw(width, height, forceRedraw, false, "")
 		}
 		return
 	}
@@ -6525,7 +6590,7 @@ func (s *muxServer) resizeForClient(
 	targetWidth, targetHeight := s.primaryAttachSizeLocked()
 	s.mu.Unlock()
 	if isPrimary {
-		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw, false)
+		s.resizeWithRedraw(targetWidth, targetHeight, forceRedraw, false, "")
 	}
 }
 
@@ -6534,6 +6599,7 @@ func (s *muxServer) resizeWithRedraw(
 	height int,
 	forceRedraw bool,
 	syntheticRedraw bool,
+	pinnedWindowID string,
 ) {
 	var attach net.Conn
 	var modeReplay []byte
@@ -6549,6 +6615,15 @@ func (s *muxServer) resizeWithRedraw(
 	}
 
 	s.mu.Lock()
+	// A pinned caller (a theme redraw) targets one specific window. If a
+	// concurrent window switch changed the active window since the caller
+	// resolved it, skip: the hint went to the old window and the switch will
+	// drive its own theme refresh for the new one, so dancing here would repaint
+	// the wrong window.
+	if pinnedWindowID != "" && s.activeID != pinnedWindowID {
+		s.mu.Unlock()
+		return
+	}
 	window := s.windowByIDLocked(s.activeID)
 	if serializeViewport && !terminalViewportTransitionSafe(window) {
 		s.width = width
@@ -6556,6 +6631,13 @@ func (s *muxServer) resizeWithRedraw(
 		s.pendingResizeWidth = width
 		s.pendingResizeHeight = height
 		s.pendingResizeRedraw = s.pendingResizeRedraw || forceRedraw
+		s.pendingResizeSyntheticRedraw =
+			s.pendingResizeSyntheticRedraw || (forceRedraw && syntheticRedraw)
+		if forceRedraw && syntheticRedraw && pinnedWindowID != "" {
+			// Preserve the pin so the replayed dance still targets the window
+			// that received the theme hint, not whatever is active at replay.
+			s.pendingResizeThemeWindowID = pinnedWindowID
+		}
 		s.mu.Unlock()
 		return
 	}
@@ -6564,6 +6646,8 @@ func (s *muxServer) resizeWithRedraw(
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
+	s.pendingResizeSyntheticRedraw = false
+	s.pendingResizeThemeWindowID = ""
 	sizeChanged :=
 		s.width != width ||
 			s.height != height ||
@@ -6626,11 +6710,13 @@ func (s *muxServer) refreshPendingViewportResize() {
 	width := s.pendingResizeWidth
 	height := s.pendingResizeHeight
 	forceRedraw := s.pendingResizeRedraw
+	syntheticRedraw := s.pendingResizeSyntheticRedraw
+	themeWindowID := s.pendingResizeThemeWindowID
 	s.mu.Unlock()
 	if width <= 0 || height <= 0 {
 		return
 	}
-	s.resizeWithRedraw(width, height, forceRedraw, false)
+	s.resizeWithRedraw(width, height, forceRedraw, syntheticRedraw, themeWindowID)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
@@ -6695,8 +6781,6 @@ func (s *muxServer) deferAttachReplayForRedrawLocked(
 		window.redrawForwardingReplay[:0],
 		replay...,
 	)
-	window.redrawForwardingFallbackReplay =
-		s.foregroundHistoryFallbackReplayLocked(window)
 	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
 	return true
 }
@@ -6775,6 +6859,17 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 	window.redrawForwardingPrimaryNeedsFailover =
 		len(preservedQueries) > 0 &&
 			!s.isAttachConnectionLocked(preservedPrimary)
+	if !window.redrawForwardingPaused ||
+		len(window.redrawForwardingFallbackReplay) == 0 {
+		// Snapshot the pre-resize frame for every redraw pause, not just
+		// deferred window-switch replays: restore and theme redraws start the
+		// same transaction directly and hit the same coalesced-SIGWINCH
+		// failure. When a pause restarts while one is already in flight the
+		// existing snapshot is kept, because the history may already have been
+		// overwritten by the redraw that produced nothing.
+		window.redrawForwardingFallbackReplay =
+			s.foregroundHistoryFallbackReplayLocked(window)
+	}
 	window.redrawForwardingPaused = true
 	window.redrawForwardingGeneration += 1
 	windowID := window.id
@@ -8190,6 +8285,8 @@ func (s *muxServer) replayFocusedWindowToClient(
 	s.pendingResizeWidth = 0
 	s.pendingResizeHeight = 0
 	s.pendingResizeRedraw = false
+	s.pendingResizeSyntheticRedraw = false
+	s.pendingResizeThemeWindowID = ""
 	s.width = width
 	s.height = height
 	s.enqueueAttachViewportResizeLocked(width, height)
@@ -8249,6 +8346,19 @@ func (s *muxServer) writeActiveFromAttach(data []byte) {
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {
+	_, ok := s.sendThemeHintToActiveWindow(data)
+	return ok
+}
+
+// sendThemeHintToActiveWindow delivers the theme hint to the active window and
+// returns the id of that window (empty only when there is no usable active
+// window). Callers that follow up with a forced repaint use the returned id to
+// pin the redraw to the same window, so a concurrent window switch cannot leave
+// the hint on one window while the synthetic resize repaints another. The bool
+// reports whether hint bytes / a focus nudge were actually delivered; the window
+// id is returned even when nothing was pushed so the caller can still repaint
+// the intended window.
+func (s *muxServer) sendThemeHintToActiveWindow(data string) (string, bool) {
 	themeHint := themeHintDataFromString(data)
 	var themeHintData []byte
 	s.mu.Lock()
@@ -8258,8 +8368,9 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	window := s.windowByIDLocked(s.activeID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
-		return false
+		return "", false
 	}
+	windowID := window.id
 	window.refreshProcessMetadataLocked(time.Now())
 	sendFocusTransition := window.themeHintFocusTransitionLocked()
 	sendFocusRefresh := false
@@ -8269,14 +8380,13 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	}
 	if len(themeHintData) == 0 && !sendFocusTransition && !sendFocusRefresh {
 		s.mu.Unlock()
-		return false
+		return windowID, false
 	}
-	windowID := window.id
 	s.mu.Unlock()
 
 	if len(themeHintData) > 0 {
 		if err := s.writeWindow(windowID, themeHintData); err != nil {
-			return false
+			return windowID, false
 		}
 	}
 	if sendFocusTransition {
@@ -8284,7 +8394,7 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	} else if sendFocusRefresh {
 		s.sendFocusRefresh(windowID)
 	}
-	return true
+	return windowID, true
 }
 
 func themeHintDataFromString(data string) []byte {
@@ -8940,6 +9050,7 @@ func (p *terminalOutputParserSnapshot) observe(data []byte) {
 
 func terminalOutputHasVisibleContent(data []byte) bool {
 	parser := terminalOutputParserSnapshot{}
+	rendition := terminalRenditionSnapshot{}
 	for index := 0; index < len(data); {
 		if parser.state != terminalOutputParserGround ||
 			parser.utf8Remaining > 0 {
@@ -8960,6 +9071,14 @@ func terminalOutputHasVisibleContent(data []byte) bool {
 			index = end
 			continue
 		}
+		if csiEnd, params, final, ok := controlSequenceAt(data, index); ok {
+			if final == 'm' {
+				rendition.observeSelectGraphicRendition(params)
+			}
+			parser.observe(data[index:csiEnd])
+			index = csiEnd
+			continue
+		}
 		value := data[index]
 		if value < 0x20 || value == 0x7f || (value >= 0x80 && value < 0xa0) {
 			parser.observe(data[index : index+1])
@@ -8972,13 +9091,132 @@ func terminalOutputHasVisibleContent(data []byte) bool {
 			index++
 			continue
 		}
-		if !unicode.IsSpace(r) {
+		if !unicode.IsSpace(r) || rendition.paintsWhitespace() {
 			return true
 		}
 		parser.observe(data[index : index+size])
 		index += size
 	}
 	return false
+}
+
+// terminalRenditionSnapshot tracks the subset of SGR state that makes a run of
+// spaces paint visible cells. Whitespace is only invisible under the default
+// rendition: with a non-default background, reverse video, an underline, a
+// strike-through, or an overline the same spaces are a real frame, so the
+// emptiness check must not discard them and restore stale history instead.
+type terminalRenditionSnapshot struct {
+	background bool
+	reverse    bool
+	underline  bool
+	strike     bool
+	overline   bool
+}
+
+func (r terminalRenditionSnapshot) paintsWhitespace() bool {
+	return r.background || r.reverse || r.underline || r.strike || r.overline
+}
+
+func (r *terminalRenditionSnapshot) observeSelectGraphicRendition(
+	params string,
+) {
+	if params != "" && params[0] >= 0x3c && params[0] <= 0x3f {
+		// Private forms such as CSI > 4 ; 2 m (modifyOtherKeys) are not SGR.
+		return
+	}
+	fields := strings.Split(params, ";")
+	for index := 0; index < len(fields); index++ {
+		field := fields[index]
+		base := field
+		sub := ""
+		if colon := strings.IndexByte(field, ':'); colon >= 0 {
+			base = field[:colon]
+			sub = field[colon+1:]
+		}
+		code := 0
+		if base != "" {
+			parsed, err := strconv.Atoi(base)
+			if err != nil {
+				continue
+			}
+			code = parsed
+		}
+		switch {
+		case code == 0:
+			*r = terminalRenditionSnapshot{}
+		case code == 4:
+			r.underline = sub != "0"
+		case code == 7:
+			r.reverse = true
+		case code == 9:
+			r.strike = true
+		case code == 21:
+			r.underline = true
+		case code == 24:
+			r.underline = false
+		case code == 27:
+			r.reverse = false
+		case code == 29:
+			r.strike = false
+		case code == 38 || code == 48:
+			if code == 48 {
+				r.background = true
+			}
+			if sub != "" {
+				// Colon sub-parameter form keeps the color in this field.
+				break
+			}
+			if index+1 < len(fields) {
+				switch fields[index+1] {
+				case "5":
+					index += 2
+				case "2":
+					index += 4
+				}
+			}
+		case code >= 40 && code <= 47:
+			r.background = true
+		case code == 49:
+			r.background = false
+		case code == 53:
+			r.overline = true
+		case code == 55:
+			r.overline = false
+		case code >= 100 && code <= 107:
+			r.background = true
+		}
+	}
+}
+
+// controlSequenceAt reports the extent, parameter bytes, and final byte of a
+// complete CSI sequence starting at start. It returns ok=false when the bytes
+// are not a CSI introducer or the sequence is truncated, leaving those bytes to
+// the byte-wise parser.
+func controlSequenceAt(
+	data []byte,
+	start int,
+) (end int, params string, final byte, ok bool) {
+	from := 0
+	switch {
+	case start+1 < len(data) &&
+		data[start] == '\x1b' &&
+		data[start+1] == '[':
+		from = start + 2
+	case data[start] == 0x9b:
+		from = start + 1
+	default:
+		return 0, "", 0, false
+	}
+	for index := from; index < len(data); index++ {
+		value := data[index]
+		if value >= 0x40 && value <= 0x7e {
+			return index + 1, string(data[from:index]), value, true
+		}
+		if value < 0x20 || value > 0x3f {
+			return 0, "", 0, false
+		}
+	}
+	return 0, "", 0, false
 }
 
 func kittyGraphicsControlAt(

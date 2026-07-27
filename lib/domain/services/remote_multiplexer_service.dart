@@ -94,11 +94,17 @@ abstract interface class RemoteMultiplexerService {
   });
 
   /// Refreshes visible clients after a theme change.
+  ///
+  /// When [forceForegroundRedraw] is true, the multiplexer should force the
+  /// active foreground TUI to fully repaint after delivering the theme hint,
+  /// so agents that diff-repaint (e.g. Copilot CLI) re-emit explicitly-colored
+  /// regions in the new theme instead of leaving stale "black bars".
   Future<void> refreshTerminalTheme(
     SshSession session,
     String sessionName,
     TerminalThemeData theme, {
     String? extraFlags,
+    bool forceForegroundRedraw = false,
   });
 }
 
@@ -229,12 +235,16 @@ class TmuxRemoteMultiplexerService implements RemoteMultiplexerService {
     String sessionName,
     TerminalThemeData theme, {
     String? extraFlags,
-  }) => _tmuxService.refreshTerminalTheme(
-    session,
-    sessionName,
-    theme,
-    extraFlags: extraFlags,
-  );
+    bool forceForegroundRedraw = false,
+  }) =>
+      // Classic tmux forces its own foreground repaint via refresh-client in
+      // buildTmuxRefreshTerminalThemeCommand, so the flag is a no-op here.
+      _tmuxService.refreshTerminalTheme(
+        session,
+        sessionName,
+        theme,
+        extraFlags: extraFlags,
+      );
 }
 
 /// tmux adapter provider for generic multiplexer consumers.

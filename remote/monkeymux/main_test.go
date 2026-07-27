@@ -33,6 +33,27 @@ func replayPostHistorySuffixForTest(cursorVisible bool) string {
 		cursorVisibilityReplaySequence(cursorVisible)
 }
 
+// orderRecordingPty is a write-only muxPty that appends "hint-write" to a shared
+// event log on every Write, so a test can assert the theme hint reaches the pty
+// before the synthetic redraw dance runs.
+type orderRecordingPty struct {
+	mu  *sync.Mutex
+	log *[]string
+}
+
+func (p *orderRecordingPty) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (p *orderRecordingPty) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	*p.log = append(*p.log, "hint-write")
+	p.mu.Unlock()
+	return len(b), nil
+}
+
+func (p *orderRecordingPty) Close() error          { return nil }
+func (p *orderRecordingPty) Resize(int, int) error { return nil }
+func (p *orderRecordingPty) Fd() uintptr           { return 0 }
+
 func synchronizedTerminalOutputForTest(data string) string {
 	return terminalSynchronizedOutputBegin + data + terminalSynchronizedOutputEnd
 }
@@ -2520,7 +2541,57 @@ func TestTerminalOutputHasVisibleContent(t *testing.T) {
 			data: "\x1b[H\x1b[2J\x1b]0;agent\x07",
 			want: false,
 		},
-		{name: "spaces only", data: "\x1b[44m   \x1b[0m", want: false},
+		{name: "spaces only", data: "\x1b[H   ", want: false},
+		{
+			name: "spaces under a background color",
+			data: "\x1b[44m   \x1b[0m",
+			want: true,
+		},
+		{
+			name: "spaces under a 256 color background",
+			data: "\x1b[48;5;236m   \x1b[0m",
+			want: true,
+		},
+		{
+			name: "spaces under a truecolor background",
+			data: "\x1b[48;2;10;20;30m   \x1b[0m",
+			want: true,
+		},
+		{
+			name: "spaces under reverse video",
+			data: "\x1b[7m   \x1b[27m",
+			want: true,
+		},
+		{
+			name: "spaces under an underline",
+			data: "\x1b[4m   \x1b[24m",
+			want: true,
+		},
+		{
+			name: "spaces after the background is reset",
+			data: "\x1b[44m\x1b[49m   ",
+			want: false,
+		},
+		{
+			name: "spaces after a full rendition reset",
+			data: "\x1b[44m\x1b[0m   ",
+			want: false,
+		},
+		{
+			name: "spaces after a cancelled underline",
+			data: "\x1b[4:3m\x1b[4:0m   ",
+			want: false,
+		},
+		{
+			name: "spaces after a foreground color only",
+			data: "\x1b[38;5;236m   ",
+			want: false,
+		},
+		{
+			name: "spaces after a private mode report",
+			data: "\x1b[>4;2m   ",
+			want: false,
+		},
 		{name: "ascii text", data: "\x1b[Hagent ready", want: true},
 		{name: "unicode text", data: "\x1b[H│", want: true},
 		{
@@ -4686,6 +4757,108 @@ func TestEmptyForegroundRedrawFallbackReachesEveryAttachClient(t *testing.T) {
 	}
 }
 
+// TestEmptyThemeRedrawFallsBackToHistory covers a redraw pause that is started
+// directly by resizeWithRedraw's synthetic dance (a theme change) rather than by
+// a deferred window-switch replay. That path has no reset replay to send, so an
+// empty redraw would otherwise leave every client blank until the next output.
+func TestEmptyThemeRedrawFallsBackToHistory(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hlast known themed frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	registerTestAttachClient(t, server, conn, "phone", 120, 40)
+	server.mu.Lock()
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.forceForegroundThemeRedraw("@1")
+	server.mu.Lock()
+	paused := window.redrawForwardingPaused
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	if !paused {
+		t.Fatal("theme redraw did not pause attach forwarding")
+	}
+	// The TUI coalesces both SIGWINCHes and answers with metadata only.
+	server.handleWindowOutput("@1", []byte("\x1b[H\x1b[2J\x1b]0;agent\x07"))
+	server.resumePausedAttachForwarding("@1", generation)
+
+	waitForRecordedContains(t, conn, "last known themed frame")
+	got := conn.String()
+	if strings.Contains(got, "\x1b]0;agent\x07") {
+		t.Fatalf("failed redraw metadata contaminated the fallback frame: %q", got)
+	}
+	// The dance writes its mode replay first, so the transaction starts partway
+	// through the stream; the fallback frame must sit entirely inside it.
+	begin := strings.Index(got, terminalSynchronizedOutputBegin)
+	if begin < 0 || !strings.HasSuffix(got, terminalSynchronizedOutputEnd) {
+		t.Fatalf("theme fallback replay was not painted atomically: %q", got)
+	}
+	transaction := got[begin+len(terminalSynchronizedOutputBegin) : len(got)-len(terminalSynchronizedOutputEnd)]
+	if !strings.Contains(transaction, "last known themed frame") {
+		t.Fatalf("fallback frame painted outside the transaction: %q", got)
+	}
+	if strings.Contains(transaction, terminalSynchronizedOutputEnd) {
+		t.Fatalf("fallback frame spanned more than one transaction: %q", got)
+	}
+}
+
+// TestRestartedRedrawPauseKeepsOriginalFallback verifies a second pause started
+// while the first is still in flight does not re-snapshot the history: by then
+// the first (empty) redraw may already have cleared it, so re-capturing would
+// hand back a blank frame instead of the last complete one.
+func TestRestartedRedrawPauseKeepsOriginalFallback(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Holdest complete frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	first := string(window.redrawForwardingFallbackReplay)
+	window.history = []byte("\x1b[H")
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	second := string(window.redrawForwardingFallbackReplay)
+	server.mu.Unlock()
+
+	if !strings.Contains(first, "oldest complete frame") {
+		t.Fatalf("first pause captured no fallback: %q", first)
+	}
+	if second != first {
+		t.Fatalf("restarted pause re-snapshotted fallback = %q, want %q", second, first)
+	}
+}
+
 func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -5205,7 +5378,7 @@ func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	// A client "settle" forced redraw (syntheticRedraw=false) must not perform
 	// the synthetic width-1 dance: the size is already current and painted, so a
 	// dance would be a pure visible bounce. It still nudges the TUI via SIGWINCH.
-	server.resizeWithRedraw(120, 40, true, false)
+	server.resizeWithRedraw(120, 40, true, false, "")
 	if len(simulated) != 0 {
 		t.Fatalf("settle redraw performed synthetic dance = %#v, want none", simulated)
 	}
@@ -5216,12 +5389,333 @@ func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	// A restore-style forced redraw (syntheticRedraw=true) must dance so a
 	// freshly relaunched agent repaints its screen.
 	signaled = nil
-	server.resizeWithRedraw(120, 40, true, true)
+	server.resizeWithRedraw(120, 40, true, true, "")
 	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
 		t.Fatalf("synthetic redraw dance = %#v, want [@1:120x40]", simulated)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
+func TestThemeChangedRedrawForcesForegroundRepaint(t *testing.T) {
+	server := newMuxServer("test")
+	var logMu sync.Mutex
+	var events []string
+	// A focus-enabled Copilot window receives a synchronous DEC 2031 mode report
+	// as its theme hint, written to the pty before the redraw.
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "copilot",
+		focusModeEnabled:  true,
+		pty:               &orderRecordingPty{mu: &logMu, log: &events},
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+	server.mu.Lock()
+	// The published grid already matches the client, so sizeChanged is false and
+	// only the synthetic dance can force a repaint.
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		logMu.Lock()
+		events = append(events, fmt.Sprintf("dance:%s:%dx%d", w.id, width, height))
+		logMu.Unlock()
+	}
+	signalForegroundResize = func(int) {}
+
+	// theme_changed with redraw must deliver the hint to the pty AND force the
+	// synthetic repaint dance even at an unchanged size, so an agent (Copilot
+	// CLI) re-emits its explicitly colored header/footer bars in the new theme.
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+
+	logMu.Lock()
+	recorded := append([]string(nil), events...)
+	logMu.Unlock()
+	firstWrite := indexOfString(recorded, "hint-write")
+	danceIndex := indexOfString(recorded, "dance:@1:120x40")
+	if firstWrite < 0 {
+		t.Fatalf("theme hint was not written to the pty; events = %#v", recorded)
+	}
+	if danceIndex < 0 {
+		t.Fatalf("theme_changed redraw did not dance; events = %#v", recorded)
+	}
+	if firstWrite > danceIndex {
+		t.Fatalf(
+			"redraw dance ran before the theme hint was delivered; events = %#v",
+			recorded,
+		)
+	}
+
+	// Without the redraw flag the theme hint is still delivered, but no repaint
+	// dance is forced (preserving the pre-existing behavior for callers that do
+	// not need a repaint).
+	logMu.Lock()
+	events = nil
+	logMu.Unlock()
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type: "theme_changed",
+		Data: "\x1b[?997;1n",
+	})
+	logMu.Lock()
+	recorded = append([]string(nil), events...)
+	logMu.Unlock()
+	for _, e := range recorded {
+		if strings.HasPrefix(e, "dance:") {
+			t.Fatalf(
+				"theme_changed without redraw performed dance; events = %#v",
+				recorded,
+			)
+		}
+	}
+}
+
+func indexOfString(values []string, target string) int {
+	for i, v := range values {
+		if v == target {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestThemeChangedRedrawSkipsPlainShell(t *testing.T) {
+	server := newMuxServer("test")
+	// A plain shell (no agent, no alternate screen) is not a foreground-redraw
+	// window, so a theme redraw must not bounce its prompt with a resize dance.
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+	server.mu.Lock()
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(simulated, w.id)
+	}
+	signalForegroundResize = func(int) {}
+
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+	if len(simulated) != 0 {
+		t.Fatalf("plain shell theme redraw danced = %#v, want none", simulated)
+	}
+}
+
+// TestForceForegroundThemeRedrawPinsToHintWindow verifies the redraw is pinned
+// to the window that received the theme hint: if a concurrent window switch has
+// changed the active window, the redraw must not dance the (now different)
+// active window.
+func TestForceForegroundThemeRedrawPinsToHintWindow(t *testing.T) {
+	server := newMuxServer("test")
+	windowA := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "copilot",
+		lastActivity:      time.Now(),
+	}
+	windowB := &muxWindow{
+		id:                "@2",
+		index:             1,
+		foregroundCommand: "copilot",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{windowA, windowB}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+	server.mu.Lock()
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(simulated, w.id)
+	}
+	signalForegroundResize = func(int) {}
+
+	// The hint targeted @1, but the active window has since switched to @2.
+	// Pinning to @1 must skip the redraw rather than dance @2.
+	server.mu.Lock()
+	server.activeID = "@2"
+	server.mu.Unlock()
+	server.forceForegroundThemeRedraw("@1")
+	if len(simulated) != 0 {
+		t.Fatalf("redraw danced after active window changed = %#v, want none", simulated)
+	}
+
+	// When the pinned window is still active it dances normally.
+	server.mu.Lock()
+	server.activeID = "@1"
+	server.mu.Unlock()
+	server.forceForegroundThemeRedraw("@1")
+	if !reflect.DeepEqual(simulated, []string{"@1"}) {
+		t.Fatalf("pinned redraw dance = %#v, want [@1]", simulated)
+	}
+}
+
+// TestThemeChangedRedrawSurvivesViewportDeferral covers the case where a theme
+// redraw arrives while the active window is mid terminal-output-forwarding, so
+// the resize is deferred (all app attaches clip the viewport). The synthetic
+// redraw intent must be preserved so the replayed resize still dances; without
+// it the replay drops the repaint and the stale theme remains.
+func TestThemeChangedRedrawSurvivesViewportDeferral(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	window := &muxWindow{
+		id:                       "@1",
+		index:                    0,
+		foregroundCommand:        "copilot",
+		terminalOutputForwarding: true,
+		lastActivity:             time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := registerTestAttachClient(t, server, conn, "primary", 80, 24)
+	client.clipViewport = true
+	server.mu.Lock()
+	server.publishedWidth = 80
+	server.publishedHeight = 24
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", w.id, width, height),
+		)
+	}
+	signalForegroundResize = func(int) {}
+
+	// The window is forwarding output, so the theme redraw is deferred.
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+	if len(simulated) != 0 {
+		t.Fatalf("deferred theme redraw danced early = %#v, want none", simulated)
+	}
+	server.mu.Lock()
+	pendingSynthetic := server.pendingResizeSyntheticRedraw
+	window.terminalOutputForwarding = false
+	server.mu.Unlock()
+	if !pendingSynthetic {
+		t.Fatal("deferred theme redraw did not preserve the synthetic-redraw bit")
+	}
+
+	// Once the transition is safe again, the replayed resize must still perform
+	// the synthetic dance so the foreground TUI repaints in the new theme.
+	server.refreshPendingViewportResize()
+	if !reflect.DeepEqual(simulated, []string{"@1:80x24"}) {
+		t.Fatalf("replayed theme redraw dance = %#v, want [@1:80x24]", simulated)
+	}
+}
+
+// TestThemeChangedRedrawDeferralPinsToHintWindow verifies the pin survives the
+// viewport deferral: if the active window changes before the deferred redraw is
+// replayed, the replay must not dance the new window.
+func TestThemeChangedRedrawDeferralPinsToHintWindow(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	windowA := &muxWindow{
+		id:                       "@1",
+		index:                    0,
+		foregroundCommand:        "copilot",
+		terminalOutputForwarding: true,
+		lastActivity:             time.Now(),
+	}
+	windowB := &muxWindow{
+		id:                "@2",
+		index:             1,
+		foregroundCommand: "copilot",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{windowA, windowB}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := registerTestAttachClient(t, server, conn, "primary", 80, 24)
+	client.clipViewport = true
+	server.mu.Lock()
+	server.publishedWidth = 80
+	server.publishedHeight = 24
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	var simulated []string
+	simulateForegroundResize = func(w *muxWindow, width int, height int) {
+		simulated = append(simulated, w.id)
+	}
+	signalForegroundResize = func(int) {}
+
+	// Defer a theme redraw pinned to @1.
+	server.handleControlRequest(newControlClient(nil), controlMessage{
+		Type:   "theme_changed",
+		Data:   "\x1b[?997;2n",
+		Redraw: true,
+	})
+	server.mu.Lock()
+	if server.pendingResizeThemeWindowID != "@1" {
+		got := server.pendingResizeThemeWindowID
+		server.mu.Unlock()
+		t.Fatalf("pending theme window id = %q, want @1", got)
+	}
+	// Simulate the active window changing (a switch that raced the replay) while
+	// the pending redraw still targets @1, and make @1's transition safe again.
+	windowA.terminalOutputForwarding = false
+	server.activeID = "@2"
+	server.mu.Unlock()
+
+	server.refreshPendingViewportResize()
+	if len(simulated) != 0 {
+		t.Fatalf("deferred redraw danced the wrong window = %#v, want none", simulated)
 	}
 }
 

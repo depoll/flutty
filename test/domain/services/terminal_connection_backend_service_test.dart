@@ -277,7 +277,8 @@ class _FakeRemoteMultiplexerService implements RemoteMultiplexerService {
     String sessionName,
     TerminalThemeData theme, {
     String? extraFlags,
+    bool forceForegroundRedraw = false,
   }) async {
-    calls.add('theme:$sessionName:$extraFlags');
+    calls.add('theme:$sessionName:$extraFlags:$forceForegroundRedraw');
   }
 }

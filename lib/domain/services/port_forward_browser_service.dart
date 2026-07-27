@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../data/database/database.dart';
+import '../models/port_proxy_name.dart';
 
 /// Returns whether the embedded WebView browser is available on [platform].
 bool isPortForwardBrowserSupported({TargetPlatform? platform}) {
@@ -59,6 +60,81 @@ Uri buildPortForwardBrowserUriForBind({
 String portForwardBrowserHostForPortForwardId(int portForwardId) =>
     'monkeyssh-${portForwardId.abs().toRadixString(36)}.localhost';
 
+/// Returns a DNS-independent loopback host dedicated to one saved host.
+String portForwardBrowserFallbackHostForHostId(int hostId) {
+  const usableLoopbackAddressCount = 0x00fffffd;
+  final addressValue = (hostId.abs() % usableLoopbackAddressCount) + 2;
+  return '127.${(addressValue >> 16) & 0xff}.'
+      '${(addressValue >> 8) & 0xff}.${addressValue & 0xff}';
+}
+
+/// Normalizes a user-entered proxy name to the prefix stored before
+/// `.localhost`.
+String normalizePortProxyName(String value) =>
+    normalizeOptionalStoredPortProxyName(value) ?? '';
+
+/// Normalizes an optional proxy name, returning null for an empty value.
+String? normalizeOptionalPortProxyName(String? value) {
+  if (value == null) {
+    return null;
+  }
+  final normalized = normalizePortProxyName(value);
+  return normalized.isEmpty ? null : normalized;
+}
+
+/// Returns a validation message when [value] is not a valid `.localhost`
+/// prefix.
+String? validatePortProxyName(String? value) {
+  final normalized = normalizeOptionalPortProxyName(value);
+  if (normalized == null) {
+    return null;
+  }
+  if (normalized.length > 221) {
+    return 'Proxy name is too long';
+  }
+  for (final label in normalized.split('.')) {
+    if (label.isEmpty ||
+        label.length > 63 ||
+        !RegExp(r'^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$').hasMatch(label)) {
+      return 'Use letters, numbers, hyphens, or dots';
+    }
+  }
+  return null;
+}
+
+/// Builds a stable generated proxy prefix from a host label and database ID.
+String generatedPortProxyName(
+  String hostLabel, {
+  int? hostId,
+  bool includeHostId = false,
+}) {
+  final suffix = includeHostId && hostId != null ? '-$hostId' : '';
+  return '${generatedPortProxySlug(hostLabel)}$suffix';
+}
+
+/// Resolves the full `.localhost` proxy domain for a host.
+String hostPortProxyDomain({
+  required String hostLabel,
+  required int hostId,
+  String? customName,
+  String? generatedName,
+}) {
+  final normalizedCustomName = normalizeOptionalPortProxyName(customName);
+  final prefix =
+      normalizedCustomName ??
+      generatedName ??
+      generatedPortProxyName(hostLabel, hostId: hostId);
+  return '$prefix.localhost';
+}
+
+/// Returns the one browser host used by all detected services for a saved host.
+String automaticPortForwardBrowserHost({
+  required String hostDomain,
+  required int hostId,
+  required String remoteHost,
+  required int remotePort,
+}) => hostDomain;
+
 /// Rewrites a loopback [uri] for one forwarded service's browser-only relay.
 ///
 /// Returns null when [uri] does not target [sourceUri].
@@ -76,6 +152,56 @@ Uri? rewriteUriForPortForwardBrowser(
   return uri.replace(
     host: browserUri.host,
     port: portForwardBrowserUriPort(browserUri),
+  );
+}
+
+/// Whether a failed friendly browser endpoint should retry through loopback.
+bool shouldUsePortForwardBrowserFallback({
+  required Uri browserUri,
+  required Uri? failedUri,
+  required bool? isForMainFrame,
+  required bool alreadyTried,
+}) =>
+    (isForMainFrame ?? false) &&
+    !alreadyTried &&
+    (failedUri == null ||
+        (failedUri.host.toLowerCase() == browserUri.host.toLowerCase() &&
+            portForwardBrowserUriPort(failedUri) ==
+                portForwardBrowserUriPort(browserUri)));
+
+/// Whether an active loopback fallback request must bypass friendly rewriting.
+bool shouldLoadPortForwardBrowserFallbackDirectly({
+  required Uri requestedUri,
+  required Uri? fallbackUri,
+  required bool fallbackActive,
+}) {
+  if (!fallbackActive || fallbackUri == null) {
+    return false;
+  }
+  final normalizedRequestedUri = normalizePortForwardBrowserUri(requestedUri);
+  final normalizedFallbackUri = normalizePortForwardBrowserUri(fallbackUri);
+  return normalizedRequestedUri.host.toLowerCase() ==
+          normalizedFallbackUri.host.toLowerCase() &&
+      portForwardBrowserUriPort(normalizedRequestedUri) ==
+          portForwardBrowserUriPort(normalizedFallbackUri);
+}
+
+/// Replaces only a failed friendly endpoint with its loopback fallback.
+Uri buildPortForwardBrowserFallbackRequestUri({
+  required Uri browserUri,
+  required Uri fallbackUri,
+  Uri? requestedUri,
+}) {
+  final candidate =
+      requestedUri != null &&
+          requestedUri.host.toLowerCase() == browserUri.host.toLowerCase() &&
+          portForwardBrowserUriPort(requestedUri) ==
+              portForwardBrowserUriPort(browserUri)
+      ? requestedUri
+      : browserUri;
+  return candidate.replace(
+    host: fallbackUri.host,
+    port: portForwardBrowserUriPort(fallbackUri),
   );
 }
 
@@ -103,7 +229,7 @@ Uri normalizePortForwardBrowserUri(Uri uri) =>
 
 /// Returns whether [host] is a browser-safe local bind address.
 bool isPortForwardBrowserHost(String host) {
-  final normalized = host.trim().toLowerCase();
+  final normalized = _withoutAddressZone(host);
   return normalized.isEmpty ||
       normalized == 'localhost' ||
       normalized == '0.0.0.0' ||
@@ -117,7 +243,7 @@ bool isPortForwardBrowserHost(String host) {
 
 /// Returns whether [host] is an explicit loopback bind address.
 bool isPortForwardLoopbackHost(String host) {
-  final normalized = host.trim().toLowerCase();
+  final normalized = _withoutAddressZone(host);
   return normalized == 'localhost' ||
       normalized == '::1' ||
       normalized == '[::1]' ||
@@ -126,7 +252,7 @@ bool isPortForwardLoopbackHost(String host) {
 }
 
 String _browserHostForBindAddress(String localHost) {
-  final host = localHost.trim().toLowerCase();
+  final host = _withoutAddressZone(localHost);
   if (host.isEmpty || host == '0.0.0.0') {
     return '127.0.0.1';
   }
@@ -136,7 +262,17 @@ String _browserHostForBindAddress(String localHost) {
   if (host == '::' || host == '[::]' || host == '::1' || host == '[::1]') {
     return 'localhost';
   }
-  return localHost.trim();
+  return host;
+}
+
+String _withoutAddressZone(String host) {
+  final normalized = host
+      .trim()
+      .toLowerCase()
+      .replaceFirst(RegExp(r'^\['), '')
+      .replaceFirst(RegExp(r'\]$'), '');
+  final zoneIndex = normalized.indexOf('%');
+  return zoneIndex < 0 ? normalized : normalized.substring(0, zoneIndex);
 }
 
 bool _samePortForwardBrowserSourceHost(String left, String right) {
