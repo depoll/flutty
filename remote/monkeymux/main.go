@@ -7224,6 +7224,12 @@ func (w *muxWindow) releaseRedrawForwardingStateLocked() {
 	w.redrawForwardingPrimaryNeedsFailover = false
 }
 
+// foregroundHistoryFallbackHistoryLocked snapshots the frame bytes to fall back
+// to if the redraw about to be triggered produces nothing. The result must be a
+// copy: these helpers can return slices aliasing window.history, which
+// appendHistoryLocked rewrites in place as output arrives during the pause,
+// which would mutate the snapshot into the very redraw it exists to recover
+// from.
 func (s *muxServer) foregroundHistoryFallbackHistoryLocked(
 	window *muxWindow,
 ) []byte {
@@ -7232,7 +7238,11 @@ func (s *muxServer) foregroundHistoryFallbackHistoryLocked(
 	}
 	history, historyStart := window.historyTailWithParserLocked()
 	history = trimReplayHistoryForAttachWithParser(history, historyStart)
-	return stripTerminalQueriesFromReplay(history)
+	history = stripTerminalQueriesFromReplay(history)
+	if len(history) == 0 {
+		return nil
+	}
+	return append([]byte(nil), history...)
 }
 
 // foregroundHistoryFallbackReplayLocked renders the snapshot taken when the
