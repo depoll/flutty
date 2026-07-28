@@ -1,15 +1,21 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
+import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
 import '../../app/theme.dart';
 import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/settings_service.dart';
+import '../browser/browser_file_picker.dart';
 
 /// Group used to prioritize and separate forwarded browser tabs.
 enum PortForwardBrowserTabGroup {
@@ -186,20 +192,35 @@ class _PortForwardBrowserScreenState
   _PortForwardBrowserTabState _createTab(PortForwardBrowserInitialTab seed) {
     final initialUri = normalizePortForwardBrowserUri(seed.uri);
     late final _PortForwardBrowserTabState tab;
-    final controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onNavigationRequest: (request) =>
-              _handleNavigationRequest(tab, request),
-          onWebResourceError: (error) =>
-              unawaited(_handleWebResourceError(tab, error)),
-          onProgress: (progress) => _handleProgress(tab, progress),
-          onPageStarted: (url) => _handlePageStarted(tab, url),
-          onPageFinished: (url) => unawaited(_handlePageFinished(tab, url)),
-          onUrlChange: (change) => _handleUrlChange(tab, change.url),
-        ),
-      );
+    var creationParams = const PlatformWebViewControllerCreationParams();
+    if (WebViewPlatform.instance is WebKitWebViewPlatform) {
+      creationParams =
+          WebKitWebViewControllerCreationParams.fromPlatformWebViewControllerCreationParams(
+            creationParams,
+            allowsInlineMediaPlayback: true,
+          );
+    }
+    final controller =
+        WebViewController.fromPlatformCreationParams(
+            creationParams,
+            onPermissionRequest: (request) =>
+                unawaited(_handleWebPermissionRequest(tab, request)),
+          )
+          ..setJavaScriptMode(JavaScriptMode.unrestricted)
+          ..setNavigationDelegate(
+            NavigationDelegate(
+              onNavigationRequest: (request) =>
+                  _handleNavigationRequest(tab, request),
+              onWebResourceError: (error) =>
+                  unawaited(_handleWebResourceError(tab, error)),
+              onProgress: (progress) => _handleProgress(tab, progress),
+              onPageStarted: (url) => _handlePageStarted(tab, url),
+              onPageFinished: (url) => unawaited(_handlePageFinished(tab, url)),
+              onUrlChange: (change) => _handleUrlChange(tab, change.url),
+              onHttpAuthRequest: (request) =>
+                  unawaited(_handleHttpAuthRequest(tab, request)),
+            ),
+          );
 
     return tab = _PortForwardBrowserTabState(
       id: _nextTabId++,
@@ -263,18 +284,29 @@ class _PortForwardBrowserScreenState
       return;
     }
     tab.hasStartedLoading = true;
-    await _configureAndLoadController(tab.controller, tab.currentUri);
+    await _configureAndLoadController(tab);
   }
 
   Future<void> _configureAndLoadController(
-    WebViewController controller,
-    Uri initialUri,
+    _PortForwardBrowserTabState tab,
   ) async {
+    final controller = tab.controller;
     await controller.enableZoom(false);
+    await controller.setOnJavaScriptAlertDialog(_showJavaScriptAlert);
+    await controller.setOnJavaScriptConfirmDialog(_showJavaScriptConfirm);
+    await controller.setOnJavaScriptTextInputDialog(_showJavaScriptPrompt);
     final platformController = controller.platform;
     if (platformController is AndroidWebViewController) {
       await platformController.setUseWideViewPort(true);
       await platformController.setTextZoom(100);
+      await platformController.setGeolocationEnabled(true);
+      await platformController.setOnShowFileSelector(
+        (params) => _showAndroidFileSelector(tab, params),
+      );
+      await platformController.setGeolocationPermissionsPromptCallbacks(
+        onShowPrompt: (request) =>
+            _handleGeolocationPermissionRequest(tab, request),
+      );
       // Flutter owns the safe viewport, so don't let Android WebView apply the
       // same system-bar and cutout insets again to the page's web content.
       await platformController.setInsetsForWebContentToIgnore([
@@ -285,7 +317,439 @@ class _PortForwardBrowserScreenState
         AndroidWebViewInsets.tappableElement,
       ]);
     }
-    await controller.loadRequest(initialUri);
+    if (platformController is WebKitWebViewController) {
+      await platformController.setAllowsBackForwardNavigationGestures(true);
+    }
+    await controller.loadRequest(tab.currentUri);
+  }
+
+  Future<List<String>> _showAndroidFileSelector(
+    _PortForwardBrowserTabState tab,
+    FileSelectorParams params,
+  ) async {
+    if (!mounted || !_tabs.contains(tab)) {
+      return const [];
+    }
+
+    try {
+      final captureType = params.isCaptureEnabled
+          ? preferredBrowserMediaCaptureType(params.acceptTypes)
+          : null;
+      if (captureType != null) {
+        final source = await _chooseBrowserFileSource(captureType);
+        if (!mounted || source == null) {
+          return const [];
+        }
+        if (source == _BrowserFileSource.camera) {
+          return await _captureBrowserMedia(captureType);
+        }
+      }
+
+      final filter = resolveBrowserFilePickerFilter(params.acceptTypes);
+      final allowMultiple = params.mode == FileSelectorMode.openMultiple;
+      final List<PlatformFile> files;
+      if (allowMultiple) {
+        files =
+            (await FilePicker.pickFiles(
+              type: filter.type,
+              allowedExtensions: filter.allowedExtensions,
+            ))?.files ??
+            const [];
+      } else {
+        final file = await FilePicker.pickFile(
+          type: filter.type,
+          allowedExtensions: filter.allowedExtensions,
+        );
+        files = file == null ? const [] : [file];
+      }
+      final uris = files
+          .map(browserUploadUriForPlatformFile)
+          .whereType<String>()
+          .toList(growable: false);
+      if (files.isNotEmpty && uris.isEmpty) {
+        _showMessage('The selected file could not be opened.');
+      }
+      return uris;
+    } on PlatformException {
+      _showMessage('Could not open the file picker. Try again.');
+      return const [];
+    }
+  }
+
+  Future<_BrowserFileSource?> _chooseBrowserFileSource(
+    BrowserMediaCaptureType captureType,
+  ) {
+    final isImage = captureType == BrowserMediaCaptureType.image;
+    return showModalBottomSheet<_BrowserFileSource>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(
+                isImage ? Icons.photo_camera_outlined : Icons.videocam_outlined,
+              ),
+              title: Text(isImage ? 'Take photo' : 'Record video'),
+              onTap: () => Navigator.of(context).pop(_BrowserFileSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.folder_open_outlined),
+              title: const Text('Choose file'),
+              onTap: () => Navigator.of(context).pop(_BrowserFileSource.files),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<List<String>> _captureBrowserMedia(
+    BrowserMediaCaptureType captureType,
+  ) async {
+    final cameraStatus = await Permission.camera.request();
+    if (!cameraStatus.isGranted) {
+      _showMessage('Camera access is required to capture media.');
+      return const [];
+    }
+
+    final picker = ImagePicker();
+    final media = switch (captureType) {
+      BrowserMediaCaptureType.image => await picker.pickImage(
+        source: ImageSource.camera,
+        requestFullMetadata: false,
+      ),
+      BrowserMediaCaptureType.video => await picker.pickVideo(
+        source: ImageSource.camera,
+      ),
+    };
+    return media == null ? const [] : [Uri.file(media.path).toString()];
+  }
+
+  Future<void> _handleWebPermissionRequest(
+    _PortForwardBrowserTabState tab,
+    WebViewPermissionRequest request,
+  ) async {
+    final supportedTypes = {
+      WebViewPermissionResourceType.camera,
+      WebViewPermissionResourceType.microphone,
+    };
+    if (!mounted ||
+        !_tabs.contains(tab) ||
+        request.types.isEmpty ||
+        !supportedTypes.containsAll(request.types)) {
+      await request.deny();
+      return;
+    }
+
+    final permissionLabel = _webPermissionLabel(request.types);
+    final allowed = await _confirmPagePermission(
+      origin: _displayOrigin(tab.currentUri),
+      title: 'Allow $permissionLabel?',
+      message:
+          'This page wants to use your $permissionLabel. '
+          'Only allow access if you trust this page.',
+    );
+    if (!allowed) {
+      await request.deny();
+      return;
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      try {
+        await request.grant();
+      } on PlatformException {
+        await request.deny();
+        _showMessage(
+          'Could not grant ${_webPermissionLabel(request.types)} access.',
+        );
+      }
+      return;
+    }
+
+    try {
+      for (final type in request.types) {
+        final status = await switch (type) {
+          WebViewPermissionResourceType.camera => Permission.camera.request(),
+          WebViewPermissionResourceType.microphone =>
+            Permission.microphone.request(),
+          _ => Future.value(PermissionStatus.denied),
+        };
+        if (!status.isGranted) {
+          await request.deny();
+          _showMessage(
+            '${_capitalizedPermissionLabel(permissionLabel)} access was denied.',
+          );
+          return;
+        }
+      }
+      await request.grant();
+    } on MissingPluginException {
+      await request.deny();
+      _showMessage(
+        '${_capitalizedPermissionLabel(permissionLabel)} access is not '
+        'available on this device.',
+      );
+    } on PlatformException {
+      await request.deny();
+      _showMessage(
+        'Could not grant ${_webPermissionLabel(request.types)} access.',
+      );
+    }
+  }
+
+  Future<GeolocationPermissionsResponse> _handleGeolocationPermissionRequest(
+    _PortForwardBrowserTabState tab,
+    GeolocationPermissionsRequestParams request,
+  ) async {
+    if (!mounted || !_tabs.contains(tab)) {
+      return const GeolocationPermissionsResponse(allow: false, retain: false);
+    }
+
+    final allowed = await _confirmPagePermission(
+      origin: _displayOrigin(Uri.tryParse(request.origin) ?? tab.currentUri),
+      title: 'Allow location?',
+      message:
+          'This page wants to use your approximate location. '
+          'Only allow access if you trust this page.',
+    );
+    if (!allowed) {
+      return const GeolocationPermissionsResponse(allow: false, retain: false);
+    }
+
+    try {
+      final status = await Permission.locationWhenInUse.request();
+      if (!status.isGranted) {
+        _showMessage('Location access was denied.');
+      }
+      return GeolocationPermissionsResponse(
+        allow: status.isGranted,
+        retain: false,
+      );
+    } on PlatformException {
+      _showMessage('Could not grant location access.');
+      return const GeolocationPermissionsResponse(allow: false, retain: false);
+    }
+  }
+
+  Future<bool> _confirmPagePermission({
+    required String origin,
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) {
+      return false;
+    }
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text(title),
+            content: Text('$message\n\n$origin'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Not now'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Allow'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  String _webPermissionLabel(Set<WebViewPermissionResourceType> types) {
+    final hasCamera = types.contains(WebViewPermissionResourceType.camera);
+    final hasMicrophone = types.contains(
+      WebViewPermissionResourceType.microphone,
+    );
+    if (hasCamera && hasMicrophone) {
+      return 'camera and microphone';
+    }
+    return hasCamera ? 'camera' : 'microphone';
+  }
+
+  String _capitalizedPermissionLabel(String label) =>
+      '${label.substring(0, 1).toUpperCase()}${label.substring(1)}';
+
+  Future<void> _showJavaScriptAlert(
+    JavaScriptAlertDialogRequest request,
+  ) async {
+    if (!mounted) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(_displayRequestOrigin(request.url)),
+        content: SelectableText(request.message),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _showJavaScriptConfirm(
+    JavaScriptConfirmDialogRequest request,
+  ) async {
+    if (!mounted) {
+      return false;
+    }
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text(_displayRequestOrigin(request.url)),
+            content: SelectableText(request.message),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<String> _showJavaScriptPrompt(
+    JavaScriptTextInputDialogRequest request,
+  ) async {
+    if (!mounted) {
+      return '';
+    }
+    final controller = TextEditingController(text: request.defaultText);
+    try {
+      return await showDialog<String>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: Text(_displayRequestOrigin(request.url)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(request.message),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    onSubmitted: (value) => Navigator.of(context).pop(value),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(''),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(controller.text),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          ) ??
+          '';
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  Future<void> _handleHttpAuthRequest(
+    _PortForwardBrowserTabState tab,
+    HttpAuthRequest request,
+  ) async {
+    if (!mounted || !_tabs.contains(tab)) {
+      request.onCancel();
+      return;
+    }
+    final usernameController = TextEditingController();
+    final passwordController = TextEditingController();
+    try {
+      final credential = await showDialog<WebViewCredential>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('Sign in'),
+          content: AutofillGroup(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  request.realm?.isNotEmpty ?? false
+                      ? '${request.host} - ${request.realm}'
+                      : request.host,
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: usernameController,
+                  autofocus: true,
+                  autofillHints: const [AutofillHints.username],
+                  decoration: const InputDecoration(labelText: 'Username'),
+                  textInputAction: TextInputAction.next,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: passwordController,
+                  autofillHints: const [AutofillHints.password],
+                  decoration: const InputDecoration(labelText: 'Password'),
+                  obscureText: true,
+                  onSubmitted: (_) => Navigator.of(context).pop(
+                    WebViewCredential(
+                      user: usernameController.text,
+                      password: passwordController.text,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(
+                WebViewCredential(
+                  user: usernameController.text,
+                  password: passwordController.text,
+                ),
+              ),
+              child: const Text('Sign in'),
+            ),
+          ],
+        ),
+      );
+      if (credential == null) {
+        request.onCancel();
+      } else {
+        request.onProceed(credential);
+      }
+    } finally {
+      usernameController.dispose();
+      passwordController.dispose();
+    }
+  }
+
+  String _displayRequestOrigin(String url) =>
+      _displayOrigin(Uri.tryParse(url) ?? _selectedTab.currentUri);
+
+  String _displayOrigin(Uri uri) {
+    if (uri.authority.isNotEmpty) {
+      return uri.origin;
+    }
+    return uri.scheme.isEmpty ? 'This page' : uri.scheme;
   }
 
   Widget _buildBottomChrome(
@@ -707,10 +1171,10 @@ class _PortForwardBrowserScreenState
     _showMessage('Could not open $uri');
   }
 
-  NavigationDecision _handleNavigationRequest(
+  Future<NavigationDecision> _handleNavigationRequest(
     _PortForwardBrowserTabState tab,
     NavigationRequest request,
-  ) {
+  ) async {
     final uri = Uri.tryParse(request.url);
     if (uri == null) {
       _showMessage('Could not open ${request.url}');
@@ -733,6 +1197,23 @@ class _PortForwardBrowserScreenState
     }
     if (uri.scheme == 'about' || uri.scheme == 'blob' || uri.scheme == 'data') {
       return NavigationDecision.navigate;
+    }
+    if (uri.scheme == 'javascript') {
+      return NavigationDecision.navigate;
+    }
+    if (shouldLaunchPortForwardBrowserUriExternally(uri)) {
+      try {
+        final launched = await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (!launched) {
+          _showMessage('No app can open this link.');
+        }
+      } on PlatformException {
+        _showMessage('Could not open this link.');
+      }
+      return NavigationDecision.prevent;
     }
 
     _showMessage('Unsupported link scheme: ${uri.scheme}');
@@ -815,6 +1296,8 @@ class _PortForwardBrowserScreenState
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
+
+enum _BrowserFileSource { camera, files }
 
 class _PortForwardBrowserTabState {
   _PortForwardBrowserTabState({
