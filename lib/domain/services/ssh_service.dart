@@ -7022,8 +7022,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   final Map<int, int> _connectionHostIds = {};
   final Map<int, String> _connectionSessionTitles = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
-  final Map<int, SshConnectionCancellationToken> _connectionCancellationTokens =
-      {};
+  final Map<int, Set<SshConnectionCancellationToken>>
+  _connectionCancellationTokens = {};
   final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
   final Map<int, StreamSubscription<_SshConnectionHealthFailure>>
   _connectionHealthFailureSubscriptions = {};
@@ -7076,10 +7076,70 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   }
 
   /// Connect to a host.
+  ///
+  /// The cancellation token is registered before any `await` so a cancel
+  /// request that arrives while the attempt is still warming up is honored,
+  /// and it is torn down again once the attempt settles.
   Future<SshConnectionResult> connect(
     int hostId, {
     bool forceNew = false,
     bool useHostThemeOverrides = true,
+  }) async {
+    final cancellationToken = SshConnectionCancellationToken();
+    _connectionCancellationTokens
+        .putIfAbsent(hostId, () => <SshConnectionCancellationToken>{})
+        .add(cancellationToken);
+
+    final SshConnectionResult result;
+    try {
+      result = await _runConnectAttempt(
+        hostId,
+        forceNew: forceNew,
+        useHostThemeOverrides: useHostThemeOverrides,
+        cancellationToken: cancellationToken,
+      );
+    } finally {
+      final tokens = _connectionCancellationTokens[hostId];
+      if (tokens != null) {
+        tokens.remove(cancellationToken);
+        if (tokens.isEmpty) {
+          _connectionCancellationTokens.remove(hostId);
+        }
+      }
+    }
+
+    if (!cancellationToken.isCancelled || result.cancelled) {
+      return result;
+    }
+
+    // The attempt raced past cancellation (for example it was reusing an
+    // existing session, or it finished while the request was in flight).
+    // Honor the user's intent instead of handing back a live connection.
+    final connectionId = result.connectionId;
+    if (result.success && connectionId != null && !result.reusedConnection) {
+      await disconnect(connectionId);
+    }
+    _updateConnectionAttempt(
+      hostId,
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.error,
+        message: 'Connection cancelled',
+      ),
+      cancelled: true,
+    );
+    DiagnosticsLogService.instance.info(
+      'ssh.active',
+      'connect_cancelled',
+      fields: {'hostId': hostId, 'phase': 'post_attempt'},
+    );
+    return const SshConnectionResult.userCancelled();
+  }
+
+  Future<SshConnectionResult> _runConnectAttempt(
+    int hostId, {
+    required bool forceNew,
+    required bool useHostThemeOverrides,
+    required SshConnectionCancellationToken cancellationToken,
   }) async {
     final telemetry = ref.read(telemetryServiceProvider);
     final host = await _telemetryHostForConnection(hostId);
@@ -7124,21 +7184,12 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       cancelRequested: false,
     );
 
-    final cancellationToken = SshConnectionCancellationToken();
-    _connectionCancellationTokens[hostId] = cancellationToken;
-    final SshConnectionResult result;
-    try {
-      result = await _sshService.connectToHost(
-        hostId,
-        onProgress: (update) => _updateConnectionAttempt(hostId, update),
-        useHostThemeOverrides: useHostThemeOverrides,
-        cancellationToken: cancellationToken,
-      );
-    } finally {
-      if (identical(_connectionCancellationTokens[hostId], cancellationToken)) {
-        _connectionCancellationTokens.remove(hostId);
-      }
-    }
+    final result = await _sshService.connectToHost(
+      hostId,
+      onProgress: (update) => _updateConnectionAttempt(hostId, update),
+      useHostThemeOverrides: useHostThemeOverrides,
+      cancellationToken: cancellationToken,
+    );
 
     if (result.cancelled) {
       _updateConnectionAttempt(
@@ -8090,19 +8141,23 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     state = {...state};
   }
 
-  /// Abandon the in-flight connection attempt for [hostId].
+  /// Abandon the in-flight connection attempt(s) for [hostId].
   ///
-  /// Returns `true` when a cancellable attempt was found. The attempt future
-  /// resolves with a cancelled [SshConnectionResult] shortly afterwards.
+  /// Returns `true` when at least one cancellable attempt was found. Every
+  /// concurrent attempt for the host is cancelled, and each resolves with a
+  /// cancelled [SshConnectionResult] shortly afterwards.
   bool cancelConnectionAttempt(int hostId) {
-    final token = _connectionCancellationTokens[hostId];
-    if (token == null || token.isCancelled) {
+    final tokens = _connectionCancellationTokens[hostId];
+    final cancellable =
+        tokens?.where((token) => !token.isCancelled).toList(growable: false) ??
+        const <SshConnectionCancellationToken>[];
+    if (cancellable.isEmpty) {
       return false;
     }
     DiagnosticsLogService.instance.info(
       'ssh.active',
       'attempt_cancel_requested',
-      fields: {'hostId': hostId},
+      fields: {'hostId': hostId, 'attemptCount': cancellable.length},
     );
     final existing = _connectionAttempts[hostId];
     _updateConnectionAttempt(
@@ -8113,15 +8168,18 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       ),
       cancelRequested: true,
     );
-    token.cancel();
+    for (final token in cancellable) {
+      token.cancel();
+    }
     return true;
   }
 
   /// Whether [hostId] currently has a cancellable connection attempt.
-  bool canCancelConnectionAttempt(int hostId) {
-    final token = _connectionCancellationTokens[hostId];
-    return token != null && !token.isCancelled;
-  }
+  bool canCancelConnectionAttempt(int hostId) =>
+      _connectionCancellationTokens[hostId]?.any(
+        (token) => !token.isCancelled,
+      ) ??
+      false;
 
   /// Surface an unexpected connection failure in the shared attempt state.
   void reportConnectionAttemptError(int hostId, String message) {

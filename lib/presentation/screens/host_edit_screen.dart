@@ -1829,6 +1829,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         testingSnackBar.close();
       }
       if (!mounted) {
+        // The screen went away mid-test; don't leak the established client.
+        unawaited(result.closeAll());
         return;
       }
 

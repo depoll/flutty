@@ -553,8 +553,15 @@ class _SingleCloseForwardChannel implements SSHForwardChannel {
 }
 
 class _CancellableConnectSshService extends SshService {
+  _CancellableConnectSshService({this.expectedAttempts = 1});
+
+  final int expectedAttempts;
   final Completer<void> connectStarted = Completer<void>();
-  SshConnectionCancellationToken? receivedToken;
+  final Completer<void> allAttemptsStarted = Completer<void>();
+  final List<SshConnectionCancellationToken> receivedTokens = [];
+
+  SshConnectionCancellationToken? get receivedToken =>
+      receivedTokens.isEmpty ? null : receivedTokens.last;
 
   @override
   Future<SshConnectionResult> connectToHost(
@@ -563,9 +570,13 @@ class _CancellableConnectSshService extends SshService {
     bool useHostThemeOverrides = true,
     SshConnectionCancellationToken? cancellationToken,
   }) async {
-    receivedToken = cancellationToken;
+    receivedTokens.add(cancellationToken!);
     if (!connectStarted.isCompleted) {
       connectStarted.complete();
+    }
+    if (receivedTokens.length >= expectedAttempts &&
+        !allAttemptsStarted.isCompleted) {
+      allAttemptsStarted.complete();
     }
     onProgress?.call(
       const ConnectionProgressUpdate(
@@ -573,7 +584,7 @@ class _CancellableConnectSshService extends SshService {
         message: 'Opening network connection…',
       ),
     );
-    await cancellationToken!.cancelled;
+    await cancellationToken.cancelled;
     return const SshConnectionResult.userCancelled();
   }
 }
@@ -3887,6 +3898,79 @@ LISTEN ::1:4201
       expect(notifier.canCancelConnectionAttempt(99), isFalse);
       expect(notifier.cancelConnectionAttempt(99), isFalse);
       expect(notifier.getConnectionAttempt(99), isNull);
+    });
+
+    test(
+      'cancelConnectionAttempt aborts every concurrent same-host attempt',
+      () async {
+        final cancellableService = _CancellableConnectSshService(
+          expectedAttempts: 2,
+        );
+        final hostRepository = _MockHostRepository();
+        when(() => hostRepository.getById(any())).thenAnswer((_) async => null);
+        final localContainer = ProviderContainer(
+          overrides: [
+            sshServiceProvider.overrideWithValue(cancellableService),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            portForwardRepositoryProvider.overrideWithValue(
+              _emptyPortForwardRepository(),
+            ),
+          ],
+        );
+        addTearDown(localContainer.dispose);
+        final notifier = localContainer.read(activeSessionsProvider.notifier);
+
+        final first = notifier.connect(42, forceNew: true);
+        final second = notifier.connect(42, forceNew: true);
+        await cancellableService.allAttemptsStarted.future;
+
+        expect(cancellableService.receivedTokens, hasLength(2));
+        expect(notifier.cancelConnectionAttempt(42), isTrue);
+
+        final results = await Future.wait([first, second]);
+
+        expect(results.every((result) => result.cancelled), isTrue);
+        expect(
+          cancellableService.receivedTokens.every((token) => token.isCancelled),
+          isTrue,
+          reason: 'both concurrent attempts must observe cancellation',
+        );
+        expect(notifier.canCancelConnectionAttempt(42), isFalse);
+      },
+    );
+
+    test('honors cancellation that races a reused connection', () async {
+      final localSshService = _FakeActiveSessionsSshService();
+      final hostRepository = _MockHostRepository();
+      when(() => hostRepository.getById(any())).thenAnswer((_) async => null);
+      final localContainer = ProviderContainer(
+        overrides: [
+          sshServiceProvider.overrideWithValue(localSshService),
+          hostRepositoryProvider.overrideWithValue(hostRepository),
+          portForwardRepositoryProvider.overrideWithValue(
+            _emptyPortForwardRepository(),
+          ),
+        ],
+      );
+      addTearDown(localContainer.dispose);
+      final notifier = localContainer.read(activeSessionsProvider.notifier);
+
+      final established = await notifier.connect(42, forceNew: true);
+      expect(established.success, isTrue);
+
+      // A reusing attempt cancelled before it settles must not hand back the
+      // live session, but must also leave that shared session connected.
+      final reusing = notifier.connect(42);
+      notifier.cancelConnectionAttempt(42);
+      final result = await reusing;
+
+      expect(result.cancelled, isTrue);
+      expect(result.connectionId, isNull);
+      expect(
+        localSshService.getSession(established.connectionId!),
+        isNotNull,
+        reason: 'a reused session belongs to the earlier caller',
+      );
     });
 
     test('keeps ownership on a connected sibling during reconnect', () async {
