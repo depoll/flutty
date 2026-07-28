@@ -563,6 +563,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   String _currentPath = '/';
   List<SftpName> _files = [];
   bool _isLoading = true;
+  bool _isConnectingSession = false;
   String? _error;
   final List<String> _pathHistory = ['/'];
   String? _hostLabel;
@@ -624,6 +625,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     super.dispose();
   }
 
+  /// Abandons the in-flight SSH connection attempt for this browser's host.
+  void _cancelConnectionAttempt() {
+    ref
+        .read(activeSessionsProvider.notifier)
+        .cancelConnectionAttempt(widget.hostId);
+  }
+
   Future<void> _connect() async {
     setState(() {
       _isLoading = true;
@@ -650,17 +658,29 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
       // Connect if not already connected
       if (session == null) {
-        final result = await sessionsNotifier.connect(
-          widget.hostId,
-          useHostThemeOverrides: useHostThemeOverrides,
-        );
+        setState(() => _isConnectingSession = true);
+        final SshConnectionResult result;
+        try {
+          result = await sessionsNotifier.connect(
+            widget.hostId,
+            useHostThemeOverrides: useHostThemeOverrides,
+          );
+        } finally {
+          if (mounted) {
+            setState(() => _isConnectingSession = false);
+          }
+        }
         if (!mounted) {
           return;
         }
         if (!result.success) {
           setState(() {
             _isLoading = false;
-            _error = result.error ?? 'Connection failed';
+            _error =
+                result.error ??
+                (result.cancelled
+                    ? 'Connection cancelled'
+                    : 'Connection failed');
           });
           return;
         }
@@ -1551,7 +1571,25 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   Widget _buildFileList() {
     if (_isLoading) {
-      return const BrandListSkeleton();
+      if (!_isConnectingSession) {
+        return const BrandListSkeleton();
+      }
+      final isCancelling =
+          ref.watch(connectionAttemptProvider(widget.hostId))?.isCancelling ??
+          false;
+      return Column(
+        children: [
+          const Expanded(child: BrandListSkeleton()),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: TextButton.icon(
+              onPressed: isCancelling ? null : _cancelConnectionAttempt,
+              icon: const Icon(Icons.close),
+              label: Text(isCancelling ? 'Cancelling…' : 'Cancel connection'),
+            ),
+          ),
+        ],
+      );
     }
 
     if (_error != null) {

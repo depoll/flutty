@@ -58,6 +58,7 @@ class _CapturingSshService extends SshService {
     SshConnectionConfig config, {
     ConnectionProgressCallback? onProgress,
     bool isJumpHost = false,
+    SshConnectionCancellationToken? cancellationToken,
   }) async {
     capturedConfig = config;
     return const SshConnectionResult(success: false, error: 'stubbed');
@@ -333,6 +334,34 @@ class _FakeHostKeySocket implements SSHSocket, HostKeySource {
   void destroy() {}
 }
 
+class _DestroyTrackingSocket implements SSHSocket {
+  _DestroyTrackingSocket(this._delegate);
+
+  final SSHSocket _delegate;
+  bool destroyed = false;
+
+  @override
+  Stream<Uint8List> get stream => _delegate.stream;
+
+  @override
+  StreamSink<List<int>> get sink => _delegate.sink;
+
+  @override
+  Future<void> close() => _delegate.close();
+
+  @override
+  Future<void> flush() => _delegate.flush();
+
+  @override
+  Future<void> get done => _delegate.done;
+
+  @override
+  void destroy() {
+    destroyed = true;
+    _delegate.destroy();
+  }
+}
+
 class _FakeForwardHostKeySocket implements SSHForwardChannel, HostKeySource {
   _FakeForwardHostKeySocket(this._hostKeyBytes);
 
@@ -523,6 +552,32 @@ class _SingleCloseForwardChannel implements SSHForwardChannel {
   }
 }
 
+class _CancellableConnectSshService extends SshService {
+  final Completer<void> connectStarted = Completer<void>();
+  SshConnectionCancellationToken? receivedToken;
+
+  @override
+  Future<SshConnectionResult> connectToHost(
+    int hostId, {
+    ConnectionProgressCallback? onProgress,
+    bool useHostThemeOverrides = true,
+    SshConnectionCancellationToken? cancellationToken,
+  }) async {
+    receivedToken = cancellationToken;
+    if (!connectStarted.isCompleted) {
+      connectStarted.complete();
+    }
+    onProgress?.call(
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.connecting,
+        message: 'Opening network connection…',
+      ),
+    );
+    await cancellationToken!.cancelled;
+    return const SshConnectionResult.userCancelled();
+  }
+}
+
 class _FakeActiveSessionsSshService extends SshService {
   _FakeActiveSessionsSshService({this.connectGate});
 
@@ -540,6 +595,7 @@ class _FakeActiveSessionsSshService extends SshService {
     int hostId, {
     ConnectionProgressCallback? onProgress,
     bool useHostThemeOverrides = true,
+    SshConnectionCancellationToken? cancellationToken,
   }) async {
     if (!connectStarted.isCompleted) {
       connectStarted.complete();
@@ -3791,6 +3847,48 @@ LISTEN ::1:4201
       },
     );
 
+    test('cancelConnectionAttempt aborts an in-flight connect', () async {
+      final cancellableService = _CancellableConnectSshService();
+      final hostRepository = _MockHostRepository();
+      when(() => hostRepository.getById(any())).thenAnswer((_) async => null);
+      final localContainer = ProviderContainer(
+        overrides: [
+          sshServiceProvider.overrideWithValue(cancellableService),
+          hostRepositoryProvider.overrideWithValue(hostRepository),
+          portForwardRepositoryProvider.overrideWithValue(
+            _emptyPortForwardRepository(),
+          ),
+        ],
+      );
+      addTearDown(localContainer.dispose);
+      final notifier = localContainer.read(activeSessionsProvider.notifier);
+
+      final pending = notifier.connect(42, forceNew: true);
+      await cancellableService.connectStarted.future;
+
+      expect(notifier.canCancelConnectionAttempt(42), isTrue);
+      expect(notifier.cancelConnectionAttempt(42), isTrue);
+      expect(notifier.getConnectionAttempt(42)?.cancelRequested, isTrue);
+      expect(notifier.getConnectionAttempt(42)?.isCancelling, isTrue);
+
+      final result = await pending;
+
+      expect(result.cancelled, isTrue);
+      expect(result.success, isFalse);
+      expect(notifier.getConnectionAttempt(42)?.cancelled, isTrue);
+      expect(notifier.getConnectionAttempt(42)?.isCancelling, isFalse);
+      expect(notifier.canCancelConnectionAttempt(42), isFalse);
+      expect(cancellableService.receivedToken?.isCancelled, isTrue);
+    });
+
+    test('cancelConnectionAttempt is a no-op without an attempt', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+
+      expect(notifier.canCancelConnectionAttempt(99), isFalse);
+      expect(notifier.cancelConnectionAttempt(99), isFalse);
+      expect(notifier.getConnectionAttempt(99), isNull);
+    });
+
     test('keeps ownership on a connected sibling during reconnect', () async {
       final configurationLog = <String>[];
       final older = _RecordingAutomaticForwardSession(
@@ -6654,6 +6752,225 @@ LISTEN ::1:4201
       expect(service.capturedConfig?.jumpHost, isNotNull);
       expect(wifiNetworkService.requestPermissionCallCount, 1);
       expect(wifiNetworkService.getCurrentSsidCallCount, 1);
+    });
+  });
+
+  group('connection cancellation', () {
+    test('cancels a stalled socket connection without waiting', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final socketRequested = Completer<void>();
+      final stalledSocket = Completer<SSHSocket>();
+      addTearDown(() {
+        if (!stalledSocket.isCompleted) {
+          stalledSocket.complete(_FakeHostKeySocket(_ed25519HostKeyBlob([9])));
+        }
+      });
+      var clientFactoryCalls = 0;
+
+      final service = SshService(
+        knownHostsRepository: KnownHostsRepository(db),
+        socketConnector: (host, port, {timeout}) {
+          if (!socketRequested.isCompleted) {
+            socketRequested.complete();
+          }
+          return stalledSocket.future;
+        },
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              onUserInfoRequest,
+              identities,
+              keepAliveInterval,
+            }) {
+              clientFactoryCalls++;
+              return _MockSshClient();
+            },
+      );
+
+      final token = SshConnectionCancellationToken();
+      const config = SshConnectionConfig(
+        hostname: 'stalled.example.com',
+        port: 22,
+        username: 'tester',
+        connectionTimeout: Duration(minutes: 10),
+      );
+
+      final pending = service.connect(config, cancellationToken: token);
+      await socketRequested.future;
+      token.cancel();
+      final result = await pending;
+
+      expect(result.cancelled, isTrue);
+      expect(result.success, isFalse);
+      expect(result.error, 'Connection cancelled');
+      expect(clientFactoryCalls, 0);
+    });
+
+    test('destroys a socket that arrives after cancellation', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final socketRequested = Completer<void>();
+      final stalledSocket = Completer<SSHSocket>();
+      final lateSocket = _DestroyTrackingSocket(
+        _FakeHostKeySocket(_ed25519HostKeyBlob([3, 2, 1])),
+      );
+
+      final service = SshService(
+        knownHostsRepository: KnownHostsRepository(db),
+        socketConnector: (host, port, {timeout}) {
+          if (!socketRequested.isCompleted) {
+            socketRequested.complete();
+          }
+          return stalledSocket.future;
+        },
+      );
+
+      final token = SshConnectionCancellationToken();
+      const config = SshConnectionConfig(
+        hostname: 'late-socket.example.com',
+        port: 22,
+        username: 'tester',
+      );
+
+      final pending = service.connect(config, cancellationToken: token);
+      await socketRequested.future;
+      token.cancel();
+      final result = await pending;
+      stalledSocket.complete(lateSocket);
+      await pumpEventQueue();
+
+      expect(result.cancelled, isTrue);
+      expect(lateSocket.destroyed, isTrue);
+    });
+
+    test('cancels a stalled authentication and closes the client', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final knownHostsRepository = KnownHostsRepository(db);
+      final hostKeyBytes = _ed25519HostKeyBlob([7, 7, 7]);
+      await _seedTrustedHost(
+        knownHostsRepository,
+        hostname: 'slow-auth.example.com',
+        hostKeyBytes: hostKeyBytes,
+      );
+      final client = _MockSshClient();
+      final authenticationStarted = Completer<void>();
+      when(() => client.authenticated).thenAnswer((_) {
+        if (!authenticationStarted.isCompleted) {
+          authenticationStarted.complete();
+        }
+        return Completer<void>().future;
+      });
+      when(client.close).thenReturn(null);
+
+      final service = SshService(
+        knownHostsRepository: knownHostsRepository,
+        socketConnector: (host, port, {timeout}) async =>
+            _FakeHostKeySocket(hostKeyBytes),
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              onUserInfoRequest,
+              identities,
+              keepAliveInterval,
+            }) => client,
+      );
+
+      final token = SshConnectionCancellationToken();
+      const config = SshConnectionConfig(
+        hostname: 'slow-auth.example.com',
+        port: 22,
+        username: 'tester',
+        connectionTimeout: Duration(minutes: 10),
+      );
+
+      final pending = service.connect(config, cancellationToken: token);
+      await authenticationStarted.future;
+      token.cancel();
+      final result = await pending;
+
+      expect(result.cancelled, isTrue);
+      expect(result.client, isNull);
+      verify(client.close).called(1);
+    });
+
+    test(
+      'returns cancelled before connecting when already cancelled',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        var socketConnectorCalls = 0;
+
+        final service = SshService(
+          knownHostsRepository: KnownHostsRepository(db),
+          socketConnector: (host, port, {timeout}) async {
+            socketConnectorCalls++;
+            return _FakeHostKeySocket(_ed25519HostKeyBlob([1]));
+          },
+        );
+
+        final token = SshConnectionCancellationToken()..cancel();
+        const config = SshConnectionConfig(
+          hostname: 'precancelled.example.com',
+          port: 22,
+          username: 'tester',
+        );
+
+        final result = await service.connect(config, cancellationToken: token);
+
+        expect(result.cancelled, isTrue);
+        expect(socketConnectorCalls, 0);
+      },
+    );
+
+    test('connectToHost does not register a cancelled session', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryption = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryption);
+      final hostId = await hostRepo.insert(
+        HostsCompanion.insert(
+          label: 'stalled',
+          hostname: 'stalled.example.com',
+          username: 'tester',
+        ),
+      );
+      final socketRequested = Completer<void>();
+      final stalledSocket = Completer<SSHSocket>();
+      addTearDown(() {
+        if (!stalledSocket.isCompleted) {
+          stalledSocket.complete(_FakeHostKeySocket(_ed25519HostKeyBlob([5])));
+        }
+      });
+
+      final service = SshService(
+        hostRepository: hostRepo,
+        keyRepository: KeyRepository(db, encryption),
+        knownHostsRepository: KnownHostsRepository(db),
+        socketConnector: (host, port, {timeout}) {
+          if (!socketRequested.isCompleted) {
+            socketRequested.complete();
+          }
+          return stalledSocket.future;
+        },
+      );
+
+      final token = SshConnectionCancellationToken();
+      final pending = service.connectToHost(hostId, cancellationToken: token);
+      await socketRequested.future;
+      token.cancel();
+      final result = await pending;
+
+      expect(result.cancelled, isTrue);
+      expect(result.connectionId, isNull);
+      expect(service.sessions, isEmpty);
     });
   });
 }

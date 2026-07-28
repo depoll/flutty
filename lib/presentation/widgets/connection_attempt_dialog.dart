@@ -49,7 +49,9 @@ Future<SshConnectionResult> connectToHostWithProgressDialog(
     result = const SshConnectionResult(success: false, error: message);
   }
 
-  if (result.success && result.connectionId != null && navigator.mounted) {
+  final closesDialog =
+      result.cancelled || (result.success && result.connectionId != null);
+  if (closesDialog && navigator.mounted) {
     navigator.pop();
   }
 
@@ -74,13 +76,26 @@ class _ConnectionAttemptDialog extends ConsumerWidget {
     final logLines = attempt?.logLines ?? const ['Preparing connection…'];
     final statusMessage = attempt?.latestMessage ?? 'Preparing connection…';
     final canClose = connectionState == SshConnectionState.error;
+    final wasCancelled = attempt?.cancelled ?? false;
+    final isCancelling = attempt?.isCancelling ?? false;
+    final canCancel = !canClose && !isCancelling;
+    final title = switch (true) {
+      _ when wasCancelled => 'Connection cancelled',
+      _ when isCancelling => 'Cancelling connection',
+      _ when canClose => 'Connection failed',
+      _ => 'Connecting to ${host.label}',
+    };
 
     return PopScope(
       canPop: canClose,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || !canCancel) {
+          return;
+        }
+        sessionsNotifier.cancelConnectionAttempt(host.id);
+      },
       child: AlertDialog(
-        title: Text(
-          canClose ? 'Connection failed' : 'Connecting to ${host.label}',
-        ),
+        title: Text(title),
         content: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
           child: Column(
@@ -98,7 +113,10 @@ class _ConnectionAttemptDialog extends ConsumerWidget {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _ConnectionAttemptIcon(state: connectionState),
+                  _ConnectionAttemptIcon(
+                    state: connectionState,
+                    cancelled: wasCancelled,
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
@@ -154,6 +172,13 @@ class _ConnectionAttemptDialog extends ConsumerWidget {
             FilledButton(
               onPressed: () => Navigator.of(context).pop(),
               child: const Text('Close'),
+            )
+          else
+            TextButton(
+              onPressed: canCancel
+                  ? () => sessionsNotifier.cancelConnectionAttempt(host.id)
+                  : null,
+              child: Text(isCancelling ? 'Cancelling…' : 'Cancel'),
             ),
         ],
       ),
@@ -162,13 +187,17 @@ class _ConnectionAttemptDialog extends ConsumerWidget {
 }
 
 class _ConnectionAttemptIcon extends StatelessWidget {
-  const _ConnectionAttemptIcon({required this.state});
+  const _ConnectionAttemptIcon({required this.state, this.cancelled = false});
 
   final SshConnectionState state;
+  final bool cancelled;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    if (cancelled) {
+      return Icon(Icons.cancel_outlined, color: colorScheme.onSurfaceVariant);
+    }
     return switch (state) {
       SshConnectionState.connected => Icon(
         Icons.check_circle,
