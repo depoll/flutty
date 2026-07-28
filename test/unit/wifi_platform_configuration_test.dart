@@ -10,6 +10,7 @@ void main() {
       ).readAsStringSync();
 
       expect(manifest, contains('android.permission.ACCESS_WIFI_STATE'));
+      expect(manifest, contains('android.permission.ACCESS_COARSE_LOCATION'));
       expect(manifest, contains('android.permission.ACCESS_FINE_LOCATION'));
     });
 
