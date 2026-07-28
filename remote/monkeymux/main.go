@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.125"
+	monkeyMuxVersion                  = "0.1.126"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -206,6 +206,7 @@ var (
 	errRunCommandClientClosed = errors.New("control client closed")
 	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
 	errRunCommandTimeout      = errors.New("command timed out")
+	errServerClosed           = errors.New("server is closed")
 )
 
 var simulateForegroundResize = func(window *muxWindow, width int, height int) {
@@ -477,6 +478,7 @@ type muxServer struct {
 	controls                   map[*controlClient]struct{}
 	themeHint                  []byte
 	closed                     bool
+	closeDone                  chan struct{}
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -486,6 +488,12 @@ type muxServer struct {
 	// first time each of these windows becomes the active/attached window we
 	// schedule follow-up redraws and clear it from this set.
 	restoreRedrawPending map[string]bool
+
+	// windowWatchers tracks the per-window reader and process-exit goroutines
+	// so close can wait for them. Without it those goroutines outlive the
+	// server and keep mutating its state (markWindowClosed) after shutdown,
+	// which races whatever runs next in the same process.
+	windowWatchers sync.WaitGroup
 }
 
 type muxWindow struct {
@@ -3737,6 +3745,21 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		// close() sets s.closed and snapshots s.windows under this same lock,
+		// so a window registered from here on would never be torn down and its
+		// watchers would join the group after close already waited. Tear the
+		// freshly started process down instead of publishing it.
+		s.mu.Unlock()
+		proc.Hangup()
+		_ = windowPty.Close()
+		return nil, errServerClosed
+	}
+	// Registering the watchers here, rather than beside the `go` statements
+	// below, keeps the count paired with the s.closed transition: once close()
+	// observes s.closed it knows no further watchers can be added, so its Wait
+	// cannot race an Add.
+	s.windowWatchers.Add(2)
 	s.nextID++
 	window := &muxWindow{
 		id:                       fmt.Sprintf("@%d", s.nextID),
@@ -3791,12 +3814,17 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
-	go s.readWindow(window)
+	// The watcher count was registered under s.mu above, alongside the s.closed
+	// check, so it is deliberately not incremented here.
 	go func() {
+		defer s.windowWatchers.Done()
+		s.readWindow(window)
+	}()
+	go func() {
+		defer s.windowWatchers.Done()
 		_ = proc.Wait()
 		s.markWindowClosed(window.id)
 	}()
-
 	s.broadcast(controlResponse{
 		Type:    "window_added",
 		Session: s.session,
@@ -12474,10 +12502,20 @@ func (s *muxServer) reindexWindowsLocked() {
 func (s *muxServer) close() {
 	s.mu.Lock()
 	if s.closed {
+		// Shutdown is triggered concurrently (`go s.close()`) as well as from
+		// deferred calls, so a later caller must not report the server as torn
+		// down while the first caller is still tearing it down. Wait for that
+		// caller instead of returning immediately.
+		inFlight := s.closeDone
 		s.mu.Unlock()
+		if inFlight != nil {
+			<-inFlight
+		}
 		return
 	}
 	s.closed = true
+	s.closeDone = make(chan struct{})
+	closeDone := s.closeDone
 	listener := s.listener
 	s.listener = nil
 	attach := net.Conn(nil)
@@ -12495,7 +12533,15 @@ func (s *muxServer) close() {
 		controls = append(controls, control)
 	}
 	windows := append([]*muxWindow(nil), s.windows...)
+	// Mark the windows closed while still holding s.mu. A watcher that outruns
+	// the bounded wait below then finds its window already closed and returns
+	// from markWindowClosed before touching any server state.
+	for _, window := range windows {
+		window.closed = true
+		window.releaseRedrawForwardingStateLocked()
+	}
 	s.mu.Unlock()
+	defer close(closeDone)
 
 	if listener != nil {
 		_ = listener.Close()
@@ -12516,6 +12562,33 @@ func (s *muxServer) close() {
 		if window.pty != nil {
 			_ = window.closePty(window.pty)
 		}
+	}
+	// Closing the ptys ends the reader goroutines and the hangup above ends the
+	// child processes, so the watchers finish promptly. Wait for them so no
+	// goroutine mutates server state after close returns. The wait is bounded
+	// because a child that ignores SIGHUP must not be able to hang shutdown;
+	// marking the windows closed above is what makes overrunning a watcher
+	// harmless rather than a late mutation of server state.
+	s.waitForWindowWatchers(windowWatcherShutdownTimeout)
+}
+
+// windowWatcherShutdownTimeout bounds how long close waits for the per-window
+// goroutines after hanging up the children and closing the ptys. They normally
+// finish immediately; the bound only exists so a child that ignores SIGHUP
+// cannot hang shutdown.
+const windowWatcherShutdownTimeout = 2 * time.Second
+
+func (s *muxServer) waitForWindowWatchers(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		s.windowWatchers.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
 	}
 }
 
