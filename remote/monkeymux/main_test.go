@@ -5379,6 +5379,39 @@ func TestCreateWindowHoldsAgentWindowOpenOnFastFailure(t *testing.T) {
 	}
 }
 
+// TestCreateWindowAfterCloseDoesNotLeakWindow pins the shutdown race: close
+// sets s.closed and snapshots s.windows under one lock, so a window published
+// after that point would never be torn down and its watchers would join the
+// wait group after close had already waited on it. createWindow must instead
+// refuse and clean up the process it just started.
+func TestCreateWindowAfterCloseDoesNotLeakWindow(t *testing.T) {
+	server := newMuxServer("test")
+	server.close()
+
+	window, err := server.createWindow(createWindowOptions{command: "sleep 30"})
+	if !errors.Is(err, errServerClosed) {
+		t.Fatalf("createWindow after close = (%v, %v), want errServerClosed", window, err)
+	}
+	if window != nil {
+		t.Fatalf("createWindow after close returned window %+v, want nil", window)
+	}
+
+	server.mu.Lock()
+	count := len(server.windows)
+	server.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("closed server published %d windows, want 0", count)
+	}
+
+	// The watcher group must be balanced, so a second close returns promptly
+	// rather than blocking for windowWatcherShutdownTimeout.
+	start := time.Now()
+	server.waitForWindowWatchers(windowWatcherShutdownTimeout)
+	if elapsed := time.Since(start); elapsed >= windowWatcherShutdownTimeout {
+		t.Fatalf("waiting for watchers took %s; the group was left unbalanced", elapsed)
+	}
+}
+
 func TestCreateWindowClosesNonAgentWindowOnExit(t *testing.T) {
 	server := newMuxServer("test")
 	t.Cleanup(server.close)
