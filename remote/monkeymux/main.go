@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.125"
+	monkeyMuxVersion                  = "0.1.126"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -486,6 +486,12 @@ type muxServer struct {
 	// first time each of these windows becomes the active/attached window we
 	// schedule follow-up redraws and clear it from this set.
 	restoreRedrawPending map[string]bool
+
+	// windowWatchers tracks the per-window reader and process-exit goroutines
+	// so close can wait for them. Without it those goroutines outlive the
+	// server and keep mutating its state (markWindowClosed) after shutdown,
+	// which races whatever runs next in the same process.
+	windowWatchers sync.WaitGroup
 }
 
 type muxWindow struct {
@@ -3791,12 +3797,16 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
-	go s.readWindow(window)
+	s.windowWatchers.Add(2)
 	go func() {
+		defer s.windowWatchers.Done()
+		s.readWindow(window)
+	}()
+	go func() {
+		defer s.windowWatchers.Done()
 		_ = proc.Wait()
 		s.markWindowClosed(window.id)
 	}()
-
 	s.broadcast(controlResponse{
 		Type:    "window_added",
 		Session: s.session,
@@ -12516,6 +12526,31 @@ func (s *muxServer) close() {
 		if window.pty != nil {
 			_ = window.closePty(window.pty)
 		}
+	}
+	// Closing the ptys ends the reader goroutines and the hangup above ends the
+	// child processes, so the watchers finish promptly. Wait for them so no
+	// goroutine mutates server state after close returns. The wait is bounded
+	// because a child that ignores SIGHUP must not be able to hang shutdown.
+	s.waitForWindowWatchers(windowWatcherShutdownTimeout)
+}
+
+// windowWatcherShutdownTimeout bounds how long close waits for the per-window
+// goroutines after hanging up the children and closing the ptys. They normally
+// finish immediately; the bound only exists so a child that ignores SIGHUP
+// cannot hang shutdown.
+const windowWatcherShutdownTimeout = 2 * time.Second
+
+func (s *muxServer) waitForWindowWatchers(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		s.windowWatchers.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
 	}
 }
 
