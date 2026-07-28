@@ -206,6 +206,7 @@ var (
 	errRunCommandClientClosed = errors.New("control client closed")
 	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
 	errRunCommandTimeout      = errors.New("command timed out")
+	errServerClosed           = errors.New("server is closed")
 )
 
 var simulateForegroundResize = func(window *muxWindow, width int, height int) {
@@ -3743,6 +3744,21 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		// close() sets s.closed and snapshots s.windows under this same lock,
+		// so a window registered from here on would never be torn down and its
+		// watchers would join the group after close already waited. Tear the
+		// freshly started process down instead of publishing it.
+		s.mu.Unlock()
+		proc.Hangup()
+		_ = windowPty.Close()
+		return nil, errServerClosed
+	}
+	// Registering the watchers here, rather than beside the `go` statements
+	// below, keeps the count paired with the s.closed transition: once close()
+	// observes s.closed it knows no further watchers can be added, so its Wait
+	// cannot race an Add.
+	s.windowWatchers.Add(2)
 	s.nextID++
 	window := &muxWindow{
 		id:                       fmt.Sprintf("@%d", s.nextID),
@@ -3797,7 +3813,8 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
-	s.windowWatchers.Add(2)
+	// The watcher count was registered under s.mu above, alongside the s.closed
+	// check, so it is deliberately not incremented here.
 	go func() {
 		defer s.windowWatchers.Done()
 		s.readWindow(window)
