@@ -3409,6 +3409,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
   bool _suppressTerminalAutoScrollFromTerminalRefresh = false;
   bool _isConnecting = true;
+  bool _connectionCancelled = false;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
   bool _detectedSensitiveKeyboardPrompt = false;
@@ -7023,6 +7024,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     setState(() {
       _isConnecting = true;
+      _connectionCancelled = false;
       _error = null;
       _connectionOpenedWorkingDirectory = null;
     });
@@ -7067,7 +7069,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!result.success || result.connectionId == null) {
       setState(() {
         _isConnecting = false;
-        _error = result.error ?? 'Connection failed';
+        _connectionCancelled = result.cancelled;
+        _error =
+            result.error ??
+            (result.cancelled ? 'Connection cancelled' : 'Connection failed');
       });
       return;
     }
@@ -11108,6 +11113,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  /// Abandons the in-flight connection attempt for this terminal's host.
+  void _cancelConnectionAttempt() {
+    final cancelled = ref
+        .read(activeSessionsProvider.notifier)
+        .cancelConnectionAttempt(widget.hostId);
+    if (!cancelled && mounted) {
+      setState(() {
+        _isConnecting = false;
+        _connectionCancelled = true;
+        _error = 'Connection cancelled';
+      });
+    }
+  }
+
   Future<void> _reconnect({bool showProgressDialog = true}) async {
     if (_isConnecting) {
       return;
@@ -11116,11 +11135,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       setState(() {
         _clearTmuxState();
         _isConnecting = true;
+        _connectionCancelled = false;
         _error = null;
       });
     } else {
       _clearTmuxState();
       _isConnecting = true;
+      _connectionCancelled = false;
       _error = null;
     }
 
@@ -12322,6 +12343,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         hasOverlayMessage: overlayMessage != null,
         isMobile: isMobile,
       );
+      final isCancellingConnection = connectionAttempt?.isCancelling ?? false;
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -12329,10 +12351,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             const CursorBlock(size: 32),
             const SizedBox(height: 16),
             Text(
-              'connecting…',
+              isCancellingConnection ? 'cancelling…' : 'connecting…',
               style: FluttyTheme.monoStyle.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
+            ),
+            const SizedBox(height: 16),
+            TextButton.icon(
+              onPressed: isCancellingConnection
+                  ? null
+                  : _cancelConnectionAttempt,
+              icon: const Icon(Icons.close),
+              label: const Text('Cancel'),
             ),
           ],
         ),
@@ -12349,7 +12379,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         isMobile: isMobile,
       );
       return BrandErrorState(
-        title: 'Connection Error',
+        title: _connectionCancelled
+            ? 'Connection Cancelled'
+            : 'Connection Error',
         message: overlayMessage,
         onRetry: _reconnect,
       );

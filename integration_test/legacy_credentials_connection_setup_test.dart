@@ -24,6 +24,7 @@ class _CapturingSshService extends SshService {
     SshConnectionConfig config, {
     ConnectionProgressCallback? onProgress,
     bool isJumpHost = false,
+    SshConnectionCancellationToken? cancellationToken,
   }) async {
     capturedConfig = config;
     return const SshConnectionResult(success: false, error: 'stubbed');

@@ -1771,8 +1771,18 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isBusy = true);
-    final messenger = ScaffoldMessenger.of(context)
-      ..showSnackBar(const SnackBar(content: Text('Testing connection...')));
+    final cancellationToken = SshConnectionCancellationToken();
+    final messenger = ScaffoldMessenger.of(context);
+    final testingSnackBar = messenger.showSnackBar(
+      SnackBar(
+        content: const Text('Testing connection...'),
+        duration: const Duration(minutes: 2),
+        action: SnackBarAction(
+          label: 'Cancel',
+          onPressed: cancellationToken.cancel,
+        ),
+      ),
+    );
 
     try {
       final keyRepo = ref.read(keyRepositoryProvider);
@@ -1809,8 +1819,23 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         jumpHost: jumpHostConfig,
       );
 
-      final result = await sshService.connect(config);
+      final SshConnectionResult result;
+      try {
+        result = await sshService.connect(
+          config,
+          cancellationToken: cancellationToken,
+        );
+      } finally {
+        testingSnackBar.close();
+      }
       if (!mounted) {
+        return;
+      }
+
+      if (result.cancelled) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('Connection test cancelled')),
+        );
         return;
       }
 
@@ -1838,6 +1863,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           context: ErrorDescription('while testing a host connection'),
         ),
       );
+      testingSnackBar.close();
       if (!mounted) {
         return;
       }
