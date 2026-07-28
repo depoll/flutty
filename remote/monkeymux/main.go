@@ -478,6 +478,7 @@ type muxServer struct {
 	controls                   map[*controlClient]struct{}
 	themeHint                  []byte
 	closed                     bool
+	closeDone                  chan struct{}
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -12501,10 +12502,20 @@ func (s *muxServer) reindexWindowsLocked() {
 func (s *muxServer) close() {
 	s.mu.Lock()
 	if s.closed {
+		// Shutdown is triggered concurrently (`go s.close()`) as well as from
+		// deferred calls, so a later caller must not report the server as torn
+		// down while the first caller is still tearing it down. Wait for that
+		// caller instead of returning immediately.
+		inFlight := s.closeDone
 		s.mu.Unlock()
+		if inFlight != nil {
+			<-inFlight
+		}
 		return
 	}
 	s.closed = true
+	s.closeDone = make(chan struct{})
+	closeDone := s.closeDone
 	listener := s.listener
 	s.listener = nil
 	attach := net.Conn(nil)
@@ -12522,7 +12533,15 @@ func (s *muxServer) close() {
 		controls = append(controls, control)
 	}
 	windows := append([]*muxWindow(nil), s.windows...)
+	// Mark the windows closed while still holding s.mu. A watcher that outruns
+	// the bounded wait below then finds its window already closed and returns
+	// from markWindowClosed before touching any server state.
+	for _, window := range windows {
+		window.closed = true
+		window.releaseRedrawForwardingStateLocked()
+	}
 	s.mu.Unlock()
+	defer close(closeDone)
 
 	if listener != nil {
 		_ = listener.Close()
@@ -12547,7 +12566,9 @@ func (s *muxServer) close() {
 	// Closing the ptys ends the reader goroutines and the hangup above ends the
 	// child processes, so the watchers finish promptly. Wait for them so no
 	// goroutine mutates server state after close returns. The wait is bounded
-	// because a child that ignores SIGHUP must not be able to hang shutdown.
+	// because a child that ignores SIGHUP must not be able to hang shutdown;
+	// marking the windows closed above is what makes overrunning a watcher
+	// harmless rather than a late mutation of server state.
 	s.waitForWindowWatchers(windowWatcherShutdownTimeout)
 }
 

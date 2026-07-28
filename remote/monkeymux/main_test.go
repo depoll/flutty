@@ -5412,6 +5412,97 @@ func TestCreateWindowAfterCloseDoesNotLeakWindow(t *testing.T) {
 	}
 }
 
+// TestConcurrentCloseWaitsForTeardown pins that a second close does not report
+// the server as torn down while the first is still tearing it down. Shutdown is
+// triggered concurrently (`go s.close()`) as well as from deferred calls, so a
+// caller returning early would let a test cleanup — or the process — finish
+// while watchers were still running.
+func TestConcurrentCloseWaitsForTeardown(t *testing.T) {
+	server := newMuxServer("test")
+	release := make(chan struct{})
+	server.windowWatchers.Add(1)
+	go func() {
+		<-release
+		server.windowWatchers.Done()
+	}()
+
+	firstReturned := make(chan struct{})
+	go func() {
+		server.close()
+		close(firstReturned)
+	}()
+
+	// Let the first caller reach its wait.
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.mu.Lock()
+		started := server.closed
+		server.mu.Unlock()
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first close never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	secondReturned := make(chan struct{})
+	go func() {
+		server.close()
+		close(secondReturned)
+	}()
+
+	select {
+	case <-secondReturned:
+		t.Fatal("second close returned while the first was still tearing down")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-secondReturned:
+	case <-time.After(windowWatcherShutdownTimeout + time.Second):
+		t.Fatal("second close did not return after teardown finished")
+	}
+	<-firstReturned
+}
+
+// TestCloseMarksWindowsClosedSoLateWatchersAreInert covers the bounded wait: a
+// child that ignores SIGHUP can outlive close, and its watcher still calls
+// markWindowClosed afterwards. Closing the windows during shutdown makes that
+// late call return before it touches any server state.
+func TestCloseMarksWindowsClosedSoLateWatchersAreInert(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      []byte("frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.close()
+
+	server.mu.Lock()
+	closed := window.closed
+	server.mu.Unlock()
+	if !closed {
+		t.Fatal("close left the window open, so a late watcher would mutate server state")
+	}
+
+	// A watcher that overran the wait would call this. It must be inert rather
+	// than reading the process-group hook, which tests swap between runs.
+	originalPgrp := foregroundProcessGroupForWindow
+	t.Cleanup(func() { foregroundProcessGroupForWindow = originalPgrp })
+	foregroundProcessGroupForWindow = func(*muxWindow) int {
+		t.Error("late markWindowClosed read server state after shutdown")
+		return 0
+	}
+	server.markWindowClosed("@1")
+}
+
 func TestCreateWindowClosesNonAgentWindowOnExit(t *testing.T) {
 	server := newMuxServer("test")
 	t.Cleanup(server.close)
