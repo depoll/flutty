@@ -7088,6 +7088,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    if (_connectionCancelled) {
+      // The user cancelled while the attempt was still warming up, before a
+      // cancellation token existed. Drop the session instead of opening it.
+      final establishedConnectionId = _connectionId;
+      _connectionId = null;
+      if (establishedConnectionId != null && !result.reusedConnection) {
+        await _sessionsNotifier!.disconnect(establishedConnectionId);
+      }
+      if (!mounted) return;
+      setState(() {
+        _isConnecting = false;
+        _error = 'Connection cancelled';
+      });
+      _syncTerminalWakeLock(SshConnectionState.disconnected);
+      return;
+    }
+
     await _openShell(session);
   }
 
