@@ -223,6 +223,20 @@ bool isPortForwardBrowserUri(Uri uri, {required int port}) =>
     isPortForwardBrowserHost(uri.host) &&
     portForwardBrowserUriPort(uri) == port;
 
+/// Returns whether [uri] should be handed to another installed application.
+bool shouldLaunchPortForwardBrowserUriExternally(Uri uri) =>
+    uri.scheme.isNotEmpty &&
+    !const {
+      'about',
+      'blob',
+      'content',
+      'data',
+      'file',
+      'http',
+      'https',
+      'javascript',
+    }.contains(uri.scheme.toLowerCase());
+
 /// Normalizes wildcard and IPv6 loopback hosts for embedded browser loading.
 Uri normalizePortForwardBrowserUri(Uri uri) =>
     uri.replace(host: _browserHostForBindAddress(uri.host));

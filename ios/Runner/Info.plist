@@ -56,13 +56,15 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>$(PRODUCT_NAME) needs photo library access to select files for transfer.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>$(PRODUCT_NAME) needs camera access to scan sync recovery key QR codes.</string>
+	<string>$(PRODUCT_NAME) uses the camera for QR scanning and browser pages you explicitly allow.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>$(PRODUCT_NAME) uses the microphone for browser pages you explicitly allow.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>$(PRODUCT_NAME) uses Face ID to unlock your encrypted SSH credentials.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name to decide whether to bypass a host's jump host on trusted networks.</string>
+	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name for trusted network rules and provides location to browser pages you explicitly allow.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name to decide whether to bypass a host's jump host on trusted networks.</string>
+	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name for trusted network rules and provides location to browser pages you explicitly allow.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

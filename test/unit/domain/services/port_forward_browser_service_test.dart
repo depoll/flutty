@@ -573,6 +573,50 @@ void main() {
     });
   });
 
+  group('shouldLaunchPortForwardBrowserUriExternally', () {
+    test('hands app links to the operating system', () {
+      expect(
+        shouldLaunchPortForwardBrowserUriExternally(
+          Uri.parse('mailto:dev@example.com'),
+        ),
+        isTrue,
+      );
+      expect(
+        shouldLaunchPortForwardBrowserUriExternally(
+          Uri.parse('vscode://file/project/main.dart'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('keeps browser-native schemes inside the WebView', () {
+      expect(
+        shouldLaunchPortForwardBrowserUriExternally(
+          Uri.parse('https://example.com'),
+        ),
+        isFalse,
+      );
+      expect(
+        shouldLaunchPortForwardBrowserUriExternally(
+          Uri.parse('javascript:void(0)'),
+        ),
+        isFalse,
+      );
+      expect(
+        shouldLaunchPortForwardBrowserUriExternally(
+          Uri.parse('blob:https://example.com/id'),
+        ),
+        isFalse,
+      );
+      expect(
+        shouldLaunchPortForwardBrowserUriExternally(
+          Uri.parse('file:///tmp/report.pdf'),
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('isPortForwardBrowserUri', () {
     test('allows only loopback web URLs on the forwarded port', () {
       expect(
