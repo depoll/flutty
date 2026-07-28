@@ -617,6 +617,38 @@ void main() {
     });
   });
 
+  group('portForwardBrowserDisplayOrigin', () {
+    test('formats web origins with their scheme and port', () {
+      expect(
+        portForwardBrowserDisplayOrigin(
+          Uri.parse('https://example.com:8443/path'),
+        ),
+        'https://example.com:8443',
+      );
+    });
+
+    test('does not call Uri.origin for non-web schemes', () {
+      expect(
+        portForwardBrowserDisplayOrigin(
+          Uri.parse('file://localhost/tmp/report.html'),
+        ),
+        'localhost',
+      );
+      expect(
+        portForwardBrowserDisplayOrigin(Uri.parse('content://documents/42')),
+        'documents',
+      );
+      expect(
+        portForwardBrowserDisplayOrigin(Uri.parse('blob:opaque-id')),
+        'blob',
+      );
+      expect(
+        portForwardBrowserDisplayOrigin(Uri.parse('http:relative-path')),
+        'http',
+      );
+    });
+  });
+
   group('isPortForwardBrowserUri', () {
     test('allows only loopback web URLs on the forwarded port', () {
       expect(

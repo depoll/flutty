@@ -237,6 +237,19 @@ bool shouldLaunchPortForwardBrowserUriExternally(Uri uri) =>
       'javascript',
     }.contains(uri.scheme.toLowerCase());
 
+/// Returns a safe origin label for browser permission and dialog prompts.
+String portForwardBrowserDisplayOrigin(Uri uri) {
+  final scheme = uri.scheme.toLowerCase();
+  if (uri.host.isNotEmpty &&
+      const {'http', 'https', 'ws', 'wss'}.contains(scheme)) {
+    return uri.origin;
+  }
+  if (uri.authority.isNotEmpty) {
+    return uri.authority;
+  }
+  return uri.scheme.isEmpty ? 'This page' : uri.scheme;
+}
+
 /// Normalizes wildcard and IPv6 loopback hosts for embedded browser loading.
 Uri normalizePortForwardBrowserUri(Uri uri) =>
     uri.replace(host: _browserHostForBindAddress(uri.host));

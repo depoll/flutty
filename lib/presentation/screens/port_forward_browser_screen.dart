@@ -13,6 +13,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
 import '../../app/theme.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../browser/browser_file_picker.dart';
@@ -337,11 +338,12 @@ class _PortForwardBrowserScreenState
           : null;
       if (captureType != null) {
         final source = await _chooseBrowserFileSource(captureType);
-        if (!mounted || source == null) {
+        if (!mounted || !_tabs.contains(tab) || source == null) {
           return const [];
         }
         if (source == _BrowserFileSource.camera) {
-          return await _captureBrowserMedia(captureType);
+          final capturedMedia = await _captureBrowserMedia(tab, captureType);
+          return mounted && _tabs.contains(tab) ? capturedMedia : const [];
         }
       }
 
@@ -350,9 +352,10 @@ class _PortForwardBrowserScreenState
       final List<PlatformFile> files;
       if (allowMultiple) {
         files =
-            (await FilePicker.pickFiles(
+            (await FilePickerPlatform.instance.pickFiles(
               type: filter.type,
               allowedExtensions: filter.allowedExtensions,
+              allowMultiple: true,
             ))?.files ??
             const [];
       } else {
@@ -362,6 +365,9 @@ class _PortForwardBrowserScreenState
         );
         files = file == null ? const [] : [file];
       }
+      if (!mounted || !_tabs.contains(tab)) {
+        return const [];
+      }
       final uris = files
           .map(browserUploadUriForPlatformFile)
           .whereType<String>()
@@ -370,7 +376,12 @@ class _PortForwardBrowserScreenState
         _showMessage('The selected file could not be opened.');
       }
       return uris;
-    } on PlatformException {
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'browser.files',
+        'picker_failed',
+        fields: {'errorType': error.runtimeType},
+      );
       _showMessage('Could not open the file picker. Try again.');
       return const [];
     }
@@ -405,12 +416,26 @@ class _PortForwardBrowserScreenState
   }
 
   Future<List<String>> _captureBrowserMedia(
+    _PortForwardBrowserTabState tab,
     BrowserMediaCaptureType captureType,
   ) async {
     final cameraStatus = await Permission.camera.request();
+    if (!mounted || !_tabs.contains(tab)) {
+      return const [];
+    }
     if (!cameraStatus.isGranted) {
       _showMessage('Camera access is required to capture media.');
       return const [];
+    }
+    if (captureType == BrowserMediaCaptureType.video) {
+      final microphoneStatus = await Permission.microphone.request();
+      if (!mounted || !_tabs.contains(tab)) {
+        return const [];
+      }
+      if (!microphoneStatus.isGranted) {
+        _showMessage('Microphone access is required to record video.');
+        return const [];
+      }
     }
 
     final picker = ImagePicker();
@@ -444,13 +469,13 @@ class _PortForwardBrowserScreenState
 
     final permissionLabel = _webPermissionLabel(request.types);
     final allowed = await _confirmPagePermission(
-      origin: _displayOrigin(tab.currentUri),
+      origin: 'Current tab: ${_displayOrigin(tab.currentUri)}',
       title: 'Allow $permissionLabel?',
       message:
-          'This page wants to use your $permissionLabel. '
+          'Web content in this tab wants to use your $permissionLabel. '
           'Only allow access if you trust this page.',
     );
-    if (!allowed) {
+    if (!mounted || !_tabs.contains(tab) || !allowed) {
       await request.deny();
       return;
     }
@@ -475,6 +500,10 @@ class _PortForwardBrowserScreenState
             Permission.microphone.request(),
           _ => Future.value(PermissionStatus.denied),
         };
+        if (!mounted || !_tabs.contains(tab)) {
+          await request.deny();
+          return;
+        }
         if (!status.isGranted) {
           await request.deny();
           _showMessage(
@@ -513,12 +542,18 @@ class _PortForwardBrowserScreenState
           'This page wants to use your approximate location. '
           'Only allow access if you trust this page.',
     );
-    if (!allowed) {
+    if (!mounted || !_tabs.contains(tab) || !allowed) {
       return const GeolocationPermissionsResponse(allow: false, retain: false);
     }
 
     try {
       final status = await Permission.locationWhenInUse.request();
+      if (!mounted || !_tabs.contains(tab)) {
+        return const GeolocationPermissionsResponse(
+          allow: false,
+          retain: false,
+        );
+      }
       if (!status.isGranted) {
         _showMessage('Location access was denied.');
       }
@@ -642,6 +677,7 @@ class _PortForwardBrowserScreenState
                   TextField(
                     controller: controller,
                     autofocus: true,
+                    decoration: const InputDecoration(labelText: 'Response'),
                     onSubmitted: (value) => Navigator.of(context).pop(value),
                   ),
                 ],
@@ -731,7 +767,7 @@ class _PortForwardBrowserScreenState
           ],
         ),
       );
-      if (credential == null) {
+      if (!mounted || !_tabs.contains(tab) || credential == null) {
         request.onCancel();
       } else {
         request.onProceed(credential);
@@ -742,15 +778,13 @@ class _PortForwardBrowserScreenState
     }
   }
 
-  String _displayRequestOrigin(String url) =>
-      _displayOrigin(Uri.tryParse(url) ?? _selectedTab.currentUri);
-
-  String _displayOrigin(Uri uri) {
-    if (uri.authority.isNotEmpty) {
-      return uri.origin;
-    }
-    return uri.scheme.isEmpty ? 'This page' : uri.scheme;
+  String _displayRequestOrigin(String url) {
+    final fallbackUri = _tabs.isEmpty ? null : _selectedTab.currentUri;
+    final uri = Uri.tryParse(url) ?? fallbackUri;
+    return uri == null ? 'This page' : _displayOrigin(uri);
   }
+
+  String _displayOrigin(Uri uri) => portForwardBrowserDisplayOrigin(uri);
 
   Widget _buildBottomChrome(
     BuildContext context,
@@ -1181,6 +1215,9 @@ class _PortForwardBrowserScreenState
       return NavigationDecision.prevent;
     }
     if (uri.scheme == 'http' || uri.scheme == 'https') {
+      if (!request.isMainFrame) {
+        return NavigationDecision.navigate;
+      }
       if (shouldLoadPortForwardBrowserFallbackDirectly(
         requestedUri: uri,
         fallbackUri: tab.fallbackUri,
@@ -1202,6 +1239,9 @@ class _PortForwardBrowserScreenState
       return NavigationDecision.navigate;
     }
     if (shouldLaunchPortForwardBrowserUriExternally(uri)) {
+      if (!request.isMainFrame) {
+        return NavigationDecision.prevent;
+      }
       try {
         final launched = await launchUrl(
           uri,
