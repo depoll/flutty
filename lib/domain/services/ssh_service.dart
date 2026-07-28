@@ -1248,11 +1248,24 @@ class SshConnectionResult {
     this.client,
     this.connectionId,
     this.reusedConnection = false,
+    this.cancelled = false,
     this.dependentClients = const <SSHClient>[],
   });
 
+  /// A result describing a connection attempt the user cancelled.
+  const SshConnectionResult.userCancelled({this.error = 'Connection cancelled'})
+    : success = false,
+      client = null,
+      connectionId = null,
+      reusedConnection = false,
+      cancelled = true,
+      dependentClients = const <SSHClient>[];
+
   /// Whether connection was successful.
   final bool success;
+
+  /// Whether the attempt stopped because the user cancelled it.
+  final bool cancelled;
 
   /// Error message if connection failed.
   final String? error;
@@ -1275,6 +1288,109 @@ class SshConnectionResult {
     for (final dependentClient in dependentClients) {
       dependentClient.close();
     }
+  }
+}
+
+/// Thrown when an in-flight SSH connection attempt is cancelled by the user.
+class SshConnectionCancelledException implements Exception {
+  /// Creates an [SshConnectionCancelledException].
+  const SshConnectionCancelledException([
+    this.message = 'Connection cancelled',
+  ]);
+
+  /// Human-readable description of the cancellation.
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Cooperative cancellation signal for a single SSH connection attempt.
+///
+/// A token is single-use: once [cancel] is called it stays cancelled. Long
+/// waits inside [SshService.connect] race against [cancelled] so a stalled
+/// attempt can be abandoned immediately instead of waiting for its timeout.
+class SshConnectionCancellationToken {
+  final Completer<void> _cancelled = Completer<void>();
+
+  /// Whether cancellation has been requested.
+  bool get isCancelled => _cancelled.isCompleted;
+
+  /// Completes as soon as cancellation is requested.
+  Future<void> get cancelled => _cancelled.future;
+
+  /// Requests cancellation of the associated connection attempt.
+  void cancel() {
+    if (!_cancelled.isCompleted) {
+      _cancelled.complete();
+    }
+  }
+
+  /// Throws [SshConnectionCancelledException] when already cancelled.
+  void throwIfCancelled() {
+    if (isCancelled) {
+      throw const SshConnectionCancelledException();
+    }
+  }
+
+  /// Completes with [operation] unless cancellation happens first.
+  ///
+  /// When cancellation wins the race the returned future fails with
+  /// [SshConnectionCancelledException] and [onAbandonedValue] is invoked with
+  /// the late result (if any) so orphaned sockets and clients can be closed.
+  Future<T> guard<T>(
+    Future<T> operation, {
+    void Function(T value)? onAbandonedValue,
+  }) {
+    void abandon(T value) {
+      if (onAbandonedValue == null) {
+        return;
+      }
+      try {
+        onAbandonedValue(value);
+      } on Exception catch (error) {
+        DiagnosticsLogService.instance.debug(
+          'ssh.connect',
+          'cancel_cleanup_failed',
+          fields: {'errorType': error.runtimeType},
+        );
+      }
+    }
+
+    if (isCancelled) {
+      unawaited(operation.then(abandon, onError: (Object _, StackTrace _) {}));
+      return Future<T>.error(
+        const SshConnectionCancelledException(),
+        StackTrace.current,
+      );
+    }
+
+    final completer = Completer<T>();
+    operation.then(
+      (value) {
+        if (completer.isCompleted) {
+          abandon(value);
+          return;
+        }
+        completer.complete(value);
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!completer.isCompleted) {
+          completer.completeError(error, stackTrace);
+        }
+      },
+    );
+    unawaited(
+      cancelled.then((_) {
+        if (!completer.isCompleted) {
+          completer.completeError(
+            const SshConnectionCancelledException(),
+            StackTrace.current,
+          );
+        }
+      }),
+    );
+    return completer.future;
   }
 }
 
@@ -1337,6 +1453,8 @@ class ConnectionAttemptStatus {
     required this.state,
     required this.latestMessage,
     required this.logLines,
+    this.cancelRequested = false,
+    this.cancelled = false,
   });
 
   /// The host currently being connected.
@@ -1350,6 +1468,15 @@ class ConnectionAttemptStatus {
 
   /// Rolling log of recent connection progress messages.
   final List<String> logLines;
+
+  /// Whether the user asked to abandon this attempt.
+  final bool cancelRequested;
+
+  /// Whether the attempt finished because the user cancelled it.
+  final bool cancelled;
+
+  /// Whether a cancellation request is still being wound down.
+  bool get isCancelling => cancelRequested && !cancelled && isInProgress;
 
   /// Whether the connection attempt is still actively progressing.
   bool get isInProgress =>
@@ -1452,6 +1579,7 @@ class SshService {
     int hostId, {
     ConnectionProgressCallback? onProgress,
     bool useHostThemeOverrides = true,
+    SshConnectionCancellationToken? cancellationToken,
   }) async {
     var preflightPhase = 'start';
     DiagnosticsLogService.instance.info(
@@ -1460,6 +1588,7 @@ class SshService {
       fields: {'hostId': hostId},
     );
     try {
+      cancellationToken?.throwIfCancelled();
       if (hostRepository == null) {
         DiagnosticsLogService.instance.warning(
           'ssh.connect',
@@ -1501,6 +1630,7 @@ class SshService {
           host,
           useHostThemeOverrides: useHostThemeOverrides,
           onProgress: onProgress,
+          cancellationToken: cancellationToken,
         );
       }
 
@@ -1627,9 +1757,25 @@ class SshService {
       );
 
       preflightPhase = 'connect';
-      final result = await connect(config, onProgress: onProgress);
+      cancellationToken?.throwIfCancelled();
+      final result = await connect(
+        config,
+        onProgress: onProgress,
+        cancellationToken: cancellationToken,
+      );
 
       if (result.success && result.client != null) {
+        if (cancellationToken?.isCancelled ?? false) {
+          // The user cancelled while the handshake was completing; drop the
+          // freshly established clients instead of registering a session.
+          await result.closeAll();
+          DiagnosticsLogService.instance.info(
+            'ssh.connect',
+            'connect_to_host_cancelled',
+            fields: {'hostId': hostId, 'phase': 'post_connect'},
+          );
+          return const SshConnectionResult.userCancelled();
+        }
         final connectionId = _nextConnectionId++;
         _sessions[connectionId] = SshSession(
           connectionId: connectionId,
@@ -1675,6 +1821,13 @@ class SshService {
         },
       );
       return result;
+    } on SshConnectionCancelledException {
+      DiagnosticsLogService.instance.info(
+        'ssh.connect',
+        'connect_to_host_cancelled',
+        fields: {'hostId': hostId, 'phase': preflightPhase},
+      );
+      return const SshConnectionResult.userCancelled();
     } on Exception catch (e) {
       DiagnosticsLogService.instance.warning(
         'ssh.connect',
@@ -1697,6 +1850,7 @@ class SshService {
     Host host, {
     required bool useHostThemeOverrides,
     ConnectionProgressCallback? onProgress,
+    SshConnectionCancellationToken? cancellationToken,
   }) async {
     onProgress?.call(
       const ConnectionProgressUpdate(
@@ -1705,6 +1859,9 @@ class SshService {
       ),
     );
     await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (cancellationToken?.isCancelled ?? false) {
+      return const SshConnectionResult.userCancelled();
+    }
     onProgress?.call(
       const ConnectionProgressUpdate(
         state: SshConnectionState.authenticating,
@@ -1712,6 +1869,9 @@ class SshService {
       ),
     );
     await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (cancellationToken?.isCancelled ?? false) {
+      return const SshConnectionResult.userCancelled();
+    }
 
     final config = SshConnectionConfig.fromHost(host);
     final client = _AppReviewDemoSshClient(host);
@@ -1742,10 +1902,15 @@ class SshService {
   }
 
   /// Connect with a configuration.
+  ///
+  /// Pass a [cancellationToken] to allow the caller to abandon a stalled
+  /// attempt; every long wait races the token so cancellation takes effect
+  /// immediately instead of after [SshConnectionConfig.connectionTimeout].
   Future<SshConnectionResult> connect(
     SshConnectionConfig config, {
     ConnectionProgressCallback? onProgress,
     bool isJumpHost = false,
+    SshConnectionCancellationToken? cancellationToken,
   }) async {
     SSHClient? client;
     final dependentClients = <SSHClient>[];
@@ -1761,7 +1926,18 @@ class SshService {
       );
     }
 
+    Future<T> guard<T>(
+      Future<T> operation, {
+      void Function(T value)? onAbandonedValue,
+    }) =>
+        cancellationToken?.guard(
+          operation,
+          onAbandonedValue: onAbandonedValue,
+        ) ??
+        operation;
+
     try {
+      cancellationToken?.throwIfCancelled();
       DiagnosticsLogService.instance.info(
         'ssh.connect',
         'connect_start',
@@ -1786,8 +1962,12 @@ class SshService {
           config.jumpHost!,
           onProgress: onProgress,
           isJumpHost: true,
+          cancellationToken: cancellationToken,
         );
         if (!jumpResult.success || jumpResult.client == null) {
+          if (jumpResult.cancelled) {
+            throw const SshConnectionCancelledException();
+          }
           return SshConnectionResult(
             success: false,
             error: 'Failed to connect to jump host: ${jumpResult.error}',
@@ -1799,7 +1979,7 @@ class SshService {
         jumpClient = jumpResult.client;
       }
 
-      Future<SSHSocket> openEndpointSocket() async {
+      Future<SSHSocket> openEndpointSocket() {
         if (jumpClient != null) {
           // Create forwarded connection through jump host.
           // SSHForwardChannel implements SSHSocket.
@@ -1807,7 +1987,10 @@ class SshService {
             SshConnectionState.connecting,
             'Opening tunnel to destination…',
           );
-          return jumpClient.forwardLocal(config.hostname, config.port);
+          return guard(
+            jumpClient.forwardLocal(config.hostname, config.port),
+            onAbandonedValue: _closeAbandonedSocket,
+          );
         }
 
         report(
@@ -1816,17 +1999,19 @@ class SshService {
               ? 'Opening jump host connection…'
               : 'Opening network connection…',
         );
-        return _socketConnector(
-          config.hostname,
-          config.port,
-          timeout: config.connectionTimeout,
+        return guard(
+          _socketConnector(
+            config.hostname,
+            config.port,
+            timeout: config.connectionTimeout,
+          ),
+          onAbandonedValue: _closeAbandonedSocket,
         );
       }
 
       final knownHosts = knownHostsRepository!;
-      final trustedHost = await knownHosts.getByHost(
-        config.hostname,
-        config.port,
+      final trustedHost = await guard(
+        knownHosts.getByHost(config.hostname, config.port),
       );
 
       if (trustedHost == null) {
@@ -1837,9 +2022,10 @@ class SshService {
         final presentedHostKey = await _probeHostKey(
           await openEndpointSocket(),
           config: config,
+          cancellationToken: cancellationToken,
         );
-        final pendingHostTrustUpdate = await verificationService.verify(
-          presentedHostKey,
+        final pendingHostTrustUpdate = await guard(
+          verificationService.verify(presentedHostKey),
         );
         await pendingHostTrustUpdate.persistTrustDecision(knownHosts);
 
@@ -1874,6 +2060,7 @@ class SshService {
           authGate,
           timeout: config.connectionTimeout,
           isJumpHost: isJumpHost,
+          cancellationToken: cancellationToken,
         );
         report(
           SshConnectionState.connected,
@@ -1928,6 +2115,7 @@ class SshService {
           authGate,
           timeout: config.connectionTimeout,
           isJumpHost: isJumpHost,
+          cancellationToken: cancellationToken,
         );
       } on SSHHostkeyError {
         if (!rejectedTrustedHostKey) {
@@ -1945,14 +2133,15 @@ class SshService {
           preparedSocket.hostKeySource,
           config: config,
           keyType: callbackKeyType,
+          cancellationToken: cancellationToken,
         );
         _confirmCapturedHostKeyMatchesCallback(
           changedHostKey,
           rejectedCallbackFingerprint,
           config: config,
         );
-        final pendingHostTrustUpdate = await verificationService.verify(
-          changedHostKey,
+        final pendingHostTrustUpdate = await guard(
+          verificationService.verify(changedHostKey),
         );
 
         final retrySocket = await openEndpointSocket();
@@ -1983,6 +2172,7 @@ class SshService {
           authGate,
           timeout: config.connectionTimeout,
           isJumpHost: isJumpHost,
+          cancellationToken: cancellationToken,
         );
         report(
           SshConnectionState.connected,
@@ -2024,6 +2214,15 @@ class SshService {
         client: client,
         dependentClients: dependentClients,
       );
+    } on SshConnectionCancelledException {
+      DiagnosticsLogService.instance.info(
+        'ssh.connect',
+        'connect_cancelled',
+        fields: {'isJumpHost': isJumpHost},
+      );
+      client?.close();
+      _closeClients(dependentClients);
+      return const SshConnectionResult.userCancelled();
     } on HostKeyVerificationException catch (e) {
       DiagnosticsLogService.instance.warning(
         'ssh.connect',
@@ -2237,6 +2436,7 @@ class SshService {
     _InteractiveAuthGate gate, {
     required Duration timeout,
     required bool isJumpHost,
+    SshConnectionCancellationToken? cancellationToken,
   }) {
     final completer = Completer<void>();
     Timer? timer;
@@ -2273,6 +2473,19 @@ class SshService {
       },
     );
 
+    if (cancellationToken != null) {
+      unawaited(
+        cancellationToken.cancelled.then((_) {
+          if (!completer.isCompleted) {
+            completer.completeError(
+              const SshConnectionCancelledException(),
+              StackTrace.current,
+            );
+          }
+        }),
+      );
+    }
+
     gate.onActivityChanged = arm;
     arm();
 
@@ -2282,6 +2495,10 @@ class SshService {
         gate.onActivityChanged = null;
       }
     });
+  }
+
+  static void _closeAbandonedSocket(SSHSocket socket) {
+    socket.destroy();
   }
 
   HostKeyVerificationService _createHostKeyVerificationService(
@@ -2304,6 +2521,7 @@ class SshService {
   Future<VerifiedHostKey> _probeHostKey(
     SSHSocket socket, {
     required SshConnectionConfig config,
+    SshConnectionCancellationToken? cancellationToken,
   }) async {
     final verificationSocket = _prepareHostKeyCapture(socket);
     SSHClient? probeClient;
@@ -2329,6 +2547,7 @@ class SshService {
         verificationSocket.hostKeySource,
         config: config,
         keyType: callbackKeyType,
+        cancellationToken: cancellationToken,
       );
       _confirmCapturedHostKeyMatchesCallback(
         presentedHostKey,
@@ -2373,14 +2592,17 @@ class SshService {
     HostKeySource hostKeySource, {
     required SshConnectionConfig config,
     required String? keyType,
+    SshConnectionCancellationToken? cancellationToken,
   }) async {
-    final hostKeyBytes = await hostKeySource.hostKeyBytes.timeout(
+    final readHostKeyBytes = hostKeySource.hostKeyBytes.timeout(
       config.connectionTimeout,
       onTimeout: () => throw HostKeyVerificationException(
         'Timed out while reading the host key for '
         '${config.hostname}:${config.port}.',
       ),
     );
+    final hostKeyBytes =
+        await (cancellationToken?.guard(readHostKeyBytes) ?? readHostKeyBytes);
     return VerifiedHostKey(
       hostname: config.hostname,
       port: config.port,
@@ -6800,6 +7022,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   final Map<int, int> _connectionHostIds = {};
   final Map<int, String> _connectionSessionTitles = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
+  final Map<int, Set<SshConnectionCancellationToken>>
+  _connectionCancellationTokens = {};
   final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
   final Map<int, StreamSubscription<_SshConnectionHealthFailure>>
   _connectionHealthFailureSubscriptions = {};
@@ -6847,14 +7071,75 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _connectionHostIds.clear();
     _connectionSessionTitles.clear();
     _connectionAttempts.clear();
+    _connectionCancellationTokens.clear();
     return {};
   }
 
   /// Connect to a host.
+  ///
+  /// The cancellation token is registered before any `await` so a cancel
+  /// request that arrives while the attempt is still warming up is honored,
+  /// and it is torn down again once the attempt settles.
   Future<SshConnectionResult> connect(
     int hostId, {
     bool forceNew = false,
     bool useHostThemeOverrides = true,
+  }) async {
+    final cancellationToken = SshConnectionCancellationToken();
+    _connectionCancellationTokens
+        .putIfAbsent(hostId, () => <SshConnectionCancellationToken>{})
+        .add(cancellationToken);
+
+    final SshConnectionResult result;
+    try {
+      result = await _runConnectAttempt(
+        hostId,
+        forceNew: forceNew,
+        useHostThemeOverrides: useHostThemeOverrides,
+        cancellationToken: cancellationToken,
+      );
+    } finally {
+      final tokens = _connectionCancellationTokens[hostId];
+      if (tokens != null) {
+        tokens.remove(cancellationToken);
+        if (tokens.isEmpty) {
+          _connectionCancellationTokens.remove(hostId);
+        }
+      }
+    }
+
+    if (!cancellationToken.isCancelled || result.cancelled) {
+      return result;
+    }
+
+    // The attempt raced past cancellation (for example it was reusing an
+    // existing session, or it finished while the request was in flight).
+    // Honor the user's intent instead of handing back a live connection.
+    final connectionId = result.connectionId;
+    if (result.success && connectionId != null && !result.reusedConnection) {
+      await disconnect(connectionId);
+    }
+    _updateConnectionAttempt(
+      hostId,
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.error,
+        message: 'Connection cancelled',
+      ),
+      cancelled: true,
+    );
+    DiagnosticsLogService.instance.info(
+      'ssh.active',
+      'connect_cancelled',
+      fields: {'hostId': hostId, 'phase': 'post_attempt'},
+    );
+    return const SshConnectionResult.userCancelled();
+  }
+
+  Future<SshConnectionResult> _runConnectAttempt(
+    int hostId, {
+    required bool forceNew,
+    required bool useHostThemeOverrides,
+    required SshConnectionCancellationToken cancellationToken,
   }) async {
     final telemetry = ref.read(telemetryServiceProvider);
     final host = await _telemetryHostForConnection(hostId);
@@ -6896,13 +7181,40 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         message: 'Preparing connection…',
       ),
       resetLog: true,
+      cancelRequested: false,
     );
 
     final result = await _sshService.connectToHost(
       hostId,
       onProgress: (update) => _updateConnectionAttempt(hostId, update),
       useHostThemeOverrides: useHostThemeOverrides,
+      cancellationToken: cancellationToken,
     );
+
+    if (result.cancelled) {
+      _updateConnectionAttempt(
+        hostId,
+        ConnectionProgressUpdate(
+          state: SshConnectionState.error,
+          message: result.error ?? 'Connection cancelled',
+        ),
+        cancelled: true,
+      );
+      unawaited(
+        telemetry.logConnectionFailed(
+          authMethod: _telemetryAuthMethodFromHost(host),
+          usesJumpHost: host?.jumpHostId != null,
+          duration: DateTime.now().difference(startedAt),
+          failureCategory: 'cancelled',
+        ),
+      );
+      DiagnosticsLogService.instance.info(
+        'ssh.active',
+        'connect_cancelled',
+        fields: {'hostId': hostId},
+      );
+      return result;
+    }
 
     if (result.success && result.connectionId != null) {
       final connectionId = result.connectionId!;
@@ -7800,6 +8112,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     int hostId,
     ConnectionProgressUpdate update, {
     bool resetLog = false,
+    bool? cancelRequested,
+    bool cancelled = false,
   }) {
     final existing = resetLog ? null : _connectionAttempts[hostId];
     final nextLogLines = <String>[if (existing != null) ...existing.logLines];
@@ -7815,6 +8129,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       state: update.state,
       latestMessage: update.message,
       logLines: List.unmodifiable(nextLogLines),
+      cancelRequested:
+          cancelRequested ?? (existing?.cancelRequested ?? false) || cancelled,
+      cancelled: cancelled,
     );
     DiagnosticsLogService.instance.info(
       'ssh.active',
@@ -7823,6 +8140,46 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     );
     state = {...state};
   }
+
+  /// Abandon the in-flight connection attempt(s) for [hostId].
+  ///
+  /// Returns `true` when at least one cancellable attempt was found. Every
+  /// concurrent attempt for the host is cancelled, and each resolves with a
+  /// cancelled [SshConnectionResult] shortly afterwards.
+  bool cancelConnectionAttempt(int hostId) {
+    final tokens = _connectionCancellationTokens[hostId];
+    final cancellable =
+        tokens?.where((token) => !token.isCancelled).toList(growable: false) ??
+        const <SshConnectionCancellationToken>[];
+    if (cancellable.isEmpty) {
+      return false;
+    }
+    DiagnosticsLogService.instance.info(
+      'ssh.active',
+      'attempt_cancel_requested',
+      fields: {'hostId': hostId, 'attemptCount': cancellable.length},
+    );
+    final existing = _connectionAttempts[hostId];
+    _updateConnectionAttempt(
+      hostId,
+      ConnectionProgressUpdate(
+        state: existing?.state ?? SshConnectionState.connecting,
+        message: 'Cancelling connection…',
+      ),
+      cancelRequested: true,
+    );
+    for (final token in cancellable) {
+      token.cancel();
+    }
+    return true;
+  }
+
+  /// Whether [hostId] currently has a cancellable connection attempt.
+  bool canCancelConnectionAttempt(int hostId) =>
+      _connectionCancellationTokens[hostId]?.any(
+        (token) => !token.isCancelled,
+      ) ??
+      false;
 
   /// Surface an unexpected connection failure in the shared attempt state.
   void reportConnectionAttemptError(int hostId, String message) {
