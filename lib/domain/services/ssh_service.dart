@@ -5277,7 +5277,7 @@ while($true){
     final cachedSftp = _sftpClient;
     if (sftpClient != null) {
       if (cachedSftp == null) {
-        unawaited(sftpClient.close());
+        _closeSftpClientBestEffort(sftpClient);
         return;
       }
       if (!identical(sftpClient, cachedSftp)) {
@@ -5287,8 +5287,33 @@ while($true){
     _sftpClient = null;
     _sftpClientFuture = null;
     if (cachedSftp != null) {
-      unawaited(cachedSftp.close());
+      _closeSftpClientBestEffort(cachedSftp);
     }
+  }
+
+  void _closeSftpClientBestEffort(SftpClient sftpClient) {
+    unawaited(
+      sftpClient.close().then<void>(
+        (_) {},
+        onError: (Object error, StackTrace _) {
+          DiagnosticsLogService.instance.warning(
+            'ssh.sftp',
+            'close_failed',
+            fields: {
+              'connectionId': connectionId,
+              'hostId': hostId,
+              'errorType': error.runtimeType,
+            },
+          );
+          if (error is SSHError) {
+            _reportConnectionHealthFailureIfClosed(
+              error,
+              operation: 'sftp_close',
+            );
+          }
+        },
+      ),
+    );
   }
 
   Future<SftpClient> _openSftpClient() async {
@@ -5684,9 +5709,9 @@ while($true){
       }
     } finally {
       try {
-        await forward?.sink.close();
-      } on Exception catch (_) {
-        // Ignore errors during cleanup.
+        forward?.destroy();
+      } on SSHError catch (_) {
+        // The transport may already be closed during channel teardown.
       }
       try {
         socket.destroy();
@@ -5797,9 +5822,9 @@ while($true){
           }
         } finally {
           try {
-            await channel.sink.close();
-          } on Exception catch (_) {
-            // Ignore cleanup errors.
+            channel.destroy();
+          } on SSHError catch (_) {
+            // The transport may already be closed during channel teardown.
           }
           try {
             socket?.destroy();
