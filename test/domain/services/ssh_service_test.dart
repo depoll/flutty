@@ -522,6 +522,7 @@ class _SingleCloseForwardChannel implements SSHForwardChannel {
 
   final _streamController = StreamController<Uint8List>();
   final _sinkController = StreamController<List<int>>.broadcast();
+  int destroyCalls = 0;
 
   @override
   // ignore: close_sinks
@@ -529,6 +530,8 @@ class _SingleCloseForwardChannel implements SSHForwardChannel {
 
   @override
   Stream<Uint8List> get stream => _streamController.stream;
+
+  Future<void> closeIncoming() => _streamController.close();
 
   @override
   Future<void> close() async {
@@ -548,7 +551,10 @@ class _SingleCloseForwardChannel implements SSHForwardChannel {
 
   @override
   void destroy() {
-    unawaited(close());
+    destroyCalls++;
+    if (!_streamController.isClosed) {
+      unawaited(_streamController.close());
+    }
   }
 }
 
@@ -3194,6 +3200,32 @@ LISTEN ::1:4201
       verify(sftp.close).called(1);
     });
 
+    test('discarding SFTP consumes close errors after disconnect', () async {
+      final client = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final session = SshSession(
+        connectionId: 11,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+      when(client.sftp).thenAnswer((_) async => sftp);
+      when(sftp.close).thenAnswer(
+        (_) => Future<void>.error(SSHStateError('Transport is closed')),
+      );
+
+      final opened = await session.sftp();
+      session.discardSftpClient(opened);
+      await pumpEventQueue();
+
+      verify(sftp.close).called(1);
+    });
+
     test('does not retry non-transient SFTP channel open failures', () async {
       final client = _MockSshClient();
       final session = SshSession(
@@ -4777,55 +4809,124 @@ LISTEN ::1:4201
       },
     );
 
-    test('local forward cleanup closes the SSH sink exactly once', () async {
-      final client = _MockSshClient();
-      final forward = _SingleCloseForwardChannel();
-      final session = SshSession(
-        connectionId: 1,
-        hostId: 42,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'host.example.com',
-          port: 22,
-          username: 'tester',
-        ),
-      );
-      final localPort = await _unusedLoopbackPort();
-      when(
-        () => client.forwardLocal('remote.example.com', 80),
-      ).thenAnswer((_) async => forward);
+    test(
+      'local forward cleanup destroys the channel without closing its sink',
+      () async {
+        final client = _MockSshClient();
+        final forward = _SingleCloseForwardChannel();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 42,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'host.example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        final localPort = await _unusedLoopbackPort();
+        when(
+          () => client.forwardLocal('remote.example.com', 80),
+        ).thenAnswer((_) async => forward);
 
-      addTearDown(() async {
-        await session.stopAllForwards();
-        await forward.close();
-      });
+        addTearDown(() async {
+          await session.stopAllForwards();
+          await forward.close();
+        });
 
-      expect(
-        await session.startLocalForward(
-          portForwardId: 1,
-          localHost: InternetAddress.loopbackIPv4.address,
-          localPort: localPort,
-          remoteHost: 'remote.example.com',
-          remotePort: 80,
-        ),
-        isTrue,
-      );
+        expect(
+          await session.startLocalForward(
+            portForwardId: 1,
+            localHost: InternetAddress.loopbackIPv4.address,
+            localPort: localPort,
+            remoteHost: 'remote.example.com',
+            remotePort: 80,
+          ),
+          isTrue,
+        );
 
-      final socket = await Socket.connect(
-        InternetAddress.loopbackIPv4,
-        localPort,
-      );
-      await socket.close();
-      // The socket close travels through the real loopback listener, so the
-      // cleanup is not guaranteed to have run after a fixed number of event
-      // loop turns; a loaded machine reliably fails that assumption. Wait for
-      // the first close, then let the queue settle so a duplicate close would
-      // still be counted before asserting it happened exactly once.
-      await _waitForCondition(() => forward.sink.closeAttempts >= 1);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+        final socket = await Socket.connect(
+          InternetAddress.loopbackIPv4,
+          localPort,
+        );
+        await socket.close();
+        await _waitForCondition(() => forward.destroyCalls >= 1);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      expect(forward.sink.closeAttempts, 1);
-    });
+        expect(forward.sink.closeAttempts, 0);
+        expect(forward.destroyCalls, 1);
+      },
+    );
+
+    test(
+      'remote forward cleanup destroys the channel without closing its sink',
+      () async {
+        final client = _MockSshClient();
+        final remoteForward = _MockRemoteForward();
+        final connections = StreamController<SSHForwardChannel>();
+        final forward = _SingleCloseForwardChannel();
+        final targetServer = await ServerSocket.bind(
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        final acceptedSocket = Completer<Socket>();
+        final targetSubscription = targetServer.listen((socket) {
+          if (!acceptedSocket.isCompleted) {
+            acceptedSocket.complete(socket);
+          }
+        });
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 42,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'host.example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+
+        when(() => remoteForward.host).thenReturn('127.0.0.1');
+        when(() => remoteForward.port).thenReturn(8022);
+        when(
+          () => remoteForward.connections,
+        ).thenAnswer((_) => connections.stream);
+        when(remoteForward.close).thenReturn(null);
+        when(
+          () => client.forwardRemote(host: '127.0.0.1', port: 8022),
+        ).thenAnswer((_) async => remoteForward);
+
+        addTearDown(() async {
+          await session.stopAllForwards();
+          await connections.close();
+          await targetSubscription.cancel();
+          await targetServer.close();
+          if (acceptedSocket.isCompleted) {
+            (await acceptedSocket.future).destroy();
+          }
+          await forward.close();
+        });
+
+        expect(
+          await session.startRemoteForward(
+            portForwardId: 1,
+            remoteHost: '127.0.0.1',
+            remotePort: 8022,
+            localHost: InternetAddress.loopbackIPv4.address,
+            localPort: targetServer.port,
+          ),
+          isTrue,
+        );
+
+        connections.add(forward);
+        await acceptedSocket.future;
+        await forward.closeIncoming();
+        await _waitForCondition(() => forward.destroyCalls >= 1);
+
+        expect(forward.sink.closeAttempts, 0);
+        expect(forward.destroyCalls, 1);
+      },
+    );
 
     test(
       'removes stale sessions when remote forwards report a closed transport',
