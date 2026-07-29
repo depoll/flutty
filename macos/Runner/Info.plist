@@ -27,7 +27,11 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name to decide whether to bypass a host's jump host on trusted networks.</string>
 	<key>NSLocationUsageDescription</key>
-	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name to decide whether to bypass a host's jump host on trusted networks.</string>
+	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name for trusted network rules and provides location to browser pages you explicitly allow.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>$(PRODUCT_NAME) uses the camera for browser pages you explicitly allow.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>$(PRODUCT_NAME) uses the microphone for browser pages you explicitly allow.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
