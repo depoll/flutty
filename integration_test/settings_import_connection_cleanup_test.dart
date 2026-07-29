@@ -48,6 +48,7 @@ class _FakeActiveSessionsSshService extends SshService {
     int hostId, {
     ConnectionProgressCallback? onProgress,
     bool useHostThemeOverrides = true,
+    SshConnectionCancellationToken? cancellationToken,
   }) async {
     final connectionId = _nextConnectionId++;
     final client = _MockSshClient();

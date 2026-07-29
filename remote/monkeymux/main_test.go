@@ -80,9 +80,21 @@ func openTestPty(t *testing.T) muxPty {
 }
 
 // wrapPty adapts a raw *os.File (typically an os.Pipe writer) to the muxPty
-// interface used by muxWindow in tests.
-func wrapPty(file *os.File) muxPty {
-	return &unixPty{file: file}
+// interface used by muxWindow in tests, and takes ownership of closing it.
+//
+// The wrapper's mutex and closed flag are what make a resize safe against a
+// concurrent close, so the file must never be closed directly: a redraw pause
+// leaves a resize timer pending for foregroundRedrawResizeDelay, and that timer
+// can fire after the test that armed it has finished. Closing the raw file
+// bypasses the guard and races the timer's ioctl; closing through the wrapper
+// makes the late resize a no-op instead.
+func wrapPty(t *testing.T, file *os.File) muxPty {
+	t.Helper()
+	wrapped := &unixPty{file: file}
+	t.Cleanup(func() {
+		_ = wrapped.Close()
+	})
+	return wrapped
 }
 
 // ptyFile extracts the underlying *os.File from a test muxPty for direct pty
@@ -1304,6 +1316,64 @@ func TestPausedRedrawFallbackPreservesQueryOrder(t *testing.T) {
 	)
 }
 
+func TestEmptyForegroundRedrawFallbackPreservesQueryFailover(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                         "@1",
+		index:                      0,
+		agentTool:                  "copilot",
+		history:                    []byte("\x1b[Hlast known query frame"),
+		lastActivity:               time.Now(),
+		redrawForwardingPaused:     true,
+		redrawForwardingGeneration: 1,
+		redrawForwardingReplay:     []byte("clear-only replay"),
+		redrawForwardingBuffer:     []byte("\x1b[>q"),
+		redrawForwardingFailoverBuffer: []byte(
+			"\x1b[>q",
+		),
+		redrawForwardingQueryBuffer: []byte("\x1b[>q"),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.mu.Lock()
+	window.redrawForwardingFallbackHistory =
+		server.foregroundHistoryFallbackHistoryLocked(window)
+	fallback := string(
+		server.foregroundHistoryFallbackReplayLocked(
+			window,
+			window.redrawForwardingFallbackHistory,
+		),
+	)
+	server.mu.Unlock()
+
+	secondaryConn := &recordingConn{}
+	registerTestAttachClient(
+		t,
+		server,
+		secondaryConn,
+		"secondary",
+		120,
+		40,
+	)
+	primary := registerTestAttachClient(
+		t,
+		server,
+		failingConn{},
+		"primary",
+		80,
+		24,
+	)
+	window.redrawForwardingPrimaryConn = primary.conn
+
+	server.resumePausedAttachForwarding("@1", 1)
+
+	waitForRecordedOutput(
+		t,
+		secondaryConn,
+		synchronizedTerminalOutputForTest(fallback+"\x1b[>q"),
+	)
+}
+
 func TestPausedRedrawQueryWaitDoesNotHoldAttachLock(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -2476,6 +2546,159 @@ func TestTerminalOutputGroundStateTracksSplitSequences(t *testing.T) {
 	}
 }
 
+func TestTerminalOutputHasVisibleContent(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{name: "empty", data: "", want: false},
+		{
+			name: "clear and title only",
+			data: "\x1b[H\x1b[2J\x1b]0;agent\x07",
+			want: false,
+		},
+		{name: "spaces only", data: "\x1b[H   ", want: false},
+		{
+			name: "spaces under a background color",
+			data: "\x1b[44m   \x1b[0m",
+			want: true,
+		},
+		{
+			name: "spaces under a 256 color background",
+			data: "\x1b[48;5;236m   \x1b[0m",
+			want: true,
+		},
+		{
+			name: "spaces under a truecolor background",
+			data: "\x1b[48;2;10;20;30m   \x1b[0m",
+			want: true,
+		},
+		{
+			// 44 would be read as "blue background" if the 256-color parameters
+			// were not skipped, so this pins the skip rather than the outcome.
+			name: "spaces under a 256 color foreground only",
+			data: "\x1b[38;5;44m   \x1b[0m",
+			want: false,
+		},
+		{
+			name: "spaces under a truecolor foreground only",
+			data: "\x1b[38;2;44;7;41m   \x1b[0m",
+			want: false,
+		},
+		{
+			name: "spaces under a colon form truecolor foreground only",
+			data: "\x1b[38:2::44:7:41m   \x1b[0m",
+			want: false,
+		},
+		{
+			name: "spaces under a colon form 256 color background",
+			data: "\x1b[48:5:236m   \x1b[0m",
+			want: true,
+		},
+		{
+			// A foreground color must not mask a background set afterwards.
+			name: "spaces under a foreground then a background",
+			data: "\x1b[38;5;44;48;5;236m   \x1b[0m",
+			want: true,
+		},
+		{
+			name: "spaces under reverse video",
+			data: "\x1b[7m   \x1b[27m",
+			want: true,
+		},
+		{
+			name: "spaces under an underline",
+			data: "\x1b[4m   \x1b[24m",
+			want: true,
+		},
+		{
+			name: "spaces after the background is reset",
+			data: "\x1b[44m\x1b[49m   ",
+			want: false,
+		},
+		{
+			name: "spaces after a full rendition reset",
+			data: "\x1b[44m\x1b[0m   ",
+			want: false,
+		},
+		{
+			name: "spaces after a cancelled underline",
+			data: "\x1b[4:3m\x1b[4:0m   ",
+			want: false,
+		},
+		{
+			name: "spaces after a foreground color only",
+			data: "\x1b[38;5;236m   ",
+			want: false,
+		},
+		{
+			name: "spaces after a private mode report",
+			data: "\x1b[>4;2m   ",
+			want: false,
+		},
+		{name: "ascii text", data: "\x1b[Hagent ready", want: true},
+		{name: "unicode text", data: "\x1b[H│", want: true},
+		{
+			name: "kitty store only",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA\x1b\\",
+			want: false,
+		},
+		{
+			name: "kitty transmit and display",
+			data: "\x1b_Ga=T,i=7,f=100;AAAA\x1b\\",
+			want: true,
+		},
+		{
+			name: "eight bit kitty store only",
+			data: "\x9fGa=t,i=7,f=100;AAAA\x9c",
+			want: false,
+		},
+		{
+			name: "eight bit kitty transmit and display",
+			data: "\x9fGa=T,i=7,f=100;AAAA\x9c",
+			want: true,
+		},
+		{
+			name: "seven bit kitty transmit and display with eight bit terminator",
+			data: "\x1b_Ga=T,i=7,f=100;AAAA\x9c",
+			want: true,
+		},
+		{
+			name: "text after a cancelled kitty transmission",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA\x18agent ready",
+			want: true,
+		},
+		{
+			name: "text after a cancelled kitty transmission before a later st",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA\x18agent ready\x1b\\",
+			want: true,
+		},
+		{
+			name: "text after a substituted kitty transmission",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA\x1aagent ready\x1b\\",
+			want: true,
+		},
+		{
+			name: "truncated kitty transmission",
+			data: "\x1b_Ga=t,i=7,f=100;AAAA",
+			want: false,
+		},
+		{
+			name: "kitty transmission with an implicit store only action",
+			data: "\x1b_Gi=7,f=100;AAAA\x1b\\",
+			want: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := terminalOutputHasVisibleContent([]byte(test.data)); got != test.want {
+				t.Fatalf("terminalOutputHasVisibleContent() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestTerminalBellParserHonorsControlSequenceCancellation(t *testing.T) {
 	for _, cancel := range []byte{0x18, 0x1a} {
 		window := &muxWindow{}
@@ -2549,13 +2772,13 @@ func TestTerminalResponseRoutesToOriginatingWindowAfterSwitch(t *testing.T) {
 		{
 			id:           "@1",
 			index:        0,
-			pty:          wrapPty(originWriter),
+			pty:          wrapPty(t, originWriter),
 			lastActivity: time.Now(),
 		},
 		{
 			id:           "@2",
 			index:        1,
-			pty:          wrapPty(activeWriter),
+			pty:          wrapPty(t, activeWriter),
 			lastActivity: time.Now(),
 		},
 	}
@@ -4193,7 +4416,7 @@ func TestAttachPrefixSwitchesWindowsAndSendsLiteralPrefix(t *testing.T) {
 		{
 			id:           "@1",
 			index:        0,
-			pty:          wrapPty(inputWriter),
+			pty:          wrapPty(t, inputWriter),
 			lastActivity: time.Now(),
 		},
 		{id: "@2", index: 1, lastActivity: time.Now()},
@@ -4506,6 +4729,406 @@ func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 	}
 }
 
+func TestSelectWindowFallsBackToHistoryWhenForegroundRedrawIsEmpty(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hlast known tui screen"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(processGroup int) {}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+	// A TUI can acknowledge the resize with only reset/clear metadata while its
+	// two SIGWINCH notifications are coalesced. That is still not a usable frame.
+	server.handleWindowOutput(
+		"@2",
+		[]byte("\x1b[H\x1b[2J\x1b]0;agent\x07"),
+	)
+
+	server.mu.Lock()
+	generation := inactiveWindow.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@2", generation)
+
+	got := attach.String()
+	if !strings.Contains(got, "last known tui screen") {
+		t.Fatalf("empty foreground redraw left no visible fallback: %q", got)
+	}
+	if strings.Contains(got, "\x1b[H\x1b[2J\x1b]0;agent\x07") {
+		t.Fatalf("failed redraw was replayed verbatim: %q", got)
+	}
+	// The title the TUI set during the failed redraw is real window state, so
+	// the rebuilt frame carries it as a structured title replay rather than as
+	// the raw redraw bytes rejected above.
+	if !strings.Contains(got, "\x1b]0;agent\x07\x1b]1;agent\x07\x1b]2;agent\x07") {
+		t.Fatalf("fallback frame dropped the window title: %q", got)
+	}
+	if !strings.HasPrefix(got, terminalSynchronizedOutputBegin) ||
+		!strings.HasSuffix(got, terminalSynchronizedOutputEnd) {
+		t.Fatalf("fallback replay was not painted atomically: %q", got)
+	}
+}
+
+func TestEmptyForegroundRedrawFallbackReachesEveryAttachClient(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hlast known shared frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	firstConn := &recordingConn{}
+	secondConn := &recordingConn{}
+	registerTestAttachClient(t, server, firstConn, "first", 120, 40)
+	registerTestAttachClient(t, server, secondConn, "second", 120, 40)
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(processGroup int) {}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+	server.mu.Lock()
+	generation := inactiveWindow.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@2", generation)
+
+	for name, conn := range map[string]*recordingConn{
+		"first":  firstConn,
+		"second": secondConn,
+	} {
+		waitForRecordedContains(t, conn, "last known shared frame")
+		got := conn.String()
+		if !strings.HasPrefix(got, terminalSynchronizedOutputBegin) ||
+			!strings.HasSuffix(got, terminalSynchronizedOutputEnd) {
+			t.Fatalf("%s client fallback was not atomic: %q", name, got)
+		}
+	}
+}
+
+// TestEmptyThemeRedrawFallsBackToHistory covers a redraw pause that is started
+// directly by resizeWithRedraw's synthetic dance (a theme change) rather than by
+// a deferred window-switch replay. That path has no reset replay to send, so an
+// empty redraw would otherwise leave every client blank until the next output.
+func TestEmptyThemeRedrawFallsBackToHistory(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hlast known themed frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	registerTestAttachClient(t, server, conn, "phone", 120, 40)
+	server.mu.Lock()
+	server.publishedWidth = 120
+	server.publishedHeight = 40
+	server.mu.Unlock()
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.forceForegroundThemeRedraw("@1")
+	server.mu.Lock()
+	paused := window.redrawForwardingPaused
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	if !paused {
+		t.Fatal("theme redraw did not pause attach forwarding")
+	}
+	// The TUI coalesces both SIGWINCHes and answers with metadata only.
+	server.handleWindowOutput("@1", []byte("\x1b[H\x1b[2J\x1b]0;agent\x07"))
+	server.resumePausedAttachForwarding("@1", generation)
+
+	waitForRecordedContains(t, conn, "last known themed frame")
+	got := conn.String()
+	if strings.Contains(got, "\x1b[H\x1b[2J\x1b]0;agent\x07") {
+		t.Fatalf("failed redraw was replayed verbatim: %q", got)
+	}
+	// The dance writes its mode replay first, so the transaction starts partway
+	// through the stream; the fallback frame must sit entirely inside it.
+	begin := strings.Index(got, terminalSynchronizedOutputBegin)
+	if begin < 0 || !strings.HasSuffix(got, terminalSynchronizedOutputEnd) {
+		t.Fatalf("theme fallback replay was not painted atomically: %q", got)
+	}
+	transaction := got[begin+len(terminalSynchronizedOutputBegin) : len(got)-len(terminalSynchronizedOutputEnd)]
+	if !strings.Contains(transaction, "last known themed frame") {
+		t.Fatalf("fallback frame painted outside the transaction: %q", got)
+	}
+	if strings.Contains(transaction, terminalSynchronizedOutputEnd) {
+		t.Fatalf("fallback frame spanned more than one transaction: %q", got)
+	}
+}
+
+// TestRestartedRedrawPauseKeepsOriginalFallback verifies a second pause started
+// while the first is still in flight does not re-snapshot a history the first
+// (empty) redraw already cleared, which would hand back a blank frame instead of
+// the last complete one.
+func TestRestartedRedrawPauseKeepsOriginalFallback(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Holdest complete frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	first := string(window.redrawForwardingFallbackHistory)
+	// The first redraw produced only a clear, so the history no longer holds a
+	// usable frame.
+	window.history = []byte("\x1b[H\x1b[2J")
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	second := string(window.redrawForwardingFallbackHistory)
+	server.mu.Unlock()
+
+	if !strings.Contains(first, "oldest complete frame") {
+		t.Fatalf("first pause captured no fallback: %q", first)
+	}
+	if second != first {
+		t.Fatalf("restarted pause re-snapshotted fallback = %q, want %q", second, first)
+	}
+}
+
+// TestRestartedRedrawPauseRefreshesUsableFallback is the complement: when the
+// redraw during the first pause did paint a real frame, the restarted pause must
+// adopt it rather than pinning the user to the older screen.
+func TestRestartedRedrawPauseRefreshesUsableFallback(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Holdest complete frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	window.history = []byte("\x1b[Hnewer complete frame")
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	second := string(window.redrawForwardingFallbackHistory)
+	server.mu.Unlock()
+
+	if !strings.Contains(second, "newer complete frame") {
+		t.Fatalf("restarted pause kept a stale fallback = %q", second)
+	}
+}
+
+// TestClosedWindowReleasesRedrawFallback verifies a window closed mid-pause does
+// not retain its snapshot: closed windows stay in s.windows for the life of the
+// server, and resumePausedAttachForwarding returns early on them, so nothing
+// else would ever free the buffers.
+func TestClosedWindowReleasesRedrawFallback(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hretained frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	originalSignalForegroundResize := signalForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+		signalForegroundResize = originalSignalForegroundResize
+	}()
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+	signalForegroundResize = func(int) {}
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	window.redrawForwardingBuffer = []byte("buffered")
+	captured := len(window.redrawForwardingFallbackHistory)
+	server.mu.Unlock()
+	if captured == 0 {
+		t.Fatal("pause captured no fallback history to release")
+	}
+
+	server.markWindowClosed("@1")
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if window.redrawForwardingFallbackHistory != nil ||
+		window.redrawForwardingBuffer != nil ||
+		window.redrawForwardingPaused {
+		t.Fatalf(
+			"closed window retained redraw state: history=%d buffer=%d paused=%v",
+			len(window.redrawForwardingFallbackHistory),
+			len(window.redrawForwardingBuffer),
+			window.redrawForwardingPaused,
+		)
+	}
+}
+
+// TestPartialSequenceRedrawKeepsNormalForwarding verifies the fallback does not
+// replace a redraw that ended mid escape sequence. Discarding it would drop the
+// head of a sequence whose tail is still to come and corrupt the client, so such
+// a redraw must forward normally even though it has no visible content yet.
+func TestPartialSequenceRedrawKeepsNormalForwarding(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[Hlast known tui screen"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(int) {}
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+	// The chunk ends inside an unterminated OSC, so its tail arrives later.
+	server.handleWindowOutput("@2", []byte("\x1b[H\x1b]0;partial"))
+
+	server.mu.Lock()
+	generation := inactiveWindow.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@2", generation)
+
+	got := attach.String()
+	if strings.Contains(got, "last known tui screen") {
+		t.Fatalf("fallback replaced a redraw that ended mid sequence: %q", got)
+	}
+	// The complete prefix still forwards normally; the unterminated OSC tail is
+	// carried until the rest of it arrives.
+	if !strings.HasSuffix(
+		got,
+		terminalSynchronizedOutputBegin+"\x1b[H"+terminalSynchronizedOutputEnd,
+	) {
+		t.Fatalf("buffered redraw prefix was not forwarded normally: %q", got)
+	}
+}
+
+// TestRedrawFallbackSnapshotSurvivesHistoryRewrite pins the snapshot against
+// aliasing: the history helpers can return slices backed by window.history, and
+// appendHistoryLocked rewrites that buffer in place as the redraw arrives, so an
+// aliased snapshot would mutate into the redraw it exists to recover from.
+func TestRedrawFallbackSnapshotSurvivesHistoryRewrite(t *testing.T) {
+	server := newMuxServer("test")
+	// A real window's history buffer is grown to twice the limit so trims are
+	// amortized; that spare capacity is what lets later appends rewrite the
+	// buffer in place rather than reallocating.
+	history := make([]byte, 0, 2*windowFullReplayHistoryLimitBytes)
+	history = append(history, "\x1b[Hlast known tui screen"...)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      history,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	snapshot := string(window.redrawForwardingFallbackHistory)
+	// Output landing while the pause is in flight rewrites the history buffer
+	// starting at index 0, over the bytes an aliased snapshot would point at.
+	window.appendHistoryLocked(
+		bytes.Repeat([]byte("x"), windowFullReplayHistoryLimitBytes),
+	)
+	after := string(window.redrawForwardingFallbackHistory)
+	server.mu.Unlock()
+
+	if !strings.Contains(snapshot, "last known tui screen") {
+		t.Fatalf("pause captured no fallback frame: %q", snapshot)
+	}
+	if after != snapshot {
+		t.Fatal("history rewrite mutated the retained fallback snapshot")
+	}
+}
+
 func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -4670,7 +5293,7 @@ func TestAttachRefreshesFocusAwareThemeHint(t *testing.T) {
 		id:                "@1",
 		index:             0,
 		foregroundCommand: "unknown-tui",
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 		lastActivity:      time.Now(),
 	}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
@@ -4754,6 +5377,130 @@ func TestCreateWindowHoldsAgentWindowOpenOnFastFailure(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+// TestCreateWindowAfterCloseDoesNotLeakWindow pins the shutdown race: close
+// sets s.closed and snapshots s.windows under one lock, so a window published
+// after that point would never be torn down and its watchers would join the
+// wait group after close had already waited on it. createWindow must instead
+// refuse and clean up the process it just started.
+func TestCreateWindowAfterCloseDoesNotLeakWindow(t *testing.T) {
+	server := newMuxServer("test")
+	server.close()
+
+	window, err := server.createWindow(createWindowOptions{command: "sleep 30"})
+	if !errors.Is(err, errServerClosed) {
+		t.Fatalf("createWindow after close = (%v, %v), want errServerClosed", window, err)
+	}
+	if window != nil {
+		t.Fatalf("createWindow after close returned window %+v, want nil", window)
+	}
+
+	server.mu.Lock()
+	count := len(server.windows)
+	server.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("closed server published %d windows, want 0", count)
+	}
+
+	// The watcher group must be balanced, so a second close returns promptly
+	// rather than blocking for windowWatcherShutdownTimeout.
+	start := time.Now()
+	server.waitForWindowWatchers(windowWatcherShutdownTimeout)
+	if elapsed := time.Since(start); elapsed >= windowWatcherShutdownTimeout {
+		t.Fatalf("waiting for watchers took %s; the group was left unbalanced", elapsed)
+	}
+}
+
+// TestConcurrentCloseWaitsForTeardown pins that a second close does not report
+// the server as torn down while the first is still tearing it down. Shutdown is
+// triggered concurrently (`go s.close()`) as well as from deferred calls, so a
+// caller returning early would let a test cleanup — or the process — finish
+// while watchers were still running.
+func TestConcurrentCloseWaitsForTeardown(t *testing.T) {
+	server := newMuxServer("test")
+	release := make(chan struct{})
+	server.windowWatchers.Add(1)
+	go func() {
+		<-release
+		server.windowWatchers.Done()
+	}()
+
+	firstReturned := make(chan struct{})
+	go func() {
+		server.close()
+		close(firstReturned)
+	}()
+
+	// Let the first caller reach its wait.
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.mu.Lock()
+		started := server.closed
+		server.mu.Unlock()
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first close never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	secondReturned := make(chan struct{})
+	go func() {
+		server.close()
+		close(secondReturned)
+	}()
+
+	select {
+	case <-secondReturned:
+		t.Fatal("second close returned while the first was still tearing down")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-secondReturned:
+	case <-time.After(windowWatcherShutdownTimeout + time.Second):
+		t.Fatal("second close did not return after teardown finished")
+	}
+	<-firstReturned
+}
+
+// TestCloseMarksWindowsClosedSoLateWatchersAreInert covers the bounded wait: a
+// child that ignores SIGHUP can outlive close, and its watcher still calls
+// markWindowClosed afterwards. Closing the windows during shutdown makes that
+// late call return before it touches any server state.
+func TestCloseMarksWindowsClosedSoLateWatchersAreInert(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      []byte("frame"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.close()
+
+	server.mu.Lock()
+	closed := window.closed
+	server.mu.Unlock()
+	if !closed {
+		t.Fatal("close left the window open, so a late watcher would mutate server state")
+	}
+
+	// A watcher that overran the wait would call this. It must be inert rather
+	// than reading the process-group hook, which tests swap between runs.
+	originalPgrp := foregroundProcessGroupForWindow
+	t.Cleanup(func() { foregroundProcessGroupForWindow = originalPgrp })
+	foregroundProcessGroupForWindow = func(*muxWindow) int {
+		t.Error("late markWindowClosed read server state after shutdown")
+		return 0
+	}
+	server.markWindowClosed("@1")
 }
 
 func TestCreateWindowClosesNonAgentWindowOnExit(t *testing.T) {
@@ -5726,12 +6473,12 @@ func TestAttachInputDropsFocusReportsUntilActiveWindowEnablesFocus(t *testing.T)
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	window := &muxWindow{id: "@1", index: 0, pty: wrapPty(writer), lastActivity: time.Now()}
+	window := &muxWindow{id: "@1", index: 0, pty: wrapPty(t, writer), lastActivity: time.Now()}
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 
 	server.writeActiveFromAttach([]byte("typed\x1b[I\x1b[Oinput"))
-	if err := writer.Close(); err != nil {
+	if err := window.pty.Close(); err != nil {
 		t.Fatal(err)
 	}
 	output, err := io.ReadAll(reader)
@@ -5754,7 +6501,7 @@ func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T)
 	window := &muxWindow{
 		id:               "@1",
 		index:            0,
-		pty:              wrapPty(writer),
+		pty:              wrapPty(t, writer),
 		lastActivity:     time.Now(),
 		focusModeEnabled: true,
 	}
@@ -5762,7 +6509,7 @@ func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T)
 	server.activeID = "@1"
 
 	server.writeActiveFromAttach([]byte("typed\x1b[I\x1b[Oinput"))
-	if err := writer.Close(); err != nil {
+	if err := window.pty.Close(); err != nil {
 		t.Fatal(err)
 	}
 	output, err := io.ReadAll(reader)
@@ -7099,7 +7846,7 @@ func TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 		lastActivity:      time.Now(),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
@@ -7149,7 +7896,7 @@ func TestActiveOutputStripsSplitLocallyAnsweredThemeQueryFromAttach(t *testing.T
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 		lastActivity:      time.Now(),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
@@ -7429,7 +8176,7 @@ func TestWin32InputModeAnswersPaletteQueryWithEncodedDefaults(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "copilot",
 		foregroundPid:     42,
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 		lastActivity:      time.Now(),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
@@ -7482,7 +8229,7 @@ func TestWin32InputModeResetRestoresRawThemeAnswers(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 		lastActivity:      time.Now(),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
@@ -9810,7 +10557,7 @@ func TestThemeHintVerifiesForegroundPidWithoutThrottle(t *testing.T) {
 		themeColorQueryPid:         42,
 		themeColorQueryKeys:        map[string]bool{"11": true},
 		lastProcessMetadataRefresh: time.Now(),
-		pty:                        wrapPty(inputWriter),
+		pty:                        wrapPty(t, inputWriter),
 	}
 	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
 		if candidate == window {
@@ -9850,7 +10597,7 @@ func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
@@ -9897,7 +10644,7 @@ func TestThemeHintAnswersFutureBackgroundQuery(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
@@ -9942,7 +10689,7 @@ func TestThemeHintAnswersFuturePaletteQuery(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
@@ -9985,7 +10732,7 @@ func TestThemeHintDoesNotSendBackgroundReportWithoutQuery(t *testing.T) {
 		_ = inputWriter.Close()
 	})
 
-	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: wrapPty(inputWriter)}
+	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: wrapPty(t, inputWriter)}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{window}
@@ -10024,7 +10771,7 @@ func TestThemeHintDoesNotPushUnsolicitedColorReportsToFocusAwareTui(t *testing.T
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 	}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	server := newMuxServer("test")
@@ -10081,7 +10828,7 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 			window := &muxWindow{
 				id:                "@1",
 				foregroundCommand: tt.command,
-				pty:               wrapPty(inputWriter),
+				pty:               wrapPty(t, inputWriter),
 			}
 			window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 			server := newMuxServer("test")
@@ -10142,7 +10889,7 @@ func TestThemeHintDoesNotSignalResizeRedraw(t *testing.T) {
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "codex",
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 	}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	server := newMuxServer("test")
@@ -10207,7 +10954,7 @@ func TestThemeHintReSendsObservedPaletteReportsToColorSchemeUpdatesTui(t *testin
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
-		pty:               wrapPty(inputWriter),
+		pty:               wrapPty(t, inputWriter),
 	}
 	foregroundProcessGroup := 42
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
@@ -10271,7 +11018,7 @@ func TestThemeHintIgnoresWindowsWithoutThemeCapabilities(t *testing.T) {
 		_ = inputWriter.Close()
 	})
 
-	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: wrapPty(inputWriter)}
+	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: wrapPty(t, inputWriter)}
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"

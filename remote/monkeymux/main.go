@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -58,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.124"
+	monkeyMuxVersion                  = "0.1.126"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -205,6 +206,7 @@ var (
 	errRunCommandClientClosed = errors.New("control client closed")
 	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
 	errRunCommandTimeout      = errors.New("command timed out")
+	errServerClosed           = errors.New("server is closed")
 )
 
 var simulateForegroundResize = func(window *muxWindow, width int, height int) {
@@ -476,6 +478,7 @@ type muxServer struct {
 	controls                   map[*controlClient]struct{}
 	themeHint                  []byte
 	closed                     bool
+	closeDone                  chan struct{}
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -485,6 +488,12 @@ type muxServer struct {
 	// first time each of these windows becomes the active/attached window we
 	// schedule follow-up redraws and clear it from this set.
 	restoreRedrawPending map[string]bool
+
+	// windowWatchers tracks the per-window reader and process-exit goroutines
+	// so close can wait for them. Without it those goroutines outlive the
+	// server and keep mutating its state (markWindowClosed) after shutdown,
+	// which races whatever runs next in the same process.
+	windowWatchers sync.WaitGroup
 }
 
 type muxWindow struct {
@@ -540,6 +549,7 @@ type muxWindow struct {
 	redrawForwardingPaused               bool
 	redrawForwardingGeneration           int
 	redrawForwardingReplay               []byte
+	redrawForwardingFallbackHistory      []byte
 	redrawForwardingBuffer               []byte
 	redrawForwardingFailoverBuffer       []byte
 	redrawForwardingSecondaryBuffer      []byte
@@ -3735,6 +3745,21 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		// close() sets s.closed and snapshots s.windows under this same lock,
+		// so a window registered from here on would never be torn down and its
+		// watchers would join the group after close already waited. Tear the
+		// freshly started process down instead of publishing it.
+		s.mu.Unlock()
+		proc.Hangup()
+		_ = windowPty.Close()
+		return nil, errServerClosed
+	}
+	// Registering the watchers here, rather than beside the `go` statements
+	// below, keeps the count paired with the s.closed transition: once close()
+	// observes s.closed it knows no further watchers can be added, so its Wait
+	// cannot race an Add.
+	s.windowWatchers.Add(2)
 	s.nextID++
 	window := &muxWindow{
 		id:                       fmt.Sprintf("@%d", s.nextID),
@@ -3789,12 +3814,17 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
-	go s.readWindow(window)
+	// The watcher count was registered under s.mu above, alongside the s.closed
+	// check, so it is deliberately not incremented here.
 	go func() {
+		defer s.windowWatchers.Done()
+		s.readWindow(window)
+	}()
+	go func() {
+		defer s.windowWatchers.Done()
 		_ = proc.Wait()
 		s.markWindowClosed(window.id)
 	}()
-
 	s.broadcast(controlResponse{
 		Type:    "window_added",
 		Session: s.session,
@@ -4068,6 +4098,9 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	}
 	window.closed = true
 	window.alert = false
+	// See closeWindow: a pause in flight would otherwise retain its buffers on
+	// a window that is never removed from s.windows.
+	window.releaseRedrawForwardingStateLocked()
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -6496,6 +6529,12 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	}
 	window.closed = true
 	window.alert = false
+	// A window can be closed while a redraw pause is in flight, and
+	// resumePausedAttachForwarding bails out on closed windows before it
+	// reaches its own cleanup. Closed windows stay in s.windows for the life of
+	// the server, so release the retained frame and output buffers here or they
+	// leak for as long as the server runs.
+	window.releaseRedrawForwardingStateLocked()
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -6857,6 +6896,24 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 	window.redrawForwardingPrimaryNeedsFailover =
 		len(preservedQueries) > 0 &&
 			!s.isAttachConnectionLocked(preservedPrimary)
+	if !window.redrawForwardingPaused ||
+		len(window.redrawForwardingFallbackHistory) == 0 {
+		// Snapshot the pre-resize frame for every redraw pause, not just
+		// deferred window-switch replays: restore and theme redraws start the
+		// same transaction directly and hit the same coalesced-SIGWINCH
+		// failure.
+		window.redrawForwardingFallbackHistory =
+			s.foregroundHistoryFallbackHistoryLocked(window)
+	} else if refreshed := s.foregroundHistoryFallbackHistoryLocked(
+		window,
+	); terminalOutputHasVisibleContent(refreshed) {
+		// A pause restarted while another is in flight only re-snapshots when
+		// the history still holds a complete frame. If the first (empty) redraw
+		// already cleared the screen, re-reading it would capture that blank
+		// frame and hand the user exactly the emptiness this fallback exists to
+		// avoid, so the original snapshot is kept instead.
+		window.redrawForwardingFallbackHistory = refreshed
+	}
 	window.redrawForwardingPaused = true
 	window.redrawForwardingGeneration += 1
 	windowID := window.id
@@ -6910,20 +6967,41 @@ func (s *muxServer) resumePausedAttachForwarding(
 	}
 	primaryNeedsFailover =
 		primaryNeedsFailover || window.redrawForwardingPrimaryNeedsFailover
-	window.redrawForwardingReplay = nil
-	window.redrawForwardingBuffer = nil
-	window.redrawForwardingFailoverBuffer = nil
-	window.redrawForwardingSecondaryBuffer = nil
-	window.redrawForwardingQueryBuffer = nil
-	window.redrawForwardingPrimaryConn = nil
-	window.redrawForwardingPrimaryNeedsFailover = false
-	window.redrawForwardingPaused = false
-	refreshPendingFocus =
-		s.pendingFocusRefreshConn != nil &&
-			s.pendingFocusRefreshConn == s.attachConn &&
-			len(window.secondaryQueryCarry) == 0 &&
-			window.queryUtf8Remaining == 0 &&
-			window.terminalOutputIsGroundLocked()
+	// Substituting the fallback discards the buffered redraw, so it is only
+	// safe once that redraw has ended on a sequence boundary. Resuming mid
+	// escape sequence would drop the head of a sequence whose tail is still to
+	// come and corrupt the client, so leave those redraws to forward normally.
+	if !terminalOutputHasVisibleContent(secondaryBuffered) &&
+		window.terminalOutputIsGroundLocked() {
+		// Some TUIs coalesce the temporary and restored SIGWINCH notifications
+		// and emit no redraw at all. Sending the normal foreground replay in
+		// that case would only clear the client, leaving it blank until future
+		// output. Fall back to the retained screen history and paint it inside
+		// one synchronized transaction so the user sees the last complete frame
+		// rather than an empty viewport.
+		fallbackReplay := s.foregroundHistoryFallbackReplayLocked(
+			window,
+			window.redrawForwardingFallbackHistory,
+		)
+		if len(fallbackReplay) > 0 {
+			replay = nil
+			buffered = append(
+				append([]byte(nil), fallbackReplay...),
+				queryData...,
+			)
+			failoverBuffered = append(
+				append([]byte(nil), fallbackReplay...),
+				queryData...,
+			)
+			secondaryBuffered = append([]byte(nil), fallbackReplay...)
+		}
+	}
+	window.releaseRedrawForwardingStateLocked()
+	refreshPendingFocus = s.pendingFocusRefreshConn != nil &&
+		s.pendingFocusRefreshConn == s.attachConn &&
+		len(window.secondaryQueryCarry) == 0 &&
+		window.queryUtf8Remaining == 0 &&
+		window.terminalOutputIsGroundLocked()
 	refreshPendingResize =
 		s.pendingResizeWidth > 0 &&
 			s.pendingResizeHeight > 0 &&
@@ -7154,6 +7232,68 @@ func (s *muxServer) replayBytesLockedWithSkip(
 		history = trimReplayHistoryForAttachWithParser(history, historyStart)
 		history = stripTerminalQueriesFromReplay(history)
 	}
+	return buildWindowReplay(window, history)
+}
+
+// releaseRedrawForwardingStateLocked drops every buffer a redraw pause retains
+// and marks the pause finished.
+func (w *muxWindow) releaseRedrawForwardingStateLocked() {
+	if w == nil {
+		return
+	}
+	w.redrawForwardingPaused = false
+	w.redrawForwardingReplay = nil
+	w.redrawForwardingFallbackHistory = nil
+	w.redrawForwardingBuffer = nil
+	w.redrawForwardingFailoverBuffer = nil
+	w.redrawForwardingSecondaryBuffer = nil
+	w.redrawForwardingQueryBuffer = nil
+	w.redrawForwardingPrimaryConn = nil
+	w.redrawForwardingPrimaryNeedsFailover = false
+}
+
+// foregroundHistoryFallbackHistoryLocked snapshots the frame bytes to fall back
+// to if the redraw about to be triggered produces nothing. The result must be a
+// copy: these helpers can return slices aliasing window.history, which
+// appendHistoryLocked rewrites in place as output arrives during the pause,
+// which would mutate the snapshot into the very redraw it exists to recover
+// from.
+func (s *muxServer) foregroundHistoryFallbackHistoryLocked(
+	window *muxWindow,
+) []byte {
+	if window == nil || !window.usesForegroundRedrawReplayLocked() {
+		return nil
+	}
+	history, historyStart := window.historyTailWithParserLocked()
+	history = trimReplayHistoryForAttachWithParser(history, historyStart)
+	history = stripTerminalQueriesFromReplay(history)
+	if len(history) == 0 {
+		return nil
+	}
+	return append([]byte(nil), history...)
+}
+
+// foregroundHistoryFallbackReplayLocked renders the snapshot taken when the
+// redraw pause began into a full replay. The frame bytes are the pre-resize
+// history, but the surrounding mode, cursor, and retained-image state is read
+// now, so state the window learned *during* the pause (a mode change, a new
+// image upload) is carried into the fallback instead of being dropped with the
+// discarded redraw.
+func (s *muxServer) foregroundHistoryFallbackReplayLocked(
+	window *muxWindow,
+	history []byte,
+) []byte {
+	if window == nil || len(history) == 0 {
+		return nil
+	}
+	images := window.kittyImageReplayLocked(nil)
+	replayHistory := make([]byte, 0, len(images)+len(history))
+	replayHistory = append(replayHistory, images...)
+	replayHistory = append(replayHistory, history...)
+	return buildWindowReplay(window, replayHistory)
+}
+
+func buildWindowReplay(window *muxWindow, history []byte) []byte {
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
 	preHistoryClear := terminalPreHistoryClearSequence(window)
@@ -8984,6 +9124,239 @@ func (p *terminalOutputParserSnapshot) observe(data []byte) {
 			}
 		}
 	}
+}
+
+func terminalOutputHasVisibleContent(data []byte) bool {
+	parser := terminalOutputParserSnapshot{}
+	rendition := terminalRenditionSnapshot{}
+	for index := 0; index < len(data); {
+		if parser.state != terminalOutputParserGround ||
+			parser.utf8Remaining > 0 {
+			parser.observe(data[index : index+1])
+			index++
+			continue
+		}
+		end, control, kitty := kittyGraphicsControlAt(data, index)
+		if kitty && end > 0 {
+			action := parseKittyControl(control)["a"]
+			if action == "T" || action == "p" || action == "a" || action == "c" {
+				return true
+			}
+			parser.observe(data[index:end])
+			index = end
+			continue
+		}
+		if kitty {
+			// The APC is truncated, or terminated in a way the Kitty scanner
+			// does not model (a CAN/SUB cancellation). Hand the bytes to the
+			// byte-wise parser, which does track those, instead of giving up on
+			// the rest of the buffer: text after a cancelled APC still paints.
+			parser.observe(data[index : index+1])
+			index++
+			continue
+		}
+		if csiEnd, params, final, ok := controlSequenceAt(data, index); ok {
+			if final == 'm' {
+				rendition.observeSelectGraphicRendition(params)
+			}
+			parser.observe(data[index:csiEnd])
+			index = csiEnd
+			continue
+		}
+		value := data[index]
+		if value < 0x20 || value == 0x7f || (value >= 0x80 && value < 0xa0) {
+			parser.observe(data[index : index+1])
+			index++
+			continue
+		}
+		r, size := utf8.DecodeRune(data[index:])
+		if r == utf8.RuneError && size == 1 {
+			parser.observe(data[index : index+1])
+			index++
+			continue
+		}
+		if !unicode.IsSpace(r) || rendition.paintsWhitespace() {
+			return true
+		}
+		parser.observe(data[index : index+size])
+		index += size
+	}
+	return false
+}
+
+// terminalRenditionSnapshot tracks the subset of SGR state that makes a run of
+// spaces paint visible cells. Whitespace is only invisible under the default
+// rendition: with a non-default background, reverse video, an underline, a
+// strike-through, or an overline the same spaces are a real frame, so the
+// emptiness check must not discard them and restore stale history instead.
+type terminalRenditionSnapshot struct {
+	background bool
+	reverse    bool
+	underline  bool
+	strike     bool
+	overline   bool
+}
+
+func (r terminalRenditionSnapshot) paintsWhitespace() bool {
+	return r.background || r.reverse || r.underline || r.strike || r.overline
+}
+
+func (r *terminalRenditionSnapshot) observeSelectGraphicRendition(
+	params string,
+) {
+	if params != "" && params[0] >= 0x3c && params[0] <= 0x3f {
+		// Private forms such as CSI > 4 ; 2 m (modifyOtherKeys) are not SGR.
+		return
+	}
+	fields := strings.Split(params, ";")
+	for index := 0; index < len(fields); index++ {
+		field := fields[index]
+		base := field
+		sub := ""
+		if colon := strings.IndexByte(field, ':'); colon >= 0 {
+			base = field[:colon]
+			sub = field[colon+1:]
+		}
+		code := 0
+		if base != "" {
+			parsed, err := strconv.Atoi(base)
+			if err != nil {
+				continue
+			}
+			code = parsed
+		}
+		switch {
+		case code == 0:
+			*r = terminalRenditionSnapshot{}
+		case code == 4:
+			r.underline = sub != "0"
+		case code == 7:
+			r.reverse = true
+		case code == 9:
+			r.strike = true
+		case code == 21:
+			r.underline = true
+		case code == 24:
+			r.underline = false
+		case code == 27:
+			r.reverse = false
+		case code == 29:
+			r.strike = false
+		case code == 38 || code == 48:
+			if code == 48 {
+				r.background = true
+			}
+			if sub != "" {
+				// Colon sub-parameter form keeps the color in this field.
+				break
+			}
+			if index+1 < len(fields) {
+				switch fields[index+1] {
+				case "5":
+					index += 2
+				case "2":
+					index += 4
+				}
+			}
+		case code >= 40 && code <= 47:
+			r.background = true
+		case code == 49:
+			r.background = false
+		case code == 53:
+			r.overline = true
+		case code == 55:
+			r.overline = false
+		case code >= 100 && code <= 107:
+			r.background = true
+		}
+	}
+}
+
+// controlSequenceAt reports the extent, parameter bytes, and final byte of a
+// complete CSI sequence starting at start. It returns ok=false when the bytes
+// are not a CSI introducer or the sequence is truncated, leaving those bytes to
+// the byte-wise parser.
+func controlSequenceAt(
+	data []byte,
+	start int,
+) (end int, params string, final byte, ok bool) {
+	from := 0
+	switch {
+	case start+1 < len(data) &&
+		data[start] == '\x1b' &&
+		data[start+1] == '[':
+		from = start + 2
+	case data[start] == 0x9b:
+		from = start + 1
+	default:
+		return 0, "", 0, false
+	}
+	for index := from; index < len(data); index++ {
+		value := data[index]
+		if value >= 0x40 && value <= 0x7e {
+			return index + 1, string(data[from:index]), value, true
+		}
+		if value < 0x20 || value > 0x3f {
+			return 0, "", 0, false
+		}
+	}
+	return 0, "", 0, false
+}
+
+func kittyGraphicsControlAt(
+	data []byte,
+	start int,
+) (end int, control string, recognized bool) {
+	if start+2 < len(data) &&
+		data[start] == '\x1b' &&
+		data[start+1] == '_' &&
+		data[start+2] == 'G' {
+		return kittyGraphicsControlExtent(data, start, start+3)
+	}
+	if start+1 >= len(data) || data[start] != 0x9f || data[start+1] != 'G' {
+		return 0, "", false
+	}
+	return kittyGraphicsControlExtent(data, start, start+2)
+}
+
+// kittyGraphicsControlExtent finds the ST that closes a Kitty APC sequence whose
+// payload begins at from, accepting both the 7-bit "ESC \" and 8-bit 0x9c
+// terminators, and returns the control (pre-payload) portion.
+func kittyGraphicsControlExtent(
+	data []byte,
+	start int,
+	from int,
+) (end int, control string, recognized bool) {
+	to := -1
+	for index := from; index < len(data); index++ {
+		if data[index] == 0x18 || data[index] == 0x1a {
+			// CAN/SUB cancel the APC. Report it as unresolved so the caller
+			// hands the bytes to the byte-wise parser, which models the
+			// cancellation; scanning on to a later ST would swallow the visible
+			// text that follows the cancelled sequence.
+			return -1, "", true
+		}
+		switch {
+		case data[index] == 0x9c:
+			end = index + 1
+			to = index
+		case index+1 < len(data) &&
+			data[index] == '\x1b' &&
+			data[index+1] == '\\':
+			end = index + 2
+			to = index
+		}
+		if end > 0 {
+			break
+		}
+	}
+	if end == 0 {
+		return -1, "", true
+	}
+	if semi := bytes.IndexByte(data[from:to], ';'); semi >= 0 {
+		to = from + semi
+	}
+	return end, string(data[from:to]), true
 }
 
 func (p *terminalOutputParserSnapshot) reset() {
@@ -12129,10 +12502,20 @@ func (s *muxServer) reindexWindowsLocked() {
 func (s *muxServer) close() {
 	s.mu.Lock()
 	if s.closed {
+		// Shutdown is triggered concurrently (`go s.close()`) as well as from
+		// deferred calls, so a later caller must not report the server as torn
+		// down while the first caller is still tearing it down. Wait for that
+		// caller instead of returning immediately.
+		inFlight := s.closeDone
 		s.mu.Unlock()
+		if inFlight != nil {
+			<-inFlight
+		}
 		return
 	}
 	s.closed = true
+	s.closeDone = make(chan struct{})
+	closeDone := s.closeDone
 	listener := s.listener
 	s.listener = nil
 	attach := net.Conn(nil)
@@ -12150,7 +12533,15 @@ func (s *muxServer) close() {
 		controls = append(controls, control)
 	}
 	windows := append([]*muxWindow(nil), s.windows...)
+	// Mark the windows closed while still holding s.mu. A watcher that outruns
+	// the bounded wait below then finds its window already closed and returns
+	// from markWindowClosed before touching any server state.
+	for _, window := range windows {
+		window.closed = true
+		window.releaseRedrawForwardingStateLocked()
+	}
 	s.mu.Unlock()
+	defer close(closeDone)
 
 	if listener != nil {
 		_ = listener.Close()
@@ -12171,6 +12562,33 @@ func (s *muxServer) close() {
 		if window.pty != nil {
 			_ = window.closePty(window.pty)
 		}
+	}
+	// Closing the ptys ends the reader goroutines and the hangup above ends the
+	// child processes, so the watchers finish promptly. Wait for them so no
+	// goroutine mutates server state after close returns. The wait is bounded
+	// because a child that ignores SIGHUP must not be able to hang shutdown;
+	// marking the windows closed above is what makes overrunning a watcher
+	// harmless rather than a late mutation of server state.
+	s.waitForWindowWatchers(windowWatcherShutdownTimeout)
+}
+
+// windowWatcherShutdownTimeout bounds how long close waits for the per-window
+// goroutines after hanging up the children and closing the ptys. They normally
+// finish immediately; the bound only exists so a child that ignores SIGHUP
+// cannot hang shutdown.
+const windowWatcherShutdownTimeout = 2 * time.Second
+
+func (s *muxServer) waitForWindowWatchers(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		s.windowWatchers.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
 	}
 }
 
