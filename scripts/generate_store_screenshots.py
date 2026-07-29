@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ADB: Path | None = None
 READY_MARKER = 'STORE_SCREENSHOT_READY '
 DONE_MARKER = 'STORE_SCREENSHOT_DONE'
+ERROR_MARKER = 'STORE_SCREENSHOT_ERROR '
 ANSI_ESCAPE_PATTERN = re.compile(
     r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))'
 )
@@ -235,6 +236,7 @@ def _run_flutter_capture(
     assert process.stdout is not None
 
     saw_done = False
+    failure: str | None = None
     try:
         for raw_line in process.stdout:
             print(raw_line, end='')
@@ -247,6 +249,9 @@ def _run_flutter_capture(
                     device_id=device_id,
                     paths=[ROOT / path for path in payload['paths']],
                 )
+            if ERROR_MARKER in line:
+                failure = line.split(ERROR_MARKER, 1)[1].strip()
+                break
             if DONE_MARKER in line:
                 saw_done = True
                 break
@@ -258,6 +263,9 @@ def _run_flutter_capture(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=20)
+
+    if failure is not None:
+        raise RuntimeError(f'{target.name} run failed in the app: {failure}')
 
     if not saw_done:
         if process.returncode not in (0, None):
@@ -379,7 +387,37 @@ class StoreDemoEnvironment:
         executable = self._tmpdir / 'monkeymux'
         executable.write_bytes(binary_bytes)
         os.chmod(executable, 0o700)
+        self._stage_bundled_monkeymux_install(
+            manifest.get('version'),
+            platform_key,
+            binary_bytes,
+        )
         return executable
+
+    def _stage_bundled_monkeymux_install(
+        self,
+        version: str | None,
+        platform_key: str,
+        binary_bytes: bytes,
+    ) -> None:
+        # The app installs the bundled helper into the remote home directory and
+        # asks the user to confirm first. The screenshot flow cannot answer that
+        # prompt, so pre-stage the exact bundled binary where the installer looks
+        # for it; the version check then reuses it instead of prompting.
+        if not version:
+            raise RuntimeError('Bundled MonkeyMux manifest is missing a version.')
+        install_dir = (
+            Path.home() / '.monkeyssh/bin/monkeymux' / version / platform_key
+        )
+        install_dir.mkdir(parents=True, exist_ok=True)
+        executable = install_dir / 'monkeymux'
+        if (
+            not executable.exists()
+            or hashlib.sha256(executable.read_bytes()).hexdigest()
+            != hashlib.sha256(binary_bytes).hexdigest()
+        ):
+            executable.write_bytes(binary_bytes)
+        os.chmod(executable, 0o700)
 
     def _build_monkeymux_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -488,7 +526,7 @@ class StoreDemoEnvironment:
             exec env COPILOT_ALLOW_ALL=0 \\
               {self._shell_quote(self._copilot)} \\
               --no-remote \\
-              --log-level none \\
+              --log-level default \\
               --secret-env-vars=USER,EMAIL,GITHUB_TOKEN,GH_TOKEN,ANTHROPIC_API_KEY \\
               --name 'Mobile Copilot Workspace'
             """,
@@ -708,6 +746,7 @@ class StoreDemoEnvironment:
 
     def _wait_for_copilot_ready(self) -> None:
         deadline = time.time() + 30
+        text = ''
         while time.time() < deadline:
             text = self._capture_visible_pane('copilot')
             if _visible_text_contains_marker_group(
@@ -716,7 +755,10 @@ class StoreDemoEnvironment:
             ):
                 return
             time.sleep(1)
-        raise RuntimeError('copilot pane did not show the Copilot prompt.')
+        raise RuntimeError(
+            'copilot pane did not show the Copilot prompt. '
+            f'Last visible pane text:\n{text.strip()[-1000:]}',
+        )
 
     def _drive_claude_full_screen(self) -> None:
         self._drive_claude_to_ready_prompt()

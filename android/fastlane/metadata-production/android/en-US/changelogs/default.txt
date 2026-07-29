@@ -1,9 +1,11 @@
 What's new in 0.3.0
 
-- Automatic port proxying: remote services are forwarded as you work, so localhost links open in the app.
+- Automatic port proxying, so remote services open in the app.
 - Live port forwarding controls for the current session.
 - Multi-client MonkeyMux sessions that follow the client you use.
 - Android device debugging over SSH with wireless ADB pairing.
 - Animated inline terminal graphics (GIF and APNG).
-- Per-host themed home-screen shortcut icons.
-- Keyboard, IME, and MonkeyMux stability fixes.
+- Cancel a stuck connection attempt.
+- In-app browser uploads, camera, and site permissions.
+- Themed home-screen shortcut icons.
+- Keyboard, IME, and MonkeyMux fixes.
