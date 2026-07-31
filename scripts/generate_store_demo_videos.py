@@ -276,6 +276,7 @@ def _run_flutter_recording(
 
     recorder: _NativeScreenRecorder | None = None
     saw_done = False
+    failure: str | None = None
     beat_times: dict[int, float] = {}
     try:
         for raw_line in process.stdout:
@@ -293,6 +294,9 @@ def _run_flutter_recording(
                 beat = _parse_beat(line)
                 if beat is not None and beat not in beat_times:
                     beat_times[beat] = time.monotonic()
+            if store_screenshots.ERROR_MARKER in line:
+                failure = line.split(store_screenshots.ERROR_MARKER, 1)[1].strip()
+                break
             if store_screenshots.DONE_MARKER in line:
                 saw_done = True
                 break
@@ -310,6 +314,9 @@ def _run_flutter_recording(
                 process.wait(timeout=20)
         if restore_error_dialogs is not None:
             restore_error_dialogs()
+
+    if failure is not None:
+        raise RuntimeError(f'{target.name} run failed in the app: {failure}')
 
     if not saw_done:
         if process.returncode not in (0, None):

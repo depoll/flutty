@@ -1,9 +1,11 @@
-What's new in this 0.2.0 beta
+What's new in this 0.3.0 beta
 
-- Windows remotes: OpenSSH + MonkeyMux window switching over ConPTY, with agent-session discovery and shell completion.
-- Cursor Agent CLI added to the launch presets.
-- In-app browser for forwarded ports.
-- Sharper terminal rendering with inline Kitty graphics.
-- Smoother keyboard handling and terminal input fixes.
-
-Thanks for testing — please report anything that feels off.
+- Automatic port proxying, so remote services open in the app.
+- Live port forwarding controls for the current session.
+- Multi-client MonkeyMux sessions that follow your active client.
+- Android device debugging over SSH with wireless ADB pairing.
+- Animated inline terminal graphics (GIF and APNG).
+- Cancel a stuck connection attempt.
+- In-app browser uploads, camera, and permissions.
+- Themed home-screen shortcut icons.
+- Keyboard, IME, and MonkeyMux fixes.
