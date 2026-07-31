@@ -4,7 +4,7 @@ description: >
   MonkeyMux/tmux remote windows, key management, snippets, and port forwarding.
 publish_to: 'none'
 
-version: 0.2.0+1
+version: 0.3.0+1
 
 environment:
   sdk: ^3.10.7

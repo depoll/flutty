@@ -2,12 +2,13 @@ MonkeySSH beta is the mobile SSH workspace for testing agentic coding workflows.
 
 Built for modern remote development:
 
-- Mobile terminal with xterm-256color, themes, gestures, modifier keys, function keys, macros, and IME-friendly typing.
-- MonkeyMux and tmux remote windows with a fast window switcher, wide-screen sidebar, status badges, alerts, and reconnect-friendly sessions.
+- Mobile terminal with xterm-256color, themes, gestures, modifier keys, function keys, macros, inline images and animations, and IME-friendly typing.
+- MonkeyMux and tmux remote windows with a fast window switcher, wide-screen sidebar, status badges, alerts, multi-client sessions shared with your desktop, and reconnect-friendly attach.
 - Agent workflows with scoped recent-session discovery and saved launch presets for Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, Antigravity, and Cursor Agent.
 - SFTP workspace for browsing, uploading, downloading, creating, and editing remote files.
-- SSH key management with Ed25519/RSA generation, import, export, and host-key verification.
-- Snippets, auto-connect commands, home-screen shortcuts, and port forwarding for repeatable remote workflows.
+- SSH key management with Ed25519/RSA generation, import, export, host-key verification, and cancellable connection attempts.
+- Port forwarding with live session controls, automatic proxying for remote services, and an in-app browser for forwarded ports with file uploads, downloads, and site permissions.
+- Snippets, auto-connect commands, themed home-screen shortcuts, and macros for repeatable remote workflows.
 - Local-first security with PIN/biometrics, encrypted transfer bundles, encrypted migration packages, and no required cloud sync.
 - Optional analytics and crash reports that are off by default and exclude commands, terminal output, paths, hostnames, usernames, clipboard contents, and credentials.
 
