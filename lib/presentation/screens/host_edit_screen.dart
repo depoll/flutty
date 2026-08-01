@@ -1138,7 +1138,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                 'Launch an agent directly, or pair it with MonkeyMux or tmux so MonkeySSH can show window navigation.',
             helperMaxLines: _hostFieldHelperMaxLines,
           ),
-          items: AgentLaunchTool.values
+          items: AgentLaunchTool.uiDisplayOrder
               .map(
                 (tool) => DropdownMenuItem<AgentLaunchTool>(
                   value: tool,
@@ -1153,7 +1153,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                 ),
               )
               .toList(growable: false),
-          selectedItemBuilder: (context) => AgentLaunchTool.values
+          selectedItemBuilder: (context) => AgentLaunchTool.uiDisplayOrder
               .map((tool) => Text(tool.label))
               .toList(growable: false),
           onChanged: hasAgentPresetAccess
