@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.128"
+	monkeyMuxVersion                  = "0.1.127"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -79,10 +79,6 @@ const (
 	windowHistoryLimitBytes           = 128 * 1024
 	windowFullReplayHistoryLimitBytes = 512 * 1024
 	windowReplayLimitBytes            = 32 * 1024
-	// An agent window replays a whole repaint frame rather than a bandwidth
-	// friendly tail, so it needs room for one. Copilot CLI emits ~48 KiB per
-	// full-screen frame.
-	windowAgentReplayLimitBytes = 128 * 1024
 	// A foreground-redraw fallback frame must hold a *whole* screen, not a
 	// bandwidth-friendly tail. Agent TUIs paint a full-screen frame well past
 	// the attach budget (Copilot CLI emits ~48 KiB), and cutting that frame from
@@ -7227,7 +7223,7 @@ func (s *muxServer) replayBytesLockedWithSkip(
 	clientHas map[string]uint32,
 ) []byte {
 	history, historyStart := window.historyTailWithParserLocked()
-	if window.repaintsOwnScreenOnAttachLocked() {
+	if window.usesForegroundRedrawReplayLocked() {
 		// The foreground app redraws its own cells on reattach (driven by a
 		// resize), so we must not replay the visible history or it would draw
 		// twice. We do, however, replay any retained Kitty graphics image
@@ -7239,29 +7235,8 @@ func (s *muxServer) replayBytesLockedWithSkip(
 		// (a=T downgraded to a=t) so they produce no visible output themselves.
 		history = window.kittyImageReplayLocked(clientHas)
 	} else {
-		// Prefer starting at the most recent full-screen erase so the replay
-		// carries a whole frame. A size-based cut can land in the middle of one,
-		// which replays only the rows the app painted last and leaves the rest
-		// of the viewport blank.
-		framed, ok := trimReplayHistoryToLastFullFrame(
-			history,
-			historyStart,
-			window.replayLimitLocked(),
-		)
-		if ok {
-			history = framed
-		} else {
-			history = trimReplayHistoryForAttachWithParser(history, historyStart)
-		}
+		history = trimReplayHistoryForAttachWithParser(history, historyStart)
 		history = stripTerminalQueriesFromReplay(history)
-		if window.agentToolLocked() != "" {
-			// Same placeholder-protocol reasoning as above: a normal-buffer
-			// agent re-emits placeholder cells without re-transmitting the
-			// image, and the transmission may sit outside the replayed frame.
-			if images := window.kittyImageReplayLocked(clientHas); len(images) > 0 {
-				history = append(append([]byte(nil), images...), history...)
-			}
-		}
 	}
 	return buildWindowReplay(window, history)
 }
@@ -7360,29 +7335,6 @@ func (w *muxWindow) usesForegroundRedrawReplayLocked() bool {
 		return false
 	}
 	return w.alternateScreenModeActiveLocked() || w.agentToolLocked() != ""
-}
-
-// repaintsOwnScreenOnAttachLocked reports whether the window's foreground app
-// re-establishes the whole screen by itself after an attach or window switch,
-// which is what lets the replay skip the visible history instead of drawing it
-// twice.
-//
-// Only an alternate-screen app can make that promise: it owns a screen-sized
-// surface and repaints all of it. An agent running in the *normal* buffer (for
-// example Copilot CLI, which never sets 1047/1049) repaints relative to a
-// document that lives in scrollback — it moves the cursor up over the rows it
-// wants to rewrite. Wiping that scrollback and replaying nothing leaves those
-// relative movements with nothing to anchor to: they clamp at the top of the
-// viewport, so the rows the app addresses relatively land off-screen while the
-// parts it positions absolutely (its bottom chrome) still paint. That is the
-// "agent chrome renders but the transcript above it is blank" failure, so a
-// normal-buffer window takes the ordinary history replay path even when it is
-// running an agent.
-func (w *muxWindow) repaintsOwnScreenOnAttachLocked() bool {
-	if w == nil {
-		return false
-	}
-	return w.alternateScreenModeActiveLocked()
 }
 
 func (w *muxWindow) alternateScreenModeActiveLocked() bool {
@@ -8810,69 +8762,6 @@ func (w *muxWindow) historyLimitLocked() int {
 		return windowFullReplayHistoryLimitBytes
 	}
 	return windowHistoryLimitBytes
-}
-
-func (w *muxWindow) replayLimitLocked() int {
-	if w != nil && w.agentToolLocked() != "" {
-		// An agent repaints the whole viewport in one frame, and those frames
-		// are large (Copilot CLI emits tens of KiB). The replay has to be able
-		// to hold a whole one or it starts mid-frame.
-		return windowAgentReplayLimitBytes
-	}
-	return windowReplayLimitBytes
-}
-
-// trimReplayHistoryToLastFullFrame returns history starting at the most recent
-// full-screen erase within limit bytes of the end, which is where a TUI that
-// repaints by clearing began the frame currently on screen. Replaying from
-// there reproduces a complete frame.
-//
-// Reports false when no such erase is retained, leaving the caller on the plain
-// size-based trim.
-func trimReplayHistoryToLastFullFrame(
-	history []byte,
-	historyStart terminalOutputParserSnapshot,
-	limit int,
-) ([]byte, bool) {
-	start := 0
-	if len(history) > limit {
-		start = len(history) - limit
-	}
-	parser := historyStart
-	parser.observe(history[:start])
-	frame := -1
-	for index := start; index < len(history); {
-		if parser.state != terminalOutputParserGround ||
-			parser.utf8Remaining > 0 {
-			parser.observe(history[index : index+1])
-			index++
-			continue
-		}
-		if end, _, kitty := kittyGraphicsControlAt(history, index); kitty {
-			if end > 0 {
-				parser.observe(history[index:end])
-				index = end
-				continue
-			}
-			parser.observe(history[index : index+1])
-			index++
-			continue
-		}
-		if csiEnd, params, final, ok := controlSequenceAt(history, index); ok {
-			if final == 'J' && (params == "2" || params == "3") {
-				frame = index
-			}
-			parser.observe(history[index:csiEnd])
-			index = csiEnd
-			continue
-		}
-		parser.observe(history[index : index+1])
-		index++
-	}
-	if frame < 0 {
-		return nil, false
-	}
-	return history[frame:], true
 }
 
 func trimReplayHistoryForAttach(history []byte) []byte {
