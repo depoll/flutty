@@ -2637,15 +2637,26 @@ class MonkeyTerminalPainter extends TerminalPainter {
   ///
   /// A run concatenates several cells into a single paragraph, so only code
   /// points that shape identically whether laid out in isolation or in sequence
-  /// — and that occupy exactly one monospace cell in standard terminal fonts —
-  /// are eligible. This deliberately excludes cursive-joining and complex
-  /// scripts (Arabic, Syriac, Indic, …), whose glyphs would connect or reorder
-  /// once concatenated (mandatory `init`/`medi`/`fina`/`isol` shaping that
-  /// [_ligatureDisablingFeatures] cannot turn off), and code points likely to
-  /// fall back to a proportional font, whose advance would drift the rest of the
-  /// run off the grid. Everything outside this set is drawn one cell at a time by
-  /// [paintCellForeground], exactly as the pre-batching path did, so their
-  /// placement and shaping are unchanged.
+  /// — and that advance exactly one measured monospace cell — are eligible.
+  /// This deliberately excludes:
+  /// - cursive-joining and complex scripts (Arabic, Syriac, Indic, …), whose
+  ///   glyphs would connect or reorder once concatenated (mandatory
+  ///   `init`/`medi`/`fina`/`isol` shaping that [_ligatureDisablingFeatures]
+  ///   cannot turn off);
+  /// - code points likely to fall back to a proportional or differently-metric
+  ///   font, whose advance would drift the rest of the run off the grid;
+  /// - Box Drawing (U+2500–U+257F). Many platform `monospace` stacks (notably
+  ///   Android) do not ship these glyphs in the primary mono face, so a long
+  ///   run of `─`/`│`/rounded corners falls back to another family whose
+  ///   advance ≠ the cell width measured from `m`. Concatenating them into one
+  ///   paragraph makes the right border of TUI frames (e.g. Codex's startup
+  ///   banner) land several cells left or right of the verticals. Per-cell
+  ///   painting keeps each glyph anchored to `column * cellWidth`.
+  ///
+  /// Block Elements at 0x2580+ are handled separately as rectangles. Everything
+  /// outside this set is drawn one cell at a time by [paintCellForeground],
+  /// exactly as the pre-batching path did, so their placement and shaping are
+  /// unchanged.
   static bool _isBatchableForegroundCodePoint(int charCode) {
     // Basic Latin (printable) — the dominant case for high-throughput output
     // such as `tail -f`/`yes`, logs, and source code.
@@ -2657,12 +2668,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
     // points, so isolated and in-run shaping match; it includes U+00A0, which
     // decorated spaces are substituted with.
     if (charCode >= 0xA0 && charCode <= 0xFF && charCode != 0xAD) {
-      return true;
-    }
-    // Box Drawing — borders, tables, and rules. Present at exactly one cell in
-    // terminal fonts and neither joining nor combining. (Block Elements at
-    // 0x2580+ are handled separately as rectangles.)
-    if (charCode >= 0x2500 && charCode <= 0x257F) {
       return true;
     }
     return false;
