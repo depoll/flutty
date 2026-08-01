@@ -530,7 +530,7 @@ class Buffer {
       for (var i = 0; i < oldHeight - newHeight; i++) {
         final lastIndex = lines.length - 1;
         final canDropLast = lastIndex > absoluteCursorY;
-        if (canDropLast && lines[lastIndex].getTrimmedLength(oldWidth) == 0) {
+        if (canDropLast && _isReclaimableRow(lastIndex, oldWidth)) {
           lines.pop();
         } else if (_cursorY > 0) {
           _cursorY--;
@@ -558,6 +558,20 @@ class Buffer {
         lines.forEach((item) => item.resize(newWidth));
       }
     }
+  }
+
+  /// Whether the row at [index] carries nothing worth keeping, so a shrink can
+  /// reclaim it instead of scrolling.
+  ///
+  /// A row holding a Kitty physical placement is not blank even though it has
+  /// no code points: the image hangs off a [CellAnchor] on the line, so popping
+  /// the line detaches the anchor and loses the image. In-flight decodes count
+  /// too — their anchor is registered before the image arrives.
+  bool _isReclaimableRow(int index, int width) {
+    if (lines[index].getTrimmedLength(width) != 0) {
+      return false;
+    }
+    return graphics.physicalPlacementAnchorsInRow(index).isEmpty;
   }
 
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
