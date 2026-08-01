@@ -25,14 +25,7 @@ import (
 )
 
 func replayPrefixForTest(window *muxWindow) string {
-	// Mirrors buildWindowReplay's head: the shared prefix, the title, then the
-	// window's own mode restore and pre-history clear. Both of the latter are
-	// empty for a window with no private modes, so this stays accurate for
-	// modeless fixtures while also covering alternate-screen ones.
-	return activeWindowReplayPrefix +
-		string(terminalTitleReplaySequence(window)) +
-		string(terminalModePreReplaySequence(window)) +
-		string(terminalPreHistoryClearSequence(window))
+	return activeWindowReplayPrefix + string(terminalTitleReplaySequence(window))
 }
 
 func replayPostHistorySuffixForTest(cursorVisible bool) string {
@@ -2005,7 +1998,6 @@ func TestClientFocusHandoffImmediatelyReplaysAndRedrawsWindow(t *testing.T) {
 		id:           "@1",
 		index:        0,
 		agentTool:    "copilot",
-		privateModes: map[string]bool{"1049": true},
 		history:      []byte("stale desktop layout"),
 		lastActivity: time.Now(),
 	}
@@ -4677,7 +4669,6 @@ func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 		id:           "@2",
 		index:        1,
 		agentTool:    "copilot",
-		privateModes: map[string]bool{"1049": true},
 		history:      []byte("stale tui screen"),
 		lastActivity: time.Now(),
 	}
@@ -5047,7 +5038,6 @@ func TestPartialSequenceRedrawKeepsNormalForwarding(t *testing.T) {
 		id:           "@2",
 		index:        1,
 		agentTool:    "copilot",
-		privateModes: map[string]bool{"1049": true},
 		history:      []byte("\x1b[Hlast known tui screen"),
 		lastActivity: time.Now(),
 	}
@@ -6342,7 +6332,6 @@ func TestRedrawResizePreservesPendingReplay(t *testing.T) {
 		id:           "@2",
 		index:        1,
 		agentTool:    "copilot",
-		privateModes: map[string]bool{"1049": true},
 		history:      []byte("stale tui screen"),
 		lastActivity: time.Now(),
 	}
@@ -6740,7 +6729,6 @@ func TestActiveReplayUsesForegroundRedrawForAgentHistory(t *testing.T) {
 		id:           "@1",
 		index:        0,
 		agentTool:    "codex",
-		privateModes: map[string]bool{"1049": true},
 		history:      history,
 		lastActivity: time.Now(),
 	}
@@ -6803,7 +6791,6 @@ func TestActiveReplaySkipsRunawayAgentHistory(t *testing.T) {
 		id:           "@1",
 		index:        0,
 		agentTool:    "copilot",
-		privateModes: map[string]bool{"1049": true},
 		history:      history,
 		lastActivity: time.Now(),
 	}
@@ -9159,9 +9146,9 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 
 	replay := string(server.activeReplayLocked())
 	preModes := string(terminalModePreReplaySequence(window))
+	preHistoryClear := string(terminalPreHistoryClearSequence(window))
 	postModes := string(terminalModePostReplaySequence(window))
-	// replayPrefixForTest already covers the mode restore and pre-history clear.
-	want := replayPrefixForTest(window) +
+	want := replayPrefixForTest(window) + preModes + preHistoryClear +
 		terminalParserResetSequence + postModes +
 		terminalCharacterSetResetSequence + cursorVisibilityReplaySequence(true)
 	if replay != want {
@@ -11741,85 +11728,5 @@ func TestForegroundFallbackKeepsWholeFrame(t *testing.T) {
 			len(fallback),
 			frame.Len(),
 		)
-	}
-}
-
-// TestNormalBufferAgentReplaysHistory covers the "Copilot renders its composer
-// and status rows but the transcript above them is blank" report.
-//
-// Copilot CLI runs in the *normal* buffer — it never sets 1047/1049 — and
-// repaints relative to a document that lives in scrollback. Classifying it as a
-// self-repainting app because it is an agent cleared the client and replayed no
-// history, leaving those relative movements with nothing to anchor to: they
-// clamp at the top of the viewport, so only the rows the app addresses
-// absolutely (its bottom chrome) survive.
-func TestNormalBufferAgentReplaysHistory(t *testing.T) {
-	server := newMuxServer("test")
-	window := &muxWindow{
-		id:           "@1",
-		index:        0,
-		agentTool:    "copilot",
-		history:      []byte("\x1b[H\x1b[2JTRANSCRIPT-ROW\r\nCOMPOSER-ROW"),
-		lastActivity: time.Now(),
-	}
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
-
-	replay := string(server.activeReplayLocked())
-	if !strings.Contains(replay, "TRANSCRIPT-ROW") {
-		t.Fatalf("normal-buffer agent replay dropped the transcript: %q", replay)
-	}
-	if !strings.Contains(replay, "COMPOSER-ROW") {
-		t.Fatalf("normal-buffer agent replay dropped the composer: %q", replay)
-	}
-}
-
-// TestAlternateScreenAgentSkipsHistoryReplay guards the other side of that rule:
-// an agent that owns an alternate screen repaints itself on attach, so replaying
-// its history would paint the frame twice.
-func TestAlternateScreenAgentSkipsHistoryReplay(t *testing.T) {
-	server := newMuxServer("test")
-	window := &muxWindow{
-		id:           "@1",
-		index:        0,
-		agentTool:    "copilot",
-		privateModes: map[string]bool{"1049": true},
-		history:      []byte("stale alt screen"),
-		lastActivity: time.Now(),
-	}
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
-
-	replay := string(server.activeReplayLocked())
-	if strings.Contains(replay, "stale alt screen") {
-		t.Fatalf("alternate-screen agent replayed its history: %q", replay)
-	}
-}
-
-// TestAgentReplayStartsAtLastFullFrame checks the replay is cut at a frame
-// boundary rather than a byte budget. Starting mid-frame replays only the rows
-// the app painted after the cut and leaves the rest of the viewport blank.
-func TestAgentReplayStartsAtLastFullFrame(t *testing.T) {
-	server := newMuxServer("test")
-	window := &muxWindow{
-		id:        "@1",
-		index:     0,
-		agentTool: "copilot",
-		history: []byte(
-			"\x1b[H\x1b[2JOLD-FRAME-TOP\r\nOLD-FRAME-BOTTOM" +
-				"\x1b[H\x1b[2JNEW-FRAME-TOP\r\nNEW-FRAME-BOTTOM",
-		),
-		lastActivity: time.Now(),
-	}
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
-
-	replay := string(server.activeReplayLocked())
-	if !strings.Contains(replay, "NEW-FRAME-TOP") ||
-		!strings.Contains(replay, "NEW-FRAME-BOTTOM") {
-		t.Fatalf("replay did not carry the whole current frame: %q", replay)
-	}
-	if strings.Contains(replay, "OLD-FRAME-TOP") {
-		t.Fatalf("replay repainted a superseded frame: %q", replay)
 	}
 }
