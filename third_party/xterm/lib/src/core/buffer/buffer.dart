@@ -530,7 +530,7 @@ class Buffer {
       for (var i = 0; i < oldHeight - newHeight; i++) {
         final lastIndex = lines.length - 1;
         final canDropLast = lastIndex > absoluteCursorY;
-        if (canDropLast && _isReclaimableRow(lastIndex, oldWidth)) {
+        if (canDropLast && _isReclaimableRow(lastIndex)) {
           lines.pop();
         } else if (_cursorY > 0) {
           _cursorY--;
@@ -563,12 +563,19 @@ class Buffer {
   /// Whether the row at [index] carries nothing worth keeping, so a shrink can
   /// reclaim it instead of scrolling.
   ///
-  /// A row holding a Kitty physical placement is not blank even though it has
-  /// no code points: the image hangs off a [CellAnchor] on the line, so popping
-  /// the line detaches the anchor and loses the image. In-flight decodes count
-  /// too — their anchor is registered before the image arrives.
-  bool _isReclaimableRow(int index, int width) {
-    if (lines[index].getTrimmedLength(width) != 0) {
+  /// Deliberately measures the line's whole retained capacity rather than the
+  /// visible width. When reflow is off (and always on the alt buffer) a width
+  /// shrink keeps the cells past the new width so they reappear on the way back
+  /// out, so a row can look empty across the visible columns while still
+  /// holding text. Measuring only the visible width would call that row blank
+  /// and pop it, destroying cells the non-reflowing contract promises to keep.
+  ///
+  /// A row holding a Kitty physical placement is likewise not blank even with
+  /// no code points at all: the image hangs off a [CellAnchor] on the line, so
+  /// popping the line detaches the anchor and loses the image. In-flight
+  /// decodes count too — their anchor is registered before the image arrives.
+  bool _isReclaimableRow(int index) {
+    if (lines[index].getTrimmedLength() != 0) {
       return false;
     }
     return graphics.physicalPlacementAnchorsInRow(index).isEmpty;

@@ -157,6 +157,31 @@ void main() {
       expect(terminal.buffer.height, beforeHeight);
     });
 
+    // With reflow off (and always on the alt buffer) a width shrink keeps the
+    // cells past the new width so they reappear when it grows back. A row whose
+    // only text lives in that hidden region reads as blank across the visible
+    // columns, so measuring blankness by visible width alone would pop it and
+    // break that contract.
+    test('shrinking keeps rows whose only content is hidden past the width',
+        () {
+      final terminal = Terminal(reflowEnabled: false, maxLines: 200);
+      terminal.resize(20, 5);
+      // Write past column 5 so every visible cell of the last row stays unset,
+      // then park the cursor above it with room left to scroll.
+      terminal.write('\x1b[5;11HWorld');
+      terminal.write('\x1b[3;1H');
+
+      terminal.resize(5, 5); // hide the text past the new width
+      terminal.resize(5, 4); // the shrink under test
+      terminal.resize(20, 5); // bring the hidden cells back
+
+      expect(
+        terminal.buffer.getText().contains('World'),
+        isTrue,
+        reason: 'hidden cells must survive a height shrink',
+      );
+    });
+
     // Trailing blank rows are the rows a shrink should consume first: real
     // terminals reclaim them instead of scrolling live content into scrollback.
     test('shrinking reclaims trailing blank rows before scrolling', () {
