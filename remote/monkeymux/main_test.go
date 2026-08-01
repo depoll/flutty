@@ -5308,13 +5308,13 @@ func TestAttachRefreshesFocusAwareThemeHint(t *testing.T) {
 	)
 
 	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
+		return strings.Contains(output, "\x1b[O") && strings.Contains(output, "\x1b[I")
 	})
 	if strings.Contains(got, backgroundReport) {
 		t.Fatalf("theme hint = %q, did not expect background report", got)
 	}
-	if strings.Contains(got, "\x1b[O") {
-		t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
+	if !strings.Contains(got, "\x1b[O") {
+		t.Fatalf("theme hint = %q, expected focus-lost for focus-aware window", got)
 	}
 }
 
@@ -10641,13 +10641,13 @@ func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
 		t.Fatal("theme hint was not sent")
 	}
 	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
+		return strings.Contains(output, "\x1b[O") && strings.Contains(output, "\x1b[I")
 	})
 	if strings.Contains(got, backgroundReport) {
 		t.Fatalf("theme hint = %q, did not expect unsolicited background report", got)
 	}
-	if strings.Contains(got, "\x1b[O") {
-		t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
+	if !strings.Contains(got, "\x1b[O") {
+		t.Fatalf("theme hint = %q, expected focus-lost for focus-aware window", got)
 	}
 }
 
@@ -10764,21 +10764,21 @@ func TestThemeHintDoesNotSendBackgroundReportWithoutQuery(t *testing.T) {
 		t.Fatal("theme hint was not sent")
 	}
 	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
+		return strings.Contains(output, "\x1b[O") && strings.Contains(output, "\x1b[I")
 	})
 	if strings.Contains(got, backgroundReport) {
 		t.Fatalf("theme hint = %q, did not expect background report", got)
 	}
-	if strings.Contains(got, "\x1b[O") {
-		t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
+	if !strings.Contains(got, "\x1b[O") {
+		t.Fatalf("theme hint = %q, expected focus-lost for focus-aware window", got)
 	}
 }
 
 // TestThemeHintDoesNotPushUnsolicitedColorReportsToFocusAwareTui guards the
 // "hermes spew" regression. When an unknown focus-aware TUI has never issued
 // an OSC 10/11/4 query, the daemon must NOT push synthetic OSC color
-// responses to it on theme refresh. It may send a FocusIn nudge so the TUI
-// can re-query through the normal live-query path.
+// responses. It still sends FocusOut/FocusIn so undetected agents that only
+// enabled focus reporting can re-query colors on the live path.
 func TestThemeHintDoesNotPushUnsolicitedColorReportsToFocusAwareTui(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
@@ -10806,7 +10806,7 @@ func TestThemeHintDoesNotPushUnsolicitedColorReportsToFocusAwareTui(t *testing.T
 		t.Fatal("theme hint was not sent")
 	}
 	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
+		return strings.Contains(output, "\x1b[O") && strings.Contains(output, "\x1b[I")
 	})
 	if strings.Contains(got, foregroundReport) {
 		t.Fatalf("theme hint = %q, did not expect foreground report", got)
@@ -10817,8 +10817,8 @@ func TestThemeHintDoesNotPushUnsolicitedColorReportsToFocusAwareTui(t *testing.T
 	if strings.Contains(got, paletteReport) {
 		t.Fatalf("theme hint = %q, did not expect palette report", got)
 	}
-	if strings.Contains(got, "\x1b[O") {
-		t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
+	if !strings.Contains(got, "\x1b[O") {
+		t.Fatalf("theme hint = %q, expected focus-lost for focus-aware window", got)
 	}
 }
 
@@ -10827,16 +10827,20 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 		name                string
 		command             string
 		wantFocusTransition bool
+		wantBackground      bool
 	}{
-		// Mode reports are gated on DEC 2031, not agent identity. Without 2031,
-		// known agents still get the OSC 11 / focus nudge path only.
-		{name: "copilot", command: "copilot"},
-		{name: "cursor-agent", command: "cursor-agent"},
-		{name: "codex", command: "codex"},
-		{name: "claude", command: "claude", wantFocusTransition: true},
-		{name: "gemini", command: "gemini", wantFocusTransition: true},
-		{name: "opencode", command: "opencode", wantFocusTransition: true},
-		{name: "antigravity", command: "antigravity", wantFocusTransition: true},
+		// Focus reporting is the opt-in for FocusOut/FocusIn (including
+		// unknown/future agents). Unsolicited OSC 11 stays limited to detected
+		// coding agents so generic focus-aware TUIs do not get composer spew.
+		{name: "copilot", command: "copilot", wantFocusTransition: true, wantBackground: true},
+		{name: "cursor-agent", command: "cursor-agent", wantFocusTransition: true, wantBackground: true},
+		{name: "claude", command: "claude", wantFocusTransition: true, wantBackground: true},
+		{name: "gemini", command: "gemini", wantFocusTransition: true, wantBackground: true},
+		{name: "opencode", command: "opencode", wantFocusTransition: true, wantBackground: true},
+		{name: "antigravity", command: "antigravity", wantFocusTransition: true, wantBackground: true},
+		{name: "codex", command: "codex", wantFocusTransition: true, wantBackground: true},
+		{name: "unknown-tui", command: "unknown-tui", wantFocusTransition: true, wantBackground: false},
+		{name: "zsh", command: "zsh", wantFocusTransition: true, wantBackground: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			inputReader, inputWriter, err := os.Pipe()
@@ -10869,8 +10873,11 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 			}
 
 			got := readPipeUntil(t, inputReader, func(output string) bool {
-				return strings.Contains(output, backgroundReport) &&
-					strings.Contains(output, "\x1b[I")
+				if tt.wantBackground {
+					return strings.Contains(output, backgroundReport) &&
+						strings.Contains(output, "\x1b[I")
+				}
+				return strings.Contains(output, "\x1b[I")
 			})
 			if strings.Contains(got, modeReport) {
 				t.Fatalf("theme hint = %q, did not expect theme mode report without DEC 2031", got)
@@ -10880,6 +10887,13 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 			}
 			if strings.Contains(got, paletteReport) {
 				t.Fatalf("theme hint = %q, did not expect palette report", got)
+			}
+			if tt.wantBackground {
+				if !strings.Contains(got, backgroundReport) {
+					t.Fatalf("theme hint = %q, expected OSC 11 for coding agent", got)
+				}
+			} else if strings.Contains(got, backgroundReport) {
+				t.Fatalf("theme hint = %q, did not expect unsolicited OSC 11", got)
 			}
 			if tt.wantFocusTransition {
 				if !strings.Contains(got, "\x1b[O") {
@@ -10892,22 +10906,61 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 	}
 }
 
+func TestThemeHintFocusTransitionDefaultsToFocusReporting(t *testing.T) {
+	// Focus mode alone opts any window into FocusOut/FocusIn — including
+	// unknown future coding agents we do not detect by binary name yet.
+	for _, command := range []string{
+		"copilot",
+		"cursor-agent",
+		"claude",
+		"gemini",
+		"opencode",
+		"antigravity",
+		"agy",
+		"codex",
+		"unknown-tui",
+		"zsh",
+	} {
+		t.Run(command, func(t *testing.T) {
+			window := &muxWindow{foregroundCommand: command}
+			window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+			if !window.themeHintFocusTransitionLocked() {
+				t.Fatalf("%s focus-aware window did not request focus transition", command)
+			}
+		})
+	}
+
+	noFocus := &muxWindow{foregroundCommand: "unknown-tui"}
+	if noFocus.themeHintFocusTransitionLocked() {
+		t.Fatal("window without focus reporting requested focus transition")
+	}
+}
+
 func TestThemeHintSendsModeReportWhenColorSchemeUpdatesMode(t *testing.T) {
 	// DEC 2031 is the general opt-in: any TUI that enables it gets the mode
 	// report, including unknown future agents, without per-tool hardcoding.
 	// Unsolicited OSC 11 is still withheld unless the window is a known agent
 	// with focus mode or previously queried those colors under 2031.
 	for _, tt := range []struct {
-		name           string
-		command        string
-		enableFocus    bool
-		wantBackground bool
+		name                string
+		command             string
+		enableFocus         bool
+		wantBackground      bool
+		wantFocusTransition bool
 	}{
 		{name: "unknown-tui", command: "unknown-tui"},
-		{name: "copilot", command: "copilot", enableFocus: true, wantBackground: true},
-		{name: "cursor-agent", command: "cursor-agent", enableFocus: true, wantBackground: true},
-		// Non-agent tools that only opted into 2031 get the mode report, not OSC.
+		// 2031 + focus: mode report for everyone; agents also keep OSC 11, and
+		// focus transition comes from the 2031+focus capability clause (including Codex).
+		{name: "copilot", command: "copilot", enableFocus: true, wantBackground: true, wantFocusTransition: true},
+		{name: "cursor-agent", command: "cursor-agent", enableFocus: true, wantBackground: true, wantFocusTransition: true},
+		{name: "claude", command: "claude", enableFocus: true, wantBackground: true, wantFocusTransition: true},
+		{name: "gemini", command: "gemini", enableFocus: true, wantBackground: true, wantFocusTransition: true},
+		{name: "opencode", command: "opencode", enableFocus: true, wantBackground: true, wantFocusTransition: true},
+		{name: "antigravity", command: "antigravity", enableFocus: true, wantBackground: true, wantFocusTransition: true},
+		{name: "codex-2031-focus", command: "codex", enableFocus: true, wantBackground: true, wantFocusTransition: true},
+		// 2031 without focus: mode report only (no agent OSC 11, no focus pair).
 		{name: "codex-2031-only", command: "codex"},
+		{name: "claude-2031-only", command: "claude"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			inputReader, inputWriter, err := os.Pipe()
@@ -10939,7 +10992,13 @@ func TestThemeHintSendsModeReportWhenColorSchemeUpdatesMode(t *testing.T) {
 			}
 
 			got := readPipeUntil(t, inputReader, func(output string) bool {
-				return strings.Contains(output, modeReport)
+				if !strings.Contains(output, modeReport) {
+					return false
+				}
+				if tt.wantFocusTransition {
+					return strings.Contains(output, "\x1b[I")
+				}
+				return true
 			})
 			if !strings.Contains(got, modeReport) {
 				t.Fatalf("theme hint = %q, expected mode report for DEC 2031 window", got)
@@ -10950,6 +11009,13 @@ func TestThemeHintSendsModeReportWhenColorSchemeUpdatesMode(t *testing.T) {
 				}
 			} else if strings.Contains(got, backgroundReport) {
 				t.Fatalf("theme hint = %q, did not expect unsolicited OSC 11", got)
+			}
+			if tt.wantFocusTransition {
+				if !strings.Contains(got, "\x1b[O") {
+					t.Fatalf("theme hint = %q, expected focus-lost from 2031+focus capability", got)
+				}
+			} else if strings.Contains(got, "\x1b[O") {
+				t.Fatalf("theme hint = %q, did not expect focus-lost without focus mode", got)
 			}
 		})
 	}

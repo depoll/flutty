@@ -85,15 +85,11 @@ int compareDiscoveredSessionsByRecency(ToolSessionInfo a, ToolSessionInfo b) {
   return (a.summary ?? '').compareTo(b.summary ?? '');
 }
 
-const _knownDiscoveredSessionTools = <String>[
-  'Claude Code',
-  'Copilot CLI',
-  'Codex',
-  'Gemini CLI',
-  'OpenCode',
-  'Antigravity',
-  'Cursor Agent',
-];
+/// Known discovery provider labels derived from [AgentLaunchTool.uiDisplayOrder].
+final List<String> _knownDiscoveredSessionTools = AgentLaunchTool.uiDisplayOrder
+    .map((tool) => tool.discoveredSessionToolName)
+    .whereType<String>()
+    .toList(growable: false);
 
 /// Orders discovered-session providers for UI rendering in a stable list.
 ///
@@ -105,13 +101,12 @@ List<String> orderedDiscoveredSessionTools(
   Iterable<String> attemptedTools, {
   String? preferredToolName,
 }) {
+  final knownTools = _knownDiscoveredSessionTools.toSet();
   final ordered = List<String>.of(_knownDiscoveredSessionTools);
-  final extraTools =
-      <String>{
-          ...grouped.keys,
-          ...attemptedTools,
-        }.where((tool) => !_knownDiscoveredSessionTools.contains(tool)).toList()
-        ..sort();
+  final extraTools = <String>{
+    ...grouped.keys,
+    ...attemptedTools,
+  }.where((tool) => !knownTools.contains(tool)).toList()..sort();
   if (preferredToolName case final preferred? when preferred.isNotEmpty) {
     if (ordered.remove(preferred)) {
       ordered.insert(0, preferred);
