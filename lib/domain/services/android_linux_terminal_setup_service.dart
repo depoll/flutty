@@ -136,6 +136,7 @@ class AndroidLinuxTerminalSetupService {
   String? _activePublicKey;
   String? _activeScript;
   bool _disposed = false;
+  bool _finishInFlight = false;
 
   /// Latest setup state.
   AndroidLinuxTerminalSetupState get state => _state;
@@ -150,6 +151,16 @@ class AndroidLinuxTerminalSetupService {
   void start() {
     _notificationSubscription ??= _notificationService.linuxTerminalSetupTaps
         .listen(_handleNotificationAction);
+    unawaited(_consumeLaunchNotification());
+  }
+
+  Future<void> _consumeLaunchNotification() async {
+    final payload = await _notificationService
+        .consumeLaunchLinuxTerminalSetup();
+    if (payload == null || _disposed) {
+      return;
+    }
+    await _handleNotificationAction(payload);
   }
 
   /// Releases timers/subscriptions.
@@ -282,48 +293,63 @@ class AndroidLinuxTerminalSetupService {
     if (_activeKeyId == null || _activePublicKey == null) {
       return beginSetup();
     }
-    _emit(
-      _state.copyWith(
-        phase: AndroidLinuxTerminalSetupPhase.probing,
-        message: 'Looking for SSH on port $androidLinuxTerminalSetupPort…',
-      ),
-    );
-    final endpoint = await _findReachableEndpoint();
-    if (endpoint == null) {
-      await _notificationService.showLinuxTerminalSetup(
-        title: 'Linux Terminal setup',
-        body:
-            'SSH not reachable yet. In Terminal, run the script and enable port forwarding if needed.',
-      );
-      return _emit(
+    // Serialize concurrent probes (timer + notification + UI) so two
+    // successful lookups cannot both insert a host before either writes.
+    if (_state.phase == AndroidLinuxTerminalSetupPhase.probing ||
+        _state.phase == AndroidLinuxTerminalSetupPhase.succeeded ||
+        _finishInFlight) {
+      return _state;
+    }
+    _finishInFlight = true;
+    _stopProbing();
+    try {
+      _emit(
         _state.copyWith(
-          phase: AndroidLinuxTerminalSetupPhase.waitingForUser,
-          message:
-              'SSH not reachable on port $androidLinuxTerminalSetupPort yet. '
-              'If the VM is isolated, open Terminal port forwarding to $androidLinuxTerminalSetupPort.',
+          phase: AndroidLinuxTerminalSetupPhase.probing,
+          message: 'Looking for SSH on port $androidLinuxTerminalSetupPort…',
         ),
       );
-    }
+      final endpoint = await _findReachableEndpoint();
+      if (endpoint == null) {
+        await _notificationService.showLinuxTerminalSetup(
+          title: 'Linux Terminal setup',
+          body:
+              'SSH not reachable yet. In Terminal, run the script and enable port forwarding if needed.',
+        );
+        final waiting = _emit(
+          _state.copyWith(
+            phase: AndroidLinuxTerminalSetupPhase.waitingForUser,
+            message:
+                'SSH not reachable on port $androidLinuxTerminalSetupPort yet. '
+                'If the VM is isolated, open Terminal port forwarding to $androidLinuxTerminalSetupPort.',
+          ),
+        );
+        _startProbing();
+        return waiting;
+      }
 
-    final hostId = await _createOrUpdateHost(
-      hostname: endpoint.host,
-      port: endpoint.port,
-      keyId: _activeKeyId!,
-    );
-    _stopProbing();
-    await _notificationService.clearLinuxTerminalSetup();
-    return _emit(
-      AndroidLinuxTerminalSetupState(
-        phase: AndroidLinuxTerminalSetupPhase.succeeded,
-        message: 'Added Linux Terminal host ${endpoint.host}:${endpoint.port}.',
-        hostId: hostId,
-        keyId: _activeKeyId,
-        publicKey: _activePublicKey,
-        script: _activeScript,
-        reachableHost: endpoint.host,
-        reachablePort: endpoint.port,
-      ),
-    );
+      final hostId = await _createOrUpdateHost(
+        hostname: endpoint.host,
+        port: endpoint.port,
+        keyId: _activeKeyId!,
+      );
+      await _notificationService.clearLinuxTerminalSetup();
+      return _emit(
+        AndroidLinuxTerminalSetupState(
+          phase: AndroidLinuxTerminalSetupPhase.succeeded,
+          message:
+              'Added Linux Terminal host ${endpoint.host}:${endpoint.port}.',
+          hostId: hostId,
+          keyId: _activeKeyId,
+          publicKey: _activePublicKey,
+          script: _activeScript,
+          reachableHost: endpoint.host,
+          reachablePort: endpoint.port,
+        ),
+      );
+    } finally {
+      _finishInFlight = false;
+    }
   }
 
   /// Cancels an in-progress setup.
@@ -437,25 +463,27 @@ class AndroidLinuxTerminalSetupService {
     required int keyId,
   }) async {
     final hosts = await _hostRepository.getAll();
+    // Only update hosts previously created by this setup flow. Never clobber an
+    // unrelated user host that happens to share localhost/8022.
     for (final host in hosts) {
-      if (isAndroidLinuxTerminalHost(host) ||
-          (host.hostname == hostname && host.port == port)) {
-        await _hostRepository.update(
-          host.copyWith(
-            label: androidLinuxTerminalHostLabel,
-            hostname: hostname,
-            port: port,
-            username: androidLinuxTerminalSetupUsername,
-            keyId: Value(keyId),
-            password: const Value(null),
-            notes: const Value(
-              '$androidLinuxTerminalHostNotesMarker. '
-              'If connect fails, enable port forwarding in the Terminal app.',
-            ),
-          ),
-        );
-        return host.id;
+      if (!isAndroidLinuxTerminalHost(host)) {
+        continue;
       }
+      await _hostRepository.update(
+        host.copyWith(
+          label: androidLinuxTerminalHostLabel,
+          hostname: hostname,
+          port: port,
+          username: androidLinuxTerminalSetupUsername,
+          keyId: Value(keyId),
+          password: const Value(null),
+          notes: const Value(
+            '$androidLinuxTerminalHostNotesMarker. '
+            'If connect fails, enable port forwarding in the Terminal app.',
+          ),
+        ),
+      );
+      return host.id;
     }
 
     return _hostRepository.insert(
@@ -482,16 +510,25 @@ class AndroidLinuxTerminalSetupService {
   }
 
   static Future<bool> _defaultProbeSsh(String host, int port) async {
+    Socket? socket;
     try {
-      final socket = await Socket.connect(
+      socket = await Socket.connect(
         host,
         port,
-        timeout: const Duration(milliseconds: 700),
+        timeout: const Duration(milliseconds: 900),
       );
-      socket.destroy();
-      return true;
+      // Require an SSH identification string so random listeners on 8022 are
+      // not treated as a successful setup.
+      final banner = await socket
+          .timeout(const Duration(milliseconds: 900))
+          .first
+          .timeout(const Duration(milliseconds: 900));
+      final text = String.fromCharCodes(banner);
+      return text.startsWith('SSH-');
     } on Object {
       return false;
+    } finally {
+      socket?.destroy();
     }
   }
 }

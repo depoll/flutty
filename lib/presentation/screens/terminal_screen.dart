@@ -14641,6 +14641,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _runExclusiveTerminalAction(
         _TerminalExclusiveAction.sftpBrowser,
         () async {
+          final activeSession = _connectionId == null
+              ? null
+              : ref
+                    .read(activeSessionsProvider.notifier)
+                    .getSession(_connectionId!);
+          if ((activeSession?.isLocalTerminal ?? false) ||
+              (_host != null && isLocalTerminalHost(_host!))) {
+            _showTerminalLinkMessage(
+              'File browser is not available for local terminals',
+            );
+            return;
+          }
+
           final normalizedPath = trimTerminalFilePathCandidate(path);
           if (!isSupportedTerminalFilePath(normalizedPath)) {
             _showTerminalLinkMessage('Could not open $path');
@@ -15181,6 +15194,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _primeTerminalFilePathVerification(String terminalPath) {
     if (!isSupportedTerminalFilePath(terminalPath)) {
+      return;
+    }
+    // Local PTY sessions have no SFTP channel for path verification.
+    final activeSession = _connectionId == null
+        ? null
+        : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
+    if ((activeSession?.isLocalTerminal ?? false) ||
+        (_host != null && isLocalTerminalHost(_host!))) {
       return;
     }
 

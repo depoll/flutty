@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -317,8 +316,19 @@ class LocalTerminalSshClient implements SSHClient {
     Map<String, String>? environment,
   }) async {
     _ensureOpen();
-    if (pty != null && _looksLikeLoginShellCommand(command)) {
-      return shell(pty: pty, environment: environment);
+    // Terminal bootstrap always requests a PTY; honor that so startup
+    // commands and truecolor wrappers run under a real TTY, not Process.start.
+    if (pty != null) {
+      final launch = _commandLaunch(command);
+      return _track(
+        LocalTerminalSshSession.interactive(
+          executable: launch.executable,
+          arguments: launch.arguments,
+          workingDirectory: workingDirectory,
+          environment: _mergedEnvironment(environment),
+          pty: pty,
+        ),
+      );
     }
     return _track(
       await LocalTerminalSshSession.exec(
@@ -363,17 +373,14 @@ class LocalTerminalSshClient implements SSHClient {
     Map<String, String>? environment,
   }) async {
     final result = await _runProcess(command, environment: environment);
-    final out = StringBuffer();
+    final builder = BytesBuilder(copy: false);
     if (stdout) {
-      out.write(result.stdout);
+      builder.add(result.stdout as List<int>);
     }
-    if (stderr && result.stderr.toString().isNotEmpty) {
-      if (out.isNotEmpty) {
-        out.writeln();
-      }
-      out.write(result.stderr);
+    if (stderr) {
+      builder.add(result.stderr as List<int>);
     }
-    return Uint8List.fromList(utf8.encode(out.toString()));
+    return builder.takeBytes();
   }
 
   @override
@@ -386,10 +393,10 @@ class LocalTerminalSshClient implements SSHClient {
   }) async {
     final result = await _runProcess(command, environment: environment);
     final stdoutBytes = stdout
-        ? Uint8List.fromList(utf8.encode('${result.stdout}'))
+        ? Uint8List.fromList(result.stdout as List<int>)
         : Uint8List(0);
     final stderrBytes = stderr
-        ? Uint8List.fromList(utf8.encode('${result.stderr}'))
+        ? Uint8List.fromList(result.stderr as List<int>)
         : Uint8List(0);
     final combined = BytesBuilder(copy: false)
       ..add(stdoutBytes)
@@ -408,13 +415,14 @@ class LocalTerminalSshClient implements SSHClient {
     Map<String, String>? environment,
   }) {
     final launch = _commandLaunch(command);
+    // Keep raw bytes so binary command output cannot throw FormatException.
     return Process.run(
       launch.executable,
       launch.arguments,
       workingDirectory: workingDirectory,
       environment: _mergedEnvironment(environment),
-      stdoutEncoding: utf8,
-      stderrEncoding: utf8,
+      stdoutEncoding: null,
+      stderrEncoding: null,
     );
   }
 
@@ -454,14 +462,6 @@ class LocalTerminalSshClient implements SSHClient {
     }
   }
 
-  static bool _looksLikeLoginShellCommand(String command) =>
-      command.contains('COLORTERM=truecolor') ||
-      command.contains('TERM_PROGRAM=kitty') ||
-      command.contains('TERM_PROGRAM=MonkeySSH') ||
-      command.contains('/bin/sh -lc') ||
-      command.contains('/bin/bash -lc') ||
-      command.contains('/bin/zsh -lc');
-
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -497,6 +497,9 @@ class LocalTerminalSshSession implements SSHSession {
   }
 
   /// Runs a short-lived local command without a PTY.
+  ///
+  /// Returns immediately with a live session so callers can stream output and
+  /// observe exit without waiting for the process to finish first.
   static Future<LocalTerminalSshSession> exec({
     required String command,
     required Map<String, String> environment,
@@ -506,33 +509,25 @@ class LocalTerminalSshSession implements SSHSession {
     final args = Platform.isWindows
         ? _windowsCommandArgs(shellExecutable, command)
         : <String>['-c', command];
-    final result = await Process.run(
+    final process = await Process.start(
       shellExecutable,
       args,
       workingDirectory: workingDirectory,
       // Merge onto the platform environment so PATH/HOME stay intact.
       environment: {...Platform.environment, ...environment},
-      stdoutEncoding: utf8,
-      stderrEncoding: utf8,
     );
-    final session = LocalTerminalSshSession._();
-    final stdoutBytes = utf8.encode('${result.stdout}');
-    final stderrBytes = utf8.encode('${result.stderr}');
-    if (stdoutBytes.isNotEmpty) {
-      session._stdoutController.add(Uint8List.fromList(stdoutBytes));
-    }
-    if (stderrBytes.isNotEmpty) {
-      session._stderrController.add(Uint8List.fromList(stderrBytes));
-    }
-    session._finish(exitCode: result.exitCode, killProcess: false);
-    return session;
+    // Non-interactive exec: close stdin so shells waiting for EOF can exit.
+    unawaited(process.stdin.close());
+    return LocalTerminalSshSession._().._attachProcess(process);
   }
 
   static const _outputDrainTimeout = Duration(seconds: 2);
 
   Pty? _pty;
+  Process? _process;
   late final StreamSubscription<Uint8List> _stdinSubscription;
   StreamSubscription<List<int>>? _outputSubscription;
+  StreamSubscription<List<int>>? _stderrSubscription;
   final StreamController<Uint8List> _stdinController;
   final StreamController<Uint8List> _stdoutController;
   final StreamController<Uint8List> _stderrController;
@@ -568,7 +563,15 @@ class LocalTerminalSshSession implements SSHSession {
     if (_closed) {
       return;
     }
-    _pty?.write(data);
+    final pty = _pty;
+    if (pty != null) {
+      pty.write(data);
+      return;
+    }
+    final process = _process;
+    if (process != null) {
+      process.stdin.add(data);
+    }
   }
 
   @override
@@ -602,11 +605,91 @@ class LocalTerminalSshSession implements SSHSession {
 
   @override
   void kill(SSHSignal signal) {
-    _pty?.kill(_mapSignal(signal));
+    final mapped = _mapSignal(signal);
+    final pty = _pty;
+    if (pty != null) {
+      pty.kill(mapped);
+      return;
+    }
+    _process?.kill(mapped);
   }
 
   void _handleStdin(Uint8List data) {
     write(data);
+  }
+
+  void _attachProcess(Process process) {
+    _process = process;
+    var stdoutDone = false;
+    var stderrDone = false;
+    int? code;
+    void maybeFinish() {
+      if (_finishStarted || code == null || !stdoutDone || !stderrDone) {
+        return;
+      }
+      _finish(exitCode: code, killProcess: false);
+    }
+
+    _outputSubscription = process.stdout.listen(
+      (chunk) {
+        if (!_stdoutController.isClosed) {
+          _stdoutController.add(Uint8List.fromList(chunk));
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!_stdoutController.isClosed) {
+          _stdoutController.addError(error, stackTrace);
+        }
+        stdoutDone = true;
+        maybeFinish();
+      },
+      onDone: () {
+        stdoutDone = true;
+        maybeFinish();
+      },
+    );
+    _stderrSubscription = process.stderr.listen(
+      (chunk) {
+        if (!_stderrController.isClosed) {
+          _stderrController.add(Uint8List.fromList(chunk));
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!_stderrController.isClosed) {
+          _stderrController.addError(error, stackTrace);
+        }
+        stderrDone = true;
+        maybeFinish();
+      },
+      onDone: () {
+        stderrDone = true;
+        maybeFinish();
+      },
+    );
+    unawaited(
+      process.exitCode.then(
+        (exitCode) {
+          code = exitCode;
+          maybeFinish();
+          Future<void>.delayed(_outputDrainTimeout, () {
+            stdoutDone = true;
+            stderrDone = true;
+            maybeFinish();
+          });
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          assert(() {
+            // Keep failure visible in debug without crashing release builds.
+            debugPrint('local_terminal process exit failed: $error');
+            return true;
+          }());
+          code ??= -1;
+          stdoutDone = true;
+          stderrDone = true;
+          maybeFinish();
+        },
+      ),
+    );
   }
 
   void _attachPty(Pty pty) {
@@ -639,15 +722,26 @@ class LocalTerminalSshSession implements SSHSession {
       },
     );
     unawaited(
-      pty.exitCode.then((exitCode) {
-        code = exitCode;
-        maybeFinish();
-        // If output stalls after exit, finish after a short drain window.
-        Future<void>.delayed(_outputDrainTimeout, () {
+      pty.exitCode.then(
+        (exitCode) {
+          code = exitCode;
+          maybeFinish();
+          // If output stalls after exit, finish after a short drain window.
+          Future<void>.delayed(_outputDrainTimeout, () {
+            outputDone = true;
+            maybeFinish();
+          });
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          assert(() {
+            debugPrint('local_terminal pty exit failed: $error');
+            return true;
+          }());
+          code ??= -1;
           outputDone = true;
           maybeFinish();
-        });
-      }),
+        },
+      ),
     );
   }
 
@@ -660,11 +754,20 @@ class LocalTerminalSshSession implements SSHSession {
     _exitCode = exitCode;
     unawaited(_stdinSubscription.cancel());
     unawaited(_outputSubscription?.cancel() ?? Future<void>.value());
+    unawaited(_stderrSubscription?.cancel() ?? Future<void>.value());
     if (killProcess) {
       final pty = _pty;
       if (pty != null) {
         try {
           pty.kill();
+        } on Object {
+          // Best-effort.
+        }
+      }
+      final process = _process;
+      if (process != null) {
+        try {
+          process.kill();
         } on Object {
           // Best-effort.
         }

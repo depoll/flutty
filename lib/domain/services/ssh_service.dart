@@ -1894,7 +1894,7 @@ class SshService {
 
       final config = SshConnectionConfig.fromHost(host);
       final connectionId = _nextConnectionId++;
-      _sessions[connectionId] = SshSession(
+      final session = SshSession(
         connectionId: connectionId,
         hostId: host.id,
         client: client,
@@ -1906,7 +1906,14 @@ class SshService {
             ? host.terminalThemeDarkId
             : null,
       );
-      await hostRepository?.updateLastConnected(host.id);
+      _sessions[connectionId] = session;
+      try {
+        await hostRepository?.updateLastConnected(host.id);
+      } on Object {
+        _sessions.remove(connectionId);
+        client.close();
+        rethrow;
+      }
       DiagnosticsLogService.instance.info(
         'ssh.connect',
         'local_terminal_connected',

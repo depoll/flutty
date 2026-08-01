@@ -384,13 +384,26 @@ class LocalNotificationService {
       autoCancel: !ongoing,
       onlyAlertOnce: true,
       actions: const <AndroidNotificationAction>[
-        AndroidNotificationAction(linuxTerminalSetupActionCopy, 'Copy script'),
+        AndroidNotificationAction(
+          linuxTerminalSetupActionCopy,
+          'Copy script',
+          showsUserInterface: true,
+        ),
         AndroidNotificationAction(
           linuxTerminalSetupActionOpen,
           'Open Terminal',
+          showsUserInterface: true,
         ),
-        AndroidNotificationAction(linuxTerminalSetupActionTest, 'Test SSH'),
-        AndroidNotificationAction(linuxTerminalSetupActionCancel, 'Cancel'),
+        AndroidNotificationAction(
+          linuxTerminalSetupActionTest,
+          'Test SSH',
+          showsUserInterface: true,
+        ),
+        AndroidNotificationAction(
+          linuxTerminalSetupActionCancel,
+          'Cancel',
+          showsUserInterface: true,
+        ),
       ],
     );
 
@@ -538,16 +551,27 @@ class LocalNotificationService {
         ),
       );
       final launchDetails = await _plugin.getNotificationAppLaunchDetails();
-      final launchPayload = (launchDetails?.didNotificationLaunchApp ?? false)
-          ? launchDetails?.notificationResponse?.payload
+      final launchResponse = (launchDetails?.didNotificationLaunchApp ?? false)
+          ? launchDetails?.notificationResponse
           : null;
+      final launchPayload = launchResponse?.payload;
       _launchTmuxAlert = TmuxAlertNotificationPayload.decode(launchPayload);
       _launchTerminalNotification = TerminalNotificationPayload.decode(
         launchPayload,
       );
-      _launchLinuxTerminalSetup = LinuxTerminalSetupNotificationPayload.decode(
-        launchPayload,
-      );
+      // Action buttons put the action in actionId, not the JSON payload.
+      final launchActionId = launchResponse?.actionId;
+      if (launchActionId == linuxTerminalSetupActionCopy ||
+          launchActionId == linuxTerminalSetupActionOpen ||
+          launchActionId == linuxTerminalSetupActionTest ||
+          launchActionId == linuxTerminalSetupActionCancel) {
+        _launchLinuxTerminalSetup = LinuxTerminalSetupNotificationPayload(
+          action: launchActionId,
+        );
+      } else {
+        _launchLinuxTerminalSetup =
+            LinuxTerminalSetupNotificationPayload.decode(launchPayload);
+      }
 
       await _plugin.initialize(
         settings: initializationSettings,

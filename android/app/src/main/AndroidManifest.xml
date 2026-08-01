@@ -114,5 +114,11 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- Android 11+ package visibility for AVF Linux Terminal detection/launch. -->
+        <package android:name="com.android.virtualization.terminal" />
+        <intent>
+            <action android:name="android.virtualization.VM_TERMINAL" />
+            <category android:name="android.intent.category.DEFAULT" />
+        </intent>
     </queries>
 </manifest>

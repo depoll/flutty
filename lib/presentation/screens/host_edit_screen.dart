@@ -119,6 +119,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   String? _selectedDarkThemeId;
   String? _selectedFontFamily;
   HostKind _hostKind = HostKind.ssh;
+
+  /// SSH-only draft values preserved while the local-terminal switch is on.
+  _SshDraftSnapshot? _sshDraftSnapshot;
+
   HostStartupMode _selectedStartupMode = HostStartupMode.none;
   AutoConnectCommandMode _selectedAutoConnectMode = AutoConnectCommandMode.none;
   AgentLaunchTool _selectedAgentLaunchTool = AgentLaunchTool.claudeCode;
@@ -196,7 +200,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     } else {
       _hostKind = widget.initialHostKind;
       if (_hostKind == HostKind.local) {
-        _applyLocalTerminalDefaults();
+        _applyLocalTerminalDefaults(preserveSshDraft: false);
       } else if (widget.initialSshUrl?.trim().isNotEmpty ?? false) {
         _applySshUrl(widget.initialSshUrl!.trim());
       }
@@ -211,7 +215,24 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     }
   }
 
-  void _applyLocalTerminalDefaults() {
+  void _applyLocalTerminalDefaults({required bool preserveSshDraft}) {
+    if (preserveSshDraft) {
+      _sshDraftSnapshot = _SshDraftSnapshot(
+        label: _labelController.text,
+        hostname: _hostnameController.text,
+        port: _portController.text,
+        username: _usernameController.text,
+        password: _passwordController.text,
+        selectedKeyId: _selectedKeyId,
+        selectedJumpHostId: _selectedJumpHostId,
+        skipJumpHostOnSsids: _skipJumpHostOnSsids,
+        selectedStartupMode: _selectedStartupMode,
+        selectedAutoConnectMode: _selectedAutoConnectMode,
+        autoConnectCommand: _autoConnectCommandController.text,
+        selectedAutoConnectSnippetId: _selectedAutoConnectSnippetId,
+        autoForwardPorts: _autoForwardPorts,
+      );
+    }
     if (_labelController.text.trim().isEmpty ||
         _labelController.text.trim() == 'My Server') {
       _labelController.text = defaultLocalTerminalHostLabel();
@@ -221,6 +242,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     if (_usernameController.text.trim().isEmpty) {
       _usernameController.text = defaultLocalTerminalUsername();
     }
+    // Hide SSH-only controls while local is selected; values stay in snapshot.
     _passwordController.clear();
     _selectedKeyId = null;
     _selectedJumpHostId = null;
@@ -232,7 +254,25 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _autoForwardPorts = false;
   }
 
-  void _applySshHostDefaultsFromLocal() {
+  void _restoreSshDraftFromLocal() {
+    final snapshot = _sshDraftSnapshot;
+    if (snapshot != null) {
+      _labelController.text = snapshot.label;
+      _hostnameController.text = snapshot.hostname;
+      _portController.text = snapshot.port;
+      _usernameController.text = snapshot.username;
+      _passwordController.text = snapshot.password;
+      _selectedKeyId = snapshot.selectedKeyId;
+      _selectedJumpHostId = snapshot.selectedJumpHostId;
+      _skipJumpHostOnSsids = snapshot.skipJumpHostOnSsids;
+      _selectedStartupMode = snapshot.selectedStartupMode;
+      _selectedAutoConnectMode = snapshot.selectedAutoConnectMode;
+      _autoConnectCommandController.text = snapshot.autoConnectCommand;
+      _selectedAutoConnectSnippetId = snapshot.selectedAutoConnectSnippetId;
+      _autoForwardPorts = snapshot.autoForwardPorts;
+      _sshDraftSnapshot = null;
+      return;
+    }
     if (_hostnameController.text.trim() == localTerminalHostname) {
       _hostnameController.clear();
     }
@@ -251,9 +291,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     setState(() {
       _hostKind = enabled ? HostKind.local : HostKind.ssh;
       if (enabled) {
-        _applyLocalTerminalDefaults();
+        _applyLocalTerminalDefaults(preserveSshDraft: true);
       } else {
-        _applySshHostDefaultsFromLocal();
+        _restoreSshDraftFromLocal();
       }
     });
     _updateDirtyState();
@@ -2984,4 +3024,36 @@ class _SkipJumpHostOnWifiSectionState
       ],
     );
   }
+}
+
+class _SshDraftSnapshot {
+  const _SshDraftSnapshot({
+    required this.label,
+    required this.hostname,
+    required this.port,
+    required this.username,
+    required this.password,
+    required this.selectedKeyId,
+    required this.selectedJumpHostId,
+    required this.skipJumpHostOnSsids,
+    required this.selectedStartupMode,
+    required this.selectedAutoConnectMode,
+    required this.autoConnectCommand,
+    required this.selectedAutoConnectSnippetId,
+    required this.autoForwardPorts,
+  });
+
+  final String label;
+  final String hostname;
+  final String port;
+  final String username;
+  final String password;
+  final int? selectedKeyId;
+  final int? selectedJumpHostId;
+  final List<String> skipJumpHostOnSsids;
+  final HostStartupMode selectedStartupMode;
+  final AutoConnectCommandMode selectedAutoConnectMode;
+  final String autoConnectCommand;
+  final int? selectedAutoConnectSnippetId;
+  final bool autoForwardPorts;
 }

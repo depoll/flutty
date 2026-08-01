@@ -213,6 +213,8 @@ class _BackgroundLifecycleBridgeState
     if (launchTerminalNotification != null) {
       _handleTerminalNotification(launchTerminalNotification);
     }
+    // Linux Terminal setup actions are consumed by
+    // AndroidLinuxTerminalSetupService.start() so cold-start taps still run.
   }
 
   bool _canOpenTmuxAlertNotification(AuthState authState) =>
