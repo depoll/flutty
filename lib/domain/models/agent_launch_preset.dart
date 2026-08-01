@@ -22,7 +22,21 @@ enum AgentLaunchTool {
   antigravity,
 
   /// Cursor Agent CLI.
-  cursorAgent,
+  cursorAgent;
+
+  /// Stable UI order for launch pickers and discovery provider rows.
+  ///
+  /// Keep this explicit so adding an enum value does not silently reshuffle
+  /// product UI. New tools should be appended here when they ship.
+  static const List<AgentLaunchTool> uiDisplayOrder = [
+    claudeCode,
+    copilotCli,
+    codex,
+    geminiCli,
+    openCode,
+    antigravity,
+    cursorAgent,
+  ];
 }
 
 /// Presentation helpers for [AgentLaunchTool].
@@ -65,15 +79,10 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   };
 
   /// Whether this tool supports session resume.
-  bool get supportsResume => switch (this) {
-    AgentLaunchTool.claudeCode => true,
-    AgentLaunchTool.copilotCli => true,
-    AgentLaunchTool.codex => true,
-    AgentLaunchTool.openCode => true,
-    AgentLaunchTool.geminiCli => true,
-    AgentLaunchTool.antigravity => true,
-    AgentLaunchTool.cursorAgent => true,
-  };
+  ///
+  /// All currently supported agents expose a resume/continue path. Keep the
+  /// flag so callers can gate UI without hard-coding tool identity.
+  bool get supportsResume => true;
 
   /// Matching discovered-session provider name, if this tool supports recent
   /// session discovery.
@@ -107,6 +116,20 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.openCode => const {'OPENCODE_PERMISSION': '{"*":"allow"}'},
     _ => const <String, String>{},
   };
+}
+
+/// Resolves a supported agent CLI from its persisted enum [name].
+AgentLaunchTool? agentLaunchToolFromStorageName(String? name) {
+  final normalized = name?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return null;
+  }
+  for (final tool in AgentLaunchTool.values) {
+    if (tool.name == normalized) {
+      return tool;
+    }
+  }
+  return null;
 }
 
 /// Resolves a supported agent CLI from a command or binary name.
@@ -172,12 +195,25 @@ class AgentLaunchPreset {
   });
 
   /// Decodes an [AgentLaunchPreset] from JSON.
+  ///
+  /// Throws [FormatException] when the stored tool name is missing or unknown
+  /// instead of silently rewriting it to another agent.
   factory AgentLaunchPreset.fromJson(Map<String, dynamic> json) {
-    final rawTool = _readTrimmedString(json['tool']);
-    final tool = AgentLaunchTool.values.firstWhere(
-      (value) => value.name == rawTool,
-      orElse: () => AgentLaunchTool.claudeCode,
+    final preset = AgentLaunchPreset.tryFromJson(json);
+    if (preset == null) {
+      throw FormatException('Unknown agent launch tool: ${json['tool']}');
+    }
+    return preset;
+  }
+
+  /// Decodes an [AgentLaunchPreset] from JSON, or `null` when invalid.
+  static AgentLaunchPreset? tryFromJson(Map<String, dynamic> json) {
+    final tool = agentLaunchToolFromStorageName(
+      _readTrimmedString(json['tool']),
     );
+    if (tool == null) {
+      return null;
+    }
     return AgentLaunchPreset(
       tool: tool,
       workingDirectory: _readTrimmedString(json['workingDirectory']),

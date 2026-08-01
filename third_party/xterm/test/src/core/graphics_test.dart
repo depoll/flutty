@@ -3193,4 +3193,40 @@ void main() {
       }
     },
   );
+
+  // A row whose only content is a Kitty physical placement has no code points,
+  // so a naive "is this row blank" check reads it as empty. Popping it detaches
+  // the anchor the image hangs off and loses the image for good — a shrink must
+  // take the lossless scrolling path instead.
+  testWidgets('shrinking preserves a physical placement below the cursor', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 4);
+      final terminal = Terminal()..resize(20, 10);
+
+      // Park an image on the last row, leaving it otherwise blank, then bring
+      // the cursor back up so the image sits below it.
+      terminal.write('\x1b[10;1H');
+      terminal.write('\x1b_Ga=T,f=100,C=1;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements, hasLength(1));
+      expect(terminal.graphics.placements.single.row, 9);
+
+      terminal.write('\x1b[5;1H');
+      terminal.resize(20, 6);
+
+      expect(
+        terminal.graphics.placements,
+        hasLength(1),
+        reason: 'shrinking must not drop the row the image is anchored to',
+      );
+      expect(terminal.graphics.placements.single.anchor.attached, isTrue);
+    });
+  });
 }
