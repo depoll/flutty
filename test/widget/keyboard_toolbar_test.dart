@@ -6,7 +6,7 @@ import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_menu_style.dart';
 import 'package:xterm/xterm.dart';
 
-const _terminalAlternateEnterInput = '\x1b\r';
+const _terminalShiftEnterNewlineInput = '\n';
 
 String _terminalKeyOutput(
   TerminalKey key, {
@@ -649,10 +649,10 @@ void main() {
       await tester.tap(find.byTooltip('Enter'));
       await tester.pump();
 
-      expect(output, contains(_terminalAlternateEnterInput));
+      expect(output, contains(_terminalShiftEnterNewlineInput));
     });
 
-    testWidgets('toolbar Alt applies to Enter', (tester) async {
+    testWidgets('toolbar Alt+Enter sends meta-sends-escape CR', (tester) async {
       final output = <String>[];
       terminal.onOutput = output.add;
 
@@ -667,7 +667,7 @@ void main() {
       await tester.tap(find.byTooltip('Enter'));
       await tester.pump();
 
-      expect(output, contains(_terminalAlternateEnterInput));
+      expect(output, contains('\x1b\r'));
     });
 
     test('keeps bottom safe-area padding when keyboard is closed', () {
