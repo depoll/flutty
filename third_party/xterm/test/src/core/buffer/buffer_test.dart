@@ -107,6 +107,70 @@ void main() {
         expect(line.length, 20);
       }
     });
+
+    // A full-screen TUI (Copilot CLI, Claude Code) parks its cursor on its
+    // input line and keeps a footer below it. Shrinking must not drop those
+    // rows: the TUI still repaints relative to its own cursor, so deleting
+    // lines it believes it owns desynchronises every later frame.
+    test('shrinking keeps content below the cursor', () {
+      final terminal = Terminal(maxLines: 200);
+      terminal.resize(20, 10);
+      for (var i = 1; i <= 7; i++) {
+        terminal.write('line$i\r\n');
+      }
+      terminal.write('prompt>\r\n footer-1\r\n footer-2');
+      terminal.write('\x1b[2A\r'); // park the cursor back on the prompt
+
+      terminal.resize(20, 5);
+
+      expect(terminal.buffer.lines[7].toString().trimRight(), 'prompt>');
+      expect(terminal.buffer.lines[8].toString().trimRight(), ' footer-1');
+      expect(terminal.buffer.lines[9].toString().trimRight(), ' footer-2');
+    });
+
+    // The keyboard-open/close animation resizes a dozen times in each
+    // direction. The round trip has to land exactly where it started or the
+    // TUI's frame drifts away from the bottom of the buffer, stranding it
+    // behind a block of blank rows.
+    test('a shrink/grow cycle round-trips buffer and cursor', () {
+      final terminal = Terminal(maxLines: 500);
+      terminal.resize(20, 20);
+      for (var i = 1; i <= 60; i++) {
+        terminal.write('line$i\r\n');
+      }
+      terminal.write('prompt>\r\n footer-1\r\n footer-2');
+      terminal.write('\x1b[2A\r');
+
+      final beforeText = terminal.buffer.getText();
+      final beforeCursorY = terminal.buffer.absoluteCursorY;
+      final beforeHeight = terminal.buffer.height;
+
+      for (var height = 19; height >= 8; height--) {
+        terminal.resize(20, height);
+      }
+      for (var height = 9; height <= 20; height++) {
+        terminal.resize(20, height);
+      }
+
+      expect(terminal.buffer.getText(), beforeText);
+      expect(terminal.buffer.absoluteCursorY, beforeCursorY);
+      expect(terminal.buffer.height, beforeHeight);
+    });
+
+    // Trailing blank rows are the rows a shrink should consume first: real
+    // terminals reclaim them instead of scrolling live content into scrollback.
+    test('shrinking reclaims trailing blank rows before scrolling', () {
+      final terminal = Terminal(maxLines: 200);
+      terminal.resize(20, 10);
+      terminal.write('line1\r\nline2\r\nline3');
+      terminal.setCursor(0, 0);
+
+      terminal.resize(20, 6);
+
+      expect(terminal.buffer.height, 6);
+      expect(terminal.buffer.lines[0].toString().trimRight(), 'line1');
+      expect(terminal.buffer.absoluteCursorY, 0);
+    });
   });
 
   group('Buffer.deleteLines()', () {
