@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../domain/models/host_kind.dart';
 import '../domain/models/monetization.dart';
 import '../domain/services/auth_service.dart';
 import '../domain/services/port_forward_browser_service.dart';
@@ -136,8 +137,16 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/hosts/add',
         name: 'host-add',
-        builder: (context, state) =>
-            HostEditScreen(initialSshUrl: state.uri.queryParameters['sshUrl']),
+        builder: (context, state) {
+          final kindParam = state.uri.queryParameters['kind'];
+          final initialHostKind = kindParam == 'local'
+              ? HostKind.local
+              : HostKind.ssh;
+          return HostEditScreen(
+            initialSshUrl: state.uri.queryParameters['sshUrl'],
+            initialHostKind: initialHostKind,
+          );
+        },
       ),
       GoRoute(
         path: '/hosts/edit/:hostId',

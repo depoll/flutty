@@ -8,6 +8,7 @@ import '../../domain/commands/save_host_command.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/host_cli_launch_preferences.dart';
+import '../../domain/models/host_kind.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
@@ -115,6 +116,7 @@ String? resolveTmuxExtraFlags({
 /// Snapshot of all draft values owned by the host edit form.
 typedef HostEditDraft = ({
   String label,
+  HostKind hostKind,
   String hostname,
   String port,
   String username,
@@ -351,6 +353,15 @@ class HostEditViewModel extends Notifier<HostEditState> {
         message: 'Fix label to save this host',
       );
     }
+    if (draft.hostKind == HostKind.local) {
+      if (draft.username.isEmpty) {
+        return const HostEditValidationIssue(
+          target: HostEditValidationTarget.username,
+          message: 'Fix username to save this host',
+        );
+      }
+      return null;
+    }
     if (draft.hostname.isEmpty) {
       return const HostEditValidationIssue(
         target: HostEditValidationTarget.hostname,
@@ -467,11 +478,12 @@ class HostEditViewModel extends Notifier<HostEditState> {
     required bool hasAutomationAccess,
   }) async {
     final existingHost = state.existingHost;
-    final port = int.parse(draft.port);
-    final password = draft.password.isEmpty ? null : draft.password;
+    final isLocal = draft.hostKind == HostKind.local;
+    final port = isLocal ? localTerminalPort : int.parse(draft.port);
+    final password = isLocal || draft.password.isEmpty ? null : draft.password;
     final tags = draft.tags.trim().isEmpty ? null : draft.tags.trim();
     final portProxyName =
-        !draft.autoForwardPorts || draft.portProxyName.trim().isEmpty
+        isLocal || !draft.autoForwardPorts || draft.portProxyName.trim().isEmpty
         ? null
         : normalizePortProxyName(draft.portProxyName);
 
@@ -605,28 +617,30 @@ class HostEditViewModel extends Notifier<HostEditState> {
 
     return SaveHostInput(
       label: draft.label,
-      hostname: draft.hostname,
+      hostKind: draft.hostKind,
+      hostname: isLocal ? localTerminalHostname : draft.hostname,
       port: port,
       username: draft.username,
       password: password,
       tags: tags,
-      keyId: draft.selectedKeyId,
+      keyId: isLocal ? null : draft.selectedKeyId,
       groupId: draft.selectedGroupId,
-      jumpHostId: draft.selectedJumpHostId,
-      skipJumpHostOnSsids: draft.selectedJumpHostId == null
+      jumpHostId: isLocal ? null : draft.selectedJumpHostId,
+      skipJumpHostOnSsids: isLocal || draft.selectedJumpHostId == null
           ? null
           : draft.skipJumpHostOnSsids,
       terminalThemeLightId: draft.selectedLightThemeId,
       terminalThemeDarkId: draft.selectedDarkThemeId,
       terminalFontFamily: draft.selectedFontFamily,
-      autoConnectCommand: normalizedAutoConnectCommand,
-      autoConnectSnippetId: normalizedAutoConnectSnippetId,
-      autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
-      tmuxSessionName: normalizedTmuxSessionName,
-      tmuxWorkingDirectory: normalizedTmuxWorkingDirectory,
-      tmuxExtraFlags: normalizedTmuxExtraFlags,
-      remoteMuxBackend: normalizedRemoteMuxBackend,
-      autoForwardPorts: draft.autoForwardPorts,
+      autoConnectCommand: isLocal ? null : normalizedAutoConnectCommand,
+      autoConnectSnippetId: isLocal ? null : normalizedAutoConnectSnippetId,
+      autoConnectRequiresConfirmation:
+          !isLocal && autoConnectRequiresConfirmation,
+      tmuxSessionName: isLocal ? null : normalizedTmuxSessionName,
+      tmuxWorkingDirectory: isLocal ? null : normalizedTmuxWorkingDirectory,
+      tmuxExtraFlags: isLocal ? null : normalizedTmuxExtraFlags,
+      remoteMuxBackend: isLocal ? null : normalizedRemoteMuxBackend,
+      autoForwardPorts: !isLocal && draft.autoForwardPorts,
       portProxyName: portProxyName,
       isFavorite: draft.isFavorite,
     );

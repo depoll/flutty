@@ -37,6 +37,7 @@ PortForward _buildPortForward({
 );
 
 Host _buildHost({required int id, required String label}) => Host(
+  hostKind: 'ssh',
   id: id,
   label: label,
   hostname: 'example.com',

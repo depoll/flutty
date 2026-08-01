@@ -14,6 +14,7 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/commands/duplicate_host_command.dart';
 import '../../domain/models/agent_launch_preset.dart';
+import '../../domain/models/host_kind.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_preview.dart';
@@ -882,6 +883,12 @@ class HostsPanel extends ConsumerWidget {
         PanelHeader(
           title: 'hosts',
           actions: [
+            if (isLocalTerminalSupported())
+              _ActionButton(
+                icon: Icons.computer_outlined,
+                label: 'Local',
+                onTap: () => context.push('/hosts/add?kind=local'),
+              ),
             _ActionButton(
               icon: Icons.add,
               label: 'Add Host',
@@ -919,6 +926,12 @@ class HostsPanel extends ConsumerWidget {
       primaryLabel: 'Add Host',
       onPrimary: () => context.push('/hosts/add'),
       secondaryActions: [
+        if (isLocalTerminalSupported())
+          BrandEmptyAction(
+            icon: Icons.computer_outlined,
+            label: 'Add Local Terminal',
+            onTap: () => context.push('/hosts/add?kind=local'),
+          ),
         BrandEmptyAction(
           icon: Icons.content_paste_go_outlined,
           label: 'Paste SSH URL',
@@ -1158,6 +1171,8 @@ class _HostRow extends ConsumerWidget {
                         Text(
                           _redactStoreScreenshotIdentities
                               ? 'store@local-demo'
+                              : isLocalTerminalHost(host)
+                              ? 'local terminal'
                               : '${host.username}@${host.hostname}',
                           style: FluttyTheme.monoStyle.copyWith(
                             fontSize: 11,

@@ -5,6 +5,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/host_cli_launch_preferences.dart';
+import '../models/host_kind.dart';
 import '../models/remote_multiplexer.dart';
 import '../services/agent_launch_preset_service.dart';
 import '../services/host_cli_launch_preferences_service.dart';
@@ -23,6 +24,7 @@ class SaveHostInput {
     required this.username,
     required this.autoConnectRequiresConfirmation,
     required this.isFavorite,
+    this.hostKind = HostKind.ssh,
     this.autoForwardPorts = false,
     this.password,
     this.tags,
@@ -44,6 +46,9 @@ class SaveHostInput {
 
   /// Display label.
   final String label;
+
+  /// Transport kind for this host.
+  final HostKind hostKind;
 
   /// Hostname or IP address.
   final String hostname;
@@ -201,6 +206,7 @@ class SaveHostCommand {
       await _hostRepository.update(
         existingHost.copyWith(
           label: input.label,
+          hostKind: input.hostKind.storageValue,
           hostname: input.hostname,
           port: input.port,
           username: input.username,
@@ -231,6 +237,7 @@ class SaveHostCommand {
       savedHostId = await _hostRepository.insert(
         HostsCompanion.insert(
           label: input.label,
+          hostKind: drift.Value(input.hostKind.storageValue),
           hostname: input.hostname,
           port: drift.Value(input.port),
           username: input.username,

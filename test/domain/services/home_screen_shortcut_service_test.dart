@@ -16,6 +16,7 @@ Host _buildHost({
   DateTime? lastConnectedAt,
   int port = 22,
 }) => Host(
+  hostKind: 'ssh',
   id: id,
   label: label,
   hostname: '$label.example.com',

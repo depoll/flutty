@@ -76,6 +76,7 @@ Host _buildHost({
   required String label,
   required int sortOrder,
 }) => Host(
+  hostKind: 'ssh',
   id: id,
   label: label,
   hostname: '$label.example.com',

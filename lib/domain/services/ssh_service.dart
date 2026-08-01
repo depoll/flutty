@@ -16,6 +16,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../models/host_kind.dart';
 import '../models/port_proxy_name.dart';
 import '../models/remote_multiplexer.dart';
 import '../models/terminal_preview.dart';
@@ -28,6 +29,7 @@ import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
 import 'interactive_auth_prompt.dart';
 import 'local_notification_service.dart';
+import 'local_terminal_service.dart';
 import 'port_forward_browser_service.dart';
 import 'settings_service.dart';
 import 'ssh_exec_queue.dart';
@@ -1634,6 +1636,15 @@ class SshService {
         );
       }
 
+      if (isLocalTerminalHost(host)) {
+        return _connectToLocalTerminalHost(
+          host,
+          useHostThemeOverrides: useHostThemeOverrides,
+          onProgress: onProgress,
+          cancellationToken: cancellationToken,
+        );
+      }
+
       List<SshKey>? cachedAutoKeys;
       var didLoadAutoKeys = false;
       Future<List<SshKey>?> loadAutoKeys() async {
@@ -1842,6 +1853,83 @@ class SshService {
         success: false,
         error:
             'Connection setup failed. Check saved credentials and try again.',
+      );
+    }
+  }
+
+  Future<SshConnectionResult> _connectToLocalTerminalHost(
+    Host host, {
+    required bool useHostThemeOverrides,
+    ConnectionProgressCallback? onProgress,
+    SshConnectionCancellationToken? cancellationToken,
+  }) async {
+    onProgress?.call(
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.connecting,
+        message: 'Starting local terminal…',
+      ),
+    );
+    if (cancellationToken?.isCancelled ?? false) {
+      return const SshConnectionResult.userCancelled();
+    }
+    if (!isLocalTerminalSupported()) {
+      return const SshConnectionResult(
+        success: false,
+        error: 'Local terminals are not supported on this platform.',
+      );
+    }
+
+    try {
+      onProgress?.call(
+        const ConnectionProgressUpdate(
+          state: SshConnectionState.authenticating,
+          message: 'Opening local shell…',
+        ),
+      );
+      final client = await const LocalTerminalService().createClient(host);
+      if (cancellationToken?.isCancelled ?? false) {
+        client.close();
+        return const SshConnectionResult.userCancelled();
+      }
+
+      final config = SshConnectionConfig.fromHost(host);
+      final connectionId = _nextConnectionId++;
+      _sessions[connectionId] = SshSession(
+        connectionId: connectionId,
+        hostId: host.id,
+        client: client,
+        config: config,
+        terminalThemeLightId: useHostThemeOverrides
+            ? host.terminalThemeLightId
+            : null,
+        terminalThemeDarkId: useHostThemeOverrides
+            ? host.terminalThemeDarkId
+            : null,
+      );
+      await hostRepository?.updateLastConnected(host.id);
+      DiagnosticsLogService.instance.info(
+        'ssh.connect',
+        'local_terminal_connected',
+        fields: {
+          'hostId': host.id,
+          'connectionId': connectionId,
+          'hostKind': HostKind.local.diagnosticsValue,
+        },
+      );
+      return SshConnectionResult(
+        success: true,
+        client: client,
+        connectionId: connectionId,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.error(
+        'ssh.connect',
+        'local_terminal_failed',
+        fields: {'hostId': host.id, 'errorType': error.runtimeType.toString()},
+      );
+      return SshConnectionResult(
+        success: false,
+        error: 'Failed to start local terminal: $error',
       );
     }
   }
@@ -3514,6 +3602,10 @@ class SshSession {
   /// PowerShell `-EncodedCommand` probes respectively).
   bool get remoteIsWindows =>
       remoteVersionIndicatesWindows(remoteSoftwareVersion);
+
+  /// Whether this session is a local device shell rather than a network SSH
+  /// connection.
+  bool get isLocalTerminal => client is LocalTerminalSshClient;
 
   /// The connection configuration.
   final SshConnectionConfig config;

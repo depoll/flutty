@@ -37,6 +37,7 @@ Host _testHost({
   String? terminalThemeLightId,
   String? terminalThemeDarkId,
 }) => Host(
+  hostKind: 'ssh',
   id: id,
   label: label,
   hostname: 'imported.example.com',

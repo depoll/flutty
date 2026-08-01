@@ -65,6 +65,7 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
 Host _buildHost({required int id, required String tmuxSessionName}) => Host(
   id: id,
   label: 'Notification navigation validation',
+  hostKind: 'ssh',
   hostname: 'terminal.example.com',
   port: 22,
   username: 'root',

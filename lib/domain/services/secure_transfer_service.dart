@@ -438,6 +438,7 @@ class SecureTransferService {
       final hostId = await _hostRepository.insert(
         HostsCompanion.insert(
           label: _requiredString(hostData, 'label'),
+          hostKind: Value(_optionalString(hostData['hostKind']) ?? 'ssh'),
           hostname: _requiredString(hostData, 'hostname'),
           port: Value(_optionalInt(hostData['port']) ?? 22),
           username: _requiredString(hostData, 'username'),
@@ -983,6 +984,7 @@ class SecureTransferService {
       final newId = await _hostRepository.insert(
         HostsCompanion.insert(
           label: _requiredString(item, 'label'),
+          hostKind: Value(_optionalString(item['hostKind']) ?? 'ssh'),
           hostname: _requiredString(item, 'hostname'),
           port: Value(_optionalInt(item['port']) ?? 22),
           username: _requiredString(item, 'username'),

@@ -53,6 +53,7 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
 Host _buildHost({required int id}) => Host(
   id: id,
   label: 'Terminal selection test host',
+  hostKind: 'ssh',
   hostname: 'terminal.example.com',
   port: 22,
   username: 'root',
