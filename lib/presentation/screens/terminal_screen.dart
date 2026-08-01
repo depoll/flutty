@@ -4708,10 +4708,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // foreground TUI. Codex treats those bytes as user input, and its crossterm
     // color re-query can also be disrupted by unrelated terminal reports.
     // Always send a synthetic focus transition so focus-aware TUIs re-query OSC
-    // 10/11 through the normal path; only send the private theme-mode and
-    // default-color response cycle to apps that explicitly requested DEC 2031
-    // color-scheme updates.
+    // 10/11 through the normal path. Also push default-color reports when the
+    // app requested DEC 2031 updates or when Windows ConPTY is active: ConPTY
+    // consumes the OSC 10/11 queries Copilot CLI uses to repaint its composer.
     final includeThemeModeReport = session.terminalColorSchemeUpdatesMode;
+    final includeDefaultColorReports =
+        includeThemeModeReport || session.terminalWin32InputMode;
     _refreshTerminalThemeReportsForTui(
       theme,
       includeThemeModeReport: false,
@@ -4726,6 +4728,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         includeFocusReport: false,
         reason: '${reason}_plain_theme_mode',
       );
+    }
+    if (includeDefaultColorReports) {
       for (final delay in const [
         Duration(milliseconds: 330),
         Duration(milliseconds: 410),

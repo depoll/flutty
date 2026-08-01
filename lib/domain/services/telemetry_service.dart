@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/app_metadata.dart';
+import '../models/agent_launch_preset.dart';
 import 'diagnostics_log_service.dart';
 import 'settings_service.dart';
 
@@ -139,22 +140,7 @@ class TelemetryService {
     'unknown',
   };
   static const _allowedMuxBackends = <String>{'auto', 'monkeymux', 'tmux'};
-  static const _allowedAgentTools = <String>{
-    'all',
-    'antigravity',
-    'claude_code',
-    'claudecode',
-    'codex',
-    'copilot_cli',
-    'copilotcli',
-    'cursor_agent',
-    'cursoragent',
-    'gemini_cli',
-    'geminicli',
-    'open_code',
-    'opencode',
-    'unknown',
-  };
+  static final Set<String> _allowedAgentTools = _buildAllowedAgentTools();
   static const _allowedPaywallFeatures = <String>{
     'agent_launch_presets',
     'auto_connect_automation',
@@ -829,6 +815,42 @@ class TelemetryService {
       return 'profile';
     }
     return 'debug';
+  }
+
+  /// Builds the agent-tool analytics allowlist from [AgentLaunchTool].
+  ///
+  /// Uses [AgentLaunchTool.uiDisplayOrder] as the curated shipped-tool set so
+  /// analytics stays aligned with product UI. Includes both snake_case and
+  /// compacted legacy forms so older event values remain accepted.
+  static Set<String> _buildAllowedAgentTools() {
+    final allowed = <String>{'all', 'unknown'};
+    for (final tool in AgentLaunchTool.uiDisplayOrder) {
+      allowed
+        ..addAll(_telemetryAllowlistTokens(tool.name))
+        ..addAll(_telemetryAllowlistTokens(tool.commandName));
+      final label = tool.discoveredSessionToolName;
+      if (label != null) {
+        allowed.addAll(_telemetryAllowlistTokens(label));
+      }
+      for (final command in tool.candidateCommandNames) {
+        allowed.addAll(_telemetryAllowlistTokens(command));
+      }
+    }
+    return Set<String>.unmodifiable(allowed);
+  }
+
+  static Set<String> _telemetryAllowlistTokens(String value) {
+    final camelSplit = value.replaceAllMapped(
+      RegExp('([a-z0-9])([A-Z])'),
+      (match) => '${match.group(1)}_${match.group(2)}',
+    );
+    final snake = camelSplit
+        .toLowerCase()
+        .replaceAll(RegExp('[^a-z0-9]+'), '_')
+        .replaceAll(RegExp('_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    final compact = snake.replaceAll('_', '');
+    return {if (snake.isNotEmpty) snake, if (compact.isNotEmpty) compact};
   }
 }
 

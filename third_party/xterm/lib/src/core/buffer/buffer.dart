@@ -510,11 +510,31 @@ class Buffer {
         }
       }
     } else {
-      // Shrink smaller
+      // Shrink smaller.
+      //
+      // Two ways to lose a row, and only one of them is lossless. Dropping the
+      // last buffer line keeps the viewport anchored where it is but destroys
+      // whatever that line held; scrolling the viewport down one row (which is
+      // what decrementing the cursor does, since the viewport top is derived
+      // from lines.length - viewHeight) pushes the top row into scrollback and
+      // keeps every line. Prefer discarding trailing blank rows, then scrolling,
+      // and only drop a line with content when the cursor has nowhere left to
+      // go.
+      //
+      // The naive "pop unless the cursor would fall off the bottom" rule ate
+      // content on every shrink step for full-screen TUIs that park the cursor
+      // above their own footer (Copilot CLI, Claude Code): the keyboard-open
+      // animation resizes a dozen times, and each step deleted another row the
+      // TUI still believed it owned, desynchronising its cursor-relative
+      // repaints from the buffer.
       for (var i = 0; i < oldHeight - newHeight; i++) {
-        if (_cursorY > newHeight - 1) {
+        final lastIndex = lines.length - 1;
+        final canDropLast = lastIndex > absoluteCursorY;
+        if (canDropLast && _isReclaimableRow(lastIndex)) {
+          lines.pop();
+        } else if (_cursorY > 0) {
           _cursorY--;
-        } else {
+        } else if (canDropLast) {
           lines.pop();
         }
       }
@@ -538,6 +558,27 @@ class Buffer {
         lines.forEach((item) => item.resize(newWidth));
       }
     }
+  }
+
+  /// Whether the row at [index] carries nothing worth keeping, so a shrink can
+  /// reclaim it instead of scrolling.
+  ///
+  /// Deliberately measures the line's whole retained capacity rather than the
+  /// visible width. When reflow is off (and always on the alt buffer) a width
+  /// shrink keeps the cells past the new width so they reappear on the way back
+  /// out, so a row can look empty across the visible columns while still
+  /// holding text. Measuring only the visible width would call that row blank
+  /// and pop it, destroying cells the non-reflowing contract promises to keep.
+  ///
+  /// A row holding a Kitty physical placement is likewise not blank even with
+  /// no code points at all: the image hangs off a [CellAnchor] on the line, so
+  /// popping the line detaches the anchor and loses the image. In-flight
+  /// decodes count too — their anchor is registered before the image arrives.
+  bool _isReclaimableRow(int index) {
+    if (lines[index].getTrimmedLength() != 0) {
+      return false;
+    }
+    return graphics.physicalPlacementAnchorsInRow(index).isEmpty;
   }
 
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
