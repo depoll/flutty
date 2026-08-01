@@ -756,29 +756,29 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   final effectiveController =
       controller ?? TerminalTextInputHandlerController();
 
-  await tester.pumpWidget(
-    MaterialApp(
-      home: Scaffold(
-        body: TerminalTextInputHandler(
-          terminal: terminal,
-          focusNode: focusNode,
-          controller: effectiveController,
-          deleteDetection: deleteDetection,
-          readOnly: readOnly,
-          tapToShowKeyboard: tapToShowKeyboard,
-          sensitiveInput: sensitiveInput,
-          manageFocus: manageFocus,
-          onReviewInsertedText: onReviewInsertedText,
-          resolveTextBeforeCursor: resolveTextBeforeCursor,
-          resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
-          consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
-          applyTerminalTextInputModifiers: applyTerminalTextInputModifiers,
-          hasActiveToolbarModifier: hasActiveToolbarModifier,
-          child: const SizedBox.expand(),
-        ),
-      ),
-    ),
+  Widget body = TerminalTextInputHandler(
+    terminal: terminal,
+    focusNode: focusNode,
+    controller: effectiveController,
+    deleteDetection: deleteDetection,
+    readOnly: readOnly,
+    tapToShowKeyboard: tapToShowKeyboard,
+    sensitiveInput: sensitiveInput,
+    manageFocus: manageFocus,
+    onReviewInsertedText: onReviewInsertedText,
+    resolveTextBeforeCursor: resolveTextBeforeCursor,
+    resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
+    consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
+    applyTerminalTextInputModifiers: applyTerminalTextInputModifiers,
+    hasActiveToolbarModifier: hasActiveToolbarModifier,
+    child: const SizedBox.expand(),
   );
+  // Production uses manageFocus: false with an external Focus (terminal view).
+  if (!manageFocus) {
+    body = Focus(focusNode: focusNode, child: body);
+  }
+
+  await tester.pumpWidget(MaterialApp(home: Scaffold(body: body)));
 
   focusNode.requestFocus();
   await tester.pump();
@@ -5048,6 +5048,55 @@ void main() {
         await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
         await tester.pump();
         focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'toolbar Shift applies to non-virtual Enter on the hardware path',
+      (tester) async {
+        var shiftActive = true;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          manageFocus: false,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: false, shift: shiftActive),
+          consumeTerminalKeyModifiers: () => shiftActive = false,
+        );
+
+        // Standard HID Enter (not platform-plane / virtual). Soft and external
+        // keyboards both use this on some devices; toolbar Shift must still
+        // apply because HardwareKeyboard does not mirror toolbar modifiers.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+
+        expect(harness.terminalOutput.join(), _terminalShiftEnterNewlineInput);
+        expect(shiftActive, isFalse);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'toolbar Alt applies to non-virtual Enter on the hardware path',
+      (tester) async {
+        var altActive = true;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          manageFocus: false,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: altActive, shift: false),
+          consumeTerminalKeyModifiers: () => altActive = false,
+        );
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+
+        expect(harness.terminalOutput.join(), '\x1b\r');
+        expect(altActive, isFalse);
+
+        await _disposeTerminalHarness(tester, harness);
       },
     );
 
