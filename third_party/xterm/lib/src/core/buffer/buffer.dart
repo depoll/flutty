@@ -510,11 +510,43 @@ class Buffer {
         }
       }
     } else {
-      // Shrink smaller
+      // Shrink smaller.
+      //
+      // Each step must give up one viewport row, and there are two ways to do
+      // that. Popping the last buffer line keeps the viewport anchored to the
+      // cursor but destroys that line outright. Decrementing the cursor keeps
+      // every line: the viewport is bottom-anchored (its top row is
+      // lines.length - viewHeight), so the viewport slides down one row and
+      // the previous top row survives above it.
+      //
+      // The old rule popped whenever the cursor still fit inside the smaller
+      // viewport, destroying rows below the cursor even when they held
+      // content. Full-screen TUIs such as Copilot CLI park the cursor on
+      // their input line with live status rows below it and repaint with
+      // cursor-relative movements, so every keyboard-animation resize step
+      // deleted a row the program still owned and desynchronized all of its
+      // later repaints — stranding stale, blank-looking regions in the
+      // scrollback that no future output repairs.
+      //
+      // Instead, reclaim the bottom row only when it is genuinely empty and
+      // below the cursor (what real terminals do), otherwise slide the
+      // viewport, and destroy a row with content only when the cursor is
+      // already at the viewport top and there is no other way to shrink.
+      //
+      // The cursor's buffer row is captured once before the loop: it cannot
+      // change inside it (pops only remove rows below the cursor, and slides
+      // do not move buffer rows), while recomputing [absoluteCursorY]
+      // mid-loop would drift because its scrollBack term still reads the
+      // pre-resize view height as lines are popped.
+      final cursorRow = absoluteCursorY;
       for (var i = 0; i < oldHeight - newHeight; i++) {
-        if (_cursorY > newHeight - 1) {
+        final lastIndex = lines.length - 1;
+        final lastIsBelowCursor = lastIndex > cursorRow;
+        if (lastIsBelowCursor && _isRowEmptyForShrink(lastIndex)) {
+          lines.pop();
+        } else if (_cursorY > 0) {
           _cursorY--;
-        } else {
+        } else if (lastIsBelowCursor) {
           lines.pop();
         }
       }
@@ -538,6 +570,27 @@ class Buffer {
         lines.forEach((item) => item.resize(newWidth));
       }
     }
+  }
+
+  /// Whether the row at [index] holds nothing that a height shrink must keep.
+  ///
+  /// Measures the line's full retained capacity, not just the visible
+  /// columns: when reflow is off (and always on the alt buffer) a width
+  /// shrink hides the cells past the new width but retains them so they
+  /// reappear when the width grows back. A row whose only text sits in that
+  /// hidden range would read as blank across the visible columns, and popping
+  /// it would destroy cells the non-reflowing contract promises to restore.
+  ///
+  /// Rows carrying Kitty image placements are also kept even though they may
+  /// contain no code points: the placement hangs off a [CellAnchor] on the
+  /// line, so popping the line detaches the anchor and loses the image. This
+  /// includes in-flight decodes, whose anchors are registered before the
+  /// image bytes finish arriving.
+  bool _isRowEmptyForShrink(int index) {
+    if (lines[index].getTrimmedLength() != 0) {
+      return false;
+    }
+    return graphics.physicalPlacementAnchorsInRow(index).isEmpty;
   }
 
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.

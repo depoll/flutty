@@ -107,6 +107,128 @@ void main() {
         expect(line.length, 20);
       }
     });
+
+    test('preserves rows below the cursor when shrinking (TUI footer)', () {
+      // Full-screen TUIs such as Copilot CLI park the cursor on their input
+      // line and keep live status rows below it. A height shrink must not
+      // destroy those rows: the program still owns them and repaints with
+      // cursor-relative movements, so deleting them desynchronizes every
+      // later repaint. On the alt buffer, rows shed to make room must come
+      // from the top (as xterm.js does), never from below the cursor.
+      final terminal = Terminal();
+      terminal.resize(10, 10);
+      terminal.write('\x1b[?1049h');
+      for (var i = 0; i < 10; i++) {
+        terminal.write('\x1b[${i + 1};1HL$i');
+      }
+      terminal.write('\x1b[8;1H'); // cursor on row index 7, above L8/L9
+
+      terminal.resize(10, 6);
+
+      final buffer = terminal.buffer;
+      expect(buffer.height, 6);
+      for (var i = 0; i < 6; i++) {
+        expect(buffer.lines[i].getText(), 'L${i + 4}');
+      }
+      // The cursor stays on its own line, with the footer intact below it.
+      expect(buffer.lines[buffer.absoluteCursorY].getText(), 'L7');
+      expect(buffer.lines[buffer.absoluteCursorY + 1].getText(), 'L8');
+      expect(buffer.lines[buffer.absoluteCursorY + 2].getText(), 'L9');
+
+      terminal.resize(10, 10);
+
+      expect(buffer.height, 10);
+      for (var i = 0; i < 6; i++) {
+        expect(buffer.lines[i].getText(), 'L${i + 4}');
+      }
+      expect(buffer.lines[buffer.absoluteCursorY].getText(), 'L7');
+    });
+
+    test('round-trips a keyboard-animation resize flurry losslessly', () {
+      // A mobile on-screen keyboard animates the viewport through many
+      // intermediate heights. On the main buffer, replaying such a flurry
+      // must return the exact original screen once the keyboard closes.
+      final terminal = Terminal();
+      terminal.resize(69, 55);
+      for (var i = 0; i < 55; i++) {
+        terminal.write('\x1b[${i + 1};1Htranscript row $i');
+      }
+      terminal.write('\x1b[53;1H'); // input line with two footer rows below
+
+      final before = [
+        for (var i = 0; i < terminal.buffer.height; i++)
+          terminal.buffer.lines[i].getText(),
+      ];
+      final cursorRowBefore = terminal.buffer.absoluteCursorY;
+
+      for (final rows in [41, 34, 33, 30, 29, 28, 29, 38, 50, 54, 55]) {
+        terminal.resize(69, rows);
+      }
+
+      final buffer = terminal.buffer;
+      expect(buffer.height, before.length);
+      expect(buffer.scrollBack, 0);
+      for (var i = 0; i < before.length; i++) {
+        expect(buffer.lines[i].getText(), before[i]);
+      }
+      expect(buffer.absoluteCursorY, cursorRowBefore);
+    });
+
+    test('reclaims trailing blank rows instead of creating scrollback', () {
+      // A shell with a prompt at the top and nothing below it should not have
+      // its blank region converted into scrollback lines on shrink.
+      final terminal = Terminal();
+      terminal.resize(10, 10);
+      terminal.write('user@host>');
+      terminal.write('\x1b[1;1H');
+
+      terminal.resize(10, 5);
+
+      final buffer = terminal.buffer;
+      expect(buffer.height, 5);
+      expect(buffer.scrollBack, 0);
+      expect(buffer.lines[0].getText(), 'user@host>');
+      expect(buffer.absoluteCursorY, 0);
+    });
+
+    test('does not reclaim rows whose text is hidden by a width shrink', () {
+      // With reflow off, a width shrink retains the cells past the new width
+      // so they reappear when the width grows back. A row whose only text
+      // lives in that hidden range must not be read as blank and destroyed by
+      // a later height shrink.
+      final terminal = Terminal(reflowEnabled: false);
+      terminal.resize(10, 10);
+      terminal.write('\x1b[6;7HTAIL'); // row index 5, columns 6-9
+      terminal.write('\x1b[3;1H'); // cursor on row index 2
+
+      terminal.resize(6, 10); // hides TAIL beyond column 5
+      terminal.resize(6, 5); // must not pop the row holding hidden cells
+      terminal.resize(10, 5); // hidden cells reappear
+
+      final buffer = terminal.buffer;
+      expect(buffer.lines[5].getText(), 'TAIL');
+      expect(buffer.lines[5].getTrimmedLength(), 10);
+      expect(buffer.absoluteCursorY, 2);
+    });
+
+    test('does not reclaim rows holding image placement anchors', () {
+      // A row whose only content is a Kitty image placement has no code
+      // points, but popping it would detach the anchor and lose the image.
+      final terminal = Terminal();
+      terminal.resize(10, 10);
+      terminal.write('\x1b[8;1H'); // cursor on row index 7
+
+      final buffer = terminal.buffer;
+      final anchor = buffer.createAnchor(0, 8);
+      buffer.graphics.retainPendingPlacementAnchor(anchor);
+
+      terminal.resize(10, 6);
+
+      expect(anchor.attached, isTrue);
+      expect(anchor.y, 8);
+      expect(buffer.height, 9); // only the blank, unanchored row 9 was popped
+      expect(buffer.absoluteCursorY, 7);
+    });
   });
 
   group('Buffer.deleteLines()', () {
