@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.128"
+	monkeyMuxVersion                  = "0.1.129"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -5597,7 +5597,6 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	var themeHintData []byte
 	var themeHintWindowID string
 	var sendFocusTransition bool
-	var sendFocusRefresh bool
 	client := newAttachClient(conn, hello)
 	client.focusSequenceSnapshot = s.focusSequenceSnapshot
 	client.focusClaim = func(expectedFocusSequence uint64) {
@@ -5658,7 +5657,6 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 			themeHintData = window.themeHintRefreshDataLocked(s.themeHint)
 			themeHintWindowID = window.id
 			sendFocusTransition = window.themeHintFocusTransitionLocked()
-			sendFocusRefresh = !sendFocusTransition && window.themeHintFocusRefreshLocked()
 		}
 	}
 	s.mu.Unlock()
@@ -5681,8 +5679,6 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	}
 	if sendFocusTransition {
 		s.sendFocusTransition(themeHintWindowID)
-	} else if sendFocusRefresh {
-		s.sendFocusRefresh(themeHintWindowID)
 	}
 	s.broadcastWindowList("active_window_changed")
 	if redrew {
@@ -8451,12 +8447,10 @@ func (s *muxServer) sendThemeHintToActiveWindow(data string) (string, bool) {
 	windowID := window.id
 	window.refreshProcessMetadataLocked(time.Now())
 	sendFocusTransition := window.themeHintFocusTransitionLocked()
-	sendFocusRefresh := false
 	if len(themeHint) > 0 {
 		themeHintData = window.themeHintRefreshDataLocked(themeHint)
-		sendFocusRefresh = !sendFocusTransition && window.themeHintFocusRefreshLocked()
 	}
-	if len(themeHintData) == 0 && !sendFocusTransition && !sendFocusRefresh {
+	if len(themeHintData) == 0 && !sendFocusTransition {
 		s.mu.Unlock()
 		return windowID, false
 	}
@@ -8469,8 +8463,6 @@ func (s *muxServer) sendThemeHintToActiveWindow(data string) (string, bool) {
 	}
 	if sendFocusTransition {
 		s.sendFocusTransition(windowID)
-	} else if sendFocusRefresh {
-		s.sendFocusRefresh(windowID)
 	}
 	return windowID, true
 }
@@ -8489,10 +8481,6 @@ func (s *muxServer) sendFocusTransition(windowID string) {
 		time.Sleep(50 * time.Millisecond)
 		_ = s.writeWindow(windowID, []byte("\x1b[I"))
 	}()
-}
-
-func (s *muxServer) sendFocusRefresh(windowID string) {
-	_ = s.writeWindow(windowID, []byte("\x1b[I"))
 }
 
 func (s *muxServer) writeWindow(windowID string, data []byte) error {
@@ -11453,9 +11441,9 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
 	return w.themeHintFocusTransitionLocked() ||
-		w.themeHintFocusRefreshLocked() ||
 		w.themeHintModeReportLocked() ||
-		len(w.themeHintRefreshKeysLocked()) > 0
+		len(w.themeHintRefreshKeysLocked()) > 0 ||
+		len(w.agentThemeHintRefreshKeysLocked()) > 0
 }
 
 // themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon
@@ -11487,9 +11475,14 @@ func (w *muxWindow) themeHintRefreshKeysLocked() []string {
 	return w.activeThemeColorQueryKeysLocked()
 }
 
+// themeHintFocusTransitionLocked reports whether theme refresh should send a
+// synthetic FocusOut/FocusIn pair.
+//
+// Any focus-reporting window gets this nudge — including coding agents we do
+// not yet detect by name. DEC 2031 is not required: focus mode is the opt-in.
+// Apps that never enabled focus reporting are left alone.
 func (w *muxWindow) themeHintFocusTransitionLocked() bool {
-	return (w.themeRefreshModeActiveLocked() && w.focusModeActiveLocked()) ||
-		w.agentThemeHintFocusTransitionLocked()
+	return w.focusModeActiveLocked()
 }
 
 func (w *muxWindow) themeHintRefreshDataLocked(themeHint []byte) []byte {
@@ -11515,10 +11508,6 @@ func (w *muxWindow) themeHintRefreshDataLocked(themeHint []byte) []byte {
 	return themeHintData
 }
 
-func (w *muxWindow) themeHintFocusRefreshLocked() bool {
-	return w.focusModeActiveLocked()
-}
-
 // themeHintModeReportLocked reports whether this window should receive the DEC
 // 997 color-scheme mode report (?997;1n dark / ?997;2n light) on a theme
 // refresh.
@@ -11534,51 +11523,19 @@ func (w *muxWindow) themeHintModeReportLocked() bool {
 	return w.themeRefreshModeActiveLocked()
 }
 
-// agentThemeHintFocusTransitionLocked reports whether a coding-agent window
-// should receive a synthetic FocusOut/FocusIn pair on theme change when it has
-// not opted into DEC 2031.
+// agentThemeHintRefreshKeysLocked returns unsolicited OSC color keys used on the
+// tmux-era agent refresh path.
 //
-// Most agent TUIs re-query colors (or otherwise refresh chrome) after a focus
-// transition. Gating on "is a coding agent with focus reporting" — not an
-// allowlist of tool names — keeps future agents working the same way.
-//
-// Codex is the deliberate exception: without DEC 2031 it treats synthetic
-// FocusOut/FocusIn as composer input. It still receives the safer FocusIn-only
-// nudge via themeHintFocusRefreshLocked and the agent OSC 11 refresh below.
-func (w *muxWindow) agentThemeHintFocusTransitionLocked() bool {
-	if !w.agentThemeHintRefreshLocked() {
-		return false
-	}
-	return !agentRejectsSyntheticFocusTransition(w.agentToolLocked())
-}
-
-// agentThemeHintRefreshKeysLocked returns unsolicited OSC color keys that known
-// coding agents already tolerate on theme refresh (the tmux-era path).
-//
-// This is intentionally agent-vs-not, not per-agent: unknown focus-aware TUIs
-// must not receive OSC pushes (composer spew). Agents share one OSC 11 push.
+// Kept narrower than focus transitions: only windows detected as a coding agent
+// get a proactive OSC 11 push. Unknown focus-aware TUIs still get FocusOut/In
+// (so undetected agents can re-query) but must not receive unsolicited OSC
+// (composer spew / Hermes). Win32 still strips these OSCs in
+// themeHintRefreshDataLocked because ConPTY delivers encoded OSC as keystrokes.
 func (w *muxWindow) agentThemeHintRefreshKeysLocked() []string {
-	if !w.agentThemeHintRefreshLocked() {
+	if !w.focusModeActiveLocked() || w.agentToolLocked() == "" {
 		return nil
 	}
 	return []string{"11"}
-}
-
-func (w *muxWindow) agentThemeHintRefreshLocked() bool {
-	return w.focusModeActiveLocked() && w.agentToolLocked() != ""
-}
-
-// agentRejectsSyntheticFocusTransition reports agents that mishandle synthetic
-// FocusOut/FocusIn pairs when they have not enabled DEC 2031 color-scheme
-// updates. Keep this denylist tiny; prefer capability gates (2031 / focus /
-// prior OSC queries) for everyone else.
-func agentRejectsSyntheticFocusTransition(tool string) bool {
-	switch tool {
-	case "codex":
-		return true
-	default:
-		return false
-	}
 }
 
 func (w *muxWindow) themeRefreshModeActiveLocked() bool {
