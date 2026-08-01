@@ -1,8 +1,11 @@
 import 'package:xterm/xterm.dart';
 
-const _terminalAlternateEnterInput = '\x1b\r';
-
-/// Sends Enter with the active terminal modifiers applied.
+/// Sends Enter the same way a physical keyboard does: via [Terminal.keyInput]
+/// with the active modifiers.
+///
+/// Outside Kitty mode, non-press events are ignored (legacy keytabs only emit
+/// on press). Kitty mode forwards press/repeat/release so the remote gets the
+/// full progressive-enhancement sequence.
 bool sendTerminalEnterInput(
   Terminal terminal, {
   required bool shiftActive,
@@ -11,26 +14,8 @@ bool sendTerminalEnterInput(
   bool metaActive = false,
   TerminalKeyEventType type = TerminalKeyEventType.press,
 }) {
-  if (terminal.kittyKeyboardMode) {
-    return terminal.keyInput(
-      TerminalKey.enter,
-      shift: shiftActive,
-      alt: altActive,
-      ctrl: ctrlActive,
-      meta: metaActive,
-      type: type,
-    );
-  }
-
-  if (type != TerminalKeyEventType.press) {
+  if (type != TerminalKeyEventType.press && !terminal.kittyKeyboardMode) {
     return false;
-  }
-
-  if (shiftActive || altActive) {
-    // Prompt UIs such as Copilot CLI use ESC+CR as their terminal-agnostic
-    // multiline Enter sequence; xterm.dart's legacy Shift+Return emits ESCOM.
-    terminal.textInput(_terminalAlternateEnterInput);
-    return true;
   }
 
   return terminal.keyInput(
@@ -39,5 +24,6 @@ bool sendTerminalEnterInput(
     alt: altActive,
     ctrl: ctrlActive,
     meta: metaActive,
+    type: type,
   );
 }

@@ -4,7 +4,24 @@ import 'package:xterm/xterm.dart';
 
 void main() {
   group('sendTerminalEnterInput', () {
-    test('keeps legacy alternate enter outside Kitty keyboard mode', () {
+    test('plain Enter matches keyInput', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      expect(
+        sendTerminalEnterInput(
+          terminal,
+          shiftActive: false,
+          altActive: false,
+          ctrlActive: false,
+        ),
+        isTrue,
+      );
+
+      expect(output, ['\r']);
+    });
+
+    test('Shift+Enter matches keyInput newline encoding', () {
       final output = <String>[];
       final terminal = Terminal(onOutput: output.add);
 
@@ -18,7 +35,8 @@ void main() {
         isTrue,
       );
 
-      expect(output, ['\x1b\r']);
+      // Legacy keytab: Enter+Shift → LF (newline without submit).
+      expect(output, ['\n']);
     });
 
     test('uses Kitty keyboard encoding when mode is active', () {
@@ -36,6 +54,22 @@ void main() {
       );
 
       expect(output, ['\x1b[13;2u']);
+    });
+
+    test('Kitty report-all mode encodes plain Enter as CSI-u', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add)..write('\x1b[>9u');
+
+      expect(
+        sendTerminalEnterInput(
+          terminal,
+          shiftActive: false,
+          altActive: false,
+          ctrlActive: false,
+        ),
+        isTrue,
+      );
+      expect(output, ['\x1b[13u']);
     });
 
     test('ignores non-press Enter events outside Kitty keyboard mode', () {
