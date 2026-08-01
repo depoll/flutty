@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.126"
+	monkeyMuxVersion                  = "0.1.127"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -11454,6 +11454,7 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 func (w *muxWindow) supportsThemeHintLocked() bool {
 	return w.themeHintFocusTransitionLocked() ||
 		w.themeHintFocusRefreshLocked() ||
+		w.themeHintModeReportLocked() ||
 		len(w.themeHintRefreshKeysLocked()) > 0
 }
 
@@ -11508,7 +11509,7 @@ func (w *muxWindow) themeHintRefreshDataLocked(themeHint []byte) []byte {
 		refreshKeys = appendThemeQueryKeys(refreshKeys, w.agentThemeHintRefreshKeysLocked())
 		themeHintData = themeHintResponsesForKeys(themeHint, refreshKeys)
 	}
-	if w.agentThemeHintModeReportLocked() {
+	if w.themeHintModeReportLocked() {
 		themeHintData = append(terminalThemeModeReportFromHint(themeHint), themeHintData...)
 	}
 	return themeHintData
@@ -11516,6 +11517,21 @@ func (w *muxWindow) themeHintRefreshDataLocked(themeHint []byte) []byte {
 
 func (w *muxWindow) themeHintFocusRefreshLocked() bool {
 	return w.focusModeActiveLocked()
+}
+
+// themeHintModeReportLocked reports whether this window should receive the DEC
+// 997 color-scheme mode report (?997;1n dark / ?997;2n light) on a theme
+// refresh.
+//
+// DEC private mode 2031 is the only opt-in. Apps that want live theme flips
+// enable it after startup (Copilot CLI does so after its OSC 10/11 + ?996n
+// handshake; Cursor Agent enables it from its theme-detection hook). Gating on
+// 2031 — not an agent-name allowlist — keeps future agents working and avoids
+// pushing unsolicited CSI at shells or TUIs that never asked for color-scheme
+// updates. CSI mode reports are also safe under Windows ConPTY, unlike
+// unsolicited OSC color pushes which must stay suppressed there.
+func (w *muxWindow) themeHintModeReportLocked() bool {
+	return w.themeRefreshModeActiveLocked()
 }
 
 func (w *muxWindow) agentThemeHintFocusTransitionLocked() bool {
@@ -11535,10 +11551,6 @@ func (w *muxWindow) agentThemeHintRefreshKeysLocked() []string {
 		return nil
 	}
 	return []string{"11"}
-}
-
-func (w *muxWindow) agentThemeHintModeReportLocked() bool {
-	return w.agentThemeHintRefreshLocked() && w.agentToolLocked() == "copilot"
 }
 
 func (w *muxWindow) agentThemeHintRefreshLocked() bool {
