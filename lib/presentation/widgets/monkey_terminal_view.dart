@@ -763,6 +763,8 @@ class MonkeyTerminalView extends StatefulWidget {
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   static const _touchScrollReportedWheelLinesPerEvent = 3.0;
+  static const _minimumTouchScrollInertiaEvents = 4;
+  static const _maximumTouchScrollInertiaEvents = 24;
 
   late FocusNode _focusNode;
 
@@ -781,6 +783,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   late final Ticker _graphicsAnimationTicker;
   Simulation? _touchScrollInertiaSimulation;
   double _lastTouchScrollInertiaOffset = 0;
+  int _touchScrollInertiaEventCount = 0;
   Duration _lastGraphicsAnimationElapsed = Duration.zero;
   bool _graphicsAnimationsEnabled = true;
   bool _graphicsAnimationSyncScheduled = false;
@@ -1493,15 +1496,17 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     return lineHeight;
   }
 
-  void _applyTouchScrollDelta(double delta) {
+  int _applyTouchScrollDelta(double delta, {int? maxEvents}) {
     _touchScrollRemainder += delta;
 
     final stepHeight = _touchScrollStepHeight;
     if (stepHeight <= 0) {
-      return;
+      return 0;
     }
 
-    while (_touchScrollRemainder.abs() >= stepHeight) {
+    var emittedEvents = 0;
+    while (_touchScrollRemainder.abs() >= stepHeight &&
+        (maxEvents == null || emittedEvents < maxEvents)) {
       final scrollUp = _touchScrollRemainder > 0;
       final handled = _sendTouchScrollMouseInput(
         scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
@@ -1515,7 +1520,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       }
 
       _touchScrollRemainder += scrollUp ? -stepHeight : stepHeight;
+      emittedEvents += 1;
     }
+    return emittedEvents;
   }
 
   void _startTouchScrollInertia(double velocity) {
@@ -1528,6 +1535,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
 
     _stopTouchScrollInertia();
+    _touchScrollInertiaEventCount = 0;
     _touchScrollInertiaSimulation = ClampingScrollSimulation(
       position: 0,
       velocity: clampedVelocity,
@@ -1540,6 +1548,16 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _touchScrollInertiaTicker.stop();
     _touchScrollInertiaSimulation = null;
     _lastTouchScrollInertiaOffset = 0;
+    _touchScrollInertiaEventCount = 0;
+  }
+
+  int get _touchScrollInertiaEventLimit {
+    final viewportEvents =
+        widget.terminal.viewHeight ~/ _touchScrollReportedWheelLinesPerEvent;
+    return viewportEvents.clamp(
+      _minimumTouchScrollInertiaEvents,
+      _maximumTouchScrollInertiaEvents,
+    );
   }
 
   void _onTouchScrollInertiaTick(Duration elapsed) {
@@ -1552,10 +1570,21 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     final elapsedSeconds =
         elapsed.inMicroseconds / Duration.microsecondsPerSecond;
     final scrollOffset = simulation.x(elapsedSeconds);
-    _applyTouchScrollDelta(scrollOffset - _lastTouchScrollInertiaOffset);
+    final remainingEvents =
+        _touchScrollInertiaEventLimit - _touchScrollInertiaEventCount;
+    if (remainingEvents <= 0) {
+      _stopTouchScrollInertia();
+      _touchScrollRemainder = 0;
+      return;
+    }
+    _touchScrollInertiaEventCount += _applyTouchScrollDelta(
+      scrollOffset - _lastTouchScrollInertiaOffset,
+      maxEvents: remainingEvents,
+    );
     _lastTouchScrollInertiaOffset = scrollOffset;
 
-    if (simulation.isDone(elapsedSeconds)) {
+    if (_touchScrollInertiaEventCount >= _touchScrollInertiaEventLimit ||
+        simulation.isDone(elapsedSeconds)) {
       _stopTouchScrollInertia();
     }
   }
