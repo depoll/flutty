@@ -1142,15 +1142,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
   final VoidCallback onEmptyWindow;
 
   /// All tools that can be shown in the picker, in display order.
-  static const _allTools = [
-    AgentLaunchTool.claudeCode,
-    AgentLaunchTool.copilotCli,
-    AgentLaunchTool.codex,
-    AgentLaunchTool.geminiCli,
-    AgentLaunchTool.openCode,
-    AgentLaunchTool.antigravity,
-    AgentLaunchTool.cursorAgent,
-  ];
+  static const _allTools = AgentLaunchTool.uiDisplayOrder;
 
   @override
   Widget build(BuildContext context) {
