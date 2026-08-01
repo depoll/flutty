@@ -510,11 +510,31 @@ class Buffer {
         }
       }
     } else {
-      // Shrink smaller
+      // Shrink smaller.
+      //
+      // Two ways to lose a row, and only one of them is lossless. Dropping the
+      // last buffer line keeps the viewport anchored where it is but destroys
+      // whatever that line held; scrolling the viewport down one row (which is
+      // what decrementing the cursor does, since the viewport top is derived
+      // from lines.length - viewHeight) pushes the top row into scrollback and
+      // keeps every line. Prefer discarding trailing blank rows, then scrolling,
+      // and only drop a line with content when the cursor has nowhere left to
+      // go.
+      //
+      // The naive "pop unless the cursor would fall off the bottom" rule ate
+      // content on every shrink step for full-screen TUIs that park the cursor
+      // above their own footer (Copilot CLI, Claude Code): the keyboard-open
+      // animation resizes a dozen times, and each step deleted another row the
+      // TUI still believed it owned, desynchronising its cursor-relative
+      // repaints from the buffer.
       for (var i = 0; i < oldHeight - newHeight; i++) {
-        if (_cursorY > newHeight - 1) {
+        final lastIndex = lines.length - 1;
+        final canDropLast = lastIndex > absoluteCursorY;
+        if (canDropLast && lines[lastIndex].getTrimmedLength(oldWidth) == 0) {
+          lines.pop();
+        } else if (_cursorY > 0) {
           _cursorY--;
-        } else {
+        } else if (canDropLast) {
           lines.pop();
         }
       }
