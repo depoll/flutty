@@ -7339,13 +7339,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     void handleTerminalOutput(String data) {
-      // On iOS/Android soft keyboards, Return sends a lone '\n' via
-      // textInput(), but SSH expects '\r'. The proper
-      // keyInput(TerminalKey.enter) path already produces '\r', so we
-      // only normalize single-'\n' to avoid rewriting legitimate LF
-      // characters in pasted or multi-char input.
+      // When DEC LNM is on, the legacy Return keytab emits CRLF as one keystroke.
+      // Collapse only that exact payload to CR so the LF half is not also
+      // delivered as a newline. Lone LF (Shift+Enter / Ctrl+J) is left alone.
       final output = normalizeTerminalOutputForRemoteShell(
-        data == '\n' ? '\r' : data,
+        data == '\r\n' ? '\r' : data,
       );
 
       if (_shouldSuppressMonkeyMuxTerminalControlInput(output)) {

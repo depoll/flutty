@@ -783,10 +783,21 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return true;
   }
 
-  bool _isVirtualTextInputKeyEvent(KeyEvent event) =>
-      event.physicalKey.usbHidUsage >= LogicalKeyboardKey.startOfPlatformPlanes;
-
+  /// Whether a soft-keyboard virtual key should be owned by the IME path.
+  ///
+  /// Soft keyboards often emit synthetic key events while [HardwareKeyboard]
+  /// still reports Shift from capitalization. Handling those as hardware
+  /// Shift+Enter would insert a newline instead of submitting. Defer virtual
+  /// Enter to [TextInputAction.newline] / newline text commits, which only
+  /// apply explicit toolbar modifiers (same as choosing to hold Shift).
   bool _isTextInputManagedTerminalKey(TerminalKey key) {
+    if (key == TerminalKey.enter || key == TerminalKey.numpadEnter) {
+      return true;
+    }
+    return _isTextInputManagedCharacterKey(key);
+  }
+
+  bool _isTextInputManagedCharacterKey(TerminalKey key) {
     if (key.index >= TerminalKey.keyA.index &&
         key.index <= TerminalKey.keyZ.index) {
       return true;
@@ -835,6 +846,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return false;
     }
   }
+
+  bool _isVirtualTextInputKeyEvent(KeyEvent event) =>
+      event.physicalKey.usbHidUsage >= LogicalKeyboardKey.startOfPlatformPlanes;
 
   void _trackHandledHardwareCursorKey(
     TerminalKey key, {
@@ -3030,9 +3044,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           revision == _pendingComposingEnterRevision;
       final hadActiveToolbarModifier =
           widget.hasActiveToolbarModifier?.call() ?? false;
+      // Newlines must use the Enter key path (same as a physical Return), not
+      // the single-grapheme text modifier path.
+      final appendedOnlyEnterNewline = _enterCommitNewlineSequences.contains(
+        delta.appendedText,
+      );
       if (!pendingEnterActionOwnedBeforeReview &&
           hadActiveToolbarModifier &&
-          delta.appendedText.isNotEmpty) {
+          delta.appendedText.isNotEmpty &&
+          !appendedOnlyEnterNewline) {
         // One-shot terminal modifiers apply to a single key. Some IMEs can send
         // stale composing text in the same batch, so keep only the newest key.
         _cancelDeferredTrailingBackspaceImeClear();
