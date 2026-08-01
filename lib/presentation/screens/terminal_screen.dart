@@ -3658,6 +3658,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalThemeDependencyReload = false;
   bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
   String _pendingTerminalThemeDependencyReason = 'unknown';
+  // Latched when a terminal theme *color* change could not reach the foreground
+  // TUI (applied while backgrounded or with no live shell), so the next forced
+  // re-sync still repairs an agent left painted in the previous theme.
+  bool _pendingForegroundThemeRedrawRepair = false;
   // Guards the build-path theme application so the same theme is not pushed
   // to the session on every rebuild.  Cleared at connect-time so the safety-
   // net call in build() still fires once for each new connection.
@@ -3824,6 +3828,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   bool get _terminalLiveOutputAutoScrollEnabled =>
       _shouldFollowLiveOutput && !_isTerminalOutputFollowPaused;
+
+  /// Whether a terminal color change can reach the foreground TUI right now.
+  ///
+  /// A change applied while backgrounded or without a live shell never repaints
+  /// the agent, so it must be repaired by the next forced re-sync instead.
+  bool get _canDeliverForegroundThemeRedraw =>
+      !_wasBackgrounded && _shell != null && _connectionId != null;
 
   Iterable<TmuxWindow>? get _currentTmuxWindowsSnapshot =>
       _tmuxBarKey.currentState?.currentWindowsSnapshot;
@@ -4547,6 +4558,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final didThemeChange =
         previousTheme != null &&
         !_terminalThemesMatchForRemoteRefresh(previousTheme, theme);
+    if (didThemeChange && !_canDeliverForegroundThemeRedraw) {
+      _pendingForegroundThemeRedrawRepair = true;
+    }
     final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(
       targetSession,
     );
@@ -4582,15 +4596,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     if (willRefresh) {
+      // A forced re-sync alone must not force the repaint: MonkeyMux implements
+      // it as a synthetic width-1 PTY dance, and a foreground TUI that answers
+      // the coalesced SIGWINCHes with metadata only leaves the server no frame
+      // to forward, so it substitutes a stale history frame and the window
+      // reads as blank until the next real output. Dance only when the colors
+      // actually changed, or to repair a change that could not be delivered.
+      final repairsUndeliveredThemeChange =
+          _pendingForegroundThemeRedrawRepair && forceRemoteRefresh;
+      final forceForegroundRedraw =
+          didThemeChange || repairsUndeliveredThemeChange;
+      if (repairsUndeliveredThemeChange && _canDeliverForegroundThemeRedraw) {
+        _pendingForegroundThemeRedrawRepair = false;
+      }
       _refreshTerminalThemeForTui(
         theme,
         targetSession,
         reason: reason,
-        // Force a foreground repaint when the colors actually changed, and also
-        // on a forced re-sync (resume/reconnect/brightness), which is when a
-        // theme change that happened while backgrounded or disconnected would
-        // otherwise leave the agent painted in the previous theme.
-        forceForegroundRedraw: didThemeChange || forceRemoteRefresh,
+        forceForegroundRedraw: forceForegroundRedraw,
       );
       return;
     }

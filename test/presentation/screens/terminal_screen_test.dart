@@ -3491,15 +3491,15 @@ void main() {
     );
 
     testWidgets(
-      'MonkeyMux forces a redraw on resume after a backgrounded theme change',
+      'MonkeyMux redraws on resume only after a backgrounded theme change',
       (tester) async {
-        // Regression guard for the resume gap: a theme change that lands while
-        // the app is backgrounded (or the connection is down) updates the
-        // session theme before any repaint reaches the agent. On resume the
-        // re-sync applies the same theme (didThemeChange == false) with
-        // forceRemoteRefresh, so the redraw must still be forced from the
-        // forced-refresh signal, otherwise Copilot CLI stays painted in the
-        // previous theme.
+        // A forced re-sync alone must not dance the foreground TUI: MonkeyMux
+        // implements the forced repaint as a synthetic width-1 PTY resize, and
+        // an agent that answers the coalesced SIGWINCHes with metadata only
+        // leaves the server substituting a stale history frame, which reads as
+        // a blank window until the next real output. The repaint is still owed
+        // when the color change itself could not reach the agent, so a change
+        // applied while backgrounded must be repaired on resume.
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final windowEvents = StreamController<TmuxWindowChangeEvent>();
@@ -3594,10 +3594,55 @@ void main() {
         // below should matter.
         clearInteractions(monkeyMuxService);
 
-        // Background then foreground the app without a color change; the resume
-        // re-sync forces the repaint via the forced-refresh signal.
+        // A resume with no color change must not force the dance.
         tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
         await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pump();
+
+        verify(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(greaterThanOrEqualTo(1));
+        verifyNever(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: true,
+          ),
+        );
+
+        clearInteractions(monkeyMuxService);
+
+        // A color change applied while backgrounded never reached the agent, so
+        // the resume re-sync still owes it a repaint.
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pump();
+        clearInteractions(monkeyMuxService);
+
         tester.binding.handleAppLifecycleStateChanged(
           AppLifecycleState.resumed,
         );
@@ -3747,9 +3792,11 @@ void main() {
         expect(refreshForceFlags.length, trapIndex + 1);
         expect(refreshForceFlags[trapIndex], isTrue);
 
-        // B: a forced re-sync (brightness) re-latches the obligation while A is
-        // still in flight and queues behind it.
-        tester.binding.platformDispatcher.onPlatformBrightnessChanged?.call();
+        // B: a second real color change (dark -> light) re-latches the
+        // obligation while A is still in flight and queues behind it.
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.light);
         await tester.pump();
         await tester.pump();
 
