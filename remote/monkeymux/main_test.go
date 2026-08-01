@@ -11684,3 +11684,49 @@ func (a testAddr) Network() string {
 func (a testAddr) String() string {
 	return string(a)
 }
+
+// TestForegroundFallbackKeepsWholeFrame covers the "Copilot transcript is blank
+// but its composer/status rows render" report. An agent TUI paints a full-screen
+// frame larger than the attach replay budget (Copilot CLI emits ~48 KiB). When a
+// forced redraw produces nothing and the retained frame is substituted, trimming
+// that frame to the attach budget would cut it from the front, replaying only its
+// tail — the bottom chrome — and leaving the transcript rows above blank.
+func TestForegroundFallbackKeepsWholeFrame(t *testing.T) {
+	server := newMuxServer("test")
+	var frame bytes.Buffer
+	frame.WriteString("\x1b[H\x1b[2J")
+	frame.WriteString("TRANSCRIPT-TOP")
+	// Pad the frame well past windowReplayLimitBytes so a budget-sized cut would
+	// drop the transcript written above.
+	for frame.Len() < windowReplayLimitBytes*2 {
+		frame.WriteString("\x1b[Kconversation filler line\r\n")
+	}
+	frame.WriteString("COMPOSER-BOTTOM")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      frame.Bytes(),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.mu.Lock()
+	fallback := server.foregroundHistoryFallbackHistoryLocked(window)
+	server.mu.Unlock()
+
+	if len(fallback) == 0 {
+		t.Fatal("no fallback frame retained for a foreground-redraw window")
+	}
+	if !bytes.Contains(fallback, []byte("COMPOSER-BOTTOM")) {
+		t.Fatal("fallback frame dropped the bottom chrome")
+	}
+	if !bytes.Contains(fallback, []byte("TRANSCRIPT-TOP")) {
+		t.Fatalf(
+			"fallback frame dropped the transcript above the chrome: kept %d of %d bytes",
+			len(fallback),
+			frame.Len(),
+		)
+	}
+}

@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.126"
+	monkeyMuxVersion                  = "0.1.127"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -79,13 +79,19 @@ const (
 	windowHistoryLimitBytes           = 128 * 1024
 	windowFullReplayHistoryLimitBytes = 512 * 1024
 	windowReplayLimitBytes            = 32 * 1024
-	csiBufferLimitBytes               = 64
-	pendingTerminalQueryLimitBytes    = 512
-	terminalResponseCarryLimitBytes   = 64 * 1024
-	themeHintLimitBytes               = 1024
-	restoreFileMode                   = 0o600
-	restoreSchemaVersion              = 1
-	attachWriteQueueLimitBytes        = 16 * 1024 * 1024
+	// A foreground-redraw fallback frame must hold a *whole* screen, not a
+	// bandwidth-friendly tail. Agent TUIs paint a full-screen frame well past
+	// the attach budget (Copilot CLI emits ~48 KiB), and cutting that frame from
+	// the front replays only its tail — the composer and status rows — leaving
+	// the transcript above them blank until the next full repaint.
+	windowForegroundFallbackReplayLimitBytes = 256 * 1024
+	csiBufferLimitBytes                      = 64
+	pendingTerminalQueryLimitBytes           = 512
+	terminalResponseCarryLimitBytes          = 64 * 1024
+	themeHintLimitBytes                      = 1024
+	restoreFileMode                          = 0o600
+	restoreSchemaVersion                     = 1
+	attachWriteQueueLimitBytes               = 16 * 1024 * 1024
 	// Per-window Kitty image retention, used to survive history eviction across
 	// reattaches and to back placeholder cells the foreground app re-emits.
 	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
@@ -7265,7 +7271,11 @@ func (s *muxServer) foregroundHistoryFallbackHistoryLocked(
 		return nil
 	}
 	history, historyStart := window.historyTailWithParserLocked()
-	history = trimReplayHistoryForAttachWithParser(history, historyStart)
+	history = trimReplayHistoryWithLimit(
+		history,
+		historyStart,
+		windowForegroundFallbackReplayLimitBytes,
+	)
 	history = stripTerminalQueriesFromReplay(history)
 	if len(history) == 0 {
 		return nil
@@ -8765,12 +8775,24 @@ func trimReplayHistoryForAttachWithParser(
 	history []byte,
 	historyStart terminalOutputParserSnapshot,
 ) []byte {
-	if len(history) <= windowReplayLimitBytes && historyStart.isGround() {
+	return trimReplayHistoryWithLimit(
+		history,
+		historyStart,
+		windowReplayLimitBytes,
+	)
+}
+
+func trimReplayHistoryWithLimit(
+	history []byte,
+	historyStart terminalOutputParserSnapshot,
+	limit int,
+) []byte {
+	if len(history) <= limit && historyStart.isGround() {
 		return history
 	}
 	start := 0
-	if len(history) > windowReplayLimitBytes {
-		start = len(history) - windowReplayLimitBytes
+	if len(history) > limit {
+		start = len(history) - limit
 	}
 	start = advanceReplayStartToTerminalGround(history, start, historyStart)
 	if start >= len(history) {
