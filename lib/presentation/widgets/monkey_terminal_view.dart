@@ -4143,6 +4143,8 @@ class MonkeyRenderTerminal extends RenderBox
       );
     }
 
+    _resetKittyPlacementPaintTallies();
+
     // Images with a negative z-index render behind the terminal text.
     _paintGraphics(
       canvas,
@@ -4371,6 +4373,15 @@ class MonkeyRenderTerminal extends RenderBox
           destination,
           Paint()..filterQuality = FilterQuality.medium,
         );
+        if (belowText) {
+          _kittyDrawnPlacementsBelowText += 1;
+        } else {
+          _kittyDrawnPlacementsAboveText += 1;
+        }
+        final coveredRows = (dstHeight / cellHeight).ceil();
+        if (coveredRows > _kittyDrawnPlacementMaxRows) {
+          _kittyDrawnPlacementMaxRows = coveredRows;
+        }
       } on Object catch (_) {
         // Intentionally swallowed: a failed image draw must never crash the
         // terminal. The next frame re-attempts with fresh metrics.
@@ -4452,6 +4463,19 @@ class MonkeyRenderTerminal extends RenderBox
   // missing (server skipped it / it was dropped) or present but not matched.
   int _kittyFirstUnresolvedImageId = 0;
   int _kittyFirstUnresolvedBitWidth = 0;
+  // Physical (non-placeholder) placements actually composited this paint, split
+  // by pass. A placement drawn in the above-text pass covers glyphs, so a window
+  // reported as "text is invisible" with a non-zero above-text count identifies
+  // a lingering placement as the cause rather than a color/contrast problem.
+  int _kittyDrawnPlacementsAboveText = 0;
+  int _kittyDrawnPlacementsBelowText = 0;
+  int _kittyDrawnPlacementMaxRows = 0;
+
+  void _resetKittyPlacementPaintTallies() {
+    _kittyDrawnPlacementsAboveText = 0;
+    _kittyDrawnPlacementsBelowText = 0;
+    _kittyDrawnPlacementMaxRows = 0;
+  }
 
   void _maybeLogKittyPlaceholderPaint(
     int placeholderCount,
@@ -4467,7 +4491,9 @@ class MonkeyRenderTerminal extends RenderBox
     // viewport-bounded analysis stays cheap, and — for the "images blank after
     // reconnect" report — whether placeholder cells are present at all and
     // whether they resolve to a ready image.
-    if (placeholderCount == 0 && imageCount == 0) {
+    if (placeholderCount == 0 &&
+        imageCount == 0 &&
+        _terminal.graphics.placements.isEmpty) {
       return;
     }
     final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -4481,6 +4507,13 @@ class MonkeyRenderTerminal extends RenderBox
       fields: {
         'placeholders': placeholderCount,
         'images': imageCount,
+        'placements': _terminal.graphics.placements.length,
+        'attachedPlacements': _terminal.graphics.placements
+            .where((placement) => placement.attached)
+            .length,
+        'drawnOverText': _kittyDrawnPlacementsAboveText,
+        'drawnBehindText': _kittyDrawnPlacementsBelowText,
+        'drawnRows': _kittyDrawnPlacementMaxRows,
         'visibleRows': lastLine - firstLine + 1,
         'durationMs': (micros / 1000).round(),
         'resolved': _kittyResolvedInstances,
