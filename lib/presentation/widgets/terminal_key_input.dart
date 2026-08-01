@@ -1,8 +1,16 @@
 import 'package:xterm/xterm.dart';
 
-const _terminalAlternateEnterInput = '\x1b\r';
-
-/// Sends Enter with the active terminal modifiers applied.
+/// Sends Enter via [Terminal.keyInput] with the active modifiers.
+///
+/// Outside Kitty mode, non-press events are ignored (legacy keytabs only emit
+/// on press). Kitty mode forwards press/repeat/release so the remote gets the
+/// full progressive-enhancement sequence.
+///
+/// Two legacy keytab gaps are corrected only for this Enter keystroke:
+/// - DEC LNM makes unmodified Return emit CRLF; collapse that to CR so prompt
+///   TUIs do not also see LF as newline. Paste and other producers are untouched.
+/// - There is no Enter+Alt keytab record, so Alt is dropped; apply
+///   meta-sends-escape (ESC CR) when Alt is the only modifier.
 bool sendTerminalEnterInput(
   Terminal terminal, {
   required bool shiftActive,
@@ -11,8 +19,16 @@ bool sendTerminalEnterInput(
   bool metaActive = false,
   TerminalKeyEventType type = TerminalKeyEventType.press,
 }) {
-  if (terminal.kittyKeyboardMode) {
-    return terminal.keyInput(
+  if (type != TerminalKeyEventType.press && !terminal.kittyKeyboardMode) {
+    return false;
+  }
+
+  final previousOutput = terminal.onOutput;
+  final chunks = <String>[];
+  terminal.onOutput = chunks.add;
+  final bool handled;
+  try {
+    handled = terminal.keyInput(
       TerminalKey.enter,
       shift: shiftActive,
       alt: altActive,
@@ -20,24 +36,28 @@ bool sendTerminalEnterInput(
       meta: metaActive,
       type: type,
     );
+  } finally {
+    terminal.onOutput = previousOutput;
   }
 
-  if (type != TerminalKeyEventType.press) {
+  if (!handled) {
     return false;
   }
 
-  if (shiftActive || altActive) {
-    // Prompt UIs such as Copilot CLI use ESC+CR as their terminal-agnostic
-    // multiline Enter sequence; xterm.dart's legacy Shift+Return emits ESCOM.
-    terminal.textInput(_terminalAlternateEnterInput);
-    return true;
+  var payload = chunks.join();
+  final hasModifiers = shiftActive || altActive || ctrlActive || metaActive;
+  if (!hasModifiers && payload == '\r\n') {
+    // LNM Return keytab emits CRLF as one keystroke.
+    payload = '\r';
+  } else if (altActive &&
+      !shiftActive &&
+      !ctrlActive &&
+      !metaActive &&
+      payload == '\r') {
+    // Meta-sends-escape: legacy keytab matched plain Enter and dropped Alt.
+    payload = '\x1b\r';
   }
 
-  return terminal.keyInput(
-    TerminalKey.enter,
-    shift: shiftActive,
-    alt: altActive,
-    ctrl: ctrlActive,
-    meta: metaActive,
-  );
+  previousOutput?.call(payload);
+  return true;
 }

@@ -759,9 +759,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     TerminalKey key, {
     required bool hasShortcutModifier,
   }) {
-    if (!_isInputConnectionShown ||
-        hasShortcutModifier ||
-        !_isVirtualTextInputKeyEvent(event)) {
+    if (!_isInputConnectionShown || hasShortcutModifier) {
+      return false;
+    }
+
+    final isVirtual = _isVirtualTextInputKeyEvent(event);
+    if (!isVirtual) {
       return false;
     }
 
@@ -783,10 +786,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return true;
   }
 
-  bool _isVirtualTextInputKeyEvent(KeyEvent event) =>
-      event.physicalKey.usbHidUsage >= LogicalKeyboardKey.startOfPlatformPlanes;
-
+  /// Whether a soft-keyboard virtual key should be owned by the IME path.
+  ///
+  /// Enter is included so soft Return is delivered via [performAction] /
+  /// newline text (where toolbar modifiers apply) instead of as a bare
+  /// hardware key that only sees [HardwareKeyboard] state.
   bool _isTextInputManagedTerminalKey(TerminalKey key) {
+    if (key == TerminalKey.enter || key == TerminalKey.numpadEnter) {
+      return true;
+    }
+    return _isTextInputManagedCharacterKey(key);
+  }
+
+  bool _isTextInputManagedCharacterKey(TerminalKey key) {
     if (key.index >= TerminalKey.keyA.index &&
         key.index <= TerminalKey.keyZ.index) {
       return true;
@@ -835,6 +847,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return false;
     }
   }
+
+  bool _isVirtualTextInputKeyEvent(KeyEvent event) =>
+      event.physicalKey.usbHidUsage >= LogicalKeyboardKey.startOfPlatformPlanes;
 
   void _trackHandledHardwareCursorKey(
     TerminalKey key, {
@@ -905,9 +920,24 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return KeyEventResult.skipRemainingHandlers;
     }
 
-    final ctrl = HardwareKeyboard.instance.isControlPressed;
-    final alt = HardwareKeyboard.instance.isAltPressed;
-    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final toolbarModifiers = widget.resolveTerminalKeyModifiers?.call();
+    final isEnter = key == TerminalKey.enter || key == TerminalKey.numpadEnter;
+    final isVirtual = _isVirtualTextInputKeyEvent(event);
+    // Toolbar modifiers are not mirrored into HardwareKeyboard. Merge them so
+    // extended-keyboard Shift/Alt/Ctrl apply on this path.
+    final ctrl =
+        HardwareKeyboard.instance.isControlPressed ||
+        (toolbarModifiers?.ctrl ?? false);
+    final alt =
+        HardwareKeyboard.instance.isAltPressed ||
+        (toolbarModifiers?.alt ?? false);
+    final physicalShift = HardwareKeyboard.instance.isShiftPressed;
+    // Enter + live IME: trust toolbar Shift always, and physical Shift only on
+    // non-virtual keys (external keyboard). Virtual soft-keyboard Enter must
+    // not inherit capitalization Shift (that becomes LF / "newline" in Codex).
+    final shift = isEnter
+        ? ((toolbarModifiers?.shift ?? false) || (physicalShift && !isVirtual))
+        : (physicalShift || (toolbarModifiers?.shift ?? false));
     final meta = HardwareKeyboard.instance.isMetaPressed;
     final type = _terminalKeyEventType(event);
     final useCustomRepeat =
@@ -927,6 +957,21 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       hasShortcutModifier: hasShortcutModifier,
       type: type,
     );
+
+    if (handled &&
+        isEnter &&
+        type == TerminalKeyEventType.press &&
+        toolbarModifiers != null &&
+        (toolbarModifiers.ctrl ||
+            toolbarModifiers.alt ||
+            toolbarModifiers.shift)) {
+      widget.consumeTerminalKeyModifiers?.call();
+      // Soft keyboards often also deliver newline via IME after the key event.
+      if (_pendingEnterActionSuppressions < 1) {
+        _pendingEnterActionSuppressions = 1;
+      }
+      _pendingPerformedEnterText = _lastSentText;
+    }
 
     if (handled && event is KeyDownEvent && useCustomRepeat) {
       _startHardwareKeyRepeat(
@@ -3030,9 +3075,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           revision == _pendingComposingEnterRevision;
       final hadActiveToolbarModifier =
           widget.hasActiveToolbarModifier?.call() ?? false;
+      // Newlines must use the Enter key path (same as a physical Return), not
+      // the single-grapheme text modifier path.
+      final appendedOnlyEnterNewline = _enterCommitNewlineSequences.contains(
+        delta.appendedText,
+      );
       if (!pendingEnterActionOwnedBeforeReview &&
           hadActiveToolbarModifier &&
-          delta.appendedText.isNotEmpty) {
+          delta.appendedText.isNotEmpty &&
+          !appendedOnlyEnterNewline) {
         // One-shot terminal modifiers apply to a single key. Some IMEs can send
         // stale composing text in the same batch, so keep only the newest key.
         _cancelDeferredTrailingBackspaceImeClear();

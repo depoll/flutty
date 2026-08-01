@@ -14,7 +14,7 @@ import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart'
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
-const _terminalAlternateEnterInput = '\x1b\r';
+const _terminalShiftEnterNewlineInput = '\n';
 
 typedef _LoggedEditingState = ({
   String text,
@@ -741,6 +741,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   bool deleteDetection = true,
   bool tapToShowKeyboard = true,
   bool sensitiveInput = false,
+  bool manageFocus = true,
   TerminalTextInputReviewCallback? onReviewInsertedText,
   String Function()? resolveTextBeforeCursor,
   TerminalKeyModifierResolver? resolveTerminalKeyModifiers,
@@ -755,28 +756,29 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   final effectiveController =
       controller ?? TerminalTextInputHandlerController();
 
-  await tester.pumpWidget(
-    MaterialApp(
-      home: Scaffold(
-        body: TerminalTextInputHandler(
-          terminal: terminal,
-          focusNode: focusNode,
-          controller: effectiveController,
-          deleteDetection: deleteDetection,
-          readOnly: readOnly,
-          tapToShowKeyboard: tapToShowKeyboard,
-          sensitiveInput: sensitiveInput,
-          onReviewInsertedText: onReviewInsertedText,
-          resolveTextBeforeCursor: resolveTextBeforeCursor,
-          resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
-          consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
-          applyTerminalTextInputModifiers: applyTerminalTextInputModifiers,
-          hasActiveToolbarModifier: hasActiveToolbarModifier,
-          child: const SizedBox.expand(),
-        ),
-      ),
-    ),
+  Widget body = TerminalTextInputHandler(
+    terminal: terminal,
+    focusNode: focusNode,
+    controller: effectiveController,
+    deleteDetection: deleteDetection,
+    readOnly: readOnly,
+    tapToShowKeyboard: tapToShowKeyboard,
+    sensitiveInput: sensitiveInput,
+    manageFocus: manageFocus,
+    onReviewInsertedText: onReviewInsertedText,
+    resolveTextBeforeCursor: resolveTextBeforeCursor,
+    resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
+    consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
+    applyTerminalTextInputModifiers: applyTerminalTextInputModifiers,
+    hasActiveToolbarModifier: hasActiveToolbarModifier,
+    child: const SizedBox.expand(),
   );
+  // Production uses manageFocus: false with an external Focus (terminal view).
+  if (!manageFocus) {
+    body = Focus(focusNode: focusNode, child: body);
+  }
+
+  await tester.pumpWidget(MaterialApp(home: Scaffold(body: body)));
 
   focusNode.requestFocus();
   await tester.pump();
@@ -4866,32 +4868,237 @@ void main() {
 
       expect(
         harness.terminalOutput.join(),
-        _terminalAlternateEnterInput + _terminalKeyOutput(TerminalKey.enter),
+        _terminalShiftEnterNewlineInput + _terminalKeyOutput(TerminalKey.enter),
       );
 
       await _disposeTerminalHarness(tester, harness);
     });
 
-    for (final scenario in [
-      (name: 'Shift+Enter', modifier: LogicalKeyboardKey.shiftLeft),
-      (name: 'Alt+Enter', modifier: LogicalKeyboardKey.altLeft),
-    ]) {
-      testWidgets('hardware ${scenario.name} sends alternate enter', (
-        tester,
-      ) async {
-        final harness = await _pumpTerminalHarness(tester);
+    testWidgets('hardware Shift+Enter sends legacy LF newline', (tester) async {
+      final harness = await _pumpTerminalHarness(tester);
 
-        await tester.sendKeyDownEvent(scenario.modifier);
-        await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
-        await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
-        await tester.sendKeyUpEvent(scenario.modifier);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+
+      expect(harness.terminalOutput.join(), _terminalShiftEnterNewlineInput);
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets('hardware Alt+Enter sends meta-sends-escape CR', (
+      tester,
+    ) async {
+      final harness = await _pumpTerminalHarness(tester);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await tester.pump();
+
+      expect(harness.terminalOutput.join(), '\x1b\r');
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets(
+      'virtual Enter ignores stale soft-keyboard Shift and submits via IME',
+      (tester) async {
+        const virtualShiftKey = PhysicalKeyboardKey(
+          LogicalKeyboardKey.androidPlane + 59,
+        );
+        const virtualEnterKey = PhysicalKeyboardKey(
+          LogicalKeyboardKey.androidPlane + 66,
+        );
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        // Production terminal screen uses manageFocus: false and routes keys
+        // through the global HardwareKeyboard handler.
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Focus(
+                focusNode: focusNode,
+                child: TerminalTextInputHandler(
+                  terminal: terminal,
+                  focusNode: focusNode,
+                  deleteDetection: true,
+                  manageFocus: false,
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        // Soft keyboards often leave Shift pressed after capitalization while
+        // also emitting a synthetic Enter key event. That used to encode as
+        // alternate-enter (newline) in Codex/Cursor instead of submit.
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyDownEvent(
+            logicalKey: LogicalKeyboardKey.shiftLeft,
+            physicalKey: virtualShiftKey,
+            timeStamp: Duration.zero,
+          ),
+        );
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyDownEvent(
+            logicalKey: LogicalKeyboardKey.enter,
+            physicalKey: virtualEnterKey,
+            timeStamp: Duration.zero,
+          ),
+        );
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyUpEvent(
+            logicalKey: LogicalKeyboardKey.enter,
+            physicalKey: virtualEnterKey,
+            timeStamp: Duration.zero,
+          ),
+        );
         await tester.pump();
 
-        expect(harness.terminalOutput.join(), _terminalAlternateEnterInput);
+        expect(terminalOutput, isEmpty);
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        expect(terminalOutput.join(), _terminalKeyOutput(TerminalKey.enter));
+
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyUpEvent(
+            logicalKey: LogicalKeyboardKey.shiftLeft,
+            physicalKey: virtualShiftKey,
+            timeStamp: Duration.zero,
+          ),
+        );
+
+        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+        await tester.pump();
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'virtual Enter with toolbar Shift still sends LF newline via IME',
+      (tester) async {
+        const virtualEnterKey = PhysicalKeyboardKey(
+          LogicalKeyboardKey.androidPlane + 66,
+        );
+        var shiftActive = true;
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Focus(
+                focusNode: focusNode,
+                child: TerminalTextInputHandler(
+                  terminal: terminal,
+                  focusNode: focusNode,
+                  deleteDetection: true,
+                  manageFocus: false,
+                  resolveTerminalKeyModifiers: () =>
+                      (ctrl: false, alt: false, shift: shiftActive),
+                  consumeTerminalKeyModifiers: () => shiftActive = false,
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyDownEvent(
+            logicalKey: LogicalKeyboardKey.enter,
+            physicalKey: virtualEnterKey,
+            timeStamp: Duration.zero,
+          ),
+        );
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyUpEvent(
+            logicalKey: LogicalKeyboardKey.enter,
+            physicalKey: virtualEnterKey,
+            timeStamp: Duration.zero,
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, isEmpty);
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        expect(terminalOutput.join(), _terminalShiftEnterNewlineInput);
+        expect(shiftActive, isFalse);
+
+        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+        await tester.pump();
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'toolbar Shift applies to non-virtual Enter on the hardware path',
+      (tester) async {
+        var shiftActive = true;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          manageFocus: false,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: false, shift: shiftActive),
+          consumeTerminalKeyModifiers: () => shiftActive = false,
+        );
+
+        // Standard HID Enter (not platform-plane / virtual). Soft and external
+        // keyboards both use this on some devices; toolbar Shift must still
+        // apply because HardwareKeyboard does not mirror toolbar modifiers.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+
+        expect(harness.terminalOutput.join(), _terminalShiftEnterNewlineInput);
+        expect(shiftActive, isFalse);
 
         await _disposeTerminalHarness(tester, harness);
-      });
-    }
+      },
+    );
+
+    testWidgets(
+      'toolbar Alt applies to non-virtual Enter on the hardware path',
+      (tester) async {
+        var altActive = true;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          manageFocus: false,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: altActive, shift: false),
+          consumeTerminalKeyModifiers: () => altActive = false,
+        );
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+
+        expect(harness.terminalOutput.join(), '\x1b\r');
+        expect(altActive, isFalse);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
 
     testWidgets('virtual shifted text bypasses Kitty hardware key encoding', (
       tester,
@@ -5337,7 +5544,7 @@ void main() {
 
         expect(
           harness.terminalOutput.join(),
-          '$command$_terminalAlternateEnterInput',
+          '$command$_terminalShiftEnterNewlineInput',
         );
         expect(consumeCount, 1);
         expect(shiftActive, isFalse);
@@ -5449,7 +5656,7 @@ void main() {
         expect(reviewCount, 1);
         expect(
           harness.terminalOutput.join(),
-          '$command$_terminalAlternateEnterInput',
+          '$command$_terminalShiftEnterNewlineInput',
         );
         expect(consumeCount, 1);
         expect(shiftActive, isFalse);
@@ -5599,7 +5806,7 @@ void main() {
 
       expect(
         harness.terminalOutput.join(),
-        '$currentCommand$_terminalAlternateEnterInput',
+        '$currentCommand$_terminalShiftEnterNewlineInput',
       );
       expect(consumeCount, 1);
       expect(shiftActive, isFalse);
@@ -5639,7 +5846,7 @@ void main() {
 
         expect(
           harness.terminalOutput.join(),
-          '$command$_terminalAlternateEnterInput',
+          '$command$_terminalShiftEnterNewlineInput',
         );
         expect(consumeCount, 1);
 
@@ -5648,7 +5855,7 @@ void main() {
 
         expect(
           harness.terminalOutput.join(),
-          '$command$_terminalAlternateEnterInput'
+          '$command$_terminalShiftEnterNewlineInput'
           '${_terminalKeyOutput(TerminalKey.enter)}',
         );
 
@@ -5813,7 +6020,8 @@ void main() {
 
       expect(
         harness.terminalOutput.join(),
-        '\x1bx$_terminalAlternateEnterInput',
+        // Alt applies to the composed character; Enter+Alt is meta-sends-escape.
+        '\x1bx\x1b\r',
       );
       expect(toolbarController.isAltActive, isTrue);
 
@@ -6020,7 +6228,7 @@ void main() {
       expect(
         harness.terminalOutput.join(),
         'printf one${_terminalKeyOutput(TerminalKey.enter)}'
-        'printf two$_terminalAlternateEnterInput',
+        'printf two$_terminalShiftEnterNewlineInput',
       );
 
       await _disposeTerminalHarness(tester, harness);
@@ -6052,7 +6260,7 @@ void main() {
         expect(
           harness.terminalOutput.join(),
           'printf one${_terminalKeyOutput(TerminalKey.enter)}'
-          '$_terminalAlternateEnterInput',
+          '$_terminalShiftEnterNewlineInput',
         );
 
         await _disposeTerminalHarness(tester, harness);
@@ -9469,30 +9677,38 @@ void main() {
       await _disposeTerminalHarness(tester, harness);
     });
 
-    testWidgets('normalizes soft-keyboard newline before applying modifiers', (
-      tester,
-    ) async {
-      var modifierActive = true;
-      final harness = await _pumpTerminalHarness(
-        tester,
-        hasActiveToolbarModifier: () => modifierActive,
-        applyTerminalTextInputModifiers: (text) {
-          expect(text, '\r');
-          modifierActive = false;
-          return '\x1b\r';
-        },
-      );
+    testWidgets(
+      'soft-keyboard newline uses Enter key path even with toolbar modifiers',
+      (tester) async {
+        var shiftActive = true;
+        var textModifierCalls = 0;
+        final harness = await _pumpTerminalHarness(
+          tester,
+          hasActiveToolbarModifier: () => true,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: false, shift: shiftActive),
+          consumeTerminalKeyModifiers: () => shiftActive = false,
+          applyTerminalTextInputModifiers: (text) {
+            textModifierCalls++;
+            return text;
+          },
+        );
 
-      tester.testTextInput.updateEditingValue(
-        _editingValue('\n', selectionOffset: 1),
-      );
-      await tester.pump();
+        tester.testTextInput.updateEditingValue(
+          _editingValue('\n', selectionOffset: 1),
+        );
+        await tester.pump();
 
-      expect(harness.terminalOutput, <String>['\x1b\r']);
-      expect(modifierActive, isFalse);
+        // Newline must not go through the single-grapheme text modifier path.
+        expect(textModifierCalls, 0);
+        expect(harness.terminalOutput, <String>[
+          _terminalShiftEnterNewlineInput,
+        ]);
+        expect(shiftActive, isFalse);
 
-      await _disposeTerminalHarness(tester, harness);
-    });
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
 
     testWidgets(
       'controller clears the IME buffer after external terminal actions',

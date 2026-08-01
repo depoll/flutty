@@ -7343,14 +7343,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     void handleTerminalOutput(String data) {
-      // On iOS/Android soft keyboards, Return sends a lone '\n' via
-      // textInput(), but SSH expects '\r'. The proper
-      // keyInput(TerminalKey.enter) path already produces '\r', so we
-      // only normalize single-'\n' to avoid rewriting legitimate LF
-      // characters in pasted or multi-char input.
-      final output = normalizeTerminalOutputForRemoteShell(
-        data == '\n' ? '\r' : data,
-      );
+      // Enter keystroke CRLF collapse lives in sendTerminalEnterInput so paste
+      // and other producers of exact "\r\n" are not rewritten here.
+      final output = normalizeTerminalOutputForRemoteShell(data);
 
       if (_shouldSuppressMonkeyMuxTerminalControlInput(output)) {
         DiagnosticsLogService.instance.debug(
