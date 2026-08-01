@@ -1447,12 +1447,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   ) {
     final isActive = window.isActive;
     final title = _redactStoreScreenshotIdentities
-        ? switch (window.name.trim()) {
-            'claude' || 'claude-code' => 'Claude Code Workspace',
-            'copilot' => 'Mobile Copilot Workspace',
-            final name when name.isNotEmpty => name,
-            _ => window.displayTitle,
-          }
+        ? _storeScreenshotWindowTitle(window)
         : window.displayTitle;
     final iconColor = isActive
         ? theme.colorScheme.onPrimaryContainer
@@ -1786,12 +1781,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
     final isActive = window.isActive;
     final title = _redactStoreScreenshotIdentities
-        ? switch (window.name.trim()) {
-            'claude' || 'claude-code' => 'Claude Code Workspace',
-            'copilot' => 'Mobile Copilot Workspace',
-            final name when name.isNotEmpty => name,
-            _ => window.displayTitle,
-          }
+        ? _storeScreenshotWindowTitle(window)
         : window.displayTitle;
     final secondaryTitle = _redactStoreScreenshotIdentities
         ? null
@@ -1912,4 +1902,20 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             },
     );
   }
+}
+
+/// Store-safe window title that brands by detected agent without private names.
+String _storeScreenshotWindowTitle(TmuxWindow window) {
+  final tool =
+      window.foregroundAgentTool ??
+      agentLaunchToolForCommandName(window.name) ??
+      agentLaunchToolForCommandText(window.name);
+  if (tool != null) {
+    return '${tool.label} Workspace';
+  }
+  final name = window.name.trim();
+  if (name.isNotEmpty) {
+    return name;
+  }
+  return window.displayTitle;
 }
