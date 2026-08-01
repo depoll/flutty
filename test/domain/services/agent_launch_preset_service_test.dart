@@ -48,4 +48,13 @@ void main() {
 
     expect(await service.getPresetForHost(7), isNull);
   });
+
+  test('returns null for stored presets with unknown tool names', () async {
+    final settings = SettingsService(database);
+    await settings.setJson(SettingKeys.agentLaunchPresets, {
+      '9': {'tool': 'unknownFutureAgent'},
+    });
+
+    expect(await service.getPresetForHost(9), isNull);
+  });
 }

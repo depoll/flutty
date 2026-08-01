@@ -544,8 +544,13 @@ void main() {
     });
   });
 
-  test('fromJson falls back to claudeCode for unknown tool name', () {
-    final preset = AgentLaunchPreset.fromJson({'tool': 'unknownTool'});
-    expect(preset.tool, AgentLaunchTool.claudeCode);
+  test('fromJson rejects unknown tool names instead of rewriting them', () {
+    expect(
+      () => AgentLaunchPreset.fromJson({'tool': 'unknownTool'}),
+      throwsA(isA<FormatException>()),
+    );
+    expect(AgentLaunchPreset.tryFromJson({'tool': 'unknownTool'}), isNull);
+    expect(agentLaunchToolFromStorageName('codex'), AgentLaunchTool.codex);
+    expect(agentLaunchToolFromStorageName('unknownTool'), isNull);
   });
 }
