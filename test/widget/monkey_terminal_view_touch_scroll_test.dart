@@ -486,6 +486,58 @@ void main() {
     expect(output.length, greaterThan(afterLiftOutputCount));
   });
 
+  testWidgets('touch scroll inertia is bounded to one viewport', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            hardwareKeyboardOnly: true,
+            touchScrollToTerminal: true,
+          ),
+        ),
+      ),
+    );
+
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(150, 100),
+      ),
+    );
+    detector.onTouchScrollEnd!(
+      DragEndDetails(
+        primaryVelocity: -kMaxFlingVelocity,
+        velocity: const Velocity(
+          pixelsPerSecond: Offset(0, -kMaxFlingVelocity),
+        ),
+      ),
+    );
+
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+
+    final wheelEvents = output
+        .where((chunk) => chunk.startsWith('\u001b[<65;'))
+        .length;
+    expect(wheelEvents, greaterThan(0));
+    expect(wheelEvents, lessThanOrEqualTo(terminal.viewHeight ~/ 3));
+  });
+
   testWidgets('double taps invoke the terminal view callback', (tester) async {
     final terminal = Terminal();
     var doubleTapDowns = 0;
