@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.127"
+	monkeyMuxVersion                  = "0.1.128"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -11534,18 +11534,29 @@ func (w *muxWindow) themeHintModeReportLocked() bool {
 	return w.themeRefreshModeActiveLocked()
 }
 
+// agentThemeHintFocusTransitionLocked reports whether a coding-agent window
+// should receive a synthetic FocusOut/FocusIn pair on theme change when it has
+// not opted into DEC 2031.
+//
+// Most agent TUIs re-query colors (or otherwise refresh chrome) after a focus
+// transition. Gating on "is a coding agent with focus reporting" — not an
+// allowlist of tool names — keeps future agents working the same way.
+//
+// Codex is the deliberate exception: without DEC 2031 it treats synthetic
+// FocusOut/FocusIn as composer input. It still receives the safer FocusIn-only
+// nudge via themeHintFocusRefreshLocked and the agent OSC 11 refresh below.
 func (w *muxWindow) agentThemeHintFocusTransitionLocked() bool {
 	if !w.agentThemeHintRefreshLocked() {
 		return false
 	}
-	switch w.agentToolLocked() {
-	case "claude", "gemini", "opencode", "antigravity":
-		return true
-	default:
-		return false
-	}
+	return !agentRejectsSyntheticFocusTransition(w.agentToolLocked())
 }
 
+// agentThemeHintRefreshKeysLocked returns unsolicited OSC color keys that known
+// coding agents already tolerate on theme refresh (the tmux-era path).
+//
+// This is intentionally agent-vs-not, not per-agent: unknown focus-aware TUIs
+// must not receive OSC pushes (composer spew). Agents share one OSC 11 push.
 func (w *muxWindow) agentThemeHintRefreshKeysLocked() []string {
 	if !w.agentThemeHintRefreshLocked() {
 		return nil
@@ -11555,6 +11566,19 @@ func (w *muxWindow) agentThemeHintRefreshKeysLocked() []string {
 
 func (w *muxWindow) agentThemeHintRefreshLocked() bool {
 	return w.focusModeActiveLocked() && w.agentToolLocked() != ""
+}
+
+// agentRejectsSyntheticFocusTransition reports agents that mishandle synthetic
+// FocusOut/FocusIn pairs when they have not enabled DEC 2031 color-scheme
+// updates. Keep this denylist tiny; prefer capability gates (2031 / focus /
+// prior OSC queries) for everyone else.
+func agentRejectsSyntheticFocusTransition(tool string) bool {
+	switch tool {
+	case "codex":
+		return true
+	default:
+		return false
+	}
 }
 
 func (w *muxWindow) themeRefreshModeActiveLocked() bool {
