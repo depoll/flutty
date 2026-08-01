@@ -652,7 +652,7 @@ void main() {
       expect(output, contains(_terminalShiftEnterNewlineInput));
     });
 
-    testWidgets('toolbar Alt+Enter matches keyInput Enter+Alt', (tester) async {
+    testWidgets('toolbar Alt+Enter sends meta-sends-escape CR', (tester) async {
       final output = <String>[];
       terminal.onOutput = output.add;
 
@@ -667,8 +667,7 @@ void main() {
       await tester.tap(find.byTooltip('Enter'));
       await tester.pump();
 
-      // Legacy keytab: Alt does not change Enter (same as plain Return).
-      expect(output, contains(_terminalKeyOutput(TerminalKey.enter)));
+      expect(output, contains('\x1b\r'));
     });
 
     test('keeps bottom safe-area padding when keyboard is closed', () {

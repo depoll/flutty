@@ -7343,12 +7343,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     void handleTerminalOutput(String data) {
-      // When DEC LNM is on, the legacy Return keytab emits CRLF as one keystroke.
-      // Collapse only that exact payload to CR so the LF half is not also
-      // delivered as a newline. Lone LF (Shift+Enter / Ctrl+J) is left alone.
-      final output = normalizeTerminalOutputForRemoteShell(
-        data == '\r\n' ? '\r' : data,
-      );
+      // Enter keystroke CRLF collapse lives in sendTerminalEnterInput so paste
+      // and other producers of exact "\r\n" are not rewritten here.
+      final output = normalizeTerminalOutputForRemoteShell(data);
 
       if (_shouldSuppressMonkeyMuxTerminalControlInput(output)) {
         DiagnosticsLogService.instance.debug(

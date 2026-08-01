@@ -4888,7 +4888,7 @@ void main() {
       await _disposeTerminalHarness(tester, harness);
     });
 
-    testWidgets('hardware Alt+Enter matches keyInput Enter+Alt', (
+    testWidgets('hardware Alt+Enter sends meta-sends-escape CR', (
       tester,
     ) async {
       final harness = await _pumpTerminalHarness(tester);
@@ -4899,11 +4899,7 @@ void main() {
       await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
       await tester.pump();
 
-      // Legacy keytab does not special-case Alt+Enter; same as plain Enter.
-      expect(
-        harness.terminalOutput.join(),
-        _terminalKeyOutput(TerminalKey.enter),
-      );
+      expect(harness.terminalOutput.join(), '\x1b\r');
 
       await _disposeTerminalHarness(tester, harness);
     });
@@ -5975,9 +5971,8 @@ void main() {
 
       expect(
         harness.terminalOutput.join(),
-        // Alt applies to the composed character; Enter+Alt is plain Enter
-        // under the legacy keytab (same as a physical keyboard).
-        '\x1bx${_terminalKeyOutput(TerminalKey.enter)}',
+        // Alt applies to the composed character; Enter+Alt is meta-sends-escape.
+        '\x1bx\x1b\r',
       );
       expect(toolbarController.isAltActive, isTrue);
 
