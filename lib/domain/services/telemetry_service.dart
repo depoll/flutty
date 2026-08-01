@@ -819,11 +819,12 @@ class TelemetryService {
 
   /// Builds the agent-tool analytics allowlist from [AgentLaunchTool].
   ///
-  /// Includes both snake_case and compacted legacy forms so older event values
-  /// remain accepted without hand-maintaining a parallel list.
+  /// Uses [AgentLaunchTool.uiDisplayOrder] as the curated shipped-tool set so
+  /// analytics stays aligned with product UI. Includes both snake_case and
+  /// compacted legacy forms so older event values remain accepted.
   static Set<String> _buildAllowedAgentTools() {
     final allowed = <String>{'all', 'unknown'};
-    for (final tool in AgentLaunchTool.values) {
+    for (final tool in AgentLaunchTool.uiDisplayOrder) {
       allowed
         ..addAll(_telemetryAllowlistTokens(tool.name))
         ..addAll(_telemetryAllowlistTokens(tool.commandName));
