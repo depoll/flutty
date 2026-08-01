@@ -351,13 +351,14 @@ void main() {
     test('parses live session titles by matched pane PID', () {
       const sep = tmuxWindowFieldSeparator;
 
-      final metadata = parseCopilotActiveSessionMetadataOutput(
-        'session-1${sep}50122${sep}42${sep}User named Copilot session\n'
-        'session-2${sep}99999${sep}77$sep\n',
+      final metadata = parseAgentActiveSessionMetadataOutput(
+        'copilot${sep}session-1${sep}50122${sep}42${sep}medium${sep}User named Copilot session\n'
+        'copilot${sep}session-2${sep}99999${sep}77${sep}medium$sep\n',
         const {42, 88},
       );
 
       expect(metadata.keys, [42]);
+      expect(metadata[42]?.tool, AgentLaunchTool.copilotCli);
       expect(metadata[42]?.sessionId, 'session-1');
       expect(metadata[42]?.title, 'User named Copilot session');
     });

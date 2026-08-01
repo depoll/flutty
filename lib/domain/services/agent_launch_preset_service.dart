@@ -11,13 +11,16 @@ class AgentLaunchPresetService {
   final SettingsService _settings;
 
   /// Loads the saved preset for [hostId], if one exists.
+  ///
+  /// Returns `null` when the stored payload is missing or references an
+  /// unknown agent tool, so stale presets never silently become another CLI.
   Future<AgentLaunchPreset?> getPresetForHost(int hostId) async {
     final presets = await _readPresetMap();
     final value = presets[hostId.toString()];
     if (value is! Map<String, dynamic>) {
       return null;
     }
-    return AgentLaunchPreset.fromJson(value);
+    return AgentLaunchPreset.tryFromJson(value);
   }
 
   /// Saves [preset] for [hostId].
