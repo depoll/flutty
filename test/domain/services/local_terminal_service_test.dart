@@ -11,6 +11,22 @@ import 'package:monkeyssh/domain/models/host_kind.dart';
 import 'package:monkeyssh/domain/services/local_terminal_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
+bool get _supportsLocalProcess =>
+    Platform.isMacOS || Platform.isLinux || Platform.isWindows;
+
+String get _posixOrWindowsShell => Platform.isWindows
+    ? (Platform.environment['ComSpec'] ?? 'cmd.exe')
+    : '/bin/sh';
+
+String _echoCommand(String message) {
+  if (Platform.isWindows) {
+    return 'echo $message';
+  }
+  return 'printf "$message\\n"';
+}
+
+String get _exitZeroCommand => Platform.isWindows ? 'exit /B 0' : 'exit 0';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -25,6 +41,39 @@ void main() {
       expect(launch.environment['COLORTERM'], 'truecolor');
       expect(launch.remoteVersion, contains('MonkeySSH_Local'));
     });
+  });
+
+  group('LocalTerminalSshSession.exec', () {
+    test(
+      'drains short command stdout before completing',
+      () async {
+        final session = await LocalTerminalSshSession.exec(
+          command: _echoCommand('monkey-local-exec'),
+          environment: const {'TERM': 'xterm-256color'},
+          shellExecutable: _posixOrWindowsShell,
+        );
+        final output = StringBuffer();
+        final stdoutDone = session.stdout.forEach((chunk) {
+          output.write(utf8.decode(chunk));
+        });
+        await session.done.timeout(const Duration(seconds: 5));
+        await stdoutDone.timeout(const Duration(seconds: 1));
+        expect(output.toString(), contains('monkey-local-exec'));
+        expect(session.exitCode, 0);
+      },
+      skip: !_supportsLocalProcess,
+    );
+
+    test('resize is a no-op for non-pty exec sessions', () async {
+      final session = await LocalTerminalSshSession.exec(
+        command: _exitZeroCommand,
+        environment: const {},
+        shellExecutable: _posixOrWindowsShell,
+      );
+      session.resizeTerminal(120, 40);
+      await session.done.timeout(const Duration(seconds: 5));
+      expect(session.exitCode, 0);
+    }, skip: !_supportsLocalProcess);
   });
 
   group('SshService local terminal connect', () {
@@ -70,36 +119,12 @@ void main() {
         expect(session!.isLocalTerminal, isTrue);
         expect(session.client, isA<LocalTerminalSshClient>());
         expect(session.remoteSoftwareVersion, contains('MonkeySSH_Local'));
-      },
-      skip:
-          !Platform.isMacOS &&
-          !Platform.isLinux &&
-          !Platform.isWindows &&
-          !Platform.isAndroid,
-    );
 
-    test(
-      'local exec runs a short command without a PTY plugin',
-      () async {
-        final hostId = await database
-            .into(database.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: 'This machine',
-                hostKind: Value(HostKind.local.storageValue),
-                hostname: localTerminalHostname,
-                port: const Value(localTerminalPort),
-                username: defaultLocalTerminalUsername(),
-              ),
-            );
-        final result = await sshService.connectToHost(hostId);
-        expect(result.success, isTrue, reason: result.error);
-        final session = sshService.getSession(result.connectionId!);
-        final client = session!.client as LocalTerminalSshClient;
-        final output = utf8.decode(await client.run('echo monkey-local-exec'));
-        expect(output, contains('monkey-local-exec'));
+        final client = session.client as LocalTerminalSshClient;
+        final bytes = await client.run(_echoCommand('monkey-via-client'));
+        expect(utf8.decode(bytes), contains('monkey-via-client'));
       },
-      skip: !Platform.isMacOS && !Platform.isLinux && !Platform.isWindows,
+      skip: !_supportsLocalProcess && !Platform.isAndroid,
     );
   });
 }

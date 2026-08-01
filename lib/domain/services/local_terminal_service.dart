@@ -257,6 +257,7 @@ class LocalTerminalSshClient implements SSHClient {
   final String remoteVersion;
 
   final _done = Completer<void>();
+  final _sessions = <LocalTerminalSshSession>{};
   bool _isClosed = false;
 
   /// Whether this client serves a local terminal host.
@@ -274,6 +275,22 @@ class LocalTerminalSshClient implements SSHClient {
   @override
   String get username => host.username;
 
+  Map<String, String> _mergedEnvironment([Map<String, String>? overrides]) => {
+    ...Platform.environment,
+    ...environment,
+    ...?overrides,
+  };
+
+  LocalTerminalSshSession _track(LocalTerminalSshSession session) {
+    _sessions.add(session);
+    unawaited(
+      session.done.whenComplete(() {
+        _sessions.remove(session);
+      }),
+    );
+    return session;
+  }
+
   @override
   Future<SSHSession> shell({
     SSHPtyConfig? pty = const SSHPtyConfig(),
@@ -281,12 +298,14 @@ class LocalTerminalSshClient implements SSHClient {
     Map<String, String>? environment,
   }) async {
     _ensureOpen();
-    return LocalTerminalSshSession.interactive(
-      executable: executable,
-      arguments: arguments,
-      workingDirectory: workingDirectory,
-      environment: {...this.environment, ...?environment},
-      pty: pty ?? const SSHPtyConfig(),
+    return _track(
+      LocalTerminalSshSession.interactive(
+        executable: executable,
+        arguments: arguments,
+        workingDirectory: workingDirectory,
+        environment: _mergedEnvironment(environment),
+        pty: pty ?? const SSHPtyConfig(),
+      ),
     );
   }
 
@@ -301,11 +320,13 @@ class LocalTerminalSshClient implements SSHClient {
     if (pty != null && _looksLikeLoginShellCommand(command)) {
       return shell(pty: pty, environment: environment);
     }
-    return LocalTerminalSshSession.exec(
-      command: command,
-      workingDirectory: workingDirectory,
-      environment: {...this.environment, ...?environment},
-      shellExecutable: executable,
+    return _track(
+      await LocalTerminalSshSession.exec(
+        command: command,
+        workingDirectory: workingDirectory,
+        environment: _mergedEnvironment(environment),
+        shellExecutable: executable,
+      ),
     );
   }
 
@@ -391,7 +412,7 @@ class LocalTerminalSshClient implements SSHClient {
       launch.executable,
       launch.arguments,
       workingDirectory: workingDirectory,
-      environment: {...this.environment, ...?environment},
+      environment: _mergedEnvironment(environment),
       stdoutEncoding: utf8,
       stderrEncoding: utf8,
     );
@@ -417,6 +438,11 @@ class LocalTerminalSshClient implements SSHClient {
       return;
     }
     _isClosed = true;
+    final openSessions = List<LocalTerminalSshSession>.of(_sessions);
+    _sessions.clear();
+    for (final session in openSessions) {
+      session.close();
+    }
     if (!_done.isCompleted) {
       _done.complete();
     }
@@ -480,26 +506,40 @@ class LocalTerminalSshSession implements SSHSession {
     final args = Platform.isWindows
         ? _windowsCommandArgs(shellExecutable, command)
         : <String>['-c', command];
-    final process = await Process.start(
+    final result = await Process.run(
       shellExecutable,
       args,
       workingDirectory: workingDirectory,
-      environment: environment,
+      // Merge onto the platform environment so PATH/HOME stay intact.
+      environment: {...Platform.environment, ...environment},
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
     );
-    return LocalTerminalSshSession._().._attachProcess(process);
+    final session = LocalTerminalSshSession._();
+    final stdoutBytes = utf8.encode('${result.stdout}');
+    final stderrBytes = utf8.encode('${result.stderr}');
+    if (stdoutBytes.isNotEmpty) {
+      session._stdoutController.add(Uint8List.fromList(stdoutBytes));
+    }
+    if (stderrBytes.isNotEmpty) {
+      session._stderrController.add(Uint8List.fromList(stderrBytes));
+    }
+    session._finish(exitCode: result.exitCode, killProcess: false);
+    return session;
   }
 
+  static const _outputDrainTimeout = Duration(seconds: 2);
+
   Pty? _pty;
-  Process? _process;
   late final StreamSubscription<Uint8List> _stdinSubscription;
   StreamSubscription<List<int>>? _outputSubscription;
-  StreamSubscription<List<int>>? _stderrSubscription;
   final StreamController<Uint8List> _stdinController;
   final StreamController<Uint8List> _stdoutController;
   final StreamController<Uint8List> _stderrController;
   final _done = Completer<void>();
   final _exitCompleter = Completer<int?>();
   bool _closed = false;
+  bool _finishStarted = false;
   int? _exitCode;
 
   @override
@@ -528,15 +568,7 @@ class LocalTerminalSshSession implements SSHSession {
     if (_closed) {
       return;
     }
-    final pty = _pty;
-    if (pty != null) {
-      pty.write(data);
-      return;
-    }
-    final process = _process;
-    if (process != null) {
-      process.stdin.add(data);
-    }
+    _pty?.write(data);
   }
 
   @override
@@ -557,7 +589,7 @@ class LocalTerminalSshSession implements SSHSession {
 
   @override
   void close() {
-    unawaited(_finish(exitCode: _exitCode));
+    _finish(exitCode: _exitCode);
   }
 
   @override
@@ -570,16 +602,7 @@ class LocalTerminalSshSession implements SSHSession {
 
   @override
   void kill(SSHSignal signal) {
-    final mapped = _mapSignal(signal);
-    final pty = _pty;
-    if (pty != null) {
-      pty.kill(mapped);
-      return;
-    }
-    final process = _process;
-    if (process != null) {
-      process.kill(mapped);
-    }
+    _pty?.kill(_mapSignal(signal));
   }
 
   void _handleStdin(Uint8List data) {
@@ -588,6 +611,15 @@ class LocalTerminalSshSession implements SSHSession {
 
   void _attachPty(Pty pty) {
     _pty = pty;
+    var outputDone = false;
+    int? code;
+    void maybeFinish() {
+      if (_finishStarted || code == null || !outputDone) {
+        return;
+      }
+      _finish(exitCode: code, killProcess: false);
+    }
+
     _outputSubscription = pty.output.listen(
       (chunk) {
         if (!_stdoutController.isClosed) {
@@ -598,95 +630,54 @@ class LocalTerminalSshSession implements SSHSession {
         if (!_stdoutController.isClosed) {
           _stdoutController.addError(error, stackTrace);
         }
+        outputDone = true;
+        maybeFinish();
       },
       onDone: () {
-        unawaited(_finishFromPty());
+        outputDone = true;
+        maybeFinish();
       },
     );
     unawaited(
-      pty.exitCode.then((code) {
-        unawaited(_finish(exitCode: code));
+      pty.exitCode.then((exitCode) {
+        code = exitCode;
+        maybeFinish();
+        // If output stalls after exit, finish after a short drain window.
+        Future<void>.delayed(_outputDrainTimeout, () {
+          outputDone = true;
+          maybeFinish();
+        });
       }),
     );
   }
 
-  void _attachProcess(Process process) {
-    _process = process;
-    _outputSubscription = process.stdout.listen(
-      (chunk) {
-        if (!_stdoutController.isClosed) {
-          _stdoutController.add(Uint8List.fromList(chunk));
-        }
-      },
-      onDone: () {
-        unawaited(_finishFromProcess());
-      },
-    );
-    _stderrSubscription = process.stderr.listen((chunk) {
-      if (!_stderrController.isClosed) {
-        _stderrController.add(Uint8List.fromList(chunk));
-      }
-    });
-    unawaited(
-      process.exitCode.then((code) {
-        unawaited(_finish(exitCode: code));
-      }),
-    );
-  }
-
-  Future<void> _finishFromPty() async {
-    final pty = _pty;
-    if (pty == null) {
-      await _finish(exitCode: _exitCode ?? 0);
+  void _finish({required int? exitCode, bool killProcess = true}) {
+    if (_finishStarted) {
       return;
     }
-    final code = await pty.exitCode;
-    await _finish(exitCode: code);
-  }
-
-  Future<void> _finishFromProcess() async {
-    final process = _process;
-    if (process == null) {
-      await _finish(exitCode: _exitCode ?? 0);
-      return;
-    }
-    final code = await process.exitCode;
-    await _finish(exitCode: code);
-  }
-
-  Future<void> _finish({required int? exitCode}) async {
-    if (_closed) {
-      return;
-    }
+    _finishStarted = true;
     _closed = true;
     _exitCode = exitCode;
-    await _stdinSubscription.cancel();
-    await _outputSubscription?.cancel();
-    await _stderrSubscription?.cancel();
-    final pty = _pty;
-    if (pty != null) {
-      try {
-        pty.kill();
-      } on Object {
-        // Best-effort.
-      }
-    }
-    final process = _process;
-    if (process != null) {
-      try {
-        process.kill();
-      } on Object {
-        // Best-effort.
+    unawaited(_stdinSubscription.cancel());
+    unawaited(_outputSubscription?.cancel() ?? Future<void>.value());
+    if (killProcess) {
+      final pty = _pty;
+      if (pty != null) {
+        try {
+          pty.kill();
+        } on Object {
+          // Best-effort.
+        }
       }
     }
     if (!_stdinController.isClosed) {
-      await _stdinController.close();
+      unawaited(_stdinController.close());
     }
     if (!_stdoutController.isClosed) {
-      await _stdoutController.close();
+      unawaited(_stdoutController.close());
     }
     if (!_stderrController.isClosed) {
-      await _stderrController.close();
+      unawaited(_stderrController.close());
     }
     if (!_exitCompleter.isCompleted) {
       _exitCompleter.complete(exitCode);

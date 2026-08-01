@@ -139,7 +139,8 @@ final routerProvider = Provider<GoRouter>((ref) {
         name: 'host-add',
         builder: (context, state) {
           final kindParam = state.uri.queryParameters['kind'];
-          final initialHostKind = kindParam == 'local'
+          final initialHostKind =
+              kindParam == 'local' && isLocalTerminalSupported()
               ? HostKind.local
               : HostKind.ssh;
           return HostEditScreen(

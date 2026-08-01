@@ -74,13 +74,20 @@ bool shouldApplyPortForwardLive({
   required ActiveSessionsNotifier sessions,
   required PortForward portForward,
   PortForward? previous,
-}) =>
-    portForward.autoStart ||
-    (previous != null &&
-        isPortForwardActiveOnConnectedSession(
-          sessions: sessions,
-          portForward: previous,
-        ));
+}) {
+  if (_connectedSessionsForHost(
+    sessions,
+    portForward.hostId,
+  ).any((session) => session.isLocalTerminal)) {
+    return false;
+  }
+  return portForward.autoStart ||
+      (previous != null &&
+          isPortForwardActiveOnConnectedSession(
+            sessions: sessions,
+            portForward: previous,
+          ));
+}
 
 /// Applies [portForward] to an existing connection without reconnecting.
 ///
@@ -132,6 +139,11 @@ Future<PortForwardActivationResult> _activatePortForwardOnConnectedSession({
     sessions,
     portForward.hostId,
   );
+  if (connectedSessions.any((session) => session.isLocalTerminal)) {
+    return const PortForwardActivationResult(
+      status: PortForwardActivationStatus.failed,
+    );
+  }
   final activeOwners = connectedSessions
       .where(
         (session) =>

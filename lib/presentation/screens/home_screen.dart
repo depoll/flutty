@@ -883,12 +883,6 @@ class HostsPanel extends ConsumerWidget {
         PanelHeader(
           title: 'hosts',
           actions: [
-            if (isLocalTerminalSupported())
-              _ActionButton(
-                icon: Icons.computer_outlined,
-                label: 'Local',
-                onTap: () => context.push('/hosts/add?kind=local'),
-              ),
             _ActionButton(
               icon: Icons.add,
               label: 'Add Host',
@@ -926,12 +920,6 @@ class HostsPanel extends ConsumerWidget {
       primaryLabel: 'Add Host',
       onPrimary: () => context.push('/hosts/add'),
       secondaryActions: [
-        if (isLocalTerminalSupported())
-          BrandEmptyAction(
-            icon: Icons.computer_outlined,
-            label: 'Add Local Terminal',
-            onTap: () => context.push('/hosts/add?kind=local'),
-          ),
         BrandEmptyAction(
           icon: Icons.content_paste_go_outlined,
           label: 'Paste SSH URL',

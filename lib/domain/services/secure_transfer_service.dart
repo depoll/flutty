@@ -14,6 +14,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../models/auto_connect_command.dart';
 import '../models/host_cli_launch_preferences.dart';
+import '../models/host_kind.dart';
 import 'diagnostics_log_service.dart';
 import 'host_cli_launch_preferences_service.dart';
 import 'host_key_verification.dart';
@@ -143,6 +144,11 @@ class MigrationPreview {
 
   /// Number of known hosts.
   final int knownHostCount;
+}
+
+String _normalizedImportedHostKind(Object? raw) {
+  final kind = hostKindFromStorage(raw is String ? raw : null);
+  return kind.storageValue;
 }
 
 /// Service that encrypts and imports offline transfer payloads.
@@ -438,7 +444,7 @@ class SecureTransferService {
       final hostId = await _hostRepository.insert(
         HostsCompanion.insert(
           label: _requiredString(hostData, 'label'),
-          hostKind: Value(_optionalString(hostData['hostKind']) ?? 'ssh'),
+          hostKind: Value(_normalizedImportedHostKind(hostData['hostKind'])),
           hostname: _requiredString(hostData, 'hostname'),
           port: Value(_optionalInt(hostData['port']) ?? 22),
           username: _requiredString(hostData, 'username'),
@@ -984,7 +990,7 @@ class SecureTransferService {
       final newId = await _hostRepository.insert(
         HostsCompanion.insert(
           label: _requiredString(item, 'label'),
-          hostKind: Value(_optionalString(item['hostKind']) ?? 'ssh'),
+          hostKind: Value(_normalizedImportedHostKind(item['hostKind'])),
           hostname: _requiredString(item, 'hostname'),
           port: Value(_optionalInt(item['port']) ?? 22),
           username: _requiredString(item, 'username'),

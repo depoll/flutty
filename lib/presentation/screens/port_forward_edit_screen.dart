@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../../domain/models/host_kind.dart';
 import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/port_forward_runtime_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -65,9 +66,17 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
 
   Future<void> _loadHosts() async {
     final hosts = await ref.read(hostRepositoryProvider).getAll();
-    if (mounted) {
-      setState(() => _hosts = hosts);
+    if (!mounted) {
+      return;
     }
+    final sshHosts = hosts.where((host) => !isLocalTerminalHost(host)).toList();
+    setState(() {
+      _hosts = sshHosts;
+      if (_selectedHostId != null &&
+          !sshHosts.any((host) => host.id == _selectedHostId)) {
+        _selectedHostId = null;
+      }
+    });
   }
 
   Future<void> _loadPortForward() async {
@@ -393,6 +402,23 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
 
   Future<void> _savePortForward() async {
     if (!_formKey.currentState!.validate()) return;
+    final selectedHostId = _selectedHostId;
+    if (selectedHostId == null) {
+      return;
+    }
+    final selectedHost = _hosts.cast<Host?>().firstWhere(
+      (host) => host?.id == selectedHostId,
+      orElse: () => null,
+    );
+    if (selectedHost == null || isLocalTerminalHost(selectedHost)) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Port forwards require an SSH host.')),
+      );
+      return;
+    }
     final isRemote = _forwardType == 'remote';
     final bindHost = isRemote
         ? _remoteHostController.text.trim()
@@ -417,7 +443,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
         // Update existing port forward
         savedPortForward = previousPortForward.copyWith(
           name: _nameController.text,
-          hostId: _selectedHostId,
+          hostId: selectedHostId,
           forwardType: _forwardType,
           localHost: _localHostController.text,
           localPort: int.parse(_localPortController.text),
@@ -431,7 +457,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
         final portForwardId = await repo.insert(
           PortForwardsCompanion.insert(
             name: _nameController.text,
-            hostId: _selectedHostId!,
+            hostId: selectedHostId,
             forwardType: _forwardType,
             localHost: drift.Value(_localHostController.text),
             localPort: int.parse(_localPortController.text),
@@ -443,7 +469,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
         savedPortForward = PortForward(
           id: portForwardId,
           name: _nameController.text,
-          hostId: _selectedHostId!,
+          hostId: selectedHostId,
           forwardType: _forwardType,
           localHost: _localHostController.text,
           localPort: int.parse(_localPortController.text),

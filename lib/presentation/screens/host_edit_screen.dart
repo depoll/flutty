@@ -212,10 +212,51 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   void _applyLocalTerminalDefaults() {
-    _labelController.text = defaultLocalTerminalHostLabel();
+    if (_labelController.text.trim().isEmpty ||
+        _labelController.text.trim() == 'My Server') {
+      _labelController.text = defaultLocalTerminalHostLabel();
+    }
     _hostnameController.text = localTerminalHostname;
     _portController.text = '$localTerminalPort';
-    _usernameController.text = defaultLocalTerminalUsername();
+    if (_usernameController.text.trim().isEmpty) {
+      _usernameController.text = defaultLocalTerminalUsername();
+    }
+    _passwordController.clear();
+    _selectedKeyId = null;
+    _selectedJumpHostId = null;
+    _skipJumpHostOnSsids = const [];
+    _selectedStartupMode = HostStartupMode.none;
+    _selectedAutoConnectMode = AutoConnectCommandMode.none;
+    _autoConnectCommandController.clear();
+    _selectedAutoConnectSnippetId = null;
+    _autoForwardPorts = false;
+  }
+
+  void _applySshHostDefaultsFromLocal() {
+    if (_hostnameController.text.trim() == localTerminalHostname) {
+      _hostnameController.clear();
+    }
+    if (_portController.text.trim() == '$localTerminalPort') {
+      _portController.text = '22';
+    }
+    if (_labelController.text.trim() == defaultLocalTerminalHostLabel()) {
+      _labelController.clear();
+    }
+  }
+
+  void _setLocalTerminalEnabled(bool enabled) {
+    if (!isLocalTerminalSupported() || widget.hostId != null) {
+      return;
+    }
+    setState(() {
+      _hostKind = enabled ? HostKind.local : HostKind.ssh;
+      if (enabled) {
+        _applyLocalTerminalDefaults();
+      } else {
+        _applySshHostDefaultsFromLocal();
+      }
+    });
+    _updateDirtyState();
   }
 
   void _applySshUrl(String rawUrl) {
@@ -498,19 +539,26 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         ),
                         const SizedBox(height: 16),
 
-                        if (_isLocalHost) ...[
-                          Card(
-                            child: ListTile(
-                              leading: const Icon(Icons.computer_outlined),
-                              title: const Text('Local terminal'),
-                              subtitle: Text(
-                                defaultTargetPlatform == TargetPlatform.android
-                                    ? 'Opens a shell in this app’s sandbox on the device.'
-                                    : 'Opens a shell on this computer without SSH.',
-                              ),
+                        if (isLocalTerminalSupported()) ...[
+                          SwitchListTile(
+                            key: const Key('host-local-terminal-switch'),
+                            contentPadding: EdgeInsets.zero,
+                            secondary: const Icon(Icons.computer_outlined),
+                            title: const Text('Local terminal'),
+                            subtitle: Text(
+                              defaultTargetPlatform == TargetPlatform.android
+                                  ? 'Open a shell in this app’s sandbox instead of SSH.'
+                                  : 'Open a shell on this computer instead of SSH.',
                             ),
+                            value: _isLocalHost,
+                            onChanged: widget.hostId == null
+                                ? _setLocalTerminalEnabled
+                                : null,
                           ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 8),
+                        ],
+
+                        if (_isLocalHost) ...[
                           KeyedSubtree(
                             key: _usernameFieldLocationKey,
                             child: TextFormField(

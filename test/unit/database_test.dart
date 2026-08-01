@@ -889,6 +889,7 @@ void main() {
           'remote_mux_backend',
           'auto_forward_ports',
           'port_proxy_name',
+          'host_kind',
         ]) {
           expect(
             names,
@@ -896,6 +897,62 @@ void main() {
             reason: 'PRAGMA table_info must include guarded column: $guarded',
           );
         }
+      },
+    );
+
+    test(
+      'v11 migration adds host_kind and defaults existing hosts to ssh',
+      () async {
+        final dbFile = await createTestDbFile('migrate-v10-host-kind');
+
+        // Build a complete current-schema database, then surgically remove
+        // host_kind and roll user_version back to 10 so onUpgrade must add it.
+        final seed = AppDatabase.forTesting(NativeDatabase(dbFile));
+        await seed.select(seed.settings).get();
+        final seededHostId = await seed
+            .into(seed.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Legacy SSH host',
+                hostname: 'legacy.example.com',
+                username: 'root',
+              ),
+            );
+        final columnRows = await seed
+            .customSelect('PRAGMA table_info(hosts)')
+            .get();
+        final columnNames = columnRows
+            .map((row) => row.read<String>('name'))
+            .where((name) => name != 'host_kind')
+            .toList(growable: false);
+        final quotedColumns = columnNames.map((name) => '"$name"').join(', ');
+        await seed.customStatement(
+          'CREATE TABLE hosts_v10 AS SELECT $quotedColumns FROM hosts;',
+        );
+        await seed.customStatement('DROP TABLE hosts;');
+        await seed.customStatement('ALTER TABLE hosts_v10 RENAME TO hosts;');
+        await seed.customStatement('PRAGMA user_version = 10');
+        await seed.close();
+
+        final upgraded = AppDatabase.forTesting(NativeDatabase(dbFile));
+        addTearDown(() async => upgraded.close());
+
+        final hostColumns = await upgraded
+            .customSelect('PRAGMA table_info(hosts)')
+            .get();
+        final names = hostColumns.map((r) => r.read<String>('name')).toSet();
+        expect(names, contains('host_kind'));
+
+        final host = await (upgraded.select(
+          upgraded.hosts,
+        )..where((h) => h.id.equals(seededHostId))).getSingle();
+        expect(host.hostKind, 'ssh');
+        expect(host.label, 'Legacy SSH host');
+
+        final versionRows = await upgraded
+            .customSelect('PRAGMA user_version')
+            .get();
+        expect(versionRows.first.read<int>('user_version'), 11);
       },
     );
   });
