@@ -19,6 +19,22 @@ const androidLinuxTerminalSetupPort = 8022;
 /// Default username used inside the AVF Debian image.
 const androidLinuxTerminalSetupUsername = 'droid';
 
+/// Label used for hosts created by Linux Terminal setup.
+const androidLinuxTerminalHostLabel = 'Android Linux Terminal';
+
+/// Marker stored in host notes for recovery UX.
+const androidLinuxTerminalHostNotesMarker =
+    'Created by MonkeySSH Linux Terminal setup';
+
+/// Whether [host] was created for Android's AVF Linux Terminal SSH access.
+bool isAndroidLinuxTerminalHost(Host host) {
+  if (host.label.trim() == androidLinuxTerminalHostLabel) {
+    return true;
+  }
+  final notes = host.notes?.trim() ?? '';
+  return notes.contains(androidLinuxTerminalHostNotesMarker);
+}
+
 /// Progress / result of an Android Linux Terminal setup attempt.
 @immutable
 class AndroidLinuxTerminalSetupState {
@@ -245,6 +261,18 @@ class AndroidLinuxTerminalSetupService {
     await _launcher.openDeveloperOptions();
   }
 
+  /// Opens Terminal and shows a lightweight recovery notification after a
+  /// failed SSH connect (does not regenerate keys or rewrite the script).
+  Future<void> prepareConnectRecovery() async {
+    await openTerminalOrSettings();
+    await _notificationService.showLinuxTerminalSetup(
+      title: 'Linux Terminal',
+      body:
+          'Start Linux Terminal, wait for the VM, then return and retry SSH. '
+          'Use port forwarding to $androidLinuxTerminalSetupPort if needed.',
+    );
+  }
+
   /// Opens Terminal port-forward settings when available.
   Future<void> openPortForwardingSettings() =>
       _launcher.openPortForwardingSettings();
@@ -410,18 +438,18 @@ class AndroidLinuxTerminalSetupService {
   }) async {
     final hosts = await _hostRepository.getAll();
     for (final host in hosts) {
-      if (host.label == 'Android Linux Terminal' ||
+      if (isAndroidLinuxTerminalHost(host) ||
           (host.hostname == hostname && host.port == port)) {
         await _hostRepository.update(
           host.copyWith(
-            label: 'Android Linux Terminal',
+            label: androidLinuxTerminalHostLabel,
             hostname: hostname,
             port: port,
             username: androidLinuxTerminalSetupUsername,
             keyId: Value(keyId),
             password: const Value(null),
             notes: const Value(
-              'Created by MonkeySSH Linux Terminal setup. '
+              '$androidLinuxTerminalHostNotesMarker. '
               'If connect fails, enable port forwarding in the Terminal app.',
             ),
           ),
@@ -432,13 +460,13 @@ class AndroidLinuxTerminalSetupService {
 
     return _hostRepository.insert(
       HostsCompanion.insert(
-        label: 'Android Linux Terminal',
+        label: androidLinuxTerminalHostLabel,
         hostname: hostname,
         port: Value(port),
         username: androidLinuxTerminalSetupUsername,
         keyId: Value(keyId),
         notes: const Value(
-          'Created by MonkeySSH Linux Terminal setup. '
+          '$androidLinuxTerminalHostNotesMarker. '
           'If connect fails, enable port forwarding in the Terminal app.',
         ),
       ),

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/services/android_linux_terminal_setup_service.dart';
 
 void main() {
@@ -27,7 +28,42 @@ void main() {
 
   group('shellSingleQuote', () {
     test('escapes embedded single quotes', () {
-      expect(shellSingleQuote('a\'b'), equals('\'a\'"\'"\'b\''));
+      expect(shellSingleQuote("a'b"), equals("'a'\"'\"'b'"));
+    });
+  });
+
+  group('isAndroidLinuxTerminalHost', () {
+    Host host({required String label, String? notes}) => Host(
+      id: 1,
+      label: label,
+      hostKind: 'ssh',
+      hostname: '127.0.0.1',
+      port: 8022,
+      username: 'droid',
+      isFavorite: false,
+      autoConnectRequiresConfirmation: false,
+      autoForwardPorts: false,
+      sortOrder: 0,
+      createdAt: DateTime(2026),
+      updatedAt: DateTime(2026),
+      notes: notes,
+    );
+
+    test('matches setup label and notes marker', () {
+      expect(
+        isAndroidLinuxTerminalHost(host(label: androidLinuxTerminalHostLabel)),
+        isTrue,
+      );
+      expect(
+        isAndroidLinuxTerminalHost(
+          host(
+            label: 'Other',
+            notes: '$androidLinuxTerminalHostNotesMarker details',
+          ),
+        ),
+        isTrue,
+      );
+      expect(isAndroidLinuxTerminalHost(host(label: 'Prod box')), isFalse);
     });
   });
 }
