@@ -5796,8 +5796,8 @@ func TestThemeChangedRedrawForcesForegroundRepaint(t *testing.T) {
 	server := newMuxServer("test")
 	var logMu sync.Mutex
 	var events []string
-	// A focus-enabled Copilot window receives a synchronous DEC 2031 mode report
-	// as its theme hint, written to the pty before the redraw.
+	// A DEC 2031 window receives a synchronous color-scheme mode report as its
+	// theme hint, written to the pty before the redraw.
 	window := &muxWindow{
 		id:                "@1",
 		index:             0,
@@ -5806,6 +5806,7 @@ func TestThemeChangedRedrawForcesForegroundRepaint(t *testing.T) {
 		pty:               &orderRecordingPty{mu: &logMu, log: &events},
 		lastActivity:      time.Now(),
 	}
+	window.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	registerTestAttachClient(t, server, &recordingConn{}, "phone", 120, 40)
@@ -8136,16 +8137,17 @@ func TestThemeHintRefreshDataSuppressesOscUnderWin32InputMode(t *testing.T) {
 	}
 }
 
-func TestThemeHintRefreshDataKeepsCopilotModeReportUnderWin32InputMode(t *testing.T) {
+func TestThemeHintRefreshDataKeepsModeReportUnderWin32InputMode(t *testing.T) {
 	hint := []byte("\x1b[?997;2n\x1b]11;rgb:1111/2222/3333\x1b\\")
-	// Copilot receives a CSI DEC 2031 mode report (safe to relay through ConPTY,
-	// which parses CSI into input events rather than typed text) but not the OSC
-	// color report that would surface as literal composer text.
+	// Any DEC 2031 window receives the CSI color-scheme mode report (safe to
+	// relay through ConPTY, which parses CSI into input events rather than typed
+	// text) but not the OSC color report that would surface as literal composer
+	// text. The gate is the mode itself, not a per-agent allowlist.
 	window := &muxWindow{
-		focusModeEnabled: true,
-		agentTool:        "copilot",
-		win32InputMode:   true,
+		foregroundCommand: "unknown-tui",
+		win32InputMode:    true,
 	}
+	window.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	got := string(window.themeHintRefreshDataLocked(hint))
 	if strings.Contains(got, "]11;") {
 		t.Fatalf("themeHintRefreshDataLocked = %q, must not include OSC 11", got)
@@ -10474,6 +10476,8 @@ func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
 	focusWindow := &muxWindow{foregroundCommand: "unknown-tui"}
 	focusWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	colorSchemeOnlyWindow := &muxWindow{foregroundCommand: "unknown-tui"}
+	colorSchemeOnlyWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	colorQueryWindow := &muxWindow{
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
@@ -10495,6 +10499,9 @@ func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
 	if !focusWindow.supportsThemeHintLocked() {
 		t.Fatal("DEC 2031 + focus-aware window did not support theme hints")
 	}
+	if !colorSchemeOnlyWindow.supportsThemeHintLocked() {
+		t.Fatal("DEC 2031-only window did not support theme hints via mode report")
+	}
 	if !colorQueryWindow.supportsThemeHintLocked() {
 		t.Fatal("DEC 2031 + OSC 11 query window did not support theme hints")
 	}
@@ -10515,8 +10522,9 @@ func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
 	}
 
 	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
-	if focusWindow.supportsThemeHintLocked() {
-		t.Fatal("window supported theme hints after focus mode disabled")
+	// DEC 2031 alone still opts the window into mode-report theme hints.
+	if !focusWindow.supportsThemeHintLocked() {
+		t.Fatal("DEC 2031 window lost theme-hint support after focus mode disabled")
 	}
 	plainFocusWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
 	if plainFocusWindow.supportsThemeHintLocked() {
@@ -10524,14 +10532,27 @@ func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
 	}
 
 	colorQueryWindow.foregroundPid = 43
+	// Both the OSC query cache and DEC 2031 tracking are pinned to the process
+	// that negotiated them, so a foreground PID change must drop theme pushes
+	// rather than spew reports at a new program in the same pane.
 	if colorQueryWindow.supportsThemeHintLocked() {
-		t.Fatal("stale OSC 11 query supported theme hints after foreground pid changed")
+		t.Fatal("stale DEC 2031/OSC capabilities still supported theme hints after foreground pid changed")
+	}
+	if keys := colorQueryWindow.themeHintRefreshKeysLocked(); len(keys) != 0 {
+		t.Fatalf("stale OSC 11 query still refreshed keys = %v", keys)
+	}
+	if colorQueryWindow.themeHintModeReportLocked() {
+		t.Fatal("stale DEC 2031 still requested a mode report after foreground pid changed")
 	}
 
 	colorQueryWindow.foregroundPid = 42
 	colorQueryWindow.observeTerminalModesLocked([]byte("\x1b[?2031l"))
 	if colorQueryWindow.supportsThemeHintLocked() {
 		t.Fatal("window supported theme hints after DEC 2031 disabled")
+	}
+	colorSchemeOnlyWindow.observeTerminalModesLocked([]byte("\x1b[?2031l"))
+	if colorSchemeOnlyWindow.supportsThemeHintLocked() {
+		t.Fatal("DEC 2031-only window supported theme hints after mode disabled")
 	}
 }
 
@@ -10805,10 +10826,12 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 	for _, tt := range []struct {
 		name                string
 		command             string
-		wantModeReport      bool
 		wantFocusTransition bool
 	}{
-		{name: "copilot", command: "copilot", wantModeReport: true},
+		// Mode reports are gated on DEC 2031, not agent identity. Without 2031,
+		// known agents still get the OSC 11 / focus nudge path only.
+		{name: "copilot", command: "copilot"},
+		{name: "cursor-agent", command: "cursor-agent"},
 		{name: "codex", command: "codex"},
 		{name: "claude", command: "claude", wantFocusTransition: true},
 		{name: "gemini", command: "gemini", wantFocusTransition: true},
@@ -10849,15 +10872,8 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 				return strings.Contains(output, backgroundReport) &&
 					strings.Contains(output, "\x1b[I")
 			})
-			if tt.wantModeReport {
-				if !strings.Contains(got, modeReport+backgroundReport) {
-					t.Fatalf(
-						"theme hint = %q, expected mode report before background report",
-						got,
-					)
-				}
-			} else if strings.Contains(got, modeReport) {
-				t.Fatalf("theme hint = %q, did not expect theme mode report", got)
+			if strings.Contains(got, modeReport) {
+				t.Fatalf("theme hint = %q, did not expect theme mode report without DEC 2031", got)
 			}
 			if strings.Contains(got, foregroundReport) {
 				t.Fatalf("theme hint = %q, did not expect foreground report", got)
@@ -10871,6 +10887,108 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 				}
 			} else if strings.Contains(got, "\x1b[O") {
 				t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
+			}
+		})
+	}
+}
+
+func TestThemeHintSendsModeReportWhenColorSchemeUpdatesMode(t *testing.T) {
+	// DEC 2031 is the general opt-in: any TUI that enables it gets the mode
+	// report, including unknown future agents, without per-tool hardcoding.
+	// Unsolicited OSC 11 is still withheld unless the window is a known agent
+	// with focus mode or previously queried those colors under 2031.
+	for _, tt := range []struct {
+		name           string
+		command        string
+		enableFocus    bool
+		wantBackground bool
+	}{
+		{name: "unknown-tui", command: "unknown-tui"},
+		{name: "copilot", command: "copilot", enableFocus: true, wantBackground: true},
+		{name: "cursor-agent", command: "cursor-agent", enableFocus: true, wantBackground: true},
+		// Non-agent tools that only opted into 2031 get the mode report, not OSC.
+		{name: "codex-2031-only", command: "codex"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			inputReader, inputWriter, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = inputReader.Close()
+				_ = inputWriter.Close()
+			})
+
+			window := &muxWindow{
+				id:                "@1",
+				foregroundCommand: tt.command,
+				pty:               wrapPty(t, inputWriter),
+			}
+			window.observeTerminalModesLocked([]byte("\x1b[?2031h"))
+			if tt.enableFocus {
+				window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+			}
+			server := newMuxServer("test")
+			server.windows = []*muxWindow{window}
+			server.activeID = "@1"
+
+			const modeReport = "\x1b[?997;2n"
+			const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
+			if !server.sendThemeHint(modeReport + backgroundReport) {
+				t.Fatal("theme hint was not sent")
+			}
+
+			got := readPipeUntil(t, inputReader, func(output string) bool {
+				return strings.Contains(output, modeReport)
+			})
+			if !strings.Contains(got, modeReport) {
+				t.Fatalf("theme hint = %q, expected mode report for DEC 2031 window", got)
+			}
+			if tt.wantBackground {
+				if !strings.Contains(got, backgroundReport) {
+					t.Fatalf("theme hint = %q, expected OSC 11 for focus-aware agent", got)
+				}
+			} else if strings.Contains(got, backgroundReport) {
+				t.Fatalf("theme hint = %q, did not expect unsolicited OSC 11", got)
+			}
+		})
+	}
+}
+
+func TestThemeHintDoesNotSendModeReportWithoutColorSchemeUpdatesMode(t *testing.T) {
+	// Focus alone must not unlock mode reports: that would spew CSI ?997 at
+	// unknown TUIs / shells that never opted into color-scheme updates.
+	for _, command := range []string{"unknown-tui", "zsh", "codex", "claude"} {
+		t.Run(command, func(t *testing.T) {
+			inputReader, inputWriter, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = inputReader.Close()
+				_ = inputWriter.Close()
+			})
+
+			window := &muxWindow{
+				id:                "@1",
+				foregroundCommand: command,
+				pty:               wrapPty(t, inputWriter),
+			}
+			window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+			server := newMuxServer("test")
+			server.windows = []*muxWindow{window}
+			server.activeID = "@1"
+
+			const modeReport = "\x1b[?997;1n"
+			if !server.sendThemeHint(modeReport) {
+				// Focus-only unknown windows still get a FocusIn nudge.
+				t.Fatal("theme hint was not sent")
+			}
+			got := readPipeUntil(t, inputReader, func(output string) bool {
+				return strings.Contains(output, "\x1b[I")
+			})
+			if strings.Contains(got, modeReport) {
+				t.Fatalf("theme hint = %q, did not expect mode report without DEC 2031", got)
 			}
 		})
 	}
