@@ -163,6 +163,31 @@ class MonkeyMuxImageReplayResult {
   }
 }
 
+/// Builds the recovery outcome for one acknowledged replay response.
+///
+/// Exposed for tests so the service-level contract around acknowledged empty
+/// and partially served batches cannot regress independently of the widget
+/// retry tests.
+@visibleForTesting
+MonkeyMuxImageReplayResult resolveMonkeyMuxImageReplayBatchForTesting({
+  required Set<int> requested,
+  required Set<int> alreadyServed,
+  required bool acknowledged,
+  required Iterable<String> responseImageIds,
+}) {
+  final pending = requested.difference(alreadyServed);
+  final batch = responseImageIds
+      .map(int.tryParse)
+      .whereType<int>()
+      .where(pending.contains)
+      .toSet();
+  final served = {...alreadyServed, ...batch};
+  return MonkeyMuxImageReplayResult(
+    served: served,
+    retryableFailure: acknowledged && requested.difference(served).isNotEmpty,
+  );
+}
+
 /// Controls a remote MonkeyMux session through its JSON backchannel.
 class MonkeyMuxService implements RemoteMultiplexerService {
   /// Creates a MonkeyMux service.
@@ -545,21 +570,24 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           'clientId': session.monkeyMuxClientId,
           'imageIds': pending.toList(growable: false),
         }, priority: SshExecPriority.low);
+        final outcome = resolveMonkeyMuxImageReplayBatchForTesting(
+          requested: requestedIds,
+          alreadyServed: served,
+          acknowledged: response.imagesAcknowledged,
+          responseImageIds: response.imageIds,
+        );
         if (!response.imagesAcknowledged) {
-          return MonkeyMuxImageReplayResult(
-            served: served,
-            retryableFailure: false,
-          );
+          return outcome;
         }
-        final batch = response.imageIds.where(pending.contains).toSet();
+        final batch = outcome.served
+            .where((id) => !served.contains(id))
+            .map((id) => id.toString())
+            .toSet();
         if (batch.isEmpty) {
-          return MonkeyMuxImageReplayResult(
-            served: served,
-            retryableFailure: pending.isNotEmpty,
-          );
+          return outcome;
         }
         pending.removeAll(batch);
-        served.addAll(batch.map(int.parse));
+        served.addAll(outcome.served);
       }
     } on _MonkeyMuxControlCommandException catch (error) {
       DiagnosticsLogService.instance.debug(

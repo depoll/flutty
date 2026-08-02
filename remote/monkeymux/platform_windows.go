@@ -396,7 +396,35 @@ func startConPty(
 	pid uint32,
 	err error,
 ) {
-	backend = preferredConPtyBackend()
+	return startConPtyWithFallback(
+		preferredConPtyBackend(),
+		systemConPtyBackend(),
+		commandLine,
+		env,
+		workdir,
+		cols,
+		rows,
+	)
+}
+
+func startConPtyWithFallback(
+	preferred *conPtyBackend,
+	fallback *conPtyBackend,
+	commandLine string,
+	env []string,
+	workdir string,
+	cols int,
+	rows int,
+) (
+	writeHandle windows.Handle,
+	readHandle windows.Handle,
+	hpcon windows.Handle,
+	backend *conPtyBackend,
+	processHandle windows.Handle,
+	pid uint32,
+	err error,
+) {
+	backend = preferred
 	writeHandle, readHandle, hpcon, processHandle, pid, err =
 		startConPtyWithBackend(
 			backend,
@@ -406,14 +434,16 @@ func startConPty(
 			cols,
 			rows,
 		)
-	if err == nil || backend.name == "system" {
+	if err == nil || fallback == nil || backend == fallback {
 		return
 	}
 	log.Printf(
-		"bundled ConPTY failed; retrying with the system backend: %v",
+		"%s ConPTY failed; retrying with the %s backend: %v",
+		preferred.name,
+		fallback.name,
 		err,
 	)
-	backend = systemConPtyBackend()
+	backend = fallback
 	writeHandle, readHandle, hpcon, processHandle, pid, err =
 		startConPtyWithBackend(
 			backend,

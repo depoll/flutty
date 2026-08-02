@@ -263,6 +263,27 @@ void main() {
       );
     });
 
+    test('inactive alternate screen commits top trim during resize', () {
+      final terminal = Terminal(maxLines: 200);
+      terminal.resize(20, 10);
+      terminal.write('\x1b[?47h');
+      for (var row = 1; row <= 10; row++) {
+        terminal.write('\x1b[$row;1Hrow$row');
+      }
+      terminal.write('\x1b[8;1H');
+      terminal
+          .write('\x1b[?47l'); // preserve the alt buffer while main is active
+
+      terminal.resize(20, 6);
+      terminal.write('\x1b[?47h');
+
+      expect(terminal.buffer.height, 6);
+      expect(terminal.buffer.scrollBack, 0);
+      expect(terminal.buffer.lines[0].toString().trimRight(), 'row3');
+      expect(terminal.buffer.lines[5].toString().trimRight(), 'row8');
+      expect(terminal.buffer.cursorY, 5);
+    });
+
     // With reflow off (and always on the alt buffer) a width shrink keeps the
     // cells past the new width so they reappear when it grows back. A row whose
     // only text lives in that hidden region reads as blank across the visible

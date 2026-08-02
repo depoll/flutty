@@ -9188,6 +9188,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session
         ..remoteMuxBackend = command.backend
         ..remoteMuxSessionName = command.sessionName;
+      session.terminal?.kittyGraphicsEnabled =
+          !session.remoteIsWindows ||
+          command.backend == RemoteMuxBackend.monkeyMux;
       if (command.backend != RemoteMuxBackend.monkeyMux) {
         return;
       }
@@ -9284,6 +9287,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ..monkeyMuxViewportClippingEnabled = false
           ..remoteMuxBackend = null
           ..remoteMuxSessionName = null;
+        session.terminal?.kittyGraphicsEnabled = !session.remoteIsWindows;
       }
     }
     _stopTmuxForegroundVerification();

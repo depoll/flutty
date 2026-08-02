@@ -174,6 +174,30 @@ void main() {
 
       expect(result.retryableUnserved(const {7, 8, 9}), isEmpty);
     });
+
+    test('acknowledged empty batch keeps requested ids retryable', () {
+      final result = resolveMonkeyMuxImageReplayBatchForTesting(
+        requested: const {7, 8},
+        alreadyServed: const <int>{},
+        acknowledged: true,
+        responseImageIds: const <String>[],
+      );
+
+      expect(result.served, isEmpty);
+      expect(result.retryableUnserved(const {7, 8}), {7, 8});
+    });
+
+    test('partial batch preserves served ids and retries the remainder', () {
+      final result = resolveMonkeyMuxImageReplayBatchForTesting(
+        requested: const {7, 8, 9},
+        alreadyServed: const {7},
+        acknowledged: true,
+        responseImageIds: const ['8'],
+      );
+
+      expect(result.served, {7, 8});
+      expect(result.retryableUnserved(const {7, 8, 9}), {9});
+    });
   });
 
   group('MonkeyMux control responses', () {

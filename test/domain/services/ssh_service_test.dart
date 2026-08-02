@@ -2861,6 +2861,29 @@ LISTEN ::1:4201
       await session.closeShell(waitForStreams: false);
     });
 
+    test('disables Kitty graphics on direct Windows PTY sessions', () {
+      final client = _MockSshClient();
+      when(
+        () => client.remoteVersion,
+      ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+      final terminal = session.getOrCreateTerminal();
+      expect(terminal.kittyGraphicsEnabled, isFalse);
+
+      session.remoteMuxBackend = RemoteMuxBackend.monkeyMux;
+      expect(session.getOrCreateTerminal().kittyGraphicsEnabled, isTrue);
+    });
+
     test(
       'returns completed startup commands to a login shell without disconnecting',
       () async {

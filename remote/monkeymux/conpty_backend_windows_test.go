@@ -110,6 +110,78 @@ func TestBundledConPtyPreservesKittyGraphics(t *testing.T) {
 	}
 }
 
+func TestConPtyStartFallsBackAndReturnsActualBackend(t *testing.T) {
+	if os.Getenv("MONKEYMUX_CONPTY_TEST_HELPER") == "1" {
+		runConPtyTestHelper()
+		os.Exit(0)
+	}
+
+	previousCacheRoot := conPtyCacheRoot
+	conPtyCacheRoot = t.TempDir()
+	t.Cleanup(func() {
+		conPtyCacheRoot = previousCacheRoot
+	})
+	fallback, err := loadBundledConPtyBackend()
+	if err != nil {
+		t.Fatalf("load fallback ConPTY: %v", err)
+	}
+	t.Cleanup(func() {
+		if fallback.dll != nil {
+			_ = windows.FreeLibrary(windows.Handle(fallback.dll.Handle()))
+		}
+	})
+	preferred := &conPtyBackend{
+		name: "injected-failure",
+		create: func(
+			windows.Coord,
+			windows.Handle,
+			windows.Handle,
+			uint32,
+			*windows.Handle,
+		) error {
+			return windows.ERROR_INVALID_PARAMETER
+		},
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	commandLine := windows.ComposeCommandLine([]string{
+		executable,
+		"-test.run=^TestConPtyStartFallsBackAndReturnsActualBackend$",
+	})
+	env := append(os.Environ(), conPtyHelperEnvironment)
+
+	writeHandle, readHandle, hpcon, usedBackend, processHandle, _, err :=
+		startConPtyWithFallback(
+			preferred,
+			fallback,
+			commandLine,
+			env,
+			"",
+			120,
+			40,
+		)
+	if err != nil {
+		t.Fatalf("start with fallback: %v", err)
+	}
+	input := os.NewFile(uintptr(writeHandle), "conpty-fallback-input")
+	output := os.NewFile(uintptr(readHandle), "conpty-fallback-output")
+	defer input.Close()
+	defer output.Close()
+	if usedBackend != fallback {
+		t.Fatalf("used backend = %q, want fallback %q", usedBackend.name, fallback.name)
+	}
+
+	waitResult, waitErr := windows.WaitForSingleObject(processHandle, 10_000)
+	_ = input.Close()
+	usedBackend.close(hpcon)
+	windows.CloseHandle(processHandle)
+	if waitErr != nil || waitResult != windows.WAIT_OBJECT_0 {
+		t.Fatalf("wait result=%d error=%v", waitResult, waitErr)
+	}
+}
+
 func runConPtyTestHelper() {
 	stdout, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 	if err == nil {

@@ -198,7 +198,10 @@ if(!$__flResolved){$__flResolved='cmd'}
     _terminal!
       ..onTitleChange = _session._handleWindowTitleChange
       ..onIconChange = _session._handleIconNameChange
-      ..canResizeFromHost = _session._canTerminalResizeFromHost;
+      ..canResizeFromHost = _session._canTerminalResizeFromHost
+      ..kittyGraphicsEnabled =
+          !_session.remoteIsWindows ||
+          _session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
     _session.terminalHyperlinkTracker.attach(_terminal!);
     _terminal!.onPrivateOSC = _session._handlePrivateOsc;
     _refreshTerminalPreview();
