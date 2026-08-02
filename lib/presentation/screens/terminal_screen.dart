@@ -7692,6 +7692,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       final retryIds = result.retryableUnserved(requestedIds);
+      DiagnosticsLogService.instance.debug(
+        'terminal.graphics',
+        'request_missing_images_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'requested': requestedIds.length,
+          'served': result.served.length,
+          'unserved': requestedIds.length - result.served.length,
+          'retryable': result.retryableFailure,
+        },
+      );
       if (!result.retryableFailure || retryIds.isEmpty) {
         _missingImageRecoveryRetryCount = 0;
         _missingImageRecoveryRetryNotBefore = null;

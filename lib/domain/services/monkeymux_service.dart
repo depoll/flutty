@@ -145,7 +145,13 @@ class MonkeyMuxImageReplayResult {
   /// Image IDs whose retained transmissions reached the attach client.
   final Set<int> served;
 
-  /// Whether unserved IDs may be retried after a transport-level failure.
+  /// Whether unserved IDs may be retried after a transient transport or
+  /// availability gap.
+  ///
+  /// A server can acknowledge `request_images` but return no IDs when the
+  /// active-window switch or a multipart transmission is still settling.
+  /// Treating that first empty acknowledgment as final permanently suppresses
+  /// repair for the rest of the window visit.
   final bool retryableFailure;
 
   /// Returns requested IDs that remain eligible for a bounded retry.
@@ -547,7 +553,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         }
         final batch = response.imageIds.where(pending.contains).toSet();
         if (batch.isEmpty) {
-          break;
+          return MonkeyMuxImageReplayResult(
+            served: served,
+            retryableFailure: pending.isNotEmpty,
+          );
         }
         pending.removeAll(batch);
         served.addAll(batch.map(int.parse));
@@ -580,7 +589,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       );
       return MonkeyMuxImageReplayResult(served: served, retryableFailure: true);
     }
-    return MonkeyMuxImageReplayResult(served: served, retryableFailure: false);
+    return MonkeyMuxImageReplayResult(
+      served: served,
+      retryableFailure: pending.isNotEmpty,
+    );
   }
 
   @override
