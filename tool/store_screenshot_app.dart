@@ -29,6 +29,8 @@ import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/presentation/screens/terminal_screen.dart'
+    show storeDemoImagePasteCompleter;
 
 const _targetName = String.fromEnvironment('STORE_SCREENSHOT_TARGET');
 const _sshPort = int.fromEnvironment('STORE_SCREENSHOT_SSH_PORT');
@@ -566,6 +568,7 @@ class _StoreScreenshotFlow extends ConsumerStatefulWidget {
 class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void>? _flow;
   int? _connectionId;
+  Completer<void>? _demoImagePasteCompleter;
 
   @override
   void initState() {
@@ -576,7 +579,35 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   @override
   void dispose() {
     unawaited(_flow?.catchError((_) {}));
+    if (_demoImagePasteCompleter != null &&
+        !_demoImagePasteCompleter!.isCompleted) {
+      _demoImagePasteCompleter!.completeError(
+        StateError('Store demo ended before image paste completed.'),
+      );
+    }
+    if (identical(storeDemoImagePasteCompleter, _demoImagePasteCompleter)) {
+      storeDemoImagePasteCompleter = null;
+    }
     super.dispose();
+  }
+
+  void _armDemoImagePasteWait() {
+    final completer = Completer<void>();
+    _demoImagePasteCompleter = completer;
+    storeDemoImagePasteCompleter = completer;
+  }
+
+  Future<void> _waitForDemoImagePaste() async {
+    final completer = _demoImagePasteCompleter;
+    if (completer == null) {
+      throw StateError('Demo image paste wait was not armed.');
+    }
+    await completer.future.timeout(
+      const Duration(seconds: 30),
+      onTimeout: () => throw TimeoutException(
+        'Timed out waiting for store demo image paste to finish.',
+      ),
+    );
   }
 
   @override
@@ -699,12 +730,15 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     await Future<void>.delayed(const Duration(milliseconds: 2800));
 
     // Beat 4 — Image context: paste a real screenshot into Copilot CLI so the
-    // agent conversation shows the image inline.
+    // agent conversation shows the image inline. Wait for an explicit paste
+    // completion marker so Beat 5 cannot race ahead of the SFTP upload.
     await _selectMonkeyMuxWindow(0);
     _emitBeat(4);
+    _armDemoImagePasteWait();
     _go('$base&pasteDemoImage=1');
     await _hideKeyboard();
-    await Future<void>.delayed(const Duration(milliseconds: 5400));
+    await _waitForDemoImagePaste();
+    await Future<void>.delayed(const Duration(milliseconds: 800));
 
     // Beat 5 — Copilot: prompt against the pasted screenshot.
     _emitBeat(5);

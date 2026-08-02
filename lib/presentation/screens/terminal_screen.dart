@@ -109,6 +109,13 @@ final _storeDemoClipboardImageBytes = base64Decode(
       : _storeDemoImageFallbackB64,
 );
 
+/// Armed by the store video harness before a `pasteDemoImage=1` navigation.
+///
+/// Completed when the demo clipboard image has been uploaded and its remote
+/// path inserted into the terminal, so the harness can wait instead of racing
+/// a fixed delay.
+Completer<void>? storeDemoImagePasteCompleter;
+
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
     (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
@@ -16115,17 +16122,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pasteStoreDemoImage() async {
-    await _pasteClipboardImage(
-      _storeDemoClipboardImageBytes,
-      autoConfirmAfter: const Duration(milliseconds: 4200),
-      showKeyboardAfterPaste: false,
-      uploadBaseDirectory: _workingDirectoryPath,
-    );
-    if (!mounted) {
-      return;
+    final pasteCompleter = storeDemoImagePasteCompleter;
+    try {
+      await _pasteClipboardImage(
+        _storeDemoClipboardImageBytes,
+        autoConfirmAfter: const Duration(milliseconds: 4200),
+        showKeyboardAfterPaste: false,
+        uploadBaseDirectory: _workingDirectoryPath,
+      );
+      if (!mounted) {
+        return;
+      }
+      FocusManager.instance.primaryFocus?.unfocus();
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+      // Signal the store video harness that the image path is in the terminal
+      // so Beat 5 does not type the Copilot prompt before the paste lands.
+      debugPrintSynchronously('STORE_SCREENSHOT_DEMO_IMAGE_PASTED');
+      if (pasteCompleter != null && !pasteCompleter.isCompleted) {
+        pasteCompleter.complete();
+      }
+    } on Object catch (error, stackTrace) {
+      debugPrintSynchronously(
+        'STORE_SCREENSHOT_ERROR demo image paste failed: $error',
+      );
+      if (pasteCompleter != null && !pasteCompleter.isCompleted) {
+        pasteCompleter.completeError(error, stackTrace);
+      }
+      rethrow;
     }
-    FocusManager.instance.primaryFocus?.unfocus();
-    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
   }
 
   Future<void> _pasteClipboardImage(
