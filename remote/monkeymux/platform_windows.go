@@ -27,6 +27,18 @@ const conPtyMinimumBuild = 17763
 // (which ConPTY rejects). Real terminals are far smaller than this.
 const conPtyMaxDimension = 0x7fff
 
+// pseudoConsolePassthroughMode is PSEUDOCONSOLE_PASSTHROUGH_MODE, which tells
+// ConPTY to stop parsing and filtering the child's output and relay it
+// verbatim. Without it ConPTY drops every sequence it does not understand,
+// including the APC sequences that carry Kitty graphics images.
+//
+// Not in golang.org/x/sys/windows and not in the public CreatePseudoConsole
+// documentation, which still lists only PSEUDOCONSOLE_INHERIT_CURSOR; the value
+// comes from Microsoft's own conpty.h (see microsoft/node-pty src/win/conpty.h,
+// which declares PSEUDOCONSOLE_RESIZE_QUIRK (2u) and
+// PSEUDOCONSOLE_PASSTHROUGH_MODE (8u)).
+const pseudoConsolePassthroughMode = 0x8
+
 // conPtyCoord clamps cols/rows into the valid positive int16 range and returns
 // the corresponding windows.Coord. Callers pass raw dimensions from control and
 // attach messages, which are only validated as > 0 upstream.
@@ -219,10 +231,28 @@ func startConPty(
 	}
 
 	size := conPtyCoord(cols, rows)
-	if err = windows.CreatePseudoConsole(size, ptyIn, ptyOut, 0, &hpcon); err != nil {
-		closeAll()
-		err = fmt.Errorf("create pseudo console: %w", err)
-		return
+	// Ask ConPTY to relay the child's output verbatim instead of parsing and
+	// re-rendering it. In the default mode ConPTY only forwards sequences it
+	// understands and drops the rest, which silently swallows the Kitty
+	// graphics protocol (APC, ESC _G ... ESC \) an agent CLI uses to transmit
+	// images. The client still receives the Unicode placeholder *cells* — those
+	// are ordinary text — so it renders holes where the image should be and
+	// never gets bytes to fill them, no matter how often it asks for a replay.
+	//
+	// The flag is honoured by newer ConPTY only, so fall back to the default
+	// mode when it is rejected rather than failing to open the window at all.
+	if err = windows.CreatePseudoConsole(
+		size,
+		ptyIn,
+		ptyOut,
+		pseudoConsolePassthroughMode,
+		&hpcon,
+	); err != nil {
+		if err = windows.CreatePseudoConsole(size, ptyIn, ptyOut, 0, &hpcon); err != nil {
+			closeAll()
+			err = fmt.Errorf("create pseudo console: %w", err)
+			return
+		}
 	}
 
 	attrs, attrErr := windows.NewProcThreadAttributeList(1)
