@@ -184,21 +184,12 @@ def _validate_ocr_content(paths: list[Path]) -> None:
         filename = path.name
         if filename in {'01_iphone_6_9.png', '01_ipad_13.png', '1.png'}:
             _require_ocr_markers(path, text, ['Copilot'])
-            # Scene 1 should show Copilot reviewing a light-mode app screenshot,
-            # not an empty idle start screen.
+            # Require labels unique to the embedded light-mode hosts screenshot
+            # (not words that also appear in the submitted Copilot prompt).
             _require_ocr_markers(
                 path,
                 text,
-                [
-                    'host',
-                    'hosts',
-                    'light',
-                    'screenshot',
-                    'listing',
-                    'monkey',
-                    'snippet',
-                    'store',
-                ],
+                ['Add Host', 'Build runner'],
                 require_any=True,
             )
         elif filename in {'02_iphone_6_9.png', '02_ipad_13.png', '2.png'}:

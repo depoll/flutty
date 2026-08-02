@@ -107,7 +107,9 @@ def main() -> None:
     args = _parse_args()
     targets = _targets_for_platform(args.platform)
 
-    with store_screenshots.StoreDemoEnvironment() as demo:
+    with store_screenshots.StoreDemoEnvironment(
+        seed_platform=args.platform,
+    ) as demo:
         for target in targets:
             _run_target(
                 target=target,
