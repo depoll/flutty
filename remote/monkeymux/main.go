@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.130"
+	monkeyMuxVersion                  = "0.1.131"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -94,7 +94,6 @@ const (
 	maxRetainedKittyImages       = 128
 	maxRetainedKittyImageNumbers = maxRetainedKittyImages
 	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
-	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
 	// Caps for how many retained images are *replayed* on a window switch.
 	// Replaying every retained transmission makes the client decode many
 	// megabytes per switch; even with client-side downscaling and dedup, a very
@@ -104,6 +103,12 @@ const (
 	// scrollback; deeper scrollback images repaint when the app redraws.
 	maxReplayedKittyImages     = 16
 	maxReplayedKittyImageBytes = 8 * 1024 * 1024
+	// A multipart transmission must fit inside the same budget that can be
+	// replayed to a client. The old 2 MiB cap silently discarded ordinary
+	// screenshots between their m=1 continuation chunks and final m=0 chunk,
+	// leaving only Unicode placeholder cells that referenced an image the
+	// server never retained.
+	maxKittyGraphicsPendingBytes = maxReplayedKittyImageBytes
 )
 
 const terminalParserResetSequence = "\x1b\\"
@@ -592,8 +597,10 @@ type muxWindow struct {
 	// reports the signatures of the images it still holds on a window switch so
 	// the replay can omit re-sending — and the client re-parsing — several
 	// megabytes of image data it already has. Kept in sync with kittyImages.
-	kittyImageToken      map[string]uint32
-	kittyGraphicsPending []byte
+	kittyImageToken          map[string]uint32
+	kittyGraphicsPending     []byte
+	kittyGraphicsPendingScan int
+	kittyGraphicsPendingTerm int
 }
 
 type terminalBellParserState int
@@ -4101,6 +4108,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	// See closeWindow: a pause in flight would otherwise retain its buffers on
 	// a window that is never removed from s.windows.
 	window.releaseRedrawForwardingStateLocked()
+	window.clearKittyGraphicsPendingLocked()
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -6531,6 +6539,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	// the server, so release the retained frame and output buffers here or they
 	// leak for as long as the server runs.
 	window.releaseRedrawForwardingStateLocked()
+	window.clearKittyGraphicsPendingLocked()
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -9907,13 +9916,160 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	}
 	data := chunk
 	if len(w.kittyGraphicsPending) > 0 {
-		data = make([]byte, 0, len(w.kittyGraphicsPending)+len(chunk))
-		data = append(data, w.kittyGraphicsPending...)
-		data = append(data, chunk...)
+		if len(chunk) > maxKittyGraphicsPendingBytes-len(w.kittyGraphicsPending) {
+			// The incomplete root cannot ever fit into the replay budget. Drop
+			// it, then scan the new chunk independently so a later well-formed
+			// root can resynchronize immediately.
+			w.clearKittyGraphicsPendingLocked()
+			return w.observeKittyGraphicsLocked(chunk)
+		}
+		w.kittyGraphicsPending = append(w.kittyGraphicsPending, chunk...)
+		nextScan, nextTerm, complete, valid := advanceKittyGraphicsPending(
+			w.kittyGraphicsPending,
+			w.kittyGraphicsPendingScan,
+			w.kittyGraphicsPendingTerm,
+		)
+		w.kittyGraphicsPendingScan = nextScan
+		w.kittyGraphicsPendingTerm = nextTerm
+		if !valid {
+			recovery := resyncKittyGraphicsData(
+				w.kittyGraphicsPending,
+				w.kittyGraphicsPendingScan,
+			)
+			w.clearKittyGraphicsPendingLocked()
+			if len(recovery) == 0 {
+				return false
+			}
+			return w.observeKittyGraphicsLocked(recovery)
+		}
+		if !complete {
+			return false
+		}
+		data = w.kittyGraphicsPending
+		w.clearKittyGraphicsPendingLocked()
 	}
 
-	changed := false
 	events, consumed := scanKittyTransmissions(data)
+	changed := w.applyKittyGraphicsEventsLocked(events)
+
+	remainder := data[consumed:]
+	if len(remainder) > maxKittyGraphicsPendingBytes {
+		// An unterminated or oversized graphics sequence: drop it rather than
+		// buffer unbounded bytes; parsing resyncs at the next introducer.
+		w.clearKittyGraphicsPendingLocked()
+		return changed
+	}
+	if len(remainder) == 0 {
+		w.clearKittyGraphicsPendingLocked()
+		return changed
+	}
+	w.kittyGraphicsPending = append(w.kittyGraphicsPending[:0], remainder...)
+	nextScan, nextTerm, complete, valid := advanceKittyGraphicsPending(
+		w.kittyGraphicsPending,
+		0,
+		0,
+	)
+	w.kittyGraphicsPendingScan = nextScan
+	w.kittyGraphicsPendingTerm = nextTerm
+	if !valid {
+		recovery := resyncKittyGraphicsData(
+			w.kittyGraphicsPending,
+			w.kittyGraphicsPendingScan,
+		)
+		w.clearKittyGraphicsPendingLocked()
+		if len(recovery) > 0 {
+			changed = w.observeKittyGraphicsLocked(recovery) || changed
+		}
+	} else if complete {
+		recovery := append([]byte(nil), w.kittyGraphicsPending...)
+		w.clearKittyGraphicsPendingLocked()
+		changed = w.observeKittyGraphicsLocked(recovery) || changed
+	}
+	return changed
+}
+
+// advanceKittyGraphicsPending scans only APC boundaries that arrived since the
+// previous call. It avoids reparsing and copying the whole image for every
+// 32-KiB PTY read while a multi-megabyte m=1 transmission is still in flight.
+// The full transmission is assembled once, after its final m=0 chunk arrives.
+func advanceKittyGraphicsPending(
+	data []byte,
+	scan int,
+	termScan int,
+) (nextScan int, nextTermScan int, complete bool, valid bool) {
+	const introducer = "\x1b_G"
+	for {
+		if scan >= len(data) {
+			return scan, termScan, false, true
+		}
+		remaining := len(data) - scan
+		if remaining < len(introducer) {
+			if bytes.Equal(data[scan:], []byte(introducer[:remaining])) {
+				return scan, termScan, false, true
+			}
+			return scan, termScan, false, false
+		}
+		if !bytes.Equal(data[scan:scan+len(introducer)], []byte(introducer)) {
+			return scan, termScan, false, false
+		}
+		if termScan < scan+len(introducer) {
+			termScan = scan + len(introducer)
+		}
+		end := -1
+		for i := termScan; i+1 < len(data); i++ {
+			if data[i] == '\x1b' && data[i+1] == '\\' {
+				end = i + 2
+				break
+			}
+		}
+		if end < 0 {
+			// Keep a one-byte overlap so an ESC at the end of this read can
+			// pair with the ST backslash at the start of the next read.
+			nextTerm := len(data) - 1
+			if nextTerm < scan+len(introducer) {
+				nextTerm = scan + len(introducer)
+			}
+			return scan, nextTerm, false, true
+		}
+		args := parseKittyControl(kittyControl(data, scan, end))
+		if args["m"] != "1" {
+			return end, end, true, true
+		}
+		scan = end
+		termScan = scan + len(introducer)
+	}
+}
+
+func (w *muxWindow) clearKittyGraphicsPendingLocked() {
+	w.kittyGraphicsPending = nil
+	w.kittyGraphicsPendingScan = 0
+	w.kittyGraphicsPendingTerm = 0
+}
+
+func resyncKittyGraphicsData(data []byte, scan int) []byte {
+	const introducer = "\x1b_G"
+	searchFrom := scan + 1
+	if searchFrom < 0 {
+		searchFrom = 0
+	}
+	if searchFrom < len(data) {
+		if next := bytes.Index(data[searchFrom:], []byte(introducer)); next >= 0 {
+			return data[searchFrom+next:]
+		}
+	}
+	for keep := len(introducer) - 1; keep > 0; keep-- {
+		if len(data) >= keep &&
+			bytes.Equal(data[len(data)-keep:], []byte(introducer[:keep])) {
+			return data[len(data)-keep:]
+		}
+	}
+	return nil
+}
+
+func (w *muxWindow) applyKittyGraphicsEventsLocked(
+	events []kittyGraphicsEvent,
+) bool {
+	changed := false
 	for _, event := range events {
 		if event.delete {
 			if event.clearCache {
@@ -9981,19 +10137,6 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 			changed = true
 		}
 	}
-
-	remainder := data[consumed:]
-	if len(remainder) > maxKittyGraphicsPendingBytes {
-		// An unterminated or oversized graphics sequence: drop it rather than
-		// buffer unbounded bytes; parsing resyncs at the next introducer.
-		w.kittyGraphicsPending = nil
-		return changed
-	}
-	if len(remainder) == 0 {
-		w.kittyGraphicsPending = nil
-		return changed
-	}
-	w.kittyGraphicsPending = append([]byte(nil), remainder...)
 	return changed
 }
 
@@ -12532,6 +12675,7 @@ func (s *muxServer) close() {
 	for _, window := range windows {
 		window.closed = true
 		window.releaseRedrawForwardingStateLocked()
+		window.clearKittyGraphicsPendingLocked()
 	}
 	s.mu.Unlock()
 	defer close(closeDone)
