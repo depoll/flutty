@@ -68,7 +68,8 @@ const _postReadyCaptureDelay = Duration(
 const _videoDemoMode = bool.fromEnvironment('STORE_SCREENSHOT_VIDEO_DEMO');
 const _copilotPrompt = String.fromEnvironment(
   'STORE_SCREENSHOT_COPILOT_PROMPT',
-  defaultValue: 'Draft a release checklist for this SSH app',
+  defaultValue:
+      'Review the pasted release checklist screenshot and list the top remaining checks',
 );
 const _claudePrompt = String.fromEnvironment(
   'STORE_SCREENSHOT_CLAUDE_PROMPT',
@@ -450,16 +451,16 @@ Future<int> _seedDatabase(
 
   final snippets = [
     (
-      name: 'Resume Copilot safely',
-      command: 'copilot --no-remote --log-level none',
-      description: 'Resume a Copilot session with identity details redacted.',
+      name: 'Resume Copilot',
+      command: 'copilot --no-remote --log-level default',
+      description: 'Resume a Copilot CLI session in this MonkeyMux workspace.',
       autoExecute: false,
       usageCount: 18,
     ),
     (
-      name: 'Open Claude Code safely',
+      name: 'Open Claude Code',
       command: 'claude --bare --name Claude Code Workspace',
-      description: 'Start Claude Code with a privacy-safe API key setup.',
+      description: 'Start Claude Code in a dedicated remote agent window.',
       autoExecute: false,
       usageCount: 12,
     ),
@@ -666,15 +667,15 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     await _hideKeyboard();
     await Future<void>.delayed(const Duration(milliseconds: 2800));
 
-    // Beat 4 — Image context: a real clipboard image upload + paste, with the
-    // upload confirmation held long enough to read.
+    // Beat 4 — Image context: paste a real screenshot into Copilot CLI so the
+    // agent conversation shows the image inline.
+    await _selectMonkeyMuxWindow(0);
     _emitBeat(4);
     _go('$base&pasteDemoImage=1');
     await _hideKeyboard();
     await Future<void>.delayed(const Duration(milliseconds: 5400));
 
-    // Beat 5 — Copilot: finish in Copilot with the same uploaded context.
-    await _selectMonkeyMuxWindow(0);
+    // Beat 5 — Copilot: prompt against the pasted screenshot.
     _emitBeat(5);
     _go('$base&showKeyboard=1');
     await Future<void>.delayed(const Duration(milliseconds: 650));

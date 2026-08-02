@@ -41,6 +41,7 @@ BAD_OCR_PATTERNS = {
     ),
     'private local path': re.compile(r'/Users/depoll|/private/var/folders', re.IGNORECASE),
     'disabled streamer mode': re.compile(r'Streamer mode disabled', re.IGNORECASE),
+    'enabled streamer mode': re.compile(r'Streamer mode enabled', re.IGNORECASE),
     'visible API key': re.compile(r'ANTHROPIC_API_KEY|sk-ant-', re.IGNORECASE),
     'Claude account banner': re.compile(
         r'Account\s+(?:settings|details|email|plan|billing)',
@@ -182,7 +183,15 @@ def _validate_ocr_content(paths: list[Path]) -> None:
     for path, text in texts.items():
         filename = path.name
         if filename in {'01_iphone_6_9.png', '01_ipad_13.png', '1.png'}:
-            _require_ocr_markers(path, text, ['Copilot', 'commands'])
+            _require_ocr_markers(path, text, ['Copilot'])
+            # Scene 1 should show Copilot reviewing a screenshot/image, not an
+            # empty idle start screen.
+            _require_ocr_markers(
+                path,
+                text,
+                ['checklist', 'release', 'screenshot', 'remaining', 'store'],
+                require_any=True,
+            )
         elif filename in {'02_iphone_6_9.png', '02_ipad_13.png', '2.png'}:
             _require_ocr_markers(path, text, ['Hosts', 'Add Host'])
         elif filename in {'03_iphone_6_9.png', '03_ipad_13.png', '3.png'}:
@@ -217,14 +226,28 @@ def _monkeymux_scene_group(path: Path) -> str:
     return str(path.parent.relative_to(ROOT))
 
 
-def _require_ocr_markers(path: Path | str, text: str, markers: list[str]) -> None:
+def _require_ocr_markers(
+    path: Path | str,
+    text: str,
+    markers: list[str],
+    *,
+    require_any: bool = False,
+) -> None:
     normalized_text = text.casefold()
     compacted_text = _compact_ocr_text(text)
-    missing = [
+    matched = [
         marker
         for marker in markers
-        if not _text_contains_marker(marker, normalized_text, compacted_text)
+        if _text_contains_marker(marker, normalized_text, compacted_text)
     ]
+    if require_any:
+        if matched:
+            return
+        raise ValueError(
+            f'{_display_path(path)} is missing expected store screenshot '
+            f'content (any of: {", ".join(markers)})',
+        )
+    missing = [marker for marker in markers if marker not in matched]
     if missing:
         raise ValueError(
             f'{_display_path(path)} is missing expected store screenshot '

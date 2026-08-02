@@ -28,7 +28,7 @@ import termios
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 ADB: Path | None = None
@@ -56,6 +56,7 @@ COPILOT_READY_MARKER_GROUPS = (
 COPILOT_PRIVACY_STRIP_MARKERS = tuple(
     marker for marker_group in COPILOT_READY_MARKER_GROUPS for marker in marker_group
 )
+COPILOT_DEMO_IMAGE_NAME = 'release-checklist.png'
 
 
 @dataclass(frozen=True)
@@ -333,6 +334,9 @@ class StoreDemoEnvironment:
 
     def __enter__(self) -> StoreDemoEnvironment:
         try:
+            # Never leave the developer's Copilot CLI in streamer mode after a
+            # store capture run, and do not enable it for the demo pane.
+            self._force_copilot_streamer_mode_off()
             self._cleanup_registered_monkeymux_sessions()
             self._register_monkeymux_session()
             self._create_keys()
@@ -344,10 +348,13 @@ class StoreDemoEnvironment:
             raise
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._teardown_monkeymux(unregister=True)
-        self._stop_sshd()
-        self._remove_demo_dir()
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        try:
+            self._teardown_monkeymux(unregister=True)
+            self._stop_sshd()
+            self._remove_demo_dir()
+            shutil.rmtree(self._tmpdir, ignore_errors=True)
+        finally:
+            self._force_copilot_streamer_mode_off()
 
     def reset_monkeymux(self) -> None:
         self._monkeymux_select('copilot')
@@ -612,11 +619,12 @@ class StoreDemoEnvironment:
                 [
                     '# Agent workspace',
                     '',
-                    'Use this streamer-safe workspace for release screenshots.',
+                    'Use this privacy-safe workspace for release screenshots.',
                     '',
                     '- Keep captures free of emails, usernames, hostnames, tokens, and private identifiers.',
                     '- Prefer concise checks that fit in a mobile terminal screenshot.',
                     '- Keep terminal output focused on SSH, MonkeyMux, agent, and store asset workflows.',
+                    '- Show Copilot CLI reviewing a real release-checklist screenshot image.',
                     '',
                     'Windows:',
                     '1. copilot - GitHub Copilot CLI',
@@ -629,6 +637,7 @@ class StoreDemoEnvironment:
                 ]
             )
         )
+        self._write_copilot_demo_image()
         (self.demo_dir / 'reconnect_plan.md').write_text(
             '\n'.join(
                 [
@@ -637,7 +646,7 @@ class StoreDemoEnvironment:
                     '- Verify keepalive settings detect dropped links promptly.',
                     '- Confirm MonkeyMux reattach restores the same shell, panes, and scrollback.',
                     '- Validate reconnect behavior after suspend, network change, and app resume.',
-                    '- Keep logs streamer-safe by hiding account and host identifiers.',
+                    '- Keep logs free of account and host identifiers.',
                     '',
                 ]
             )
@@ -663,6 +672,45 @@ class StoreDemoEnvironment:
                 ]
             )
         )
+
+    def _write_copilot_demo_image(self) -> None:
+        """Write a phone-screenshot-style PNG for Copilot CLI image review."""
+        width, height = 720, 1280
+        image = Image.new('RGB', (width, height), (14, 16, 28))
+        draw = ImageDraw.Draw(image)
+
+        # Status bar / chrome
+        draw.rounded_rectangle((28, 28, width - 28, height - 28), radius=36, fill=(22, 26, 42))
+        draw.rounded_rectangle((28, 28, width - 28, 110), radius=36, fill=(30, 36, 58))
+        draw.rectangle((28, 74, width - 28, 110), fill=(30, 36, 58))
+        draw.text((52, 52), 'MonkeySSH', fill=(236, 240, 255))
+        draw.text((52, 78), 'Release checklist', fill=(140, 190, 255))
+
+        # Checklist card
+        draw.rounded_rectangle((56, 150, width - 56, 980), radius=24, fill=(32, 38, 62))
+        items = [
+            ('Store screenshots', True),
+            ('App Store app previews', True),
+            ('Google Play promo video', True),
+            ('Metadata character limits', False),
+            ('Copilot image review scene', False),
+            ('Privacy scan of visible text', False),
+        ]
+        y = 190
+        for label, done in items:
+            color = (72, 210, 140) if done else (90, 110, 150)
+            draw.ellipse((88, y, 120, y + 32), outline=color, width=3)
+            if done:
+                draw.ellipse((96, y + 8, 112, y + 24), fill=color)
+            draw.text((148, y + 4), label, fill=(230, 234, 248))
+            y += 110
+
+        # Footer tip
+        draw.rounded_rectangle((56, 1040, width - 56, 1180), radius=20, fill=(40, 28, 72))
+        draw.text((84, 1080), 'Paste a screenshot into Copilot CLI', fill=(220, 210, 255))
+        draw.text((84, 1120), 'and keep the review on-device over SSH.', fill=(180, 170, 220))
+
+        image.save(self.demo_dir / COPILOT_DEMO_IMAGE_NAME, optimize=True)
 
     def _remove_demo_dir(self) -> None:
         marker = self.demo_dir / '.monkeyssh-release-workspace'
@@ -738,11 +786,12 @@ class StoreDemoEnvironment:
         time.sleep(4)
         self._monkeymux_send_keys('copilot', 'Enter')
         time.sleep(8)
-        self._ensure_copilot_streamer_mode()
-        self._monkeymux_send_keys('copilot', 'C-l')
-        time.sleep(2)
         self._wait_for_copilot_ready()
-        self._assert_copilot_pane_streamer_safe()
+        # Leave streamer mode alone (and force it off around the run). Store
+        # captures should show a normal named session with the checklist image
+        # rendered inside Copilot CLI, not a redacted placeholder session.
+        self._drive_copilot_image_review()
+        self._assert_copilot_pane_privacy_safe()
 
     def _wait_for_copilot_ready(self) -> None:
         deadline = time.time() + 30
@@ -760,13 +809,61 @@ class StoreDemoEnvironment:
             f'Last visible pane text:\n{text.strip()[-1000:]}',
         )
 
+    def _drive_copilot_image_review(self) -> None:
+        image_path = self.demo_dir / COPILOT_DEMO_IMAGE_NAME
+        if not image_path.is_file():
+            raise RuntimeError(f'Missing Copilot demo image: {image_path}')
+        # Submit the image path as the first prompt so Copilot CLI attaches and
+        # renders the screenshot inline in the conversation.
+        prompt = (
+            f'{COPILOT_DEMO_IMAGE_NAME} Review this phone screenshot of the '
+            'release checklist and list the top remaining checks.'
+        )
+        self._monkeymux_send_literal('copilot', prompt)
+        self._monkeymux_send_keys('copilot', 'Enter')
+        self._wait_for_copilot_image_display()
+
+    def _wait_for_copilot_image_display(self) -> None:
+        deadline = time.time() + 90
+        last_text = ''
+        while time.time() < deadline:
+            raw = self._capture_monkeymux_attach_replay()
+            text = _strip_terminal_output(raw.decode(errors='ignore'))
+            last_text = text
+            has_kitty_graphics = b'\x1b_G' in raw
+            has_image_name = _visible_text_contains_marker(
+                text,
+                COPILOT_DEMO_IMAGE_NAME,
+            ) or _visible_text_contains_marker(text, 'release checklist')
+            has_response = any(
+                _visible_text_contains_marker(text, marker)
+                for marker in (
+                    'remaining',
+                    'checklist',
+                    'screenshot',
+                    'store',
+                    'preview',
+                    'metadata',
+                )
+            )
+            if has_kitty_graphics or (has_image_name and has_response):
+                # Hold briefly so the inline image finishes painting before
+                # screenshot/video capture starts from this settled pane.
+                time.sleep(3)
+                return
+            time.sleep(1)
+        raise RuntimeError(
+            'copilot pane did not display the release checklist image. '
+            f'Last visible pane text:\n{last_text.strip()[-1000:]}',
+        )
+
     def _drive_claude_full_screen(self) -> None:
         self._drive_claude_to_ready_prompt()
         self._monkeymux_send_keys('claude', 'C-l')
         time.sleep(2)
         self._wait_for_visible_text('claude', ['shortcuts'])
         time.sleep(3)
-        self._assert_claude_pane_streamer_safe()
+        self._assert_claude_pane_privacy_safe()
 
     def _drive_claude_to_ready_prompt(self) -> None:
         deadline = time.time() + 90
@@ -788,23 +885,6 @@ class StoreDemoEnvironment:
             time.sleep(1)
         raise RuntimeError('claude pane did not show the Claude Code prompt.')
 
-    def _ensure_copilot_streamer_mode(self) -> None:
-        self._wait_for_copilot_ready()
-        self._monkeymux_send_literal('copilot', '/streamer')
-        self._monkeymux_send_keys('copilot', 'Enter')
-        time.sleep(4)
-        text = self._capture_visible_pane('copilot')
-        if _visible_text_contains_marker(text, 'Streamer mode enabled.'):
-            return
-        if _visible_text_contains_marker(text, 'Streamer mode disabled.'):
-            self._monkeymux_send_literal('copilot', '/streamer')
-            self._monkeymux_send_keys('copilot', 'Enter')
-            time.sleep(4)
-            text = self._capture_visible_pane('copilot')
-            if _visible_text_contains_marker(text, 'Streamer mode enabled.'):
-                return
-        self._assert_copilot_pane_streamer_safe()
-
     def _wait_for_visible_text(self, window: str, markers: list[str]) -> None:
         deadline = time.time() + 30
         while time.time() < deadline:
@@ -816,11 +896,29 @@ class StoreDemoEnvironment:
             f'{window} pane did not show expected text: {", ".join(markers)}.',
         )
 
-    def _assert_copilot_pane_streamer_safe(self) -> None:
+    def _assert_copilot_pane_privacy_safe(self) -> None:
         self._assert_pane_privacy_safe('copilot')
 
-    def _assert_claude_pane_streamer_safe(self) -> None:
+    def _assert_claude_pane_privacy_safe(self) -> None:
         self._assert_pane_privacy_safe('claude', allow_billing_label=True)
+
+    def _force_copilot_streamer_mode_off(self) -> None:
+        """Ensure the store harness never leaves the user's Copilot CLI in streamer mode."""
+        settings_path = Path.home() / '.copilot' / 'settings.json'
+        try:
+            if not settings_path.exists():
+                return
+            raw = settings_path.read_text()
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                return
+            if data.get('streamerMode') is False:
+                return
+            data['streamerMode'] = False
+            settings_path.write_text(json.dumps(data, indent=2) + '\n')
+            print('Disabled Copilot CLI streamer mode in ~/.copilot/settings.json')
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+            _warn_cleanup(f'Could not disable Copilot streamer mode: {error}')
 
     def _assert_pane_privacy_safe(
         self,
@@ -1732,12 +1830,28 @@ def _reset_ios_app_state(device_id: str) -> None:
 
 
 def _android_device_id() -> str:
+    override = os.environ.get('ANDROID_SERIAL') or os.environ.get(
+        'STORE_SCREENSHOT_ANDROID_SERIAL',
+    )
     adb = _adb_path()
     result = subprocess.check_output([str(adb), 'devices'], text=True)
-    for line in result.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) >= 2 and parts[1] == 'device':
-            return parts[0]
+    devices = [
+        parts[0]
+        for line in result.splitlines()[1:]
+        if len(parts := line.split()) >= 2 and parts[1] == 'device'
+    ]
+    if override:
+        if override not in devices:
+            raise RuntimeError(
+                f'Configured Android device {override!r} is not connected.',
+            )
+        return override
+    # Prefer emulators for deterministic store resolutions over physical phones.
+    for device_id in devices:
+        if device_id.startswith('emulator-'):
+            return device_id
+    if devices:
+        return devices[0]
     raise RuntimeError('No running Android device or emulator found')
 
 

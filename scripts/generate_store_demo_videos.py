@@ -33,7 +33,9 @@ MAX_COMPOSE_DURATION = 28.0
 CAPTION_LEAD_S = 0.45
 PIXEL_LAUNCHER_PACKAGE = 'com.google.android.apps.nexuslauncher'
 OVERLAY_FPS = 30
-COPILOT_PROMPT = 'Draft a release checklist for this SSH app'
+COPILOT_PROMPT = (
+    'Review the pasted release checklist screenshot and list the top remaining checks'
+)
 CLAUDE_PROMPT = 'Summarize the riskiest release checks'
 
 
