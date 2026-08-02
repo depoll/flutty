@@ -11,9 +11,26 @@ class ByteConsumer {
 
   var _totalConsumed = 0;
 
+  /// A high surrogate from the end of the previous [add] whose low half has not
+  /// arrived yet.
+  ///
+  /// Chunk boundaries fall wherever the transport and the parse slicer happen
+  /// to land, so an astral character is regularly split across two chunks. In a
+  /// terminal stream that character is overwhelmingly the Kitty Unicode
+  /// placeholder U+10EEEE, emitted once per cell of every image an agent CLI
+  /// draws. Decoding each chunk in isolation turned the split pair into two
+  /// lone surrogates: two broken cells instead of one, and — because the
+  /// graphics layer keys on the placeholder code point — no placeholder
+  /// registered for the cell, so the row/column diacritics that follow were
+  /// written as ordinary cells too. That renders them as stray combining marks
+  /// (U+030D is a vertical line) and pushes the rest of the line right by three
+  /// columns per placeholder, which strands the frame the app is repainting.
+  int _pendingHighSurrogate = 0;
+
   void add(String data) {
     if (data.isEmpty) return;
     final block = _toCodePoints(data);
+    if (block.isEmpty) return;
     _queue.addLast(block);
     _length += block.length;
   }
@@ -26,9 +43,12 @@ class ByteConsumer {
   /// base64 of replayed Kitty images that land on the window-switch parse
   /// critical path — contains no surrogate pairs, so the UTF-16 code units are
   /// already the code points. In that case the lazy [String.codeUnits] view is
-  /// returned directly with no copy. Only when a surrogate pair is present do we
-  /// fall back to combining the pair into a single code point.
-  static List<int> _toCodePoints(String data) {
+  /// returned directly with no copy. Only when a surrogate pair is present, or
+  /// one is still pending from the previous chunk, do we fall back to combining.
+  List<int> _toCodePoints(String data) {
+    if (_pendingHighSurrogate != 0) {
+      return _combineSurrogatePairs(data.codeUnits, 0);
+    }
     final units = data.codeUnits;
     final length = units.length;
     for (var i = 0; i < length; i++) {
@@ -40,15 +60,35 @@ class ByteConsumer {
     return units;
   }
 
-  static List<int> _combineSurrogatePairs(List<int> units, int firstSurrogate) {
+  List<int> _combineSurrogatePairs(List<int> units, int firstSurrogate) {
     final length = units.length;
     final out = <int>[];
-    for (var i = 0; i < firstSurrogate; i++) {
+    final pending = _pendingHighSurrogate;
+    _pendingHighSurrogate = 0;
+    var start = 0;
+    if (pending != 0) {
+      if (length > 0 && units[0] >= 0xDC00 && units[0] <= 0xDFFF) {
+        out.add(0x10000 + ((pending - 0xD800) << 10) + (units[0] - 0xDC00));
+        start = 1;
+      } else {
+        // The low half never came. Keep the orphan rather than silently
+        // dropping input the app counted on advancing the cursor.
+        out.add(pending);
+      }
+    }
+    for (var i = start; i < firstSurrogate; i++) {
       out.add(units[i]);
     }
-    for (var i = firstSurrogate; i < length; i++) {
+    for (var i = start > firstSurrogate ? start : firstSurrogate;
+        i < length;
+        i++) {
       final unit = units[i];
-      if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < length) {
+      if (unit >= 0xD800 && unit <= 0xDBFF) {
+        if (i + 1 >= length) {
+          // Hold the high half back so the next chunk can complete the pair.
+          _pendingHighSurrogate = unit;
+          continue;
+        }
         final low = units[i + 1];
         if (low >= 0xDC00 && low <= 0xDFFF) {
           out.add(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00));
@@ -124,5 +164,6 @@ class ByteConsumer {
     _currentOffset = 0;
     _totalConsumed = 0;
     _length = 0;
+    _pendingHighSurrogate = 0;
   }
 }
