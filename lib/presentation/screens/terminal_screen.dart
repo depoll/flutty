@@ -9051,6 +9051,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !identical(_shell, shell)) {
       return;
     }
+    if (session.remoteIsWindows) {
+      await _reopenShellForVisibleTmux(
+        session,
+        command: command.command,
+        requestPty: false,
+      );
+      DiagnosticsLogService.instance.info(
+        'terminal.agent_launch',
+        'command_written',
+        fields: {
+          'connectionId': session.connectionId,
+          'backend': command.backend.storageValue,
+          'requestedPty': false,
+          if (command.tool case final tool?) 'tool': tool.name,
+        },
+      );
+      return;
+    }
     shell.write(utf8.encode(formatAutoConnectCommandForShell(command.command)));
     DiagnosticsLogService.instance.info(
       'terminal.agent_launch',
@@ -9194,9 +9212,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session
         ..remoteMuxBackend = command.backend
         ..remoteMuxSessionName = command.sessionName;
-      session.terminal?.kittyGraphicsEnabled =
-          !session.remoteIsWindows ||
-          command.backend == RemoteMuxBackend.monkeyMux;
       if (command.backend != RemoteMuxBackend.monkeyMux) {
         return;
       }
@@ -9293,7 +9308,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ..monkeyMuxViewportClippingEnabled = false
           ..remoteMuxBackend = null
           ..remoteMuxSessionName = null;
-        session.terminal?.kittyGraphicsEnabled = !session.remoteIsWindows;
       }
     }
     _stopTmuxForegroundVerification();

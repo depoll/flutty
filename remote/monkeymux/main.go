@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.131"
+	monkeyMuxVersion                  = "0.1.132"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -927,7 +927,13 @@ func attachCommand(args []string) {
 	}
 	defer restoreTerminal()
 
-	stopResize := forwardResizeSignals(session, resolvedClientID)
+	stopResize := forwardResizeSignals(
+		session,
+		resolvedClientID,
+		width,
+		height,
+		*widthFlag > 0 && *heightFlag > 0,
+	)
 	defer stopResize()
 
 	// The attach lives for as long as the server keeps the connection open. The

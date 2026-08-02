@@ -857,10 +857,24 @@ func terminalSize() (int, int) {
 // forwardResizeSignals sends the initial terminal size and then polls for
 // changes. Windows has no SIGWINCH; interactive resizes primarily arrive over
 // the MonkeyMux control channel, and this poller covers local console resizes.
-func forwardResizeSignals(session string, clientID string) func() {
+//
+// A raw SSH exec attach has no local console to poll. Its caller supplies an
+// explicit size and all later resizes arrive over the app control channel; a
+// terminalSize() poll there would return the 80x24 fallback and overwrite the
+// correct attach hello immediately.
+func forwardResizeSignals(
+	session string,
+	clientID string,
+	initialWidth int,
+	initialHeight int,
+	explicitSize bool,
+) func() {
+	if explicitSize {
+		return func() {}
+	}
 	done := make(chan struct{})
 	go func() {
-		lastWidth, lastHeight := terminalSize()
+		lastWidth, lastHeight := initialWidth, initialHeight
 		sendResize(session, clientID, lastWidth, lastHeight)
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
