@@ -89,6 +89,19 @@ void main() {
       );
     });
 
+    test('passes explicit viewport dimensions for raw SSH attach', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: r'C:\Users\me\monkeymux.exe',
+        sessionName: 'work',
+        terminalColumns: 69,
+        terminalRows: 55,
+        windows: true,
+      );
+
+      expect(command, contains('--width 69 --height 55'));
+      expect(command, endsWith(' work'));
+    });
+
     test('escapes arguments for Windows argv parsing', () {
       final command = buildMonkeyMuxAttachCommand(
         executablePath: r'C:\Program Files\mm\monkeymux.exe',

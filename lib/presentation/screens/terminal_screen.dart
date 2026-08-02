@@ -8612,12 +8612,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted) {
           return null;
         }
+        final viewportCellSize = _localTerminalViewportCellSize();
         return (
           command: buildMonkeyMuxAttachCommand(
             executablePath: installation.executablePath,
             sessionName: sessionName,
             clientId: session.monkeyMuxClientId,
             clipViewport: true,
+            terminalColumns: viewportCellSize.columns,
+            terminalRows: viewportCellSize.rows,
             workingDirectory: host.tmuxWorkingDirectory,
             terminalThemeReports: terminalThemeReports,
             serverUpdatePolicy: updatePolicy,
@@ -9118,11 +9121,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final terminalThemeReports = buildTerminalThemeHintReports(
         session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
       );
+      final viewportCellSize = _localTerminalViewportCellSize();
       attachCommand = buildMonkeyMuxAttachCommand(
         executablePath: installation.executablePath,
         sessionName: sessionName,
         clientId: session.monkeyMuxClientId,
         clipViewport: true,
+        terminalColumns: viewportCellSize.columns,
+        terminalRows: viewportCellSize.rows,
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,

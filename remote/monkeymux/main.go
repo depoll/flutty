@@ -828,6 +828,8 @@ func attachCommand(args []string) {
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
 	clientID := fs.String("client-id", "", "stable foreground client identifier")
 	clipViewport := fs.Bool("clip-viewport", false, "clip a shared terminal grid to this client's viewport")
+	widthFlag := fs.Int("width", 0, "terminal columns when stdout has no PTY")
+	heightFlag := fs.Int("height", 0, "terminal rows when stdout has no PTY")
 	noPrefix := fs.Bool("no-prefix", false, "disable Ctrl-B window commands")
 	quiet := fs.Bool("quiet", false, "suppress attach and detach messages")
 	target := fs.String("t", "", "target session")
@@ -865,6 +867,12 @@ func attachCommand(args []string) {
 		)
 	}
 	width, height := terminalSize()
+	if *widthFlag > 0 {
+		width = *widthFlag
+	}
+	if *heightFlag > 0 {
+		height = *heightFlag
+	}
 	if err := ensureServer(
 		session,
 		createWindowOptions{

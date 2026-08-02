@@ -92,6 +92,8 @@ String buildMonkeyMuxAttachCommand({
   String? launchCommand,
   String? windowName,
   String? terminalThemeReports,
+  int? terminalColumns,
+  int? terminalRows,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
   bool clipViewport = false,
@@ -107,6 +109,9 @@ String buildMonkeyMuxAttachCommand({
       _monkeyMuxQuoteArg(clientId.trim(), windows: windows),
     ],
     if (clipViewport) '--clip-viewport',
+    if (terminalColumns != null && terminalColumns > 0)
+      '--width $terminalColumns',
+    if (terminalRows != null && terminalRows > 0) '--height $terminalRows',
     if (serverUpdatePolicy != null) ...[
       '--update-policy',
       serverUpdatePolicy.cliValue,
