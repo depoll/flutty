@@ -166,7 +166,7 @@ void main() {
       expect(result.retryableUnserved(const {7, 8, 9}), {8, 9});
     });
 
-    test('keeps acknowledged missing ids suppressed', () {
+    test('keeps explicitly non-retryable missing ids suppressed', () {
       final result = MonkeyMuxImageReplayResult(
         served: const {7},
         retryableFailure: false,

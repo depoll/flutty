@@ -4525,7 +4525,7 @@ void main() {
         expect(
           monkeyMuxService.imageReplayCalls,
           hasLength(2),
-          reason: 'acknowledged misses stay suppressed for this window visit',
+          reason: 'explicitly non-retryable misses stay suppressed',
         );
 
         monkeyMuxService.imageReplayFutures.addAll(
