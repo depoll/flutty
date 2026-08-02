@@ -90,13 +90,15 @@ String _buildSvg(String viewBox, List<_SvgPathSpec> paths) {
 }
 
 final Map<AgentLaunchTool, String> _svgByTool = <AgentLaunchTool, String>{
-  // Pi renders its own "π" wordmark, so a Greek pi glyph is the faithful mark.
-  // Kept geometric and heavy so it holds up next to the other solid glyphs at
-  // the 20px size used in the picker rows.
+  // Pi's own blocky monogram, taken from the lobehub icon set. Preferred over
+  // a plain Greek pi glyph so it reads as the brand rather than a maths symbol.
   AgentLaunchTool.pi: _buildSvg('0 0 24 24', const [
-    _SvgPathSpec('M2.4 4.4h19.2v3.9H2.4z'),
-    _SvgPathSpec('M6 8.3h4v12.3H6z'),
-    _SvgPathSpec('M14 8.3h4v12.3h-4z'),
+    _SvgPathSpec(
+      'M1 1h16.5v11H12v5.5H6.5V23H1V1zm5.5 5.5V12H12V6.5H6.5z',
+      fillRule: 'evenodd',
+      clipRule: 'evenodd',
+    ),
+    _SvgPathSpec('M17.5 12H23v11h-5.5V12z'),
   ]),
   // Hermes' favicon is the winged-staff symbol. It is redrawn as vector paths
   // because a text glyph does not render reliably through flutter_svg, and as
