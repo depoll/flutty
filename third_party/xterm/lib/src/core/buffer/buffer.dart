@@ -527,8 +527,48 @@ class Buffer {
       // animation resizes a dozen times, and each step deleted another row the
       // TUI still believed it owned, desynchronising its cursor-relative
       // repaints from the buffer.
+      //
+      // None of that holds on the alternate screen, which has no scrollback: a
+      // row pushed above the viewport is deleted outright by the
+      // `clearScrollback()` that follows every resize. So there the choice is
+      // not lossless-vs-destructive, it is only *which* rows to destroy — and
+      // the answer has to be whichever ones the host destroys, because the
+      // client is mirroring a remote grid and a TUI repaints against the host's
+      // row indices. tmux (`screen_resize_y`, with `GRID_HISTORY` cleared for
+      // the alternate grid by `screen_alternate_on`) gives up the rows *below*
+      // the cursor first, blank or not, and only once the cursor has nothing
+      // left below it deletes from the top, moving the cursor up with them.
+      //
+      // Preferring blank rows there — refusing to drop a TUI's non-blank footer
+      // and taking the row off the top instead — diverges from the host by
+      // exactly the number of rows the app keeps under its cursor, on every one
+      // of the dozen steps an Android keyboard animation produces. The frame
+      // then sits at an offset the app never applies, so its cursor-relative
+      // repaints land on the wrong rows and leave stale bands behind.
+      //
+      // Rows taken off the top are not removed here: decrementing the cursor
+      // pushes them above the viewport and the `clearScrollback()` after this
+      // resize does the trim, which keeps `_cursorY` and the trim count in step.
+      var deferredTopTrim = 0;
       for (var i = 0; i < oldHeight - newHeight; i++) {
         final lastIndex = lines.length - 1;
+        if (isAltBuffer) {
+          if (lastIndex <= 0) {
+            break;
+          }
+          // `_cursorY` has already been decremented for rows that are queued
+          // for trimming but still present, so the cursor's index in [lines] is
+          // its row plus that pending count.
+          if (lastIndex > _cursorY + deferredTopTrim) {
+            lines.pop();
+          } else if (_cursorY > 0) {
+            _cursorY--;
+            deferredTopTrim++;
+          } else {
+            lines.pop();
+          }
+          continue;
+        }
         final canDropLast = lastIndex > absoluteCursorY;
         if (canDropLast && _isReclaimableRow(lastIndex)) {
           lines.pop();

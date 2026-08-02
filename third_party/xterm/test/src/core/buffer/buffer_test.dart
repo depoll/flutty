@@ -157,6 +157,112 @@ void main() {
       expect(terminal.buffer.height, beforeHeight);
     });
 
+    // The alternate screen has no scrollback, so the rows a shrink scrolls above
+    // the viewport are deleted by the `clearScrollback()` that follows the
+    // resize. Scrolling there therefore destroys the *top* rows, while the host
+    // gives up the rows below the cursor first. tmux's `screen_resize_y` runs
+    // with `GRID_HISTORY` cleared on the alternate grid, so it deletes up to
+    // `oldHeight - 1 - cursorY` rows off the bottom before it touches the top.
+    // Preferring blank rows instead — refusing a TUI's non-blank footer and
+    // taking the row off the top — offsets the whole frame from the grid the
+    // app repaints against.
+    test('alternate screen shrink gives up the rows below the cursor', () {
+      final terminal = Terminal(maxLines: 200);
+      terminal.resize(20, 10);
+      terminal.write('\x1b[?1049h');
+      for (var row = 1; row <= 10; row++) {
+        terminal.write('\x1b[$row;1Hrow$row');
+      }
+      terminal.write('\x1b[8;1H'); // park the cursor above a non-blank footer
+
+      terminal.resize(20, 8); // exactly the two rows below the cursor
+
+      expect(terminal.buffer.height, 8);
+      for (var row = 1; row <= 8; row++) {
+        expect(
+          terminal.buffer.lines[row - 1].toString().trimRight(),
+          'row$row',
+          reason: 'nothing above the cursor may move',
+        );
+      }
+      expect(
+        terminal.buffer.cursorY,
+        7,
+        reason: 'the cursor keeps its row when only the footer is dropped',
+      );
+    });
+
+    // Once the cursor has nothing left below it the host takes the remainder off
+    // the top and moves the cursor up with it, so the cursor always keeps its
+    // own line. Popping past the cursor instead would delete the TUI's input
+    // line and everything it had just drawn above it.
+    test('alternate screen deep shrink trims the top and keeps the cursor', () {
+      final terminal = Terminal(maxLines: 200);
+      terminal.resize(20, 10);
+      terminal.write('\x1b[?1049h');
+      for (var row = 1; row <= 10; row++) {
+        terminal.write('\x1b[$row;1Hrow$row');
+      }
+      terminal.write('\x1b[8;1H');
+
+      terminal.resize(20, 6); // 2 rows below the cursor, 2 more off the top
+
+      expect(terminal.buffer.height, 6);
+      expect(terminal.buffer.lines[0].toString().trimRight(), 'row3');
+      expect(terminal.buffer.lines[5].toString().trimRight(), 'row8');
+      expect(
+        terminal.buffer.cursorY,
+        5,
+        reason: 'the cursor must still sit on row8, its own line',
+      );
+    });
+
+    // The Android keyboard animation shrinks and grows a dozen times per open.
+    // Whatever it destroys, the cursor has to come out still on its own line and
+    // the buffer has to be exactly one viewport tall, so the `clearScrollback()`
+    // after the next resize has nothing left to trim.
+    test('alternate screen shrink/grow keeps the cursor on its line', () {
+      final terminal = Terminal(maxLines: 200);
+      terminal.resize(20, 10);
+      terminal.write('\x1b[?1049h');
+      for (var row = 1; row <= 10; row++) {
+        terminal.write('\x1b[$row;1Hrow$row');
+      }
+      terminal.write('\x1b[8;1H');
+
+      for (final height in [8, 6, 5, 4]) {
+        terminal.resize(20, height);
+        expect(
+          terminal.buffer.height,
+          height,
+          reason: 'the alternate screen never keeps scrollback',
+        );
+        expect(
+          terminal.buffer.scrollBack,
+          0,
+          reason: 'clearScrollback() must have nothing left to trim',
+        );
+        expect(
+          terminal.buffer.lines[terminal.buffer.cursorY].toString().trimRight(),
+          'row8',
+          reason: 'the cursor may move index, never leave its line',
+        );
+      }
+
+      terminal.resize(20, 10);
+
+      expect(terminal.buffer.height, 10);
+      expect(
+        terminal.buffer.lines[terminal.buffer.cursorY].toString().trimRight(),
+        'row8',
+      );
+      expect(
+        terminal.buffer.lines[9].toString().trimRight(),
+        isEmpty,
+        reason: 'regrown rows are appended below the survivors',
+      );
+    });
+
     // With reflow off (and always on the alt buffer) a width shrink keeps the
     // cells past the new width so they reappear when it grows back. A row whose
     // only text lives in that hidden region reads as blank across the visible
