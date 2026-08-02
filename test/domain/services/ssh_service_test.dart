@@ -2821,6 +2821,46 @@ LISTEN ::1:4201
       await session.closeShell(waitForStreams: false);
     });
 
+    test('opens commands without an outer PTY when requested', () async {
+      final client = _MockSshClient();
+      final shell = _MockExecSession();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      const pty = SSHPtyConfig(width: 120, height: 30);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shell);
+      when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+      when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+      when(() => shell.done).thenAnswer((_) => Completer<void>().future);
+
+      final result = await session.getShell(
+        pty: pty,
+        requestPty: false,
+        command: 'monkeymux attach test',
+      );
+
+      expect(result, same(shell));
+      verify(
+        () => client.execute(
+          _expectedMarkedCommand(session, 'monkeymux attach test'),
+        ),
+      ).called(1);
+
+      session.resizeShell(80, 24, 0, 0);
+      verifyNever(() => shell.resizeTerminal(any(), any(), any(), any()));
+      await session.closeShell(waitForStreams: false);
+    });
+
     test(
       'returns completed startup commands to a login shell without disconnecting',
       () async {
