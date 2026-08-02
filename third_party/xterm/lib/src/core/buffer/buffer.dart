@@ -546,25 +546,29 @@ class Buffer {
       // then sits at an offset the app never applies, so its cursor-relative
       // repaints land on the wrong rows and leave stale bands behind.
       //
-      // Rows taken off the top are not removed here: decrementing the cursor
-      // pushes them above the viewport and the `clearScrollback()` after this
-      // resize does the trim, which keeps `_cursorY` and the trim count in step.
-      var deferredTopTrim = 0;
       for (var i = 0; i < oldHeight - newHeight; i++) {
         final lastIndex = lines.length - 1;
         if (isAltBuffer) {
           if (lastIndex <= 0) {
             break;
           }
-          // `_cursorY` has already been decremented for rows that are queued
-          // for trimming but still present, so the cursor's index in [lines] is
-          // its row plus that pending count.
-          if (lastIndex > _cursorY + deferredTopTrim) {
+          if (lastIndex > _cursorY) {
+            // The host gives up rows below the cursor first. Remove graphics
+            // before detaching their anchors so stale placements cannot keep
+            // decoded images alive after the row is gone.
+            graphics.removePlacementsInRows(lastIndex, lastIndex);
             lines.pop();
           } else if (_cursorY > 0) {
+            // Once no rows remain below the cursor, the no-history host drops
+            // rows from the top and moves the cursor up with them. Commit that
+            // trim here instead of deferring it to clearScrollback(): resize
+            // runs for the inactive alt buffer too, where clearScrollback()
+            // would otherwise never run and the discarded rows could reappear.
+            graphics.removePlacementsInRows(0, 0);
+            lines.trimStart(1);
             _cursorY--;
-            deferredTopTrim++;
           } else {
+            graphics.removePlacementsInRows(lastIndex, lastIndex);
             lines.pop();
           }
           continue;

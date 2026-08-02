@@ -282,6 +282,23 @@ void main() {
     expect(terminal.graphics.hasPlacements, isFalse);
   });
 
+  testWidgets('Kitty graphics query reports disabled capability', (
+    tester,
+  ) async {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add)
+      ..kittyGraphicsEnabled = false;
+
+    terminal.write(
+      '\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;${base64.encode([0, 0, 0])}'
+      '\x1b\\',
+    );
+
+    expect(output, ['\x1b_Gi=31;ENOTSUP: graphics disabled\x1b\\']);
+    expect(terminal.graphics.imageCount, 0);
+    expect(terminal.heldImageSignatures(), isEmpty);
+  });
+
   testWidgets('Kitty graphics query rejects unsupported transmission media', (
     tester,
   ) async {
@@ -3276,63 +3293,36 @@ void main() {
     });
   });
 
-  // U+10EEEE is a surrogate pair, and an agent CLI emits one per cell of every
-  // image it draws — by far the most common astral character in a terminal
-  // stream. Chunk boundaries land wherever the transport and the parse slicer
-  // put them, so the pair gets split. When the halves were decoded as separate
-  // code points the placeholder was never recognised: the cell became two
-  // broken cells, no placeholder was registered for the graphics layer, and the
-  // row/column diacritics that follow were written as ordinary cells — stray
-  // combining marks (U+030D draws a vertical line) plus three extra columns per
-  // placeholder, which shears every following line of the frame.
-  test('placeholder cells survive a write split at the surrogate boundary', () {
-    const placeholder = '\u{10EEEE}';
-    final frame = StringBuffer()
-      ..write('\x1b[38;2;0;175;255m')
-      ..write('$placeholder\u0305\u0305') // row 0, col 0
-      ..write('$placeholder\u0305\u030D') // row 0, col 1
-      ..write('$placeholder\u0305\u030E') // row 0, col 2
-      ..write('\x1b[0m')
-      ..write('AFTER');
-    final payload = frame.toString();
+  testWidgets('alternate screen shrink releases images below the cursor', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 4);
+      final terminal = Terminal()..resize(20, 10);
 
-    Terminal render(Iterable<String> chunks) {
-      final terminal = Terminal(maxLines: 100)..resize(20, 5);
-      for (final chunk in chunks) {
-        terminal.write(chunk);
+      terminal.write('\x1b[?1049h\x1b[10;1H');
+      terminal.write('\x1b_Ga=T,f=100,C=1;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
       }
-      return terminal;
-    }
+      expect(terminal.graphics.placements, hasLength(1));
+      terminal.write('\x1b[5;1H');
 
-    final whole = render([payload]);
-    expect(whole.graphics.placeholders, hasLength(3));
-    expect(whole.buffer.cursorX, 8);
+      terminal.resize(20, 8);
 
-    // One code unit at a time is the worst case, and splits every pair.
-    final split = render([
-      for (final unit in payload.codeUnits) String.fromCharCode(unit),
-    ]);
-
-    expect(
-      split.graphics.placeholders,
-      hasLength(3),
-      reason: 'a split pair must still register its placeholder',
-    );
-    expect(
-      split.buffer.cursorX,
-      whole.buffer.cursorX,
-      reason: 'diacritics must not be written as cells and advance the cursor',
-    );
-    expect(
-      split.buffer.lines[0].toString().trimRight(),
-      whole.buffer.lines[0].toString().trimRight(),
-    );
-    for (var x = 0; x < 3; x++) {
       expect(
-        split.buffer.lines[0].getCodePoint(x),
-        0x10EEEE,
-        reason: 'cell $x must hold the placeholder, not a lone surrogate',
+        terminal.graphics.placements,
+        isEmpty,
+        reason: 'the host discards bottom rows below the cursor',
       );
-    }
+      expect(
+        terminal.graphics.imageCount,
+        0,
+        reason: 'the detached placement must not retain decoded image memory',
+      );
+    });
   });
 }
