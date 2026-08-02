@@ -3905,13 +3905,19 @@ class SshSession {
   /// command directly instead of opening an interactive login shell first. If
   /// [returnToLoginShell] is true, completing that command replaces its channel
   /// with an interactive login shell without closing the SSH connection.
+  ///
+  /// Set [requestPty] to false for commands that already implement their own
+  /// terminal protocol and PTY, such as MonkeyMux attach on native Windows.
+  /// Avoiding the redundant OpenSSH ConPTY also preserves Kitty APC/DCS bytes.
   Future<SSHSession> getShell({
     SSHPtyConfig? pty,
+    bool requestPty = true,
     bool forceNew = false,
     String? command,
     bool returnToLoginShell = false,
   }) => _runtime.getShell(
     pty: pty,
+    requestPty: requestPty,
     forceNew: forceNew,
     command: command,
     returnToLoginShell: returnToLoginShell,

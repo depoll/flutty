@@ -7231,6 +7231,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           width: viewportCellSize.columns,
           height: viewportCellSize.rows,
         ),
+        requestPty:
+            !(session.remoteIsWindows &&
+                startupCommand?.backend == RemoteMuxBackend.monkeyMux),
         command: startupCommand?.command,
         returnToLoginShell: startupCommand != null,
       );
@@ -10432,6 +10435,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sessionName,
         force: true,
       );
+      unawaited(
+        _reattachTmuxAfterWindowChangeInBackground(
+          session,
+          sessionName,
+          forceVisibleTmux: forceVisibleTmux,
+          deferUntilAfterRedraw: deferPostSwitchExec,
+        ),
+      );
       return;
     }
     _prepareTerminalForMuxWindowChange();
@@ -10851,15 +10862,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    final shell = forceVisibleTmux && !canReattachInCurrentShell
-        ? await _reopenShellForVisibleTmux(session)
-        : _shell;
-    if (shell == null) {
-      return;
-    }
-
     final host = _host;
     late final String reattachCommand;
+    var reattachBackend = RemoteMuxBackend.tmux;
     if (host == null) {
       reattachCommand = buildTmuxCommand(sessionName: sessionName);
     } else {
@@ -10872,17 +10877,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       _activeMuxBackend = attachCommand.backend;
+      reattachBackend = attachCommand.backend;
       reattachCommand = attachCommand.command;
     }
-    session.writeToShell(formatAutoConnectCommandForShell(reattachCommand));
+    final requiresRawMonkeyMuxAttach =
+        session.remoteIsWindows &&
+        reattachBackend == RemoteMuxBackend.monkeyMux;
+    final mustReopenShell =
+        requiresRawMonkeyMuxAttach ||
+        (forceVisibleTmux && !canReattachInCurrentShell);
+    final shell = mustReopenShell
+        ? await _reopenShellForVisibleTmux(
+            session,
+            command: requiresRawMonkeyMuxAttach ? reattachCommand : null,
+            requestPty: !requiresRawMonkeyMuxAttach,
+          )
+        : _shell;
+    if (shell == null) {
+      return;
+    }
+
+    if (!requiresRawMonkeyMuxAttach) {
+      session.writeToShell(formatAutoConnectCommandForShell(reattachCommand));
+    }
     DiagnosticsLogService.instance.info(
       'tmux.ui',
       'reattach_command_sent',
-      fields: {'connectionId': session.connectionId},
+      fields: {
+        'connectionId': session.connectionId,
+        'requestedPty': !requiresRawMonkeyMuxAttach,
+      },
     );
   }
 
-  Future<SSHSession?> _reopenShellForVisibleTmux(SshSession session) async {
+  Future<SSHSession?> _reopenShellForVisibleTmux(
+    SshSession session, {
+    String? command,
+    bool requestPty = true,
+  }) async {
     bool stillOwnsSession() => mounted && _connectionId == session.connectionId;
 
     final previousTerminal = _terminal;
@@ -10938,7 +10970,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         reason: 'reopen_shell',
       );
-      shell = await session.getShell(pty: pty);
+      shell = await session.getShell(
+        pty: pty,
+        requestPty: requestPty,
+        command: command,
+        returnToLoginShell: command != null,
+      );
       if (!stillOwnsSession()) {
         restorePreviousTerminalState(restoreShell: false);
         return null;
