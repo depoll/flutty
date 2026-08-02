@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../domain/models/agent_launch_preset.dart';
+import 'agent_tool_marks.dart';
 
 /// Renders a branded icon for a supported coding-agent CLI.
 class AgentToolIcon extends StatelessWidget {
@@ -100,15 +101,9 @@ final Map<AgentLaunchTool, String> _svgByTool = <AgentLaunchTool, String>{
     ),
     _SvgPathSpec('M17.5 12H23v11h-5.5V12z'),
   ]),
-  // Hermes' favicon is the winged-staff symbol. It is redrawn as vector paths
-  // because a text glyph does not render reliably through flutter_svg, and as
-  // a single bold wing pair because finer feathering turns to mush at 20px.
-  AgentLaunchTool.hermes: _buildSvg('0 0 24 24', const [
-    _SvgPathSpec('M12 .8a2.6 2.6 0 1 1 0 5.2A2.6 2.6 0 0 1 12 .8z'),
-    _SvgPathSpec('M10.4 5h3.2v16a1.6 1.6 0 0 1-3.2 0z'),
-    _SvgPathSpec('M10.4 6.4C5.6 6.7 1.6 9.4 0 13.9c3.4-2.4 7-3.4 10.4-3.2z'),
-    _SvgPathSpec('M13.6 6.4c4.8.3 8.8 3 10.4 7.5-3.4-2.4-7-3.4-10.4-3.2z'),
-  ]),
+  // Hermes ships the Nous Research portrait as its mark; it is reproduced
+  // verbatim from the lobehub icon set rather than redrawn.
+  AgentLaunchTool.hermes: hermesAgentMarkSvg,
   // OpenClaw's own monochrome menu-bar mark: a silhouette with knocked-out
   // eyes, so the icon still reads as its mascot when tinted to one colour.
   AgentLaunchTool.openclaw:
