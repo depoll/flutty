@@ -28,7 +28,7 @@ import termios
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 ADB: Path | None = None
@@ -56,7 +56,7 @@ COPILOT_READY_MARKER_GROUPS = (
 COPILOT_PRIVACY_STRIP_MARKERS = tuple(
     marker for marker_group in COPILOT_READY_MARKER_GROUPS for marker in marker_group
 )
-COPILOT_DEMO_IMAGE_NAME = 'release-checklist.png'
+COPILOT_DEMO_IMAGE_NAME = 'monkeyssh-light-mode.png'
 
 
 @dataclass(frozen=True)
@@ -200,6 +200,10 @@ def _run_flutter_capture(
         '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
         '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
     ]
+    if demo.demo_image_b64:
+        dart_defines.append(
+            f'--dart-define=STORE_SCREENSHOT_DEMO_IMAGE_B64={demo.demo_image_b64}',
+        )
     command = [
         'flutter',
         'run',
@@ -318,6 +322,8 @@ class StoreDemoEnvironment:
         if self._claude is None:
             raise RuntimeError('Claude Code CLI is required for the Claude store screenshot.')
         self._opencode = shutil.which('opencode')
+        # Populated after the light-mode app capture; used for video image paste.
+        self.demo_image_b64: str | None = None
 
     @property
     def private_key_b64(self) -> str:
@@ -534,6 +540,7 @@ class StoreDemoEnvironment:
               {self._shell_quote(self._copilot)} \\
               --no-remote \\
               --log-level default \\
+              --add-dir {self._shell_quote(str(self.demo_dir))} \\
               --secret-env-vars=USER,EMAIL,GITHUB_TOKEN,GH_TOKEN,ANTHROPIC_API_KEY \\
               --name 'Mobile Copilot Workspace'
             """,
@@ -600,6 +607,9 @@ class StoreDemoEnvironment:
             """,
         )
         self._start_monkeymux_windows()
+        # Capture a real light-mode app screenshot before driving Copilot so the
+        # seeded image is clearly the product UI (and contrasts in the dark TUI).
+        self._capture_light_mode_demo_image()
         self._drive_copilot_start_screen()
         self._drive_claude_full_screen()
         self.reset_monkeymux()
@@ -624,7 +634,7 @@ class StoreDemoEnvironment:
                     '- Keep captures free of emails, usernames, hostnames, tokens, and private identifiers.',
                     '- Prefer concise checks that fit in a mobile terminal screenshot.',
                     '- Keep terminal output focused on SSH, MonkeyMux, agent, and store asset workflows.',
-                    '- Show Copilot CLI reviewing a real release-checklist screenshot image.',
+                    '- Show Copilot CLI reviewing a real light-mode MonkeySSH app screenshot.',
                     '',
                     'Windows:',
                     '1. copilot - GitHub Copilot CLI',
@@ -637,7 +647,6 @@ class StoreDemoEnvironment:
                 ]
             )
         )
-        self._write_copilot_demo_image()
         (self.demo_dir / 'reconnect_plan.md').write_text(
             '\n'.join(
                 [
@@ -673,44 +682,164 @@ class StoreDemoEnvironment:
             )
         )
 
-    def _write_copilot_demo_image(self) -> None:
-        """Write a phone-screenshot-style PNG for Copilot CLI image review."""
-        width, height = 720, 1280
-        image = Image.new('RGB', (width, height), (14, 16, 28))
-        draw = ImageDraw.Draw(image)
+    def _capture_light_mode_demo_image(self) -> None:
+        """Capture a real light-mode MonkeySSH hosts screenshot for Copilot."""
+        target = TARGETS['ios_phone']
+        output_path = self.demo_dir / COPILOT_DEMO_IMAGE_NAME
+        print(f'Capturing light-mode demo image at {output_path}...')
+        device_id = _boot_ios_simulator(_ios_simulator_name(target))
+        _reset_ios_app_state(device_id)
 
-        # Status bar / chrome
-        draw.rounded_rectangle((28, 28, width - 28, height - 28), radius=36, fill=(22, 26, 42))
-        draw.rounded_rectangle((28, 28, width - 28, 110), radius=36, fill=(30, 36, 58))
-        draw.rectangle((28, 74, width - 28, 110), fill=(30, 36, 58))
-        draw.text((52, 52), 'MonkeySSH', fill=(236, 240, 255))
-        draw.text((52, 78), 'Release checklist', fill=(140, 190, 255))
-
-        # Checklist card
-        draw.rounded_rectangle((56, 150, width - 56, 980), radius=24, fill=(32, 38, 62))
-        items = [
-            ('Store screenshots', True),
-            ('App Store app previews', True),
-            ('Google Play promo video', True),
-            ('Metadata character limits', False),
-            ('Copilot image review scene', False),
-            ('Privacy scan of visible text', False),
+        env = os.environ.copy()
+        dart_defines = [
+            f'--dart-define=STORE_SCREENSHOT_TARGET={target.name}',
+            f'--dart-define=STORE_SCREENSHOT_SSH_PORT={self.port}',
+            f'--dart-define=STORE_SCREENSHOT_SSH_USERNAME={self.username}',
+            f'--dart-define=STORE_SCREENSHOT_SSH_PRIVATE_KEY_B64={self.private_key_b64}',
+            f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_B64={self.host_key_b64}',
+            (
+                '--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT='
+                f'{self.host_key_fingerprint}'
+            ),
+            f'--dart-define=STORE_SCREENSHOT_MUX_SESSION={self.mux_session}',
+            f'--dart-define=STORE_SCREENSHOT_WORKSPACE_PATH={self.demo_dir}',
+            '--dart-define=STORE_SCREENSHOT_THEME_MODE=light',
+            '--dart-define=STORE_SCREENSHOT_LIGHT_DEMO_IMAGE=true',
+            f'--dart-define=STORE_SCREENSHOT_LIGHT_DEMO_OUTPUT={output_path}',
+            '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
+            '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
+            '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
+            '--dart-define=STORE_SCREENSHOT_SCENE_HOLD_MS=1800',
         ]
-        y = 190
-        for label, done in items:
-            color = (72, 210, 140) if done else (90, 110, 150)
-            draw.ellipse((88, y, 120, y + 32), outline=color, width=3)
-            if done:
-                draw.ellipse((96, y + 8, 112, y + 24), fill=color)
-            draw.text((148, y + 4), label, fill=(230, 234, 248))
-            y += 110
+        command = [
+            'flutter',
+            'run',
+            '--debug',
+            '-d',
+            device_id,
+            '-t',
+            'tool/store_screenshot_app.dart',
+            '--flavor',
+            'production',
+            *dart_defines,
+        ]
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        saw_done = False
+        failure: str | None = None
+        try:
+            for raw_line in process.stdout:
+                print(raw_line, end='')
+                line = raw_line.strip()
+                if READY_MARKER in line:
+                    payload = json.loads(line.split(READY_MARKER, 1)[1])
+                    time.sleep(0.5)
+                    _capture_native_screenshot(
+                        target=target,
+                        device_id=device_id,
+                        paths=[Path(path) for path in payload['paths']],
+                    )
+                if ERROR_MARKER in line:
+                    failure = line.split(ERROR_MARKER, 1)[1].strip()
+                    break
+                if DONE_MARKER in line:
+                    saw_done = True
+                    break
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=20)
 
-        # Footer tip
-        draw.rounded_rectangle((56, 1040, width - 56, 1180), radius=20, fill=(40, 28, 72))
-        draw.text((84, 1080), 'Paste a screenshot into Copilot CLI', fill=(220, 210, 255))
-        draw.text((84, 1120), 'and keep the review on-device over SSH.', fill=(180, 170, 220))
+        if failure is not None:
+            raise RuntimeError(f'Light-mode demo image capture failed: {failure}')
+        if not saw_done:
+            raise RuntimeError('Light-mode demo image capture ended before DONE.')
+        if not output_path.is_file() or output_path.stat().st_size < 10_000:
+            raise RuntimeError(
+                f'Light-mode demo image was not written: {output_path}',
+            )
 
-        image.save(self.demo_dir / COPILOT_DEMO_IMAGE_NAME, optimize=True)
+        # Full-bleed phone captures are too tall for Copilot's inline preview.
+        # Crop tightly to the brand header + host rows (the high-signal area on
+        # the hosts screen), boost contrast so light UI survives Kitty
+        # downscaling, and frame it on a dark card.
+        with Image.open(output_path) as image:
+            rgb = image.convert('RGB')
+            width, height = rgb.size
+            # Empirically matches the hosts screen: logo/title, "hosts" heading,
+            # Add Host, and the three seeded host rows — without the empty
+            # lower half that collapses to a blank mint slab in the TUI.
+            top = int(height * 0.11)
+            bottom = int(height * 0.42)
+            left = int(width * 0.05)
+            right = int(width * 0.95)
+            cropped = rgb.crop((left, top, right, max(top + 1, bottom)))
+
+            # Make light-mode UI pop when nested inside a dark terminal capture.
+            cropped = ImageEnhance.Contrast(cropped).enhance(1.18)
+            cropped = ImageEnhance.Sharpness(cropped).enhance(1.25)
+            cropped = ImageEnhance.Color(cropped).enhance(1.08)
+
+            max_width = 960
+            if cropped.width > max_width:
+                ratio = max_width / cropped.width
+                cropped = cropped.resize(
+                    (max_width, max(1, int(cropped.height * ratio))),
+                    Image.Resampling.LANCZOS,
+                )
+
+            border = 16
+            frame = Image.new(
+                'RGB',
+                (cropped.width + border * 2, cropped.height + border * 2),
+                (12, 16, 28),
+            )
+            frame.paste(cropped, (border, border))
+            draw = ImageDraw.Draw(frame)
+            draw.rectangle(
+                (
+                    border - 2,
+                    border - 2,
+                    border + cropped.width + 1,
+                    border + cropped.height + 1,
+                ),
+                outline=(64, 196, 255),
+                width=3,
+            )
+            frame.save(output_path, format='PNG', optimize=True)
+            # Keep a debug copy for local inspection of what Copilot will attach.
+            debug_copy = Path('/tmp') / 'monkeyssh-light-mode-demo.png'
+            frame.save(debug_copy, format='PNG', optimize=True)
+
+            buffer = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+            buffer_path = Path(buffer.name)
+            buffer.close()
+            try:
+                frame.save(buffer_path, format='JPEG', quality=90, optimize=True)
+                self.demo_image_b64 = base64.b64encode(
+                    buffer_path.read_bytes(),
+                ).decode()
+            finally:
+                buffer_path.unlink(missing_ok=True)
+        print(
+            f'Light-mode demo image ready '
+            f'({output_path.stat().st_size} bytes PNG, '
+            f'{len(self.demo_image_b64 or "")} base64 chars for paste); '
+            f'debug copy at {debug_copy}',
+        )
 
     def _remove_demo_dir(self) -> None:
         marker = self.demo_dir / '.monkeyssh-release-workspace'
@@ -816,8 +945,10 @@ class StoreDemoEnvironment:
         # Submit the image path as the first prompt so Copilot CLI attaches and
         # renders the screenshot inline in the conversation.
         prompt = (
-            f'{COPILOT_DEMO_IMAGE_NAME} Review this phone screenshot of the '
-            'release checklist and list the top remaining checks.'
+            f'{COPILOT_DEMO_IMAGE_NAME} Visually describe only what is shown in '
+            'this light-mode MonkeySSH screenshot and call out the strongest '
+            'store-listing details. Do not run tools, read other files, load '
+            'skills, or access paths outside this workspace.'
         )
         self._monkeymux_send_literal('copilot', prompt)
         self._monkeymux_send_keys('copilot', 'Enter')
@@ -834,16 +965,20 @@ class StoreDemoEnvironment:
             has_image_name = _visible_text_contains_marker(
                 text,
                 COPILOT_DEMO_IMAGE_NAME,
-            ) or _visible_text_contains_marker(text, 'release checklist')
+            ) or _visible_text_contains_marker(text, 'light-mode')
             has_response = any(
                 _visible_text_contains_marker(text, marker)
                 for marker in (
-                    'remaining',
-                    'checklist',
-                    'screenshot',
+                    'host',
+                    'hosts',
+                    'snippet',
+                    'monkey',
                     'store',
-                    'preview',
-                    'metadata',
+                    'ssh',
+                    'agent',
+                    'terminal',
+                    'listing',
+                    'screenshot',
                 )
             )
             if has_kitty_graphics or (has_image_name and has_response):
@@ -853,7 +988,7 @@ class StoreDemoEnvironment:
                 return
             time.sleep(1)
         raise RuntimeError(
-            'copilot pane did not display the release checklist image. '
+            'copilot pane did not display the light-mode app screenshot. '
             f'Last visible pane text:\n{last_text.strip()[-1000:]}',
         )
 
@@ -1778,8 +1913,12 @@ def _capture_native_screenshot(
             for path in paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 screenshot.save(path, optimize=True)
+                try:
+                    display_path = path.relative_to(ROOT)
+                except ValueError:
+                    display_path = path
                 print(
-                    f'Wrote {path.relative_to(ROOT)} '
+                    f'Wrote {display_path} '
                     f'({target.size[0]}x{target.size[1]})',
                 )
 

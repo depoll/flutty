@@ -98,8 +98,15 @@ const _redactStoreScreenshotIdentities = bool.fromEnvironment(
 const _hideStoreScreenshotKeyboardToolbar = bool.fromEnvironment(
   'STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR',
 );
+const _storeDemoImageB64 = String.fromEnvironment(
+  'STORE_SCREENSHOT_DEMO_IMAGE_B64',
+);
+const _storeDemoImageFallbackB64 =
+    'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC';
 final _storeDemoClipboardImageBytes = base64Decode(
-  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC',
+  _storeDemoImageB64.isNotEmpty
+      ? _storeDemoImageB64
+      : _storeDemoImageFallbackB64,
 );
 
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
@@ -16134,7 +16141,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         message:
             'This will upload the clipboard image to $_clipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
         confirmLabel: 'Upload and paste',
-        details: const ['release-checklist.png'],
+        details: const ['monkeyssh-light-mode.png'],
         autoConfirmAfter: autoConfirmAfter,
       );
       if (!shouldUpload) {

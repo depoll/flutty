@@ -34,7 +34,9 @@ CAPTION_LEAD_S = 0.45
 PIXEL_LAUNCHER_PACKAGE = 'com.google.android.apps.nexuslauncher'
 OVERLAY_FPS = 30
 COPILOT_PROMPT = (
-    'Review the pasted release checklist screenshot and list the top remaining checks'
+    'Visually describe only what is shown in the attached light-mode '
+    'MonkeySSH screenshot and call out the strongest store-listing details. '
+    'Do not run tools, read other files, or load skills.'
 )
 CLAUDE_PROMPT = 'Summarize the riskiest release checks'
 
@@ -256,6 +258,10 @@ def _run_flutter_recording(
         f'--dart-define=STORE_SCREENSHOT_CLAUDE_PROMPT={CLAUDE_PROMPT}',
         f'--dart-define=STORE_SCREENSHOT_SCENE_HOLD_MS={scene_hold_ms}',
     ]
+    if demo.demo_image_b64:
+        dart_defines.append(
+            f'--dart-define=STORE_SCREENSHOT_DEMO_IMAGE_B64={demo.demo_image_b64}',
+        )
     command = _flutter_command(target, device_id, env, dart_defines)
     watchdog = (
         _AndroidSystemDialogWatchdog(device_id)

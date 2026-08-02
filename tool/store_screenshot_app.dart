@@ -66,10 +66,18 @@ const _postReadyCaptureDelay = Duration(
   ),
 );
 const _videoDemoMode = bool.fromEnvironment('STORE_SCREENSHOT_VIDEO_DEMO');
+const _lightDemoImageMode = bool.fromEnvironment(
+  'STORE_SCREENSHOT_LIGHT_DEMO_IMAGE',
+);
+const _lightDemoImageOutput = String.fromEnvironment(
+  'STORE_SCREENSHOT_LIGHT_DEMO_OUTPUT',
+);
 const _copilotPrompt = String.fromEnvironment(
   'STORE_SCREENSHOT_COPILOT_PROMPT',
   defaultValue:
-      'Review the pasted release checklist screenshot and list the top remaining checks',
+      'Visually describe only what is shown in the attached light-mode '
+      'MonkeySSH screenshot and call out the strongest store-listing details. '
+      'Do not run tools, read other files, or load skills.',
 );
 const _claudePrompt = String.fromEnvironment(
   'STORE_SCREENSHOT_CLAUDE_PROMPT',
@@ -577,7 +585,9 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void> _runFlow() async {
     try {
       await _waitForApp();
-      if (_videoDemoMode) {
+      if (_lightDemoImageMode) {
+        await _runLightDemoImageFlow();
+      } else if (_videoDemoMode) {
         await _runVideoDemoFlow();
       } else {
         await _runScreenshotFlow();
@@ -592,6 +602,27 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       await ref.read(databaseProvider).close();
       exit(1);
     }
+  }
+
+  /// Captures one light-mode hosts screenshot used as the Copilot CLI demo image.
+  Future<void> _runLightDemoImageFlow() async {
+    if (_lightDemoImageOutput.isEmpty) {
+      throw StateError('STORE_SCREENSHOT_LIGHT_DEMO_OUTPUT is required.');
+    }
+    // Hosts is a full-app light chrome surface, so it contrasts strongly when
+    // Copilot renders the PNG inside the dark terminal theme.
+    _go('/');
+    await Future<void>.delayed(const Duration(seconds: 3));
+    FocusManager.instance.primaryFocus?.unfocus();
+    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    final payload = {
+      'scene': 'light_demo_hosts',
+      'index': 1,
+      'paths': [_lightDemoImageOutput],
+    };
+    debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
+    await Future<void>.delayed(const Duration(milliseconds: 2200));
   }
 
   Future<void> _runScreenshotFlow() async {
