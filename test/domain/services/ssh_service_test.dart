@@ -2444,6 +2444,30 @@ LISTEN ::1:4201
       );
     });
 
+    test('encodes a standalone Escape keystroke as win32 key events', () {
+      expect(
+        encodeTerminalInputForWin32InputMode('\x1b'),
+        '\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_',
+      );
+    });
+
+    test('leaves unambiguous escape sequences and text unchanged', () {
+      // Arrow keys, Alt+key, query replies and typed text already survive
+      // ConPTY's input parser; only a bare ESC is ambiguous.
+      for (final data in const [
+        '',
+        '\x1b[A',
+        '\x1b[1;5C',
+        '\x1bb',
+        '\x1b\x1b',
+        '\x1b[5;7R',
+        '\x03',
+        'esc',
+      ]) {
+        expect(encodeTerminalInputForWin32InputMode(data), data);
+      }
+    });
+
     test(
       'preserves split terminal theme mode report queries across chunks',
       () {
@@ -3758,6 +3782,63 @@ LISTEN ::1:4201
           utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
           '${report.codeUnits.map((unit) => '\x1b[0;0;$unit;1;0;1_').join()}'
           'typed',
+        );
+      },
+    );
+
+    test(
+      'win32-encodes a bare Escape keystroke while ConPTY requested the mode',
+      () async {
+        final shell = await openShell();
+        final terminal = shell.session.terminal!;
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?9001h')));
+        await pumpEventQueue();
+        shell.shellWrites.clear();
+
+        terminal.keyInput(TerminalKey.escape);
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_',
+        );
+      },
+    );
+
+    test(
+      'sends a bare Escape keystroke raw without win32-input-mode',
+      () async {
+        final shell = await openShell();
+        final terminal = shell.session.terminal!;
+        shell.shellWrites.clear();
+
+        terminal.keyInput(TerminalKey.escape);
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b',
+        );
+      },
+    );
+
+    test(
+      'leaves Escape-prefixed sequences raw under win32-input-mode',
+      () async {
+        final shell = await openShell();
+        final terminal = shell.session.terminal!;
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?9001h')));
+        await pumpEventQueue();
+        shell.shellWrites.clear();
+
+        terminal.keyInput(TerminalKey.arrowUp);
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b[A',
         );
       },
     );
