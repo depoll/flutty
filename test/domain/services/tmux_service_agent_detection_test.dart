@@ -133,7 +133,10 @@ void main() {
           '/b/gemini\n'
           '/b/opencode\n'
           '/b/antigravity\n'
-          '/b/cursor-agent\n';
+          '/b/cursor-agent\n'
+          '/b/pi\n'
+          '/b/hermes\n'
+          '/b/openclaw\n';
       expect(parseInstalledAgentTools(output), AgentLaunchTool.values.toSet());
     });
 
