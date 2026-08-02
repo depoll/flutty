@@ -29,6 +29,8 @@ import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/presentation/screens/terminal_screen.dart'
+    show storeDemoImagePasteCompleter;
 
 const _targetName = String.fromEnvironment('STORE_SCREENSHOT_TARGET');
 const _sshPort = int.fromEnvironment('STORE_SCREENSHOT_SSH_PORT');
@@ -66,9 +68,18 @@ const _postReadyCaptureDelay = Duration(
   ),
 );
 const _videoDemoMode = bool.fromEnvironment('STORE_SCREENSHOT_VIDEO_DEMO');
+const _lightDemoImageMode = bool.fromEnvironment(
+  'STORE_SCREENSHOT_LIGHT_DEMO_IMAGE',
+);
+const _lightDemoImageOutput = String.fromEnvironment(
+  'STORE_SCREENSHOT_LIGHT_DEMO_OUTPUT',
+);
 const _copilotPrompt = String.fromEnvironment(
   'STORE_SCREENSHOT_COPILOT_PROMPT',
-  defaultValue: 'Draft a release checklist for this SSH app',
+  defaultValue:
+      'Visually describe only what is shown in the attached light-mode '
+      'MonkeySSH screenshot and call out the strongest store-listing details. '
+      'Do not run tools, read other files, or load skills.',
 );
 const _claudePrompt = String.fromEnvironment(
   'STORE_SCREENSHOT_CLAUDE_PROMPT',
@@ -450,16 +461,16 @@ Future<int> _seedDatabase(
 
   final snippets = [
     (
-      name: 'Resume Copilot safely',
-      command: 'copilot --no-remote --log-level none',
-      description: 'Resume a Copilot session with identity details redacted.',
+      name: 'Resume Copilot',
+      command: 'copilot --no-remote --log-level default',
+      description: 'Resume a Copilot CLI session in this MonkeyMux workspace.',
       autoExecute: false,
       usageCount: 18,
     ),
     (
-      name: 'Open Claude Code safely',
+      name: 'Open Claude Code',
       command: 'claude --bare --name Claude Code Workspace',
-      description: 'Start Claude Code with a privacy-safe API key setup.',
+      description: 'Start Claude Code in a dedicated remote agent window.',
       autoExecute: false,
       usageCount: 12,
     ),
@@ -557,6 +568,7 @@ class _StoreScreenshotFlow extends ConsumerStatefulWidget {
 class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void>? _flow;
   int? _connectionId;
+  Completer<void>? _demoImagePasteCompleter;
 
   @override
   void initState() {
@@ -567,7 +579,35 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   @override
   void dispose() {
     unawaited(_flow?.catchError((_) {}));
+    if (_demoImagePasteCompleter != null &&
+        !_demoImagePasteCompleter!.isCompleted) {
+      _demoImagePasteCompleter!.completeError(
+        StateError('Store demo ended before image paste completed.'),
+      );
+    }
+    if (identical(storeDemoImagePasteCompleter, _demoImagePasteCompleter)) {
+      storeDemoImagePasteCompleter = null;
+    }
     super.dispose();
+  }
+
+  void _armDemoImagePasteWait() {
+    final completer = Completer<void>();
+    _demoImagePasteCompleter = completer;
+    storeDemoImagePasteCompleter = completer;
+  }
+
+  Future<void> _waitForDemoImagePaste() async {
+    final completer = _demoImagePasteCompleter;
+    if (completer == null) {
+      throw StateError('Demo image paste wait was not armed.');
+    }
+    await completer.future.timeout(
+      const Duration(seconds: 30),
+      onTimeout: () => throw TimeoutException(
+        'Timed out waiting for store demo image paste to finish.',
+      ),
+    );
   }
 
   @override
@@ -576,7 +616,9 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void> _runFlow() async {
     try {
       await _waitForApp();
-      if (_videoDemoMode) {
+      if (_lightDemoImageMode) {
+        await _runLightDemoImageFlow();
+      } else if (_videoDemoMode) {
         await _runVideoDemoFlow();
       } else {
         await _runScreenshotFlow();
@@ -591,6 +633,27 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       await ref.read(databaseProvider).close();
       exit(1);
     }
+  }
+
+  /// Captures one light-mode hosts screenshot used as the Copilot CLI demo image.
+  Future<void> _runLightDemoImageFlow() async {
+    if (_lightDemoImageOutput.isEmpty) {
+      throw StateError('STORE_SCREENSHOT_LIGHT_DEMO_OUTPUT is required.');
+    }
+    // Hosts is a full-app light chrome surface, so it contrasts strongly when
+    // Copilot renders the PNG inside the dark terminal theme.
+    _go('/');
+    await Future<void>.delayed(const Duration(seconds: 3));
+    FocusManager.instance.primaryFocus?.unfocus();
+    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    final payload = {
+      'scene': 'light_demo_hosts',
+      'index': 1,
+      'paths': [_lightDemoImageOutput],
+    };
+    debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
+    await Future<void>.delayed(const Duration(milliseconds: 2200));
   }
 
   Future<void> _runScreenshotFlow() async {
@@ -666,15 +729,18 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     await _hideKeyboard();
     await Future<void>.delayed(const Duration(milliseconds: 2800));
 
-    // Beat 4 — Image context: a real clipboard image upload + paste, with the
-    // upload confirmation held long enough to read.
+    // Beat 4 — Image context: paste a real screenshot into Copilot CLI so the
+    // agent conversation shows the image inline. Wait for an explicit paste
+    // completion marker so Beat 5 cannot race ahead of the SFTP upload.
+    await _selectMonkeyMuxWindow(0);
     _emitBeat(4);
+    _armDemoImagePasteWait();
     _go('$base&pasteDemoImage=1');
     await _hideKeyboard();
-    await Future<void>.delayed(const Duration(milliseconds: 5400));
+    await _waitForDemoImagePaste();
+    await Future<void>.delayed(const Duration(milliseconds: 800));
 
-    // Beat 5 — Copilot: finish in Copilot with the same uploaded context.
-    await _selectMonkeyMuxWindow(0);
+    // Beat 5 — Copilot: prompt against the pasted screenshot.
     _emitBeat(5);
     _go('$base&showKeyboard=1');
     await Future<void>.delayed(const Duration(milliseconds: 650));
