@@ -199,9 +199,7 @@ if(!$__flResolved){$__flResolved='cmd'}
       ..onTitleChange = _session._handleWindowTitleChange
       ..onIconChange = _session._handleIconNameChange
       ..canResizeFromHost = _session._canTerminalResizeFromHost
-      ..kittyGraphicsEnabled =
-          !_session.remoteIsWindows ||
-          _session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+      ..kittyGraphicsEnabled = !_session.remoteIsWindows || !_shellHasPty;
     _session.terminalHyperlinkTracker.attach(_terminal!);
     _terminal!.onPrivateOSC = _session._handlePrivateOsc;
     _refreshTerminalPreview();
@@ -269,6 +267,7 @@ if(!$__flResolved){$__flResolved='cmd'}
       final shellPty = pty ?? const SSHPtyConfig();
       _shellPty = shellPty;
       _shellHasPty = requestPty;
+      _syncKittyGraphicsAvailability();
       final commandKind = command == null
           ? 'interactive_shell'
           : _diagnosticSshCommandKind(command);
@@ -579,6 +578,7 @@ if(!$__flResolved){$__flResolved='cmd'}
     _shell = null;
     _shellPty = const SSHPtyConfig();
     _shellHasPty = true;
+    _syncKittyGraphicsAvailability();
     final terminal = _terminal;
     if (terminal != null &&
         identical(terminal.onOutput, _runtimeTerminalOutputHandler)) {
@@ -791,11 +791,13 @@ if(!$__flResolved){$__flResolved='cmd'}
     try {
       loginShell = await _openShell(pty: _shellPty);
       _shellHasPty = true;
+      _syncKittyGraphicsAvailability();
       _applyLatestTerminalWindowMetrics(loginShell);
     } on Object catch (error) {
       if (loginShell != null) {
         _closeShellBestEffort(loginShell);
       }
+
       if (generation != _shellGeneration ||
           !identical(_shell, completedShell)) {
         return;
@@ -834,6 +836,14 @@ if(!$__flResolved){$__flResolved='cmd'}
       'return_to_login_success',
       fields: {'connectionId': _session.connectionId},
     );
+  }
+
+  void _syncKittyGraphicsAvailability() {
+    final terminal = _terminal;
+    if (terminal == null) {
+      return;
+    }
+    terminal.kittyGraphicsEnabled = !_session.remoteIsWindows || !_shellHasPty;
   }
 
   void _finishShellTransition(SSHSession shell) {

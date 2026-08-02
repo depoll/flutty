@@ -2861,28 +2861,44 @@ LISTEN ::1:4201
       await session.closeShell(waitForStreams: false);
     });
 
-    test('disables Kitty graphics on direct Windows PTY sessions', () {
-      final client = _MockSshClient();
-      when(
-        () => client.remoteVersion,
-      ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
-      final session = SshSession(
-        connectionId: 1,
-        hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
-      );
+    test(
+      'gates Kitty graphics by the actual Windows channel transport',
+      () async {
+        final client = _MockSshClient();
+        final shell = _MockExecSession();
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => shell);
+        when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+        when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => shell.done).thenAnswer((_) => Completer<void>().future);
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
 
-      final terminal = session.getOrCreateTerminal();
-      expect(terminal.kittyGraphicsEnabled, isFalse);
+        final terminal = session.getOrCreateTerminal();
+        expect(terminal.kittyGraphicsEnabled, isFalse);
 
-      session.remoteMuxBackend = RemoteMuxBackend.monkeyMux;
-      expect(session.getOrCreateTerminal().kittyGraphicsEnabled, isTrue);
-    });
+        await session.getShell(
+          requestPty: false,
+          command: 'monkeymux attach test',
+        );
+        expect(terminal.kittyGraphicsEnabled, isTrue);
+
+        await session.closeShell(waitForStreams: false);
+        expect(terminal.kittyGraphicsEnabled, isFalse);
+      },
+    );
 
     test(
       'returns completed startup commands to a login shell without disconnecting',
