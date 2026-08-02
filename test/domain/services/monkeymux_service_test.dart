@@ -641,7 +641,7 @@ void main() {
       },
     );
 
-    test('listWindows fails when the control channel never opens', () async {
+    test('listWindows recovers after the control channel never opens', () async {
       final client = _MockSshClient();
       final installer = _MockMonkeyMuxInstaller();
       final session = _buildSession(client, connectionId: 903);
@@ -667,6 +667,31 @@ void main() {
         throwsA(isA<TimeoutException>()),
       );
 
+      // The wedged start attempt must not be reused: every later reload would
+      // await the same dead future and time out without opening a channel.
+      final reconnectController = StreamController<Uint8List>();
+      final reconnectSession = _buildRespondingControlSession(
+        reconnectController,
+        window: _fakeWindowJson,
+      );
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => reconnectSession);
+
+      final windows = await service.listWindows(session, 'work');
+      expect(windows, hasLength(1));
+      expect(windows.single.name, 'Codex');
+
+      // A channel that opens after its attempt was abandoned is closed rather
+      // than installed over the live one.
+      final abandoned = _buildSilentControlSession(
+        StreamController<Uint8List>(),
+      );
+      neverOpens.complete(abandoned);
+      await pumpEventQueue();
+      verify(abandoned.close).called(1);
+
+      await reconnectController.close();
       await service.clearCache(903);
     });
 
