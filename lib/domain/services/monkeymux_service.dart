@@ -35,6 +35,12 @@ const _monkeyMuxSessionStdinCloseTimeout = Duration(milliseconds: 250);
 /// connection instead of retrying.
 const _windowListWatchdogTimeout = Duration(seconds: 30);
 
+/// Deadline for opening the shared control channel.
+///
+/// An SSH channel open carries no deadline of its own, so a wedged open would
+/// otherwise leave every later command awaiting the same dead start attempt.
+const _controlChannelOpenTimeout = Duration(seconds: 20);
+
 var _controlRequestSequence = 0;
 
 /// Returns a process-unique id for a MonkeyMux control request.
@@ -1448,8 +1454,16 @@ class _MonkeyMuxWindowChangeObserver {
   MonkeyMuxInstallation? _installation;
   bool _disposed = false;
   int _reconnectAttempts = 0;
+  int _startGeneration = 0;
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
+
+  /// Deadline for negotiating the control channel, scaled down under the test
+  /// override so recovery after a wedged open stays observable.
+  Duration get _channelOpenTimeout {
+    final override = controlResponseTimeoutOverride;
+    return override == null ? _controlChannelOpenTimeout : override * 2;
+  }
 
   bool get isControlChannelReady =>
       !_disposed && !_controller.isClosed && _controlSession != null;
@@ -1515,7 +1529,7 @@ class _MonkeyMuxWindowChangeObserver {
     _reconnectTimer = null;
     final existingStart = _startFuture;
     if (existingStart != null) return existingStart;
-    final start = _start();
+    final start = _start(++_startGeneration);
     _startFuture = start;
     unawaited(
       start.whenComplete(() {
@@ -1527,15 +1541,39 @@ class _MonkeyMuxWindowChangeObserver {
     return start;
   }
 
-  Future<void> _start() async {
+  /// Drops the in-flight start attempt so the next command opens a new channel.
+  ///
+  /// Bumping the generation makes the abandoned attempt discard whatever it
+  /// eventually produces, so a channel that opens late is closed instead of
+  /// being installed over a newer one.
+  void _abandonStartAttempt() {
+    if (_startFuture == null) return;
+    _startGeneration += 1;
+    _startFuture = null;
+  }
+
+  Future<void> _start(int generation) async {
     try {
       final installation = _installation ??= await installer.ensureInstalled(
         session,
       );
-      if (_disposed) return;
+      if (_disposed || generation != _startGeneration) return;
       final command = _buildMonkeyMuxControlCommand(installation, sessionName);
-      final controlSession = await session.execute(command);
-      if (_disposed) {
+      final open = session.execute(command);
+      final controlSession = await open.timeout(
+        _channelOpenTimeout,
+        onTimeout: () {
+          unawaited(
+            open.then(
+              (late) =>
+                  _closeControlSession(late, operation: 'start_open_timeout'),
+              onError: (Object _) {},
+            ),
+          );
+          throw TimeoutException('MonkeyMux control channel open timed out.');
+        },
+      );
+      if (_disposed || generation != _startGeneration) {
         await _closeControlSession(controlSession, operation: 'start_disposed');
         return;
       }
@@ -1558,6 +1596,7 @@ class _MonkeyMuxWindowChangeObserver {
         fields: {'connectionId': session.connectionId},
       );
     } on Object catch (error, stackTrace) {
+      if (generation != _startGeneration) return;
       _handleError(error, stackTrace);
     }
   }
@@ -1658,6 +1697,10 @@ class _MonkeyMuxWindowChangeObserver {
       },
     );
     _failPending(error, stackTrace);
+    // A start attempt still in flight may never finish, and every later command
+    // would await that same dead future. Abandoning it lets the reconnect below
+    // — and the next command — negotiate a fresh channel.
+    _abandonStartAttempt();
     unawaited(_cleanup().whenComplete(_scheduleReconnect));
   }
 
