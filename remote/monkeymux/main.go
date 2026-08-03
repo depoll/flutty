@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.132"
+	monkeyMuxVersion                  = "0.1.133"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -250,6 +250,16 @@ func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
 		return width, height - 1, true
 	}
 	return width, height, false
+}
+
+func shouldSimulateForegroundRedraw(
+	forceRedraw bool,
+	syntheticRedraw bool,
+	dimensionsChanged bool,
+	supportsExplicitResizeSignal bool,
+) bool {
+	return syntheticRedraw ||
+		(forceRedraw && !dimensionsChanged && !supportsExplicitResizeSignal)
 }
 
 func (w *muxWindow) resizePty(width int, height int) {
@@ -6704,12 +6714,12 @@ func (s *muxServer) resizeWithRedraw(
 	s.pendingResizeRedraw = false
 	s.pendingResizeSyntheticRedraw = false
 	s.pendingResizeThemeWindowID = ""
-	sizeChanged :=
+	dimensionsChanged :=
 		s.width != width ||
 			s.height != height ||
 			s.publishedWidth != width ||
-			s.publishedHeight != height ||
-			hadPendingResize
+			s.publishedHeight != height
+	sizeChanged := dimensionsChanged || hadPendingResize
 	s.width = width
 	s.height = height
 	if sizeChanged && serializeViewport {
@@ -6722,22 +6732,20 @@ func (s *muxServer) resizeWithRedraw(
 		!window.closed &&
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
-		// The synthetic width-1 redraw dance is only for callers that genuinely
-		// need a foreground process to repaint content the real PTY SIGWINCH
-		// won't produce: a restored window whose agent just relaunched. Its
-		// intermediate one-cell frame is hidden from attach clients by the
-		// synchronized redraw transaction in resumePausedAttachForwarding.
+		// Genuine viewport changes rely on the real PTY resize and forward their
+		// reflow immediately. Restore/theme redraws always need the synthetic
+		// width-1 dance, while a same-size settle redraw only needs it on
+		// platforms such as Windows that cannot explicitly signal a foreground
+		// resize after ResizePseudoConsole ignores an unchanged size.
 		//
-		// Viewport resizes (keyboard show/hide, pinch-zoom) and their trailing
-		// "settle" redraw never set syntheticRedraw: resizeWindowLocked above
-		// already applied the new PTY size, so a genuine size change delivers a
-		// real SIGWINCH and the TUI repaints once at the correct size, while an
-		// unchanged size is already painted. Performing the dance there resized
-		// the PTY smaller and immediately back, producing a visible one-cell
-		// "bounce" reflow on every resize (and holding the settled frame for the
-		// synchronized-redraw tail). Skip it and forward the single clean reflow
-		// immediately; the explicit SIGWINCH below still nudges the TUI.
-		if syntheticRedraw {
+		// The intermediate frame is hidden from attach clients by the
+		// synchronized redraw transaction in resumePausedAttachForwarding.
+		if shouldSimulateForegroundRedraw(
+			forceRedraw,
+			syntheticRedraw,
+			dimensionsChanged,
+			supportsExplicitForegroundResizeSignal,
+		) {
 			s.pauseAttachForwardingForRedrawLocked(window, width, height)
 			simulateForegroundResize(window, width, height)
 		}

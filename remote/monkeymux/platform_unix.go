@@ -150,6 +150,8 @@ func signalCommandProcessGroup(cmd *exec.Cmd, signal syscall.Signal) {
 	_ = cmd.Process.Signal(signal)
 }
 
+const supportsExplicitForegroundResizeSignal = true
+
 var signalForegroundResize = func(processGroup int) {
 	if processGroup <= 0 {
 		return

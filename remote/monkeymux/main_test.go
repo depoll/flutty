@@ -5726,7 +5726,7 @@ func TestClosedUnixPtyUsesInvalidFileDescriptorSentinel(t *testing.T) {
 	}
 }
 
-func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
+func TestForcedSameSizeRedrawUsesExplicitSignalWhenAvailable(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
@@ -5769,12 +5769,14 @@ func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 		signaled = append(signaled, processGroup)
 	}
 
-	// A client "settle" forced redraw (syntheticRedraw=false) must not perform
-	// the synthetic width-1 dance: the size is already current and painted, so a
-	// dance would be a pure visible bounce. It still nudges the TUI via SIGWINCH.
+	// A client "settle" forced redraw uses SIGWINCH on this platform instead of
+	// bouncing the PTY through an intermediate size.
 	server.resizeWithRedraw(120, 40, true, false, "")
 	if len(simulated) != 0 {
-		t.Fatalf("settle redraw performed synthetic dance = %#v, want none", simulated)
+		t.Fatalf(
+			"settle redraw performed synthetic dance = %#v, want none",
+			simulated,
+		)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
@@ -5783,12 +5785,58 @@ func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	// A restore-style forced redraw (syntheticRedraw=true) must dance so a
 	// freshly relaunched agent repaints its screen.
 	signaled = nil
+	simulated = nil
 	server.resizeWithRedraw(120, 40, true, true, "")
 	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
 		t.Fatalf("synthetic redraw dance = %#v, want [@1:120x40]", simulated)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
+func TestShouldSimulateForegroundRedraw(t *testing.T) {
+	tests := []struct {
+		name                   string
+		forceRedraw            bool
+		syntheticRedraw        bool
+		dimensionsChanged      bool
+		supportsExplicitSignal bool
+		want                   bool
+	}{
+		{
+			name:              "normal resize",
+			dimensionsChanged: true,
+		},
+		{
+			name:                   "same-size redraw with explicit signal",
+			forceRedraw:            true,
+			supportsExplicitSignal: true,
+		},
+		{
+			name:        "same-size redraw without explicit signal",
+			forceRedraw: true,
+			want:        true,
+		},
+		{
+			name:              "synthetic restore redraw",
+			syntheticRedraw:   true,
+			dimensionsChanged: true,
+			want:              true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := shouldSimulateForegroundRedraw(
+				test.forceRedraw,
+				test.syntheticRedraw,
+				test.dimensionsChanged,
+				test.supportsExplicitSignal,
+			)
+			if got != test.want {
+				t.Fatalf("shouldSimulateForegroundRedraw() = %t, want %t", got, test.want)
+			}
+		})
 	}
 }
 
