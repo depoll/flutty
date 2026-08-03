@@ -5819,6 +5819,12 @@ func TestShouldSimulateForegroundRedraw(t *testing.T) {
 			want:        true,
 		},
 		{
+			name:                   "changed-size redraw without explicit signal",
+			forceRedraw:            true,
+			dimensionsChanged:      true,
+			supportsExplicitSignal: false,
+		},
+		{
 			name:              "synthetic restore redraw",
 			syntheticRedraw:   true,
 			dimensionsChanged: true,
