@@ -208,6 +208,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.deleteDetection = false,
     this.keyboardAppearance = Brightness.dark,
     this.onUserInput,
+    this.onPasteText,
     this.onReviewInsertedText,
     this.buildReviewTextForInsertedText,
     this.resolveTextBeforeCursor,
@@ -243,6 +244,9 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// Called when user input has been accepted for sending to the terminal.
   final VoidCallback? onUserInput;
+
+  /// Handles hardware-keyboard paste shortcuts before they reach the terminal.
+  final FutureOr<void> Function()? onPasteText;
 
   /// Called before suspicious multi-character IME insertions are sent.
   final TerminalTextInputReviewCallback? onReviewInsertedText;
@@ -892,10 +896,24 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return KeyEventResult.ignored;
     }
 
+    final hardwareKeyboard = HardwareKeyboard.instance;
+    final isPasteShortcut =
+        widget.onPasteText != null &&
+        event.logicalKey == LogicalKeyboardKey.keyV &&
+        !hardwareKeyboard.isAltPressed &&
+        (hardwareKeyboard.isControlPressed || hardwareKeyboard.isMetaPressed);
+    if (isPasteShortcut) {
+      _stopHardwareKeyRepeat();
+      if (event is KeyDownEvent) {
+        unawaited(Future<void>.sync(widget.onPasteText!));
+      }
+      return KeyEventResult.handled;
+    }
+
     final hasShortcutModifier =
-        HardwareKeyboard.instance.isControlPressed ||
-        HardwareKeyboard.instance.isAltPressed ||
-        HardwareKeyboard.instance.isMetaPressed;
+        hardwareKeyboard.isControlPressed ||
+        hardwareKeyboard.isAltPressed ||
+        hardwareKeyboard.isMetaPressed;
     if (!_currentEditingState.composing.isCollapsed && !hasShortcutModifier) {
       return KeyEventResult.skipRemainingHandlers;
     }
