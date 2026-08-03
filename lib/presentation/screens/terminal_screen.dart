@@ -342,6 +342,8 @@ typedef _TerminalPasteMode = ({
   Terminal terminal,
 });
 
+typedef _AttachmentPasteResult = ({int requestedCount, int sentCount});
+
 /// Resolves the retry schedule used for tmux detection after connect.
 @visibleForTesting
 List<Duration> resolveTmuxDetectionRetrySchedule({bool skipDelay = false}) =>
@@ -12812,6 +12814,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: true,
       keyboardAppearance: keyboardAppearance,
       onUserInput: _handleTerminalUserInput,
+      onPasteText: _pasteClipboard,
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       resolveTextBeforeCursor: _terminalTextBeforeCursor,
@@ -16247,7 +16250,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// attachment. The pre-built segments are written straight to the session
   /// input via [Terminal.onOutput]; they must not go through [Terminal.paste],
   /// which would strip the bracketed-paste markers.
-  Future<bool> _insertUploadedFileReferences(
+  Future<_AttachmentPasteResult> _insertUploadedFileReferences(
     List<String> remotePaths, {
     required bool windows,
   }) async {
@@ -16255,12 +16258,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final pathCount = remotePaths
         .where((remotePath) => remotePath.isNotEmpty)
         .length;
+    _AttachmentPasteResult result(int sentCount) =>
+        (requestedCount: pathCount, sentCount: sentCount);
     if (pathCount == 0) {
-      return true;
+      return result(0);
     }
+    var sentCount = 0;
     final initialPasteMode = await _resolveSettledTerminalPasteMode();
     if (initialPasteMode == null || !mounted) {
-      return false;
+      return result(sentCount);
     }
     final pasteMode = initialPasteMode;
     if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
@@ -16269,7 +16275,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'attachment_input_skipped_context_changed',
         fields: {'connectionId': _connectionId, 'pathCount': pathCount},
       );
-      return false;
+      return result(sentCount);
     }
     if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
       _syncTerminalModesFromActiveMuxWindow();
@@ -16278,7 +16284,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'attachment_input_skipped_window_changed',
         fields: {'connectionId': _connectionId, 'pathCount': pathCount},
       );
-      return false;
+      return result(sentCount);
     }
     final modeReliable = _terminalPasteModeIsReliable(pasteMode);
     final modeUsable = _terminalPasteModeCanUseResolvedState(pasteMode);
@@ -16288,13 +16294,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'attachment_input_skipped_mode_unavailable',
         fields: {'connectionId': _connectionId, 'pathCount': pathCount},
       );
-      return false;
+      return result(sentCount);
     }
     final usedBracketedPaste = _effectiveTerminalBracketedPasteMode(pasteMode);
+    final sendablePathCount = countTerminalAttachmentPastePaths(remotePaths);
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
       bracketedPasteMode: usedBracketedPaste,
       windows: windows,
+      preferRawAgentPaths: _isAgentToolActive,
     );
     if (segments.isEmpty) {
       DiagnosticsLogService.instance.warning(
@@ -16302,7 +16310,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'attachment_input_skipped_unsafe_paths',
         fields: {'connectionId': _connectionId, 'pathCount': pathCount},
       );
-      return false;
+      return result(sentCount);
     }
     DiagnosticsLogService.instance.debug(
       'terminal.clipboard',
@@ -16322,30 +16330,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     for (var i = 0; i < segments.length; i++) {
       if (!mounted) {
-        return false;
-      }
-      if (i > 0) {
-        _syncTerminalModesFromActiveMuxWindow();
-        final activeWindowBracketedPasteMode =
-            resolveTmuxBarActiveWindowBracketedPasteMode(
-              _currentTmuxWindowsSnapshot,
-            );
-        final modeChanged = pasteMode.isMuxActive
-            ? activeWindowBracketedPasteMode != null &&
-                  activeWindowBracketedPasteMode != usedBracketedPaste
-            : pasteMode.terminal.bracketedPasteMode != usedBracketedPaste;
-        if (modeChanged) {
-          DiagnosticsLogService.instance.warning(
-            'terminal.clipboard',
-            'attachment_input_stopped_mode_changed',
-            fields: {
-              'connectionId': _connectionId,
-              'pathCount': pathCount,
-              'sentCount': i,
-            },
-          );
-          return false;
-        }
+        return result(sentCount);
       }
       if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
         DiagnosticsLogService.instance.warning(
@@ -16357,7 +16342,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'sentCount': i,
           },
         );
-        return false;
+        return result(sentCount);
       }
       if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
         _syncTerminalModesFromActiveMuxWindow();
@@ -16370,7 +16355,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'sentCount': i,
           },
         );
-        return false;
+        return result(sentCount);
       }
       if (_terminalUserInputGeneration != inputGeneration) {
         DiagnosticsLogService.instance.warning(
@@ -16382,16 +16367,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'sentCount': i,
           },
         );
-        return false;
+        return result(sentCount);
       }
       pasteMode.terminal.onOutput?.call(segments[i]);
       _terminalUserInputGeneration++;
       inputGeneration = _terminalUserInputGeneration;
+      sentCount = usedBracketedPaste ? sentCount + 1 : sendablePathCount;
       if (i < segments.length - 1) {
         await Future<void>.delayed(_uploadedAttachmentPasteStagger);
       }
     }
-    return true;
+    return result(sentCount);
   }
 
   Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
@@ -16472,14 +16458,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    final pathsInserted = await _insertUploadedFileReferences(
+    final pasteResult = await _insertUploadedFileReferences(
       remotePaths.paths,
       windows: remotePaths.windows,
     );
     if (!mounted) {
       return;
     }
-    if (pathsInserted) {
+    if (pasteResult.sentCount > 0) {
       unawaited(
         ref
             .read(telemetryServiceProvider)
@@ -16491,9 +16477,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    final pathsInserted = pasteResult.sentCount == pasteResult.requestedCount;
     _showClipboardMessage(
       pathsInserted
           ? 'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay'
+          : pasteResult.sentCount > 0
+          ? 'Uploaded ${remotePaths.paths.length} files and pasted ${pasteResult.sentCount} of ${pasteResult.requestedCount} paths'
           : 'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'}, but could not paste ${remotePaths.paths.length == 1 ? 'its path' : 'their paths'}',
     );
   }
@@ -16588,12 +16577,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }, uploadBaseDirectory: uploadBaseDirectory);
     _followLiveOutput();
-    final pathInserted = await _insertUploadedFileReferences([
+    final pasteResult = await _insertUploadedFileReferences([
       remotePath.path,
     ], windows: remotePath.windows);
     if (!mounted) {
       return false;
     }
+    final pathInserted = pasteResult.sentCount == 1;
     if (pathInserted) {
       unawaited(
         ref
@@ -16690,14 +16680,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    final pathsInserted = await _insertUploadedFileReferences(
+    final pasteResult = await _insertUploadedFileReferences(
       remotePaths.paths,
       windows: remotePaths.windows,
     );
     if (!mounted) {
       return;
     }
-    if (pathsInserted) {
+    if (pasteResult.sentCount > 0) {
       unawaited(
         ref
             .read(telemetryServiceProvider)
@@ -16706,9 +16696,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    final pathsInserted = pasteResult.sentCount == pasteResult.requestedCount;
     _showClipboardMessage(
       pathsInserted
           ? 'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay'
+          : pasteResult.sentCount > 0
+          ? 'Uploaded ${remotePaths.paths.length} $itemLabelPlural and pasted ${pasteResult.sentCount} of ${pasteResult.requestedCount} paths'
           : 'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'}, but could not paste ${remotePaths.paths.length == 1 ? 'its path' : 'their paths'}',
     );
   }
