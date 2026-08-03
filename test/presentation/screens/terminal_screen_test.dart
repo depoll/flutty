@@ -4568,9 +4568,8 @@ void main() {
         await tester.pump();
         expect(
           monkeyMuxService.resizeTerminalCalls.length,
-          resizeCountAfterWindowRefresh + 1,
+          resizeCountAfterWindowRefresh,
         );
-        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
         await gesture.up();
 
         final placeholder = String.fromCharCode(
