@@ -89,6 +89,19 @@ void main() {
       );
     });
 
+    test('passes explicit viewport dimensions for raw SSH attach', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: r'C:\Users\me\monkeymux.exe',
+        sessionName: 'work',
+        terminalColumns: 69,
+        terminalRows: 55,
+        windows: true,
+      );
+
+      expect(command, contains('--width 69 --height 55'));
+      expect(command, endsWith(' work'));
+    });
+
     test('escapes arguments for Windows argv parsing', () {
       final command = buildMonkeyMuxAttachCommand(
         executablePath: r'C:\Program Files\mm\monkeymux.exe',
@@ -166,13 +179,37 @@ void main() {
       expect(result.retryableUnserved(const {7, 8, 9}), {8, 9});
     });
 
-    test('keeps acknowledged missing ids suppressed', () {
+    test('keeps explicitly non-retryable missing ids suppressed', () {
       final result = MonkeyMuxImageReplayResult(
         served: const {7},
         retryableFailure: false,
       );
 
       expect(result.retryableUnserved(const {7, 8, 9}), isEmpty);
+    });
+
+    test('acknowledged empty batch keeps requested ids retryable', () {
+      final result = resolveMonkeyMuxImageReplayBatchForTesting(
+        requested: const {7, 8},
+        alreadyServed: const <int>{},
+        acknowledged: true,
+        responseImageIds: const <String>[],
+      );
+
+      expect(result.served, isEmpty);
+      expect(result.retryableUnserved(const {7, 8}), {7, 8});
+    });
+
+    test('partial batch preserves served ids and retries the remainder', () {
+      final result = resolveMonkeyMuxImageReplayBatchForTesting(
+        requested: const {7, 8, 9},
+        alreadyServed: const {7},
+        acknowledged: true,
+        responseImageIds: const ['8'],
+      );
+
+      expect(result.served, {7, 8});
+      expect(result.retryableUnserved(const {7, 8, 9}), {9});
     });
   });
 

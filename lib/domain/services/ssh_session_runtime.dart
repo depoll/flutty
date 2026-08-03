@@ -17,6 +17,7 @@ class _SshSessionRuntime {
   StreamSubscription<String>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
   SSHPtyConfig _shellPty = const SSHPtyConfig();
+  bool _shellHasPty = true;
   bool _returnToLoginShell = false;
   bool _isReplacingShell = false;
   int _shellGeneration = 0;
@@ -197,7 +198,8 @@ if(!$__flResolved){$__flResolved='cmd'}
     _terminal!
       ..onTitleChange = _session._handleWindowTitleChange
       ..onIconChange = _session._handleIconNameChange
-      ..canResizeFromHost = _session._canTerminalResizeFromHost;
+      ..canResizeFromHost = _session._canTerminalResizeFromHost
+      ..kittyGraphicsEnabled = !_session.remoteIsWindows || !_shellHasPty;
     _session.terminalHyperlinkTracker.attach(_terminal!);
     _terminal!.onPrivateOSC = _session._handlePrivateOsc;
     _refreshTerminalPreview();
@@ -232,6 +234,9 @@ if(!$__flResolved){$__flResolved='cmd'}
     if (shell == null) {
       throw StateError('No active shell');
     }
+    if (!_shellHasPty) {
+      return;
+    }
     shell.resizeTerminal(width, height, pixelWidth, pixelHeight);
   }
 
@@ -249,6 +254,7 @@ if(!$__flResolved){$__flResolved='cmd'}
 
   Future<SSHSession> getShell({
     SSHPtyConfig? pty,
+    bool requestPty = true,
     bool forceNew = false,
     String? command,
     bool returnToLoginShell = false,
@@ -264,6 +270,8 @@ if(!$__flResolved){$__flResolved='cmd'}
       _isReplacingShell = true;
       final shellPty = pty ?? const SSHPtyConfig();
       _shellPty = shellPty;
+      _shellHasPty = requestPty;
+      _syncKittyGraphicsAvailability();
       final commandKind = command == null
           ? 'interactive_shell'
           : _diagnosticSshCommandKind(command);
@@ -273,15 +281,20 @@ if(!$__flResolved){$__flResolved='cmd'}
         fields: {
           'connectionId': _session.connectionId,
           'hostId': _session.hostId,
-          'requestedPty': pty != null,
+          'requestedPty': requestPty,
           'hasCommand': command != null,
           'commandKind': commandKind,
         },
       );
       SSHSession? openedShell;
       try {
-        openedShell = await _openShell(pty: shellPty, command: command);
-        _applyLatestTerminalWindowMetrics(openedShell);
+        openedShell = await _openShell(
+          pty: requestPty ? shellPty : null,
+          command: command,
+        );
+        if (requestPty) {
+          _applyLatestTerminalWindowMetrics(openedShell);
+        }
         _shell = openedShell;
         _returnToLoginShell = command != null && returnToLoginShell;
         _shellGeneration += 1;
@@ -332,7 +345,6 @@ if(!$__flResolved){$__flResolved='cmd'}
   }
 
   Future<SSHSession> _openShell({SSHPtyConfig? pty, String? command}) async {
-    final ptyConfig = pty ?? const SSHPtyConfig();
     if (command != null) {
       final markedCommand = _session.remoteIsWindows
           ? command
@@ -340,9 +352,10 @@ if(!$__flResolved){$__flResolved='cmd'}
                 '/bin/sh -c '
                 '${_quotePosixShellArgument(r'if [ -n "$SHELL" ]; then exec "$SHELL" -c "$1"; else exec /bin/sh -c "$1"; fi')} '
                 'sh ${_quotePosixShellArgument(command)}';
-      return _session.client.execute(markedCommand, pty: ptyConfig);
+      return _session.client.execute(markedCommand, pty: pty);
     }
 
+    final ptyConfig = pty ?? const SSHPtyConfig();
     if (_session.remoteIsWindows) {
       return _openWindowsCapabilityShell(ptyConfig);
     }
@@ -568,6 +581,8 @@ if(!$__flResolved){$__flResolved='cmd'}
     }
     _shell = null;
     _shellPty = const SSHPtyConfig();
+    _shellHasPty = true;
+    _syncKittyGraphicsAvailability();
     final terminal = _terminal;
     if (terminal != null &&
         identical(terminal.onOutput, _runtimeTerminalOutputHandler)) {
@@ -779,11 +794,14 @@ if(!$__flResolved){$__flResolved='cmd'}
     SSHSession? loginShell;
     try {
       loginShell = await _openShell(pty: _shellPty);
+      _shellHasPty = true;
+      _syncKittyGraphicsAvailability();
       _applyLatestTerminalWindowMetrics(loginShell);
     } on Object catch (error) {
       if (loginShell != null) {
         _closeShellBestEffort(loginShell);
       }
+
       if (generation != _shellGeneration ||
           !identical(_shell, completedShell)) {
         return;
@@ -822,6 +840,14 @@ if(!$__flResolved){$__flResolved='cmd'}
       'return_to_login_success',
       fields: {'connectionId': _session.connectionId},
     );
+  }
+
+  void _syncKittyGraphicsAvailability() {
+    final terminal = _terminal;
+    if (terminal == null) {
+      return;
+    }
+    terminal.kittyGraphicsEnabled = !_session.remoteIsWindows || !_shellHasPty;
   }
 
   void _finishShellTransition(SSHSession shell) {
