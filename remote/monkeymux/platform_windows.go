@@ -702,47 +702,47 @@ func killCommandProcessGroup(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
-	func processIDAlive(pid int) bool {
-		if pid <= 0 {
-			return false
-		}
-		handle, err := windows.OpenProcess(
-			windows.PROCESS_QUERY_LIMITED_INFORMATION,
-			false,
-			uint32(pid),
-		)
-		if err != nil {
-			return false
-		}
-		defer windows.CloseHandle(handle)
-		var code uint32
-		if err := windows.GetExitCodeProcess(handle, &code); err != nil {
-			return false
-		}
-		const stillActive = 259
-		return code == stillActive
+func processIDAlive(pid int) bool {
+	if pid <= 0 {
+		return false
 	}
-
-	func terminateProcessID(pid int) {
-		if pid <= 0 {
-			return
-		}
-		kill := exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprint(pid))
-		kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		if err := kill.Run(); err == nil {
-			return
-		}
-		handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
-		if err != nil {
-			return
-		}
-		defer windows.CloseHandle(handle)
-		_ = windows.TerminateProcess(handle, 1)
+	handle, err := windows.OpenProcess(
+		windows.PROCESS_QUERY_LIMITED_INFORMATION,
+		false,
+		uint32(pid),
+	)
+	if err != nil {
+		return false
 	}
+	defer windows.CloseHandle(handle)
+	var code uint32
+	if err := windows.GetExitCodeProcess(handle, &code); err != nil {
+		return false
+	}
+	const stillActive = 259
+	return code == stillActive
+}
 
-	// signalForegroundResize is a no-op on Windows: ResizePseudoConsole already
-	// notifies the attached child of size changes.
-	var signalForegroundResize = func(processGroup int) {}
+func terminateProcessID(pid int) {
+	if pid <= 0 {
+		return
+	}
+	kill := exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprint(pid))
+	kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := kill.Run(); err == nil {
+		return
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(handle)
+	_ = windows.TerminateProcess(handle, 1)
+}
+
+// signalForegroundResize is a no-op on Windows: ResizePseudoConsole already
+// notifies the attached child of size changes.
+var signalForegroundResize = func(processGroup int) {}
 
 // attachOutputWriter wraps the attach process's stdout so win32-input-mode
 // requests emitted by the window's child are hidden from the SSH server's own

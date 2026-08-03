@@ -89,12 +89,12 @@ const (
 	// ensureServer serializes attach/create for a session and retries dials so a
 	// transient socket blip cannot steal the path from a live server and replace
 	// a multi-window workspace with a fresh single auto-connect window.
-	ensureServerDialAttempts   = 8
-	ensureServerDialInterval   = 50 * time.Millisecond
-	ensureServerLockTimeout    = 5 * time.Second
-	ensureServerLockRetryWait  = 50 * time.Millisecond
-	sessionPIDFileMode         = 0o600
-	sessionLockFileMode        = 0o600
+	ensureServerDialAttempts  = 8
+	ensureServerDialInterval  = 50 * time.Millisecond
+	ensureServerLockTimeout   = 5 * time.Second
+	ensureServerLockRetryWait = 50 * time.Millisecond
+	sessionPIDFileMode        = 0o600
+	sessionLockFileMode       = 0o600
 	// Per-window Kitty image retention, used to survive history eviction across
 	// reattaches and to back placeholder cells the foreground app re-emits.
 	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
