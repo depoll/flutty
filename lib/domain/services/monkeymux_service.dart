@@ -28,6 +28,29 @@ const _oneShotControlResponseTimeout = Duration(seconds: 10);
 const _oneShotRunCommandResponseTimeout = Duration(seconds: 25);
 const _monkeyMuxSessionStdinCloseTimeout = Duration(milliseconds: 250);
 
+/// Last-resort deadline for a shared window-list query.
+///
+/// The in-flight request is handed to every later caller, so a query that never
+/// settles would pin the window switcher on a spinner for the rest of the
+/// connection instead of retrying.
+const _windowListWatchdogTimeout = Duration(seconds: 30);
+
+/// Deadline for opening the shared control channel.
+///
+/// An SSH channel open carries no deadline of its own, so a wedged open would
+/// otherwise leave every later command awaiting the same dead start attempt.
+const _controlChannelOpenTimeout = Duration(seconds: 20);
+
+var _controlRequestSequence = 0;
+
+/// Returns a process-unique id for a MonkeyMux control request.
+///
+/// Raw microsecond timestamps are not unique: two commands created in the same
+/// microsecond collided in the pending-request map, so the overwritten request
+/// never received a response and stalled its caller forever.
+String _nextControlRequestId() =>
+    '${DateTime.now().microsecondsSinceEpoch}-${_controlRequestSequence++}';
+
 /// MonkeyMux-backed implementation of [RemoteMultiplexerService].
 final monkeyMuxServiceProvider = Provider<MonkeyMuxService>(
   (ref) =>
@@ -92,9 +115,12 @@ String buildMonkeyMuxAttachCommand({
   String? launchCommand,
   String? windowName,
   String? terminalThemeReports,
+  int? terminalColumns,
+  int? terminalRows,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
   bool clipViewport = false,
+  bool existingOnly = false,
   bool windows = false,
 }) {
   final themeHint = terminalThemeReports?.trim();
@@ -107,6 +133,10 @@ String buildMonkeyMuxAttachCommand({
       _monkeyMuxQuoteArg(clientId.trim(), windows: windows),
     ],
     if (clipViewport) '--clip-viewport',
+    if (existingOnly) '--existing',
+    if (terminalColumns != null && terminalColumns > 0)
+      '--width $terminalColumns',
+    if (terminalRows != null && terminalRows > 0) '--height $terminalRows',
     if (serverUpdatePolicy != null) ...[
       '--update-policy',
       serverUpdatePolicy.cliValue,
@@ -145,7 +175,13 @@ class MonkeyMuxImageReplayResult {
   /// Image IDs whose retained transmissions reached the attach client.
   final Set<int> served;
 
-  /// Whether unserved IDs may be retried after a transport-level failure.
+  /// Whether unserved IDs may be retried after a transient transport or
+  /// availability gap.
+  ///
+  /// A server can acknowledge `request_images` but return no IDs when the
+  /// active-window switch or a multipart transmission is still settling.
+  /// Treating that first empty acknowledgment as final permanently suppresses
+  /// repair for the rest of the window visit.
   final bool retryableFailure;
 
   /// Returns requested IDs that remain eligible for a bounded retry.
@@ -155,6 +191,31 @@ class MonkeyMuxImageReplayResult {
     }
     return requested.where((id) => !served.contains(id)).toSet();
   }
+}
+
+/// Builds the recovery outcome for one acknowledged replay response.
+///
+/// Exposed for tests so the service-level contract around acknowledged empty
+/// and partially served batches cannot regress independently of the widget
+/// retry tests.
+@visibleForTesting
+MonkeyMuxImageReplayResult resolveMonkeyMuxImageReplayBatchForTesting({
+  required Set<int> requested,
+  required Set<int> alreadyServed,
+  required bool acknowledged,
+  required Iterable<String> responseImageIds,
+}) {
+  final pending = requested.difference(alreadyServed);
+  final batch = responseImageIds
+      .map(int.tryParse)
+      .whereType<int>()
+      .where(pending.contains)
+      .toSet();
+  final served = {...alreadyServed, ...batch};
+  return MonkeyMuxImageReplayResult(
+    served: served,
+    retryableFailure: acknowledged && requested.difference(served).isNotEmpty,
+  );
 }
 
 /// Controls a remote MonkeyMux session through its JSON backchannel.
@@ -311,7 +372,19 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     _MonkeyMuxWatchKey key,
   ) {
-    final request = _listWindows(session, sessionName, key);
+    final request = _listWindows(session, sessionName, key).timeout(
+      _controlResponseTimeout == null
+          ? _windowListWatchdogTimeout
+          : _controlResponseTimeout * 3,
+      onTimeout: () {
+        DiagnosticsLogService.instance.warning(
+          'monkeymux.watch',
+          'window_list_watchdog',
+          fields: {'connectionId': session.connectionId},
+        );
+        throw TimeoutException('MonkeyMux window list timed out.');
+      },
+    );
     _windowListRequests[key] = request;
     request.whenComplete(() {
       if (identical(_windowListRequests[key], request)) {
@@ -346,42 +419,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       scheduleMicrotask(state.emitWindowList);
       return state.stream;
     }
-    final observer = _observers.putIfAbsent(
-      key,
-      () => _MonkeyMuxWindowChangeObserver(
-        session: session,
-        sessionName: sessionName,
-        installer: _installer,
-        onWindowList: (windows) {
-          _cacheWindows(key, windows);
-          _scheduleAgentMetadataRefresh(session, sessionName, key, windows);
-        },
-        onWindowSnapshot: (window) {
-          final cachedWindows = _windowSnapshotCache[key];
-          final forceAgentMetadataRefresh =
-              shouldForceAgentSessionMetadataRefreshForSnapshot(
-                cachedWindows ?? const <TmuxWindow>[],
-                window,
-              );
-          _cacheWindowSnapshot(key, window);
-          final windows = _windowSnapshotCache[key];
-          if (windows != null) {
-            _scheduleAgentMetadataRefresh(
-              session,
-              sessionName,
-              key,
-              windows,
-              force: forceAgentMetadataRefresh,
-            );
-          }
-        },
-        onDispose: () {
-          _observers.remove(key);
-          _cancelAgentMetadataPeriodicRefresh(key);
-        },
-        controlResponseTimeoutOverride: _controlResponseTimeout,
-      ),
-    );
+    final observer = _resolveObserver(session, sessionName, key);
     final cachedWindows = _windowSnapshotCache[key];
     if (cachedWindows != null) {
       _scheduleAgentMetadataRefresh(session, sessionName, key, cachedWindows);
@@ -395,6 +433,61 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       },
     );
     return observer.stream;
+  }
+
+  /// Returns the live observer for [key], replacing a disposed one.
+  ///
+  /// Disposal finishes asynchronously, so a disposed observer keeps its map
+  /// entry for a moment. Reusing it would hand the caller a closed stream and a
+  /// control channel that can never run another command.
+  _MonkeyMuxWindowChangeObserver _resolveObserver(
+    SshSession session,
+    String sessionName,
+    _MonkeyMuxWatchKey key,
+  ) {
+    final existing = _observers[key];
+    if (existing != null && !existing.isDisposed) {
+      return existing;
+    }
+    late final _MonkeyMuxWindowChangeObserver observer;
+    observer = _MonkeyMuxWindowChangeObserver(
+      session: session,
+      sessionName: sessionName,
+      installer: _installer,
+      onWindowList: (windows) {
+        _cacheWindows(key, windows);
+        _scheduleAgentMetadataRefresh(session, sessionName, key, windows);
+      },
+      onWindowSnapshot: (window) {
+        final cachedWindows = _windowSnapshotCache[key];
+        final forceAgentMetadataRefresh =
+            shouldForceAgentSessionMetadataRefreshForSnapshot(
+              cachedWindows ?? const <TmuxWindow>[],
+              window,
+            );
+        _cacheWindowSnapshot(key, window);
+        final windows = _windowSnapshotCache[key];
+        if (windows != null) {
+          _scheduleAgentMetadataRefresh(
+            session,
+            sessionName,
+            key,
+            windows,
+            force: forceAgentMetadataRefresh,
+          );
+        }
+      },
+      onDispose: () {
+        // A newer observer may already own this key, and dropping its entry
+        // would orphan a live control channel.
+        if (!identical(_observers[key], observer)) return;
+        _observers.remove(key);
+        _cancelAgentMetadataPeriodicRefresh(key);
+      },
+      controlResponseTimeoutOverride: _controlResponseTimeout,
+    );
+    _observers[key] = observer;
+    return observer;
   }
 
   @override
@@ -539,18 +632,24 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           'clientId': session.monkeyMuxClientId,
           'imageIds': pending.toList(growable: false),
         }, priority: SshExecPriority.low);
+        final outcome = resolveMonkeyMuxImageReplayBatchForTesting(
+          requested: requestedIds,
+          alreadyServed: served,
+          acknowledged: response.imagesAcknowledged,
+          responseImageIds: response.imageIds,
+        );
         if (!response.imagesAcknowledged) {
-          return MonkeyMuxImageReplayResult(
-            served: served,
-            retryableFailure: false,
-          );
+          return outcome;
         }
-        final batch = response.imageIds.where(pending.contains).toSet();
+        final batch = outcome.served
+            .where((id) => !served.contains(id))
+            .map((id) => id.toString())
+            .toSet();
         if (batch.isEmpty) {
-          break;
+          return outcome;
         }
         pending.removeAll(batch);
-        served.addAll(batch.map(int.parse));
+        served.addAll(outcome.served);
       }
     } on _MonkeyMuxControlCommandException catch (error) {
       DiagnosticsLogService.instance.debug(
@@ -580,7 +679,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       );
       return MonkeyMuxImageReplayResult(served: served, retryableFailure: true);
     }
-    return MonkeyMuxImageReplayResult(served: served, retryableFailure: false);
+    return MonkeyMuxImageReplayResult(
+      served: served,
+      retryableFailure: pending.isNotEmpty,
+    );
   }
 
   @override
@@ -857,7 +959,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   }) async {
     final observer =
         _observers[_MonkeyMuxWatchKey(session.connectionId, sessionName)];
-    if (observer != null) {
+    if (observer != null && !observer.isDisposed) {
       return observer.runCommand(command, priority: priority);
     }
     final installation = await _installer.ensureInstalled(
@@ -868,7 +970,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       installation,
       sessionName,
     );
-    final commandId = DateTime.now().microsecondsSinceEpoch.toString();
+    final commandId = _nextControlRequestId();
     final request = <String, Object?>{'id': commandId, ...command};
     return session.runQueuedExec(
       () => _runOneShotControlCommand(session, controlCommand, request),
@@ -1399,11 +1501,22 @@ class _MonkeyMuxWindowChangeObserver {
   MonkeyMuxInstallation? _installation;
   bool _disposed = false;
   int _reconnectAttempts = 0;
+  int _startGeneration = 0;
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
 
+  /// Deadline for negotiating the control channel, scaled down under the test
+  /// override so recovery after a wedged open stays observable.
+  Duration get _channelOpenTimeout {
+    final override = controlResponseTimeoutOverride;
+    return override == null ? _controlChannelOpenTimeout : override * 2;
+  }
+
   bool get isControlChannelReady =>
       !_disposed && !_controller.isClosed && _controlSession != null;
+
+  /// Whether this observer has been torn down and can no longer run commands.
+  bool get isDisposed => _disposed;
 
   void emitWindowList(List<TmuxWindow> windows) {
     if (_disposed || _controller.isClosed || windows.isEmpty) {
@@ -1422,21 +1535,39 @@ class _MonkeyMuxWindowChangeObserver {
         'MonkeyMux control channel unavailable.',
       );
     }
-    await _ensureStarted();
-    if (_disposed || _controlSession == null) {
-      throw const MonkeyMuxInstallException(
-        'MonkeyMux control channel unavailable.',
-      );
-    }
     final request = _MonkeyMuxControlRequest(command);
+    // Arm the deadline before the channel is negotiated. Opening the control
+    // session is unbounded, and a request that is disposed or dropped while
+    // still queued never reaches the write path, so a timeout armed only when
+    // the command is written would leave the caller awaiting forever.
+    request.scheduleTimeout(
+      controlResponseTimeoutOverride ??
+          _oneShotResponseTimeout(request.payload),
+      () => _handleRequestTimeout(request),
+    );
     switch (priority) {
       case SshExecPriority.normal:
         _normalCommandQueue.add(request);
       case SshExecPriority.low:
         _lowCommandQueue.add(request);
     }
-    _drainCommands();
+    unawaited(_flushQueuedCommands(request));
     return request.future;
+  }
+
+  Future<void> _flushQueuedCommands(_MonkeyMuxControlRequest request) async {
+    await _ensureStarted();
+    if (request.isCompleted) return;
+    if (_disposed || _controlSession == null) {
+      _failPending(
+        const MonkeyMuxInstallException(
+          'MonkeyMux control channel unavailable.',
+        ),
+        StackTrace.current,
+      );
+      return;
+    }
+    _drainCommands();
   }
 
   Future<void> _ensureStarted() {
@@ -1445,7 +1576,7 @@ class _MonkeyMuxWindowChangeObserver {
     _reconnectTimer = null;
     final existingStart = _startFuture;
     if (existingStart != null) return existingStart;
-    final start = _start();
+    final start = _start(++_startGeneration);
     _startFuture = start;
     unawaited(
       start.whenComplete(() {
@@ -1457,15 +1588,39 @@ class _MonkeyMuxWindowChangeObserver {
     return start;
   }
 
-  Future<void> _start() async {
+  /// Drops the in-flight start attempt so the next command opens a new channel.
+  ///
+  /// Bumping the generation makes the abandoned attempt discard whatever it
+  /// eventually produces, so a channel that opens late is closed instead of
+  /// being installed over a newer one.
+  void _abandonStartAttempt() {
+    if (_startFuture == null) return;
+    _startGeneration += 1;
+    _startFuture = null;
+  }
+
+  Future<void> _start(int generation) async {
     try {
       final installation = _installation ??= await installer.ensureInstalled(
         session,
       );
-      if (_disposed) return;
+      if (_disposed || generation != _startGeneration) return;
       final command = _buildMonkeyMuxControlCommand(installation, sessionName);
-      final controlSession = await session.execute(command);
-      if (_disposed) {
+      final open = session.execute(command);
+      final controlSession = await open.timeout(
+        _channelOpenTimeout,
+        onTimeout: () {
+          unawaited(
+            open.then(
+              (late) =>
+                  _closeControlSession(late, operation: 'start_open_timeout'),
+              onError: (Object _) {},
+            ),
+          );
+          throw TimeoutException('MonkeyMux control channel open timed out.');
+        },
+      );
+      if (_disposed || generation != _startGeneration) {
         await _closeControlSession(controlSession, operation: 'start_disposed');
         return;
       }
@@ -1488,6 +1643,7 @@ class _MonkeyMuxWindowChangeObserver {
         fields: {'connectionId': session.connectionId},
       );
     } on Object catch (error, stackTrace) {
+      if (generation != _startGeneration) return;
       _handleError(error, stackTrace);
     }
   }
@@ -1502,35 +1658,40 @@ class _MonkeyMuxWindowChangeObserver {
       _pendingCommands[request.id] = request;
       try {
         controlSession.write(utf8.encode('${jsonEncode(request.payload)}\n'));
-        request.scheduleTimeout(
-          controlResponseTimeoutOverride ??
-              _oneShotResponseTimeout(request.payload),
-          () => _handleRequestTimeout(request),
-        );
       } on Object catch (error, stackTrace) {
         _pendingCommands.remove(request.id);
+        request.completeError(error, stackTrace);
+        // Recycling the channel also fails everything still queued behind this
+        // command, so there is nothing left to drain.
         _handleError(error, stackTrace);
-        Error.throwWithStackTrace(error, stackTrace);
+        return;
       }
     }
   }
 
   void _handleRequestTimeout(_MonkeyMuxControlRequest request) {
-    if (_disposed) return;
-    if (!_pendingCommands.containsKey(request.id)) return;
+    if (request.isCompleted) return;
     DiagnosticsLogService.instance.warning(
       'monkeymux.watch',
       'request_timeout',
-      fields: {'connectionId': session.connectionId},
+      fields: {
+        'connectionId': session.connectionId,
+        'sent': _pendingCommands.containsKey(request.id),
+        'disposed': _disposed,
+      },
     );
+    final error = TimeoutException('MonkeyMux control command timed out.');
+    final stackTrace = StackTrace.current;
     // A missing response means the shared control channel is wedged: further
     // commands would also stall. Fail the in-flight requests and recycle the
     // channel so the next command runs on a fresh session instead of leaving
     // the UI stuck on a perpetual spinner.
-    _handleError(
-      TimeoutException('MonkeyMux control command timed out.'),
-      StackTrace.current,
-    );
+    if (!_disposed) {
+      _handleError(error, stackTrace);
+    }
+    // Nothing else completes a request that is still queued or that outlived
+    // its observer, so always settle it here.
+    request.completeError(error, stackTrace);
   }
 
   void _handleLine(String line) {
@@ -1583,6 +1744,10 @@ class _MonkeyMuxWindowChangeObserver {
       },
     );
     _failPending(error, stackTrace);
+    // A start attempt still in flight may never finish, and every later command
+    // would await that same dead future. Abandoning it lets the reconnect below
+    // — and the next command — negotiate a fresh channel.
+    _abandonStartAttempt();
     unawaited(_cleanup().whenComplete(_scheduleReconnect));
   }
 
@@ -1675,6 +1840,13 @@ class _MonkeyMuxWindowChangeObserver {
     _disposed = true;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    // Queued and in-flight commands can never receive a response once the
+    // channel is gone. Leaving them pending strands their callers — including
+    // the window switcher, which then spins forever on a dead reload future.
+    _failPending(
+      const MonkeyMuxInstallException('MonkeyMux control channel closed.'),
+      StackTrace.current,
+    );
     await _cleanup();
     if (!_controller.isClosed) {
       await _controller.close();
@@ -1685,7 +1857,7 @@ class _MonkeyMuxWindowChangeObserver {
 
 class _MonkeyMuxControlRequest {
   _MonkeyMuxControlRequest(Map<String, Object?> command)
-    : this._(DateTime.now().microsecondsSinceEpoch.toString(), command);
+    : this._(_nextControlRequestId(), command);
 
   _MonkeyMuxControlRequest._(this.id, Map<String, Object?> command)
     : payload = {'id': id, ...command};
@@ -1696,6 +1868,9 @@ class _MonkeyMuxControlRequest {
   Timer? _timeoutTimer;
 
   Future<_MonkeyMuxControlResponse> get future => _completer.future;
+
+  /// Whether this request already resolved with a response or an error.
+  bool get isCompleted => _completer.isCompleted;
 
   /// Arms a one-shot timer that fires when no response arrives in time.
   ///

@@ -4,7 +4,7 @@ description: >
   MonkeyMux/tmux remote windows, key management, snippets, and port forwarding.
 publish_to: 'none'
 
-version: 0.3.0+1
+version: 0.3.1+1
 
 environment:
   sdk: ^3.10.7
@@ -123,6 +123,7 @@ flutter:
     - assets/monkeymux/bin/linux-arm64/
     - assets/monkeymux/bin/windows-amd64/
     - assets/monkeymux/bin/windows-arm64/
+    - remote/monkeymux/conpty/LICENSE.microsoft-terminal
     - assets/version_codenames.json
   #   - assets/icons/
   #   - assets/fonts/

@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
+import 'package:monkeyssh/domain/services/windows_remote_powershell.dart';
 
 void main() {
   group('parseTmuxPanePids', () {
@@ -55,6 +56,26 @@ void main() {
           reason: 'Windows detection script must look up ${tool.commandName}',
         );
       }
+    });
+
+    test('windows script applies the profile PATH before probing', () {
+      // Agent CLIs are normally installed via npm/bun or a Node version
+      // manager (fnm, nvm-windows, volta), which add their shim directory to
+      // PATH from a PowerShell profile. Remote scripts run with -NoProfile,
+      // so without this the binaries are invisible even though an interactive
+      // shell on the same host resolves them.
+      final script = buildWindowsAgentToolDetectionScript();
+      expect(script, contains(powerShellProfilePathPreamble));
+      expect(script, contains(r'$PROFILE.CurrentUserCurrentHost'));
+      // Profiles run in a child scope, so their helpers cannot clobber the
+      // probe, and all of their output is discarded so it cannot be mistaken
+      // for a resolved binary path.
+      expect(script, contains(r'& $__flProfilePath *> $null'));
+      expect(
+        script.indexOf(powerShellProfilePathPreamble),
+        lessThan(script.indexOf('Get-Command -Name')),
+        reason: 'the profile PATH must be applied before binaries are probed',
+      );
     });
 
     test('tolerates missing binaries without failing the outer shell', () {
@@ -133,7 +154,10 @@ void main() {
           '/b/gemini\n'
           '/b/opencode\n'
           '/b/antigravity\n'
-          '/b/cursor-agent\n';
+          '/b/cursor-agent\n'
+          '/b/pi\n'
+          '/b/hermes\n'
+          '/b/openclaw\n';
       expect(parseInstalledAgentTools(output), AgentLaunchTool.values.toSet());
     });
 

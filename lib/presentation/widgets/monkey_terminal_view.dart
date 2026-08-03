@@ -592,6 +592,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.onSystemSelectionChanged,
     this.onInsertText,
     this.onPasteText,
+    this.onUserInput,
     this.inlineUnderlines = const <TerminalTextUnderline>[],
   });
 
@@ -752,6 +753,9 @@ class MonkeyTerminalView extends StatefulWidget {
 
   /// Called to handle paste shortcuts before xterm pastes clipboard text.
   final Future<void> Function()? onPasteText;
+
+  /// Called immediately before accepted user input is sent to the terminal.
+  final VoidCallback? onUserInput;
 
   /// Cell ranges that should be painted with inline text underlines.
   final List<TerminalTextUnderline> inlineUnderlines;
@@ -1600,6 +1604,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
 
     final key = charToTerminalKey(text.trim());
+    widget.onUserInput?.call();
 
     // On mobile platforms there is no guarantee that virtual keyboard will
     // generate hardware key events. So we need first try to send the key
@@ -1667,6 +1672,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           );
 
     if (handled) {
+      widget.onUserInput?.call();
       _scrollToBottom();
     }
 
@@ -1697,12 +1703,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   void _onDelete() {
     _scrollToBottom();
+    widget.onUserInput?.call();
     widget.terminal.keyInput(TerminalKey.backspace);
   }
 
   void _onTextInputAction(TextInputAction action) {
     _scrollToBottom();
     if (action == TextInputAction.done) {
+      widget.onUserInput?.call();
       widget.terminal.keyInput(TerminalKey.enter);
     }
   }

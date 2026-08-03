@@ -6885,6 +6885,43 @@ void main() {
       otherFocusNode.dispose();
     });
 
+    testWidgets('routes hardware paste shortcuts through the paste callback', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      var pasteCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onPasteText: () => pasteCount++,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+
+      expect(pasteCount, 1);
+      expect(terminalOutput, isEmpty);
+
+      focusNode.dispose();
+    });
+
     testWidgets('consumes composing hardware keys when the child owns focus', (
       tester,
     ) async {

@@ -3,11 +3,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,6 +29,204 @@ const conPtyMinimumBuild = 17763
 // conversion for windows.Coord can never wrap into a negative or zero value
 // (which ConPTY rejects). Real terminals are far smaller than this.
 const conPtyMaxDimension = 0x7fff
+
+const bundledConPtyVersion = "1.25.260710002-preview"
+
+type conPtyBackend struct {
+	name   string
+	dll    *syscall.LazyDLL
+	create func(
+		size windows.Coord,
+		input windows.Handle,
+		output windows.Handle,
+		flags uint32,
+		hpcon *windows.Handle,
+	) error
+	resize func(windows.Handle, windows.Coord) error
+	close  func(windows.Handle)
+}
+
+var (
+	conPtyBackendOnce sync.Once
+	preferredConPty   *conPtyBackend
+	conPtyCacheRoot   string
+)
+
+func systemConPtyBackend() *conPtyBackend {
+	return &conPtyBackend{
+		name: "system",
+		create: func(
+			size windows.Coord,
+			input windows.Handle,
+			output windows.Handle,
+			flags uint32,
+			hpcon *windows.Handle,
+		) error {
+			return windows.CreatePseudoConsole(size, input, output, flags, hpcon)
+		},
+		resize: windows.ResizePseudoConsole,
+		close:  windows.ClosePseudoConsole,
+	}
+}
+
+func preferredConPtyBackend() *conPtyBackend {
+	conPtyBackendOnce.Do(func() {
+		backend, err := loadBundledConPtyBackend()
+		if err != nil {
+			log.Printf(
+				"bundled ConPTY unavailable; falling back to the system backend: %v",
+				err,
+			)
+			preferredConPty = systemConPtyBackend()
+			return
+		}
+		preferredConPty = backend
+	})
+	return preferredConPty
+}
+
+func loadBundledConPtyBackend() (*conPtyBackend, error) {
+	dllPath, err := ensureBundledConPtyFiles()
+	if err != nil {
+		return nil, err
+	}
+	dll := syscall.NewLazyDLL(dllPath)
+	if err := dll.Load(); err != nil {
+		return nil, fmt.Errorf("load bundled conpty.dll: %w", err)
+	}
+	createProc := dll.NewProc("ConptyCreatePseudoConsole")
+	resizeProc := dll.NewProc("ConptyResizePseudoConsole")
+	closeProc := dll.NewProc("ConptyClosePseudoConsole")
+	for name, proc := range map[string]*syscall.LazyProc{
+		"ConptyCreatePseudoConsole": procOrNil(createProc),
+		"ConptyResizePseudoConsole": procOrNil(resizeProc),
+		"ConptyClosePseudoConsole":  procOrNil(closeProc),
+	} {
+		if proc == nil {
+			return nil, fmt.Errorf("bundled conpty.dll is missing %s", name)
+		}
+	}
+	return &conPtyBackend{
+		name: "bundled",
+		dll:  dll,
+		create: func(
+			size windows.Coord,
+			input windows.Handle,
+			output windows.Handle,
+			flags uint32,
+			hpcon *windows.Handle,
+		) error {
+			hr, _, callErr := createProc.Call(
+				packConPtyCoord(size),
+				uintptr(input),
+				uintptr(output),
+				uintptr(flags),
+				uintptr(unsafe.Pointer(hpcon)),
+			)
+			return conPtyHRESULT("create", hr, callErr)
+		},
+		resize: func(hpcon windows.Handle, size windows.Coord) error {
+			hr, _, callErr := resizeProc.Call(
+				uintptr(hpcon),
+				packConPtyCoord(size),
+			)
+			return conPtyHRESULT("resize", hr, callErr)
+		},
+		close: func(hpcon windows.Handle) {
+			_, _, _ = closeProc.Call(uintptr(hpcon))
+		},
+	}, nil
+}
+
+func procOrNil(proc *syscall.LazyProc) *syscall.LazyProc {
+	if err := proc.Find(); err != nil {
+		return nil
+	}
+	return proc
+}
+
+func packConPtyCoord(size windows.Coord) uintptr {
+	return uintptr(uint32(uint16(size.X)) | uint32(uint16(size.Y))<<16)
+}
+
+func conPtyHRESULT(operation string, hr uintptr, callErr error) error {
+	if int32(hr) >= 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s bundled pseudo console: HRESULT 0x%08x (%v)",
+		operation,
+		uint32(hr),
+		callErr,
+	)
+}
+
+func ensureBundledConPtyFiles() (string, error) {
+	cacheDir := conPtyCacheRoot
+	if cacheDir == "" {
+		var err error
+		cacheDir, err = os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve cache directory: %w", err)
+		}
+	}
+	dir := filepath.Join(
+		cacheDir,
+		"MonkeySSH",
+		"MonkeyMux",
+		"conpty",
+		bundledConPtyVersion,
+		runtime.GOARCH,
+	)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create bundled ConPTY directory: %w", err)
+	}
+	openConsolePath := filepath.Join(dir, "OpenConsole.exe")
+	if err := writeBundledConPtyFile(openConsolePath, bundledOpenConsole); err != nil {
+		return "", err
+	}
+	dllPath := filepath.Join(dir, "conpty.dll")
+	if err := writeBundledConPtyFile(dllPath, bundledConPtyDLL); err != nil {
+		return "", err
+	}
+	return dllPath, nil
+}
+
+func writeBundledConPtyFile(path string, data []byte) error {
+	current, err := os.ReadFile(path)
+	if err == nil && bytes.Equal(current, data) {
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read bundled ConPTY file %s: %w", path, err)
+	}
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, ".conpty-*")
+	if err != nil {
+		return fmt.Errorf("create temporary bundled ConPTY file: %w", err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("write bundled ConPTY file %s: %w", path, err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close bundled ConPTY file %s: %w", path, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		// Another server may have won the same first-start extraction race.
+		current, readErr := os.ReadFile(path)
+		if readErr == nil && bytes.Equal(current, data) {
+			return nil
+		}
+		_ = os.Remove(path)
+		if retryErr := os.Rename(tempPath, path); retryErr != nil {
+			return fmt.Errorf("install bundled ConPTY file %s: %w", path, retryErr)
+		}
+	}
+	return nil
+}
 
 // conPtyCoord clamps cols/rows into the valid positive int16 range and returns
 // the corresponding windows.Coord. Callers pass raw dimensions from control and
@@ -48,6 +249,7 @@ func clampConPtyDimension(value int) int16 {
 // parent uses to talk to the attached child process.
 type winPty struct {
 	hpc       windows.Handle
+	backend   *conPtyBackend
 	writeFile *os.File // parent writes child's stdin (input pipe write end)
 	readFile  *os.File // parent reads child's stdout (output pipe read end)
 
@@ -68,7 +270,7 @@ func (p *winPty) Resize(cols int, rows int) error {
 	if p.closed {
 		return nil
 	}
-	return windows.ResizePseudoConsole(p.hpc, conPtyCoord(cols, rows))
+	return p.backend.resize(p.hpc, conPtyCoord(cols, rows))
 }
 
 func (p *winPty) Fd() uintptr { return 0 }
@@ -81,7 +283,7 @@ func (p *winPty) Close() error {
 		// Closing the pseudo console terminates the attached process tree and
 		// causes the output pipe to reach EOF (after any final frame is
 		// flushed), so the reader goroutine unblocks and exits.
-		windows.ClosePseudoConsole(p.hpc)
+		p.backend.close(p.hpc)
 		_ = p.readFile.Close()
 		_ = p.writeFile.Close()
 	})
@@ -137,7 +339,7 @@ func startWindow(cmd *exec.Cmd, cols int, rows int) (muxPty, muxProcess, error) 
 	}
 	env = ensureSystemRoot(env)
 
-	writeHandle, readHandle, hpc, procHandle, pid, err := startConPty(
+	writeHandle, readHandle, hpc, backend, procHandle, pid, err := startConPty(
 		commandLine,
 		env,
 		cmd.Dir,
@@ -150,6 +352,7 @@ func startWindow(cmd *exec.Cmd, cols int, rows int) (muxPty, muxProcess, error) 
 
 	windowPty := &winPty{
 		hpc:       hpc,
+		backend:   backend,
 		writeFile: os.NewFile(uintptr(writeHandle), "monkeymux-conpty-in"),
 		readFile:  os.NewFile(uintptr(readHandle), "monkeymux-conpty-out"),
 	}
@@ -177,8 +380,84 @@ func commandLineArgs(cmd *exec.Cmd) []string {
 
 // startConPty creates a ConPTY of size cols x rows and launches commandLine
 // attached to it. It returns the parent-side stdin write handle, stdout read
-// handle, the pseudo console handle, the process handle and pid.
+// handle, the pseudo console handle and backend, the process handle and pid.
 func startConPty(
+	commandLine string,
+	env []string,
+	workdir string,
+	cols int,
+	rows int,
+) (
+	writeHandle windows.Handle,
+	readHandle windows.Handle,
+	hpcon windows.Handle,
+	backend *conPtyBackend,
+	processHandle windows.Handle,
+	pid uint32,
+	err error,
+) {
+	return startConPtyWithFallback(
+		preferredConPtyBackend(),
+		systemConPtyBackend(),
+		commandLine,
+		env,
+		workdir,
+		cols,
+		rows,
+	)
+}
+
+func startConPtyWithFallback(
+	preferred *conPtyBackend,
+	fallback *conPtyBackend,
+	commandLine string,
+	env []string,
+	workdir string,
+	cols int,
+	rows int,
+) (
+	writeHandle windows.Handle,
+	readHandle windows.Handle,
+	hpcon windows.Handle,
+	backend *conPtyBackend,
+	processHandle windows.Handle,
+	pid uint32,
+	err error,
+) {
+	backend = preferred
+	writeHandle, readHandle, hpcon, processHandle, pid, err =
+		startConPtyWithBackend(
+			backend,
+			commandLine,
+			env,
+			workdir,
+			cols,
+			rows,
+		)
+	if err == nil || fallback == nil || backend == fallback {
+		return
+	}
+	log.Printf(
+		"%s ConPTY failed; retrying with the %s backend: %v",
+		preferred.name,
+		fallback.name,
+		err,
+	)
+	backend = fallback
+	writeHandle, readHandle, hpcon, processHandle, pid, err =
+		startConPtyWithBackend(
+			backend,
+			commandLine,
+			env,
+			workdir,
+			cols,
+			rows,
+		)
+	return
+}
+
+func startConPtyWithBackend(
+	backend *conPtyBackend,
 	commandLine string,
 	env []string,
 	workdir string,
@@ -219,15 +498,15 @@ func startConPty(
 	}
 
 	size := conPtyCoord(cols, rows)
-	if err = windows.CreatePseudoConsole(size, ptyIn, ptyOut, 0, &hpcon); err != nil {
+	if err = backend.create(size, ptyIn, ptyOut, 0, &hpcon); err != nil {
 		closeAll()
-		err = fmt.Errorf("create pseudo console: %w", err)
+		err = fmt.Errorf("create %s pseudo console: %w", backend.name, err)
 		return
 	}
 
 	attrs, attrErr := windows.NewProcThreadAttributeList(1)
 	if attrErr != nil {
-		windows.ClosePseudoConsole(hpcon)
+		backend.close(hpcon)
 		hpcon = 0
 		closeAll()
 		err = fmt.Errorf("allocate attribute list: %w", attrErr)
@@ -245,7 +524,7 @@ func startConPty(
 		pseudoConsoleValue,
 		unsafe.Sizeof(hpcon),
 	); err != nil {
-		windows.ClosePseudoConsole(hpcon)
+		backend.close(hpcon)
 		hpcon = 0
 		closeAll()
 		err = fmt.Errorf("set pseudo console attribute: %w", err)
@@ -265,7 +544,7 @@ func startConPty(
 
 	commandLinePtr, cmdErr := windows.UTF16PtrFromString(commandLine)
 	if cmdErr != nil {
-		windows.ClosePseudoConsole(hpcon)
+		backend.close(hpcon)
 		hpcon = 0
 		closeAll()
 		err = fmt.Errorf("encode command line: %w", cmdErr)
@@ -276,7 +555,7 @@ func startConPty(
 	if strings.TrimSpace(workdir) != "" {
 		dirPtr, err = windows.UTF16PtrFromString(workdir)
 		if err != nil {
-			windows.ClosePseudoConsole(hpcon)
+			backend.close(hpcon)
 			hpcon = 0
 			closeAll()
 			err = fmt.Errorf("encode working directory: %w", err)
@@ -290,7 +569,7 @@ func startConPty(
 		creationFlags |= uint32(windows.CREATE_UNICODE_ENVIRONMENT)
 		envBlock, err = buildEnvBlock(env)
 		if err != nil {
-			windows.ClosePseudoConsole(hpcon)
+			backend.close(hpcon)
 			hpcon = 0
 			closeAll()
 			err = fmt.Errorf("encode environment: %w", err)
@@ -315,7 +594,7 @@ func startConPty(
 		&startupInfo.StartupInfo,
 		&procInfo,
 	); err != nil {
-		windows.ClosePseudoConsole(hpcon)
+		backend.close(hpcon)
 		hpcon = 0
 		closeAll()
 		err = fmt.Errorf("create process: %w", err)
@@ -578,10 +857,24 @@ func terminalSize() (int, int) {
 // forwardResizeSignals sends the initial terminal size and then polls for
 // changes. Windows has no SIGWINCH; interactive resizes primarily arrive over
 // the MonkeyMux control channel, and this poller covers local console resizes.
-func forwardResizeSignals(session string, clientID string) func() {
+//
+// A raw SSH exec attach has no local console to poll. Its caller supplies an
+// explicit size and all later resizes arrive over the app control channel; a
+// terminalSize() poll there would return the 80x24 fallback and overwrite the
+// correct attach hello immediately.
+func forwardResizeSignals(
+	session string,
+	clientID string,
+	initialWidth int,
+	initialHeight int,
+	explicitSize bool,
+) func() {
+	if explicitSize {
+		return func() {}
+	}
 	done := make(chan struct{})
 	go func() {
-		lastWidth, lastHeight := terminalSize()
+		lastWidth, lastHeight := initialWidth, initialHeight
 		sendResize(session, clientID, lastWidth, lastHeight)
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()

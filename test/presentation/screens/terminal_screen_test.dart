@@ -577,6 +577,12 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
     state = {...state}..remove(connectionId);
   }
 
+  @override
+  Future<void> handleUnexpectedDisconnect(
+    int connectionId, {
+    required String message,
+  }) => disconnect(connectionId);
+
   void dropSessionButKeepConnectedState(int connectionId) {
     if (!disconnectedConnectionIds.contains(connectionId)) {
       disconnectedConnectionIds.add(connectionId);
@@ -3074,6 +3080,7 @@ void main() {
         final monkeyMuxService = _MockMonkeyMuxService();
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
         final executedCommands = <String>[];
+        final requestedPtys = <SSHPtyConfig?>[];
 
         host = _buildHost(
           id: host.id,
@@ -3103,6 +3110,7 @@ void main() {
           () => sshClient.execute(any(), pty: any(named: 'pty')),
         ).thenAnswer((invocation) async {
           executedCommands.add(invocation.positionalArguments.single as String);
+          requestedPtys.add(invocation.namedArguments[#pty] as SSHPtyConfig?);
           return shellChannel;
         });
         when(
@@ -3210,6 +3218,17 @@ void main() {
         );
         expect(executedCommands.single, isNot(contains("'")));
         expect(executedCommands.single, endsWith(' $sessionName'));
+        expect(
+          requestedPtys,
+          [isNull],
+          reason:
+              'the SSH channel must stay raw; a Windows OpenSSH PTY creates '
+              'an outer system ConPTY that strips Kitty APC while preserving '
+              'the placeholder cells',
+        );
+        verifyNever(
+          () => shellChannel.resizeTerminal(any(), any(), any(), any()),
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -3974,6 +3993,11 @@ void main() {
 
         await tester.pump(const Duration(milliseconds: 300));
         await tester.pump();
+        final switchResizeCalls = monkeyMuxService.resizeTerminalCalls
+            .skip(resizeCallsBeforeSwitch)
+            .toList(growable: false);
+        expect(switchResizeCalls, hasLength(1));
+        expect(switchResizeCalls.single.redraw, isTrue);
         final resizeCallsAfterWindowReplay =
             monkeyMuxService.resizeTerminalCalls.length;
         final terminalViewState = tester.state<MonkeyTerminalViewState>(
@@ -4468,8 +4492,9 @@ void main() {
         await tester.pump();
         expect(
           monkeyMuxService.resizeTerminalCalls.length,
-          resizeCountAfterWindowRefresh,
+          resizeCountAfterWindowRefresh + 1,
         );
+        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
         await gesture.up();
 
         final placeholder = String.fromCharCode(
@@ -4525,7 +4550,7 @@ void main() {
         expect(
           monkeyMuxService.imageReplayCalls,
           hasLength(2),
-          reason: 'acknowledged misses stay suppressed for this window visit',
+          reason: 'explicitly non-retryable misses stay suppressed',
         );
 
         monkeyMuxService.imageReplayFutures.addAll(
@@ -6974,7 +6999,7 @@ void main() {
     );
 
     testWidgets(
-      'auto-connect launches MonkeyMux agent presets with user-visible install priority',
+      'reconnects a lost MonkeyMux session without launching a new agent',
       (tester) async {
         final settingsService = SettingsService(db);
         final presetService = AgentLaunchPresetService(settingsService);
@@ -6984,6 +7009,17 @@ void main() {
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final tmuxService = _MockTmuxService();
+        final reconnectClient = _MockSshClient();
+        final reconnectShell = _MockShellChannel();
+        final reconnectDone = Completer<void>();
+        final reconnectStdout = StreamController<Uint8List>.broadcast();
+        final reconnectCommands = <String>[];
+        addTearDown(() async {
+          await reconnectStdout.close();
+          if (!reconnectDone.isCompleted) {
+            reconnectDone.complete();
+          }
+        });
         session = SshSession(
           connectionId: 7,
           hostId: host.id,
@@ -6993,6 +7029,12 @@ void main() {
             port: 22,
             username: 'root',
           ),
+        );
+        final reconnectSession = SshSession(
+          connectionId: 8,
+          hostId: host.id,
+          client: reconnectClient,
+          config: session.config,
         );
         host = _buildHost(id: host.id, autoConnectCommand: 'copilot');
         await presetService.setPresetForHost(
@@ -7011,19 +7053,45 @@ void main() {
         when(
           () => monetizationService.canUseFeature(any()),
         ).thenAnswer((_) async => false);
-        when(
-          () => monkeyMuxInstallerService.ensureInstalled(
-            session,
-            priority: any(named: 'priority'),
-            confirmInstall: any(named: 'confirmInstall'),
-          ),
-        ).thenAnswer(
-          (_) async => const MonkeyMuxInstallation(
-            executablePath: '/tmp/monkeymux',
-            platform: 'darwin-arm64',
-            version: '0.1.10',
-          ),
-        );
+        when(() => tmuxService.clearCache(any())).thenAnswer((_) async {});
+        when(() => monkeyMuxService.clearCache(any())).thenAnswer((_) async {});
+        for (final testSession in <SshSession>[session, reconnectSession]) {
+          when(
+            () => monkeyMuxInstallerService.ensureInstalled(
+              testSession,
+              priority: any(named: 'priority'),
+              confirmInstall: any(named: 'confirmInstall'),
+            ),
+          ).thenAnswer(
+            (_) async => const MonkeyMuxInstallation(
+              executablePath: '/tmp/monkeymux',
+              platform: 'darwin-arm64',
+              version: '0.1.10',
+            ),
+          );
+          when(
+            () => monkeyMuxService.hasForegroundClientOrThrow(
+              testSession,
+              'agents',
+            ),
+          ).thenAnswer((_) async => true);
+          when(
+            () => monkeyMuxService.listWindows(testSession, 'agents'),
+          ).thenAnswer(
+            (_) async => const <TmuxWindow>[
+              TmuxWindow(index: 0, name: 'Copilot CLI', isActive: true),
+            ],
+          );
+          when(
+            () => monkeyMuxService.watchWindowChanges(testSession, 'agents'),
+          ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+          when(
+            () => tmuxService.detectInstalledAgentTools(testSession),
+          ).thenAnswer((_) async => const <AgentLaunchTool>{});
+          when(
+            () => tmuxService.prefetchInstalledAgentTools(testSession),
+          ).thenAnswer((_) async {});
+        }
         final executedCommands = <String>[];
         when(
           () => sshClient.execute(any(), pty: any(named: 'pty')),
@@ -7032,22 +7100,29 @@ void main() {
           return shellChannel;
         });
         when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(session, 'agents'),
-        ).thenAnswer((_) async => true);
-        when(() => monkeyMuxService.listWindows(session, 'agents')).thenAnswer(
-          (_) async => const <TmuxWindow>[
-            TmuxWindow(index: 0, name: 'Copilot CLI', isActive: true),
-          ],
-        );
+          () => reconnectClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          reconnectCommands.add(
+            invocation.positionalArguments.single as String,
+          );
+          return reconnectShell;
+        });
         when(
-          () => monkeyMuxService.watchWindowChanges(session, 'agents'),
-        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+          () => reconnectShell.stdout,
+        ).thenAnswer((_) => reconnectStdout.stream);
         when(
-          () => tmuxService.detectInstalledAgentTools(session),
-        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+          () => reconnectShell.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(() => reconnectShell.done).thenAnswer((_) => reconnectDone.future);
+        when(() => reconnectShell.write(any())).thenAnswer((_) {});
         when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
+          () => reconnectShell.resizeTerminal(any(), any(), any(), any()),
+        ).thenAnswer((_) {});
+        when(reconnectShell.close).thenAnswer((_) {});
+        final activeSessions = _TestActiveSessionsNotifier(
+          session,
+          reconnectSession: reconnectSession,
+        )..disconnectedConnectionIds.add(reconnectSession.connectionId);
 
         await tester.pumpWidget(
           ProviderScope(
@@ -7062,9 +7137,7 @@ void main() {
                 (ref) => Stream.value(_proMonetizationState),
               ),
               sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
+              activeSessionsProvider.overrideWith(() => activeSessions),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
@@ -7121,10 +7194,41 @@ void main() {
             MonetizationFeature.autoConnectAutomation,
           ),
         );
+
+        await activeSessions.disconnect(session.connectionId);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(
+          activeSessions.disconnectedConnectionIds,
+          contains(session.connectionId),
+        );
+        expect(find.text('Disconnected'), findsOneWidget);
+        expect(find.text('Reconnect'), findsOneWidget);
+        expect(executedCommands, hasLength(1));
+
+        await tester.tap(find.text('Reconnect'));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(reconnectCommands, hasLength(1));
+        final reconnectCommand = reconnectCommands.single;
+        expect(reconnectCommand, contains('/tmp/monkeymux'));
+        expect(reconnectCommand, contains(' attach'));
+        expect(reconnectCommand, contains('--existing'));
+        expect(reconnectCommand, contains('--update-policy never'));
+        expect(reconnectCommand, contains('agents'));
+        expect(reconnectCommand, isNot(contains('--command')));
+        expect(reconnectCommand, isNot(contains('--name')));
+        expect(reconnectSession.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
+        expect(reconnectSession.remoteMuxSessionName, 'agents');
+
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
       },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
     testWidgets(

@@ -98,9 +98,23 @@ const _redactStoreScreenshotIdentities = bool.fromEnvironment(
 const _hideStoreScreenshotKeyboardToolbar = bool.fromEnvironment(
   'STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR',
 );
-final _storeDemoClipboardImageBytes = base64Decode(
-  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC',
+const _storeDemoImageB64 = String.fromEnvironment(
+  'STORE_SCREENSHOT_DEMO_IMAGE_B64',
 );
+const _storeDemoImageFallbackB64 =
+    'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC';
+final _storeDemoClipboardImageBytes = base64Decode(
+  _storeDemoImageB64.isNotEmpty
+      ? _storeDemoImageB64
+      : _storeDemoImageFallbackB64,
+);
+
+/// Armed by the store video harness before a `pasteDemoImage=1` navigation.
+///
+/// Completed when the demo clipboard image has been uploaded and its remote
+/// path inserted into the terminal, so the harness can wait instead of racing
+/// a fixed delay.
+Completer<void>? storeDemoImagePasteCompleter;
 
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
@@ -314,9 +328,10 @@ class _ClipboardUploadTarget {
       remoteShellPathForSftpPath(sftpPath, windows: windows);
 }
 
-typedef _UploadedAttachmentPasteMode = ({
+typedef _TerminalPasteMode = ({
   String? activeWindowKey,
   bool bracketedPasteMode,
+  bool bracketedPasteModeKnown,
   int? connectionId,
   bool isMuxActive,
   RemoteMuxBackend muxBackend,
@@ -326,6 +341,8 @@ typedef _UploadedAttachmentPasteMode = ({
   SshSession? session,
   Terminal terminal,
 });
+
+typedef _AttachmentPasteResult = ({int requestedCount, int sentCount});
 
 /// Resolves the retry schedule used for tmux detection after connect.
 @visibleForTesting
@@ -901,21 +918,60 @@ bool inheritTerminalBracketedPasteModeFromMuxWindow({
 
 /// Refreshes [terminal] from the active window in a fresh mux snapshot.
 @visibleForTesting
-Future<({bool bracketedPasteMode, String? activeWindowKey})>
+Future<
+  ({
+    bool bracketedPasteMode,
+    bool bracketedPasteModeKnown,
+    String? activeWindowKey,
+  })
+>
 refreshTerminalBracketedPasteModeFromMuxWindows({
   required Terminal terminal,
   required Future<Iterable<TmuxWindow>> Function() loadWindows,
 }) async {
   final windows = await loadWindows();
+  final activeWindowBracketedPasteMode =
+      resolveTmuxBarActiveWindowBracketedPasteMode(windows);
   inheritTerminalBracketedPasteModeFromMuxWindow(
     terminal: terminal,
-    activeWindowBracketedPasteMode:
-        resolveTmuxBarActiveWindowBracketedPasteMode(windows),
+    activeWindowBracketedPasteMode: activeWindowBracketedPasteMode,
   );
   return (
     bracketedPasteMode: terminal.bracketedPasteMode,
+    bracketedPasteModeKnown: activeWindowBracketedPasteMode != null,
     activeWindowKey: resolveTmuxBarActiveWindowKey(windows),
   );
+}
+
+/// Pastes [text] using an explicitly resolved bracketed-paste mode.
+@visibleForTesting
+void pasteTerminalTextWithBracketedPasteMode({
+  required Terminal terminal,
+  required String text,
+  required bool bracketedPasteMode,
+}) {
+  final previousBracketedPasteMode = terminal.bracketedPasteMode;
+  terminal.setBracketedPasteMode(bracketedPasteMode);
+  try {
+    terminal.paste(text);
+  } finally {
+    terminal.setBracketedPasteMode(previousBracketedPasteMode);
+  }
+}
+
+/// Whether paste-mode settling should request another mux snapshot.
+@visibleForTesting
+bool shouldRetryTerminalPasteModeSettle({
+  required bool refreshAttempted,
+  required bool refreshSucceeded,
+  required bool hasActiveWindow,
+  required bool modeReliable,
+  required bool targetsCurrentWindow,
+}) {
+  if (refreshAttempted) {
+    return refreshSucceeded && (!hasActiveWindow || !targetsCurrentWindow);
+  }
+  return !modeReliable || !targetsCurrentWindow;
 }
 
 int? _compareMonkeyMuxVersions(String? left, String? right) {
@@ -1343,6 +1399,10 @@ typedef _PreparedRemoteMuxCommand = ({
   String sessionName,
   AgentLaunchTool? tool,
 });
+
+class _MonkeyMuxReconnectException implements Exception {
+  const _MonkeyMuxReconnectException();
+}
 
 enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
@@ -3401,6 +3461,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final _toolbarController = KeyboardToolbarController();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
+  StreamSubscription<void>? _shellCommandCompletedSubscription;
   StreamSubscription<String>? _shellStdoutSubscription;
   Terminal? _terminalWithOwnedCallbacks;
   void Function(String)? _terminalOutputHandler;
@@ -3441,6 +3502,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  String? _monkeyMuxReconnectSessionName;
+  bool _monkeyMuxReconnectAttachPending = false;
   int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
@@ -3507,6 +3570,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// Monotonically-increasing counter; incremented whenever the terminal
   /// buffer changes content. Used to invalidate per-row snapshot caches.
   int _terminalContentGeneration = 0;
+  int _terminalUserInputGeneration = 0;
 
   /// Cache of [_TerminalPathTapSnapshot] objects keyed by the canonical start
   /// row of each wrapped-line group. Invalidated when
@@ -4224,6 +4288,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String title,
     required String Function(TerminalCommandReview review) messageBuilder,
     required String confirmLabel,
+    VoidCallback? onReviewShown,
   }) async {
     while (mounted) {
       final review = buildReview(_terminalCommandAfterInsertion(insertedText));
@@ -4231,6 +4296,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return true;
       }
 
+      onReviewShown?.call();
       final shouldInsert = await _confirmCommandInsertion(
         title: title,
         message: messageBuilder(review),
@@ -4958,6 +5024,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool activeWindowChanged,
   }) {
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _markMonkeyMuxReconnectEstablished(session, sessionName);
       _syncTerminalModesFromActiveMuxWindow();
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
@@ -4988,6 +5055,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session: session,
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
+    );
+  }
+
+  void _markMonkeyMuxReconnectEstablished(
+    SshSession session,
+    String sessionName,
+  ) {
+    if (!_monkeyMuxReconnectAttachPending ||
+        _connectionId != session.connectionId ||
+        _monkeyMuxReconnectSessionName != sessionName) {
+      return;
+    }
+    _monkeyMuxReconnectAttachPending = false;
+    _monkeyMuxReconnectSessionName = null;
+    DiagnosticsLogService.instance.info(
+      'terminal',
+      'monkeymux_reconnect_established',
+      fields: {'connectionId': session.connectionId},
     );
   }
 
@@ -5073,14 +5158,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  Future<_UploadedAttachmentPasteMode?>
-  _resolveUploadedAttachmentPasteMode() async {
+  static const _terminalPasteModeSettleAttempts = 3;
+  static const _terminalPasteModeSettleDelay = Duration(milliseconds: 75);
+
+  Future<_TerminalPasteMode?> _resolveTerminalPasteMode() async {
     _syncTerminalModesFromActiveMuxWindow();
     final terminal = _terminal;
     final connectionId = _connectionId;
     final muxBackend = _activeMuxBackend;
     final activeSession = _activeSession();
     final isMuxActive = _isTmuxActive && _tmuxStateConnectionId == connectionId;
+    final currentActiveWindowBracketedPasteMode =
+        resolveTmuxBarActiveWindowBracketedPasteMode(
+          _currentTmuxWindowsSnapshot,
+        );
     final currentActiveWindowKey = isMuxActive
         ? resolveTmuxBarActiveWindowKey(_currentTmuxWindowsSnapshot)
         : null;
@@ -5089,6 +5180,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return (
         activeWindowKey: currentActiveWindowKey,
         bracketedPasteMode: terminal.bracketedPasteMode,
+        bracketedPasteModeKnown: true,
         connectionId: connectionId,
         isMuxActive: isMuxActive,
         muxBackend: muxBackend,
@@ -5110,6 +5202,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _currentTmuxWindowsSnapshot,
         ),
         bracketedPasteMode: terminal.bracketedPasteMode,
+        bracketedPasteModeKnown: currentActiveWindowBracketedPasteMode != null,
         connectionId: connectionId,
         isMuxActive: isMuxActive,
         muxBackend: muxBackend,
@@ -5152,6 +5245,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return (
         activeWindowKey: refreshedMode.activeWindowKey,
         bracketedPasteMode: refreshedMode.bracketedPasteMode,
+        bracketedPasteModeKnown: refreshedMode.bracketedPasteModeKnown,
         connectionId: connectionId,
         isMuxActive: isMuxActive,
         muxBackend: muxBackend,
@@ -5162,23 +5256,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         terminal: terminal,
       );
     } on TimeoutException catch (error) {
-      _logAttachmentPasteModeRefreshFailure(session, error);
+      _logTerminalPasteModeRefreshFailure(session, error);
     } on MonkeyMuxInstallException catch (error) {
-      _logAttachmentPasteModeRefreshFailure(session, error);
+      _logTerminalPasteModeRefreshFailure(session, error);
     } on SSHError catch (error) {
-      _logAttachmentPasteModeRefreshFailure(session, error);
+      _logTerminalPasteModeRefreshFailure(session, error);
     } on IOException catch (error) {
-      _logAttachmentPasteModeRefreshFailure(session, error);
+      _logTerminalPasteModeRefreshFailure(session, error);
     }
 
     if (!stillOwnsTerminalContext()) {
       return null;
     }
+    _syncTerminalModesFromActiveMuxWindow();
+    final fallbackActiveWindowBracketedPasteMode =
+        resolveTmuxBarActiveWindowBracketedPasteMode(
+          _currentTmuxWindowsSnapshot,
+        );
     return (
       activeWindowKey: resolveTmuxBarActiveWindowKey(
         _currentTmuxWindowsSnapshot,
       ),
       bracketedPasteMode: terminal.bracketedPasteMode,
+      bracketedPasteModeKnown: fallbackActiveWindowBracketedPasteMode != null,
       connectionId: connectionId,
       isMuxActive: isMuxActive,
       muxBackend: muxBackend,
@@ -5190,9 +5290,59 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  bool _uploadedAttachmentPasteModeOwnsCurrentTerminalContext(
-    _UploadedAttachmentPasteMode pasteMode,
-  ) {
+  bool _terminalPasteModeIsReliable(_TerminalPasteMode pasteMode) {
+    if (!pasteMode.isMuxActive ||
+        pasteMode.muxBackend != RemoteMuxBackend.monkeyMux) {
+      return true;
+    }
+    return pasteMode.refreshSucceeded && pasteMode.activeWindowKey != null;
+  }
+
+  bool _effectiveTerminalBracketedPasteMode(_TerminalPasteMode pasteMode) =>
+      pasteMode.bracketedPasteModeKnown && pasteMode.bracketedPasteMode;
+
+  bool _terminalPasteModeCanUseResolvedState(_TerminalPasteMode pasteMode) =>
+      _terminalPasteModeIsReliable(pasteMode) ||
+      (pasteMode.isMuxActive &&
+          pasteMode.muxBackend == RemoteMuxBackend.monkeyMux &&
+          pasteMode.bracketedPasteModeKnown &&
+          pasteMode.activeWindowKey != null &&
+          _terminalPasteModeTargetsCurrentWindow(pasteMode));
+
+  Future<_TerminalPasteMode?> _resolveSettledTerminalPasteMode() async {
+    _TerminalPasteMode? pasteMode;
+    for (
+      var attempt = 0;
+      attempt < _terminalPasteModeSettleAttempts;
+      attempt++
+    ) {
+      pasteMode = await _resolveTerminalPasteMode();
+      if (pasteMode == null ||
+          !mounted ||
+          !_terminalPasteModeOwnsCurrentContext(pasteMode)) {
+        return pasteMode;
+      }
+      final modeReliable = _terminalPasteModeIsReliable(pasteMode);
+      final targetsCurrentWindow = _terminalPasteModeTargetsCurrentWindow(
+        pasteMode,
+      );
+      if (!shouldRetryTerminalPasteModeSettle(
+        refreshAttempted: pasteMode.refreshAttempted,
+        refreshSucceeded: pasteMode.refreshSucceeded,
+        hasActiveWindow: pasteMode.activeWindowKey != null,
+        modeReliable: modeReliable,
+        targetsCurrentWindow: targetsCurrentWindow,
+      )) {
+        return pasteMode;
+      }
+      if (attempt < _terminalPasteModeSettleAttempts - 1) {
+        await Future<void>.delayed(_terminalPasteModeSettleDelay);
+      }
+    }
+    return pasteMode;
+  }
+
+  bool _terminalPasteModeOwnsCurrentContext(_TerminalPasteMode pasteMode) {
     if (!mounted ||
         _connectionId != pasteMode.connectionId ||
         !identical(_activeSession(), pasteMode.session) ||
@@ -5216,9 +5366,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         : _tmuxSessionName == pasteMode.muxSessionName;
   }
 
-  bool _sameUploadedAttachmentTerminalContext(
-    _UploadedAttachmentPasteMode previous,
-    _UploadedAttachmentPasteMode next,
+  bool _sameTerminalPasteContext(
+    _TerminalPasteMode previous,
+    _TerminalPasteMode next,
   ) =>
       previous.connectionId == next.connectionId &&
       identical(previous.session, next.session) &&
@@ -5227,9 +5377,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       previous.muxBackend == next.muxBackend &&
       previous.muxSessionName == next.muxSessionName;
 
-  bool _uploadedAttachmentPasteModeTargetsCurrentWindow(
-    _UploadedAttachmentPasteMode pasteMode,
-  ) {
+  bool _terminalPasteModeTargetsCurrentWindow(_TerminalPasteMode pasteMode) {
     final activeWindowKey = pasteMode.activeWindowKey;
     if (!pasteMode.isMuxActive) {
       return true;
@@ -5244,10 +5392,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _logAttachmentPasteModeRefreshFailure(SshSession session, Object error) {
+  void _logTerminalPasteModeRefreshFailure(SshSession session, Object error) {
     DiagnosticsLogService.instance.warning(
       'terminal.clipboard',
-      'attachment_mode_refresh_failed',
+      'mode_refresh_failed',
       fields: {
         'connectionId': session.connectionId,
         'errorType': error.runtimeType,
@@ -6172,6 +6320,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _queueTerminalScrollToBottom();
   }
 
+  void _handleTerminalUserInput() {
+    _terminalUserInputGeneration++;
+    _followLiveOutput();
+  }
+
   void _followNextLiveOutputWithoutScrolling() {
     _setShouldFollowLiveOutput(true);
   }
@@ -6786,7 +6939,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (text.isNotEmpty) {
       _terminal.textInput(text);
     }
-    _followLiveOutput();
+    _handleTerminalUserInput();
     _terminalTextInputController.clearImeBuffer();
   }
 
@@ -7016,6 +7169,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Clean up any previous connection state before reconnecting.
     await _doneSubscription?.cancel();
     _doneSubscription = null;
+    await _shellCommandCompletedSubscription?.cancel();
+    _shellCommandCompletedSubscription = null;
     await _shellStdoutSubscription?.cancel();
     _shellStdoutSubscription = null;
     _promptOutputImeResetTimer?.cancel();
@@ -7231,6 +7386,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           width: viewportCellSize.columns,
           height: viewportCellSize.rows,
         ),
+        requestPty:
+            !(session.remoteIsWindows &&
+                startupCommand?.backend == RemoteMuxBackend.monkeyMux),
         command: startupCommand?.command,
         returnToLoginShell: startupCommand != null,
       );
@@ -7292,6 +7450,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       } else {
         unawaited(_detectTmux(session));
       }
+    } on _MonkeyMuxReconnectException {
+      _monkeyMuxReconnectSessionName = null;
+      _monkeyMuxReconnectAttachPending = false;
+      DiagnosticsLogService.instance.warning(
+        'terminal',
+        'monkeymux_reconnect_prepare_failed',
+        fields: {'connectionId': session.connectionId},
+      );
+      if (!mounted) return;
+      setState(() {
+        _isConnecting = false;
+        _error = 'Could not reconnect to the MonkeyMux session. Try again.';
+      });
     } on Object catch (e) {
       DiagnosticsLogService.instance.error(
         'terminal',
@@ -7324,6 +7495,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _handleShellClosed();
       }
     });
+    _shellCommandCompletedSubscription = session.shellCommandCompletedStream
+        .listen((_) => unawaited(_handleShellCommandCompleted(session)));
     _shellStdoutSubscription = session.shellStdoutStream.listen(
       _schedulePromptOutputImeResetCheck,
       onError: (Object error, StackTrace stackTrace) {
@@ -7448,6 +7621,57 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalWithOwnedCallbacks = _terminal;
   }
 
+  Future<void> _handleShellCommandCompleted(SshSession session) async {
+    if (!mounted ||
+        _connectionId != session.connectionId ||
+        !_isTmuxActive ||
+        _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    final reconnectAttempt = _monkeyMuxReconnectAttachPending;
+    _monkeyMuxReconnectAttachPending = false;
+    if (reconnectAttempt) {
+      _monkeyMuxReconnectSessionName = null;
+    } else {
+      _rememberMonkeyMuxReconnectTarget(session);
+    }
+    DiagnosticsLogService.instance.warning(
+      'terminal',
+      reconnectAttempt
+          ? 'monkeymux_reconnect_attach_completed'
+          : 'monkeymux_attach_completed',
+      fields: {'connectionId': session.connectionId},
+    );
+    setState(() {
+      if (reconnectAttempt) {
+        _clearTmuxState();
+      }
+      _isConnecting = false;
+      _error = reconnectAttempt
+          ? 'The MonkeyMux session is no longer available. Reconnect to start '
+                'the configured session.'
+          : 'MonkeyMux disconnected. Reconnect to continue.';
+    });
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    _terminalFocusNode.unfocus();
+
+    try {
+      final replacementShell = await session.getShell();
+      if (mounted && _connectionId == session.connectionId) {
+        _shell = replacementShell;
+      }
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal',
+        'monkeymux_login_fallback_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+  }
+
   void _clearOwnedTerminalCallbacks() {
     final terminal = _terminalWithOwnedCallbacks;
     final outputHandler = _terminalOutputHandler;
@@ -7560,6 +7784,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       suppressMonkeyMuxResizeSync: true,
       suppressAutoScroll: !revealLatestOutput,
     );
+    // A MonkeyMux window selection can replay a retained frame before the
+    // foreground TUI has fully repainted at the shared PTY size. A real later
+    // resize (for example opening/closing the software keyboard) reliably heals
+    // the corruption, while switches that happen not to trigger an onResize
+    // callback can remain stale indefinitely. Always schedule the same settled
+    // force-redraw after a window replay; the scheduler coalesces with any real
+    // resize already in flight.
+    _scheduleMonkeyMuxResizeRedrawFollowUp(session);
     _scheduleMonkeyMuxSettledRedrawDisplayRefreshes(
       session,
       reason: 'window_change_replay',
@@ -7692,6 +7924,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       final retryIds = result.retryableUnserved(requestedIds);
+      DiagnosticsLogService.instance.debug(
+        'terminal.graphics',
+        'request_missing_images_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'requested': requestedIds.length,
+          'served': result.served.length,
+          'unserved': requestedIds.length - result.served.length,
+          'retryable': result.retryableFailure,
+        },
+      );
       if (!result.retryableFailure || retryIds.isEmpty) {
         _missingImageRecoveryRetryCount = 0;
         _missingImageRecoveryRetryNotBefore = null;
@@ -8334,6 +8577,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return (command: null, handled: true);
     }
 
+    final reconnectSessionName = _monkeyMuxReconnectSessionName;
+    if (reconnectSessionName != null) {
+      final attachCommand = await _prepareRemoteMuxAttachCommand(
+        session,
+        host,
+        reconnectSessionName,
+        preferredBackend: RemoteMuxBackend.monkeyMux,
+        existingOnly: true,
+      );
+      if (attachCommand == null) {
+        throw const _MonkeyMuxReconnectException();
+      }
+      _monkeyMuxReconnectAttachPending = true;
+      DiagnosticsLogService.instance.info(
+        'terminal',
+        'monkeymux_reconnect_target_used',
+        fields: {'connectionId': session.connectionId},
+      );
+      _applyPreparedRemoteMuxCommand(session, attachCommand);
+      return (command: attachCommand, handled: true);
+    }
+
     final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
     if (tmuxSession != null && tmuxSession.isNotEmpty) {
       if (_configuredRemoteMuxBackend(host) == RemoteMuxBackend.tmux) {
@@ -8514,12 +8779,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<_PreparedRemoteMuxCommand?> _prepareRemoteMuxAttachCommand(
     SshSession session,
     Host host,
-    String sessionName,
-  ) async {
+    String sessionName, {
+    RemoteMuxBackend? preferredBackend,
+    bool existingOnly = false,
+  }) async {
     final attachCommand = await _buildRemoteMuxAttachCommand(
       session,
       host,
       sessionName,
+      preferredBackend: preferredBackend,
+      existingOnly: existingOnly,
     );
     if (!mounted || attachCommand == null) {
       return null;
@@ -8553,10 +8822,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   _buildRemoteMuxAttachCommand(
     SshSession session,
     Host host,
-    String sessionName,
-  ) async {
+    String sessionName, {
+    RemoteMuxBackend? preferredBackend,
+    bool existingOnly = false,
+  }) async {
     final configuredBackend =
-        _configuredRemoteMuxBackend(host) ?? RemoteMuxBackend.auto;
+        preferredBackend ??
+        _configuredRemoteMuxBackend(host) ??
+        RemoteMuxBackend.auto;
     // Windows remotes run cmd.exe/PowerShell, which can't host tmux. MonkeyMux
     // does work there via its ConPTY helper, so only the tmux backend is
     // skipped; the monkeyMux/auto path proceeds and, if the helper can't
@@ -8598,12 +8871,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted) {
           return null;
         }
+        final viewportCellSize = _localTerminalViewportCellSize();
         return (
           command: buildMonkeyMuxAttachCommand(
             executablePath: installation.executablePath,
             sessionName: sessionName,
             clientId: session.monkeyMuxClientId,
             clipViewport: true,
+            existingOnly: existingOnly,
+            terminalColumns: viewportCellSize.columns,
+            terminalRows: viewportCellSize.rows,
             workingDirectory: host.tmuxWorkingDirectory,
             terminalThemeReports: terminalThemeReports,
             serverUpdatePolicy: updatePolicy,
@@ -9034,6 +9311,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !identical(_shell, shell)) {
       return;
     }
+    if (session.remoteIsWindows) {
+      await _reopenShellForVisibleTmux(
+        session,
+        command: command.command,
+        requestPty: false,
+      );
+      DiagnosticsLogService.instance.info(
+        'terminal.agent_launch',
+        'command_written',
+        fields: {
+          'connectionId': session.connectionId,
+          'backend': command.backend.storageValue,
+          'requestedPty': false,
+          if (command.tool case final tool?) 'tool': tool.name,
+        },
+      );
+      return;
+    }
     shell.write(utf8.encode(formatAutoConnectCommandForShell(command.command)));
     DiagnosticsLogService.instance.info(
       'terminal.agent_launch',
@@ -9104,11 +9399,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final terminalThemeReports = buildTerminalThemeHintReports(
         session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
       );
+      final viewportCellSize = _localTerminalViewportCellSize();
       attachCommand = buildMonkeyMuxAttachCommand(
         executablePath: installation.executablePath,
         sessionName: sessionName,
         clientId: session.monkeyMuxClientId,
         clipViewport: true,
+        terminalColumns: viewportCellSize.columns,
+        terminalRows: viewportCellSize.rows,
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,
@@ -9667,6 +9965,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session
           ..remoteMuxBackend = muxBackend
           ..remoteMuxSessionName = sessionName;
+        if (muxBackend == RemoteMuxBackend.monkeyMux) {
+          _markMonkeyMuxReconnectEstablished(session, sessionName);
+        }
         _startTmuxForegroundVerification(session, sessionName);
         DiagnosticsLogService.instance.info(
           'tmux.ui',
@@ -10307,6 +10608,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _tmuxSessionName != sessionName) {
       return;
     }
+    _monkeyMuxReconnectSessionName = null;
+    _monkeyMuxReconnectAttachPending = false;
     DiagnosticsLogService.instance.info(
       'tmux.ui',
       'monkeymux_session_disconnect',
@@ -10420,6 +10723,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session,
         sessionName,
         force: true,
+      );
+      unawaited(
+        _reattachTmuxAfterWindowChangeInBackground(
+          session,
+          sessionName,
+          forceVisibleTmux: forceVisibleTmux,
+          deferUntilAfterRedraw: deferPostSwitchExec,
+        ),
       );
       return;
     }
@@ -10840,15 +11151,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    final shell = forceVisibleTmux && !canReattachInCurrentShell
-        ? await _reopenShellForVisibleTmux(session)
-        : _shell;
-    if (shell == null) {
-      return;
-    }
-
     final host = _host;
     late final String reattachCommand;
+    var reattachBackend = RemoteMuxBackend.tmux;
     if (host == null) {
       reattachCommand = buildTmuxCommand(sessionName: sessionName);
     } else {
@@ -10856,22 +11161,51 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session,
         host,
         sessionName,
+        preferredBackend: _activeMuxBackend,
+        existingOnly: true,
       );
       if (attachCommand == null) {
         return;
       }
       _activeMuxBackend = attachCommand.backend;
+      reattachBackend = attachCommand.backend;
       reattachCommand = attachCommand.command;
     }
-    session.writeToShell(formatAutoConnectCommandForShell(reattachCommand));
+    final requiresRawMonkeyMuxAttach =
+        session.remoteIsWindows &&
+        reattachBackend == RemoteMuxBackend.monkeyMux;
+    final mustReopenShell =
+        requiresRawMonkeyMuxAttach ||
+        (forceVisibleTmux && !canReattachInCurrentShell);
+    final shell = mustReopenShell
+        ? await _reopenShellForVisibleTmux(
+            session,
+            command: requiresRawMonkeyMuxAttach ? reattachCommand : null,
+            requestPty: !requiresRawMonkeyMuxAttach,
+          )
+        : _shell;
+    if (shell == null) {
+      return;
+    }
+
+    if (!requiresRawMonkeyMuxAttach) {
+      session.writeToShell(formatAutoConnectCommandForShell(reattachCommand));
+    }
     DiagnosticsLogService.instance.info(
       'tmux.ui',
       'reattach_command_sent',
-      fields: {'connectionId': session.connectionId},
+      fields: {
+        'connectionId': session.connectionId,
+        'requestedPty': !requiresRawMonkeyMuxAttach,
+      },
     );
   }
 
-  Future<SSHSession?> _reopenShellForVisibleTmux(SshSession session) async {
+  Future<SSHSession?> _reopenShellForVisibleTmux(
+    SshSession session, {
+    String? command,
+    bool requestPty = true,
+  }) async {
     bool stillOwnsSession() => mounted && _connectionId == session.connectionId;
 
     final previousTerminal = _terminal;
@@ -10898,6 +11232,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    unawaited(_shellCommandCompletedSubscription?.cancel());
+    _shellCommandCompletedSubscription = null;
     unawaited(_shellStdoutSubscription?.cancel());
     _shellStdoutSubscription = null;
     _promptOutputImeResetTimer?.cancel();
@@ -10927,7 +11263,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         reason: 'reopen_shell',
       );
-      shell = await session.getShell(pty: pty);
+      shell = await session.getShell(
+        pty: pty,
+        requestPty: requestPty,
+        command: command,
+        returnToLoginShell: command != null,
+      );
       if (!stillOwnsSession()) {
         restorePreviousTerminalState(restoreShell: false);
         return null;
@@ -11009,6 +11350,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final suppressAutomaticReconnect =
         _suppressNextAutomaticReconnectConnectionId == connectionId;
     _suppressNextAutomaticReconnectConnectionId = null;
+    _rememberMonkeyMuxReconnectTarget(_observedSession);
     _prepareTerminalForLostConnection(_observedSession);
     if (_wasBackgrounded) {
       _connectionLostWhileBackgrounded = !suppressAutomaticReconnect;
@@ -11043,6 +11385,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shell = null;
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    unawaited(_shellCommandCompletedSubscription?.cancel());
+    _shellCommandCompletedSubscription = null;
     unawaited(_shellStdoutSubscription?.cancel());
     _shellStdoutSubscription = null;
     _promptOutputImeResetTimer?.cancel();
@@ -11058,9 +11402,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _handleShellClosed() {
     final connectionId = _connectionId;
+    _rememberMonkeyMuxReconnectTarget(_observedSession ?? _activeSession());
     _shell = null;
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    unawaited(_shellCommandCompletedSubscription?.cancel());
+    _shellCommandCompletedSubscription = null;
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     if (!mounted) {
       if (connectionId != null) {
@@ -11123,6 +11470,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    unawaited(_shellCommandCompletedSubscription?.cancel());
+    _shellCommandCompletedSubscription = null;
     _shell = null;
     if (connectionId != null) {
       await _tmuxService.clearCache(connectionId);
@@ -11152,6 +11501,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_isConnecting) {
       return;
     }
+    _rememberMonkeyMuxReconnectTarget(_observedSession ?? _activeSession());
     if (mounted) {
       setState(() {
         _clearTmuxState();
@@ -11177,6 +11527,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     try {
       await _doneSubscription?.cancel();
       _doneSubscription = null;
+      await _shellCommandCompletedSubscription?.cancel();
+      _shellCommandCompletedSubscription = null;
       _shell = null;
       if (previousConnectionId != null) {
         await _tmuxService.clearCache(previousConnectionId);
@@ -11192,6 +11544,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isConnecting = false;
       }
     }
+  }
+
+  void _rememberMonkeyMuxReconnectTarget(SshSession? session) {
+    final backend = _isTmuxActive
+        ? _activeMuxBackend
+        : session?.remoteMuxBackend;
+    if (backend != RemoteMuxBackend.monkeyMux) {
+      if (session != null) {
+        _monkeyMuxReconnectSessionName = null;
+        _monkeyMuxReconnectAttachPending = false;
+      }
+      return;
+    }
+    final sessionName = (_tmuxSessionName ?? session?.remoteMuxSessionName)
+        ?.trim();
+    if (sessionName == null || sessionName.isEmpty) {
+      return;
+    }
+    _monkeyMuxReconnectSessionName = sessionName;
+    DiagnosticsLogService.instance.info(
+      'terminal',
+      'monkeymux_reconnect_target_saved',
+      fields: {'connectionId': session?.connectionId ?? _connectionId},
+    );
   }
 
   @override
@@ -11234,6 +11610,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeOverlayCollapseTimer?.cancel();
     _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
+    _shellCommandCompletedSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
     _terminalTextInputController
@@ -11886,7 +12263,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 _toolbarController.isShiftActive,
           ),
     );
-    _followLiveOutput();
+    _handleTerminalUserInput();
     _terminalTextInputController.clearImeBuffer();
   }
 
@@ -12487,7 +12864,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       touchScrollToTerminal: routeTouchScrollToTerminal,
       forceSgrTouchScroll: _forceSgrTouchScroll,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
-      onPasteText: isMobile ? null : _pasteClipboard,
+      onPasteText: _pasteClipboard,
+      onUserInput: _handleTerminalUserInput,
       onTapDown: (_, _) => _claimActiveMonkeyMuxClientFocus(),
     );
 
@@ -12605,7 +12983,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       controller: _terminalTextInputController,
       deleteDetection: true,
       keyboardAppearance: keyboardAppearance,
-      onUserInput: _followLiveOutput,
+      onUserInput: _handleTerminalUserInput,
+      onPasteText: _pasteClipboard,
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       resolveTextBeforeCursor: _terminalTextBeforeCursor,
@@ -15451,6 +15830,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pasteClipboard() async {
+    final inputGeneration = _terminalUserInputGeneration;
     try {
       if (_isAndroidPlatform) {
         final imageBytes = await Pasteboard.image;
@@ -15481,28 +15861,182 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
 
+      final initialPasteMode = await _resolveSettledTerminalPasteMode();
+      if (initialPasteMode == null || !mounted) {
+        if (mounted) {
+          _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        }
+        return;
+      }
+      var pasteMode = initialPasteMode;
+      if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'text_input_skipped_context_changed',
+          fields: {'connectionId': _connectionId},
+        );
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
+      if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
+        _syncTerminalModesFromActiveMuxWindow();
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'text_input_skipped_window_changed',
+          fields: {'connectionId': _connectionId},
+        );
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
+      if (!_terminalPasteModeCanUseResolvedState(pasteMode)) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'text_input_skipped_mode_unavailable',
+          fields: {'connectionId': _connectionId},
+        );
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        _showClipboardMessage(
+          'Could not verify bracketed paste mode. Try again.',
+        );
+        return;
+      }
+
       final requiredReview = _shouldReviewTerminalCommandInsertion;
-      final shouldPaste =
-          !requiredReview ||
-          await _confirmTerminalInsertionIfNeeded(
+      var reviewedBracketedPasteMode = _effectiveTerminalBracketedPasteMode(
+        pasteMode,
+      );
+      if (requiredReview) {
+        var modeStableAfterReview = false;
+        for (var reviewAttempt = 0; reviewAttempt < 2; reviewAttempt++) {
+          var reviewShown = false;
+          final shouldPaste = await _confirmTerminalInsertionIfNeeded(
             insertedText: text,
             buildReview: (commandText) => assessClipboardPasteCommand(
               commandText,
-              bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+              bracketedPasteModeEnabled: reviewedBracketedPasteMode,
             ),
             title: 'Review clipboard paste',
             messageBuilder: (review) => review.bracketedPasteModeEnabled
                 ? 'This clipboard content looks risky even with bracketed paste enabled.'
                 : 'This clipboard content could execute multiple or reshaped commands.',
             confirmLabel: 'Paste anyway',
+            onReviewShown: () => reviewShown = true,
           );
-      if (!shouldPaste) {
+          if (!shouldPaste) {
+            _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+            return;
+          }
+          if (!reviewShown) {
+            modeStableAfterReview = true;
+            break;
+          }
+
+          final refreshedPasteMode = await _resolveSettledTerminalPasteMode();
+          if (refreshedPasteMode == null || !mounted) {
+            if (mounted) {
+              _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+            }
+            return;
+          }
+          if (!_sameTerminalPasteContext(pasteMode, refreshedPasteMode) ||
+              refreshedPasteMode.activeWindowKey != pasteMode.activeWindowKey ||
+              !_terminalPasteModeOwnsCurrentContext(refreshedPasteMode)) {
+            DiagnosticsLogService.instance.warning(
+              'terminal.clipboard',
+              'text_input_skipped_window_changed',
+              fields: {'connectionId': _connectionId},
+            );
+            _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+            return;
+          }
+          pasteMode = refreshedPasteMode;
+          if (!_terminalPasteModeCanUseResolvedState(pasteMode)) {
+            DiagnosticsLogService.instance.warning(
+              'terminal.clipboard',
+              'text_input_skipped_mode_unavailable',
+              fields: {'connectionId': _connectionId},
+            );
+            _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+            _showClipboardMessage(
+              'Could not verify bracketed paste mode. Try again.',
+            );
+            return;
+          }
+          final refreshedBracketedPasteMode =
+              _effectiveTerminalBracketedPasteMode(pasteMode);
+          if (refreshedBracketedPasteMode == reviewedBracketedPasteMode) {
+            modeStableAfterReview = true;
+            break;
+          }
+          reviewedBracketedPasteMode = refreshedBracketedPasteMode;
+        }
+        if (!modeStableAfterReview) {
+          DiagnosticsLogService.instance.warning(
+            'terminal.clipboard',
+            'text_input_skipped_mode_changed',
+            fields: {'connectionId': _connectionId},
+          );
+          _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+          return;
+        }
+      }
+      if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'text_input_skipped_context_changed',
+          fields: {'connectionId': _connectionId},
+        );
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
+      if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
+        _syncTerminalModesFromActiveMuxWindow();
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'text_input_skipped_window_changed',
+          fields: {'connectionId': _connectionId},
+        );
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         return;
       }
 
+      if (_terminalUserInputGeneration != inputGeneration) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'text_input_skipped_intervening_input',
+          fields: {'connectionId': _connectionId},
+        );
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        _showClipboardMessage('Paste canceled because terminal input changed.');
+        return;
+      }
+
+      final modeReliable = _terminalPasteModeIsReliable(pasteMode);
+      final modeUsable = _terminalPasteModeCanUseResolvedState(pasteMode);
+      final usedBracketedPaste = _effectiveTerminalBracketedPasteMode(
+        pasteMode,
+      );
       _followLiveOutput();
-      _terminal.paste(text);
+      pasteTerminalTextWithBracketedPasteMode(
+        terminal: pasteMode.terminal,
+        text: text,
+        bracketedPasteMode: usedBracketedPaste,
+      );
+      _terminalUserInputGeneration++;
+      DiagnosticsLogService.instance.info(
+        'terminal.clipboard',
+        'text_input',
+        fields: {
+          'connectionId': pasteMode.connectionId,
+          'bracketedPasteMode': pasteMode.bracketedPasteMode,
+          'bracketedPasteModeKnown': pasteMode.bracketedPasteModeKnown,
+          'modeReliable': modeReliable,
+          'modeUsable': modeUsable,
+          'usedBracketedPaste': usedBracketedPaste,
+          'modeRefreshAttempted': pasteMode.refreshAttempted,
+          'modeRefreshSucceeded': pasteMode.refreshSucceeded,
+        },
+      );
       unawaited(
         ref
             .read(telemetryServiceProvider)
@@ -15886,73 +16420,79 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// attachment. The pre-built segments are written straight to the session
   /// input via [Terminal.onOutput]; they must not go through [Terminal.paste],
   /// which would strip the bracketed-paste markers.
-  Future<void> _insertUploadedFileReferences(
+  Future<_AttachmentPasteResult> _insertUploadedFileReferences(
     List<String> remotePaths, {
     required bool windows,
   }) async {
+    var inputGeneration = _terminalUserInputGeneration;
     final pathCount = remotePaths
         .where((remotePath) => remotePath.isNotEmpty)
         .length;
+    _AttachmentPasteResult result(int sentCount) =>
+        (requestedCount: pathCount, sentCount: sentCount);
     if (pathCount == 0) {
-      return;
+      return result(0);
     }
-    var pasteMode = await _resolveUploadedAttachmentPasteMode();
-    if (pasteMode == null || !mounted) {
-      return;
+    var sentCount = 0;
+    final initialPasteMode = await _resolveSettledTerminalPasteMode();
+    if (initialPasteMode == null || !mounted) {
+      return result(sentCount);
     }
-    if (!_uploadedAttachmentPasteModeOwnsCurrentTerminalContext(pasteMode)) {
+    final pasteMode = initialPasteMode;
+    if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
       DiagnosticsLogService.instance.warning(
         'terminal.clipboard',
         'attachment_input_skipped_context_changed',
         fields: {'connectionId': _connectionId, 'pathCount': pathCount},
       );
-      return;
+      return result(sentCount);
     }
-    if (!_uploadedAttachmentPasteModeTargetsCurrentWindow(pasteMode)) {
-      final refreshedPasteMode = await _resolveUploadedAttachmentPasteMode();
-      if (refreshedPasteMode == null || !mounted) {
-        return;
-      }
-      if (!_sameUploadedAttachmentTerminalContext(
-            pasteMode,
-            refreshedPasteMode,
-          ) ||
-          !_uploadedAttachmentPasteModeOwnsCurrentTerminalContext(
-            refreshedPasteMode,
-          )) {
-        DiagnosticsLogService.instance.warning(
-          'terminal.clipboard',
-          'attachment_input_skipped_context_changed',
-          fields: {'connectionId': _connectionId, 'pathCount': pathCount},
-        );
-        return;
-      }
-      pasteMode = refreshedPasteMode;
-      if (!_uploadedAttachmentPasteModeTargetsCurrentWindow(pasteMode)) {
-        _syncTerminalModesFromActiveMuxWindow();
-        DiagnosticsLogService.instance.warning(
-          'terminal.clipboard',
-          'attachment_input_skipped_window_changed',
-          fields: {'connectionId': _connectionId, 'pathCount': pathCount},
-        );
-        return;
-      }
+    if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
+      _syncTerminalModesFromActiveMuxWindow();
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'attachment_input_skipped_window_changed',
+        fields: {'connectionId': _connectionId, 'pathCount': pathCount},
+      );
+      return result(sentCount);
     }
+    final modeReliable = _terminalPasteModeIsReliable(pasteMode);
+    final modeUsable = _terminalPasteModeCanUseResolvedState(pasteMode);
+    if (!modeUsable) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'attachment_input_skipped_mode_unavailable',
+        fields: {'connectionId': _connectionId, 'pathCount': pathCount},
+      );
+      return result(sentCount);
+    }
+    final usedBracketedPaste = _effectiveTerminalBracketedPasteMode(pasteMode);
+    final sendablePathCount = countTerminalAttachmentPastePaths(remotePaths);
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
-      bracketedPasteMode: pasteMode.bracketedPasteMode,
+      bracketedPasteMode: usedBracketedPaste,
       windows: windows,
+      preferRawAgentPaths: _isAgentToolActive,
     );
-    final usedBracketedPaste = segments.any(
-      (segment) => segment.startsWith('\x1b[200~'),
-    );
+    if (segments.isEmpty) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'attachment_input_skipped_unsafe_paths',
+        fields: {'connectionId': _connectionId, 'pathCount': pathCount},
+      );
+      return result(sentCount);
+    }
     DiagnosticsLogService.instance.debug(
       'terminal.clipboard',
       'attachment_input',
       fields: {
         'connectionId': _connectionId,
         'pathCount': pathCount,
+        'segmentCount': segments.length,
         'bracketedPasteMode': pasteMode.bracketedPasteMode,
+        'bracketedPasteModeKnown': pasteMode.bracketedPasteModeKnown,
+        'modeReliable': modeReliable,
+        'modeUsable': modeUsable,
         'usedBracketedPaste': usedBracketedPaste,
         'modeRefreshAttempted': pasteMode.refreshAttempted,
         'modeRefreshSucceeded': pasteMode.refreshSucceeded,
@@ -15960,9 +16500,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     for (var i = 0; i < segments.length; i++) {
       if (!mounted) {
-        return;
+        return result(sentCount);
       }
-      if (!_uploadedAttachmentPasteModeOwnsCurrentTerminalContext(pasteMode)) {
+      if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
         DiagnosticsLogService.instance.warning(
           'terminal.clipboard',
           'attachment_input_stopped_context_changed',
@@ -15972,9 +16512,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'sentCount': i,
           },
         );
-        return;
+        return result(sentCount);
       }
-      if (!_uploadedAttachmentPasteModeTargetsCurrentWindow(pasteMode)) {
+      if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
         _syncTerminalModesFromActiveMuxWindow();
         DiagnosticsLogService.instance.warning(
           'terminal.clipboard',
@@ -15985,13 +16525,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'sentCount': i,
           },
         );
-        return;
+        return result(sentCount);
       }
-      _terminal.onOutput?.call(segments[i]);
+      if (_terminalUserInputGeneration != inputGeneration) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'attachment_input_stopped_intervening_input',
+          fields: {
+            'connectionId': _connectionId,
+            'pathCount': pathCount,
+            'sentCount': i,
+          },
+        );
+        return result(sentCount);
+      }
+      pasteMode.terminal.onOutput?.call(segments[i]);
+      _terminalUserInputGeneration++;
+      inputGeneration = _terminalUserInputGeneration;
+      sentCount = usedBracketedPaste ? sentCount + 1 : sendablePathCount;
       if (i < segments.length - 1) {
         await Future<void>.delayed(_uploadedAttachmentPasteStagger);
       }
     }
+    return result(sentCount);
   }
 
   Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
@@ -16072,25 +16628,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    await _insertUploadedFileReferences(
+    final pasteResult = await _insertUploadedFileReferences(
       remotePaths.paths,
       windows: remotePaths.windows,
     );
     if (!mounted) {
       return;
     }
-    unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logTerminalPasteUsed(
-            source: 'clipboard_files',
-            requiredReview: true,
-          ),
-    );
+    if (pasteResult.sentCount > 0) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalPasteUsed(
+              source: 'clipboard_files',
+              requiredReview: true,
+            ),
+      );
+    }
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    final pathsInserted = pasteResult.sentCount == pasteResult.requestedCount;
     _showClipboardMessage(
-      'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay',
+      pathsInserted
+          ? 'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay'
+          : pasteResult.sentCount > 0
+          ? 'Uploaded ${remotePaths.paths.length} files and pasted ${pasteResult.sentCount} of ${pasteResult.requestedCount} paths'
+          : 'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'}, but could not paste ${remotePaths.paths.length == 1 ? 'its path' : 'their paths'}',
     );
   }
 
@@ -16108,20 +16671,40 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pasteStoreDemoImage() async {
-    await _pasteClipboardImage(
-      _storeDemoClipboardImageBytes,
-      autoConfirmAfter: const Duration(milliseconds: 4200),
-      showKeyboardAfterPaste: false,
-      uploadBaseDirectory: _workingDirectoryPath,
-    );
-    if (!mounted) {
-      return;
+    final pasteCompleter = storeDemoImagePasteCompleter;
+    try {
+      final pathInserted = await _pasteClipboardImage(
+        _storeDemoClipboardImageBytes,
+        autoConfirmAfter: const Duration(milliseconds: 4200),
+        showKeyboardAfterPaste: false,
+        uploadBaseDirectory: _workingDirectoryPath,
+      );
+      if (!pathInserted) {
+        throw StateError('Demo image path was not inserted into the terminal');
+      }
+      if (!mounted) {
+        return;
+      }
+      FocusManager.instance.primaryFocus?.unfocus();
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+      // Signal the store video harness that the image path is in the terminal
+      // so Beat 5 does not type the Copilot prompt before the paste lands.
+      debugPrintSynchronously('STORE_SCREENSHOT_DEMO_IMAGE_PASTED');
+      if (pasteCompleter != null && !pasteCompleter.isCompleted) {
+        pasteCompleter.complete();
+      }
+    } on Object catch (error, stackTrace) {
+      debugPrintSynchronously(
+        'STORE_SCREENSHOT_ERROR demo image paste failed: $error',
+      );
+      if (pasteCompleter != null && !pasteCompleter.isCompleted) {
+        pasteCompleter.completeError(error, stackTrace);
+      }
+      rethrow;
     }
-    FocusManager.instance.primaryFocus?.unfocus();
-    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
   }
 
-  Future<void> _pasteClipboardImage(
+  Future<bool> _pasteClipboardImage(
     Uint8List imageBytes, {
     bool confirm = true,
     Duration? autoConfirmAfter,
@@ -16134,12 +16717,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         message:
             'This will upload the clipboard image to $_clipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
         confirmLabel: 'Upload and paste',
-        details: const ['release-checklist.png'],
+        details: const ['monkeyssh-light-mode.png'],
         autoConfirmAfter: autoConfirmAfter,
       );
       if (!shouldUpload) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-        return;
+        return false;
       }
     }
 
@@ -16164,25 +16747,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }, uploadBaseDirectory: uploadBaseDirectory);
     _followLiveOutput();
-    await _insertUploadedFileReferences([
+    final pasteResult = await _insertUploadedFileReferences([
       remotePath.path,
     ], windows: remotePath.windows);
     if (!mounted) {
-      return;
+      return false;
     }
-    unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logTerminalPasteUsed(
-            source: 'clipboard_image',
-            requiredReview: true,
-          ),
-    );
+    final pathInserted = pasteResult.sentCount == 1;
+    if (pathInserted) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalPasteUsed(
+              source: 'clipboard_image',
+              requiredReview: true,
+            ),
+      );
+    }
     _terminalController.clearSelection();
     _restoreTerminalFocus(
       showSystemKeyboard: showKeyboardAfterPaste && _isMobilePlatform,
     );
-    _showClipboardMessage('Uploaded clipboard image to ${remotePath.path}');
+    _showClipboardMessage(
+      pathInserted
+          ? 'Uploaded clipboard image to ${remotePath.path}'
+          : 'Uploaded clipboard image, but could not paste its path',
+    );
+    return pathInserted;
   }
 
   Future<void> _pasteSelectedFiles(
@@ -16259,22 +16850,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    await _insertUploadedFileReferences(
+    final pasteResult = await _insertUploadedFileReferences(
       remotePaths.paths,
       windows: remotePaths.windows,
     );
     if (!mounted) {
       return;
     }
-    unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logTerminalPasteUsed(source: 'picked_files', requiredReview: true),
-    );
+    if (pasteResult.sentCount > 0) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalPasteUsed(source: 'picked_files', requiredReview: true),
+      );
+    }
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    final pathsInserted = pasteResult.sentCount == pasteResult.requestedCount;
     _showClipboardMessage(
-      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay',
+      pathsInserted
+          ? 'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay'
+          : pasteResult.sentCount > 0
+          ? 'Uploaded ${remotePaths.paths.length} $itemLabelPlural and pasted ${pasteResult.sentCount} of ${pasteResult.requestedCount} paths'
+          : 'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'}, but could not paste ${remotePaths.paths.length == 1 ? 'its path' : 'their paths'}',
     );
   }
 
@@ -16379,7 +16977,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    _followLiveOutput();
+    _handleTerminalUserInput();
     _terminal.paste(substitution.command);
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
@@ -16523,7 +17121,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         return;
       }
-      _followLiveOutput();
+      _handleTerminalUserInput();
       // Insert the command into terminal
       _terminal.paste(result.command);
       // Track usage
