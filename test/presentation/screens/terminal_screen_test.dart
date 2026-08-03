@@ -662,6 +662,33 @@ void main() {
     registerFallbackValue(SshExecPriority.normal);
   });
 
+  test(
+    'only falls back when an initial MonkeyMux attach never established',
+    () {
+      expect(
+        shouldFallbackFromUnestablishedMonkeyMuxAttach(
+          reconnectAttempt: false,
+          attachEstablished: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldFallbackFromUnestablishedMonkeyMuxAttach(
+          reconnectAttempt: false,
+          attachEstablished: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldFallbackFromUnestablishedMonkeyMuxAttach(
+          reconnectAttempt: true,
+          attachEstablished: false,
+        ),
+        isFalse,
+      );
+    },
+  );
+
   group('terminal native selection helpers', () {
     test('starts selection on separator characters', () {
       final terminal = Terminal(maxLines: 100)..write('foo/bar');
