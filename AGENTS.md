@@ -25,10 +25,10 @@ CI runs the MonkeyMux Go suite on both Linux and Windows (the `go-test` job), be
 On a Windows workstation `go test ./...` in `remote/monkeymux` therefore only runs the ~17 portable + Windows-tagged tests. To run the full Linux set locally, use WSL:
 
 ```powershell
-wsl --install Ubuntu-26.04 --no-launch   # WSL2 kernel ships with Windows; no reboot needed
+wsl --install Ubuntu-26.04 --no-launch   # WSL2 kernel ships with Windows; a clean machine may still require a reboot first
 ```
 
-Then inside the distro install Go (the module needs the toolchain in `go.mod`, not the older apt package) and clone into the **Linux** filesystem:
+Then, once the distro is available (after a reboot if Windows prompts for one), install Go (the module needs the toolchain in `go.mod`, not the older apt package) and clone into the **Linux** filesystem:
 
 ```bash
 curl -sSLO https://go.dev/dl/go1.26.5.linux-amd64.tar.gz
