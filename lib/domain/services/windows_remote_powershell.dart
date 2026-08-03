@@ -85,3 +85,34 @@ const String powerShellUtf8OutputEpilogue =
 /// preamble/epilogue and returns the full script text.
 String powerShellUtf8OutputScript(String body) =>
     '$powerShellUtf8OutputPreamble$body$powerShellUtf8OutputEpilogue';
+
+/// PowerShell statements that apply the signed-in user's profile `PATH` to the
+/// running process.
+///
+/// [buildWindowsPowerShellCommand] deliberately passes `-NoProfile` so remote
+/// helpers stay fast and cannot be corrupted by profile output. That also hides
+/// any CLI whose `PATH` entry is added by a PowerShell profile instead of the
+/// persistent machine/user environment — which is exactly how Node version
+/// managers (fnm, nvm-windows, volta) and npm/bun global installs are wired up,
+/// and therefore how most coding-agent CLIs land on Windows. Scripts that need
+/// to resolve user-installed binaries should prepend this so they see the same
+/// `PATH` an interactive shell would, mirroring the POSIX side re-invoking
+/// `$SHELL -ic`.
+///
+/// Profiles are run with the call operator rather than dot-sourced, so their
+/// functions, aliases, and variables stay out of the calling scope while
+/// `$env:Path` edits still apply (the `env:` drive is process-scoped). All
+/// output and errors are discarded so a chatty or broken profile cannot corrupt
+/// the caller's stdout, and the preferences are re-asserted afterwards in case a
+/// profile changed them.
+const String powerShellProfilePathPreamble =
+    r'$__flProfilePaths = @($PROFILE.AllUsersAllHosts, '
+    r'$PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, '
+    r'$PROFILE.CurrentUserCurrentHost) | Where-Object { $_ } | '
+    'Select-Object -Unique; '
+    r'foreach ($__flProfilePath in $__flProfilePaths) { '
+    r'if (Test-Path -LiteralPath $__flProfilePath) { '
+    r'try { & $__flProfilePath *> $null } catch {} } }; '
+    r"$ErrorActionPreference = 'SilentlyContinue'; "
+    r'$ProgressPreference = '
+    "'SilentlyContinue';";
