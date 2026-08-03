@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.133"
+	monkeyMuxVersion                  = "0.1.136"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -86,6 +86,15 @@ const (
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
 	attachWriteQueueLimitBytes        = 16 * 1024 * 1024
+	// ensureServer serializes attach/create for a session and retries dials so a
+	// transient socket blip cannot steal the path from a live server and replace
+	// a multi-window workspace with a fresh single auto-connect window.
+	ensureServerDialAttempts  = 8
+	ensureServerDialInterval  = 50 * time.Millisecond
+	ensureServerLockTimeout   = 5 * time.Second
+	ensureServerLockRetryWait = 50 * time.Millisecond
+	sessionPIDFileMode        = 0o600
+	sessionLockFileMode       = 0o600
 	// Per-window Kitty image retention, used to survive history eviction across
 	// reattaches and to back placeholder cells the foreground app re-emits.
 	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
@@ -1392,6 +1401,11 @@ func gcCommand() {
 	}
 }
 
+type ensureServerReplacement struct {
+	restore *serverRestore
+	oldPID  int
+}
+
 func ensureServer(
 	session string,
 	initialWindow createWindowOptions,
@@ -1401,49 +1415,65 @@ func ensureServer(
 	height int,
 	existingOnly bool,
 ) error {
-	var restore *serverRestore
-	if status, err := queryRunningServerStatus(session); err == nil {
-		if status.version == monkeyMuxVersion {
-			return nil
-		}
-		if !shouldUpdateRunningServer(
-			os.Stdin,
-			os.Stderr,
+	unlock, err := acquireSessionLock(session)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	var replacement *ensureServerReplacement
+	status, statusErr := queryRunningServerStatusWithRetry(session)
+	switch {
+	case statusErr == nil:
+		outcome, err := prepareRunningServerReplacement(
 			session,
 			status,
 			updatePolicy,
-		) {
-			return nil
+			startInYoloMode,
+		)
+		if err != nil || outcome == nil {
+			return err
 		}
-		restore = collectServerRestore(session, status)
-		if restore != nil {
-			restore.StartInYoloMode = startInYoloMode
-		}
-		if status.supportsCapability("shutdown") {
-			requestServerShutdown(session)
-			if !waitForServerExit(session, 2*time.Second) {
-				fmt.Fprintf(
-					os.Stderr,
-					"monkeymux: running session did not exit; continuing with helper %s\r\n",
-					status.displayVersion(),
-				)
-				return nil
-			}
-		} else {
-			fmt.Fprintf(
-				os.Stderr,
-				"monkeymux: abandoning helper %s socket and starting helper %s\r\n",
-				status.displayVersion(),
-				monkeyMuxVersion,
-			)
-		}
-	} else if existingOnly {
+		replacement = outcome
+	case existingOnly:
 		return fmt.Errorf("MonkeyMux session %q is not running", session)
+	default:
+		if pid := readSessionPID(session); pid > 0 && processIDAlive(pid) {
+			// A previous serve still owns the windows but the socket path is not
+			// answering. Stealing the path would orphan those windows forever and
+			// surface a brand-new one-window workspace to MonkeySSH.
+			if recovered, recoverErr := queryRunningServerStatusWithRetry(session); recoverErr == nil {
+				outcome, err := prepareRunningServerReplacement(
+					session,
+					recovered,
+					updatePolicy,
+					startInYoloMode,
+				)
+				if err != nil || outcome == nil {
+					return err
+				}
+				replacement = outcome
+			} else {
+				return fmt.Errorf(
+					"MonkeyMux session %q is running (pid %d) but not accepting connections",
+					session,
+					pid,
+				)
+			}
+		}
 	}
 
 	socket, err := socketPath(session)
 	if err != nil {
 		return err
+	}
+	// Final ownership check immediately before unlinking the path. On Windows
+	// AF_UNIX, removing a live socket steals the name while the old process and
+	// all of its ConPTY windows keep running unreachable.
+	if current, err := queryRunningServerStatus(session); err == nil {
+		if replacement == nil || current.version == monkeyMuxVersion {
+			return nil
+		}
 	}
 	_ = os.Remove(socket)
 
@@ -1455,32 +1485,48 @@ func ensureServer(
 	if width > 0 && height > 0 {
 		serveArgs = append(serveArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
 	}
+	var restore *serverRestore
+	var previousPID int
+	if replacement != nil {
+		restore = replacement.restore
+		previousPID = replacement.oldPID
+	}
 	if restore != nil && len(restore.Windows) > 0 {
 		path, err := writeRestoreFile(session, restore)
-		if err == nil {
-			defer os.Remove(path)
-			serveArgs = append(serveArgs, "--restore-file", path)
-		}
-	}
-	if strings.TrimSpace(initialWindow.cwd) != "" {
-		serveArgs = append(serveArgs, "--cwd", initialWindow.cwd)
-	}
-	if strings.TrimSpace(initialWindow.name) != "" {
-		serveArgs = append(serveArgs, "--name", initialWindow.name)
-	}
-	if strings.TrimSpace(initialWindow.command) != "" {
-		serveArgs = append(serveArgs, "--command", initialWindow.command)
-	}
-	if len(initialWindow.args) > 0 {
-		encodedArgs, err := json.Marshal(initialWindow.args)
 		if err != nil {
-			return err
+			return fmt.Errorf(
+				"monkeymux: could not write restore snapshot for session %q: %w",
+				session,
+				err,
+			)
 		}
-		serveArgs = append(
-			serveArgs,
-			"--args-base64",
-			base64.StdEncoding.EncodeToString(encodedArgs),
-		)
+		defer os.Remove(path)
+		serveArgs = append(serveArgs, "--restore-file", path)
+	}
+	// When restoring an existing workspace, ignore the attach-time launch
+	// command/name/cwd so auto-connect cannot collapse the session to one
+	// fresh agent window.
+	if restore == nil || len(restore.Windows) == 0 {
+		if strings.TrimSpace(initialWindow.cwd) != "" {
+			serveArgs = append(serveArgs, "--cwd", initialWindow.cwd)
+		}
+		if strings.TrimSpace(initialWindow.name) != "" {
+			serveArgs = append(serveArgs, "--name", initialWindow.name)
+		}
+		if strings.TrimSpace(initialWindow.command) != "" {
+			serveArgs = append(serveArgs, "--command", initialWindow.command)
+		}
+		if len(initialWindow.args) > 0 {
+			encodedArgs, err := json.Marshal(initialWindow.args)
+			if err != nil {
+				return err
+			}
+			serveArgs = append(
+				serveArgs,
+				"--args-base64",
+				base64.StdEncoding.EncodeToString(encodedArgs),
+			)
+		}
 	}
 	if len(initialWindow.themeHint) > 0 {
 		serveArgs = append(serveArgs, "--theme-hint-base64", base64.StdEncoding.EncodeToString(initialWindow.themeHint))
@@ -1521,11 +1567,211 @@ func ensureServer(
 		conn, err := dialSession(session)
 		if err == nil {
 			_ = conn.Close()
+			if previousPID > 0 && processIDAlive(previousPID) {
+				terminateProcessID(previousPID)
+			}
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("monkeymux server did not start for session %q", session)
+}
+
+// prepareRunningServerReplacement decides whether a running helper should be
+// replaced. A nil outcome means the caller should keep using the existing
+// server. A non-nil outcome means the caller may start a replacement server
+// using the captured restore snapshot.
+func prepareRunningServerReplacement(
+	session string,
+	status runningServerStatus,
+	updatePolicy string,
+	startInYoloMode bool,
+) (*ensureServerReplacement, error) {
+	if status.version == monkeyMuxVersion {
+		return nil, nil
+	}
+	if !shouldUpdateRunningServer(
+		os.Stdin,
+		os.Stderr,
+		session,
+		status,
+		updatePolicy,
+	) {
+		return nil, nil
+	}
+	restore := collectServerRestore(session, status)
+	if restore != nil {
+		restore.StartInYoloMode = startInYoloMode
+	}
+	// Never replace a live multi-window server with an empty/auto-connect
+	// session just because the snapshot failed. That is how Windows hosts
+	// "lose all windows" after a helper upgrade or reconnect race.
+	if restore == nil || len(restore.Windows) == 0 {
+		fmt.Fprintf(
+			os.Stderr,
+			"monkeymux: could not snapshot session %q; keeping helper %s\r\n",
+			session,
+			status.displayVersion(),
+		)
+		return nil, nil
+	}
+	oldPID := readSessionPID(session)
+	if status.supportsCapability("shutdown") {
+		requestServerShutdown(session)
+		if !waitForServerExit(session, 2*time.Second) {
+			fmt.Fprintf(
+				os.Stderr,
+				"monkeymux: running session did not exit; continuing with helper %s\r\n",
+				status.displayVersion(),
+			)
+			return nil, nil
+		}
+	} else {
+		fmt.Fprintf(
+			os.Stderr,
+			"monkeymux: abandoning helper %s socket and starting helper %s\r\n",
+			status.displayVersion(),
+			monkeyMuxVersion,
+		)
+	}
+	return &ensureServerReplacement{restore: restore, oldPID: oldPID}, nil
+}
+
+func queryRunningServerStatusWithRetry(
+	session string,
+) (runningServerStatus, error) {
+	var lastErr error
+	for attempt := 0; attempt < ensureServerDialAttempts; attempt++ {
+		status, err := queryRunningServerStatus(session)
+		if err == nil {
+			return status, nil
+		}
+		lastErr = err
+		if attempt+1 < ensureServerDialAttempts {
+			time.Sleep(ensureServerDialInterval)
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("monkeymux server did not respond")
+	}
+	return runningServerStatus{}, lastErr
+}
+
+func sessionMetadataPath(session string, suffix string) (string, error) {
+	socket, err := socketPath(session)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(socket, ".sock") + suffix, nil
+}
+
+func sessionPIDPath(session string) (string, error) {
+	return sessionMetadataPath(session, ".pid")
+}
+
+func sessionLockPath(session string) (string, error) {
+	return sessionMetadataPath(session, ".lock")
+}
+
+func acquireSessionLock(session string) (func(), error) {
+	path, err := sessionLockPath(session)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(ensureServerLockTimeout)
+	for {
+		file, err := os.OpenFile(
+			path,
+			os.O_CREATE|os.O_EXCL|os.O_WRONLY,
+			sessionLockFileMode,
+		)
+		if err == nil {
+			_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
+			_ = file.Close()
+			return func() {
+				current, readErr := readPIDFile(path)
+				if readErr == nil && current != os.Getpid() {
+					return
+				}
+				_ = os.Remove(path)
+			}, nil
+		}
+		if pid := readPIDFileOrZero(path); pid > 0 && !processIDAlive(pid) {
+			_ = os.Remove(path)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf(
+				"timeout waiting for MonkeyMux session %q lock",
+				session,
+			)
+		}
+		time.Sleep(ensureServerLockRetryWait)
+	}
+}
+
+func writeSessionPIDFile(session string, pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(
+		path,
+		[]byte(strconv.Itoa(pid)+"\n"),
+		sessionPIDFileMode,
+	)
+}
+
+func removeSessionPIDFile(session string) {
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		return
+	}
+	current, err := readPIDFile(path)
+	if err != nil || current != os.Getpid() {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+func readSessionPID(session string) int {
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		return 0
+	}
+	return readPIDFileOrZero(path)
+}
+
+func readPIDFileOrZero(path string) int {
+	pid, err := readPIDFile(path)
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+func readPIDFile(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return 0, errors.New("empty pid file")
+	}
+	pid, err := strconv.Atoi(text)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("invalid pid file %q", path)
+	}
+	return pid, nil
 }
 
 func collectServerRestore(session string, status runningServerStatus) *serverRestore {
@@ -3341,14 +3587,26 @@ func serveSession(
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return err
 	}
+	// Refuse to steal a socket that is still accepting connections. ensureServer
+	// already gates this; the check here covers direct `serve` invocations and
+	// races where another helper rebound the path first.
+	if _, err := queryRunningServerStatus(session); err == nil {
+		return fmt.Errorf("MonkeyMux session %q is already running", session)
+	}
 	_ = os.Remove(socket)
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		return err
 	}
+	if err := writeSessionPIDFile(session, os.Getpid()); err != nil {
+		_ = listener.Close()
+		_ = os.Remove(socket)
+		return err
+	}
 	defer func() {
 		_ = listener.Close()
 		_ = os.Remove(socket)
+		removeSessionPIDFile(session)
 	}()
 	_ = os.Chmod(socket, 0o600)
 
