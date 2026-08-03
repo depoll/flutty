@@ -2444,6 +2444,30 @@ LISTEN ::1:4201
       );
     });
 
+    test('encodes a standalone Escape keystroke as win32 key events', () {
+      expect(
+        encodeTerminalInputForWin32InputMode('\x1b'),
+        '\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_',
+      );
+    });
+
+    test('leaves unambiguous escape sequences and text unchanged', () {
+      // Arrow keys, Alt+key, query replies and typed text already survive
+      // ConPTY's input parser; only a bare ESC is ambiguous.
+      for (final data in const [
+        '',
+        '\x1b[A',
+        '\x1b[1;5C',
+        '\x1bb',
+        '\x1b\x1b',
+        '\x1b[5;7R',
+        '\x03',
+        'esc',
+      ]) {
+        expect(encodeTerminalInputForWin32InputMode(data), data);
+      }
+    });
+
     test(
       'preserves split terminal theme mode report queries across chunks',
       () {
@@ -2821,6 +2845,134 @@ LISTEN ::1:4201
       await session.closeShell(waitForStreams: false);
     });
 
+    test('opens commands without an outer PTY when requested', () async {
+      final client = _MockSshClient();
+      final shell = _MockExecSession();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      const pty = SSHPtyConfig(width: 120, height: 30);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shell);
+      when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+      when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+      when(() => shell.done).thenAnswer((_) => Completer<void>().future);
+
+      final result = await session.getShell(
+        pty: pty,
+        requestPty: false,
+        command: 'monkeymux attach test',
+      );
+
+      expect(result, same(shell));
+      verify(
+        () => client.execute(
+          _expectedMarkedCommand(session, 'monkeymux attach test'),
+        ),
+      ).called(1);
+
+      session.resizeShell(80, 24, 0, 0);
+      verifyNever(() => shell.resizeTerminal(any(), any(), any(), any()));
+      await session.closeShell(waitForStreams: false);
+    });
+
+    test(
+      'emits shell done when a completed startup command has no login fallback',
+      () async {
+        final client = _MockSshClient();
+        final shell = _MockExecSession();
+        final shellDone = Completer<void>();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => shell);
+        when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+        when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => shell.done).thenAnswer((_) => shellDone.future);
+        when(shell.close).thenAnswer((_) {});
+
+        await session.getShell(
+          requestPty: false,
+          command: 'monkeymux attach work',
+        );
+        final emittedShellDone = session.shellDoneStream.first;
+
+        shellDone.complete();
+
+        await emittedShellDone;
+        verify(
+          () => client.execute(
+            _expectedMarkedCommand(session, 'monkeymux attach work'),
+          ),
+        ).called(1);
+        verifyNever(
+          () => client.execute(
+            _expectedLoginShellCommand(session),
+            pty: any(named: 'pty'),
+          ),
+        );
+        await session.closeShell(waitForStreams: false);
+      },
+    );
+
+    test(
+      'gates Kitty graphics by the actual Windows channel transport',
+      () async {
+        final client = _MockSshClient();
+        final shell = _MockExecSession();
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => shell);
+        when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+        when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => shell.done).thenAnswer((_) => Completer<void>().future);
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+
+        final terminal = session.getOrCreateTerminal();
+        expect(terminal.kittyGraphicsEnabled, isFalse);
+
+        await session.getShell(
+          requestPty: false,
+          command: 'monkeymux attach test',
+        );
+        expect(terminal.kittyGraphicsEnabled, isTrue);
+
+        await session.closeShell(waitForStreams: false);
+        expect(terminal.kittyGraphicsEnabled, isFalse);
+      },
+    );
+
     test(
       'returns completed startup commands to a login shell without disconnecting',
       () async {
@@ -2897,6 +3049,10 @@ LISTEN ::1:4201
           shellDoneEvents.add,
         );
         addTearDown(shellDoneSubscription.cancel);
+        var commandCompletedCount = 0;
+        final commandCompletedSubscription = session.shellCommandCompletedStream
+            .listen((_) => commandCompletedCount += 1);
+        addTearDown(commandCompletedSubscription.cancel);
 
         startupStdout.add(Uint8List.fromList(utf8.encode('\x1b[?9001h')));
         await pumpEventQueue();
@@ -2913,6 +3069,7 @@ LISTEN ::1:4201
         final replacementShell = await session.getShell();
 
         expect(replacementShell, same(loginShell));
+        expect(commandCompletedCount, 1);
         expect(shellDoneEvents, isEmpty);
         expect(startupWrites, isEmpty);
         expect(loginWrites.map(utf8.decode), contains('queued input'));
@@ -3758,6 +3915,63 @@ LISTEN ::1:4201
           utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
           '${report.codeUnits.map((unit) => '\x1b[0;0;$unit;1;0;1_').join()}'
           'typed',
+        );
+      },
+    );
+
+    test(
+      'win32-encodes a bare Escape keystroke while ConPTY requested the mode',
+      () async {
+        final shell = await openShell();
+        final terminal = shell.session.terminal!;
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?9001h')));
+        await pumpEventQueue();
+        shell.shellWrites.clear();
+
+        terminal.keyInput(TerminalKey.escape);
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_',
+        );
+      },
+    );
+
+    test(
+      'sends a bare Escape keystroke raw without win32-input-mode',
+      () async {
+        final shell = await openShell();
+        final terminal = shell.session.terminal!;
+        shell.shellWrites.clear();
+
+        terminal.keyInput(TerminalKey.escape);
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b',
+        );
+      },
+    );
+
+    test(
+      'leaves Escape-prefixed sequences raw under win32-input-mode',
+      () async {
+        final shell = await openShell();
+        final terminal = shell.session.terminal!;
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?9001h')));
+        await pumpEventQueue();
+        shell.shellWrites.clear();
+
+        terminal.keyInput(TerminalKey.arrowUp);
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b[A',
         );
       },
     );

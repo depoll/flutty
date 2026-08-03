@@ -523,6 +523,90 @@ void main() {
       expect(agentLaunchToolForCommandName(''), isNull);
     });
 
+    test('resolves the newly supported CLIs from command names', () {
+      expect(agentLaunchToolForCommandName('pi'), AgentLaunchTool.pi);
+      expect(agentLaunchToolForCommandName('hermes'), AgentLaunchTool.hermes);
+      expect(
+        agentLaunchToolForCommandName('hermes-agent'),
+        AgentLaunchTool.hermes,
+      );
+      expect(
+        agentLaunchToolForCommandName('openclaw'),
+        AgentLaunchTool.openclaw,
+      );
+      expect(
+        agentLaunchToolForCommandText('openclaw tui'),
+        AgentLaunchTool.openclaw,
+      );
+      expect(
+        agentLaunchToolForCommandName('/opt/homebrew/bin/pi'),
+        AgentLaunchTool.pi,
+      );
+    });
+
+    test('builds launch commands for the newly supported CLIs', () {
+      expect(buildAgentToolCommand(AgentLaunchTool.pi), 'pi');
+      expect(buildAgentToolCommand(AgentLaunchTool.hermes), 'hermes');
+      // OpenClaw's interactive UI lives behind the `tui` subcommand.
+      expect(buildAgentToolCommand(AgentLaunchTool.openclaw), 'openclaw tui');
+      expect(
+        buildAgentToolCommand(AgentLaunchTool.hermes, startInYoloMode: true),
+        'hermes --yolo',
+      );
+      // Pi exposes no YOLO flag, so the host setting must not invent one.
+      expect(
+        buildAgentToolCommand(AgentLaunchTool.pi, startInYoloMode: true),
+        'pi',
+      );
+      expect(
+        buildAgentToolCommand(AgentLaunchTool.openclaw, startInYoloMode: true),
+        'openclaw tui',
+      );
+    });
+
+    test('does not duplicate an explicit Hermes yolo argument', () {
+      expect(
+        buildAgentToolCommand(
+          AgentLaunchTool.hermes,
+          additionalArguments: '--yolo --tui',
+          startInYoloMode: true,
+        ),
+        'hermes --yolo --tui',
+      );
+    });
+
+    test('builds resume commands for the newly supported CLIs', () {
+      expect(
+        buildAgentResumeCommand(AgentLaunchTool.pi, 'abc123'),
+        "pi --session 'abc123'",
+      );
+      expect(
+        buildAgentResumeCommand(AgentLaunchTool.pi, '_continue'),
+        'pi --continue',
+      );
+      expect(
+        buildAgentResumeCommand(AgentLaunchTool.hermes, '20250305_091523_a1b2'),
+        "hermes --resume '20250305_091523_a1b2'",
+      );
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.hermes,
+          '_continue',
+          startInYoloMode: true,
+        ),
+        'hermes --yolo --continue',
+      );
+      // The `tui` subcommand must stay ahead of the resume arguments.
+      expect(
+        buildAgentResumeCommand(AgentLaunchTool.openclaw, 'main'),
+        "openclaw tui --session 'main'",
+      );
+      expect(
+        buildAgentResumeCommand(AgentLaunchTool.openclaw, '_continue'),
+        'openclaw tui',
+      );
+    });
+
     test('supportsResume returns true for all tools', () {
       for (final tool in AgentLaunchTool.values) {
         expect(
@@ -533,12 +617,15 @@ void main() {
       }
     });
 
-    test('supportsYoloMode is only true for supported tools', () {
+    test('supportsYoloMode reflects each CLI startup capability', () {
+      // Pi has no approval layer, and OpenClaw's YOLO preset is a persisted
+      // exec-policy mutation rather than a per-launch flag.
+      const withoutYolo = {AgentLaunchTool.pi, AgentLaunchTool.openclaw};
       for (final tool in AgentLaunchTool.values) {
         expect(
           tool.supportsYoloMode,
-          isTrue,
-          reason: '${tool.name} should support yolo mode',
+          !withoutYolo.contains(tool),
+          reason: '${tool.name} yolo support is misreported',
         );
       }
     });

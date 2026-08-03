@@ -282,6 +282,23 @@ void main() {
     expect(terminal.graphics.hasPlacements, isFalse);
   });
 
+  testWidgets('Kitty graphics query reports disabled capability', (
+    tester,
+  ) async {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add)
+      ..kittyGraphicsEnabled = false;
+
+    terminal.write(
+      '\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;${base64.encode([0, 0, 0])}'
+      '\x1b\\',
+    );
+
+    expect(output, ['\x1b_Gi=31;ENOTSUP: graphics disabled\x1b\\']);
+    expect(terminal.graphics.imageCount, 0);
+    expect(terminal.heldImageSignatures(), isEmpty);
+  });
+
   testWidgets('Kitty graphics query rejects unsupported transmission media', (
     tester,
   ) async {
@@ -3227,6 +3244,85 @@ void main() {
         reason: 'shrinking must not drop the row the image is anchored to',
       );
       expect(terminal.graphics.placements.single.anchor.attached, isTrue);
+    });
+  });
+
+  // A full-screen agent CLI keeps a non-blank footer under its cursor. Refusing
+  // to give those rows up on an alternate-screen shrink — and taking rows off
+  // the top instead — destroys whatever is anchored up there, which on a Copilot
+  // CLI frame is its images. The host drops the footer rows first, so matching
+  // it keeps images that sit above the cursor attached through the dozen shrink
+  // steps an Android keyboard animation produces.
+  testWidgets('alternate screen shrink keeps images above the cursor', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 4);
+      final terminal = Terminal()..resize(20, 10);
+
+      terminal.write('\x1b[?1049h');
+      terminal.write('\x1b[2;1H');
+      terminal.write('\x1b_Ga=T,f=100,C=1;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements, hasLength(1));
+      expect(terminal.graphics.placements.single.row, 1);
+
+      // A non-blank footer under the cursor: the rows the host gives up first,
+      // and the rows the blank-row preference used to refuse to touch. They have
+      // to reach the bottom of the screen, or the shrink just reclaims the blank
+      // rows past them and never has to choose.
+      for (var row = 7; row <= 10; row++) {
+        terminal.write('\x1b[$row;1Hfooter$row');
+      }
+      terminal.write('\x1b[6;1H'); // park the cursor above the footer
+
+      terminal.resize(20, 8);
+
+      expect(
+        terminal.graphics.placements,
+        hasLength(1),
+        reason: 'dropping the footer must not reach the image row',
+      );
+      expect(terminal.graphics.placements.single.anchor.attached, isTrue);
+      expect(terminal.graphics.placements.single.row, 1);
+    });
+  });
+
+  testWidgets('alternate screen shrink releases images below the cursor', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 4);
+      final terminal = Terminal()..resize(20, 10);
+
+      terminal.write('\x1b[?1049h\x1b[10;1H');
+      terminal.write('\x1b_Ga=T,f=100,C=1;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements, hasLength(1));
+      terminal.write('\x1b[5;1H');
+
+      terminal.resize(20, 8);
+
+      expect(
+        terminal.graphics.placements,
+        isEmpty,
+        reason: 'the host discards bottom rows below the cursor',
+      );
+      expect(
+        terminal.graphics.imageCount,
+        0,
+        reason: 'the detached placement must not retain decoded image memory',
+      );
     });
   });
 }

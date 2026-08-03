@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.129"
+	monkeyMuxVersion                  = "0.1.133"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -94,7 +94,6 @@ const (
 	maxRetainedKittyImages       = 128
 	maxRetainedKittyImageNumbers = maxRetainedKittyImages
 	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
-	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
 	// Caps for how many retained images are *replayed* on a window switch.
 	// Replaying every retained transmission makes the client decode many
 	// megabytes per switch; even with client-side downscaling and dedup, a very
@@ -104,6 +103,12 @@ const (
 	// scrollback; deeper scrollback images repaint when the app redraws.
 	maxReplayedKittyImages     = 16
 	maxReplayedKittyImageBytes = 8 * 1024 * 1024
+	// A multipart transmission must fit inside the same budget that can be
+	// replayed to a client. The old 2 MiB cap silently discarded ordinary
+	// screenshots between their m=1 continuation chunks and final m=0 chunk,
+	// leaving only Unicode placeholder cells that referenced an image the
+	// server never retained.
+	maxKittyGraphicsPendingBytes = maxReplayedKittyImageBytes
 )
 
 const terminalParserResetSequence = "\x1b\\"
@@ -592,8 +597,10 @@ type muxWindow struct {
 	// reports the signatures of the images it still holds on a window switch so
 	// the replay can omit re-sending — and the client re-parsing — several
 	// megabytes of image data it already has. Kept in sync with kittyImages.
-	kittyImageToken      map[string]uint32
-	kittyGraphicsPending []byte
+	kittyImageToken          map[string]uint32
+	kittyGraphicsPending     []byte
+	kittyGraphicsPendingScan int
+	kittyGraphicsPendingTerm int
 }
 
 type terminalBellParserState int
@@ -793,7 +800,7 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, "Usage:")
 	fmt.Fprintln(writer, "  monkeymux                              attach or choose a session")
-	fmt.Fprintln(writer, "  monkeymux attach [-t NAME] [NAME]      attach, creating NAME if needed")
+	fmt.Fprintln(writer, "  monkeymux attach [--existing] [-t NAME] [NAME]")
 	fmt.Fprintln(writer, "  monkeymux new-session [-d] [-s NAME] [COMMAND...]")
 	fmt.Fprintln(writer, "  monkeymux list-sessions")
 	fmt.Fprintln(writer, "  monkeymux kill-session -t NAME")
@@ -821,6 +828,9 @@ func attachCommand(args []string) {
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
 	clientID := fs.String("client-id", "", "stable foreground client identifier")
 	clipViewport := fs.Bool("clip-viewport", false, "clip a shared terminal grid to this client's viewport")
+	existingOnly := fs.Bool("existing", false, "fail instead of creating a missing session")
+	widthFlag := fs.Int("width", 0, "terminal columns when stdout has no PTY")
+	heightFlag := fs.Int("height", 0, "terminal rows when stdout has no PTY")
 	noPrefix := fs.Bool("no-prefix", false, "disable Ctrl-B window commands")
 	quiet := fs.Bool("quiet", false, "suppress attach and detach messages")
 	target := fs.String("t", "", "target session")
@@ -858,6 +868,12 @@ func attachCommand(args []string) {
 		)
 	}
 	width, height := terminalSize()
+	if *widthFlag > 0 {
+		width = *widthFlag
+	}
+	if *heightFlag > 0 {
+		height = *heightFlag
+	}
 	if err := ensureServer(
 		session,
 		createWindowOptions{
@@ -870,6 +886,7 @@ func attachCommand(args []string) {
 		*restoreYolo,
 		width,
 		height,
+		*existingOnly,
 	); err != nil {
 		fatal(err)
 	}
@@ -912,7 +929,13 @@ func attachCommand(args []string) {
 	}
 	defer restoreTerminal()
 
-	stopResize := forwardResizeSignals(session, resolvedClientID)
+	stopResize := forwardResizeSignals(
+		session,
+		resolvedClientID,
+		width,
+		height,
+		*widthFlag > 0 && *heightFlag > 0,
+	)
 	defer stopResize()
 
 	// The attach lives for as long as the server keeps the connection open. The
@@ -991,6 +1014,7 @@ func newSessionCommand(args []string) {
 		false,
 		width,
 		height,
+		false,
 	); err != nil {
 		fatal(err)
 	}
@@ -1375,6 +1399,7 @@ func ensureServer(
 	startInYoloMode bool,
 	width int,
 	height int,
+	existingOnly bool,
 ) error {
 	var restore *serverRestore
 	if status, err := queryRunningServerStatus(session); err == nil {
@@ -1412,6 +1437,8 @@ func ensureServer(
 				monkeyMuxVersion,
 			)
 		}
+	} else if existingOnly {
+		return fmt.Errorf("MonkeyMux session %q is not running", session)
 	}
 
 	socket, err := socketPath(session)
@@ -4101,6 +4128,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	// See closeWindow: a pause in flight would otherwise retain its buffers on
 	// a window that is never removed from s.windows.
 	window.releaseRedrawForwardingStateLocked()
+	window.clearKittyGraphicsPendingLocked()
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -6531,6 +6559,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	// the server, so release the retained frame and output buffers here or they
 	// leak for as long as the server runs.
 	window.releaseRedrawForwardingStateLocked()
+	window.clearKittyGraphicsPendingLocked()
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -8492,10 +8521,12 @@ func (s *muxServer) writeWindow(windowID string, data []byte) error {
 		return fmt.Errorf("window %q not found", windowID)
 	}
 	if win32InputMode {
-		// ConPTY's input parser drops raw OSC/DCS sequences, so synthetic
+		// ConPTY's input parser cannot disambiguate a bare ESC and drops raw
+		// OSC/DCS sequences, so a standalone Escape keystroke and synthetic
 		// replies (theme hints, clipboard responses, relayed query answers)
 		// must be re-encoded as win32-input-mode key events to survive the
 		// trip through conhost to the child process.
+		data = encodeTerminalInputForWin32InputMode(data)
 		data = encodeTerminalResponsesForWin32InputMode(data)
 	}
 	_, err := window.pty.Write(data)
@@ -8535,6 +8566,29 @@ func writeWin32InputModeKeyEvents(output *bytes.Buffer, sequence []byte) {
 		// associated virtual key.
 		fmt.Fprintf(output, "\x1b[0;0;%d;1;0;1_", codeUnit)
 	}
+}
+
+// win32InputModeEscapeKeyEvents are the win32-input-mode key-down and key-up
+// events for the Escape key: `CSI Vk;Sc;Uc;Kd;Cs;Rc _` with VK_ESCAPE (27), the
+// Escape scan code (1) and U+001B, matching what Windows Terminal sends for a
+// physical Escape.
+const win32InputModeEscapeKeyEvents = "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_"
+
+// encodeTerminalInputForWin32InputMode re-encodes a standalone Escape keystroke
+// as win32-input-mode key events.
+//
+// ConPTY's input parser cannot tell a bare ESC from the first byte of an escape
+// sequence, so it holds the byte back until enough input arrives to disambiguate
+// it. A lone Escape therefore only reaches the window's child once the next key
+// is pressed, which reads as "Escape stopped working" (TUIs never leave their
+// mode, and Ctrl+C is the only way out). An explicit key event has no such
+// ambiguity. Only a payload that is exactly ESC is rewritten; escape sequences
+// are already unambiguous and pass through untouched.
+func encodeTerminalInputForWin32InputMode(data []byte) []byte {
+	if len(data) != 1 || data[0] != 0x1b {
+		return data
+	}
+	return []byte(win32InputModeEscapeKeyEvents)
 }
 
 // win32InputModeRequests are the DEC private mode 9001 (win32-input-mode)
@@ -9907,13 +9961,160 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	}
 	data := chunk
 	if len(w.kittyGraphicsPending) > 0 {
-		data = make([]byte, 0, len(w.kittyGraphicsPending)+len(chunk))
-		data = append(data, w.kittyGraphicsPending...)
-		data = append(data, chunk...)
+		if len(chunk) > maxKittyGraphicsPendingBytes-len(w.kittyGraphicsPending) {
+			// The incomplete root cannot ever fit into the replay budget. Drop
+			// it, then scan the new chunk independently so a later well-formed
+			// root can resynchronize immediately.
+			w.clearKittyGraphicsPendingLocked()
+			return w.observeKittyGraphicsLocked(chunk)
+		}
+		w.kittyGraphicsPending = append(w.kittyGraphicsPending, chunk...)
+		nextScan, nextTerm, complete, valid := advanceKittyGraphicsPending(
+			w.kittyGraphicsPending,
+			w.kittyGraphicsPendingScan,
+			w.kittyGraphicsPendingTerm,
+		)
+		w.kittyGraphicsPendingScan = nextScan
+		w.kittyGraphicsPendingTerm = nextTerm
+		if !valid {
+			recovery := resyncKittyGraphicsData(
+				w.kittyGraphicsPending,
+				w.kittyGraphicsPendingScan,
+			)
+			w.clearKittyGraphicsPendingLocked()
+			if len(recovery) == 0 {
+				return false
+			}
+			return w.observeKittyGraphicsLocked(recovery)
+		}
+		if !complete {
+			return false
+		}
+		data = w.kittyGraphicsPending
+		w.clearKittyGraphicsPendingLocked()
 	}
 
-	changed := false
 	events, consumed := scanKittyTransmissions(data)
+	changed := w.applyKittyGraphicsEventsLocked(events)
+
+	remainder := data[consumed:]
+	if len(remainder) > maxKittyGraphicsPendingBytes {
+		// An unterminated or oversized graphics sequence: drop it rather than
+		// buffer unbounded bytes; parsing resyncs at the next introducer.
+		w.clearKittyGraphicsPendingLocked()
+		return changed
+	}
+	if len(remainder) == 0 {
+		w.clearKittyGraphicsPendingLocked()
+		return changed
+	}
+	w.kittyGraphicsPending = append(w.kittyGraphicsPending[:0], remainder...)
+	nextScan, nextTerm, complete, valid := advanceKittyGraphicsPending(
+		w.kittyGraphicsPending,
+		0,
+		0,
+	)
+	w.kittyGraphicsPendingScan = nextScan
+	w.kittyGraphicsPendingTerm = nextTerm
+	if !valid {
+		recovery := resyncKittyGraphicsData(
+			w.kittyGraphicsPending,
+			w.kittyGraphicsPendingScan,
+		)
+		w.clearKittyGraphicsPendingLocked()
+		if len(recovery) > 0 {
+			changed = w.observeKittyGraphicsLocked(recovery) || changed
+		}
+	} else if complete {
+		recovery := append([]byte(nil), w.kittyGraphicsPending...)
+		w.clearKittyGraphicsPendingLocked()
+		changed = w.observeKittyGraphicsLocked(recovery) || changed
+	}
+	return changed
+}
+
+// advanceKittyGraphicsPending scans only APC boundaries that arrived since the
+// previous call. It avoids reparsing and copying the whole image for every
+// 32-KiB PTY read while a multi-megabyte m=1 transmission is still in flight.
+// The full transmission is assembled once, after its final m=0 chunk arrives.
+func advanceKittyGraphicsPending(
+	data []byte,
+	scan int,
+	termScan int,
+) (nextScan int, nextTermScan int, complete bool, valid bool) {
+	const introducer = "\x1b_G"
+	for {
+		if scan >= len(data) {
+			return scan, termScan, false, true
+		}
+		remaining := len(data) - scan
+		if remaining < len(introducer) {
+			if bytes.Equal(data[scan:], []byte(introducer[:remaining])) {
+				return scan, termScan, false, true
+			}
+			return scan, termScan, false, false
+		}
+		if !bytes.Equal(data[scan:scan+len(introducer)], []byte(introducer)) {
+			return scan, termScan, false, false
+		}
+		if termScan < scan+len(introducer) {
+			termScan = scan + len(introducer)
+		}
+		end := -1
+		for i := termScan; i+1 < len(data); i++ {
+			if data[i] == '\x1b' && data[i+1] == '\\' {
+				end = i + 2
+				break
+			}
+		}
+		if end < 0 {
+			// Keep a one-byte overlap so an ESC at the end of this read can
+			// pair with the ST backslash at the start of the next read.
+			nextTerm := len(data) - 1
+			if nextTerm < scan+len(introducer) {
+				nextTerm = scan + len(introducer)
+			}
+			return scan, nextTerm, false, true
+		}
+		args := parseKittyControl(kittyControl(data, scan, end))
+		if args["m"] != "1" {
+			return end, end, true, true
+		}
+		scan = end
+		termScan = scan + len(introducer)
+	}
+}
+
+func (w *muxWindow) clearKittyGraphicsPendingLocked() {
+	w.kittyGraphicsPending = nil
+	w.kittyGraphicsPendingScan = 0
+	w.kittyGraphicsPendingTerm = 0
+}
+
+func resyncKittyGraphicsData(data []byte, scan int) []byte {
+	const introducer = "\x1b_G"
+	searchFrom := scan + 1
+	if searchFrom < 0 {
+		searchFrom = 0
+	}
+	if searchFrom < len(data) {
+		if next := bytes.Index(data[searchFrom:], []byte(introducer)); next >= 0 {
+			return data[searchFrom+next:]
+		}
+	}
+	for keep := len(introducer) - 1; keep > 0; keep-- {
+		if len(data) >= keep &&
+			bytes.Equal(data[len(data)-keep:], []byte(introducer[:keep])) {
+			return data[len(data)-keep:]
+		}
+	}
+	return nil
+}
+
+func (w *muxWindow) applyKittyGraphicsEventsLocked(
+	events []kittyGraphicsEvent,
+) bool {
+	changed := false
 	for _, event := range events {
 		if event.delete {
 			if event.clearCache {
@@ -9981,19 +10182,6 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 			changed = true
 		}
 	}
-
-	remainder := data[consumed:]
-	if len(remainder) > maxKittyGraphicsPendingBytes {
-		// An unterminated or oversized graphics sequence: drop it rather than
-		// buffer unbounded bytes; parsing resyncs at the next introducer.
-		w.kittyGraphicsPending = nil
-		return changed
-	}
-	if len(remainder) == 0 {
-		w.kittyGraphicsPending = nil
-		return changed
-	}
-	w.kittyGraphicsPending = append([]byte(nil), remainder...)
 	return changed
 }
 
@@ -12532,6 +12720,7 @@ func (s *muxServer) close() {
 	for _, window := range windows {
 		window.closed = true
 		window.releaseRedrawForwardingStateLocked()
+		window.clearKittyGraphicsPendingLocked()
 	}
 	s.mu.Unlock()
 	defer close(closeDone)

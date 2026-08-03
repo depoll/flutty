@@ -28,9 +28,10 @@ jobs:
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     outputs:
       run_check: ${{ steps.filter.outputs.run_check }}
+      go: ${{ steps.filter.outputs.go }}
       android: ${{ steps.filter.outputs.android }}
       ios: ${{ steps.filter.outputs.ios }}
       macos: ${{ steps.filter.outputs.macos }}
@@ -40,7 +41,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          # The checked-out PR/merge commit contains both diff parents. Avoid
+          # fetching the binary-heavy full history just to classify changed files.
+          fetch-depth: 2
 
       - name: Detect platform changes
         id: filter
@@ -62,6 +65,7 @@ jobs:
           else
             # Fallback for first pushes or missing history — run the full suite.
             echo "run_check=true" >> "$GITHUB_OUTPUT"
+            echo "go=true" >> "$GITHUB_OUTPUT"
             for p in android ios macos windows linux; do
               echo "$p=true" >> "$GITHUB_OUTPUT"
             done
@@ -71,6 +75,7 @@ jobs:
           if ! changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null); then
             echo "::warning::git diff failed — building all platforms as a safety net"
             echo "run_check=true" >> "$GITHUB_OUTPUT"
+            echo "go=true" >> "$GITHUB_OUTPUT"
             for p in android ios macos windows linux; do
               echo "$p=true" >> "$GITHUB_OUTPUT"
             done
@@ -78,6 +83,13 @@ jobs:
           fi
 
           matches() { echo "$changed" | grep -qE "$1" && echo "true" || echo "false"; }
+
+          # The MonkeyMux helper is a standalone Go module shipped to remote
+          # hosts as the prebuilt binaries under assets/monkeymux/, so asset
+          # changes are in scope too: version_consistency_test.go pins the
+          # bundled manifest to the compiled monkeyMuxVersion.
+          go_changed=$(matches '(^remote/monkeymux/|^assets/monkeymux/|^\.github/workflows/ci\.yml$|^scripts/build_monkeymux_assets\.sh$)')
+          echo "go=$go_changed" >> "$GITHUB_OUTPUT"
 
           run_check=$(matches '(\.dart$|^pubspec\.(yaml|lock)$|^analysis_options\.yaml$|^\.github/workflows/|^scripts/|^assets/|^(android|ios|macos|windows|linux|web)/)')
           echo "run_check=$run_check" >> "$GITHUB_OUTPUT"
@@ -105,7 +117,7 @@ jobs:
   noop:
     name: No-op
     needs: changes
-    if: needs.changes.outputs.run_check != 'true'
+    if: needs.changes.outputs.run_check != 'true' && needs.changes.outputs.go != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -167,6 +179,91 @@ jobs:
 
       - name: Run tests
         run: flutter test --no-pub --total-shards 4 --shard-index ${{ matrix.shard-index }}
+
+  # ---------------------------------------------------------------------------
+  # MonkeyMux helper (Go) — a standalone module under remote/monkeymux that is
+  # shipped to remote hosts as the prebuilt binaries in assets/monkeymux/.
+  #
+  # Runs on both Linux and Windows because the helper supports both as a remote
+  # host and the two platforms cover disjoint test sets: the bulk of the suite
+  # is //go:build !windows (it needs creack/pty and the unixPty type), while the
+  # ConPTY backend tests are //go:build windows.
+  # ---------------------------------------------------------------------------
+  go-test:
+    name: Go Tests (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-2025
+    defaults:
+      run:
+        shell: bash
+        working-directory: remote/monkeymux
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: remote/monkeymux/go.mod
+          cache-dependency-path: remote/monkeymux/go.sum
+
+      # Checked on Linux only: the repository has no .gitattributes, so a
+      # Windows runner checks out CRLF and gofmt would flag every file.
+      - name: Check formatting
+        if: matrix.name == 'linux'
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt reported unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      # The race detector needs cgo and a C toolchain, which is dependable on
+      # the Linux runner but not on Windows; run the Windows set without it
+      # rather than make the job depend on a preinstalled gcc.
+      - name: Test
+        run: |
+          if [ "${{ matrix.name }}" = "linux" ]; then
+            go test -race ./...
+          else
+            go test ./...
+          fi
+
+      # The helper ships as prebuilt binaries for six platform pairs. Building
+      # each one keeps a platform-gated compile error from reaching the release
+      # script, which is the only place they are otherwise built.
+      - name: Cross-compile release targets
+        if: matrix.name == 'linux'
+        run: |
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            echo "building $target"
+            GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w" -o /dev/null .
+          done
+
+      # Vet the platform-gated sources (including their tests) that this
+      # runner's own GOOS excludes from the checks above.
+      - name: Vet other platforms
+        if: matrix.name == 'linux'
+        run: |
+          for goos in darwin windows; do
+            echo "vetting $goos"
+            GOOS="$goos" go vet ./...
+          done
 
   # ---------------------------------------------------------------------------
   # Platform builds — conditional on detected changes.
@@ -467,7 +564,7 @@ jobs:
   ci:
     name: CI
     if: ${{ always() && !cancelled() }}
-    needs: [changes, check, test, build-android, build-ios, build-macos, build-windows, build-linux]
+    needs: [changes, check, test, go-test, build-android, build-ios, build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -476,6 +573,7 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           CHECK_RESULT: ${{ needs.check.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          GO_TEST_RESULT: ${{ needs.go-test.result }}
           ANDROID_RESULT: ${{ needs.build-android.result }}
           IOS_RESULT: ${{ needs.build-ios.result }}
           MACOS_RESULT: ${{ needs.build-macos.result }}
@@ -487,6 +585,7 @@ jobs:
             "changes:$CHANGES_RESULT" \
             "check:$CHECK_RESULT" \
             "test:$TEST_RESULT" \
+            "go-test:$GO_TEST_RESULT" \
             "build-android:$ANDROID_RESULT" \
             "build-ios:$IOS_RESULT" \
             "build-macos:$MACOS_RESULT" \
