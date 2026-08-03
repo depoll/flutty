@@ -22,7 +22,16 @@ enum AgentLaunchTool {
   antigravity,
 
   /// Cursor Agent CLI.
-  cursorAgent;
+  cursorAgent,
+
+  /// Pi coding agent CLI.
+  pi,
+
+  /// Nous Research Hermes agent CLI.
+  hermes,
+
+  /// OpenClaw terminal UI.
+  openclaw;
 
   /// Stable UI order for launch pickers and discovery provider rows.
   ///
@@ -36,6 +45,9 @@ enum AgentLaunchTool {
     openCode,
     antigravity,
     cursorAgent,
+    pi,
+    hermes,
+    openclaw,
   ];
 }
 
@@ -50,6 +62,9 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.geminiCli => 'Gemini CLI',
     AgentLaunchTool.antigravity => 'Antigravity',
     AgentLaunchTool.cursorAgent => 'Cursor Agent',
+    AgentLaunchTool.pi => 'Pi',
+    AgentLaunchTool.hermes => 'Hermes',
+    AgentLaunchTool.openclaw => 'OpenClaw',
   };
 
   /// Shell command used to launch this tool.
@@ -61,6 +76,19 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.geminiCli => 'gemini',
     AgentLaunchTool.antigravity => 'agy',
     AgentLaunchTool.cursorAgent => 'cursor-agent',
+    AgentLaunchTool.pi => 'pi',
+    AgentLaunchTool.hermes => 'hermes',
+    AgentLaunchTool.openclaw => 'openclaw',
+  };
+
+  /// Subcommand arguments required to open this tool's interactive terminal
+  /// UI, inserted immediately after [commandName].
+  ///
+  /// Most agent CLIs start their TUI when invoked bare, so this is empty. It
+  /// exists for tools whose interactive UI lives behind a subcommand.
+  List<String> get launchArguments => switch (this) {
+    AgentLaunchTool.openclaw => const ['tui'],
+    _ => const <String>[],
   };
 
   /// All candidate command names that can refer to this tool.
@@ -76,6 +104,9 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
       'antigravity-cli',
     ],
     AgentLaunchTool.cursorAgent => const ['cursor-agent'],
+    AgentLaunchTool.pi => const ['pi'],
+    AgentLaunchTool.hermes => const ['hermes', 'hermes-agent'],
+    AgentLaunchTool.openclaw => const ['openclaw'],
   };
 
   /// Whether this tool supports session resume.
@@ -94,6 +125,11 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.geminiCli => 'Gemini CLI',
     AgentLaunchTool.antigravity => 'Antigravity',
     AgentLaunchTool.cursorAgent => 'Cursor Agent',
+    AgentLaunchTool.pi => 'Pi',
+    AgentLaunchTool.hermes => 'Hermes',
+    // OpenClaw persists sessions in a per-agent SQLite store that has no
+    // reliable working directory, so it cannot back the cwd-scoped picker.
+    AgentLaunchTool.openclaw => null,
   };
 
   /// Whether this tool supports launching directly into YOLO mode.
@@ -109,6 +145,13 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.geminiCli => const ['--yolo'],
     AgentLaunchTool.antigravity => const ['--dangerously-skip-permissions'],
     AgentLaunchTool.cursorAgent => const ['--force'],
+    // Pi has no approval layer to bypass: it acts with the permissions of the
+    // invoking user, so there is no startup YOLO flag.
+    AgentLaunchTool.pi => const [],
+    AgentLaunchTool.hermes => const ['--yolo'],
+    // OpenClaw's YOLO preset is a persisted `openclaw exec-policy` mutation,
+    // not a per-launch flag, so there is nothing safe to pass here.
+    AgentLaunchTool.openclaw => const [],
   };
 
   /// Environment variables that enable YOLO mode for this tool.
@@ -150,6 +193,9 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
     'gemini' || 'gemini-cli' => AgentLaunchTool.geminiCli,
     'agy' || 'antigravity' || 'antigravity-cli' => AgentLaunchTool.antigravity,
     'cursor-agent' => AgentLaunchTool.cursorAgent,
+    'pi' => AgentLaunchTool.pi,
+    'hermes' || 'hermes-agent' => AgentLaunchTool.hermes,
+    'openclaw' => AgentLaunchTool.openclaw,
     _ => null,
   };
 }
@@ -400,6 +446,7 @@ final _openCodeDangerouslySkipPermissionsPattern = RegExp(
   r'(?<!\S)--dangerously-skip-permissions(?=\s|$)',
 );
 final _cursorForcePattern = RegExp(r'(?<!\S)(?:--force|--yolo|-f)(?=\s|$)');
+final _hermesYoloPattern = RegExp(r'(?<!\S)--yolo(?=\s|$)');
 
 /// Builds the shell command for a saved agent launch preset.
 String buildAgentLaunchCommand(
@@ -449,6 +496,7 @@ String buildAgentToolCommand(
       startInYoloMode: startInYoloMode,
     ),
     tool.commandName,
+    ...tool.launchArguments,
   ];
   final normalizedArguments = _normalizeAgentToolArguments(
     tool: tool,
@@ -473,6 +521,7 @@ String buildAgentResumeCommand(
       startInYoloMode: startInYoloMode,
     ),
     tool.commandName,
+    ...tool.launchArguments,
     if (startInYoloMode) ...tool.yoloArguments,
     ..._buildAgentResumeArguments(tool, sessionId),
   ];
@@ -499,6 +548,20 @@ List<String> _buildAgentResumeArguments(
     sessionId == '_continue'
         ? const ['--continue']
         : ['--resume', _quoteShellArgument(sessionId)],
+  AgentLaunchTool.pi =>
+    sessionId == '_continue'
+        ? const ['--continue']
+        : ['--session', _quoteShellArgument(sessionId)],
+  AgentLaunchTool.hermes =>
+    sessionId == '_continue'
+        ? const ['--continue']
+        : ['--resume', _quoteShellArgument(sessionId)],
+  // OpenClaw reattaches by session key; omitting it resumes the default
+  // `main` key, which is the closest equivalent to continuing.
+  AgentLaunchTool.openclaw =>
+    sessionId == '_continue'
+        ? const <String>[]
+        : ['--session', _quoteShellArgument(sessionId)],
 };
 
 String? _normalizeAgentToolArguments({
@@ -544,6 +607,12 @@ String? _normalizeAgentToolArguments({
     AgentLaunchTool.cursorAgent => _stripArgumentPatterns(
       trimmedAdditionalArguments,
       [_cursorForcePattern],
+    ),
+    AgentLaunchTool.pi ||
+    AgentLaunchTool.openclaw => trimmedAdditionalArguments,
+    AgentLaunchTool.hermes => _stripArgumentPatterns(
+      trimmedAdditionalArguments,
+      [_hermesYoloPattern],
     ),
   };
 

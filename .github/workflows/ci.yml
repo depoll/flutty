@@ -28,7 +28,7 @@ jobs:
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     outputs:
       run_check: ${{ steps.filter.outputs.run_check }}
       go: ${{ steps.filter.outputs.go }}
@@ -41,7 +41,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          # The checked-out PR/merge commit contains both diff parents. Avoid
+          # fetching the binary-heavy full history just to classify changed files.
+          fetch-depth: 2
 
       - name: Detect platform changes
         id: filter
