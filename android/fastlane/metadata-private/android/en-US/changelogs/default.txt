@@ -1,11 +1,8 @@
-What's new in this 0.3.0 beta
+What's new in this 0.3.1 beta
 
-- Automatic port proxying, so remote services open in the app.
-- Live port forwarding controls for the current session.
-- Multi-client MonkeyMux sessions that follow your active client.
-- Android device debugging over SSH with wireless ADB pairing.
-- Animated inline terminal graphics (GIF and APNG).
-- Cancel a stuck connection attempt.
-- In-app browser uploads, camera, and permissions.
-- Themed home-screen shortcut icons.
-- Keyboard, IME, and MonkeyMux fixes.
+- Terminal Enter matches physical keyboard and toolbar modifiers.
+- TUI box borders stay on the monospace grid.
+- Simpler MonkeyMux theme focus defaults.
+- Cursor Agent and Copilot CLI theme refresh fixes.
+- Terminal shrink keeps rows and images intact.
+- Keyboard, MonkeyMux, and window-switching stability fixes.

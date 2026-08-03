@@ -98,9 +98,23 @@ const _redactStoreScreenshotIdentities = bool.fromEnvironment(
 const _hideStoreScreenshotKeyboardToolbar = bool.fromEnvironment(
   'STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR',
 );
-final _storeDemoClipboardImageBytes = base64Decode(
-  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC',
+const _storeDemoImageB64 = String.fromEnvironment(
+  'STORE_SCREENSHOT_DEMO_IMAGE_B64',
 );
+const _storeDemoImageFallbackB64 =
+    'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC';
+final _storeDemoClipboardImageBytes = base64Decode(
+  _storeDemoImageB64.isNotEmpty
+      ? _storeDemoImageB64
+      : _storeDemoImageFallbackB64,
+);
+
+/// Armed by the store video harness before a `pasteDemoImage=1` navigation.
+///
+/// Completed when the demo clipboard image has been uploaded and its remote
+/// path inserted into the terminal, so the harness can wait instead of racing
+/// a fixed delay.
+Completer<void>? storeDemoImagePasteCompleter;
 
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
@@ -7231,6 +7245,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           width: viewportCellSize.columns,
           height: viewportCellSize.rows,
         ),
+        requestPty:
+            !(session.remoteIsWindows &&
+                startupCommand?.backend == RemoteMuxBackend.monkeyMux),
         command: startupCommand?.command,
         returnToLoginShell: startupCommand != null,
       );
@@ -7692,6 +7709,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       final retryIds = result.retryableUnserved(requestedIds);
+      DiagnosticsLogService.instance.debug(
+        'terminal.graphics',
+        'request_missing_images_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'requested': requestedIds.length,
+          'served': result.served.length,
+          'unserved': requestedIds.length - result.served.length,
+          'retryable': result.retryableFailure,
+        },
+      );
       if (!result.retryableFailure || retryIds.isEmpty) {
         _missingImageRecoveryRetryCount = 0;
         _missingImageRecoveryRetryNotBefore = null;
@@ -8598,12 +8626,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted) {
           return null;
         }
+        final viewportCellSize = _localTerminalViewportCellSize();
         return (
           command: buildMonkeyMuxAttachCommand(
             executablePath: installation.executablePath,
             sessionName: sessionName,
             clientId: session.monkeyMuxClientId,
             clipViewport: true,
+            terminalColumns: viewportCellSize.columns,
+            terminalRows: viewportCellSize.rows,
             workingDirectory: host.tmuxWorkingDirectory,
             terminalThemeReports: terminalThemeReports,
             serverUpdatePolicy: updatePolicy,
@@ -9034,6 +9065,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !identical(_shell, shell)) {
       return;
     }
+    if (session.remoteIsWindows) {
+      await _reopenShellForVisibleTmux(
+        session,
+        command: command.command,
+        requestPty: false,
+      );
+      DiagnosticsLogService.instance.info(
+        'terminal.agent_launch',
+        'command_written',
+        fields: {
+          'connectionId': session.connectionId,
+          'backend': command.backend.storageValue,
+          'requestedPty': false,
+          if (command.tool case final tool?) 'tool': tool.name,
+        },
+      );
+      return;
+    }
     shell.write(utf8.encode(formatAutoConnectCommandForShell(command.command)));
     DiagnosticsLogService.instance.info(
       'terminal.agent_launch',
@@ -9104,11 +9153,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final terminalThemeReports = buildTerminalThemeHintReports(
         session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
       );
+      final viewportCellSize = _localTerminalViewportCellSize();
       attachCommand = buildMonkeyMuxAttachCommand(
         executablePath: installation.executablePath,
         sessionName: sessionName,
         clientId: session.monkeyMuxClientId,
         clipViewport: true,
+        terminalColumns: viewportCellSize.columns,
+        terminalRows: viewportCellSize.rows,
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,
@@ -10421,6 +10473,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sessionName,
         force: true,
       );
+      unawaited(
+        _reattachTmuxAfterWindowChangeInBackground(
+          session,
+          sessionName,
+          forceVisibleTmux: forceVisibleTmux,
+          deferUntilAfterRedraw: deferPostSwitchExec,
+        ),
+      );
       return;
     }
     _prepareTerminalForMuxWindowChange();
@@ -10840,15 +10900,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    final shell = forceVisibleTmux && !canReattachInCurrentShell
-        ? await _reopenShellForVisibleTmux(session)
-        : _shell;
-    if (shell == null) {
-      return;
-    }
-
     final host = _host;
     late final String reattachCommand;
+    var reattachBackend = RemoteMuxBackend.tmux;
     if (host == null) {
       reattachCommand = buildTmuxCommand(sessionName: sessionName);
     } else {
@@ -10861,17 +10915,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       _activeMuxBackend = attachCommand.backend;
+      reattachBackend = attachCommand.backend;
       reattachCommand = attachCommand.command;
     }
-    session.writeToShell(formatAutoConnectCommandForShell(reattachCommand));
+    final requiresRawMonkeyMuxAttach =
+        session.remoteIsWindows &&
+        reattachBackend == RemoteMuxBackend.monkeyMux;
+    final mustReopenShell =
+        requiresRawMonkeyMuxAttach ||
+        (forceVisibleTmux && !canReattachInCurrentShell);
+    final shell = mustReopenShell
+        ? await _reopenShellForVisibleTmux(
+            session,
+            command: requiresRawMonkeyMuxAttach ? reattachCommand : null,
+            requestPty: !requiresRawMonkeyMuxAttach,
+          )
+        : _shell;
+    if (shell == null) {
+      return;
+    }
+
+    if (!requiresRawMonkeyMuxAttach) {
+      session.writeToShell(formatAutoConnectCommandForShell(reattachCommand));
+    }
     DiagnosticsLogService.instance.info(
       'tmux.ui',
       'reattach_command_sent',
-      fields: {'connectionId': session.connectionId},
+      fields: {
+        'connectionId': session.connectionId,
+        'requestedPty': !requiresRawMonkeyMuxAttach,
+      },
     );
   }
 
-  Future<SSHSession?> _reopenShellForVisibleTmux(SshSession session) async {
+  Future<SSHSession?> _reopenShellForVisibleTmux(
+    SshSession session, {
+    String? command,
+    bool requestPty = true,
+  }) async {
     bool stillOwnsSession() => mounted && _connectionId == session.connectionId;
 
     final previousTerminal = _terminal;
@@ -10927,7 +11008,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         reason: 'reopen_shell',
       );
-      shell = await session.getShell(pty: pty);
+      shell = await session.getShell(
+        pty: pty,
+        requestPty: requestPty,
+        command: command,
+        returnToLoginShell: command != null,
+      );
       if (!stillOwnsSession()) {
         restorePreviousTerminalState(restoreShell: false);
         return null;
@@ -16108,17 +16194,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pasteStoreDemoImage() async {
-    await _pasteClipboardImage(
-      _storeDemoClipboardImageBytes,
-      autoConfirmAfter: const Duration(milliseconds: 4200),
-      showKeyboardAfterPaste: false,
-      uploadBaseDirectory: _workingDirectoryPath,
-    );
-    if (!mounted) {
-      return;
+    final pasteCompleter = storeDemoImagePasteCompleter;
+    try {
+      await _pasteClipboardImage(
+        _storeDemoClipboardImageBytes,
+        autoConfirmAfter: const Duration(milliseconds: 4200),
+        showKeyboardAfterPaste: false,
+        uploadBaseDirectory: _workingDirectoryPath,
+      );
+      if (!mounted) {
+        return;
+      }
+      FocusManager.instance.primaryFocus?.unfocus();
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+      // Signal the store video harness that the image path is in the terminal
+      // so Beat 5 does not type the Copilot prompt before the paste lands.
+      debugPrintSynchronously('STORE_SCREENSHOT_DEMO_IMAGE_PASTED');
+      if (pasteCompleter != null && !pasteCompleter.isCompleted) {
+        pasteCompleter.complete();
+      }
+    } on Object catch (error, stackTrace) {
+      debugPrintSynchronously(
+        'STORE_SCREENSHOT_ERROR demo image paste failed: $error',
+      );
+      if (pasteCompleter != null && !pasteCompleter.isCompleted) {
+        pasteCompleter.completeError(error, stackTrace);
+      }
+      rethrow;
     }
-    FocusManager.instance.primaryFocus?.unfocus();
-    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
   }
 
   Future<void> _pasteClipboardImage(
@@ -16134,7 +16237,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         message:
             'This will upload the clipboard image to $_clipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
         confirmLabel: 'Upload and paste',
-        details: const ['release-checklist.png'],
+        details: const ['monkeyssh-light-mode.png'],
         autoConfirmAfter: autoConfirmAfter,
       );
       if (!shouldUpload) {

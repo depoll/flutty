@@ -143,6 +143,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// alternate screens.
   GraphicsManager get graphics => _buffer.graphics;
 
+  /// Whether this terminal advertises and accepts Kitty graphics.
+  ///
+  /// Disable this when an intermediate terminal layer cannot carry Kitty APC
+  /// sequences end-to-end. Native Windows OpenSSH PTY channels use the system
+  /// ConPTY, which removes the image transmission while preserving Unicode
+  /// placeholder cells; reporting support there would produce permanent holes.
+  bool kittyGraphicsEnabled = true;
+
   /// The `{imageId: sourceSignature}` of every Kitty image currently held across
   /// both the main and alternate screens (decoded or still pending).
   ///
@@ -1425,6 +1433,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final args = _graphicsArgs;
     final data = Uint8List.fromList(_graphicsData);
     _graphicsData.clear();
+
+    if (!kittyGraphicsEnabled) {
+      _respondToGraphicsFailure(args, 'ENOTSUP: graphics disabled');
+      return;
+    }
 
     if (args['a'] == 'q') {
       _respondToGraphicsQuery(args, data);

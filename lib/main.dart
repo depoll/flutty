@@ -1,7 +1,8 @@
 import 'dart:async';
-import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:xterm/xterm.dart';
@@ -22,6 +23,7 @@ import 'domain/services/telemetry_service.dart';
 /// Entry point for the MonkeySSH client.
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _installBundledLicenses();
   _installPerformanceDiagnostics();
   final database = AppDatabase();
   final settingsService = SettingsService(database);
@@ -45,6 +47,17 @@ Future<void> main() async {
       child: const FluttyApp(),
     ),
   );
+}
+
+void _installBundledLicenses() {
+  LicenseRegistry.addLicense(() async* {
+    final license = await rootBundle.loadString(
+      'remote/monkeymux/conpty/LICENSE.microsoft-terminal',
+    );
+    yield LicenseEntryWithLineBreaks(const [
+      'Microsoft Windows Terminal ConPTY',
+    ], license);
+  });
 }
 
 void _installPerformanceDiagnostics() {
