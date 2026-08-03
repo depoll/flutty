@@ -8515,10 +8515,12 @@ func (s *muxServer) writeWindow(windowID string, data []byte) error {
 		return fmt.Errorf("window %q not found", windowID)
 	}
 	if win32InputMode {
-		// ConPTY's input parser drops raw OSC/DCS sequences, so synthetic
+		// ConPTY's input parser cannot disambiguate a bare ESC and drops raw
+		// OSC/DCS sequences, so a standalone Escape keystroke and synthetic
 		// replies (theme hints, clipboard responses, relayed query answers)
 		// must be re-encoded as win32-input-mode key events to survive the
 		// trip through conhost to the child process.
+		data = encodeTerminalInputForWin32InputMode(data)
 		data = encodeTerminalResponsesForWin32InputMode(data)
 	}
 	_, err := window.pty.Write(data)
@@ -8558,6 +8560,29 @@ func writeWin32InputModeKeyEvents(output *bytes.Buffer, sequence []byte) {
 		// associated virtual key.
 		fmt.Fprintf(output, "\x1b[0;0;%d;1;0;1_", codeUnit)
 	}
+}
+
+// win32InputModeEscapeKeyEvents are the win32-input-mode key-down and key-up
+// events for the Escape key: `CSI Vk;Sc;Uc;Kd;Cs;Rc _` with VK_ESCAPE (27), the
+// Escape scan code (1) and U+001B, matching what Windows Terminal sends for a
+// physical Escape.
+const win32InputModeEscapeKeyEvents = "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_"
+
+// encodeTerminalInputForWin32InputMode re-encodes a standalone Escape keystroke
+// as win32-input-mode key events.
+//
+// ConPTY's input parser cannot tell a bare ESC from the first byte of an escape
+// sequence, so it holds the byte back until enough input arrives to disambiguate
+// it. A lone Escape therefore only reaches the window's child once the next key
+// is pressed, which reads as "Escape stopped working" (TUIs never leave their
+// mode, and Ctrl+C is the only way out). An explicit key event has no such
+// ambiguity. Only a payload that is exactly ESC is rewritten; escape sequences
+// are already unambiguous and pass through untouched.
+func encodeTerminalInputForWin32InputMode(data []byte) []byte {
+	if len(data) != 1 || data[0] != 0x1b {
+		return data
+	}
+	return []byte(win32InputModeEscapeKeyEvents)
 }
 
 // win32InputModeRequests are the DEC private mode 9001 (win32-input-mode)

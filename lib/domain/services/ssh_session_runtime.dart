@@ -240,13 +240,17 @@ if(!$__flResolved){$__flResolved='cmd'}
     shell.resizeTerminal(width, height, pixelWidth, pixelHeight);
   }
 
-  /// Encodes OSC/DCS responses as win32-input-mode key events when the remote
-  /// ConPTY has requested that mode, so the responses survive conhost's
-  /// input-side parser and reach the foreground app.
-  String _encodeForWin32InputModeIfNeeded(String data) =>
-      _terminalWin32InputMode
-      ? encodeTerminalResponsesForWin32InputMode(data)
-      : data;
+  /// Encodes terminal input and OSC/DCS responses as win32-input-mode key
+  /// events when the remote ConPTY has requested that mode, so both survive
+  /// conhost's input-side parser and reach the foreground app.
+  String _encodeForWin32InputModeIfNeeded(String data) {
+    if (!_terminalWin32InputMode) {
+      return data;
+    }
+    return encodeTerminalResponsesForWin32InputMode(
+      encodeTerminalInputForWin32InputMode(data),
+    );
+  }
 
   Future<SSHSession> getShell({
     SSHPtyConfig? pty,

@@ -28,7 +28,7 @@ import termios
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 ADB: Path | None = None
@@ -56,6 +56,7 @@ COPILOT_READY_MARKER_GROUPS = (
 COPILOT_PRIVACY_STRIP_MARKERS = tuple(
     marker for marker_group in COPILOT_READY_MARKER_GROUPS for marker in marker_group
 )
+COPILOT_DEMO_IMAGE_NAME = 'monkeyssh-light-mode.png'
 
 
 @dataclass(frozen=True)
@@ -127,7 +128,7 @@ def main() -> None:
     _prefer_stable_xcode()
     args = _parse_args()
     targets = _targets_for_platform(args.platform)
-    with StoreDemoEnvironment() as demo:
+    with StoreDemoEnvironment(seed_platform=args.platform) as demo:
         for target in targets:
             _run_target(target, demo)
 
@@ -199,6 +200,10 @@ def _run_flutter_capture(
         '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
         '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
     ]
+    if demo.demo_image_b64:
+        dart_defines.append(
+            f'--dart-define=STORE_SCREENSHOT_DEMO_IMAGE_B64={demo.demo_image_b64}',
+        )
     command = [
         'flutter',
         'run',
@@ -297,7 +302,8 @@ def _build_android_screenshot_apk(
 
 
 class StoreDemoEnvironment:
-    def __init__(self) -> None:
+    def __init__(self, *, seed_platform: str = 'both') -> None:
+        self._seed_platform = seed_platform
         self._tmpdir = Path(tempfile.mkdtemp(prefix='monkeyssh-store-demo-'))
         self.username = getpass.getuser()
         self.port = _free_local_port()
@@ -317,6 +323,11 @@ class StoreDemoEnvironment:
         if self._claude is None:
             raise RuntimeError('Claude Code CLI is required for the Claude store screenshot.')
         self._opencode = shutil.which('opencode')
+        # Populated after the light-mode app capture; used for video image paste.
+        self.demo_image_b64: str | None = None
+        # Preserve the developer's Copilot streamerMode across the run.
+        self._previous_copilot_streamer_mode: bool | None = None
+        self._copilot_streamer_mode_was_set = False
 
     @property
     def private_key_b64(self) -> str:
@@ -333,6 +344,9 @@ class StoreDemoEnvironment:
 
     def __enter__(self) -> StoreDemoEnvironment:
         try:
+            # Capture must not run with streamer mode on (placeholder sessions).
+            # Preserve and restore the developer's original setting around the run.
+            self._disable_copilot_streamer_mode_for_capture(required=True)
             self._cleanup_registered_monkeymux_sessions()
             self._register_monkeymux_session()
             self._create_keys()
@@ -344,10 +358,13 @@ class StoreDemoEnvironment:
             raise
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._teardown_monkeymux(unregister=True)
-        self._stop_sshd()
-        self._remove_demo_dir()
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        try:
+            self._teardown_monkeymux(unregister=True)
+            self._stop_sshd()
+            self._remove_demo_dir()
+            shutil.rmtree(self._tmpdir, ignore_errors=True)
+        finally:
+            self._restore_copilot_streamer_mode()
 
     def reset_monkeymux(self) -> None:
         self._monkeymux_select('copilot')
@@ -527,6 +544,7 @@ class StoreDemoEnvironment:
               {self._shell_quote(self._copilot)} \\
               --no-remote \\
               --log-level default \\
+              --add-dir {self._shell_quote(str(self.demo_dir))} \\
               --secret-env-vars=USER,EMAIL,GITHUB_TOKEN,GH_TOKEN,ANTHROPIC_API_KEY \\
               --name 'Mobile Copilot Workspace'
             """,
@@ -593,6 +611,9 @@ class StoreDemoEnvironment:
             """,
         )
         self._start_monkeymux_windows()
+        # Capture a real light-mode app screenshot before driving Copilot so the
+        # seeded image is clearly the product UI (and contrasts in the dark TUI).
+        self._capture_light_mode_demo_image()
         self._drive_copilot_start_screen()
         self._drive_claude_full_screen()
         self.reset_monkeymux()
@@ -612,11 +633,12 @@ class StoreDemoEnvironment:
                 [
                     '# Agent workspace',
                     '',
-                    'Use this streamer-safe workspace for release screenshots.',
+                    'Use this privacy-safe workspace for release screenshots.',
                     '',
                     '- Keep captures free of emails, usernames, hostnames, tokens, and private identifiers.',
                     '- Prefer concise checks that fit in a mobile terminal screenshot.',
                     '- Keep terminal output focused on SSH, MonkeyMux, agent, and store asset workflows.',
+                    '- Show Copilot CLI reviewing a real light-mode MonkeySSH app screenshot.',
                     '',
                     'Windows:',
                     '1. copilot - GitHub Copilot CLI',
@@ -637,7 +659,7 @@ class StoreDemoEnvironment:
                     '- Verify keepalive settings detect dropped links promptly.',
                     '- Confirm MonkeyMux reattach restores the same shell, panes, and scrollback.',
                     '- Validate reconnect behavior after suspend, network change, and app resume.',
-                    '- Keep logs streamer-safe by hiding account and host identifiers.',
+                    '- Keep logs free of account and host identifiers.',
                     '',
                 ]
             )
@@ -662,6 +684,202 @@ class StoreDemoEnvironment:
                     '',
                 ]
             )
+        )
+
+    def _capture_light_mode_demo_image(self) -> None:
+        """Capture a real light-mode MonkeySSH hosts screenshot for Copilot."""
+        # Prefer a device from the requested platform so android-only runs do not
+        # require an iOS simulator.
+        if self._seed_platform == 'android':
+            target = TARGETS['android_phone']
+        else:
+            target = TARGETS['ios_phone']
+        output_path = self.demo_dir / COPILOT_DEMO_IMAGE_NAME
+        print(
+            f'Capturing light-mode demo image on {target.name} at {output_path}...',
+        )
+        restore_android = None
+        if target.platform == 'ios':
+            device_id = _boot_ios_simulator(_ios_simulator_name(target))
+            _reset_ios_app_state(device_id)
+        else:
+            device_id = _android_device_id()
+            restore_android = _configure_android_display(target, device_id)
+
+        env = os.environ.copy()
+        java_home = _java_home_17()
+        if java_home:
+            env['JAVA_HOME'] = java_home
+        dart_defines = [
+            f'--dart-define=STORE_SCREENSHOT_TARGET={target.name}',
+            f'--dart-define=STORE_SCREENSHOT_SSH_PORT={self.port}',
+            f'--dart-define=STORE_SCREENSHOT_SSH_USERNAME={self.username}',
+            f'--dart-define=STORE_SCREENSHOT_SSH_PRIVATE_KEY_B64={self.private_key_b64}',
+            f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_B64={self.host_key_b64}',
+            (
+                '--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT='
+                f'{self.host_key_fingerprint}'
+            ),
+            f'--dart-define=STORE_SCREENSHOT_MUX_SESSION={self.mux_session}',
+            f'--dart-define=STORE_SCREENSHOT_WORKSPACE_PATH={self.demo_dir}',
+            '--dart-define=STORE_SCREENSHOT_THEME_MODE=light',
+            '--dart-define=STORE_SCREENSHOT_LIGHT_DEMO_IMAGE=true',
+            f'--dart-define=STORE_SCREENSHOT_LIGHT_DEMO_OUTPUT={output_path}',
+            '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
+            '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
+            '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
+            '--dart-define=STORE_SCREENSHOT_SCENE_HOLD_MS=1800',
+        ]
+        command = [
+            'flutter',
+            'run',
+            '--debug',
+            '-d',
+            device_id,
+            '-t',
+            'tool/store_screenshot_app.dart',
+            '--flavor',
+            'production',
+            *dart_defines,
+        ]
+        if target.platform == 'android':
+            apk_path = _build_android_screenshot_apk(env, dart_defines)
+            command = [
+                'flutter',
+                'run',
+                '-d',
+                device_id,
+                '--use-application-binary',
+                str(apk_path),
+                '--no-pub',
+            ]
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        saw_done = False
+        failure: str | None = None
+        try:
+            for raw_line in process.stdout:
+                print(raw_line, end='')
+                line = raw_line.strip()
+                if READY_MARKER in line:
+                    payload = json.loads(line.split(READY_MARKER, 1)[1])
+                    time.sleep(0.5)
+                    _capture_native_screenshot(
+                        target=target,
+                        device_id=device_id,
+                        paths=[Path(path) for path in payload['paths']],
+                    )
+                if ERROR_MARKER in line:
+                    failure = line.split(ERROR_MARKER, 1)[1].strip()
+                    break
+                if DONE_MARKER in line:
+                    saw_done = True
+                    break
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=20)
+            if restore_android is not None:
+                restore_android()
+
+        if failure is not None:
+            raise RuntimeError(f'Light-mode demo image capture failed: {failure}')
+        if not saw_done:
+            raise RuntimeError('Light-mode demo image capture ended before DONE.')
+        if not output_path.is_file() or output_path.stat().st_size < 10_000:
+            raise RuntimeError(
+                f'Light-mode demo image was not written: {output_path}',
+            )
+
+        # Full-bleed phone captures are too tall for Copilot's inline preview.
+        # Crop tightly to the brand header + host rows (the high-signal area on
+        # the hosts screen), boost contrast so light UI survives Kitty
+        # downscaling, and frame it on a dark card.
+        with Image.open(output_path) as image:
+            rgb = image.convert('RGB')
+            width, height = rgb.size
+            # Empirically matches the hosts screen: logo/title, "hosts" heading,
+            # Add Host, and the three seeded host rows — without the empty
+            # lower half that collapses to a blank mint slab in the TUI.
+            top = int(height * 0.11)
+            bottom = int(height * 0.42)
+            left = int(width * 0.05)
+            right = int(width * 0.95)
+            cropped = rgb.crop((left, top, right, max(top + 1, bottom)))
+
+            # Make light-mode UI pop when nested inside a dark terminal capture.
+            cropped = ImageEnhance.Contrast(cropped).enhance(1.18)
+            cropped = ImageEnhance.Sharpness(cropped).enhance(1.25)
+            cropped = ImageEnhance.Color(cropped).enhance(1.08)
+
+            max_width = 960
+            if cropped.width > max_width:
+                ratio = max_width / cropped.width
+                cropped = cropped.resize(
+                    (max_width, max(1, int(cropped.height * ratio))),
+                    Image.Resampling.LANCZOS,
+                )
+
+            border = 16
+            frame = Image.new(
+                'RGB',
+                (cropped.width + border * 2, cropped.height + border * 2),
+                (12, 16, 28),
+            )
+            frame.paste(cropped, (border, border))
+            draw = ImageDraw.Draw(frame)
+            draw.rectangle(
+                (
+                    border - 2,
+                    border - 2,
+                    border + cropped.width + 1,
+                    border + cropped.height + 1,
+                ),
+                outline=(64, 196, 255),
+                width=3,
+            )
+            frame.save(output_path, format='PNG', optimize=True)
+            # Keep a debug copy for local inspection of what Copilot will attach.
+            debug_copy = Path('/tmp') / 'monkeyssh-light-mode-demo.png'
+            frame.save(debug_copy, format='PNG', optimize=True)
+
+            # Keep PNG bytes (not JPEG) so the in-app paste filename image.png
+            # matches the payload Copilot CLI attaches.
+            png_buffer = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+            png_path = Path(png_buffer.name)
+            png_buffer.close()
+            try:
+                # Shrink slightly for argv-friendly dart-defines while staying PNG.
+                paste = frame
+                paste_max_width = 720
+                if paste.width > paste_max_width:
+                    ratio = paste_max_width / paste.width
+                    paste = paste.resize(
+                        (paste_max_width, max(1, int(paste.height * ratio))),
+                        Image.Resampling.LANCZOS,
+                    )
+                paste.save(png_path, format='PNG', optimize=True)
+                self.demo_image_b64 = base64.b64encode(png_path.read_bytes()).decode()
+            finally:
+                png_path.unlink(missing_ok=True)
+        print(
+            f'Light-mode demo image ready '
+            f'({output_path.stat().st_size} bytes PNG, '
+            f'{len(self.demo_image_b64 or "")} base64 chars for paste); '
+            f'debug copy at {debug_copy}',
         )
 
     def _remove_demo_dir(self) -> None:
@@ -738,11 +956,12 @@ class StoreDemoEnvironment:
         time.sleep(4)
         self._monkeymux_send_keys('copilot', 'Enter')
         time.sleep(8)
-        self._ensure_copilot_streamer_mode()
-        self._monkeymux_send_keys('copilot', 'C-l')
-        time.sleep(2)
         self._wait_for_copilot_ready()
-        self._assert_copilot_pane_streamer_safe()
+        # Leave streamer mode alone (and force it off around the run). Store
+        # captures should show a normal named session with the checklist image
+        # rendered inside Copilot CLI, not a redacted placeholder session.
+        self._drive_copilot_image_review()
+        self._assert_copilot_pane_privacy_safe()
 
     def _wait_for_copilot_ready(self) -> None:
         deadline = time.time() + 30
@@ -760,13 +979,50 @@ class StoreDemoEnvironment:
             f'Last visible pane text:\n{text.strip()[-1000:]}',
         )
 
+    def _drive_copilot_image_review(self) -> None:
+        image_path = self.demo_dir / COPILOT_DEMO_IMAGE_NAME
+        if not image_path.is_file():
+            raise RuntimeError(f'Missing Copilot demo image: {image_path}')
+        # Submit the image path as the first prompt so Copilot CLI attaches and
+        # renders the screenshot inline in the conversation.
+        prompt = (
+            f'{COPILOT_DEMO_IMAGE_NAME} Visually describe only what is shown in '
+            'this light-mode MonkeySSH screenshot and call out the strongest '
+            'store-listing details. Do not run tools, read other files, load '
+            'skills, or access paths outside this workspace.'
+        )
+        self._monkeymux_send_literal('copilot', prompt)
+        self._monkeymux_send_keys('copilot', 'Enter')
+        self._wait_for_copilot_image_display()
+
+    def _wait_for_copilot_image_display(self) -> None:
+        deadline = time.time() + 90
+        last_text = ''
+        while time.time() < deadline:
+            raw = self._capture_monkeymux_attach_replay()
+            text = _strip_terminal_output(raw.decode(errors='ignore'))
+            last_text = text
+            # Require a real Kitty graphics transmission. Prompt echo alone is
+            # not enough — the submitted text already contains the image name.
+            if b'\x1b_G' in raw:
+                # Hold briefly so the inline image finishes painting before
+                # screenshot/video capture starts from this settled pane.
+                time.sleep(3)
+                return
+            time.sleep(1)
+        raise RuntimeError(
+            'copilot pane did not emit Kitty graphics for the light-mode '
+            'app screenshot. '
+            f'Last visible pane text:\n{last_text.strip()[-1000:]}',
+        )
+
     def _drive_claude_full_screen(self) -> None:
         self._drive_claude_to_ready_prompt()
         self._monkeymux_send_keys('claude', 'C-l')
         time.sleep(2)
         self._wait_for_visible_text('claude', ['shortcuts'])
         time.sleep(3)
-        self._assert_claude_pane_streamer_safe()
+        self._assert_claude_pane_privacy_safe()
 
     def _drive_claude_to_ready_prompt(self) -> None:
         deadline = time.time() + 90
@@ -788,23 +1044,6 @@ class StoreDemoEnvironment:
             time.sleep(1)
         raise RuntimeError('claude pane did not show the Claude Code prompt.')
 
-    def _ensure_copilot_streamer_mode(self) -> None:
-        self._wait_for_copilot_ready()
-        self._monkeymux_send_literal('copilot', '/streamer')
-        self._monkeymux_send_keys('copilot', 'Enter')
-        time.sleep(4)
-        text = self._capture_visible_pane('copilot')
-        if _visible_text_contains_marker(text, 'Streamer mode enabled.'):
-            return
-        if _visible_text_contains_marker(text, 'Streamer mode disabled.'):
-            self._monkeymux_send_literal('copilot', '/streamer')
-            self._monkeymux_send_keys('copilot', 'Enter')
-            time.sleep(4)
-            text = self._capture_visible_pane('copilot')
-            if _visible_text_contains_marker(text, 'Streamer mode enabled.'):
-                return
-        self._assert_copilot_pane_streamer_safe()
-
     def _wait_for_visible_text(self, window: str, markers: list[str]) -> None:
         deadline = time.time() + 30
         while time.time() < deadline:
@@ -816,11 +1055,79 @@ class StoreDemoEnvironment:
             f'{window} pane did not show expected text: {", ".join(markers)}.',
         )
 
-    def _assert_copilot_pane_streamer_safe(self) -> None:
+    def _assert_copilot_pane_privacy_safe(self) -> None:
         self._assert_pane_privacy_safe('copilot')
 
-    def _assert_claude_pane_streamer_safe(self) -> None:
+    def _assert_claude_pane_privacy_safe(self) -> None:
         self._assert_pane_privacy_safe('claude', allow_billing_label=True)
+
+    def _copilot_settings_path(self) -> Path:
+        return Path.home() / '.copilot' / 'settings.json'
+
+    def _read_copilot_settings(self) -> dict[str, object]:
+        settings_path = self._copilot_settings_path()
+        if not settings_path.exists():
+            return {}
+        data = json.loads(settings_path.read_text())
+        if not isinstance(data, dict):
+            raise ValueError(f'Copilot settings is not an object: {settings_path}')
+        return data
+
+    def _write_copilot_settings(self, data: dict[str, object]) -> None:
+        settings_path = self._copilot_settings_path()
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(data, indent=2) + '\n')
+
+    def _disable_copilot_streamer_mode_for_capture(self, *, required: bool) -> None:
+        """Turn streamer mode off for capture while remembering the prior value."""
+        try:
+            data = self._read_copilot_settings()
+            if 'streamerMode' in data:
+                self._copilot_streamer_mode_was_set = True
+                previous = data.get('streamerMode')
+                self._previous_copilot_streamer_mode = (
+                    previous if isinstance(previous, bool) else None
+                )
+            else:
+                self._copilot_streamer_mode_was_set = False
+                self._previous_copilot_streamer_mode = None
+            if data.get('streamerMode') is False:
+                print('Copilot CLI streamer mode already off')
+                return
+            data['streamerMode'] = False
+            self._write_copilot_settings(data)
+            print(
+                'Temporarily disabled Copilot CLI streamer mode for store capture '
+                '(will restore on exit)',
+            )
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+            message = f'Could not disable Copilot streamer mode: {error}'
+            if required:
+                raise RuntimeError(message) from error
+            _warn_cleanup(message)
+
+    def _restore_copilot_streamer_mode(self) -> None:
+        """Restore the developer's original Copilot streamerMode setting."""
+        try:
+            data = self._read_copilot_settings()
+            if self._copilot_streamer_mode_was_set:
+                if self._previous_copilot_streamer_mode is None:
+                    data.pop('streamerMode', None)
+                else:
+                    data['streamerMode'] = self._previous_copilot_streamer_mode
+            else:
+                # Setting was absent before the run; leave capture-forced false
+                # only if we created the key. Prefer removing it to avoid a
+                # permanent config change when it was previously unset.
+                data.pop('streamerMode', None)
+            if data:
+                self._write_copilot_settings(data)
+            elif self._copilot_settings_path().exists() and not data:
+                # Empty object after removing the only key — keep a valid file.
+                self._write_copilot_settings({})
+            print('Restored Copilot CLI streamer mode setting after store capture')
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+            _warn_cleanup(f'Could not restore Copilot streamer mode: {error}')
 
     def _assert_pane_privacy_safe(
         self,
@@ -1680,8 +1987,12 @@ def _capture_native_screenshot(
             for path in paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 screenshot.save(path, optimize=True)
+                try:
+                    display_path = path.relative_to(ROOT)
+                except ValueError:
+                    display_path = path
                 print(
-                    f'Wrote {path.relative_to(ROOT)} '
+                    f'Wrote {display_path} '
                     f'({target.size[0]}x{target.size[1]})',
                 )
 
@@ -1732,12 +2043,28 @@ def _reset_ios_app_state(device_id: str) -> None:
 
 
 def _android_device_id() -> str:
+    override = os.environ.get('ANDROID_SERIAL') or os.environ.get(
+        'STORE_SCREENSHOT_ANDROID_SERIAL',
+    )
     adb = _adb_path()
     result = subprocess.check_output([str(adb), 'devices'], text=True)
-    for line in result.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) >= 2 and parts[1] == 'device':
-            return parts[0]
+    devices = [
+        parts[0]
+        for line in result.splitlines()[1:]
+        if len(parts := line.split()) >= 2 and parts[1] == 'device'
+    ]
+    if override:
+        if override not in devices:
+            raise RuntimeError(
+                f'Configured Android device {override!r} is not connected.',
+            )
+        return override
+    # Prefer emulators for deterministic store resolutions over physical phones.
+    for device_id in devices:
+        if device_id.startswith('emulator-'):
+            return device_id
+    if devices:
+        return devices[0]
     raise RuntimeError('No running Android device or emulator found')
 
 

@@ -98,9 +98,23 @@ const _redactStoreScreenshotIdentities = bool.fromEnvironment(
 const _hideStoreScreenshotKeyboardToolbar = bool.fromEnvironment(
   'STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR',
 );
-final _storeDemoClipboardImageBytes = base64Decode(
-  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC',
+const _storeDemoImageB64 = String.fromEnvironment(
+  'STORE_SCREENSHOT_DEMO_IMAGE_B64',
 );
+const _storeDemoImageFallbackB64 =
+    'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC';
+final _storeDemoClipboardImageBytes = base64Decode(
+  _storeDemoImageB64.isNotEmpty
+      ? _storeDemoImageB64
+      : _storeDemoImageFallbackB64,
+);
+
+/// Armed by the store video harness before a `pasteDemoImage=1` navigation.
+///
+/// Completed when the demo clipboard image has been uploaded and its remote
+/// path inserted into the terminal, so the harness can wait instead of racing
+/// a fixed delay.
+Completer<void>? storeDemoImagePasteCompleter;
 
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
@@ -16180,17 +16194,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pasteStoreDemoImage() async {
-    await _pasteClipboardImage(
-      _storeDemoClipboardImageBytes,
-      autoConfirmAfter: const Duration(milliseconds: 4200),
-      showKeyboardAfterPaste: false,
-      uploadBaseDirectory: _workingDirectoryPath,
-    );
-    if (!mounted) {
-      return;
+    final pasteCompleter = storeDemoImagePasteCompleter;
+    try {
+      await _pasteClipboardImage(
+        _storeDemoClipboardImageBytes,
+        autoConfirmAfter: const Duration(milliseconds: 4200),
+        showKeyboardAfterPaste: false,
+        uploadBaseDirectory: _workingDirectoryPath,
+      );
+      if (!mounted) {
+        return;
+      }
+      FocusManager.instance.primaryFocus?.unfocus();
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+      // Signal the store video harness that the image path is in the terminal
+      // so Beat 5 does not type the Copilot prompt before the paste lands.
+      debugPrintSynchronously('STORE_SCREENSHOT_DEMO_IMAGE_PASTED');
+      if (pasteCompleter != null && !pasteCompleter.isCompleted) {
+        pasteCompleter.complete();
+      }
+    } on Object catch (error, stackTrace) {
+      debugPrintSynchronously(
+        'STORE_SCREENSHOT_ERROR demo image paste failed: $error',
+      );
+      if (pasteCompleter != null && !pasteCompleter.isCompleted) {
+        pasteCompleter.completeError(error, stackTrace);
+      }
+      rethrow;
     }
-    FocusManager.instance.primaryFocus?.unfocus();
-    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
   }
 
   Future<void> _pasteClipboardImage(
@@ -16206,7 +16237,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         message:
             'This will upload the clipboard image to $_clipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
         confirmLabel: 'Upload and paste',
-        details: const ['release-checklist.png'],
+        details: const ['monkeyssh-light-mode.png'],
         autoConfirmAfter: autoConfirmAfter,
       );
       if (!shouldUpload) {

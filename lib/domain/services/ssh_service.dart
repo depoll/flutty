@@ -246,6 +246,30 @@ void _writeWin32InputModeKeyEvents(StringBuffer output, String sequence) {
   }
 }
 
+/// Win32-input-mode key-down and key-up events for the Escape key.
+///
+/// `CSI Vk;Sc;Uc;Kd;Cs;Rc _` with `VK_ESCAPE` (27), the Escape scan code (1)
+/// and U+001B, matching what Windows Terminal sends for a physical Escape.
+const terminalWin32InputModeEscapeKeyEvents =
+    '\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_';
+
+/// Re-encodes a standalone Escape keystroke so a Windows ConPTY delivers it.
+///
+/// ConPTY's input-side parser cannot tell a bare `ESC` from the first byte of
+/// an escape sequence, so it holds the byte back until enough input arrives to
+/// disambiguate it. A lone Escape keypress therefore reaches the foreground app
+/// only once the *next* key is pressed, which reads as "Escape stopped
+/// working": TUIs never leave their mode, and Ctrl+C (an unambiguous control
+/// byte) is the only way out.
+///
+/// Sending Escape as an explicit win32-input-mode key event instead of the raw
+/// byte removes the ambiguity, so conhost dispatches it immediately. Only a
+/// payload that is exactly `ESC` is rewritten; escape sequences (arrow keys,
+/// `Alt`+key, query replies) are already unambiguous and pass through
+/// unmodified.
+String encodeTerminalInputForWin32InputMode(String data) =>
+    data == '\x1b' ? terminalWin32InputModeEscapeKeyEvents : data;
+
 /// Normalizes terminal-generated output before it is sent to the remote shell.
 ///
 /// xterm.dart currently emits cursor-position reports using its internal
