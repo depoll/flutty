@@ -28,7 +28,7 @@ jobs:
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
     outputs:
       run_check: ${{ steps.filter.outputs.run_check }}
       go: ${{ steps.filter.outputs.go }}
