@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path;
 
 final _sftpWindowsDriveRootPattern = RegExp(r'^/?[A-Za-z]:(?:/|$)');
+final _terminalControlCharacterPattern = RegExp(r'[\x00-\x1f\x7f-\x9f]');
 
 /// Display path for files pasted directly into a terminal session.
 const remoteClipboardUploadDirectoryDisplay = '~/.cache/monkeyssh/uploads';
@@ -349,27 +350,27 @@ bool _isUnquotedSafeAttachmentPath(String path, {required bool windows}) {
   return safePathPattern.hasMatch(path);
 }
 
+bool _isTerminalSafeAttachmentPath(String path) =>
+    !_terminalControlCharacterPattern.hasMatch(path);
+
 String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
     windows ? shellEscapeWindows(path) : shellEscapePosix(path);
 
 /// Builds the terminal-input segments that reference uploaded [remotePaths]
 /// after a paste upload.
 ///
-/// When [bracketedPasteMode] is true *and* every path is safe to paste
-/// unquoted, each path is returned as its own bracketed-paste segment
-/// (`CSI 200~ <path> CSI 201~ ` with a trailing space). The caller must write
-/// these segments sequentially with a short delay between them: an agent CLI
-/// such as Copilot CLI only recognises each path as a separate attachment —
-/// rendering a preview chip per file — when the bracketed pastes arrive as
-/// distinct reads. The trailing space also keeps the paths usable as distinct
-/// shell arguments.
+/// When [bracketedPasteMode] is true, each terminal-safe path is returned as
+/// its own bracketed-paste segment (`CSI 200~ <path> CSI 201~ ` with a trailing
+/// space). Paths that are unsafe unquoted are shell-escaped inside the framing,
+/// so one quoted path no longer disables bracketed paste for the whole batch.
+/// The caller must write these segments sequentially with a short delay: an
+/// agent CLI such as Copilot CLI only recognises each path as a separate
+/// attachment when the bracketed pastes arrive as distinct reads.
 ///
-/// Otherwise — when bracketed paste is not requested, or when a path contains
-/// characters that would be unsafe unquoted (e.g. a remote home directory with
-/// spaces or shell metacharacters) — the paths are shell-escaped for the current
-/// remote shell and returned as a single segment. That form shows no preview (a
-/// path with spaces would not produce a chip anyway) but keeps the inserted text
-/// quoted for the active remote shell.
+/// When bracketed paste is not requested, paths are shell-escaped for the
+/// current remote shell and returned as one segment. Paths containing terminal
+/// control characters are omitted in either mode because they cannot be safely
+/// represented as terminal input.
 ///
 /// Segments must be written straight to the session input sink (e.g.
 /// `Terminal.onOutput`), not through `Terminal.paste`, which would strip the
@@ -380,26 +381,25 @@ List<String> buildTerminalAttachmentPasteSegments(
   bool windows = false,
 }) {
   final paths = remotePaths
-      .where((remotePath) => remotePath.isNotEmpty)
+      .where(
+        (remotePath) =>
+            remotePath.isNotEmpty && _isTerminalSafeAttachmentPath(remotePath),
+      )
       .toList();
   if (paths.isEmpty) {
     return const [];
   }
-  final canRenderChips =
-      bracketedPasteMode &&
-      paths.every(
-        (remotePath) =>
-            _isUnquotedSafeAttachmentPath(remotePath, windows: windows),
-      );
-  if (!canRenderChips) {
+  if (!bracketedPasteMode) {
     return [
       '${paths.map((path) => _shellEscapeAttachmentPath(path, windows: windows)).join(' ')} ',
     ];
   }
-  return [
-    for (final remotePath in paths)
-      '$_bracketedPasteStart$remotePath$_bracketedPasteEnd ',
-  ];
+  return paths.map((remotePath) {
+    final payload = _isUnquotedSafeAttachmentPath(remotePath, windows: windows)
+        ? remotePath
+        : _shellEscapeAttachmentPath(remotePath, windows: windows);
+    return '$_bracketedPasteStart$payload$_bracketedPasteEnd ';
+  }).toList();
 }
 
 /// Shared helpers for remote file transfers over SFTP.

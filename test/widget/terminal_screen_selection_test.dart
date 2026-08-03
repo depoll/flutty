@@ -464,33 +464,40 @@ void main() {
   });
 
   group('refreshTerminalBracketedPasteModeFromMuxWindows', () {
-    test(
-      'refreshes a stale disabled mode before attachment insertion',
-      () async {
-        final terminal = Terminal();
-        final windows = Completer<Iterable<TmuxWindow>>();
-        final refresh = refreshTerminalBracketedPasteModeFromMuxWindows(
-          terminal: terminal,
-          loadWindows: () => windows.future,
-        );
+    test('refreshes a stale disabled mode before terminal paste', () async {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+      final windows = Completer<Iterable<TmuxWindow>>();
+      final refresh = refreshTerminalBracketedPasteModeFromMuxWindows(
+        terminal: terminal,
+        loadWindows: () => windows.future,
+      );
 
-        expect(terminal.bracketedPasteMode, isFalse);
-        windows.complete(const [
-          TmuxWindow(
-            index: 0,
-            name: 'copilot',
-            isActive: true,
-            terminalBracketedPasteMode: true,
-          ),
-        ]);
+      expect(terminal.bracketedPasteMode, isFalse);
+      windows.complete(const [
+        TmuxWindow(
+          index: 0,
+          name: 'copilot',
+          isActive: true,
+          terminalBracketedPasteMode: true,
+        ),
+      ]);
 
-        expect(await refresh, (
-          bracketedPasteMode: true,
-          activeWindowKey: '#0',
-        ));
-        expect(terminal.bracketedPasteMode, isTrue);
-      },
-    );
+      expect(await refresh, (
+        bracketedPasteMode: true,
+        bracketedPasteModeKnown: true,
+        activeWindowKey: '#0',
+      ));
+      expect(terminal.bracketedPasteMode, isTrue);
+
+      pasteTerminalTextWithBracketedPasteMode(
+        terminal: terminal,
+        text: 'clipboard text',
+        bracketedPasteMode: true,
+      );
+
+      expect(output, ['\x1b[200~clipboard text\x1b[201~']);
+    });
 
     test('applies known disabled mode and preserves unknown mode', () async {
       final terminal = Terminal()..setBracketedPasteMode(true);
@@ -507,7 +514,11 @@ void main() {
             ),
           ],
         ),
-        (bracketedPasteMode: false, activeWindowKey: '#0'),
+        (
+          bracketedPasteMode: false,
+          bracketedPasteModeKnown: true,
+          activeWindowKey: '#0',
+        ),
       );
 
       terminal.setBracketedPasteMode(true);
@@ -518,7 +529,11 @@ void main() {
             TmuxWindow(index: 0, name: 'legacy', isActive: true),
           ],
         ),
-        (bracketedPasteMode: true, activeWindowKey: '#0'),
+        (
+          bracketedPasteMode: true,
+          bracketedPasteModeKnown: false,
+          activeWindowKey: '#0',
+        ),
       );
     });
 
@@ -538,8 +553,27 @@ void main() {
             ),
           ],
         ),
-        (bracketedPasteMode: true, activeWindowKey: '@9'),
+        (
+          bracketedPasteMode: true,
+          bracketedPasteModeKnown: true,
+          activeWindowKey: '@9',
+        ),
       );
+    });
+
+    test('can conservatively paste without mutating cached terminal mode', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add)
+        ..setBracketedPasteMode(true);
+
+      pasteTerminalTextWithBracketedPasteMode(
+        terminal: terminal,
+        text: 'clipboard text',
+        bracketedPasteMode: false,
+      );
+
+      expect(output, ['clipboard text']);
+      expect(terminal.bracketedPasteMode, isTrue);
     });
   });
 
