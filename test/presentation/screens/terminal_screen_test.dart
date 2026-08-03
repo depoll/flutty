@@ -3987,6 +3987,11 @@ void main() {
 
         await tester.pump(const Duration(milliseconds: 300));
         await tester.pump();
+        final switchResizeCalls = monkeyMuxService.resizeTerminalCalls
+            .skip(resizeCallsBeforeSwitch)
+            .toList(growable: false);
+        expect(switchResizeCalls, hasLength(1));
+        expect(switchResizeCalls.single.redraw, isTrue);
         final resizeCallsAfterWindowReplay =
             monkeyMuxService.resizeTerminalCalls.length;
         final terminalViewState = tester.state<MonkeyTerminalViewState>(
@@ -4481,8 +4486,9 @@ void main() {
         await tester.pump();
         expect(
           monkeyMuxService.resizeTerminalCalls.length,
-          resizeCountAfterWindowRefresh,
+          resizeCountAfterWindowRefresh + 1,
         );
+        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
         await gesture.up();
 
         final placeholder = String.fromCharCode(
