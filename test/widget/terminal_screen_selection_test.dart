@@ -609,6 +609,50 @@ void main() {
     });
   });
 
+  group('shouldRetryTerminalPasteModeSettle', () {
+    test('does not retry a failed refresh', () {
+      expect(
+        shouldRetryTerminalPasteModeSettle(
+          refreshAttempted: true,
+          refreshSucceeded: false,
+          modeReliable: false,
+          targetsCurrentWindow: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('retries successful snapshots until mode and window settle', () {
+      expect(
+        shouldRetryTerminalPasteModeSettle(
+          refreshAttempted: true,
+          refreshSucceeded: true,
+          modeReliable: false,
+          targetsCurrentWindow: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldRetryTerminalPasteModeSettle(
+          refreshAttempted: true,
+          refreshSucceeded: true,
+          modeReliable: true,
+          targetsCurrentWindow: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldRetryTerminalPasteModeSettle(
+          refreshAttempted: true,
+          refreshSucceeded: true,
+          modeReliable: true,
+          targetsCurrentWindow: true,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('enableAndroidPhotoPickerForTerminalMedia', () {
     test('enables the existing Android image picker implementation', () {
       final imagePicker = ImagePickerAndroid();

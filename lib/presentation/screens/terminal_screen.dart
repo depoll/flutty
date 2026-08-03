@@ -957,6 +957,20 @@ void pasteTerminalTextWithBracketedPasteMode({
   }
 }
 
+/// Whether paste-mode settling should request another mux snapshot.
+@visibleForTesting
+bool shouldRetryTerminalPasteModeSettle({
+  required bool refreshAttempted,
+  required bool refreshSucceeded,
+  required bool modeReliable,
+  required bool targetsCurrentWindow,
+}) {
+  if (refreshAttempted && !refreshSucceeded) {
+    return false;
+  }
+  return !modeReliable || !targetsCurrentWindow;
+}
+
 int? _compareMonkeyMuxVersions(String? left, String? right) {
   final leftVersion = _parseMonkeyMuxVersion(left);
   final rightVersion = _parseMonkeyMuxVersion(right);
@@ -5262,8 +5276,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           !_terminalPasteModeOwnsCurrentContext(pasteMode)) {
         return pasteMode;
       }
-      if (_terminalPasteModeIsReliable(pasteMode) &&
-          _terminalPasteModeTargetsCurrentWindow(pasteMode)) {
+      final modeReliable = _terminalPasteModeIsReliable(pasteMode);
+      final targetsCurrentWindow = _terminalPasteModeTargetsCurrentWindow(
+        pasteMode,
+      );
+      if (!shouldRetryTerminalPasteModeSettle(
+        refreshAttempted: pasteMode.refreshAttempted,
+        refreshSucceeded: pasteMode.refreshSucceeded,
+        modeReliable: modeReliable,
+        targetsCurrentWindow: targetsCurrentWindow,
+      )) {
         return pasteMode;
       }
       if (attempt < _terminalPasteModeSettleAttempts - 1) {
