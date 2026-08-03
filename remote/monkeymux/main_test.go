@@ -498,6 +498,30 @@ func TestShouldUpdateRunningServerPromptUsesTerminalPrompt(t *testing.T) {
 	}
 }
 
+func TestEnsureServerExistingOnlyRejectsMissingSession(t *testing.T) {
+	session := fmt.Sprintf(
+		"missing-existing-%d-%d",
+		os.Getpid(),
+		time.Now().UnixNano(),
+	)
+
+	err := ensureServer(
+		session,
+		createWindowOptions{},
+		serverUpdatePolicyNever,
+		false,
+		80,
+		24,
+		true,
+	)
+	if err == nil {
+		t.Fatal("existing-only attach created a missing session")
+	}
+	if !strings.Contains(err.Error(), "is not running") {
+		t.Fatalf("existing-only error = %q, want missing-session message", err)
+	}
+}
+
 func TestHasAttachClientReportsAttachConnection(t *testing.T) {
 	server := newMuxServer("test")
 	if server.hasAttachClient() {

@@ -120,6 +120,7 @@ String buildMonkeyMuxAttachCommand({
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
   bool clipViewport = false,
+  bool existingOnly = false,
   bool windows = false,
 }) {
   final themeHint = terminalThemeReports?.trim();
@@ -132,6 +133,7 @@ String buildMonkeyMuxAttachCommand({
       _monkeyMuxQuoteArg(clientId.trim(), windows: windows),
     ],
     if (clipViewport) '--clip-viewport',
+    if (existingOnly) '--existing',
     if (terminalColumns != null && terminalColumns > 0)
       '--width $terminalColumns',
     if (terminalRows != null && terminalRows > 0) '--height $terminalRows',

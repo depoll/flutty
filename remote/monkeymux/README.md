@@ -24,6 +24,7 @@ The direct CLI accepts both concise and familiar tmux-style commands:
 ```sh
 monkeymux                         # attach, create, or choose
 monkeymux attach work             # attach to work
+monkeymux attach --existing work  # attach only if work is still running
 monkeymux attach-session -t work  # same operation, tmux spelling
 monkeymux new-session -s review   # create and attach
 monkeymux new-session -d -s build # create in the background
