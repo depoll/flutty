@@ -154,6 +154,35 @@ class TmuxService {
     return 'tmux $optionText$command';
   }
 
+  /// Returns the version reported by the active remote tmux server.
+  Future<String?> detectedVersion(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    try {
+      final output = await _execTmuxCommand(
+        session,
+        sessionName,
+        'display-message -p -t ${_shellQuote('$sessionName:')} '
+        '${_shellQuote('#{version}')}',
+        extraFlags: extraFlags,
+        priority: SshExecPriority.low,
+      );
+      return parseTmuxVersionOutput(output);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.query',
+        'version_unavailable',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return null;
+    }
+  }
+
   /// Returns whether a tmux binary path cache entry exists for [connectionId].
   @visibleForTesting
   static bool hasTmuxPathCacheEntry(int connectionId) =>
@@ -2718,6 +2747,23 @@ String _diagnosticTmuxCommandKind(String command) {
     return 'which_tmux';
   }
   return 'tmux_exec';
+}
+
+/// Parses a version returned by a tmux version probe.
+@visibleForTesting
+String? parseTmuxVersionOutput(String output) {
+  for (final line in const LineSplitter().convert(output).reversed) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) {
+      continue;
+    }
+    final match = RegExp(
+      r'^tmux\s+(.+)$',
+      caseSensitive: false,
+    ).firstMatch(trimmed);
+    return match?.group(1)?.trim() ?? trimmed;
+  }
+  return null;
 }
 
 String _buildForegroundTmuxSessionCommand({String? extraFlags}) {

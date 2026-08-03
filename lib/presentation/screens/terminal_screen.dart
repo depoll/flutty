@@ -1018,6 +1018,22 @@ String _telemetryMuxBackendName(RemoteMuxBackend backend) => switch (backend) {
   RemoteMuxBackend.monkeyMux => 'monkeymux',
 };
 
+/// Formats a detected remote multiplexer version for terminal metadata.
+@visibleForTesting
+String? formatRemoteMuxVersionLabel(RemoteMuxBackend backend, String? version) {
+  final trimmedVersion = version?.trim();
+  if (trimmedVersion == null || trimmedVersion.isEmpty) {
+    return null;
+  }
+  final backendLabel = backend.label;
+  if (trimmedVersion.toLowerCase().startsWith(
+    '${backendLabel.toLowerCase()} ',
+  )) {
+    return trimmedVersion;
+  }
+  return '$backendLabel $trimmedVersion';
+}
+
 /// Resolves whether the active tmux window requested mouse-wheel input.
 @visibleForTesting
 bool? resolveTmuxBarActiveWindowReportsMouseWheel(
@@ -3509,6 +3525,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  String? _muxVersion;
   String? _monkeyMuxReconnectSessionName;
   bool _monkeyMuxReconnectAttachPending = false;
   bool _monkeyMuxAttachEstablished = false;
@@ -9500,11 +9517,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _PreparedRemoteMuxCommand command,
   ) {
     void apply() {
+      final muxContextChanged =
+          _tmuxStateConnectionId != session.connectionId ||
+          _activeMuxBackend != command.backend ||
+          _tmuxSessionName != command.sessionName;
       _activeMuxBackend = command.backend;
       _remoteMuxStartupTool = command.tool;
       session
         ..remoteMuxBackend = command.backend
         ..remoteMuxSessionName = command.sessionName;
+      if (muxContextChanged) {
+        _muxVersion = null;
+      }
       if (command.backend != RemoteMuxBackend.monkeyMux) {
         return;
       }
@@ -9611,6 +9635,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isTmuxActive = false;
     _tmuxSessionName = null;
     _monkeyMuxAttachEstablished = false;
+    _muxVersion = null;
     _activeMuxBackend = RemoteMuxBackend.tmux;
     _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
@@ -9644,6 +9669,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxForegroundVerificationTimer = null;
     _tmuxForegroundVerificationGeneration += 1;
     _tmuxForegroundVerificationInFlight = false;
+  }
+
+  Future<void> _refreshMuxVersion({
+    required SshSession session,
+    required String sessionName,
+    required RemoteMuxBackend backend,
+    required int detectionGeneration,
+  }) async {
+    try {
+      final version = await _remoteMultiplexerServiceForBackend(backend)
+          .detectedVersion(
+            session,
+            sessionName,
+            extraFlags: backend == RemoteMuxBackend.tmux
+                ? _host?.tmuxExtraFlags
+                : null,
+          );
+      final normalizedVersion = version?.trim();
+      if (!mounted ||
+          _connectionId != session.connectionId ||
+          detectionGeneration != _tmuxDetectionGeneration ||
+          !_isTmuxActive ||
+          _activeMuxBackend != backend ||
+          _tmuxSessionName != sessionName) {
+        return;
+      }
+      final nextVersion = normalizedVersion == null || normalizedVersion.isEmpty
+          ? null
+          : normalizedVersion;
+      if (_muxVersion != nextVersion) {
+        setState(() => _muxVersion = nextVersion);
+      }
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'version_unavailable',
+        fields: {
+          'connectionId': session.connectionId,
+          'backend': backend.storageValue,
+          'errorType': error.runtimeType,
+        },
+      );
+      if (mounted &&
+          _connectionId == session.connectionId &&
+          detectionGeneration == _tmuxDetectionGeneration &&
+          _isTmuxActive &&
+          _activeMuxBackend == backend &&
+          _tmuxSessionName == sessionName &&
+          _muxVersion != null) {
+        setState(() => _muxVersion = null);
+      }
+    }
   }
 
   Future<void> _verifyTmuxForegroundSession(
@@ -9815,6 +9892,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _isTmuxActive = true;
           _tmuxSessionName = candidateSessionName;
           _activeMuxBackend = muxBackend;
+          _muxVersion = null;
           _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
           _tmuxWorkingDirectory = preferredWorkingDirectory;
@@ -9824,6 +9902,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _stopTmuxForegroundVerification();
           _isTmuxActive = false;
           _tmuxSessionName = null;
+          _muxVersion = null;
           _tmuxStateConnectionId = null;
           _tmuxLaunchWorkingDirectory = null;
           _tmuxWorkingDirectory = null;
@@ -9997,6 +10076,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             tmuxLaunchCwd,
           );
         });
+        unawaited(
+          _refreshMuxVersion(
+            session: session,
+            sessionName: sessionName,
+            backend: muxBackend,
+            detectionGeneration: detectionGeneration,
+          ),
+        );
         session
           ..remoteMuxBackend = muxBackend
           ..remoteMuxSessionName = sessionName;
@@ -11742,6 +11829,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   List<Widget> _buildTerminalStatusChips(ThemeData theme) {
     final chipLabels = <({IconData icon, String label, String tooltip})>[
+      if (formatRemoteMuxVersionLabel(_activeMuxBackend, _muxVersion)
+          case final muxVersionLabel? when _isTmuxActive)
+        (
+          icon: Icons.window_outlined,
+          label: muxVersionLabel,
+          tooltip:
+              'Detected ${_activeMuxBackend.label} version for the active '
+              'remote multiplexer.',
+        ),
       if (_workingDirectoryLabel case final workingDirectory?
           when workingDirectory.isNotEmpty)
         (

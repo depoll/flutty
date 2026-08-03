@@ -156,8 +156,17 @@ class _FakeRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
 }
 
 class _MockTmuxService extends Mock implements TmuxService {
+  String? detectedVersionValue;
+
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
+
+  @override
+  Future<String?> detectedVersion(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async => detectedVersionValue;
 }
 
 class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
@@ -165,6 +174,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   Future<MonkeyMuxServerStatus?>? runningStatusFuture;
   MonkeyMuxServerStatus? installedHelpersStatus;
   String? helperVersion;
+  String? detectedVersionValue;
   int installedHelperVersionCalls = 0;
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
@@ -183,6 +193,13 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
 
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
+
+  @override
+  Future<String?> detectedVersion(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async => detectedVersionValue;
 
   @override
   bool hasLiveControlChannel(SshSession session, String sessionName) =>
@@ -2757,6 +2774,31 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
     }
+
+    testWidgets(
+      'shows the detected tmux version in terminal info',
+      (tester) async {
+        final tmuxService = _MockTmuxService()..detectedVersionValue = '3.4';
+        await pumpTmuxScreen(tester, tmuxService);
+        await tester.pump();
+
+        await openTerminalOverflowSubmenu(tester, 'Options');
+        final showTerminalInfo = terminalMenuItemButton('Show Terminal Info');
+        expect(showTerminalInfo, findsOneWidget);
+
+        await tester.tap(showTerminalInfo);
+        await tester.pumpAndSettle();
+
+        expect(find.text('tmux 3.4'), findsOneWidget);
+        expect(
+          find.byTooltip(
+            'Detected tmux version for the active remote multiplexer.',
+          ),
+          findsOneWidget,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
 
     testWidgets(
       'keeps probing for tmux after an initial inactive result',
