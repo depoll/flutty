@@ -2886,6 +2886,55 @@ LISTEN ::1:4201
     });
 
     test(
+      'emits shell done when a completed startup command has no login fallback',
+      () async {
+        final client = _MockSshClient();
+        final shell = _MockExecSession();
+        final shellDone = Completer<void>();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => shell);
+        when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+        when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => shell.done).thenAnswer((_) => shellDone.future);
+        when(shell.close).thenAnswer((_) {});
+
+        await session.getShell(
+          requestPty: false,
+          command: 'monkeymux attach work',
+        );
+        final emittedShellDone = session.shellDoneStream.first;
+
+        shellDone.complete();
+
+        await emittedShellDone;
+        verify(
+          () => client.execute(
+            _expectedMarkedCommand(session, 'monkeymux attach work'),
+          ),
+        ).called(1);
+        verifyNever(
+          () => client.execute(
+            _expectedLoginShellCommand(session),
+            pty: any(named: 'pty'),
+          ),
+        );
+        await session.closeShell(waitForStreams: false);
+      },
+    );
+
+    test(
       'gates Kitty graphics by the actual Windows channel transport',
       () async {
         final client = _MockSshClient();

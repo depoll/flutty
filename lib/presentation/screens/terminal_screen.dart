@@ -3455,6 +3455,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  String? _monkeyMuxReconnectSessionName;
   int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
@@ -7249,7 +7250,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             !(session.remoteIsWindows &&
                 startupCommand?.backend == RemoteMuxBackend.monkeyMux),
         command: startupCommand?.command,
-        returnToLoginShell: startupCommand != null,
       );
       DiagnosticsLogService.instance.info(
         'terminal',
@@ -8370,6 +8370,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return (command: null, handled: true);
     }
 
+    final reconnectSessionName = _monkeyMuxReconnectSessionName;
+    if (reconnectSessionName != null) {
+      final attachCommand = await _prepareRemoteMuxAttachCommand(
+        session,
+        host,
+        reconnectSessionName,
+        preferredBackend: RemoteMuxBackend.monkeyMux,
+      );
+      if (attachCommand == null) {
+        _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+        return (command: null, handled: true);
+      }
+      DiagnosticsLogService.instance.info(
+        'terminal',
+        'monkeymux_reconnect_target_used',
+        fields: {'connectionId': session.connectionId},
+      );
+      _applyPreparedRemoteMuxCommand(session, attachCommand);
+      return (command: attachCommand, handled: true);
+    }
+
     final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
     if (tmuxSession != null && tmuxSession.isNotEmpty) {
       if (_configuredRemoteMuxBackend(host) == RemoteMuxBackend.tmux) {
@@ -8550,12 +8571,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<_PreparedRemoteMuxCommand?> _prepareRemoteMuxAttachCommand(
     SshSession session,
     Host host,
-    String sessionName,
-  ) async {
+    String sessionName, {
+    RemoteMuxBackend? preferredBackend,
+  }) async {
     final attachCommand = await _buildRemoteMuxAttachCommand(
       session,
       host,
       sessionName,
+      preferredBackend: preferredBackend,
     );
     if (!mounted || attachCommand == null) {
       return null;
@@ -8589,10 +8612,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   _buildRemoteMuxAttachCommand(
     SshSession session,
     Host host,
-    String sessionName,
-  ) async {
+    String sessionName, {
+    RemoteMuxBackend? preferredBackend,
+  }) async {
     final configuredBackend =
-        _configuredRemoteMuxBackend(host) ?? RemoteMuxBackend.auto;
+        preferredBackend ??
+        _configuredRemoteMuxBackend(host) ??
+        RemoteMuxBackend.auto;
     // Windows remotes run cmd.exe/PowerShell, which can't host tmux. MonkeyMux
     // does work there via its ConPTY helper, so only the tmux backend is
     // skipped; the monkeyMux/auto path proceeds and, if the helper can't
@@ -10367,6 +10393,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _tmuxSessionName != sessionName) {
       return;
     }
+    _monkeyMuxReconnectSessionName = null;
     DiagnosticsLogService.instance.info(
       'tmux.ui',
       'monkeymux_session_disconnect',
@@ -10918,6 +10945,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session,
         host,
         sessionName,
+        preferredBackend: _activeMuxBackend,
       );
       if (attachCommand == null) {
         return;
@@ -11020,7 +11048,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pty: pty,
         requestPty: requestPty,
         command: command,
-        returnToLoginShell: command != null,
       );
       if (!stillOwnsSession()) {
         restorePreviousTerminalState(restoreShell: false);
@@ -11103,6 +11130,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final suppressAutomaticReconnect =
         _suppressNextAutomaticReconnectConnectionId == connectionId;
     _suppressNextAutomaticReconnectConnectionId = null;
+    _rememberMonkeyMuxReconnectTarget(_observedSession);
     _prepareTerminalForLostConnection(_observedSession);
     if (_wasBackgrounded) {
       _connectionLostWhileBackgrounded = !suppressAutomaticReconnect;
@@ -11152,6 +11180,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _handleShellClosed() {
     final connectionId = _connectionId;
+    _rememberMonkeyMuxReconnectTarget(_observedSession ?? _activeSession());
     _shell = null;
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
@@ -11246,6 +11275,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_isConnecting) {
       return;
     }
+    _rememberMonkeyMuxReconnectTarget(_observedSession ?? _activeSession());
     if (mounted) {
       setState(() {
         _clearTmuxState();
@@ -11286,6 +11316,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isConnecting = false;
       }
     }
+  }
+
+  void _rememberMonkeyMuxReconnectTarget(SshSession? session) {
+    final backend = _isTmuxActive
+        ? _activeMuxBackend
+        : session?.remoteMuxBackend;
+    if (backend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    final sessionName = (_tmuxSessionName ?? session?.remoteMuxSessionName)
+        ?.trim();
+    if (sessionName == null || sessionName.isEmpty) {
+      return;
+    }
+    _monkeyMuxReconnectSessionName = sessionName;
+    DiagnosticsLogService.instance.info(
+      'terminal',
+      'monkeymux_reconnect_target_saved',
+      fields: {'connectionId': session?.connectionId ?? _connectionId},
+    );
   }
 
   @override
