@@ -249,7 +249,7 @@ func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
 	if height > 1 {
 		return width, height - 1, true
 	}
-	return width, height, false
+	return 2, 1, true
 }
 
 func shouldSimulateForegroundRedraw(

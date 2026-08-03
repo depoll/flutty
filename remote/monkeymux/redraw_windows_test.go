@@ -3,9 +3,48 @@
 package main
 
 import (
+	"io"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 )
+
+type recordedTerminalSize struct {
+	width  int
+	height int
+}
+
+type resizeRecordingPty struct {
+	mu    sync.Mutex
+	sizes []recordedTerminalSize
+}
+
+func (p *resizeRecordingPty) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (p *resizeRecordingPty) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+func (p *resizeRecordingPty) Close() error { return nil }
+
+func (p *resizeRecordingPty) Resize(width int, height int) error {
+	p.mu.Lock()
+	p.sizes = append(
+		p.sizes,
+		recordedTerminalSize{width: width, height: height},
+	)
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *resizeRecordingPty) Fd() uintptr { return 0 }
+
+func (p *resizeRecordingPty) snapshot() []recordedTerminalSize {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]recordedTerminalSize(nil), p.sizes...)
+}
 
 func TestForcedSameSizeRedrawUsesSyntheticWindowsFallback(t *testing.T) {
 	server := newMuxServerWithSize("test", 120, 40)
@@ -36,6 +75,35 @@ func TestForcedSameSizeRedrawUsesSyntheticWindowsFallback(t *testing.T) {
 
 	if !reflect.DeepEqual(simulated, []string{"@1"}) {
 		t.Fatalf("same-size redraw fallback = %#v, want [@1]", simulated)
+	}
+}
+
+func TestSingleCellRedrawUsesTemporaryWindowsExpansion(t *testing.T) {
+	server := newMuxServerWithSize("test", 1, 1)
+	pty := &resizeRecordingPty{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		pty:               pty,
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
+	server.attachConn = &recordingConn{}
+
+	server.resizeWithRedraw(1, 1, true, false, "")
+
+	deadline := time.Now().Add(time.Second)
+	for len(pty.snapshot()) < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	want := []recordedTerminalSize{
+		{width: 1, height: 1},
+		{width: 2, height: 1},
+		{width: 1, height: 1},
+	}
+	if got := pty.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("single-cell redraw sizes = %#v, want %#v", got, want)
 	}
 }
 
