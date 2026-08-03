@@ -3956,6 +3956,10 @@ class SshSession {
   /// Shell done event stream for screen re-attachment.
   Stream<void> get shellDoneStream => _runtime.shellDoneStream;
 
+  /// Completion events for startup commands that return to a login shell.
+  Stream<void> get shellCommandCompletedStream =>
+      _runtime.shellCommandCompletedStream;
+
   /// Writes text to the currently active shell channel.
   void writeToShell(String data) => _runtime.writeToShell(data);
 
