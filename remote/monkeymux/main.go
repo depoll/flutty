@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.137"
+	monkeyMuxVersion                  = "0.1.138"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -479,22 +479,24 @@ type muxServer struct {
 	publishedWidth  int
 	publishedHeight int
 
-	mu                      sync.Mutex
-	resizeMu                sync.Mutex
-	windows                 []*muxWindow
-	activeID                string
-	lastActiveID            string
-	nextID                  int
-	listener                net.Listener
-	attachConn              net.Conn
-	attachMu                sync.Mutex
-	attachClients           map[net.Conn]*attachClient
-	nextAttachSequence      uint64
-	nextFocusSequence       uint64
-	pendingFocusRefreshConn net.Conn
-	pendingResizeWidth      int
-	pendingResizeHeight     int
-	pendingResizeRedraw     bool
+	mu                               sync.Mutex
+	resizeMu                         sync.Mutex
+	attachTransitionMu               sync.Mutex
+	windows                          []*muxWindow
+	activeID                         string
+	lastActiveID                     string
+	nextID                           int
+	listener                         net.Listener
+	attachConn                       net.Conn
+	attachMu                         sync.Mutex
+	attachClients                    map[net.Conn]*attachClient
+	nextAttachSequence               uint64
+	nextFocusSequence                uint64
+	pendingFocusRefreshConn          net.Conn
+	attachViewportTransitionWindowID string
+	pendingResizeWidth               int
+	pendingResizeHeight              int
+	pendingResizeRedraw              bool
 	// pendingResizeSyntheticRedraw preserves, across a viewport-transition
 	// deferral, whether a deferred forced redraw needs the synthetic one-cell
 	// resize dance (e.g. a theme change, whose SIGWINCH at an unchanged size
@@ -4176,6 +4178,21 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var outputGeneration uint64
 	now := time.Now()
 
+	for {
+		s.mu.Lock()
+		window := s.windowByIDLocked(windowID)
+		waitForAttachTransition :=
+			s.attachViewportTransitionWindowID == windowID &&
+				window != nil &&
+				!window.closed &&
+				terminalViewportTransitionSafe(window)
+		s.mu.Unlock()
+		if !waitForAttachTransition {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
@@ -5895,7 +5912,6 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 }
 
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
-	var replay []byte
 	var foregroundProcessGroup int
 	var redrawWindow *muxWindow
 	var activeWindowID string
@@ -5910,9 +5926,54 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	client.inputPassthrough = func(data []byte) {
 		_ = s.handleAttachInput(client, data)
 	}
-	s.resizeMu.Lock()
-	s.attachMu.Lock()
-	s.mu.Lock()
+	s.attachTransitionMu.Lock()
+	attachTransitionLocked := true
+	defer func() {
+		if attachTransitionLocked {
+			s.attachTransitionMu.Unlock()
+		}
+	}()
+	transitionWindowID := ""
+	for {
+		s.mu.Lock()
+		if s.closed {
+			s.attachViewportTransitionWindowID = ""
+			s.mu.Unlock()
+			client.close()
+			return
+		}
+		transitionWindowID = s.activeID
+		s.attachViewportTransitionWindowID = transitionWindowID
+		window := s.windowByIDLocked(transitionWindowID)
+		transitionSafe := terminalViewportTransitionSafe(window)
+		s.mu.Unlock()
+		if !transitionSafe {
+			time.Sleep(time.Millisecond)
+			continue
+		}
+
+		s.resizeMu.Lock()
+		s.attachMu.Lock()
+		s.mu.Lock()
+		window = s.windowByIDLocked(s.activeID)
+		if !s.closed &&
+			s.activeID == transitionWindowID &&
+			terminalViewportTransitionSafe(window) {
+			break
+		}
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		s.resizeMu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	if s.closed {
+		s.attachViewportTransitionWindowID = ""
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		s.resizeMu.Unlock()
+		client.close()
+		return
+	}
 	if s.attachClients == nil {
 		s.attachClients = map[net.Conn]*attachClient{}
 	}
@@ -5927,9 +5988,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	}
 	width, height := s.primaryAttachSizeLocked()
 	window := s.windowByIDLocked(s.activeID)
-	if width > 0 &&
-		height > 0 &&
-		terminalViewportTransitionSafe(window) {
+	if width > 0 && height > 0 {
 		s.pendingFocusRefreshConn = nil
 		s.pendingResizeWidth = 0
 		s.pendingResizeHeight = 0
@@ -5942,33 +6001,33 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.publishedWidth = width
 		s.publishedHeight = height
 		s.resizeActiveLocked(width, height)
-	} else if width > 0 && height > 0 {
-		s.width = width
-		s.height = height
-		s.pendingFocusRefreshConn = conn
-		s.enqueueAttachViewportResizeLocked(
-			s.publishedWidth,
-			s.publishedHeight,
-		)
 	} else {
 		s.pendingFocusRefreshConn = nil
 	}
-	replay = s.activeReplayLocked()
+	replay := s.activeReplayLocked()
+	var completion <-chan error
+	var queued bool
 	if window != nil {
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
 		redrawWindow = window
 		activeWindowID = window.id
+		client.markOutputReplay(activeWindowID, window.outputGeneration)
 		if len(s.themeHint) > 0 {
 			themeHintData = window.themeHintRefreshDataLocked(s.themeHint)
 			themeHintWindowID = window.id
 			sendFocusTransition = window.themeHintFocusTransitionLocked()
 		}
 	}
+	completion, queued = client.enqueue(replay, true)
+	if !queued {
+		client.clearOutputReplay()
+	}
+	s.attachViewportTransitionWindowID = ""
 	s.mu.Unlock()
-
-	completion, queued := client.enqueue(replay, true)
 	s.attachMu.Unlock()
 	s.resizeMu.Unlock()
+	s.attachTransitionMu.Unlock()
+	attachTransitionLocked = false
 	if queued {
 		queued = client.waitForWrite(completion)
 	}
