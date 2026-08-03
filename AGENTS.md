@@ -18,6 +18,30 @@ bundle exec fastlane regenerate_profiles scheme:Private
 
 Local Xcode builds with automatic signing pick up the new entitlement on next build without any extra step (Xcode regenerates dev profiles via the developer portal automatically).
 
+## MonkeyMux Go tests on a Windows dev machine
+
+CI runs the MonkeyMux Go suite on both Linux and Windows (the `go-test` job), because the two platforms cover disjoint sets: most of the suite is `//go:build !windows` and needs `creack/pty` plus the `unixPty` type, while the ConPTY backend tests are `//go:build windows`.
+
+On a Windows workstation `go test ./...` in `remote/monkeymux` therefore only runs the ~17 portable + Windows-tagged tests. To run the full Linux set locally, use WSL:
+
+```powershell
+wsl --install Ubuntu-26.04 --no-launch   # WSL2 kernel ships with Windows; no reboot needed
+```
+
+Then inside the distro install Go (the module needs the toolchain in `go.mod`, not the older apt package) and clone into the **Linux** filesystem:
+
+```bash
+curl -sSLO https://go.dev/dl/go1.26.5.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.26.5.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee /etc/profile.d/go.sh
+sudo apt-get install -y build-essential   # cgo, needed for `go test -race`
+
+git clone --depth 1 --single-branch file:///mnt/c/path/to/MonkeySSH ~/MonkeySSH
+cd ~/MonkeySSH/remote/monkeymux && go test -race ./...
+```
+
+**Do not run the suite over `/mnt/c`.** The repository has no `.gitattributes` and Git for Windows checks out CRLF, so `gofmt -l` flags every file. `os.Symlink` also fails on `/mnt/c` without Developer Mode, and `TestAssignCopilotSessionsByWorkingDirectoryNormalizesPaths` has a `t.Skipf` guard, so that coverage is silently lost rather than reported. Cloning into the Linux filesystem gives an LF checkout and working symlinks. A local `file://` clone avoids needing GitHub credentials in the distro; use `--depth 1` because `.git` is several GB.
+
 ## Manual testing: tmux navigation
 
 The tmux/MonkeyMux navigator feature requires a real SSH connection to a host running tmux or MonkeyMux. Use the setup script to create a local tmux test environment:
