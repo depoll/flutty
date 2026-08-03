@@ -163,11 +163,30 @@ void main() {
         name: 'workspace',
         isActive: false,
         currentCommand: 'claude',
+        currentPath: '/src/workspace',
         paneTitle: '✨ Editing main.dart',
       );
 
       expect(window.handleTitle, 'workspace');
     });
+
+    test(
+      'handleTitle uses the pane title for runtime-backed agent windows',
+      () {
+        const window = TmuxWindow(
+          index: 1,
+          name: 'Copilot CLI',
+          isActive: true,
+          currentCommand: 'node',
+          currentPath: r'C:\src\MonkeySSH',
+          paneTitle: 'Fix Windows session titles',
+          agentTool: AgentLaunchTool.copilotCli,
+        );
+
+        expect(window.displayTitle, 'Fix Windows session titles');
+        expect(window.handleTitle, 'Fix Windows session titles');
+      },
+    );
 
     test(
       'prefers decorated window name when pane title is the plain version',
