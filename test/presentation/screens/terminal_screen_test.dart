@@ -7217,6 +7217,7 @@ void main() {
         final reconnectCommand = reconnectCommands.single;
         expect(reconnectCommand, contains('/tmp/monkeymux'));
         expect(reconnectCommand, contains(' attach'));
+        expect(reconnectCommand, contains('--existing'));
         expect(reconnectCommand, contains('--update-policy never'));
         expect(reconnectCommand, contains('agents'));
         expect(reconnectCommand, isNot(contains('--command')));

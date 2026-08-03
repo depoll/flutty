@@ -3049,6 +3049,10 @@ LISTEN ::1:4201
           shellDoneEvents.add,
         );
         addTearDown(shellDoneSubscription.cancel);
+        var commandCompletedCount = 0;
+        final commandCompletedSubscription = session.shellCommandCompletedStream
+            .listen((_) => commandCompletedCount += 1);
+        addTearDown(commandCompletedSubscription.cancel);
 
         startupStdout.add(Uint8List.fromList(utf8.encode('\x1b[?9001h')));
         await pumpEventQueue();
@@ -3065,6 +3069,7 @@ LISTEN ::1:4201
         final replacementShell = await session.getShell();
 
         expect(replacementShell, same(loginShell));
+        expect(commandCompletedCount, 1);
         expect(shellDoneEvents, isEmpty);
         expect(startupWrites, isEmpty);
         expect(loginWrites.map(utf8.decode), contains('queued input'));
