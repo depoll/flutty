@@ -240,11 +240,22 @@ void main() {
           bracketedPasteMode: true,
           windows: true,
         ),
+        [
+          '$start${r'"C:\Users\John Smith\.cache\monkeyssh\uploads\a.png"'}$end ',
+        ],
+      );
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          [r'C:\Users\John Smith\.cache\monkeyssh\uploads\a.png'],
+          bracketedPasteMode: true,
+          windows: true,
+          preferRawAgentPaths: true,
+        ),
         ['$start${r'C:\Users\John Smith\.cache\monkeyssh\uploads\a.png'}$end '],
       );
     });
 
-    test('keeps printable paths raw inside separate bracketed pastes', () {
+    test('keeps agent paths raw and shell paths escaped when needed', () {
       const start = '\x1b[200~';
       const end = '\x1b[201~';
       expect(
@@ -253,15 +264,23 @@ void main() {
           '/home/u/.cache/monkeyssh/uploads/b.png',
         ], bracketedPasteMode: true),
         [
-          '$start/home/john smith/.cache/monkeyssh/uploads/a.png$end ',
+          "$start'/home/john smith/.cache/monkeyssh/uploads/a.png'$end ",
           '$start/home/u/.cache/monkeyssh/uploads/b.png$end ',
         ],
+      );
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          ['/home/john smith/.cache/monkeyssh/uploads/a.png'],
+          bracketedPasteMode: true,
+          preferRawAgentPaths: true,
+        ),
+        ['$start/home/john smith/.cache/monkeyssh/uploads/a.png$end '],
       );
       expect(
         buildTerminalAttachmentPasteSegments([
           r'/home/u/$(reboot)/a.png',
         ], bracketedPasteMode: true),
-        isEmpty,
+        ["$start'/home/u/\$(reboot)/a.png'$end "],
       );
     });
 
