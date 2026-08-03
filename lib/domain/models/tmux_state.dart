@@ -1018,6 +1018,9 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
     'cursor-agent',
     'cursor cli',
   },
+  AgentLaunchTool.pi => const {'pi'},
+  AgentLaunchTool.hermes => const {'hermes', 'hermes agent'},
+  AgentLaunchTool.openclaw => const {'openclaw', 'openclaw tui'},
 };
 
 AgentLaunchTool? _agentToolFromTerminalTitle(String? value) {
@@ -1136,6 +1139,17 @@ String? agentSessionIdFromLaunchCommand(
     ],
     AgentLaunchTool.cursorAgent => const [
       r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.pi => const [
+      r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+      r'''(?<!\S)--session-id(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.hermes => const [
+      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+      r'''(?<!\S)-r\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.openclaw => const [
+      r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
     ],
   };
 

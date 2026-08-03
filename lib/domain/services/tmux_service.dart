@@ -4234,6 +4234,12 @@ String buildAgentToolDetectionCommand() {
 /// Builds the PowerShell script used by [TmuxService.detectInstalledAgentTools]
 /// to resolve agent CLI binaries on Windows remotes.
 ///
+/// It first applies the user's profile `PATH` (see
+/// [powerShellProfilePathPreamble]) because agent CLIs are usually installed
+/// through npm/bun or a Node version manager, which put their shims on `PATH`
+/// from a PowerShell profile rather than the persistent environment an SSH exec
+/// channel inherits.
+///
 /// It only accepts external commands (`Application` or `ExternalScript`) so
 /// aliases, functions, and cmdlets are not mistaken for installed CLIs.
 @visibleForTesting
@@ -4246,6 +4252,7 @@ String buildWindowsAgentToolDetectionScript() {
         ..sort();
   final quotedNames = names.map(powerShellSingleQuote).join(',');
   final body = [
+    powerShellProfilePathPreamble,
     '\$__flNames=@($quotedNames);',
     r'foreach($__flName in $__flNames){',
     r'$__flCmd=Get-Command -Name $__flName -CommandType Application,ExternalScript -ErrorAction SilentlyContinue|Select-Object -First 1;',

@@ -240,25 +240,58 @@ void main() {
           bracketedPasteMode: true,
           windows: true,
         ),
-        [r'"C:\Users\John Smith\.cache\monkeyssh\uploads\a.png" '],
+        [
+          '$start${r'"C:\Users\John Smith\.cache\monkeyssh\uploads\a.png"'}$end ',
+        ],
+      );
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          [r'C:\Users\John Smith\.cache\monkeyssh\uploads\a.png'],
+          bracketedPasteMode: true,
+          windows: true,
+          preferRawAgentPaths: true,
+        ),
+        ['$start${r'C:\Users\John Smith\.cache\monkeyssh\uploads\a.png'}$end '],
       );
     });
 
-    test('falls back to shell-escaping when a path is not unquoted-safe', () {
-      // A remote home directory with a space (or shell metacharacters) must not
-      // be pasted raw: it would split/inject in a shell. Such a path would not
-      // produce a preview chip anyway, so a safe shell-escaped segment is used.
+    test('keeps agent paths raw and shell paths escaped when needed', () {
+      const start = '\x1b[200~';
+      const end = '\x1b[201~';
       expect(
         buildTerminalAttachmentPasteSegments([
           '/home/john smith/.cache/monkeyssh/uploads/a.png',
+          '/home/u/.cache/monkeyssh/uploads/b.png',
         ], bracketedPasteMode: true),
-        ["'/home/john smith/.cache/monkeyssh/uploads/a.png' "],
+        [
+          "$start'/home/john smith/.cache/monkeyssh/uploads/a.png'$end ",
+          '$start/home/u/.cache/monkeyssh/uploads/b.png$end ',
+        ],
+      );
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          ['/home/john smith/.cache/monkeyssh/uploads/a.png'],
+          bracketedPasteMode: true,
+          preferRawAgentPaths: true,
+        ),
+        ['$start/home/john smith/.cache/monkeyssh/uploads/a.png$end '],
       );
       expect(
         buildTerminalAttachmentPasteSegments([
           r'/home/u/$(reboot)/a.png',
         ], bracketedPasteMode: true),
-        [r"'/home/u/$(reboot)/a.png' "],
+        ["$start'/home/u/\$(reboot)/a.png'$end "],
+      );
+    });
+
+    test('omits paths containing terminal control characters', () {
+      expect(
+        buildTerminalAttachmentPasteSegments([
+          '/tmp/safe.png',
+          '/tmp/bad\x1b[201~\n.png',
+          '/tmp/c1\u009b201~.png',
+        ], bracketedPasteMode: true),
+        const ['\x1b[200~/tmp/safe.png\x1b[201~ '],
       );
     });
 

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path;
 
 final _sftpWindowsDriveRootPattern = RegExp(r'^/?[A-Za-z]:(?:/|$)');
+final _terminalControlCharacterPattern = RegExp(r'[\x00-\x1f\x7f-\x9f]');
 
 /// Display path for files pasted directly into a terminal session.
 const remoteClipboardUploadDirectoryDisplay = '~/.cache/monkeyssh/uploads';
@@ -336,16 +337,20 @@ String shellEscapeWindows(String value) {
 const _bracketedPasteStart = '\x1b[200~';
 const _bracketedPasteEnd = '\x1b[201~';
 
-/// Whether [path] is safe to paste unquoted (only path separators and the
-/// strict upload-filename allowlist). Windows shell paths also allow `:`
-/// drive prefixes and `\` separators.
-/// Uploaded filenames are sanitized, but the directory prefix derives from the
-/// remote home directory, which a hostile or misconfigured server could fill
-/// with spaces or shell metacharacters.
-bool _isUnquotedSafeAttachmentPath(String path, {required bool windows}) {
+bool _isTerminalSafeAttachmentPath(String path) =>
+    !_terminalControlCharacterPattern.hasMatch(path);
+
+bool _isUnquotedAttachmentPath(String path, {required bool windows}) {
   final safePathPattern = windows
       ? RegExp(r'^[A-Za-z0-9._/\\:-]+$')
       : RegExp(r'^[A-Za-z0-9._/-]+$');
+  return safePathPattern.hasMatch(path);
+}
+
+bool _isRawAgentAttachmentPath(String path, {required bool windows}) {
+  final safePathPattern = windows
+      ? RegExp(r'^[A-Za-z0-9._/\\: -]+$')
+      : RegExp(r'^[A-Za-z0-9._/ -]+$');
   return safePathPattern.hasMatch(path);
 }
 
@@ -355,21 +360,17 @@ String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
 /// Builds the terminal-input segments that reference uploaded [remotePaths]
 /// after a paste upload.
 ///
-/// When [bracketedPasteMode] is true *and* every path is safe to paste
-/// unquoted, each path is returned as its own bracketed-paste segment
-/// (`CSI 200~ <path> CSI 201~ ` with a trailing space). The caller must write
-/// these segments sequentially with a short delay between them: an agent CLI
-/// such as Copilot CLI only recognises each path as a separate attachment —
-/// rendering a preview chip per file — when the bracketed pastes arrive as
-/// distinct reads. The trailing space also keeps the paths usable as distinct
-/// shell arguments.
+/// When [bracketedPasteMode] is true, each path containing only normal path
+/// characters (including spaces) is returned as its own bracketed-paste segment
+/// (`CSI 200~ <path> CSI 201~ ` with a trailing space). The raw path stays
+/// unquoted for paths that are shell-safe, and also for space-containing paths
+/// when [preferRawAgentPaths] confirms an agent CLI owns the pane. Other
+/// printable paths are shell-escaped inside the framing.
 ///
-/// Otherwise — when bracketed paste is not requested, or when a path contains
-/// characters that would be unsafe unquoted (e.g. a remote home directory with
-/// spaces or shell metacharacters) — the paths are shell-escaped for the current
-/// remote shell and returned as a single segment. That form shows no preview (a
-/// path with spaces would not produce a chip anyway) but keeps the inserted text
-/// quoted for the active remote shell.
+/// When bracketed paste is not requested, paths are shell-escaped for the
+/// current remote shell and returned as one segment. Paths containing terminal
+/// control characters are omitted in either mode because they cannot be safely
+/// represented as terminal input.
 ///
 /// Segments must be written straight to the session input sink (e.g.
 /// `Terminal.onOutput`), not through `Terminal.paste`, which would strip the
@@ -378,29 +379,43 @@ List<String> buildTerminalAttachmentPasteSegments(
   Iterable<String> remotePaths, {
   required bool bracketedPasteMode,
   bool windows = false,
+  bool preferRawAgentPaths = false,
 }) {
   final paths = remotePaths
-      .where((remotePath) => remotePath.isNotEmpty)
+      .where(
+        (remotePath) =>
+            remotePath.isNotEmpty && _isTerminalSafeAttachmentPath(remotePath),
+      )
       .toList();
   if (paths.isEmpty) {
     return const [];
   }
-  final canRenderChips =
-      bracketedPasteMode &&
-      paths.every(
-        (remotePath) =>
-            _isUnquotedSafeAttachmentPath(remotePath, windows: windows),
-      );
-  if (!canRenderChips) {
+  if (!bracketedPasteMode) {
     return [
       '${paths.map((path) => _shellEscapeAttachmentPath(path, windows: windows)).join(' ')} ',
     ];
   }
-  return [
-    for (final remotePath in paths)
-      '$_bracketedPasteStart$remotePath$_bracketedPasteEnd ',
-  ];
+  return paths.map((remotePath) {
+    final useRawPath =
+        _isUnquotedAttachmentPath(remotePath, windows: windows) ||
+        (preferRawAgentPaths &&
+            _isRawAgentAttachmentPath(remotePath, windows: windows));
+    final payload = useRawPath
+        ? remotePath
+        : _shellEscapeAttachmentPath(remotePath, windows: windows);
+    return '$_bracketedPasteStart$payload$_bracketedPasteEnd ';
+  }).toList();
 }
+
+/// Counts paths that can be safely represented as terminal attachment input.
+int countTerminalAttachmentPastePaths(Iterable<String> remotePaths) =>
+    remotePaths
+        .where(
+          (remotePath) =>
+              remotePath.isNotEmpty &&
+              _isTerminalSafeAttachmentPath(remotePath),
+        )
+        .length;
 
 /// Shared helpers for remote file transfers over SFTP.
 final remoteFileServiceProvider = Provider<RemoteFileService>(
