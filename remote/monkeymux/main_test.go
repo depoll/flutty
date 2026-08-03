@@ -8001,6 +8001,46 @@ func win32EncodeSequence(sequence string) string {
 	return buffer.String()
 }
 
+func TestEncodeTerminalInputForWin32InputMode(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "bare escape becomes a key event",
+			input: "\x1b",
+			want:  "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_",
+		},
+		{name: "empty input passes through", input: "", want: ""},
+		{name: "cursor key passes through", input: "\x1b[A", want: "\x1b[A"},
+		{
+			name:  "modified cursor key passes through",
+			input: "\x1b[1;5C",
+			want:  "\x1b[1;5C",
+		},
+		{name: "alt chord passes through", input: "\x1bb", want: "\x1bb"},
+		{name: "double escape passes through", input: "\x1b\x1b", want: "\x1b\x1b"},
+		{name: "ctrl-c passes through", input: "\x03", want: "\x03"},
+		{name: "plain text passes through", input: "esc", want: "esc"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := string(encodeTerminalInputForWin32InputMode(
+				[]byte(testCase.input),
+			))
+			if got != testCase.want {
+				t.Fatalf(
+					"encodeTerminalInputForWin32InputMode(%q) = %q, want %q",
+					testCase.input,
+					got,
+					testCase.want,
+				)
+			}
+		})
+	}
+}
+
 func TestStripWin32InputModeRequests(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -8257,6 +8297,81 @@ func TestWin32InputModeResetRestoresRawThemeAnswers(t *testing.T) {
 	})
 	if got != backgroundReport {
 		t.Fatalf("window pty got = %q, want raw background report %q", got, backgroundReport)
+	}
+}
+
+// TestWriteWindowEncodesBareEscapeUnderWin32InputMode verifies that a lone
+// Escape keystroke relayed to a Windows window is delivered as an explicit
+// win32-input-mode key event. ConPTY's input parser holds a bare ESC back until
+// later input disambiguates it, so relaying the raw byte leaves Escape looking
+// dead until the next keypress.
+func TestWriteWindowEncodesBareEscapeUnderWin32InputMode(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:             "@1",
+		pty:            wrapPty(t, inputWriter),
+		lastActivity:   time.Now(),
+		win32InputMode: true,
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	if err := server.writeWindow("@1", []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return output == win32InputModeEscapeKeyEvents
+	})
+	if got != win32InputModeEscapeKeyEvents {
+		t.Fatalf(
+			"window pty got = %q, want %q",
+			got,
+			win32InputModeEscapeKeyEvents,
+		)
+	}
+}
+
+// TestWriteWindowKeepsBareEscapeRawWithoutWin32InputMode verifies that the
+// Escape rewrite is scoped to ConPTY: a POSIX window must still receive the raw
+// byte, which every other terminal delivers unambiguously.
+func TestWriteWindowKeepsBareEscapeRawWithoutWin32InputMode(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:           "@1",
+		pty:          wrapPty(t, inputWriter),
+		lastActivity: time.Now(),
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	if err := server.writeWindow("@1", []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return output == "\x1b"
+	})
+	if got != "\x1b" {
+		t.Fatalf("window pty got = %q, want a raw escape byte", got)
 	}
 }
 
