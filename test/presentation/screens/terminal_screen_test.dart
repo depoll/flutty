@@ -3095,6 +3095,8 @@ void main() {
             ),
           ),
         );
+        expect(session.terminal, isNotNull);
+        session.terminal!.resize(59, 50);
         await tester.pump();
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -3105,6 +3107,19 @@ void main() {
         expect(executedCommands.single, contains(' attach'));
         expect(executedCommands.single, contains('--update-policy never'));
         expect(executedCommands.single, contains(sessionName));
+        final viewportSize = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .viewportCellSize!;
+        expect(
+          executedCommands.single,
+          contains('--width ${viewportSize.columns}'),
+        );
+        expect(
+          executedCommands.single,
+          contains('--height ${viewportSize.rows}'),
+        );
+        expect(executedCommands.single, isNot(contains('--width 59')));
+        expect(executedCommands.single, isNot(contains('--height 50')));
         expect(
           shellWrites.map(utf8.decode).join(),
           isNot(contains('/tmp/monkeymux')),
