@@ -702,6 +702,8 @@ func killCommandProcessGroup(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
+const supportsExplicitForegroundResizeSignal = false
+
 // signalForegroundResize is a no-op on Windows: ResizePseudoConsole already
 // notifies the attached child of size changes.
 var signalForegroundResize = func(processGroup int) {}
