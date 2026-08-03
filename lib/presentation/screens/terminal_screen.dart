@@ -1358,6 +1358,10 @@ typedef _PreparedRemoteMuxCommand = ({
   AgentLaunchTool? tool,
 });
 
+class _MonkeyMuxReconnectException implements Exception {
+  const _MonkeyMuxReconnectException();
+}
+
 enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
 /// Padding around the terminal viewport.
@@ -3415,6 +3419,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final _toolbarController = KeyboardToolbarController();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
+  StreamSubscription<void>? _shellCommandCompletedSubscription;
   StreamSubscription<String>? _shellStdoutSubscription;
   Terminal? _terminalWithOwnedCallbacks;
   void Function(String)? _terminalOutputHandler;
@@ -3456,6 +3461,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
   String? _monkeyMuxReconnectSessionName;
+  bool _monkeyMuxReconnectAttachPending = false;
   int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
@@ -4973,6 +4979,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool activeWindowChanged,
   }) {
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _markMonkeyMuxReconnectEstablished(session, sessionName);
       _syncTerminalModesFromActiveMuxWindow();
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
@@ -5003,6 +5010,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session: session,
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
+    );
+  }
+
+  void _markMonkeyMuxReconnectEstablished(
+    SshSession session,
+    String sessionName,
+  ) {
+    if (!_monkeyMuxReconnectAttachPending ||
+        _connectionId != session.connectionId ||
+        _monkeyMuxReconnectSessionName != sessionName) {
+      return;
+    }
+    _monkeyMuxReconnectAttachPending = false;
+    _monkeyMuxReconnectSessionName = null;
+    DiagnosticsLogService.instance.info(
+      'terminal',
+      'monkeymux_reconnect_established',
+      fields: {'connectionId': session.connectionId},
     );
   }
 
@@ -7031,6 +7056,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Clean up any previous connection state before reconnecting.
     await _doneSubscription?.cancel();
     _doneSubscription = null;
+    await _shellCommandCompletedSubscription?.cancel();
+    _shellCommandCompletedSubscription = null;
     await _shellStdoutSubscription?.cancel();
     _shellStdoutSubscription = null;
     _promptOutputImeResetTimer?.cancel();
@@ -7250,6 +7277,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             !(session.remoteIsWindows &&
                 startupCommand?.backend == RemoteMuxBackend.monkeyMux),
         command: startupCommand?.command,
+        returnToLoginShell: startupCommand != null,
       );
       DiagnosticsLogService.instance.info(
         'terminal',
@@ -7309,6 +7337,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       } else {
         unawaited(_detectTmux(session));
       }
+    } on _MonkeyMuxReconnectException {
+      _monkeyMuxReconnectSessionName = null;
+      _monkeyMuxReconnectAttachPending = false;
+      DiagnosticsLogService.instance.warning(
+        'terminal',
+        'monkeymux_reconnect_prepare_failed',
+        fields: {'connectionId': session.connectionId},
+      );
+      if (!mounted) return;
+      setState(() {
+        _isConnecting = false;
+        _error = 'Could not reconnect to the MonkeyMux session. Try again.';
+      });
     } on Object catch (e) {
       DiagnosticsLogService.instance.error(
         'terminal',
@@ -7341,6 +7382,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _handleShellClosed();
       }
     });
+    _shellCommandCompletedSubscription = session.shellCommandCompletedStream
+        .listen((_) => unawaited(_handleShellCommandCompleted(session)));
     _shellStdoutSubscription = session.shellStdoutStream.listen(
       _schedulePromptOutputImeResetCheck,
       onError: (Object error, StackTrace stackTrace) {
@@ -7463,6 +7506,57 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       handleTerminalHostResize(_terminal.viewWidth, _terminal.viewHeight);
     }
     _terminalWithOwnedCallbacks = _terminal;
+  }
+
+  Future<void> _handleShellCommandCompleted(SshSession session) async {
+    if (!mounted ||
+        _connectionId != session.connectionId ||
+        !_isTmuxActive ||
+        _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    final reconnectAttempt = _monkeyMuxReconnectAttachPending;
+    _monkeyMuxReconnectAttachPending = false;
+    if (reconnectAttempt) {
+      _monkeyMuxReconnectSessionName = null;
+    } else {
+      _rememberMonkeyMuxReconnectTarget(session);
+    }
+    DiagnosticsLogService.instance.warning(
+      'terminal',
+      reconnectAttempt
+          ? 'monkeymux_reconnect_attach_completed'
+          : 'monkeymux_attach_completed',
+      fields: {'connectionId': session.connectionId},
+    );
+    setState(() {
+      if (reconnectAttempt) {
+        _clearTmuxState();
+      }
+      _isConnecting = false;
+      _error = reconnectAttempt
+          ? 'The MonkeyMux session is no longer available. Reconnect to start '
+                'the configured session.'
+          : 'MonkeyMux disconnected. Reconnect to continue.';
+    });
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    _terminalFocusNode.unfocus();
+
+    try {
+      final replacementShell = await session.getShell();
+      if (mounted && _connectionId == session.connectionId) {
+        _shell = replacementShell;
+      }
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal',
+        'monkeymux_login_fallback_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
   }
 
   void _clearOwnedTerminalCallbacks() {
@@ -8377,11 +8471,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         host,
         reconnectSessionName,
         preferredBackend: RemoteMuxBackend.monkeyMux,
+        existingOnly: true,
       );
       if (attachCommand == null) {
-        _suppressRemoteMuxDetectionConnectionId = session.connectionId;
-        return (command: null, handled: true);
+        throw const _MonkeyMuxReconnectException();
       }
+      _monkeyMuxReconnectAttachPending = true;
       DiagnosticsLogService.instance.info(
         'terminal',
         'monkeymux_reconnect_target_used',
@@ -8573,12 +8668,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Host host,
     String sessionName, {
     RemoteMuxBackend? preferredBackend,
+    bool existingOnly = false,
   }) async {
     final attachCommand = await _buildRemoteMuxAttachCommand(
       session,
       host,
       sessionName,
       preferredBackend: preferredBackend,
+      existingOnly: existingOnly,
     );
     if (!mounted || attachCommand == null) {
       return null;
@@ -8614,6 +8711,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Host host,
     String sessionName, {
     RemoteMuxBackend? preferredBackend,
+    bool existingOnly = false,
   }) async {
     final configuredBackend =
         preferredBackend ??
@@ -8667,6 +8765,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sessionName: sessionName,
             clientId: session.monkeyMuxClientId,
             clipViewport: true,
+            existingOnly: existingOnly,
             terminalColumns: viewportCellSize.columns,
             terminalRows: viewportCellSize.rows,
             workingDirectory: host.tmuxWorkingDirectory,
@@ -9753,6 +9852,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session
           ..remoteMuxBackend = muxBackend
           ..remoteMuxSessionName = sessionName;
+        if (muxBackend == RemoteMuxBackend.monkeyMux) {
+          _markMonkeyMuxReconnectEstablished(session, sessionName);
+        }
         _startTmuxForegroundVerification(session, sessionName);
         DiagnosticsLogService.instance.info(
           'tmux.ui',
@@ -10394,6 +10496,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _monkeyMuxReconnectSessionName = null;
+    _monkeyMuxReconnectAttachPending = false;
     DiagnosticsLogService.instance.info(
       'tmux.ui',
       'monkeymux_session_disconnect',
@@ -10946,6 +11049,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         host,
         sessionName,
         preferredBackend: _activeMuxBackend,
+        existingOnly: true,
       );
       if (attachCommand == null) {
         return;
@@ -11015,6 +11119,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    unawaited(_shellCommandCompletedSubscription?.cancel());
+    _shellCommandCompletedSubscription = null;
     unawaited(_shellStdoutSubscription?.cancel());
     _shellStdoutSubscription = null;
     _promptOutputImeResetTimer?.cancel();
@@ -11048,6 +11154,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pty: pty,
         requestPty: requestPty,
         command: command,
+        returnToLoginShell: command != null,
       );
       if (!stillOwnsSession()) {
         restorePreviousTerminalState(restoreShell: false);
@@ -11165,6 +11272,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shell = null;
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    unawaited(_shellCommandCompletedSubscription?.cancel());
+    _shellCommandCompletedSubscription = null;
     unawaited(_shellStdoutSubscription?.cancel());
     _shellStdoutSubscription = null;
     _promptOutputImeResetTimer?.cancel();
@@ -11184,6 +11293,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shell = null;
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    unawaited(_shellCommandCompletedSubscription?.cancel());
+    _shellCommandCompletedSubscription = null;
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     if (!mounted) {
       if (connectionId != null) {
@@ -11246,6 +11357,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    unawaited(_shellCommandCompletedSubscription?.cancel());
+    _shellCommandCompletedSubscription = null;
     _shell = null;
     if (connectionId != null) {
       await _tmuxService.clearCache(connectionId);
@@ -11301,6 +11414,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     try {
       await _doneSubscription?.cancel();
       _doneSubscription = null;
+      await _shellCommandCompletedSubscription?.cancel();
+      _shellCommandCompletedSubscription = null;
       _shell = null;
       if (previousConnectionId != null) {
         await _tmuxService.clearCache(previousConnectionId);
@@ -11323,6 +11438,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ? _activeMuxBackend
         : session?.remoteMuxBackend;
     if (backend != RemoteMuxBackend.monkeyMux) {
+      if (session != null) {
+        _monkeyMuxReconnectSessionName = null;
+        _monkeyMuxReconnectAttachPending = false;
+      }
       return;
     }
     final sessionName = (_tmuxSessionName ?? session?.remoteMuxSessionName)
@@ -11378,6 +11497,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeOverlayCollapseTimer?.cancel();
     _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
+    _shellCommandCompletedSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
     _terminalTextInputController

@@ -13,6 +13,7 @@ class _SshSessionRuntime {
   StreamController<String>? _shellStdoutController;
   StreamController<String>? _shellStderrController;
   StreamController<void>? _shellDoneController;
+  StreamController<void>? _shellCommandCompletedController;
   StreamSubscription<String>? _shellStdoutSubscription;
   StreamSubscription<String>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
@@ -172,6 +173,9 @@ if(!$__flResolved){$__flResolved='cmd'}
 
   Stream<void> get shellDoneStream =>
       _shellDoneController?.stream ?? const Stream.empty();
+
+  Stream<void> get shellCommandCompletedStream =>
+      _shellCommandCompletedController?.stream ?? const Stream.empty();
 
   void updateTerminalWindowMetrics({
     required int columns,
@@ -548,14 +552,17 @@ if(!$__flResolved){$__flResolved='cmd'}
       await _shellStdoutController?.close();
       await _shellStderrController?.close();
       await _shellDoneController?.close();
+      await _shellCommandCompletedController?.close();
     } else {
       unawaited(_shellStdoutController?.close());
       unawaited(_shellStderrController?.close());
       unawaited(_shellDoneController?.close());
+      unawaited(_shellCommandCompletedController?.close());
     }
     _shellStdoutController = null;
     _shellStderrController = null;
     _shellDoneController = null;
+    _shellCommandCompletedController = null;
 
     final shell = _shell;
     if (shell != null) {
@@ -624,6 +631,7 @@ if(!$__flResolved){$__flResolved='cmd'}
     _shellStdoutController ??= StreamController<String>.broadcast();
     _shellStderrController ??= StreamController<String>.broadcast();
     _shellDoneController ??= StreamController<void>.broadcast();
+    _shellCommandCompletedController ??= StreamController<void>.broadcast();
     _attachShellStreamPipes(shell, terminal);
     _refreshTerminalPreview();
   }
@@ -722,6 +730,10 @@ if(!$__flResolved){$__flResolved='cmd'}
           },
         );
         if (returnToLoginShell) {
+          final completedController = _shellCommandCompletedController;
+          if (completedController != null && !completedController.isClosed) {
+            completedController.add(null);
+          }
           _returnToLoginShell = false;
           _isReplacingShell = true;
           final replacement = _replaceCompletedCommandWithLoginShell(shell);

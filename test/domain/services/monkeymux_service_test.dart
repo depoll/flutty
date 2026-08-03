@@ -95,10 +95,12 @@ void main() {
         sessionName: 'work',
         terminalColumns: 69,
         terminalRows: 55,
+        existingOnly: true,
         windows: true,
       );
 
       expect(command, contains('--width 69 --height 55'));
+      expect(command, contains('--existing'));
       expect(command, endsWith(' work'));
     });
 
