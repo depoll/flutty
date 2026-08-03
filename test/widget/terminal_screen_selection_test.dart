@@ -615,6 +615,7 @@ void main() {
         shouldRetryTerminalPasteModeSettle(
           refreshAttempted: true,
           refreshSucceeded: false,
+          hasActiveWindow: true,
           modeReliable: false,
           targetsCurrentWindow: false,
         ),
@@ -622,11 +623,22 @@ void main() {
       );
     });
 
-    test('retries successful snapshots until mode and window settle', () {
+    test('only retries successful snapshots for window settling', () {
       expect(
         shouldRetryTerminalPasteModeSettle(
           refreshAttempted: true,
           refreshSucceeded: true,
+          hasActiveWindow: true,
+          modeReliable: false,
+          targetsCurrentWindow: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldRetryTerminalPasteModeSettle(
+          refreshAttempted: true,
+          refreshSucceeded: true,
+          hasActiveWindow: false,
           modeReliable: false,
           targetsCurrentWindow: true,
         ),
@@ -636,6 +648,7 @@ void main() {
         shouldRetryTerminalPasteModeSettle(
           refreshAttempted: true,
           refreshSucceeded: true,
+          hasActiveWindow: true,
           modeReliable: true,
           targetsCurrentWindow: false,
         ),
@@ -645,6 +658,7 @@ void main() {
         shouldRetryTerminalPasteModeSettle(
           refreshAttempted: true,
           refreshSucceeded: true,
+          hasActiveWindow: true,
           modeReliable: true,
           targetsCurrentWindow: true,
         ),

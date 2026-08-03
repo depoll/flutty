@@ -337,21 +337,15 @@ String shellEscapeWindows(String value) {
 const _bracketedPasteStart = '\x1b[200~';
 const _bracketedPasteEnd = '\x1b[201~';
 
-/// Whether [path] is safe to paste unquoted (only path separators and the
-/// strict upload-filename allowlist). Windows shell paths also allow `:`
-/// drive prefixes and `\` separators.
-/// Uploaded filenames are sanitized, but the directory prefix derives from the
-/// remote home directory, which a hostile or misconfigured server could fill
-/// with spaces or shell metacharacters.
-bool _isUnquotedSafeAttachmentPath(String path, {required bool windows}) {
-  final safePathPattern = windows
-      ? RegExp(r'^[A-Za-z0-9._/\\:-]+$')
-      : RegExp(r'^[A-Za-z0-9._/-]+$');
-  return safePathPattern.hasMatch(path);
-}
-
 bool _isTerminalSafeAttachmentPath(String path) =>
     !_terminalControlCharacterPattern.hasMatch(path);
+
+bool _isBracketedAttachmentPath(String path, {required bool windows}) {
+  final safePathPattern = windows
+      ? RegExp(r'^[A-Za-z0-9._/\\: -]+$')
+      : RegExp(r'^[A-Za-z0-9._/ -]+$');
+  return safePathPattern.hasMatch(path);
+}
 
 String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
     windows ? shellEscapeWindows(path) : shellEscapePosix(path);
@@ -359,13 +353,12 @@ String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
 /// Builds the terminal-input segments that reference uploaded [remotePaths]
 /// after a paste upload.
 ///
-/// When [bracketedPasteMode] is true, each terminal-safe path is returned as
-/// its own bracketed-paste segment (`CSI 200~ <path> CSI 201~ ` with a trailing
-/// space). Paths that are unsafe unquoted are shell-escaped inside the framing,
-/// so one quoted path no longer disables bracketed paste for the whole batch.
-/// The caller must write these segments sequentially with a short delay: an
-/// agent CLI such as Copilot CLI only recognises each path as a separate
-/// attachment when the bracketed pastes arrive as distinct reads.
+/// When [bracketedPasteMode] is true, each path containing only normal path
+/// characters (including spaces) is returned as its own bracketed-paste segment
+/// (`CSI 200~ <path> CSI 201~ ` with a trailing space). The raw path stays
+/// unquoted inside the framing because agent CLIs require the real filesystem
+/// path to recognise it as an attachment. Shell metacharacters and terminal
+/// controls are omitted so the payload remains safe if a shell owns the mode.
 ///
 /// When bracketed paste is not requested, paths are shell-escaped for the
 /// current remote shell and returned as one segment. Paths containing terminal
@@ -383,7 +376,10 @@ List<String> buildTerminalAttachmentPasteSegments(
   final paths = remotePaths
       .where(
         (remotePath) =>
-            remotePath.isNotEmpty && _isTerminalSafeAttachmentPath(remotePath),
+            remotePath.isNotEmpty &&
+            _isTerminalSafeAttachmentPath(remotePath) &&
+            (!bracketedPasteMode ||
+                _isBracketedAttachmentPath(remotePath, windows: windows)),
       )
       .toList();
   if (paths.isEmpty) {
@@ -394,12 +390,10 @@ List<String> buildTerminalAttachmentPasteSegments(
       '${paths.map((path) => _shellEscapeAttachmentPath(path, windows: windows)).join(' ')} ',
     ];
   }
-  return paths.map((remotePath) {
-    final payload = _isUnquotedSafeAttachmentPath(remotePath, windows: windows)
-        ? remotePath
-        : _shellEscapeAttachmentPath(remotePath, windows: windows);
-    return '$_bracketedPasteStart$payload$_bracketedPasteEnd ';
-  }).toList();
+  return [
+    for (final remotePath in paths)
+      '$_bracketedPasteStart$remotePath$_bracketedPasteEnd ',
+  ];
 }
 
 /// Shared helpers for remote file transfers over SFTP.
