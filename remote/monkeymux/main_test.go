@@ -6194,12 +6194,12 @@ func TestForegroundRedrawTemporarySize(t *testing.T) {
 			wantOK:     true,
 		},
 		{
-			name:       "cannot shrink single cell",
+			name:       "expands single cell",
 			width:      1,
 			height:     1,
-			wantWidth:  1,
+			wantWidth:  2,
 			wantHeight: 1,
-			wantOK:     false,
+			wantOK:     true,
 		},
 	}
 	for _, test := range tests {
