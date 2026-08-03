@@ -3618,10 +3618,46 @@ void main() {
           () => sshClient.remoteVersion,
         ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
 
-        // Background then foreground the app without a color change; the resume
-        // re-sync forces the repaint via the forced-refresh signal.
-        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        // A redraw follow-up armed just before backgrounding must be cancelled
+        // instead of replaying the hidden TUI after the app is paused.
+        final initialWidth = session.terminal!.viewWidth;
+        final initialRows = session.terminal!.viewHeight;
+        session.terminal!.onResize?.call(
+          initialWidth,
+          initialRows > 2 ? initialRows - 2 : initialRows + 2,
+          initialWidth * 10,
+          initialRows * 20,
+        );
         await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(monkeyMuxService.resizeTerminalCalls, isNotEmpty);
+        expect(
+          monkeyMuxService.resizeTerminalCalls.every((call) => !call.redraw),
+          isTrue,
+        );
+        clearInteractions(monkeyMuxService);
+        monkeyMuxService.resizeTerminalCalls.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+
+        // Defer a real theme change while backgrounded. It must not redraw the
+        // hidden TUI immediately, but resume must deliver one forced refresh.
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        verifyNever(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        );
         tester.binding.handleAppLifecycleStateChanged(
           AppLifecycleState.resumed,
         );
@@ -3639,9 +3675,41 @@ void main() {
             extraFlags: any(named: 'extraFlags'),
             forceForegroundRedraw: true,
           ),
-        ).called(greaterThanOrEqualTo(1));
+        ).called(1);
+        expect(monkeyMuxService.resizeTerminalCalls, isEmpty);
+
+        // A later same-theme resume performs only a local repaint. It must not
+        // request another full ConPTY replay or arm a resize-redraw follow-up.
+        clearInteractions(monkeyMuxService);
+        monkeyMuxService.resizeTerminalCalls.clear();
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        final width = session.terminal!.viewWidth;
+        final rows = session.terminal!.viewHeight;
+        session.terminal!.onResize?.call(
+          width,
+          rows > 1 ? rows - 1 : rows + 1,
+          width * 10,
+          rows * 20,
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+
+        verifyNever(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        );
+        expect(monkeyMuxService.resizeTerminalCalls, isNotEmpty);
         expect(
-          monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
+          monkeyMuxService.resizeTerminalCalls.every((call) => !call.redraw),
           isTrue,
         );
       },
@@ -4005,8 +4073,7 @@ void main() {
         final switchResizeCalls = monkeyMuxService.resizeTerminalCalls
             .skip(resizeCallsBeforeSwitch)
             .toList(growable: false);
-        expect(switchResizeCalls, hasLength(1));
-        expect(switchResizeCalls.single.redraw, isTrue);
+        expect(switchResizeCalls, isEmpty);
         final resizeCallsAfterWindowReplay =
             monkeyMuxService.resizeTerminalCalls.length;
         final terminalViewState = tester.state<MonkeyTerminalViewState>(

@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.134"
+	monkeyMuxVersion                  = "0.1.135"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -242,6 +242,15 @@ var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, false
+	}
+	if prefersVerticalForegroundRedrawResize {
+		if height > 1 {
+			return width, height - 1, true
+		}
+		if width > 1 {
+			return width - 1, height, true
+		}
+		return 2, 1, true
 	}
 	if width > 1 {
 		return width - 1, height, true
@@ -478,11 +487,11 @@ type muxServer struct {
 	pendingResizeHeight     int
 	pendingResizeRedraw     bool
 	// pendingResizeSyntheticRedraw preserves, across a viewport-transition
-	// deferral, whether a deferred forced redraw needs the synthetic width-1
-	// dance (e.g. a theme change, whose SIGWINCH at an unchanged size would not
-	// otherwise repaint). Without it, refreshPendingViewportResize would replay
-	// the deferred redraw with syntheticRedraw=false and silently drop the
-	// repaint. Reset wherever pendingResizeRedraw is.
+	// deferral, whether a deferred forced redraw needs the synthetic one-cell
+	// resize dance (e.g. a theme change, whose SIGWINCH at an unchanged size
+	// would not otherwise repaint). Without it, refreshPendingViewportResize
+	// would replay the deferred redraw with syntheticRedraw=false and silently
+	// drop the repaint. Reset wherever pendingResizeRedraw is.
 	pendingResizeSyntheticRedraw bool
 	// pendingResizeThemeWindowID pins a deferred synthetic theme redraw to the
 	// window that received the theme hint, so that when refreshPendingViewportResize

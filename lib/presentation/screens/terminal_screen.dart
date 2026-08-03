@@ -247,6 +247,7 @@ double resolveTmuxBarMaxContentHeight(
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
 const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
+const _appResumeTerminalMetricsSettleDelay = Duration(milliseconds: 350);
 const _monkeyMuxSettledRedrawDisplayRefreshDelays = <Duration>[
   Duration(milliseconds: 450),
   Duration(milliseconds: 850),
@@ -3623,6 +3624,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalSizeRefreshSuppressesAutoScroll = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   Timer? _monkeyMuxResizeRedrawFollowUpTimer;
+  Timer? _appResumeTerminalMetricsSettleTimer;
+  bool _isSettlingTerminalMetricsAfterAppResume = false;
   Timer? _monkeyMuxResizeSyncCooldownTimer;
   bool _monkeyMuxResizeSyncInFlight = false;
   bool _monkeyMuxResizeSyncThrottled = false;
@@ -3722,6 +3725,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalThemeDependencyReload = false;
   bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
   String _pendingTerminalThemeDependencyReason = 'unknown';
+  bool _terminalThemeRefreshRequiredAfterResume = false;
   // Guards the build-path theme application so the same theme is not pushed
   // to the session on every rebuild.  Cleared at connect-time so the safety-
   // net call in build() still fires once for each new connection.
@@ -5740,19 +5744,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _monkeyMuxForcedThemeRedrawPending = false;
         }
         if (forceForegroundRedraw) {
-          if (request.session.remoteIsWindows) {
-            // ConPTY theme redraws can leave vertically anchored TUI regions
-            // stale even after the helper's immediate synthetic resize. A
-            // settled same-size redraw follows the completed replay and uses
-            // the Windows-specific buffered resize fallback, matching the real
-            // keyboard resize that reliably repairs the frame.
-            _scheduleMonkeyMuxResizeRedrawFollowUp(request.session);
-          } else {
-            // POSIX can explicitly signal the foreground process as part of the
-            // theme redraw, so a second resize-redraw would be redundant.
-            _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
-            _monkeyMuxResizeRedrawFollowUpTimer = null;
-          }
+          // The helper already performs the platform-appropriate synthetic
+          // redraw atomically with the theme hint. A second resize-redraw can
+          // replay a large agent transcript twice and temporarily erase the
+          // composer, so discard any older viewport follow-up instead.
+          _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+          _monkeyMuxResizeRedrawFollowUpTimer = null;
         }
         DiagnosticsLogService.instance.info(
           'terminal.theme',
@@ -5931,6 +5928,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String reason = 'unknown',
   }) {
     if (!mounted) {
+      return;
+    }
+    final session = _observedSession ?? _activeSession();
+    if (forceRemoteRefresh &&
+        _wasBackgrounded &&
+        _isWindowsMonkeyMuxSession(session)) {
+      _terminalThemeRefreshRequiredAfterResume = true;
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'dependency_deferred',
+        fields: {
+          'reason': reason,
+          'connectionId': session?.connectionId ?? _connectionId,
+          'until': 'app_resumed',
+        },
+      );
       return;
     }
     _pendingTerminalThemeDependencyReload = true;
@@ -7594,7 +7607,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
         _scheduleMonkeyMuxResizeSync(session, columns: width, rows: height);
-        _scheduleMonkeyMuxResizeRedrawFollowUp(session);
+        if (!_isSettlingTerminalMetricsAfterAppResume) {
+          _scheduleMonkeyMuxResizeRedrawFollowUp(session);
+        }
       }
     }
 
@@ -7768,6 +7783,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
+  bool _isWindowsMonkeyMuxSession(SshSession? session) =>
+      session != null &&
+      session.remoteIsWindows &&
+      (_activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+          session.remoteMuxBackend == RemoteMuxBackend.monkeyMux);
+
+  void _refreshTerminalAfterWindowsMonkeyMuxResume() {
+    _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxResizeRedrawFollowUpTimer = null;
+    _followNextLiveOutputWithoutScrolling();
+    _scheduleTerminalSizeRefresh(
+      forceDisplayRefresh: true,
+      suppressMonkeyMuxResizeSync: true,
+      suppressAutoScroll: true,
+    );
+  }
+
+  void _beginAppResumeTerminalMetricsSettle() {
+    _isSettlingTerminalMetricsAfterAppResume = true;
+    _scheduleAppResumeTerminalMetricsSettleEnd();
+  }
+
+  void _scheduleAppResumeTerminalMetricsSettleEnd() {
+    _appResumeTerminalMetricsSettleTimer?.cancel();
+    _appResumeTerminalMetricsSettleTimer = Timer(
+      _appResumeTerminalMetricsSettleDelay,
+      () {
+        _appResumeTerminalMetricsSettleTimer = null;
+        _isSettlingTerminalMetricsAfterAppResume = false;
+      },
+    );
+  }
+
+  void _endAppResumeTerminalMetricsSettle() {
+    _appResumeTerminalMetricsSettleTimer?.cancel();
+    _appResumeTerminalMetricsSettleTimer = null;
+    _isSettlingTerminalMetricsAfterAppResume = false;
+  }
+
   void _refreshTerminalAfterMonkeyMuxWindowChange(
     SshSession session, {
     bool revealLatestOutput = false,
@@ -7792,14 +7846,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       suppressMonkeyMuxResizeSync: true,
       suppressAutoScroll: !revealLatestOutput,
     );
-    // A MonkeyMux window selection can replay a retained frame before the
-    // foreground TUI has fully repainted at the shared PTY size. A real later
-    // resize (for example opening/closing the software keyboard) reliably heals
-    // the corruption, while switches that happen not to trigger an onResize
-    // callback can remain stale indefinitely. Always schedule the same settled
-    // force-redraw after a window replay; the scheduler coalesces with any real
-    // resize already in flight.
-    _scheduleMonkeyMuxResizeRedrawFollowUp(session);
+    // The helper owns the synthetic redraw for a window switch. Do not request
+    // another remote redraw here: long agent transcripts can produce hundreds
+    // of kilobytes per repaint. The settled callbacks below only relayout and
+    // repaint the already-received local buffer.
     _scheduleMonkeyMuxSettledRedrawDisplayRefreshes(
       session,
       reason: 'window_change_replay',
@@ -8122,6 +8172,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!isMonkeyMuxSession) {
       return;
     }
+    if (_wasBackgrounded || _isSettlingTerminalMetricsAfterAppResume) {
+      _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+      _monkeyMuxResizeRedrawFollowUpTimer = null;
+      return;
+    }
     final connectionId = session.connectionId;
     final generation = _monkeyMuxRefreshAndResizeGeneration;
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
@@ -8210,6 +8265,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxWindowRefreshFollowUpTimer = null;
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
     _monkeyMuxResizeRedrawFollowUpTimer = null;
+    _endAppResumeTerminalMetricsSettle();
     _monkeyMuxResizeSyncCooldownTimer?.cancel();
     _monkeyMuxResizeSyncCooldownTimer = null;
     _monkeyMuxResizeSyncInFlight = false;
@@ -11639,6 +11695,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _restoreKeyboardAfterAppResume =
           _restoreKeyboardAfterAppResume || shouldRestoreKeyboard;
       _wasBackgrounded = true;
+      _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+      _monkeyMuxResizeRedrawFollowUpTimer = null;
       _stopSharedClipboardSync();
       _syncTerminalWakeLock();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
@@ -11647,10 +11705,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _wasBackgrounded = false;
       _syncTerminalWakeLock();
       final session = _observedSession;
+      final isWindowsMonkeyMux = _isWindowsMonkeyMuxSession(session);
+      final forceThemeRefresh =
+          !isWindowsMonkeyMux || _terminalThemeRefreshRequiredAfterResume;
+      _terminalThemeRefreshRequiredAfterResume = false;
       if (_isTmuxActive &&
           _activeMuxBackend == RemoteMuxBackend.monkeyMux &&
           session != null) {
-        _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        if (isWindowsMonkeyMux) {
+          _beginAppResumeTerminalMetricsSettle();
+          _refreshTerminalAfterWindowsMonkeyMuxResume();
+        } else {
+          _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        }
       } else {
         _scheduleTerminalSizeRefresh();
       }
@@ -11662,11 +11729,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.write('\r\n[reconnecting...]\r\n');
         unawaited(_reconnect(showProgressDialog: false));
       } else if (session != null) {
-        unawaited(
-          _reloadTerminalThemeForDependencies(
-            forceRemoteRefresh: true,
-            reason: 'app_resumed',
-          ),
+        _handleTerminalThemeDependenciesChanged(
+          forceRemoteRefresh: forceThemeRefresh,
+          reason: 'app_resumed',
         );
       }
       _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
@@ -11685,6 +11750,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void didChangeMetrics() {
     super.didChangeMetrics();
+    if (_isSettlingTerminalMetricsAfterAppResume) {
+      _scheduleAppResumeTerminalMetricsSettleEnd();
+    }
     _scheduleTerminalSizeRefresh();
   }
 
