@@ -7577,6 +7577,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       suppressMonkeyMuxResizeSync: true,
       suppressAutoScroll: !revealLatestOutput,
     );
+    // A MonkeyMux window selection can replay a retained frame before the
+    // foreground TUI has fully repainted at the shared PTY size. A real later
+    // resize (for example opening/closing the software keyboard) reliably heals
+    // the corruption, while switches that happen not to trigger an onResize
+    // callback can remain stale indefinitely. Always schedule the same settled
+    // force-redraw after a window replay; the scheduler coalesces with any real
+    // resize already in flight.
+    _scheduleMonkeyMuxResizeRedrawFollowUp(session);
     _scheduleMonkeyMuxSettledRedrawDisplayRefreshes(
       session,
       reason: 'window_change_replay',
