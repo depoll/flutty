@@ -962,11 +962,12 @@ void pasteTerminalTextWithBracketedPasteMode({
 bool shouldRetryTerminalPasteModeSettle({
   required bool refreshAttempted,
   required bool refreshSucceeded,
+  required bool hasActiveWindow,
   required bool modeReliable,
   required bool targetsCurrentWindow,
 }) {
-  if (refreshAttempted && !refreshSucceeded) {
-    return false;
+  if (refreshAttempted) {
+    return refreshSucceeded && (!hasActiveWindow || !targetsCurrentWindow);
   }
   return !modeReliable || !targetsCurrentWindow;
 }
@@ -3560,6 +3561,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// Monotonically-increasing counter; incremented whenever the terminal
   /// buffer changes content. Used to invalidate per-row snapshot caches.
   int _terminalContentGeneration = 0;
+  int _terminalUserInputGeneration = 0;
 
   /// Cache of [_TerminalPathTapSnapshot] objects keyed by the canonical start
   /// row of each wrapped-line group. Invalidated when
@@ -4277,6 +4279,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String title,
     required String Function(TerminalCommandReview review) messageBuilder,
     required String confirmLabel,
+    VoidCallback? onReviewShown,
   }) async {
     while (mounted) {
       final review = buildReview(_terminalCommandAfterInsertion(insertedText));
@@ -4284,6 +4287,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return true;
       }
 
+      onReviewShown?.call();
       final shouldInsert = await _confirmCommandInsertion(
         title: title,
         message: messageBuilder(review),
@@ -5236,12 +5240,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!stillOwnsTerminalContext()) {
       return null;
     }
+    _syncTerminalModesFromActiveMuxWindow();
+    final fallbackActiveWindowBracketedPasteMode =
+        resolveTmuxBarActiveWindowBracketedPasteMode(
+          _currentTmuxWindowsSnapshot,
+        );
     return (
       activeWindowKey: resolveTmuxBarActiveWindowKey(
         _currentTmuxWindowsSnapshot,
       ),
       bracketedPasteMode: terminal.bracketedPasteMode,
-      bracketedPasteModeKnown: currentActiveWindowBracketedPasteMode != null,
+      bracketedPasteModeKnown: fallbackActiveWindowBracketedPasteMode != null,
       connectionId: connectionId,
       isMuxActive: isMuxActive,
       muxBackend: muxBackend,
@@ -5263,6 +5272,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pasteMode.activeWindowKey != null;
   }
 
+  bool _terminalPasteModeCanUseResolvedState(_TerminalPasteMode pasteMode) =>
+      _terminalPasteModeIsReliable(pasteMode) ||
+      (pasteMode.isMuxActive &&
+          pasteMode.muxBackend == RemoteMuxBackend.monkeyMux &&
+          pasteMode.bracketedPasteModeKnown &&
+          pasteMode.activeWindowKey != null &&
+          _terminalPasteModeTargetsCurrentWindow(pasteMode));
+
   Future<_TerminalPasteMode?> _resolveSettledTerminalPasteMode() async {
     _TerminalPasteMode? pasteMode;
     for (
@@ -5283,6 +5300,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!shouldRetryTerminalPasteModeSettle(
         refreshAttempted: pasteMode.refreshAttempted,
         refreshSucceeded: pasteMode.refreshSucceeded,
+        hasActiveWindow: pasteMode.activeWindowKey != null,
         modeReliable: modeReliable,
         targetsCurrentWindow: targetsCurrentWindow,
       )) {
@@ -7458,6 +7476,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           fields: {'connectionId': session.connectionId},
         );
         return;
+      }
+      if (!_terminalMouseReportOutputPattern.hasMatch(output) &&
+          !_terminalFocusReportOutputPattern.hasMatch(output)) {
+        _terminalUserInputGeneration++;
       }
       _clearDetectedSensitiveKeyboardPromptAfterInput(output);
       _handleTerminalOutputForShellCompletion(output);
@@ -15632,6 +15654,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pasteClipboard() async {
+    final inputGeneration = _terminalUserInputGeneration;
     try {
       if (_isAndroidPlatform) {
         final imageBytes = await Pasteboard.image;
@@ -15689,14 +15712,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         return;
       }
+      if (!_terminalPasteModeCanUseResolvedState(pasteMode)) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'text_input_skipped_mode_unavailable',
+          fields: {'connectionId': _connectionId},
+        );
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        _showClipboardMessage(
+          'Could not verify bracketed paste mode. Try again.',
+        );
+        return;
+      }
 
       final requiredReview = _shouldReviewTerminalCommandInsertion;
-      var reviewedBracketedPasteMode =
-          _terminalPasteModeIsReliable(pasteMode) &&
-          pasteMode.bracketedPasteMode;
+      var reviewedBracketedPasteMode = pasteMode.bracketedPasteMode;
       if (requiredReview) {
         var modeStableAfterReview = false;
         for (var reviewAttempt = 0; reviewAttempt < 2; reviewAttempt++) {
+          var reviewShown = false;
           final shouldPaste = await _confirmTerminalInsertionIfNeeded(
             insertedText: text,
             buildReview: (commandText) => assessClipboardPasteCommand(
@@ -15708,10 +15742,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ? 'This clipboard content looks risky even with bracketed paste enabled.'
                 : 'This clipboard content could execute multiple or reshaped commands.',
             confirmLabel: 'Paste anyway',
+            onReviewShown: () => reviewShown = true,
           );
           if (!shouldPaste) {
             _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
             return;
+          }
+          if (!reviewShown) {
+            modeStableAfterReview = true;
+            break;
           }
 
           final refreshedPasteMode = await _resolveSettledTerminalPasteMode();
@@ -15722,19 +15761,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             return;
           }
           if (!_sameTerminalPasteContext(pasteMode, refreshedPasteMode) ||
+              refreshedPasteMode.activeWindowKey != pasteMode.activeWindowKey ||
               !_terminalPasteModeOwnsCurrentContext(refreshedPasteMode)) {
             DiagnosticsLogService.instance.warning(
               'terminal.clipboard',
-              'text_input_skipped_context_changed',
+              'text_input_skipped_window_changed',
               fields: {'connectionId': _connectionId},
             );
             _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
             return;
           }
           pasteMode = refreshedPasteMode;
-          final refreshedBracketedPasteMode =
-              _terminalPasteModeIsReliable(pasteMode) &&
-              pasteMode.bracketedPasteMode;
+          if (!_terminalPasteModeCanUseResolvedState(pasteMode)) {
+            DiagnosticsLogService.instance.warning(
+              'terminal.clipboard',
+              'text_input_skipped_mode_unavailable',
+              fields: {'connectionId': _connectionId},
+            );
+            _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+            _showClipboardMessage(
+              'Could not verify bracketed paste mode. Try again.',
+            );
+            return;
+          }
+          final refreshedBracketedPasteMode = pasteMode.bracketedPasteMode;
           if (refreshedBracketedPasteMode == reviewedBracketedPasteMode) {
             modeStableAfterReview = true;
             break;
@@ -15771,8 +15821,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
 
+      if (_terminalUserInputGeneration != inputGeneration) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'text_input_skipped_intervening_input',
+          fields: {'connectionId': _connectionId},
+        );
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        _showClipboardMessage('Paste canceled because terminal input changed.');
+        return;
+      }
+
       final modeReliable = _terminalPasteModeIsReliable(pasteMode);
-      final usedBracketedPaste = modeReliable && pasteMode.bracketedPasteMode;
+      final modeUsable = _terminalPasteModeCanUseResolvedState(pasteMode);
+      final usedBracketedPaste = pasteMode.bracketedPasteMode;
       _followLiveOutput();
       pasteTerminalTextWithBracketedPasteMode(
         terminal: pasteMode.terminal,
@@ -15787,6 +15849,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'bracketedPasteMode': pasteMode.bracketedPasteMode,
           'bracketedPasteModeKnown': pasteMode.bracketedPasteModeKnown,
           'modeReliable': modeReliable,
+          'modeUsable': modeUsable,
           'usedBracketedPaste': usedBracketedPaste,
           'modeRefreshAttempted': pasteMode.refreshAttempted,
           'modeRefreshSucceeded': pasteMode.refreshSucceeded,
@@ -16175,28 +16238,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// attachment. The pre-built segments are written straight to the session
   /// input via [Terminal.onOutput]; they must not go through [Terminal.paste],
   /// which would strip the bracketed-paste markers.
-  Future<void> _insertUploadedFileReferences(
+  Future<bool> _insertUploadedFileReferences(
     List<String> remotePaths, {
     required bool windows,
   }) async {
+    var inputGeneration = _terminalUserInputGeneration;
     final pathCount = remotePaths
         .where((remotePath) => remotePath.isNotEmpty)
         .length;
     if (pathCount == 0) {
-      return;
+      return true;
     }
     final initialPasteMode = await _resolveSettledTerminalPasteMode();
     if (initialPasteMode == null || !mounted) {
-      return;
+      return false;
     }
-    var pasteMode = initialPasteMode;
+    final pasteMode = initialPasteMode;
     if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
       DiagnosticsLogService.instance.warning(
         'terminal.clipboard',
         'attachment_input_skipped_context_changed',
         fields: {'connectionId': _connectionId, 'pathCount': pathCount},
       );
-      return;
+      return false;
     }
     if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
       _syncTerminalModesFromActiveMuxWindow();
@@ -16205,10 +16269,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'attachment_input_skipped_window_changed',
         fields: {'connectionId': _connectionId, 'pathCount': pathCount},
       );
-      return;
+      return false;
     }
     final modeReliable = _terminalPasteModeIsReliable(pasteMode);
-    final usedBracketedPaste = modeReliable && pasteMode.bracketedPasteMode;
+    final modeUsable = _terminalPasteModeCanUseResolvedState(pasteMode);
+    if (!modeUsable) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'attachment_input_skipped_mode_unavailable',
+        fields: {'connectionId': _connectionId, 'pathCount': pathCount},
+      );
+      return false;
+    }
+    final usedBracketedPaste = pasteMode.bracketedPasteMode;
     final terminalSafePathCount = buildTerminalAttachmentPasteSegments(
       remotePaths,
       bracketedPasteMode: true,
@@ -16220,7 +16293,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'attachment_input_skipped_unsafe_paths',
         fields: {'connectionId': _connectionId, 'pathCount': pathCount},
       );
-      return;
+      return false;
     }
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
@@ -16238,6 +16311,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'bracketedPasteMode': pasteMode.bracketedPasteMode,
         'bracketedPasteModeKnown': pasteMode.bracketedPasteModeKnown,
         'modeReliable': modeReliable,
+        'modeUsable': modeUsable,
         'usedBracketedPaste': usedBracketedPaste,
         'modeRefreshAttempted': pasteMode.refreshAttempted,
         'modeRefreshSucceeded': pasteMode.refreshSucceeded,
@@ -16245,19 +16319,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     for (var i = 0; i < segments.length; i++) {
       if (!mounted) {
-        return;
+        return false;
       }
       if (i > 0) {
-        final currentPasteMode = await _resolveSettledTerminalPasteMode();
-        if (currentPasteMode == null || !mounted) {
-          return;
-        }
-        final currentUsedBracketedPaste =
-            _terminalPasteModeIsReliable(currentPasteMode) &&
-            currentPasteMode.bracketedPasteMode;
-        if (!_sameTerminalPasteContext(pasteMode, currentPasteMode) ||
-            currentPasteMode.activeWindowKey != pasteMode.activeWindowKey ||
-            currentUsedBracketedPaste != usedBracketedPaste) {
+        _syncTerminalModesFromActiveMuxWindow();
+        final activeWindowBracketedPasteMode =
+            resolveTmuxBarActiveWindowBracketedPasteMode(
+              _currentTmuxWindowsSnapshot,
+            );
+        final modeChanged = pasteMode.isMuxActive
+            ? activeWindowBracketedPasteMode != null &&
+                  activeWindowBracketedPasteMode != usedBracketedPaste
+            : pasteMode.terminal.bracketedPasteMode != usedBracketedPaste;
+        if (modeChanged) {
           DiagnosticsLogService.instance.warning(
             'terminal.clipboard',
             'attachment_input_stopped_mode_changed',
@@ -16267,9 +16341,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               'sentCount': i,
             },
           );
-          return;
+          return false;
         }
-        pasteMode = currentPasteMode;
       }
       if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
         DiagnosticsLogService.instance.warning(
@@ -16281,7 +16354,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'sentCount': i,
           },
         );
-        return;
+        return false;
       }
       if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
         _syncTerminalModesFromActiveMuxWindow();
@@ -16294,13 +16367,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'sentCount': i,
           },
         );
-        return;
+        return false;
+      }
+      if (_terminalUserInputGeneration != inputGeneration) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'attachment_input_stopped_intervening_input',
+          fields: {
+            'connectionId': _connectionId,
+            'pathCount': pathCount,
+            'sentCount': i,
+          },
+        );
+        return false;
       }
       pasteMode.terminal.onOutput?.call(segments[i]);
+      inputGeneration = _terminalUserInputGeneration;
       if (i < segments.length - 1) {
         await Future<void>.delayed(_uploadedAttachmentPasteStagger);
       }
     }
+    return true;
   }
 
   Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
@@ -16381,25 +16468,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    await _insertUploadedFileReferences(
+    final pathsInserted = await _insertUploadedFileReferences(
       remotePaths.paths,
       windows: remotePaths.windows,
     );
     if (!mounted) {
       return;
     }
-    unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logTerminalPasteUsed(
-            source: 'clipboard_files',
-            requiredReview: true,
-          ),
-    );
+    if (pathsInserted) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalPasteUsed(
+              source: 'clipboard_files',
+              requiredReview: true,
+            ),
+      );
+    }
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(
-      'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay',
+      pathsInserted
+          ? 'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay'
+          : 'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'}, but could not paste ${remotePaths.paths.length == 1 ? 'its path' : 'their paths'}',
     );
   }
 
@@ -16490,25 +16581,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }, uploadBaseDirectory: uploadBaseDirectory);
     _followLiveOutput();
-    await _insertUploadedFileReferences([
+    final pathInserted = await _insertUploadedFileReferences([
       remotePath.path,
     ], windows: remotePath.windows);
     if (!mounted) {
       return;
     }
-    unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logTerminalPasteUsed(
-            source: 'clipboard_image',
-            requiredReview: true,
-          ),
-    );
+    if (pathInserted) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalPasteUsed(
+              source: 'clipboard_image',
+              requiredReview: true,
+            ),
+      );
+    }
     _terminalController.clearSelection();
     _restoreTerminalFocus(
       showSystemKeyboard: showKeyboardAfterPaste && _isMobilePlatform,
     );
-    _showClipboardMessage('Uploaded clipboard image to ${remotePath.path}');
+    _showClipboardMessage(
+      pathInserted
+          ? 'Uploaded clipboard image to ${remotePath.path}'
+          : 'Uploaded clipboard image, but could not paste its path',
+    );
   }
 
   Future<void> _pasteSelectedFiles(
@@ -16585,22 +16682,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    await _insertUploadedFileReferences(
+    final pathsInserted = await _insertUploadedFileReferences(
       remotePaths.paths,
       windows: remotePaths.windows,
     );
     if (!mounted) {
       return;
     }
-    unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logTerminalPasteUsed(source: 'picked_files', requiredReview: true),
-    );
+    if (pathsInserted) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalPasteUsed(source: 'picked_files', requiredReview: true),
+      );
+    }
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(
-      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay',
+      pathsInserted
+          ? 'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay'
+          : 'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'}, but could not paste ${remotePaths.paths.length == 1 ? 'its path' : 'their paths'}',
     );
   }
 

@@ -240,13 +240,11 @@ void main() {
           bracketedPasteMode: true,
           windows: true,
         ),
-        [
-          '$start${r'"C:\Users\John Smith\.cache\monkeyssh\uploads\a.png"'}$end ',
-        ],
+        ['$start${r'C:\Users\John Smith\.cache\monkeyssh\uploads\a.png'}$end '],
       );
     });
 
-    test('keeps unsafe printable paths inside separate bracketed pastes', () {
+    test('keeps printable paths raw inside separate bracketed pastes', () {
       const start = '\x1b[200~';
       const end = '\x1b[201~';
       expect(
@@ -255,7 +253,7 @@ void main() {
           '/home/u/.cache/monkeyssh/uploads/b.png',
         ], bracketedPasteMode: true),
         [
-          "$start'/home/john smith/.cache/monkeyssh/uploads/a.png'$end ",
+          '$start/home/john smith/.cache/monkeyssh/uploads/a.png$end ',
           '$start/home/u/.cache/monkeyssh/uploads/b.png$end ',
         ],
       );
@@ -263,7 +261,7 @@ void main() {
         buildTerminalAttachmentPasteSegments([
           r'/home/u/$(reboot)/a.png',
         ], bracketedPasteMode: true),
-        ["$start'/home/u/\$(reboot)/a.png'$end "],
+        isEmpty,
       );
     });
 
