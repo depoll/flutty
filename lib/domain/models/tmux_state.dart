@@ -445,6 +445,12 @@ class TmuxWindow {
     }
     if (normalizedPaneTitle != null &&
         normalizedName != null &&
+        foregroundTool != null &&
+        _isAgentTitleAlias(normalizedName, foregroundTool)) {
+      return normalizedPaneTitle;
+    }
+    if (normalizedPaneTitle != null &&
+        normalizedName != null &&
         normalizedCommand != null &&
         normalizedName.toLowerCase() == normalizedCommand.toLowerCase() &&
         normalizedPaneTitle != normalizedName) {
@@ -970,7 +976,7 @@ bool _isUnhelpfulAgentTitle(
   if (_isDecorativeShellTitle(value)) return true;
   final lowered = _normalizeAgentTitleForComparison(value);
   if (lowered.isEmpty) return true;
-  if (_agentTitleAliases(tool).contains(lowered)) return true;
+  if (_isAgentTitleAlias(value, tool)) return true;
   if (_isLikelyDefaultHostTitle(value)) return true;
 
   final loweredContext = contextLabel?.trim().toLowerCase();
@@ -989,6 +995,9 @@ bool _isUnhelpfulAgentTitle(
       statusContext.isEmpty ||
       statusContext == loweredContext;
 }
+
+bool _isAgentTitleAlias(String value, AgentLaunchTool tool) =>
+    _agentTitleAliases(tool).contains(_normalizeAgentTitleForComparison(value));
 
 bool _isDecorativeShellTitle(String value) {
   final trimmed = value.trim();
