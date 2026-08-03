@@ -631,6 +631,117 @@ parseClaudeSessionMetadata(String raw) {
   );
 }
 
+/// Parses Pi session metadata from the head of a session JSONL transcript.
+///
+/// Pi writes a `{"type":"session"}` header record first, carrying the session
+/// id, ISO timestamp, and cwd. A later `session_info` record may set a
+/// user-defined display name, otherwise the first user message is summarized.
+@visibleForTesting
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool parsedAny,
+})
+parsePiSessionMetadata(String raw) {
+  String? sessionId;
+  String? displayName;
+  String? firstUserMessage;
+  String? workingDirectory;
+  DateTime? updatedAt;
+  var parsedAny = false;
+
+  for (final line in const LineSplitter().convert(raw)) {
+    final decoded = _tryDecodeJsonObject(line);
+    if (decoded == null) continue;
+    parsedAny = true;
+
+    final type = _readStringField(decoded, 'type');
+    if (type == 'session') {
+      sessionId ??= _readStringField(decoded, 'id');
+      workingDirectory ??= _readStringField(decoded, 'cwd');
+      updatedAt ??= _parseDateTimeValue(decoded['timestamp']);
+      continue;
+    }
+
+    // The latest session_info wins so renames replace earlier names.
+    if (type == 'session_info') {
+      final name = _readStringField(decoded, 'name');
+      if (name != null && name.trim().isNotEmpty) {
+        displayName = name.trim();
+      }
+      continue;
+    }
+
+    if (type != 'message' || firstUserMessage != null) continue;
+    final message = _readMapField(decoded, 'message');
+    if (_readStringField(message, 'role') != 'user') continue;
+    final text = _extractClaudeUserSummary(_readPiMessageText(message));
+    if (text != null && text.trim().isNotEmpty) {
+      firstUserMessage = text;
+    }
+  }
+
+  return (
+    sessionId: sessionId,
+    summary: displayName ?? firstUserMessage,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
+    parsedAny: parsedAny,
+  );
+}
+
+/// Extracts the Pi session id from a `<timestamp>_<sessionId>.jsonl` file name.
+///
+/// The leading ISO timestamp has its `:` and `.` characters replaced with `-`
+/// and therefore never contains an underscore, so the id is everything after
+/// the first separator.
+String _piSessionIdFromFileName(String fileName) {
+  final separatorIndex = fileName.indexOf('_');
+  if (separatorIndex < 0 || separatorIndex + 1 >= fileName.length) {
+    return fileName;
+  }
+  return fileName.substring(separatorIndex + 1);
+}
+
+/// Parses `sqlite3`-separated Hermes session rows into session metadata.
+///
+/// Columns are id, title, cwd, and the epoch-seconds last-activity time,
+/// delimited by ASCII Unit Separator so titles may contain any printable text.
+@visibleForTesting
+List<ToolSessionInfo> parseHermesDbOutput(String output) {
+  final sessions = <ToolSessionInfo>[];
+  for (final line in output.trim().split('\n')) {
+    if (line.trim().isEmpty) continue;
+    final parts = line.split('\x1f');
+    if (parts.length < 3) continue;
+
+    final id = parts[0].trim();
+    if (id.isEmpty) continue;
+    final title = parts[1].trim();
+    final directory = parts[2].trim();
+    DateTime? lastActive;
+    if (parts.length >= 4) {
+      final epoch = int.tryParse(parts[3].trim());
+      if (epoch != null && epoch > 0) {
+        lastActive = _dateTimeFromEpochValue(epoch);
+      }
+    }
+
+    sessions.add(
+      ToolSessionInfo(
+        toolName: 'Hermes',
+        sessionId: id,
+        workingDirectory: directory.isNotEmpty ? directory : null,
+        lastActive: lastActive,
+        summary: title.isNotEmpty ? title : _truncateSessionIdValue(id),
+      ),
+    );
+  }
+  return sessions;
+}
+
 /// Parses Cursor Agent session metadata from a chat `meta.json` file.
 @visibleForTesting
 ({
@@ -1798,6 +1909,20 @@ class AgentSessionDiscoveryService {
               effectiveMaxPerTool,
               previewOnly: previewOnly,
             ),
+            _discoverPiSessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
+            _discoverHermesSessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
           ]
         : [
             _discoverSessionsForTool(
@@ -1854,6 +1979,18 @@ class AgentSessionDiscoveryService {
       maxPerTool,
     ),
     'Cursor Agent' => _discoverCursorSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    'Pi' => _discoverPiSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    'Hermes' => _discoverHermesSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
@@ -3262,6 +3399,220 @@ print(json.dumps(sessions))
         .toList(growable: false);
     if (segments.length < 2) return null;
     return segments[segments.length - 2];
+  }
+
+  // ── Pi ─────────────────────────────────────────────────────────────────
+  // Sessions: ~/.pi/agent/sessions/--<encoded-cwd>--/<timestamp>_<id>.jsonl
+  // The first record is a `{"type":"session"}` header with id, timestamp and
+  // cwd, so the head of each file is enough to build a picker row.
+
+  Future<_ToolDiscoveryResult> _discoverPiSessions(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    try {
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 24,
+              maximum: 40,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final metadataReadLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 12,
+            )
+          : calculateRecentSessionMetadataReadLimit(max);
+      final output = session.remoteIsWindows
+          ? await _execWindowsPowerShell(
+              session,
+              windowsListNewestFilesScript(
+                relativeRoot: '.pi/agent/sessions',
+                includeGlobs: const ['*.jsonl'],
+                limit: scanLimit,
+              ),
+            )
+          : await _exec(
+              session,
+              'find ~/.pi/agent/sessions -name "*.jsonl" -type f '
+              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+            );
+      if (output.trim().isEmpty) {
+        return const _ToolDiscoveryResult.success('Pi', []);
+      }
+
+      final sessionPaths = output
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false);
+      final recentSessionPaths = sessionPaths
+          .take(metadataReadLimit)
+          .toList(growable: false);
+      final snapshots = await _readRemoteFileSnapshots(
+        session,
+        recentSessionPaths,
+        maxLines: previewOnly ? 40 : 80,
+      );
+      final sessions = <ToolSessionInfo>[];
+      var hadError = false;
+
+      for (final filePath in recentSessionPaths) {
+        final fileName = filePath.split('/').last.replaceAll('.jsonl', '');
+        String? sessionId;
+        String? summary;
+        String? sessionWorkingDirectory;
+        DateTime? lastActive;
+
+        final snapshot = snapshots[filePath];
+        if (snapshot == null) {
+          hadError = true;
+        } else {
+          try {
+            final metadata = parsePiSessionMetadata(snapshot.content);
+            if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
+              hadError = true;
+            }
+            sessionId = metadata.sessionId;
+            summary = metadata.summary;
+            sessionWorkingDirectory = metadata.workingDirectory;
+            lastActive = metadata.updatedAt;
+          } on Object {
+            hadError = true;
+          }
+          // The header timestamp is the session start, so prefer the file
+          // mtime, which tracks the most recent appended turn.
+          lastActive = snapshot.modifiedAt ?? lastActive;
+        }
+
+        final resolvedId = sessionId ?? _piSessionIdFromFileName(fileName);
+        sessions.add(
+          ToolSessionInfo(
+            toolName: 'Pi',
+            sessionId: resolvedId,
+            workingDirectory: sessionWorkingDirectory,
+            lastActive: lastActive,
+            summary: summary ?? _truncateId(resolvedId),
+          ),
+        );
+      }
+      final scopedSessions =
+          workingDirectory != null && workingDirectory.isNotEmpty
+          ? sessions
+                .where(
+                  (info) => matchesDiscoveredSessionWorkingDirectory(
+                    workingDirectory,
+                    info.workingDirectory,
+                    relatedWorkingDirectories: relatedWorkingDirectories,
+                  ),
+                )
+                .toList(growable: false)
+          : sessions;
+      return _ToolDiscoveryResult.success(
+        'Pi',
+        sortAndLimitDiscoveredSessions(
+          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+          max,
+        ),
+        hadError: hadError,
+      );
+    } on Object {
+      return const _ToolDiscoveryResult.failure('Pi');
+    }
+  }
+
+  // ── Hermes ─────────────────────────────────────────────────────────────
+  // Sessions: SQLite at ~/.hermes/state.db (HERMES_HOME overrides the root).
+  // Only `cli`/`tui` sourced roots are listed so gateway chats from Telegram,
+  // Discord and friends never appear in a terminal picker.
+
+  Future<_ToolDiscoveryResult> _discoverHermesSessions(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    if (session.remoteIsWindows) {
+      return const _ToolDiscoveryResult.success('Hermes', []);
+    }
+    try {
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 24,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final scopedDirectories = <String>[
+        if (workingDirectory != null && workingDirectory.isNotEmpty)
+          workingDirectory,
+        ...relatedWorkingDirectories,
+      ];
+      var output = await _queryHermesDb(
+        session,
+        scanLimit,
+        scopedDirectories: scopedDirectories,
+      );
+      // Fall back to an unscoped query so a preset pointed at an unused
+      // directory still surfaces recent work instead of an empty picker.
+      if (output.trim().isEmpty && scopedDirectories.isNotEmpty) {
+        output = await _queryHermesDb(session, scanLimit);
+      }
+      if (output.trim().isEmpty) {
+        return const _ToolDiscoveryResult.success('Hermes', []);
+      }
+
+      return _ToolDiscoveryResult.success(
+        'Hermes',
+        sortAndLimitDiscoveredSessions(parseHermesDbOutput(output), max),
+      );
+    } on Object {
+      return const _ToolDiscoveryResult.failure('Hermes');
+    }
+  }
+
+  Future<String> _queryHermesDb(
+    SshSession session,
+    int scanLimit, {
+    Iterable<String> scopedDirectories = const <String>[],
+  }) {
+    final directoryScopeClause = buildSqlWorkingDirectoryScopeClause(
+      scopedDirectories,
+      columnName: 'cwd',
+    );
+    final sql = StringBuffer()
+      ..write(
+        "SELECT id, COALESCE(NULLIF(title, ''), display_name, ''), "
+        "COALESCE(cwd, ''), "
+        'CAST(COALESCE(ended_at, started_at) AS INTEGER) ',
+      )
+      ..write('FROM sessions ')
+      ..write("WHERE source IN ('cli', 'tui') ")
+      ..write('AND parent_session_id IS NULL ')
+      ..write('AND COALESCE(archived, 0) = 0 ');
+    if (directoryScopeClause != null) {
+      sql.write('AND ($directoryScopeClause) ');
+    }
+    sql
+      ..write('ORDER BY COALESCE(ended_at, started_at) DESC ')
+      ..write('LIMIT $scanLimit;');
+
+    return _exec(
+      session,
+      r'SEP=$(printf "\037"); sqlite3 -separator "$SEP" '
+      r'"${HERMES_HOME:-$HOME/.hermes}/state.db" '
+      '${_shellQuote(sql.toString())} 2>/dev/null',
+    );
   }
 
   // ── OpenCode ───────────────────────────────────────────────────────────
@@ -4933,6 +5284,21 @@ String? _extractGeminiUserSummary(List<dynamic>? messages) {
     if (displayContent != null && displayContent.trim().isNotEmpty) {
       return _summarizeSessionText(displayContent);
     }
+  }
+  return null;
+}
+
+/// Reads the plain text of a Pi message whose content is either a bare string
+/// or a list of content blocks.
+String? _readPiMessageText(Map<String, dynamic>? message) {
+  final content = message?['content'];
+  if (content is String) return content;
+  if (content is! List) return null;
+
+  for (final block in content.whereType<Map<String, dynamic>>()) {
+    if (_readStringField(block, 'type') != 'text') continue;
+    final text = _readStringField(block, 'text');
+    if (text != null && text.trim().isNotEmpty) return text;
   }
   return null;
 }

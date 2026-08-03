@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.133"
+	monkeyMuxVersion                  = "0.1.134"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -810,7 +810,7 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, "Usage:")
 	fmt.Fprintln(writer, "  monkeymux                              attach or choose a session")
-	fmt.Fprintln(writer, "  monkeymux attach [-t NAME] [NAME]      attach, creating NAME if needed")
+	fmt.Fprintln(writer, "  monkeymux attach [--existing] [-t NAME] [NAME]")
 	fmt.Fprintln(writer, "  monkeymux new-session [-d] [-s NAME] [COMMAND...]")
 	fmt.Fprintln(writer, "  monkeymux list-sessions")
 	fmt.Fprintln(writer, "  monkeymux kill-session -t NAME")
@@ -838,6 +838,7 @@ func attachCommand(args []string) {
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
 	clientID := fs.String("client-id", "", "stable foreground client identifier")
 	clipViewport := fs.Bool("clip-viewport", false, "clip a shared terminal grid to this client's viewport")
+	existingOnly := fs.Bool("existing", false, "fail instead of creating a missing session")
 	widthFlag := fs.Int("width", 0, "terminal columns when stdout has no PTY")
 	heightFlag := fs.Int("height", 0, "terminal rows when stdout has no PTY")
 	noPrefix := fs.Bool("no-prefix", false, "disable Ctrl-B window commands")
@@ -895,6 +896,7 @@ func attachCommand(args []string) {
 		*restoreYolo,
 		width,
 		height,
+		*existingOnly,
 	); err != nil {
 		fatal(err)
 	}
@@ -1022,6 +1024,7 @@ func newSessionCommand(args []string) {
 		false,
 		width,
 		height,
+		false,
 	); err != nil {
 		fatal(err)
 	}
@@ -1406,6 +1409,7 @@ func ensureServer(
 	startInYoloMode bool,
 	width int,
 	height int,
+	existingOnly bool,
 ) error {
 	var restore *serverRestore
 	if status, err := queryRunningServerStatus(session); err == nil {
@@ -1443,6 +1447,8 @@ func ensureServer(
 				monkeyMuxVersion,
 			)
 		}
+	} else if existingOnly {
+		return fmt.Errorf("MonkeyMux session %q is not running", session)
 	}
 
 	socket, err := socketPath(session)
