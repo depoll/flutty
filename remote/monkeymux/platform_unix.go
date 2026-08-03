@@ -355,7 +355,16 @@ func terminalSize() (int, int) {
 	return defaultColumns, defaultRows
 }
 
-func forwardResizeSignals(session string, clientID string) func() {
+func forwardResizeSignals(
+	session string,
+	clientID string,
+	initialWidth int,
+	initialHeight int,
+	explicitSize bool,
+) func() {
+	_ = initialWidth
+	_ = initialHeight
+	_ = explicitSize
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGWINCH)
 	done := make(chan struct{})

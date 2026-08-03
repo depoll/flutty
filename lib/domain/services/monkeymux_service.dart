@@ -115,6 +115,8 @@ String buildMonkeyMuxAttachCommand({
   String? launchCommand,
   String? windowName,
   String? terminalThemeReports,
+  int? terminalColumns,
+  int? terminalRows,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
   bool clipViewport = false,
@@ -130,6 +132,9 @@ String buildMonkeyMuxAttachCommand({
       _monkeyMuxQuoteArg(clientId.trim(), windows: windows),
     ],
     if (clipViewport) '--clip-viewport',
+    if (terminalColumns != null && terminalColumns > 0)
+      '--width $terminalColumns',
+    if (terminalRows != null && terminalRows > 0) '--height $terminalRows',
     if (serverUpdatePolicy != null) ...[
       '--update-policy',
       serverUpdatePolicy.cliValue,
@@ -168,7 +173,13 @@ class MonkeyMuxImageReplayResult {
   /// Image IDs whose retained transmissions reached the attach client.
   final Set<int> served;
 
-  /// Whether unserved IDs may be retried after a transport-level failure.
+  /// Whether unserved IDs may be retried after a transient transport or
+  /// availability gap.
+  ///
+  /// A server can acknowledge `request_images` but return no IDs when the
+  /// active-window switch or a multipart transmission is still settling.
+  /// Treating that first empty acknowledgment as final permanently suppresses
+  /// repair for the rest of the window visit.
   final bool retryableFailure;
 
   /// Returns requested IDs that remain eligible for a bounded retry.
@@ -178,6 +189,31 @@ class MonkeyMuxImageReplayResult {
     }
     return requested.where((id) => !served.contains(id)).toSet();
   }
+}
+
+/// Builds the recovery outcome for one acknowledged replay response.
+///
+/// Exposed for tests so the service-level contract around acknowledged empty
+/// and partially served batches cannot regress independently of the widget
+/// retry tests.
+@visibleForTesting
+MonkeyMuxImageReplayResult resolveMonkeyMuxImageReplayBatchForTesting({
+  required Set<int> requested,
+  required Set<int> alreadyServed,
+  required bool acknowledged,
+  required Iterable<String> responseImageIds,
+}) {
+  final pending = requested.difference(alreadyServed);
+  final batch = responseImageIds
+      .map(int.tryParse)
+      .whereType<int>()
+      .where(pending.contains)
+      .toSet();
+  final served = {...alreadyServed, ...batch};
+  return MonkeyMuxImageReplayResult(
+    served: served,
+    retryableFailure: acknowledged && requested.difference(served).isNotEmpty,
+  );
 }
 
 /// Controls a remote MonkeyMux session through its JSON backchannel.
@@ -594,18 +630,24 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           'clientId': session.monkeyMuxClientId,
           'imageIds': pending.toList(growable: false),
         }, priority: SshExecPriority.low);
+        final outcome = resolveMonkeyMuxImageReplayBatchForTesting(
+          requested: requestedIds,
+          alreadyServed: served,
+          acknowledged: response.imagesAcknowledged,
+          responseImageIds: response.imageIds,
+        );
         if (!response.imagesAcknowledged) {
-          return MonkeyMuxImageReplayResult(
-            served: served,
-            retryableFailure: false,
-          );
+          return outcome;
         }
-        final batch = response.imageIds.where(pending.contains).toSet();
+        final batch = outcome.served
+            .where((id) => !served.contains(id))
+            .map((id) => id.toString())
+            .toSet();
         if (batch.isEmpty) {
-          break;
+          return outcome;
         }
         pending.removeAll(batch);
-        served.addAll(batch.map(int.parse));
+        served.addAll(outcome.served);
       }
     } on _MonkeyMuxControlCommandException catch (error) {
       DiagnosticsLogService.instance.debug(
@@ -635,7 +677,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       );
       return MonkeyMuxImageReplayResult(served: served, retryableFailure: true);
     }
-    return MonkeyMuxImageReplayResult(served: served, retryableFailure: false);
+    return MonkeyMuxImageReplayResult(
+      served: served,
+      retryableFailure: pending.isNotEmpty,
+    );
   }
 
   @override
