@@ -522,6 +522,8 @@ branch refs/heads/fix/session-resumption
         'OpenCode',
         'Antigravity',
         'Cursor Agent',
+        'Pi',
+        'Hermes',
       ]);
     });
 
@@ -540,6 +542,8 @@ branch refs/heads/fix/session-resumption
         'OpenCode',
         'Antigravity',
         'Cursor Agent',
+        'Pi',
+        'Hermes',
         'Custom Tool',
       ]);
     });
@@ -1007,6 +1011,83 @@ cwd: /tmp/demo
 ''');
 
       expect(metadata.parsedAny, isFalse);
+    });
+  });
+
+  group('parsePiSessionMetadata', () {
+    test('reads the session header and first user prompt', () {
+      final metadata = parsePiSessionMetadata('''
+{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/flutty"}
+{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Fix the tmux navigator crash"}}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.sessionId, '01JYX7');
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(metadata.summary, 'Fix the tmux navigator crash');
+      expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:07:44.781Z'));
+    });
+
+    test('prefers the latest session_info name over the first prompt', () {
+      final metadata = parsePiSessionMetadata('''
+{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/tmp/project"}
+{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"initial prompt"}}
+{"type":"session_info","id":"b","parentId":"a","name":"Refactor auth"}
+{"type":"session_info","id":"c","parentId":"b","name":"Refactor auth module"}
+''');
+
+      expect(metadata.summary, 'Refactor auth module');
+    });
+
+    test('reads user text from structured content blocks', () {
+      final metadata = parsePiSessionMetadata('''
+{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/tmp/project"}
+{"type":"message","message":{"role":"user","content":[{"type":"image"},{"type":"text","text":"Explain this diagram"}]}}
+''');
+
+      expect(metadata.summary, 'Explain this diagram');
+    });
+
+    test('reports no parsed content for an unreadable transcript', () {
+      final metadata = parsePiSessionMetadata('not json at all');
+
+      expect(metadata.parsedAny, isFalse);
+      expect(metadata.sessionId, isNull);
+    });
+  });
+
+  group('parseHermesDbOutput', () {
+    test('maps separated columns onto session metadata', () {
+      final sessions = parseHermesDbOutput(
+        '${<String>['20250305_091523_a1b2c3', 'Refactor auth', '/Users/depoll/Code/flutty', '1783405351'].join('\x1f')}\n',
+      );
+
+      expect(sessions, hasLength(1));
+      expect(sessions.single.toolName, 'Hermes');
+      expect(sessions.single.sessionId, '20250305_091523_a1b2c3');
+      expect(sessions.single.summary, 'Refactor auth');
+      expect(sessions.single.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(
+        sessions.single.lastActive,
+        DateTime.fromMillisecondsSinceEpoch(1783405351000),
+      );
+    });
+
+    test('tolerates empty titles, cwd, and timestamps', () {
+      final sessions = parseHermesDbOutput(
+        '20250305_091523_a1b2c3\x1f\x1f\x1f0\n\n',
+      );
+
+      expect(sessions, hasLength(1));
+      expect(sessions.single.workingDirectory, isNull);
+      expect(sessions.single.lastActive, isNull);
+      expect(sessions.single.summary, isNotEmpty);
+    });
+
+    test('skips malformed rows without an id', () {
+      final sessions = parseHermesDbOutput('\x1fno id\x1f/tmp\x1f1\nbroken\n');
+
+      expect(sessions, isEmpty);
     });
   });
 
@@ -1872,6 +1953,91 @@ branch refs/heads/main
         discovery.buildResumeCommand(info),
         "cd '/Users/depoll/Code/flutty' && cursor-agent --resume '$chatId'",
       );
+    });
+
+    test('Pi discovery resolves session id, name, and cwd', () async {
+      final client = _MockSshClient();
+      const sessionPath =
+          '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
+          '2026-04-12T21-07-44-781Z_01JYX7ABCD.jsonl';
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('find ~/.pi/agent/sessions')) {
+          return _buildExecSession(stdout: sessionPath);
+        }
+        if (command.contains(sessionPath)) {
+          return _buildExecSession(
+            stdout: _remoteSnapshotLine(sessionPath, '''
+{"type":"session","version":3,"id":"01JYX7ABCD","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/flutty"}
+{"type":"message","message":{"role":"user","content":"Fix the tmux navigator crash"}}
+''', mtime: 1777243460),
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(session, toolName: 'Pi');
+
+      expect(result.sessions, hasLength(1));
+      final info = result.sessions.single;
+      expect(info.toolName, 'Pi');
+      expect(info.sessionId, '01JYX7ABCD');
+      expect(info.summary, 'Fix the tmux navigator crash');
+      expect(info.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(
+        discovery.buildResumeCommand(info),
+        "cd '/Users/depoll/Code/flutty' && pi --session '01JYX7ABCD'",
+      );
+    });
+
+    test('Hermes discovery reads the state database', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('state.db')) {
+          return _buildExecSession(
+            stdout: <String>[
+              '20250305_091523_a1b2c3',
+              'Refactor auth',
+              '/Users/depoll/Code/flutty',
+              '1783405351',
+            ].join('\x1f'),
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        toolName: 'Hermes',
+      );
+
+      expect(result.sessions, hasLength(1));
+      final info = result.sessions.single;
+      expect(info.toolName, 'Hermes');
+      expect(info.sessionId, '20250305_091523_a1b2c3');
+      expect(info.summary, 'Refactor auth');
+      expect(info.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(
+        discovery.buildResumeCommand(info),
+        "cd '/Users/depoll/Code/flutty' && "
+        "hermes --resume '20250305_091523_a1b2c3'",
+      );
+      // Gateway chats from messaging platforms must stay out of the picker,
+      // and HERMES_HOME must be honoured when set. The SQL is shell-quoted,
+      // so assert on tokens that survive escaping.
+      final query = commands.firstWhere((c) => c.contains('state.db'));
+      expect(query, contains('source IN ('));
+      expect(query, contains('cli'));
+      expect(query, contains('tui'));
+      expect(query, contains('parent_session_id IS NULL'));
+      expect(query, contains(r'${HERMES_HOME:-$HOME/.hermes}/state.db'));
     });
 
     test('toolName limits discovery to the requested provider', () async {
