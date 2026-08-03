@@ -89,6 +89,19 @@ void main() {
       );
     });
 
+    test('passes explicit viewport dimensions for raw SSH attach', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: r'C:\Users\me\monkeymux.exe',
+        sessionName: 'work',
+        terminalColumns: 69,
+        terminalRows: 55,
+        windows: true,
+      );
+
+      expect(command, contains('--width 69 --height 55'));
+      expect(command, endsWith(' work'));
+    });
+
     test('escapes arguments for Windows argv parsing', () {
       final command = buildMonkeyMuxAttachCommand(
         executablePath: r'C:\Program Files\mm\monkeymux.exe',
@@ -166,13 +179,37 @@ void main() {
       expect(result.retryableUnserved(const {7, 8, 9}), {8, 9});
     });
 
-    test('keeps acknowledged missing ids suppressed', () {
+    test('keeps explicitly non-retryable missing ids suppressed', () {
       final result = MonkeyMuxImageReplayResult(
         served: const {7},
         retryableFailure: false,
       );
 
       expect(result.retryableUnserved(const {7, 8, 9}), isEmpty);
+    });
+
+    test('acknowledged empty batch keeps requested ids retryable', () {
+      final result = resolveMonkeyMuxImageReplayBatchForTesting(
+        requested: const {7, 8},
+        alreadyServed: const <int>{},
+        acknowledged: true,
+        responseImageIds: const <String>[],
+      );
+
+      expect(result.served, isEmpty);
+      expect(result.retryableUnserved(const {7, 8}), {7, 8});
+    });
+
+    test('partial batch preserves served ids and retries the remainder', () {
+      final result = resolveMonkeyMuxImageReplayBatchForTesting(
+        requested: const {7, 8, 9},
+        alreadyServed: const {7},
+        acknowledged: true,
+        responseImageIds: const ['8'],
+      );
+
+      expect(result.served, {7, 8});
+      expect(result.retryableUnserved(const {7, 8, 9}), {9});
     });
   });
 
@@ -582,7 +619,167 @@ void main() {
         await service.clearCache(901);
       },
     );
+    test(
+      'listWindows fails instead of hanging when the watcher is disposed',
+      () async {
+        final client = _MockSshClient();
+        final installer = _MockMonkeyMuxInstaller();
+        final session = _buildSession(client, connectionId: 902);
+        final stdoutController = StreamController<Uint8List>();
+        final controlSession = _buildSilentControlSession(stdoutController);
+
+        when(
+          () => installer.ensureInstalled(session),
+        ).thenAnswer((_) async => _fakeInstallation);
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => controlSession);
+
+        final service = MonkeyMuxService(
+          installer: installer,
+          agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+        );
+        final subscription = service
+            .watchWindowChanges(session, 'work')
+            .listen((_) {});
+        final stuckReload = service.listWindows(session, 'work');
+        final reloadFailed = expectLater(
+          stuckReload,
+          throwsA(isA<MonkeyMuxInstallException>()),
+        );
+        await pumpEventQueue();
+
+        // Tearing down the last window-change listener disposes the shared
+        // control channel. The in-flight reload used to stay pending forever,
+        // and because it is cached as the shared window-list request every
+        // later reload reused it, leaving the switcher on a perpetual spinner.
+        await subscription.cancel();
+        await reloadFailed;
+
+        final reconnectController = StreamController<Uint8List>();
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (_) async => _buildRespondingControlSession(
+            reconnectController,
+            window: _fakeWindowJson,
+          ),
+        );
+        final resubscribed = service
+            .watchWindowChanges(session, 'work')
+            .listen((_) {});
+
+        final windows = await service.listWindows(session, 'work');
+        expect(windows, hasLength(1));
+        expect(windows.single.name, 'Codex');
+
+        await resubscribed.cancel();
+        await reconnectController.close();
+        await stdoutController.close();
+        await service.clearCache(902);
+      },
+    );
+
+    test('listWindows recovers after the control channel never opens', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 903);
+      final neverOpens = Completer<SSHSession>();
+
+      when(
+        () => installer.ensureInstalled(session),
+      ).thenAnswer((_) async => _fakeInstallation);
+      // A channel open that never resolves used to block runCommand before the
+      // request deadline was armed, so no timeout could ever fire.
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) => neverOpens.future);
+
+      final service = MonkeyMuxService(
+        installer: installer,
+        agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+        controlResponseTimeout: const Duration(milliseconds: 80),
+      )..watchWindowChanges(session, 'work');
+
+      await expectLater(
+        service.listWindows(session, 'work'),
+        throwsA(isA<TimeoutException>()),
+      );
+
+      // The wedged start attempt must not be reused: every later reload would
+      // await the same dead future and time out without opening a channel.
+      final reconnectController = StreamController<Uint8List>();
+      final reconnectSession = _buildRespondingControlSession(
+        reconnectController,
+        window: _fakeWindowJson,
+      );
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => reconnectSession);
+
+      final windows = await service.listWindows(session, 'work');
+      expect(windows, hasLength(1));
+      expect(windows.single.name, 'Codex');
+
+      // A channel that opens after its attempt was abandoned is closed rather
+      // than installed over the live one.
+      final abandoned = _buildSilentControlSession(
+        StreamController<Uint8List>(),
+      );
+      neverOpens.complete(abandoned);
+      await pumpEventQueue();
+      verify(abandoned.close).called(1);
+
+      await reconnectController.close();
+      await service.clearCache(903);
+    });
+
+    test('gives every queued control command a distinct id', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 904);
+      final stdoutController = StreamController<Uint8List>();
+      final controlSession = _buildSilentControlSession(stdoutController);
+      final requests = <Map<String, Object?>>[];
+
+      when(
+        () => installer.ensureInstalled(session),
+      ).thenAnswer((_) async => _fakeInstallation);
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => controlSession);
+      when(() => controlSession.write(any())).thenAnswer((invocation) {
+        final data = invocation.positionalArguments.single as List<int>;
+        requests.add(jsonDecode(utf8.decode(data)) as Map<String, Object?>);
+      });
+
+      final service = MonkeyMuxService(
+        installer: installer,
+        agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+      )..watchWindowChanges(session, 'work');
+      // Commands created in the same tick used to share a microsecond
+      // timestamp id, so the second overwrote the first in the pending map and
+      // the first caller never received a response.
+      final windowList = service.listWindows(session, 'work');
+      final panePath = service.currentPanePath(session, 'work');
+      await pumpEventQueue();
+
+      expect(requests, hasLength(2));
+      expect(requests.first['id'], isNot(requests.last['id']));
+
+      for (final request in requests) {
+        _respondToWindowListRequest(
+          stdoutController,
+          request,
+          terminalBracketedPasteMode: false,
+        );
+      }
+      await windowList;
+      await panePath;
+
+      await stdoutController.close();
+      await service.clearCache(904);
+    });
   });
+
   group('MonkeyMuxService.installedHelperVersion', () {
     setUpAll(() => registerFallbackValue(Uint8List(0)));
 

@@ -3074,6 +3074,7 @@ void main() {
         final monkeyMuxService = _MockMonkeyMuxService();
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
         final executedCommands = <String>[];
+        final requestedPtys = <SSHPtyConfig?>[];
 
         host = _buildHost(
           id: host.id,
@@ -3103,6 +3104,7 @@ void main() {
           () => sshClient.execute(any(), pty: any(named: 'pty')),
         ).thenAnswer((invocation) async {
           executedCommands.add(invocation.positionalArguments.single as String);
+          requestedPtys.add(invocation.namedArguments[#pty] as SSHPtyConfig?);
           return shellChannel;
         });
         when(
@@ -3210,6 +3212,17 @@ void main() {
         );
         expect(executedCommands.single, isNot(contains("'")));
         expect(executedCommands.single, endsWith(' $sessionName'));
+        expect(
+          requestedPtys,
+          [isNull],
+          reason:
+              'the SSH channel must stay raw; a Windows OpenSSH PTY creates '
+              'an outer system ConPTY that strips Kitty APC while preserving '
+              'the placeholder cells',
+        );
+        verifyNever(
+          () => shellChannel.resizeTerminal(any(), any(), any(), any()),
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -4525,7 +4538,7 @@ void main() {
         expect(
           monkeyMuxService.imageReplayCalls,
           hasLength(2),
-          reason: 'acknowledged misses stay suppressed for this window visit',
+          reason: 'explicitly non-retryable misses stay suppressed',
         );
 
         monkeyMuxService.imageReplayFutures.addAll(
