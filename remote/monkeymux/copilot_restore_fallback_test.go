@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,8 +24,21 @@ func writeCopilotSession(
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	events := `{"type":"session.start","data":{"sessionId":"` + id +
-		`","context":{"cwd":"` + cwd + `"}}}` + "\n"
+	// Marshal rather than concatenate: a Windows cwd such as
+	// C:\Users\...\project is full of backslashes that would otherwise become
+	// invalid JSON escapes, so the events log would not parse at all.
+	event := map[string]any{
+		"type": "session.start",
+		"data": map[string]any{
+			"sessionId": id,
+			"context":   map[string]any{"cwd": cwd},
+		},
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := string(encoded) + "\n"
 	eventsPath := filepath.Join(dir, "events.jsonl")
 	if err := os.WriteFile(eventsPath, []byte(events), 0o600); err != nil {
 		t.Fatal(err)
@@ -66,7 +80,7 @@ func itoaPositive(n int) string {
 // pane.
 func TestDiscoverCopilotSessionIDsPrefersFreshSessionOnStaleLock(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHomeDir(t, home)
 	stateDir := filepath.Join(home, ".copilot", "session-state")
 
 	now := time.Now()
@@ -92,7 +106,7 @@ func TestDiscoverCopilotSessionIDsPrefersFreshSessionOnStaleLock(t *testing.T) {
 // instead of relaunching blank.
 func TestEnrichRestoreCopilotFallsBackToCwd(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHomeDir(t, home)
 	stateDir := filepath.Join(home, ".copilot", "session-state")
 	project := filepath.Join(home, "project")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -125,7 +139,7 @@ func TestEnrichRestoreCopilotFallsBackToCwd(t *testing.T) {
 // that a session already claimed elsewhere is never reused.
 func TestAssignCopilotSessionsByWorkingDirectoryDedups(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHomeDir(t, home)
 	stateDir := filepath.Join(home, ".copilot", "session-state")
 	project := filepath.Join(home, "shared")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -163,7 +177,7 @@ func TestAssignCopilotSessionsByWorkingDirectoryDedups(t *testing.T) {
 // cwd and a session cwd match through ~ expansion and symlink resolution.
 func TestAssignCopilotSessionsByWorkingDirectoryNormalizesPaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHomeDir(t, home)
 	stateDir := filepath.Join(home, ".copilot", "session-state")
 
 	realDir := filepath.Join(home, "real-project")
