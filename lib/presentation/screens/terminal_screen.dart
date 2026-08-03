@@ -153,6 +153,13 @@ String describeTerminalConnectionState(
   }
 }
 
+/// Whether a completed MonkeyMux startup should return to a usable login shell.
+@visibleForTesting
+bool shouldFallbackFromUnestablishedMonkeyMuxAttach({
+  required bool reconnectAttempt,
+  required bool attachEstablished,
+}) => !reconnectAttempt && !attachEstablished;
+
 /// Formats the remote host and session identity shown in the terminal title.
 @visibleForTesting
 String? formatTerminalConnectionIdentity({
@@ -3521,6 +3528,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _muxVersion;
   String? _monkeyMuxReconnectSessionName;
   bool _monkeyMuxReconnectAttachPending = false;
+  bool _monkeyMuxAttachEstablished = false;
   int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
@@ -7646,9 +7654,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     final reconnectAttempt = _monkeyMuxReconnectAttachPending;
+    final failedBeforeWindowState =
+        shouldFallbackFromUnestablishedMonkeyMuxAttach(
+          reconnectAttempt: reconnectAttempt,
+          attachEstablished: _monkeyMuxAttachEstablished,
+        );
     _monkeyMuxReconnectAttachPending = false;
     if (reconnectAttempt) {
       _monkeyMuxReconnectSessionName = null;
+    } else if (failedBeforeWindowState) {
+      _clearTmuxState();
     } else {
       _rememberMonkeyMuxReconnectTarget(session);
     }
@@ -7656,6 +7671,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       'terminal',
       reconnectAttempt
           ? 'monkeymux_reconnect_attach_completed'
+          : failedBeforeWindowState
+          ? 'monkeymux_attach_failed_before_window_state'
           : 'monkeymux_attach_completed',
       fields: {'connectionId': session.connectionId},
     );
@@ -7664,18 +7681,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _clearTmuxState();
       }
       _isConnecting = false;
-      _error = reconnectAttempt
+      _error = failedBeforeWindowState
+          ? null
+          : reconnectAttempt
           ? 'The MonkeyMux session is no longer available. Reconnect to start '
                 'the configured session.'
           : 'MonkeyMux disconnected. Reconnect to continue.';
     });
-    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
-    _terminalFocusNode.unfocus();
+    if (!failedBeforeWindowState) {
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+      _terminalFocusNode.unfocus();
+    }
 
     try {
       final replacementShell = await session.getShell();
       if (mounted && _connectionId == session.connectionId) {
         _shell = replacementShell;
+        if (failedBeforeWindowState) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'MonkeyMux could not start. Connected to a login shell instead.',
+              ),
+            ),
+          );
+          _restoreTerminalFocus(
+            forceShowSystemKeyboard: widget.initiallyShowKeyboard,
+          );
+        }
       }
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
@@ -9499,6 +9532,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (command.backend != RemoteMuxBackend.monkeyMux) {
         return;
       }
+      _monkeyMuxAttachEstablished = false;
       _isTmuxActive = true;
       _tmuxSessionName = command.sessionName;
       _tmuxStateConnectionId = session.connectionId;
@@ -9600,6 +9634,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
+    _monkeyMuxAttachEstablished = false;
     _muxVersion = null;
     _activeMuxBackend = RemoteMuxBackend.tmux;
     _tmuxStateConnectionId = null;
@@ -10451,13 +10486,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
-      onWindowsChanged: (windows) => _syncAutomaticPortForwardProcessRoots(
-        session,
-        windows,
-        sessionName: _tmuxSessionName,
-        extraFlags: _activeTmuxExtraFlags,
-        queryTmuxPanePids: _activeMuxBackend == RemoteMuxBackend.tmux,
-      ),
+      onWindowsChanged: (windows) {
+        if (_activeMuxBackend == RemoteMuxBackend.monkeyMux &&
+            windows.isNotEmpty) {
+          _monkeyMuxAttachEstablished = true;
+        }
+        _syncAutomaticPortForwardProcessRoots(
+          session,
+          windows,
+          sessionName: _tmuxSessionName,
+          extraFlags: _activeTmuxExtraFlags,
+          queryTmuxPanePids: _activeMuxBackend == RemoteMuxBackend.tmux,
+        );
+      },
       onWindowStateChanged: _handleTmuxWindowStateChanged,
       onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
