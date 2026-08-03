@@ -703,6 +703,7 @@ func killCommandProcessGroup(cmd *exec.Cmd) {
 }
 
 const supportsExplicitForegroundResizeSignal = false
+const prefersVerticalForegroundRedrawResize = true
 
 // signalForegroundResize is a no-op on Windows: ResizePseudoConsole already
 // notifies the attached child of size changes.

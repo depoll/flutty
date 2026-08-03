@@ -78,6 +78,19 @@ func TestForcedSameSizeRedrawUsesSyntheticWindowsFallback(t *testing.T) {
 	}
 }
 
+func TestForegroundRedrawTemporarySizePrefersHeightOnWindows(t *testing.T) {
+	width, height, ok := foregroundRedrawTemporarySize(120, 40)
+
+	if width != 120 || height != 39 || !ok {
+		t.Fatalf(
+			"temporary Windows redraw size = %dx%d, %t; want 120x39, true",
+			width,
+			height,
+			ok,
+		)
+	}
+}
+
 func TestSingleCellRedrawUsesTemporaryWindowsExpansion(t *testing.T) {
 	server := newMuxServerWithSize("test", 1, 1)
 	pty := &resizeRecordingPty{}
