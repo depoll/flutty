@@ -2978,7 +2978,7 @@ void main() {
             port: 22,
             username: 'root',
           ),
-        );
+        )..terminalFontSize = 10;
         when(
           () => shellChannel.resizeTerminal(any(), any(), any(), any()),
         ).thenAnswer((_) {});

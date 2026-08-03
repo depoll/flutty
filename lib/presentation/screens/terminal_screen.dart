@@ -7421,12 +7421,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final host = _host;
       final reserveMuxChromeBeforeActivation =
           host != null && _expectsPreparedMonkeyMuxOnInitialShell(host);
+      final sessionFontSizeOverride = session.terminalFontSize;
       if (_reserveMuxChromeBeforeActivation !=
-          reserveMuxChromeBeforeActivation) {
-        setState(
-          () => _reserveMuxChromeBeforeActivation =
-              reserveMuxChromeBeforeActivation,
-        );
+              reserveMuxChromeBeforeActivation ||
+          _sessionFontSizeOverride != sessionFontSizeOverride) {
+        setState(() {
+          _reserveMuxChromeBeforeActivation = reserveMuxChromeBeforeActivation;
+          _sessionFontSizeOverride = sessionFontSizeOverride;
+        });
       }
       await _waitForInitialTerminalViewportLayout(
         refreshLayout: _reserveMuxChromeBeforeActivation,
