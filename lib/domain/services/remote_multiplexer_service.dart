@@ -10,6 +10,16 @@ import 'tmux_service.dart';
 
 /// Common app-side surface for remote terminal multiplexers.
 abstract interface class RemoteMultiplexerService {
+  /// Returns the detected backend version for the active remote multiplexer.
+  ///
+  /// The returned value excludes the backend name and is null when the version
+  /// cannot be determined without disrupting the active terminal.
+  Future<String?> detectedVersion(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  });
+
   /// Returns the current window list for [sessionName].
   Future<List<TmuxWindow>> listWindows(
     SshSession session,
@@ -114,6 +124,17 @@ class TmuxRemoteMultiplexerService implements RemoteMultiplexerService {
   const TmuxRemoteMultiplexerService(this._tmuxService);
 
   final TmuxService _tmuxService;
+
+  @override
+  Future<String?> detectedVersion(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) => _tmuxService.detectedVersion(
+    session,
+    sessionName,
+    extraFlags: extraFlags,
+  );
 
   @override
   Future<List<TmuxWindow>> listWindows(
