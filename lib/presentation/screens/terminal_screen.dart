@@ -3533,6 +3533,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
+  double _terminalViewportReservedWidth = 0;
+  double _terminalViewportReservedBottomPadding = 0;
+  bool _reserveMuxChromeBeforeActivation = false;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
@@ -7415,6 +7418,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         reason: 'open_new_terminal',
       );
+      final host = _host;
+      final reserveMuxChromeBeforeActivation =
+          host != null && _expectsPreparedMonkeyMuxOnInitialShell(host);
+      if (_reserveMuxChromeBeforeActivation !=
+          reserveMuxChromeBeforeActivation) {
+        setState(
+          () => _reserveMuxChromeBeforeActivation =
+              reserveMuxChromeBeforeActivation,
+        );
+      }
+      await _waitForInitialTerminalViewportLayout(
+        refreshLayout: _reserveMuxChromeBeforeActivation,
+      );
+      if (!mounted) {
+        return;
+      }
       final initialAutoConnect = await _prepareNewShellInitialAutoConnect(
         session,
       );
@@ -7422,6 +7441,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           initialAutoConnect.command?.backend == RemoteMuxBackend.monkeyMux
           ? initialAutoConnect.command
           : null;
+      if (startupCommand == null && _reserveMuxChromeBeforeActivation) {
+        setState(() => _reserveMuxChromeBeforeActivation = false);
+      }
       final handledInitialAutoConnect =
           initialAutoConnect.handled ||
           _suppressRemoteMuxDetectionConnectionId == session.connectionId;
@@ -8421,8 +8443,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ),
         textScaler: mediaQuery.textScaler,
       );
-      final availableWidth = layoutSize.width - viewportPadding.horizontal;
-      final availableHeight = layoutSize.height - viewportPadding.vertical;
+      final availableWidth =
+          layoutSize.width -
+          viewportPadding.horizontal -
+          _terminalViewportReservedWidth;
+      final availableHeight =
+          layoutSize.height -
+          viewportPadding.vertical -
+          _terminalViewportReservedBottomPadding;
       final columns = availableWidth ~/ painter.cellSize.width;
       final rows = availableHeight ~/ painter.cellSize.height;
       if (columns > 0 && rows > 0) {
@@ -8430,6 +8458,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
     return (columns: _terminal.viewWidth, rows: _terminal.viewHeight);
+  }
+
+  Future<void> _waitForInitialTerminalViewportLayout({
+    bool refreshLayout = false,
+  }) async {
+    if (!refreshLayout &&
+        (_terminalViewKey.currentState?.viewportCellSize != null ||
+            _terminalViewportLayoutSize != null)) {
+      return;
+    }
+    for (var attempt = 0; attempt < 3 && mounted; attempt += 1) {
+      WidgetsBinding.instance.ensureVisualUpdate();
+      await WidgetsBinding.instance.endOfFrame;
+      if (_terminalViewKey.currentState?.viewportCellSize != null ||
+          _terminalViewportLayoutSize != null) {
+        return;
+      }
+    }
+  }
+
+  bool _expectsPreparedMonkeyMuxOnInitialShell(Host host) {
+    if (_monkeyMuxReconnectSessionName != null) {
+      return true;
+    }
+    final sessionName = _initialTmuxSessionName ?? host.tmuxSessionName;
+    if (sessionName != null && sessionName.trim().isNotEmpty) {
+      return _configuredRemoteMuxBackend(host) != RemoteMuxBackend.tmux;
+    }
+    return _autoConnectAgentPreset?.usesMonkeyMuxSession ?? false;
   }
 
   Future<void> _syncActiveMonkeyMuxTerminalSize(
@@ -10330,6 +10387,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isTmuxActive &&
         _showTmuxBar &&
         connectionState == SshConnectionState.connected;
+    final configuredMuxExpected = _reserveMuxChromeBeforeActivation;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -10344,13 +10402,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           0,
           constraints.maxWidth - tmuxBarSafeInsets.horizontal,
         ).toDouble();
-        final tmuxBarPlacement = showTmux
+        final expectedTmuxBarPlacement = showTmux || configuredMuxExpected
             ? resolveTmuxBarPlacement(tmuxBarAvailableWidth)
+            : TmuxBarPlacement.bottomOverlay;
+        final tmuxBarPlacement = showTmux
+            ? expectedTmuxBarPlacement
             : TmuxBarPlacement.bottomOverlay;
         final availableHeight = max(
           0,
           constraints.maxHeight - tmuxBarSafeInsets.bottom,
         ).toDouble();
+        _terminalViewportReservedWidth =
+            expectedTmuxBarPlacement == TmuxBarPlacement.sidebar
+            ? resolveTmuxSidebarWidth(
+                isExpanded: _isTmuxBarExpanded,
+                dragOffset: _tmuxSidebarDragOffset,
+              )
+            : 0.0;
+        _terminalViewportReservedBottomPadding =
+            expectedTmuxBarPlacement == TmuxBarPlacement.bottomOverlay &&
+                (showTmux || configuredMuxExpected)
+            ? _TmuxExpandableBar.handleHeight + tmuxBarSafeInsets.bottom
+            : 0.0;
 
         if (tmuxBarPlacement == TmuxBarPlacement.sidebar) {
           return _buildTerminalWithTmuxSidebar(
