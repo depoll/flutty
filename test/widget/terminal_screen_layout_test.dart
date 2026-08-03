@@ -95,6 +95,25 @@ void main() {
       );
     });
 
+    test('formats detected remote multiplexer versions', () {
+      expect(
+        formatRemoteMuxVersionLabel(RemoteMuxBackend.monkeyMux, '0.2.4'),
+        'MonkeyMux 0.2.4',
+      );
+      expect(
+        formatRemoteMuxVersionLabel(RemoteMuxBackend.tmux, '3.4'),
+        'tmux 3.4',
+      );
+      expect(
+        formatRemoteMuxVersionLabel(RemoteMuxBackend.tmux, 'tmux next-3.5'),
+        'tmux next-3.5',
+      );
+      expect(
+        formatRemoteMuxVersionLabel(RemoteMuxBackend.monkeyMux, '  '),
+        isNull,
+      );
+    });
+
     test('terminal identity includes remote host and session id', () {
       expect(
         formatTerminalConnectionIdentity(
