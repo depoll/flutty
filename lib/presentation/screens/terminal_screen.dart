@@ -31,6 +31,7 @@ import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
+import '../../domain/models/terminal_capability_hint.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -8883,6 +8884,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             terminalRows: viewportCellSize.rows,
             workingDirectory: host.tmuxWorkingDirectory,
             terminalThemeReports: terminalThemeReports,
+            terminalCapabilityReports: buildTerminalCapabilityHintReports(),
             serverUpdatePolicy: updatePolicy,
             startInYoloMode: _startClisInYoloMode,
             windows: installation.isWindows,
@@ -9411,6 +9413,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         windowName: preset.tool.label,
         launchCommand: launchCommand,
         terminalThemeReports: terminalThemeReports,
+        terminalCapabilityReports: buildTerminalCapabilityHintReports(),
         serverUpdatePolicy: updatePolicy,
         startInYoloMode: _startClisInYoloMode,
         windows: installation.isWindows,
