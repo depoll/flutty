@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -357,11 +358,11 @@ func TestCapabilityHintDefersFenceQueryBehindUnansweredProbe(t *testing.T) {
 	}
 }
 
-// TestCapabilityHintAnswersFenceOnceProbeGroupIsEmpty is the companion case:
-// with nothing buffered, a standalone XTVERSION probe emitted before the
-// unanswerable ones is still answered immediately, which is what restores the
-// agent's richer rendering mode.
-func TestCapabilityHintAnswersFenceOnceProbeGroupIsEmpty(t *testing.T) {
+// TestCapabilityHintDefersFenceAfterProbeEarlierInChunk covers the gate closing
+// mid-chunk: the buffer starts empty, so XTVERSION is answered, but the DECRQM
+// probe that follows cannot be answered and buffers, which must then defer the
+// DA1 fence behind it even though nothing was pending when the chunk began.
+func TestCapabilityHintDefersFenceAfterProbeEarlierInChunk(t *testing.T) {
 	server := newMuxServer("cap-hint-order")
 	pty := &recordingPty{}
 	window := &muxWindow{
@@ -386,6 +387,83 @@ func TestCapabilityHintAnswersFenceOnceProbeGroupIsEmpty(t *testing.T) {
 	server.mu.Unlock()
 	if pending != decrqmQuery+da1Query {
 		t.Fatalf("pending queries = %q, want the unanswered probe group", pending)
+	}
+}
+
+// TestCapabilityHintIsNotBorrowedFromAnotherClient pins the hint to the client
+// that sent it. A client that declares no capabilities — an older helper, or a
+// plain terminal running `monkeymux attach` — must not have the previous
+// client's terminal identity advertised to its windows.
+func TestCapabilityHintIsNotBorrowedFromAnotherClient(t *testing.T) {
+	server := newMuxServer("cap-hint-client")
+	pty := &recordingPty{}
+	background := &muxWindow{
+		id:           "@2",
+		index:        1,
+		agentTool:    "copilot",
+		pty:          pty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		background,
+	}
+	server.activeID = "@1"
+	// The session was started by a client that declared its capabilities, but
+	// the client attached now did not.
+	server.capabilityHint = []byte(capabilityHintFixture)
+	conn := &recordingConn{}
+	server.attachConn = conn
+	server.attachClients = map[net.Conn]*attachClient{
+		conn: {conn: conn, id: "legacy"},
+	}
+
+	server.handleWindowOutput("@2", []byte(xtversionQuery))
+
+	if got := pty.String(); got != "" {
+		t.Fatalf("window pty got = %q, want no reply for a hintless client", got)
+	}
+	server.mu.Lock()
+	pending := string(background.pendingTerminalQueries)
+	server.mu.Unlock()
+	if pending != xtversionQuery {
+		t.Fatalf("pending queries = %q, want the probe buffered for replay", pending)
+	}
+}
+
+// TestCapabilityHintDefersFenceBehindProbeSplitAcrossReads pins the fence gate
+// across pty reads. A probe can arrive split in half, so the gate must still see
+// it: the carry is prepended and rescanned at the front of the next chunk, which
+// buffers the probe before the DA1 fence later in that same chunk is examined.
+func TestCapabilityHintDefersFenceBehindProbeSplitAcrossReads(t *testing.T) {
+	server := newMuxServer("cap-hint-split-fence")
+	pty := &recordingPty{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		pty:          pty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.capabilityHint = []byte(capabilityHintFixture)
+
+	// DECRQM for synchronized output, split mid-sequence across two reads.
+	server.handleWindowOutput("@1", []byte("\x1b[?2026"))
+	server.handleWindowOutput("@1", []byte("$p"+da1Query))
+
+	if got := pty.String(); got != "" {
+		t.Fatalf("window pty got = %q, want the fence left unanswered", got)
+	}
+	server.mu.Lock()
+	pending := string(window.pendingTerminalQueries)
+	server.mu.Unlock()
+	if pending != "\x1b[?2026$p"+da1Query {
+		t.Fatalf(
+			"pending queries = %q, want the reassembled probe and its fence",
+			pending,
+		)
 	}
 }
 
@@ -504,6 +582,53 @@ func TestCapabilityHintVersionAnswersAreBoundedAcrossChunks(t *testing.T) {
 	}
 	if got := len(pty.String()); got == 0 {
 		t.Fatal("wrote no replies at all, want the budget spent on real answers")
+	}
+}
+
+// TestCapabilityAnswerBudgetResetsWhenWindowIsShown pins the budget reset to
+// window visibility rather than to output: a window whose budget was spent
+// while unwatched must be able to answer probes again after the user visits it,
+// even if it produced nothing while it was on screen.
+func TestCapabilityAnswerBudgetResetsWhenWindowIsShown(t *testing.T) {
+	restore := stubForegroundResize(t)
+	defer restore()
+
+	server := newMuxServer("cap-hint-budget-reset")
+	pty := &recordingPty{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		pty:          pty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.capabilityHint = []byte(capabilityHintFixture)
+
+	// Spend the budget while no terminal is attached.
+	server.handleWindowOutput("@1", []byte(strings.Repeat(xtversionQuery, 4096)))
+	spent := len(pty.String())
+	if spent == 0 || spent > pendingTerminalQueryLimitBytes {
+		t.Fatalf("spent %d reply bytes, want a bounded non-zero burst", spent)
+	}
+	server.handleWindowOutput("@1", []byte(xtversionQuery))
+	if got := len(pty.String()); got != spent {
+		t.Fatalf("answered %d more bytes with the budget spent", got-spent)
+	}
+
+	// A terminal attaches and shows the window without it producing output.
+	attach := &recordingConn{}
+	server.handleAttach(
+		attach,
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{Width: 80, Height: 24},
+	)
+
+	server.mu.Lock()
+	remaining := window.capabilityAnswerBytes
+	server.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("budget = %d after the window was shown, want a reset", remaining)
 	}
 }
 
