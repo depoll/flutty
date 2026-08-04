@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.134"
+	monkeyMuxVersion                  = "0.1.141"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -87,6 +87,15 @@ const (
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
 	attachWriteQueueLimitBytes        = 16 * 1024 * 1024
+	// ensureServer serializes attach/create for a session and retries dials so a
+	// transient socket blip cannot steal the path from a live server and replace
+	// a multi-window workspace with a fresh single auto-connect window.
+	ensureServerDialAttempts  = 8
+	ensureServerDialInterval  = 50 * time.Millisecond
+	ensureServerLockTimeout   = 5 * time.Second
+	ensureServerLockRetryWait = 50 * time.Millisecond
+	sessionPIDFileMode        = 0o600
+	sessionLockFileMode       = 0o600
 	// Per-window Kitty image retention, used to survive history eviction across
 	// reattaches and to back placeholder cells the foreground app re-emits.
 	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
@@ -241,9 +250,42 @@ var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 	window.resizePtyIfCurrent(generation, width, height)
 }
 
+// deliverForegroundGeometry gives a window's foreground app this geometry and
+// makes sure it notices.
+//
+// A genuine size change is its own redraw notification, so it is applied
+// directly. Manufacturing a temporary size on top of it would make the app lay
+// out and emit an entire frame for a geometry that never existed, which the
+// client paints before the real one replaces it. Only when the size is already
+// current is there nothing for the app to notice, and the synthetic size is
+// then the sole way left to ask for a repaint.
+var deliverForegroundGeometry = func(
+	window *muxWindow,
+	width int,
+	height int,
+) {
+	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
+		return
+	}
+	if !window.ptySizeIs(width, height) {
+		window.resizePty(width, height)
+		return
+	}
+	simulateForegroundResize(window, width, height)
+}
+
 func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, false
+	}
+	if prefersVerticalForegroundRedrawResize {
+		if height > 1 {
+			return width, height - 1, true
+		}
+		if width > 1 {
+			return width - 1, height, true
+		}
+		return 2, 1, true
 	}
 	if width > 1 {
 		return width - 1, height, true
@@ -251,7 +293,17 @@ func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
 	if height > 1 {
 		return width, height - 1, true
 	}
-	return width, height, false
+	return 2, 1, true
+}
+
+func shouldSimulateForegroundRedraw(
+	forceRedraw bool,
+	syntheticRedraw bool,
+	dimensionsChanged bool,
+	supportsExplicitResizeSignal bool,
+) bool {
+	return syntheticRedraw ||
+		(forceRedraw && !dimensionsChanged && !supportsExplicitResizeSignal)
 }
 
 func (w *muxWindow) resizePty(width int, height int) {
@@ -261,7 +313,21 @@ func (w *muxWindow) resizePty(width int, height int) {
 	w.resizeGeneration.Add(1)
 	w.ptyResizeMu.Lock()
 	_ = w.pty.Resize(width, height)
+	w.ptyWidth = width
+	w.ptyHeight = height
 	w.ptyResizeMu.Unlock()
+}
+
+// ptySizeIs reports whether the PTY already holds this geometry, so callers can
+// tell a genuine resize (which notifies the foreground app by itself) apart
+// from a repeat that the app would ignore.
+func (w *muxWindow) ptySizeIs(width int, height int) bool {
+	if w == nil {
+		return false
+	}
+	w.ptyResizeMu.Lock()
+	defer w.ptyResizeMu.Unlock()
+	return w.ptyWidth == width && w.ptyHeight == height
 }
 
 func (w *muxWindow) resizePtyIfCurrent(
@@ -278,6 +344,8 @@ func (w *muxWindow) resizePtyIfCurrent(
 		return
 	}
 	_ = w.pty.Resize(width, height)
+	w.ptyWidth = width
+	w.ptyHeight = height
 }
 
 func (w *muxWindow) closePty(ptyFile muxPty) error {
@@ -457,28 +525,30 @@ type muxServer struct {
 	publishedWidth  int
 	publishedHeight int
 
-	mu                      sync.Mutex
-	resizeMu                sync.Mutex
-	windows                 []*muxWindow
-	activeID                string
-	lastActiveID            string
-	nextID                  int
-	listener                net.Listener
-	attachConn              net.Conn
-	attachMu                sync.Mutex
-	attachClients           map[net.Conn]*attachClient
-	nextAttachSequence      uint64
-	nextFocusSequence       uint64
-	pendingFocusRefreshConn net.Conn
-	pendingResizeWidth      int
-	pendingResizeHeight     int
-	pendingResizeRedraw     bool
+	mu                               sync.Mutex
+	resizeMu                         sync.Mutex
+	attachTransitionMu               sync.Mutex
+	windows                          []*muxWindow
+	activeID                         string
+	lastActiveID                     string
+	nextID                           int
+	listener                         net.Listener
+	attachConn                       net.Conn
+	attachMu                         sync.Mutex
+	attachClients                    map[net.Conn]*attachClient
+	nextAttachSequence               uint64
+	nextFocusSequence                uint64
+	pendingFocusRefreshConn          net.Conn
+	attachViewportTransitionWindowID string
+	pendingResizeWidth               int
+	pendingResizeHeight              int
+	pendingResizeRedraw              bool
 	// pendingResizeSyntheticRedraw preserves, across a viewport-transition
-	// deferral, whether a deferred forced redraw needs the synthetic width-1
-	// dance (e.g. a theme change, whose SIGWINCH at an unchanged size would not
-	// otherwise repaint). Without it, refreshPendingViewportResize would replay
-	// the deferred redraw with syntheticRedraw=false and silently drop the
-	// repaint. Reset wherever pendingResizeRedraw is.
+	// deferral, whether a deferred forced redraw needs the synthetic one-cell
+	// resize dance (e.g. a theme change, whose SIGWINCH at an unchanged size
+	// would not otherwise repaint). Without it, refreshPendingViewportResize
+	// would replay the deferred redraw with syntheticRedraw=false and silently
+	// drop the repaint. Reset wherever pendingResizeRedraw is.
 	pendingResizeSyntheticRedraw bool
 	// pendingResizeThemeWindowID pins a deferred synthetic theme redraw to the
 	// window that received the theme hint, so that when refreshPendingViewportResize
@@ -525,6 +595,8 @@ type muxWindow struct {
 	paneTitle                   string
 	pty                         muxPty
 	ptyResizeMu                 sync.Mutex
+	ptyWidth                    int
+	ptyHeight                   int
 	resizeGeneration            atomic.Uint64
 	proc                        muxProcess
 	history                     []byte
@@ -1440,6 +1512,11 @@ func gcCommand() {
 	}
 }
 
+type ensureServerReplacement struct {
+	restore *serverRestore
+	oldPID  int
+}
+
 func ensureServer(
 	session string,
 	initialWindow createWindowOptions,
@@ -1449,49 +1526,65 @@ func ensureServer(
 	height int,
 	existingOnly bool,
 ) error {
-	var restore *serverRestore
-	if status, err := queryRunningServerStatus(session); err == nil {
-		if status.version == monkeyMuxVersion {
-			return nil
-		}
-		if !shouldUpdateRunningServer(
-			os.Stdin,
-			os.Stderr,
+	unlock, err := acquireSessionLock(session)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	var replacement *ensureServerReplacement
+	status, statusErr := queryRunningServerStatusWithRetry(session)
+	switch {
+	case statusErr == nil:
+		outcome, err := prepareRunningServerReplacement(
 			session,
 			status,
 			updatePolicy,
-		) {
-			return nil
+			startInYoloMode,
+		)
+		if err != nil || outcome == nil {
+			return err
 		}
-		restore = collectServerRestore(session, status)
-		if restore != nil {
-			restore.StartInYoloMode = startInYoloMode
-		}
-		if status.supportsCapability("shutdown") {
-			requestServerShutdown(session)
-			if !waitForServerExit(session, 2*time.Second) {
-				fmt.Fprintf(
-					os.Stderr,
-					"monkeymux: running session did not exit; continuing with helper %s\r\n",
-					status.displayVersion(),
-				)
-				return nil
-			}
-		} else {
-			fmt.Fprintf(
-				os.Stderr,
-				"monkeymux: abandoning helper %s socket and starting helper %s\r\n",
-				status.displayVersion(),
-				monkeyMuxVersion,
-			)
-		}
-	} else if existingOnly {
+		replacement = outcome
+	case existingOnly:
 		return fmt.Errorf("MonkeyMux session %q is not running", session)
+	default:
+		if pid := readSessionPID(session); pid > 0 && processIDAlive(pid) {
+			// A previous serve still owns the windows but the socket path is not
+			// answering. Stealing the path would orphan those windows forever and
+			// surface a brand-new one-window workspace to MonkeySSH.
+			if recovered, recoverErr := queryRunningServerStatusWithRetry(session); recoverErr == nil {
+				outcome, err := prepareRunningServerReplacement(
+					session,
+					recovered,
+					updatePolicy,
+					startInYoloMode,
+				)
+				if err != nil || outcome == nil {
+					return err
+				}
+				replacement = outcome
+			} else {
+				return fmt.Errorf(
+					"MonkeyMux session %q is running (pid %d) but not accepting connections",
+					session,
+					pid,
+				)
+			}
+		}
 	}
 
 	socket, err := socketPath(session)
 	if err != nil {
 		return err
+	}
+	// Final ownership check immediately before unlinking the path. On Windows
+	// AF_UNIX, removing a live socket steals the name while the old process and
+	// all of its ConPTY windows keep running unreachable.
+	if current, err := queryRunningServerStatus(session); err == nil {
+		if replacement == nil || current.version == monkeyMuxVersion {
+			return nil
+		}
 	}
 	_ = os.Remove(socket)
 
@@ -1503,32 +1596,48 @@ func ensureServer(
 	if width > 0 && height > 0 {
 		serveArgs = append(serveArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
 	}
+	var restore *serverRestore
+	var previousPID int
+	if replacement != nil {
+		restore = replacement.restore
+		previousPID = replacement.oldPID
+	}
 	if restore != nil && len(restore.Windows) > 0 {
 		path, err := writeRestoreFile(session, restore)
-		if err == nil {
-			defer os.Remove(path)
-			serveArgs = append(serveArgs, "--restore-file", path)
-		}
-	}
-	if strings.TrimSpace(initialWindow.cwd) != "" {
-		serveArgs = append(serveArgs, "--cwd", initialWindow.cwd)
-	}
-	if strings.TrimSpace(initialWindow.name) != "" {
-		serveArgs = append(serveArgs, "--name", initialWindow.name)
-	}
-	if strings.TrimSpace(initialWindow.command) != "" {
-		serveArgs = append(serveArgs, "--command", initialWindow.command)
-	}
-	if len(initialWindow.args) > 0 {
-		encodedArgs, err := json.Marshal(initialWindow.args)
 		if err != nil {
-			return err
+			return fmt.Errorf(
+				"monkeymux: could not write restore snapshot for session %q: %w",
+				session,
+				err,
+			)
 		}
-		serveArgs = append(
-			serveArgs,
-			"--args-base64",
-			base64.StdEncoding.EncodeToString(encodedArgs),
-		)
+		defer os.Remove(path)
+		serveArgs = append(serveArgs, "--restore-file", path)
+	}
+	// When restoring an existing workspace, ignore the attach-time launch
+	// command/name/cwd so auto-connect cannot collapse the session to one
+	// fresh agent window.
+	if restore == nil || len(restore.Windows) == 0 {
+		if strings.TrimSpace(initialWindow.cwd) != "" {
+			serveArgs = append(serveArgs, "--cwd", initialWindow.cwd)
+		}
+		if strings.TrimSpace(initialWindow.name) != "" {
+			serveArgs = append(serveArgs, "--name", initialWindow.name)
+		}
+		if strings.TrimSpace(initialWindow.command) != "" {
+			serveArgs = append(serveArgs, "--command", initialWindow.command)
+		}
+		if len(initialWindow.args) > 0 {
+			encodedArgs, err := json.Marshal(initialWindow.args)
+			if err != nil {
+				return err
+			}
+			serveArgs = append(
+				serveArgs,
+				"--args-base64",
+				base64.StdEncoding.EncodeToString(encodedArgs),
+			)
+		}
 	}
 	if len(initialWindow.themeHint) > 0 {
 		serveArgs = append(serveArgs, "--theme-hint-base64", base64.StdEncoding.EncodeToString(initialWindow.themeHint))
@@ -1576,11 +1685,211 @@ func ensureServer(
 		conn, err := dialSession(session)
 		if err == nil {
 			_ = conn.Close()
+			if previousPID > 0 && processIDAlive(previousPID) {
+				terminateProcessID(previousPID)
+			}
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("monkeymux server did not start for session %q", session)
+}
+
+// prepareRunningServerReplacement decides whether a running helper should be
+// replaced. A nil outcome means the caller should keep using the existing
+// server. A non-nil outcome means the caller may start a replacement server
+// using the captured restore snapshot.
+func prepareRunningServerReplacement(
+	session string,
+	status runningServerStatus,
+	updatePolicy string,
+	startInYoloMode bool,
+) (*ensureServerReplacement, error) {
+	if status.version == monkeyMuxVersion {
+		return nil, nil
+	}
+	if !shouldUpdateRunningServer(
+		os.Stdin,
+		os.Stderr,
+		session,
+		status,
+		updatePolicy,
+	) {
+		return nil, nil
+	}
+	restore := collectServerRestore(session, status)
+	if restore != nil {
+		restore.StartInYoloMode = startInYoloMode
+	}
+	// Never replace a live multi-window server with an empty/auto-connect
+	// session just because the snapshot failed. That is how Windows hosts
+	// "lose all windows" after a helper upgrade or reconnect race.
+	if restore == nil || len(restore.Windows) == 0 {
+		fmt.Fprintf(
+			os.Stderr,
+			"monkeymux: could not snapshot session %q; keeping helper %s\r\n",
+			session,
+			status.displayVersion(),
+		)
+		return nil, nil
+	}
+	oldPID := readSessionPID(session)
+	if status.supportsCapability("shutdown") {
+		requestServerShutdown(session)
+		if !waitForServerExit(session, 2*time.Second) {
+			fmt.Fprintf(
+				os.Stderr,
+				"monkeymux: running session did not exit; continuing with helper %s\r\n",
+				status.displayVersion(),
+			)
+			return nil, nil
+		}
+	} else {
+		fmt.Fprintf(
+			os.Stderr,
+			"monkeymux: abandoning helper %s socket and starting helper %s\r\n",
+			status.displayVersion(),
+			monkeyMuxVersion,
+		)
+	}
+	return &ensureServerReplacement{restore: restore, oldPID: oldPID}, nil
+}
+
+func queryRunningServerStatusWithRetry(
+	session string,
+) (runningServerStatus, error) {
+	var lastErr error
+	for attempt := 0; attempt < ensureServerDialAttempts; attempt++ {
+		status, err := queryRunningServerStatus(session)
+		if err == nil {
+			return status, nil
+		}
+		lastErr = err
+		if attempt+1 < ensureServerDialAttempts {
+			time.Sleep(ensureServerDialInterval)
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("monkeymux server did not respond")
+	}
+	return runningServerStatus{}, lastErr
+}
+
+func sessionMetadataPath(session string, suffix string) (string, error) {
+	socket, err := socketPath(session)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(socket, ".sock") + suffix, nil
+}
+
+func sessionPIDPath(session string) (string, error) {
+	return sessionMetadataPath(session, ".pid")
+}
+
+func sessionLockPath(session string) (string, error) {
+	return sessionMetadataPath(session, ".lock")
+}
+
+func acquireSessionLock(session string) (func(), error) {
+	path, err := sessionLockPath(session)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(ensureServerLockTimeout)
+	for {
+		file, err := os.OpenFile(
+			path,
+			os.O_CREATE|os.O_EXCL|os.O_WRONLY,
+			sessionLockFileMode,
+		)
+		if err == nil {
+			_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
+			_ = file.Close()
+			return func() {
+				current, readErr := readPIDFile(path)
+				if readErr == nil && current != os.Getpid() {
+					return
+				}
+				_ = os.Remove(path)
+			}, nil
+		}
+		if pid := readPIDFileOrZero(path); pid > 0 && !processIDAlive(pid) {
+			_ = os.Remove(path)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf(
+				"timeout waiting for MonkeyMux session %q lock",
+				session,
+			)
+		}
+		time.Sleep(ensureServerLockRetryWait)
+	}
+}
+
+func writeSessionPIDFile(session string, pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(
+		path,
+		[]byte(strconv.Itoa(pid)+"\n"),
+		sessionPIDFileMode,
+	)
+}
+
+func removeSessionPIDFile(session string) {
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		return
+	}
+	current, err := readPIDFile(path)
+	if err != nil || current != os.Getpid() {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+func readSessionPID(session string) int {
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		return 0
+	}
+	return readPIDFileOrZero(path)
+}
+
+func readPIDFileOrZero(path string) int {
+	pid, err := readPIDFile(path)
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+func readPIDFile(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return 0, errors.New("empty pid file")
+	}
+	pid, err := strconv.Atoi(text)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("invalid pid file %q", path)
+	}
+	return pid, nil
 }
 
 func collectServerRestore(session string, status runningServerStatus) *serverRestore {
@@ -3396,14 +3705,26 @@ func serveSession(
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return err
 	}
+	// Refuse to steal a socket that is still accepting connections. ensureServer
+	// already gates this; the check here covers direct `serve` invocations and
+	// races where another helper rebound the path first.
+	if _, err := queryRunningServerStatus(session); err == nil {
+		return fmt.Errorf("MonkeyMux session %q is already running", session)
+	}
 	_ = os.Remove(socket)
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		return err
 	}
+	if err := writeSessionPIDFile(session, os.Getpid()); err != nil {
+		_ = listener.Close()
+		_ = os.Remove(socket)
+		return err
+	}
 	defer func() {
 		_ = listener.Close()
 		_ = os.Remove(socket)
+		removeSessionPIDFile(session)
 	}()
 	_ = os.Chmod(socket, 0o600)
 
@@ -3856,6 +4177,8 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		foregroundCommand:        filepath.Base(cmd.Path),
 		paneTitle:                paneTitle,
 		pty:                      windowPty,
+		ptyWidth:                 cols,
+		ptyHeight:                rows,
 		proc:                     proc,
 		history:                  append([]byte(nil), options.history...),
 		lastActivity:             time.Now(),
@@ -3956,6 +4279,21 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var maxAttachSequence uint64
 	var outputGeneration uint64
 	now := time.Now()
+
+	for {
+		s.mu.Lock()
+		window := s.windowByIDLocked(windowID)
+		waitForAttachTransition :=
+			s.attachViewportTransitionWindowID == windowID &&
+				window != nil &&
+				!window.closed &&
+				terminalViewportTransitionSafe(window)
+		s.mu.Unlock()
+		if !waitForAttachTransition {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
@@ -5692,7 +6030,6 @@ func (s *muxServer) removeAttachClient(client *attachClient) {
 }
 
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
-	var replay []byte
 	var foregroundProcessGroup int
 	var redrawWindow *muxWindow
 	var activeWindowID string
@@ -5707,9 +6044,54 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	client.inputPassthrough = func(data []byte) {
 		_ = s.handleAttachInput(client, data)
 	}
-	s.resizeMu.Lock()
-	s.attachMu.Lock()
-	s.mu.Lock()
+	s.attachTransitionMu.Lock()
+	attachTransitionLocked := true
+	defer func() {
+		if attachTransitionLocked {
+			s.attachTransitionMu.Unlock()
+		}
+	}()
+	transitionWindowID := ""
+	for {
+		s.mu.Lock()
+		if s.closed {
+			s.attachViewportTransitionWindowID = ""
+			s.mu.Unlock()
+			client.close()
+			return
+		}
+		transitionWindowID = s.activeID
+		s.attachViewportTransitionWindowID = transitionWindowID
+		window := s.windowByIDLocked(transitionWindowID)
+		transitionSafe := terminalViewportTransitionSafe(window)
+		s.mu.Unlock()
+		if !transitionSafe {
+			time.Sleep(time.Millisecond)
+			continue
+		}
+
+		s.resizeMu.Lock()
+		s.attachMu.Lock()
+		s.mu.Lock()
+		window = s.windowByIDLocked(s.activeID)
+		if !s.closed &&
+			s.activeID == transitionWindowID &&
+			terminalViewportTransitionSafe(window) {
+			break
+		}
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		s.resizeMu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	if s.closed {
+		s.attachViewportTransitionWindowID = ""
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		s.resizeMu.Unlock()
+		client.close()
+		return
+	}
 	if s.attachClients == nil {
 		s.attachClients = map[net.Conn]*attachClient{}
 	}
@@ -5727,9 +6109,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	}
 	width, height := s.primaryAttachSizeLocked()
 	window := s.windowByIDLocked(s.activeID)
-	if width > 0 &&
-		height > 0 &&
-		terminalViewportTransitionSafe(window) {
+	if width > 0 && height > 0 {
 		s.pendingFocusRefreshConn = nil
 		s.pendingResizeWidth = 0
 		s.pendingResizeHeight = 0
@@ -5742,33 +6122,33 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.publishedWidth = width
 		s.publishedHeight = height
 		s.resizeActiveLocked(width, height)
-	} else if width > 0 && height > 0 {
-		s.width = width
-		s.height = height
-		s.pendingFocusRefreshConn = conn
-		s.enqueueAttachViewportResizeLocked(
-			s.publishedWidth,
-			s.publishedHeight,
-		)
 	} else {
 		s.pendingFocusRefreshConn = nil
 	}
-	replay = s.activeReplayLocked()
+	replay := s.activeReplayLocked()
+	var completion <-chan error
+	var queued bool
 	if window != nil {
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
 		redrawWindow = window
 		activeWindowID = window.id
+		client.markOutputReplay(activeWindowID, window.outputGeneration)
 		if len(s.themeHint) > 0 {
 			themeHintData = window.themeHintRefreshDataLocked(s.themeHint)
 			themeHintWindowID = window.id
 			sendFocusTransition = window.themeHintFocusTransitionLocked()
 		}
 	}
+	completion, queued = client.enqueue(replay, true)
+	if !queued {
+		client.clearOutputReplay()
+	}
+	s.attachViewportTransitionWindowID = ""
 	s.mu.Unlock()
-
-	completion, queued := client.enqueue(replay, true)
 	s.attachMu.Unlock()
 	s.resizeMu.Unlock()
+	s.attachTransitionMu.Unlock()
+	attachTransitionLocked = false
 	if queued {
 		queued = client.waitForWrite(completion)
 	}
@@ -6548,7 +6928,8 @@ func (s *muxServer) selectWindowWithSkip(
 	}
 	s.publishedWidth = s.width
 	s.publishedHeight = s.height
-	s.resizeActiveLocked(s.width, s.height)
+	targetWidth := s.width
+	targetHeight := s.height
 	if s.attachCountLocked() > 1 {
 		clientHas = nil
 	}
@@ -6557,7 +6938,16 @@ func (s *muxServer) selectWindowWithSkip(
 	foregroundProcessGroup = window.foregroundProcessGroupLocked()
 	redrawWindow = window
 	s.mu.Unlock()
+	// The redraw below owns delivering this geometry to the PTY. Resizing here
+	// first would leave it already at the target, forcing that redraw to
+	// manufacture a temporary size and making the foreground app render a whole
+	// extra frame for a geometry that never existed.
 	redrew := s.broadcastAttachReplayAndResizeLocked(replay, redrawWindow)
+	if !redrew {
+		s.mu.Lock()
+		s.resizeWindowLocked(window, targetWidth, targetHeight)
+		s.mu.Unlock()
+	}
 	s.flushPendingTerminalQueriesLocked(primary, windowID)
 	s.attachMu.Unlock()
 	s.broadcastWindowList("active_window_changed")
@@ -6579,6 +6969,8 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var windowPty muxPty
 	var snapshots []windowSnapshot
 	var resetViewportParser bool
+	var targetWidth int
+	var targetHeight int
 
 	s.attachMu.Lock()
 	s.mu.Lock()
@@ -6618,7 +7010,8 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			}
 			s.publishedWidth = s.width
 			s.publishedHeight = s.height
-			s.resizeActiveLocked(s.width, s.height)
+			targetWidth = s.width
+			targetHeight = s.height
 			replay = s.replayBytesLocked(replacement)
 			foregroundProcessGroup = replacement.foregroundProcessGroupLocked()
 			redrawWindow = replacement
@@ -6647,7 +7040,14 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
 	s.mu.Unlock()
 	if activeChanged {
+		// The redraw owns delivering the geometry so the replacement window's
+		// foreground app repaints once, at the final size.
 		redrew = s.broadcastAttachReplayAndResizeLocked(replay, redrawWindow)
+		if !redrew {
+			s.mu.Lock()
+			s.resizeWindowLocked(redrawWindow, targetWidth, targetHeight)
+			s.mu.Unlock()
+		}
 	}
 	s.attachMu.Unlock()
 
@@ -6787,15 +7187,20 @@ func (s *muxServer) resizeWithRedraw(
 	s.pendingResizeRedraw = false
 	s.pendingResizeSyntheticRedraw = false
 	s.pendingResizeThemeWindowID = ""
-	sizeChanged :=
+	dimensionsChanged :=
 		s.width != width ||
 			s.height != height ||
 			s.publishedWidth != width ||
-			s.publishedHeight != height ||
-			hadPendingResize
+			s.publishedHeight != height
+	sizeChanged := dimensionsChanged || hadPendingResize
 	s.width = width
 	s.height = height
-	if sizeChanged && serializeViewport {
+	// Publish the canonical grid on every resize, not only when the server
+	// believes it changed. Clipping clients size their terminal buffer solely
+	// from this sequence, so a single missed or dropped publish would otherwise
+	// leave a client rendering the wrong grid for the rest of the session with
+	// no way to ask for a correction.
+	if serializeViewport {
 		s.enqueueAttachViewportResizeLocked(width, height)
 	}
 	s.publishedWidth = width
@@ -6805,22 +7210,20 @@ func (s *muxServer) resizeWithRedraw(
 		!window.closed &&
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
-		// The synthetic width-1 redraw dance is only for callers that genuinely
-		// need a foreground process to repaint content the real PTY SIGWINCH
-		// won't produce: a restored window whose agent just relaunched. Its
-		// intermediate one-cell frame is hidden from attach clients by the
-		// synchronized redraw transaction in resumePausedAttachForwarding.
+		// Genuine viewport changes rely on the real PTY resize and forward their
+		// reflow immediately. Restore/theme redraws always need the synthetic
+		// width-1 dance, while a same-size settle redraw only needs it on
+		// platforms such as Windows that cannot explicitly signal a foreground
+		// resize after ResizePseudoConsole ignores an unchanged size.
 		//
-		// Viewport resizes (keyboard show/hide, pinch-zoom) and their trailing
-		// "settle" redraw never set syntheticRedraw: resizeWindowLocked above
-		// already applied the new PTY size, so a genuine size change delivers a
-		// real SIGWINCH and the TUI repaints once at the correct size, while an
-		// unchanged size is already painted. Performing the dance there resized
-		// the PTY smaller and immediately back, producing a visible one-cell
-		// "bounce" reflow on every resize (and holding the settled frame for the
-		// synchronized-redraw tail). Skip it and forward the single clean reflow
-		// immediately; the explicit SIGWINCH below still nudges the TUI.
-		if syntheticRedraw {
+		// The intermediate frame is hidden from attach clients by the
+		// synchronized redraw transaction in resumePausedAttachForwarding.
+		if shouldSimulateForegroundRedraw(
+			forceRedraw,
+			syntheticRedraw,
+			dimensionsChanged,
+			supportsExplicitForegroundResizeSignal,
+		) {
 			s.pauseAttachForwardingForRedrawLocked(window, width, height)
 			simulateForegroundResize(window, width, height)
 		}
@@ -6920,7 +7323,7 @@ func (s *muxServer) deferAttachReplayForRedrawLocked(
 		window.redrawForwardingReplay[:0],
 		replay...,
 	)
-	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
+	deliverForegroundGeometry(window, s.publishedWidth, s.publishedHeight)
 	return true
 }
 
@@ -6938,7 +7341,7 @@ func (s *muxServer) simulateForegroundResizeIfAttached(
 		s.publishedWidth,
 		s.publishedHeight,
 	)
-	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
+	deliverForegroundGeometry(window, s.publishedWidth, s.publishedHeight)
 	return true
 }
 
@@ -6953,7 +7356,7 @@ func (s *muxServer) simulateForegroundResizeIfAnyAttached(window *muxWindow) boo
 		s.publishedWidth,
 		s.publishedHeight,
 	)
-	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
+	deliverForegroundGeometry(window, s.publishedWidth, s.publishedHeight)
 	return true
 }
 
@@ -7003,9 +7406,17 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 		// Snapshot the pre-resize frame for every redraw pause, not just
 		// deferred window-switch replays: restore and theme redraws start the
 		// same transaction directly and hit the same coalesced-SIGWINCH
-		// failure.
-		window.redrawForwardingFallbackHistory =
-			s.foregroundHistoryFallbackHistoryLocked(window)
+		// failure. Only a frame with visible content is worth retaining: a
+		// snapshot taken in the instant after the child cleared but before it
+		// repainted would hand the user exactly the emptiness this fallback
+		// exists to avoid.
+		if snapshot := s.foregroundHistoryFallbackHistoryLocked(
+			window,
+		); terminalOutputHasVisibleContent(snapshot) {
+			window.redrawForwardingFallbackHistory = snapshot
+		} else {
+			window.redrawForwardingFallbackHistory = nil
+		}
 	} else if refreshed := s.foregroundHistoryFallbackHistoryLocked(
 		window,
 	); terminalOutputHasVisibleContent(refreshed) {
@@ -7085,7 +7496,13 @@ func (s *muxServer) resumePausedAttachForwarding(
 			window,
 			window.redrawForwardingFallbackHistory,
 		)
-		if len(fallbackReplay) > 0 {
+		// Substitute only a frame that actually paints something. An
+		// escape-only snapshot (a clear the child had just emitted) is long
+		// enough to look like a frame while rendering exactly the blank screen
+		// this fallback exists to prevent.
+		if terminalOutputHasVisibleContent(
+			window.redrawForwardingFallbackHistory,
+		) && len(fallbackReplay) > 0 {
 			replay = nil
 			buffered = append(
 				append([]byte(nil), fallbackReplay...),
@@ -7743,10 +8160,13 @@ func (s *muxServer) enqueueAttachViewportTransitionLocked(
 		return
 	}
 	for _, client := range s.attachClients {
-		if !client.clipViewport ||
-			(client.terminalWidth == width && client.terminalHeight == height) {
+		if !client.clipViewport {
 			continue
 		}
+		// Deliberately not suppressed when the tracked size already matches:
+		// that value records what was queued, never what the client actually
+		// applied, so trusting it can silence the only message able to repair a
+		// client whose grid drifted.
 		client.terminalWidth = width
 		client.terminalHeight = height
 		_, _ = client.enqueue(sequence, false)

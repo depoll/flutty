@@ -156,8 +156,17 @@ class _FakeRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
 }
 
 class _MockTmuxService extends Mock implements TmuxService {
+  String? detectedVersionValue;
+
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
+
+  @override
+  Future<String?> detectedVersion(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async => detectedVersionValue;
 }
 
 class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
@@ -165,6 +174,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   Future<MonkeyMuxServerStatus?>? runningStatusFuture;
   MonkeyMuxServerStatus? installedHelpersStatus;
   String? helperVersion;
+  String? detectedVersionValue;
   int installedHelperVersionCalls = 0;
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
@@ -183,6 +193,13 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
 
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
+
+  @override
+  Future<String?> detectedVersion(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async => detectedVersionValue;
 
   @override
   bool hasLiveControlChannel(SshSession session, String sessionName) =>
@@ -661,6 +678,33 @@ void main() {
     registerFallbackValue(monkey_themes.TerminalThemes.defaultDarkTheme);
     registerFallbackValue(SshExecPriority.normal);
   });
+
+  test(
+    'only falls back when an initial MonkeyMux attach never established',
+    () {
+      expect(
+        shouldFallbackFromUnestablishedMonkeyMuxAttach(
+          reconnectAttempt: false,
+          attachEstablished: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldFallbackFromUnestablishedMonkeyMuxAttach(
+          reconnectAttempt: false,
+          attachEstablished: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldFallbackFromUnestablishedMonkeyMuxAttach(
+          reconnectAttempt: true,
+          attachEstablished: false,
+        ),
+        isFalse,
+      );
+    },
+  );
 
   group('terminal native selection helpers', () {
     test('starts selection on separator characters', () {
@@ -2732,6 +2776,31 @@ void main() {
     }
 
     testWidgets(
+      'shows the detected tmux version in terminal info',
+      (tester) async {
+        final tmuxService = _MockTmuxService()..detectedVersionValue = '3.4';
+        await pumpTmuxScreen(tester, tmuxService);
+        await tester.pump();
+
+        await openTerminalOverflowSubmenu(tester, 'Options');
+        final showTerminalInfo = terminalMenuItemButton('Show Terminal Info');
+        expect(showTerminalInfo, findsOneWidget);
+
+        await tester.tap(showTerminalInfo);
+        await tester.pumpAndSettle();
+
+        expect(find.text('tmux 3.4'), findsOneWidget);
+        expect(
+          find.byTooltip(
+            'Detected tmux version for the active remote multiplexer.',
+          ),
+          findsOneWidget,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'keeps probing for tmux after an initial inactive result',
       (tester) async {
         final tmuxService = _MockTmuxService();
@@ -2909,7 +2978,7 @@ void main() {
             port: 22,
             username: 'root',
           ),
-        );
+        )..terminalFontSize = 10;
         when(
           () => shellChannel.resizeTerminal(any(), any(), any(), any()),
         ).thenAnswer((_) {});
@@ -3026,6 +3095,8 @@ void main() {
             ),
           ),
         );
+        expect(session.terminal, isNotNull);
+        session.terminal!.resize(59, 50);
         await tester.pump();
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -3036,6 +3107,19 @@ void main() {
         expect(executedCommands.single, contains(' attach'));
         expect(executedCommands.single, contains('--update-policy never'));
         expect(executedCommands.single, contains(sessionName));
+        final viewportSize = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .viewportCellSize!;
+        expect(
+          executedCommands.single,
+          contains('--width ${viewportSize.columns}'),
+        );
+        expect(
+          executedCommands.single,
+          contains('--height ${viewportSize.rows}'),
+        );
+        expect(executedCommands.single, isNot(contains('--width 59')));
+        expect(executedCommands.single, isNot(contains('--height 50')));
         expect(
           shellWrites.map(utf8.decode).join(),
           isNot(contains('/tmp/monkeymux')),
@@ -3510,7 +3594,8 @@ void main() {
     );
 
     testWidgets(
-      'MonkeyMux forces a redraw on resume after a backgrounded theme change',
+      'Windows MonkeyMux settles the redraw on resume after a backgrounded '
+      'theme change',
       (tester) async {
         // Regression guard for the resume gap: a theme change that lands while
         // the app is backgrounded (or the connection is down) updates the
@@ -3612,11 +3697,51 @@ void main() {
         // Ignore refreshes emitted while connecting; only the resume re-sync
         // below should matter.
         clearInteractions(monkeyMuxService);
+        monkeyMuxService.resizeTerminalCalls.clear();
+        when(
+          () => sshClient.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
 
-        // Background then foreground the app without a color change; the resume
-        // re-sync forces the repaint via the forced-refresh signal.
-        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        // A redraw follow-up armed just before backgrounding must be cancelled
+        // instead of replaying the hidden TUI after the app is paused.
+        final initialWidth = session.terminal!.viewWidth;
+        final initialRows = session.terminal!.viewHeight;
+        session.terminal!.onResize?.call(
+          initialWidth,
+          initialRows > 2 ? initialRows - 2 : initialRows + 2,
+          initialWidth * 10,
+          initialRows * 20,
+        );
         await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(monkeyMuxService.resizeTerminalCalls, isNotEmpty);
+        expect(
+          monkeyMuxService.resizeTerminalCalls.every((call) => !call.redraw),
+          isTrue,
+        );
+        clearInteractions(monkeyMuxService);
+        monkeyMuxService.resizeTerminalCalls.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+
+        // Defer a real theme change while backgrounded. It must not redraw the
+        // hidden TUI immediately, but resume must deliver one forced refresh.
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        verifyNever(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        );
         tester.binding.handleAppLifecycleStateChanged(
           AppLifecycleState.resumed,
         );
@@ -3634,7 +3759,43 @@ void main() {
             extraFlags: any(named: 'extraFlags'),
             forceForegroundRedraw: true,
           ),
-        ).called(greaterThanOrEqualTo(1));
+        ).called(1);
+        expect(monkeyMuxService.resizeTerminalCalls, isEmpty);
+
+        // A later same-theme resume performs only a local repaint. It must not
+        // request another full ConPTY replay or arm a resize-redraw follow-up.
+        clearInteractions(monkeyMuxService);
+        monkeyMuxService.resizeTerminalCalls.clear();
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        final width = session.terminal!.viewWidth;
+        final rows = session.terminal!.viewHeight;
+        session.terminal!.onResize?.call(
+          width,
+          rows > 1 ? rows - 1 : rows + 1,
+          width * 10,
+          rows * 20,
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+
+        verifyNever(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        );
+        expect(monkeyMuxService.resizeTerminalCalls, isNotEmpty);
+        expect(
+          monkeyMuxService.resizeTerminalCalls.every((call) => !call.redraw),
+          isTrue,
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -3996,8 +4157,7 @@ void main() {
         final switchResizeCalls = monkeyMuxService.resizeTerminalCalls
             .skip(resizeCallsBeforeSwitch)
             .toList(growable: false);
-        expect(switchResizeCalls, hasLength(1));
-        expect(switchResizeCalls.single.redraw, isTrue);
+        expect(switchResizeCalls, isEmpty);
         final resizeCallsAfterWindowReplay =
             monkeyMuxService.resizeTerminalCalls.length;
         final terminalViewState = tester.state<MonkeyTerminalViewState>(
@@ -4016,6 +4176,292 @@ void main() {
         expect(
           monkeyMuxService.resizeTerminalCalls.length,
           resizeCallsAfterWindowReplay,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'MonkeyMux re-asserts the viewport when the shared grid is too small',
+      (tester) async {
+        // Regression for the long-standing Windows corruption: once viewport
+        // clipping is on, the terminal buffer is sized only by the server. A
+        // published grid smaller than the rendered viewport draws output into
+        // too few cells and leaves the rest blank, and previously nothing
+        // corrected it until the user opened or closed the keyboard.
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump();
+
+        session
+          ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+          ..remoteMuxSessionName = sessionName;
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final viewport = terminalViewState.viewportCellSize!;
+        expect(viewport.columns, greaterThan(4));
+        expect(viewport.rows, greaterThan(4));
+        monkeyMuxService.resizeTerminalCalls.clear();
+
+        final staleColumns = viewport.columns - 4;
+        final staleRows = viewport.rows - 3;
+        session.terminal!.write('\x1b[?8;$staleRows;${staleColumns}t');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump();
+
+        expect(session.terminal!.viewWidth, staleColumns);
+        expect(
+          monkeyMuxService.resizeTerminalCalls.any(
+            (call) =>
+                call.columns == viewport.columns && call.rows == viewport.rows,
+          ),
+          isTrue,
+          reason:
+              'a shared grid smaller than the viewport must be re-asserted '
+              'instead of waiting for the user to resize',
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'MonkeyMux asks for a repaint when a window switch leaves the pane blank',
+      (tester) async {
+        // A pane whose foreground app owns its own pixels is cleared on a
+        // window switch and refilled only when that app repaints. When the app
+        // coalesces or ignores the resize that was supposed to provoke it, the
+        // pane stays empty with a perfectly correct grid, so nothing on either
+        // side has a reason to speak up and only opening the keyboard escapes.
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
+          TmuxWindow(index: 1, name: 'agent', isActive: false, id: '@1'),
+        ];
+        const activeAgentWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: false, id: '@0'),
+          TmuxWindow(index: 1, name: 'agent', isActive: true, id: '@1'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        for (var row = 0; row < 120; row += 1) {
+          session.terminal!.write('row $row\r\n');
+        }
+
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.currentPaneContext(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.selectWindow(
+            session,
+            sessionName,
+            1,
+            extraFlags: any(named: 'extraFlags'),
+            clientImageSignatures: any(named: 'clientImageSignatures'),
+          ),
+        ).thenAnswer((_) async {
+          monkeyMuxService.controlOperations.add('select');
+        });
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+
+        session
+          ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+          ..remoteMuxSessionName = sessionName;
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.tap(find.text('agent'));
+        await tester.pump();
+        await tester.pump();
+
+        windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        // The switch replay clears the screen and its scrollback; the frame
+        // that should have replaced it never arrives.
+        session.terminal!.write('\x1b[H\x1b[2J\x1b[3J');
+        await tester.pump();
+        monkeyMuxService.resizeTerminalCalls.clear();
+
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+
+        expect(
+          monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
+          isTrue,
+          reason:
+              'an empty pane is the evidence the client needs to ask for the '
+              'frame it never received, instead of waiting for the user to '
+              'open the keyboard',
         );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
@@ -4492,9 +4938,8 @@ void main() {
         await tester.pump();
         expect(
           monkeyMuxService.resizeTerminalCalls.length,
-          resizeCountAfterWindowRefresh + 1,
+          resizeCountAfterWindowRefresh,
         );
-        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
         await gesture.up();
 
         final placeholder = String.fromCharCode(

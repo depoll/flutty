@@ -149,6 +149,47 @@ void main() {
       );
     });
 
+    test('reads the active remote tmux server version', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 1067);
+      const service = TmuxService();
+      final commands = <String>[];
+
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        commands.add(invocation.positionalArguments.single as String);
+        return _buildOpenExecSession(stdout: '3.4\n${_doneMarker()}');
+      });
+
+      final version = await service.detectedVersion(
+        session,
+        'work',
+        extraFlags: '-S /tmp/tmux-socket',
+      );
+
+      expect(version, '3.4');
+      expect(
+        commands.single,
+        contains(
+          "tmux -u -S '/tmp/tmux-socket' display-message -p "
+          "-t 'work:' '#{version}'",
+        ),
+      );
+    });
+
+    test('returns null when the active tmux version is unavailable', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 1068);
+      const service = TmuxService();
+
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+        (_) => Future<SSHSession>.error(SSHChannelOpenError(2, 'open failed')),
+      );
+
+      expect(await service.detectedVersion(session, 'work'), isNull);
+    });
+
     test('theme refresh command updates pane palette before redraw', () {
       final command = buildTmuxRefreshTerminalThemeCommand(
         "dev's session",
