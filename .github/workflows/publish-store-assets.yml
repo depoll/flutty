@@ -1,0 +1,210 @@
+name: Publish Store Assets
+
+# Regenerated screenshots / App Previews / demo videos are not committed.
+# This workflow downloads the rolling `store-assets` GitHub Release archive,
+# validates it, and re-hosts the media as Actions artifacts. Optionally it
+# triggers Sync Store Metadata so listings pick up the new media.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync:
+        description: 'Trigger Sync Store Metadata after validation'
+        required: true
+        type: boolean
+        default: false
+      platform:
+        description: 'Platform set to validate / sync'
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - ios
+          - android
+      app:
+        description: 'Which app listing to sync when sync=true'
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - private
+          - production
+  repository_dispatch:
+    types: [store-assets-published]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: publish-store-assets
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Validate & Upload Store Asset Artifacts
+    runs-on: macos-latest
+    outputs:
+      sync: ${{ steps.inputs.outputs.sync }}
+      platform: ${{ steps.inputs.outputs.platform }}
+      app: ${{ steps.inputs.outputs.app }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve inputs
+        id: inputs
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            SYNC="$(
+              python3 - <<'PY'
+          import json, os
+          payload = json.loads(os.environ.get('CLIENT_PAYLOAD', '{}') or '{}')
+          print('true' if str(payload.get('sync', False)).lower() in {'1', 'true', 'yes'} else 'false')
+          PY
+            )"
+            PLATFORM="$(
+              python3 - <<'PY'
+          import json, os
+          payload = json.loads(os.environ.get('CLIENT_PAYLOAD', '{}') or '{}')
+          value = str(payload.get('platform', 'both')).lower()
+          print(value if value in {'both', 'ios', 'android'} else 'both')
+          PY
+            )"
+            APP="$(
+              python3 - <<'PY'
+          import json, os
+          payload = json.loads(os.environ.get('CLIENT_PAYLOAD', '{}') or '{}')
+          value = str(payload.get('app', 'both')).lower()
+          print(value if value in {'both', 'private', 'production'} else 'both')
+          PY
+            )"
+          else
+            SYNC='${{ inputs.sync }}'
+            PLATFORM='${{ inputs.platform }}'
+            APP='${{ inputs.app }}'
+          fi
+          echo "sync=$SYNC" >> "$GITHUB_OUTPUT"
+          echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+        env:
+          CLIENT_PAYLOAD: ${{ github.event_name == 'repository_dispatch' && toJson(github.event.client_payload) || '{}' }}
+
+      - name: Download published store assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x scripts/store_assets.sh
+          scripts/store_assets.sh download
+
+      - name: Install screenshot validation dependencies
+        if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios' || steps.inputs.outputs.platform == 'android'
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet --upgrade pip
+          .venv/bin/python -m pip install --quiet Pillow
+
+      - name: Validate store screenshots
+        if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios' || steps.inputs.outputs.platform == 'android'
+        run: |
+          case "${{ steps.inputs.outputs.platform }}" in
+            both) .venv/bin/python scripts/validate_store_screenshots.py both ;;
+            ios) .venv/bin/python scripts/validate_store_screenshots.py ios ;;
+            android) .venv/bin/python scripts/validate_store_screenshots.py android ;;
+          esac
+
+      - name: Validate demo videos / App Previews
+        if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios' || steps.inputs.outputs.platform == 'android'
+        run: |
+          has_videos=false
+          if find ios/fastlane/app-previews store/demo-videos -type f \( -name '*.mov' -o -name '*.mp4' -o -name '*.m4v' \) 2>/dev/null | grep -q .; then
+            has_videos=true
+          fi
+          if [ "$has_videos" != true ]; then
+            echo "No demo videos/App Previews in published archive; skipping video validation."
+            exit 0
+          fi
+          case "${{ steps.inputs.outputs.platform }}" in
+            both) python3 scripts/validate_store_demo_videos.py all ;;
+            ios) python3 scripts/validate_store_demo_videos.py ios ;;
+            android) python3 scripts/validate_store_demo_videos.py android ;;
+          esac
+
+      - name: Package store-assets artifact archive
+        run: |
+          chmod +x scripts/store_assets.sh
+          scripts/store_assets.sh package \
+            --output "$RUNNER_TEMP/store-assets.tar.gz" \
+            --require-screenshots
+          mkdir -p "$RUNNER_TEMP/store-assets-artifact"
+          cp "$RUNNER_TEMP/store-assets.tar.gz" "$RUNNER_TEMP/store-assets-artifact/store-assets.tar.gz"
+          if [ -f store-assets-manifest.json ]; then
+            cp store-assets-manifest.json "$RUNNER_TEMP/store-assets-artifact/store-assets-manifest.json"
+          fi
+
+      - name: Upload store-assets archive artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store-assets
+          path: ${{ runner.temp }}/store-assets-artifact/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload iOS screenshots artifact
+        if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store-screenshots-ios
+          path: ios/fastlane/screenshots/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload Android screenshots artifact
+        if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'android'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store-screenshots-android
+          path: |
+            android/fastlane/metadata-private/android/en-US/images/phoneScreenshots/
+            android/fastlane/metadata-private/android/en-US/images/sevenInchScreenshots/
+            android/fastlane/metadata-private/android/en-US/images/tenInchScreenshots/
+            android/fastlane/metadata-production/android/en-US/images/phoneScreenshots/
+            android/fastlane/metadata-production/android/en-US/images/sevenInchScreenshots/
+            android/fastlane/metadata-production/android/en-US/images/tenInchScreenshots/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload iOS App Previews artifact
+        if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store-app-previews-ios
+          path: ios/fastlane/app-previews/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload demo videos artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store-demo-videos
+          path: store/demo-videos/
+          if-no-files-found: warn
+          retention-days: 90
+
+  sync-metadata:
+    name: Sync Store Metadata
+    needs: publish
+    if: needs.publish.outputs.sync == 'true'
+    permissions:
+      contents: read
+      actions: write
+      deployments: write
+    uses: ./.github/workflows/sync-metadata.yml
+    with:
+      platform: ${{ needs.publish.outputs.platform }}
+      app: ${{ needs.publish.outputs.app }}
+    secrets: inherit

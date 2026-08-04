@@ -92,25 +92,35 @@ Be respectful and constructive in all interactions.
 
 ### Store Screenshots and Demo Videos
 
-Store screenshots are generated locally because the capture flow needs real
-simulators/emulators plus authenticated `copilot` and `claude` CLIs. To generate
-fresh screenshots, commit only the PNG assets, and open a PR:
+Regenerated store media (screenshots, App Previews, demo videos) is **not
+committed to git**. It is published to a rolling GitHub Release tag
+(`store-assets`) and re-hosted as GitHub Actions artifacts.
+
+Generation still runs locally because the capture flow needs real
+simulators/emulators plus authenticated `copilot` and `claude` CLIs:
 
 ```bash
-./scripts/create_store_screenshots_pr.sh both
+# Screenshots only, then publish to the store-assets release + CI artifacts
+./scripts/store_assets.sh publish --generate screenshots --platform both
+
+# Screenshots + demo videos/App Previews, then publish and sync listings
+./scripts/store_assets.sh publish --generate all --platform both --sync
 ```
 
-You can pass `ios` or `android` instead of `both` for a narrower update. After
-the screenshot PR merges to `main`, the Sync Store Metadata workflow validates
-and uploads the committed screenshots.
-
-Short product demo videos use the same real app, SSH, and MonkeyMux capture
-flow, then compose that single live recording into several store-compliant
-deliverables per platform. Generate local iOS and Android recordings with:
+Or generate first and publish whatever is already on disk:
 
 ```bash
+python3 scripts/generate_store_screenshots.py both
 python3 scripts/generate_store_demo_videos.py both
+python3 scripts/validate_store_screenshots.py both
 python3 scripts/validate_store_demo_videos.py all
+./scripts/store_assets.sh publish --sync
+```
+
+Restore the latest published media into a working tree with:
+
+```bash
+./scripts/store_assets.sh download
 ```
 
 Each device is recorded once and composed into:
@@ -128,7 +138,8 @@ Each device is recorded once and composed into:
 
 The validator checks per-slot resolution, 15-30s duration, H.264, an audio track
 on the Apple previews, and that the live app region actually advances through
-scenes.
+scenes. Sync Store Metadata and production releases download the published
+archive automatically before uploading to the stores.
 
 ### Commit Messages
 
