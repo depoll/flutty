@@ -3694,14 +3694,17 @@ func TestSplitPasteStartAfterUserInputActivatesOpaquePaste(t *testing.T) {
 
 	first := []byte("abc\x1b[20")
 	firstRouting := client.routeInput(first)
-	if !bytes.Equal(firstRouting.passthrough, first) ||
+	if !bytes.Equal(firstRouting.passthrough, []byte("abc")) ||
 		len(firstRouting.responses) != 0 {
 		t.Fatalf("partial user paste start routing = %#v", firstRouting)
 	}
 	second := []byte("0~/tmp/a")
 	secondRouting := client.routeInput(second)
-	if !bytes.Equal(secondRouting.passthrough, second) ||
-		len(secondRouting.responses) != 0 {
+	wantSecond := []byte("\x1b[200~/tmp/a")
+	if !bytes.Equal(secondRouting.passthrough, wantSecond) ||
+		len(secondRouting.responses) != 0 ||
+		len(secondRouting.actions) != 1 ||
+		!secondRouting.actions[0].bracketedPaste {
 		t.Fatalf("completed user paste start routing = %#v", secondRouting)
 	}
 	fakeResponseAndEnd := []byte("\x1b[?62;4c.png\x1b[201~")
@@ -8062,6 +8065,22 @@ func TestEncodeTerminalInputForWin32InputMode(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestEncodeBracketedPasteInputForWin32InputMode(t *testing.T) {
+	input := "\x1b[200~hello\x1b[?62;4c\x1b[201~"
+	want := win32InputModeEscapeCharacterEvent + "[200~hello" +
+		win32InputModeEscapeCharacterEvent + "[?62;4c" +
+		win32InputModeEscapeCharacterEvent + "[201~"
+	got := string(encodeBracketedPasteInputForWin32InputMode([]byte(input)))
+	if got != want {
+		t.Fatalf(
+			"encodeBracketedPasteInputForWin32InputMode(%q) = %q, want %q",
+			input,
+			got,
+			want,
+		)
 	}
 }
 
