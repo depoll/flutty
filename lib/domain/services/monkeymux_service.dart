@@ -115,6 +115,7 @@ String buildMonkeyMuxAttachCommand({
   String? launchCommand,
   String? windowName,
   String? terminalThemeReports,
+  String? terminalCapabilityReports,
   int? terminalColumns,
   int? terminalRows,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
@@ -124,6 +125,7 @@ String buildMonkeyMuxAttachCommand({
   bool windows = false,
 }) {
   final themeHint = terminalThemeReports?.trim();
+  final capabilityHint = terminalCapabilityReports?.trim();
   final parts = <String>[
     _monkeyMuxQuoteArg(executablePath, windows: windows),
     'attach',
@@ -145,6 +147,10 @@ String buildMonkeyMuxAttachCommand({
     if (themeHint != null && themeHint.isNotEmpty) ...[
       '--theme-hint-base64',
       base64Encode(utf8.encode(themeHint)),
+    ],
+    if (capabilityHint != null && capabilityHint.isNotEmpty) ...[
+      '--capability-hint-base64',
+      base64Encode(utf8.encode(capabilityHint)),
     ],
     if (workingDirectory != null && workingDirectory.trim().isNotEmpty) ...[
       '--cwd',

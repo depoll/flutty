@@ -90,6 +90,16 @@ the selected PTY. Replay strips old terminal response queries, such as device
 attributes and OSC color queries, so re-showing history does not synthesize new
 input into the live PTY.
 
+A client can hand MonkeyMux its static terminal replies with
+`attach --capability-hint-base64` (the `capabilityHint` field of the attach
+hello). MonkeyMux answers device attribute, XTVERSION, and device-status probes
+from that cache for any window no terminal is currently showing. Without it an
+agent relaunched by an upgrade restore — which starts before the client
+reattaches, or in a background window — never gets a reply in time and falls
+back to a less capable rendering mode. Queries with no cached reply, and every
+query whose answer depends on live terminal state, are still buffered and
+re-delivered to the terminal on the next attach or window switch.
+
 MonkeyMux observes OSC title and working-directory reports for metadata only,
 without stripping or rewriting those bytes from the foreground stream. It also
 tracks the PTY foreground process group for snapshots, so shell-launched tools

@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.140"
+	monkeyMuxVersion                  = "0.1.142"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -83,6 +83,7 @@ const (
 	pendingTerminalQueryLimitBytes    = 512
 	terminalResponseCarryLimitBytes   = 64 * 1024
 	themeHintLimitBytes               = 1024
+	capabilityHintLimitBytes          = 1024
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
 	attachWriteQueueLimitBytes        = 16 * 1024 * 1024
@@ -203,6 +204,7 @@ var capabilities = []string{
 	"client-scoped-run-command",
 	"focus-hint",
 	"theme-hint",
+	"terminal-capability-hint",
 	"shutdown",
 	"attach-update-policy",
 	"attach-state",
@@ -413,25 +415,29 @@ var (
 )
 
 type controlMessage struct {
-	Role         string   `json:"role,omitempty"`
-	ID           string   `json:"id,omitempty"`
-	Type         string   `json:"type,omitempty"`
-	Session      string   `json:"session,omitempty"`
-	ClientID     string   `json:"clientId,omitempty"`
-	WindowID     string   `json:"windowId,omitempty"`
-	WindowIndex  *int     `json:"windowIndex,omitempty"`
-	Name         string   `json:"name,omitempty"`
-	Cwd          string   `json:"cwd,omitempty"`
-	Command      string   `json:"command,omitempty"`
-	Args         []string `json:"args,omitempty"`
-	Data         string   `json:"data,omitempty"`
-	Width        int      `json:"width,omitempty"`
-	Height       int      `json:"height,omitempty"`
-	PixelWidth   int      `json:"pixelWidth,omitempty"`
-	PixelHeight  int      `json:"pixelHeight,omitempty"`
-	Redraw       bool     `json:"redraw,omitempty"`
-	NoPrefix     bool     `json:"noPrefix,omitempty"`
-	ClipViewport bool     `json:"clipViewport,omitempty"`
+	Role        string   `json:"role,omitempty"`
+	ID          string   `json:"id,omitempty"`
+	Type        string   `json:"type,omitempty"`
+	Session     string   `json:"session,omitempty"`
+	ClientID    string   `json:"clientId,omitempty"`
+	WindowID    string   `json:"windowId,omitempty"`
+	WindowIndex *int     `json:"windowIndex,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Cwd         string   `json:"cwd,omitempty"`
+	Command     string   `json:"command,omitempty"`
+	Args        []string `json:"args,omitempty"`
+	Data        string   `json:"data,omitempty"`
+	// CapabilityHint carries the attaching client's static terminal capability
+	// replies (see capabilityHintResponseMap) so the daemon can answer device
+	// attribute/XTVERSION probes for windows the client is not showing.
+	CapabilityHint string `json:"capabilityHint,omitempty"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
+	PixelWidth     int    `json:"pixelWidth,omitempty"`
+	PixelHeight    int    `json:"pixelHeight,omitempty"`
+	Redraw         bool   `json:"redraw,omitempty"`
+	NoPrefix       bool   `json:"noPrefix,omitempty"`
+	ClipViewport   bool   `json:"clipViewport,omitempty"`
 	// HaveImageSignatures maps a Kitty protocol image id (as a string) to the
 	// FNV-1a-32 signature of the base64-decoded payload the client already
 	// holds. Sent with select_window so the replay can skip re-transmitting
@@ -552,8 +558,14 @@ type muxServer struct {
 	pendingResizeThemeWindowID string
 	controls                   map[*controlClient]struct{}
 	themeHint                  []byte
-	closed                     bool
-	closeDone                  chan struct{}
+	// capabilityHint holds the attached client's replies to static terminal
+	// capability queries (device attributes, XTVERSION, DSR), keyed by query.
+	// It lets the daemon answer those probes for windows no terminal is
+	// currently showing — the upgrade-restore case, where relaunched agents
+	// would otherwise time out and pick a less capable rendering mode.
+	capabilityHint []byte
+	closed         bool
+	closeDone      chan struct{}
 
 	// restoreRedrawPending tracks windows recreated from a restore snapshot
 	// whose freshly-launched foreground process (an agent that was just
@@ -644,10 +656,18 @@ type muxWindow struct {
 	pendingTerminalQueries         []byte
 	pendingTerminalQueriesInFlight []byte
 	pendingTerminalQueryCarry      []byte
-	secondaryQueryCarry            []byte
-	secondaryQueryPrimary          net.Conn
-	queryUtf8Remaining             int
-	lastForwardedTerminalQueries   []byte
+	// capabilityAnswerBytes counts the replies synthesized from the client's
+	// capability hint since a terminal last showed this window. It bounds how
+	// much a window running unwatched can push into its own child's stdin: an
+	// agent needs one short reply, while output being replayed into a
+	// background window (ANSI art, a terminal recording) can carry an unbounded
+	// stream of device attribute queries. Reset once the window is forwarded to
+	// a terminal again.
+	capabilityAnswerBytes        int
+	secondaryQueryCarry          []byte
+	secondaryQueryPrimary        net.Conn
+	queryUtf8Remaining           int
+	lastForwardedTerminalQueries []byte
 	// Kitty graphics image transmissions retained for replay on reattach.
 	// Placeholder-protocol clients (e.g. Copilot CLI) transmit an image once
 	// and thereafter only re-emit placeholder cells, so the one-time image
@@ -790,13 +810,19 @@ func (r *attachInputRouting) addUserInput(data []byte) {
 }
 
 type attachClient struct {
-	conn                               net.Conn
-	id                                 string
-	width                              int
-	height                             int
-	terminalWidth                      int
-	terminalHeight                     int
-	clipViewport                       bool
+	conn           net.Conn
+	id             string
+	width          int
+	height         int
+	terminalWidth  int
+	terminalHeight int
+	clipViewport   bool
+	// capabilityHint holds this client's replies to static terminal capability
+	// queries. It is per client because the answer describes *this* terminal:
+	// a client that sends no hint (an older helper, or a plain terminal running
+	// `monkeymux attach`) must not have a previous client's identity advertised
+	// on its behalf.
+	capabilityHint                     []byte
 	sequence                           uint64
 	focusSequence                      atomic.Uint64
 	prefixEnabled                      bool
@@ -897,6 +923,7 @@ func attachCommand(args []string) {
 	command := fs.String("command", "", "initial command")
 	restoreYolo := fs.Bool("restore-yolo", false, "restore agent windows in YOLO mode")
 	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme reports")
+	capabilityHintBase64 := fs.String("capability-hint-base64", "", "base64-encoded terminal capability reports")
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
 	clientID := fs.String("client-id", "", "stable foreground client identifier")
 	clipViewport := fs.Bool("clip-viewport", false, "clip a shared terminal grid to this client's viewport")
@@ -915,6 +942,10 @@ func attachCommand(args []string) {
 		fatal(err)
 	}
 	themeHint, err := decodeThemeHintBase64(*themeHintBase64)
+	if err != nil {
+		fatal(err)
+	}
+	capabilityHint, err := decodeCapabilityHintBase64(*capabilityHintBase64)
 	if err != nil {
 		fatal(err)
 	}
@@ -949,10 +980,11 @@ func attachCommand(args []string) {
 	if err := ensureServer(
 		session,
 		createWindowOptions{
-			cwd:       *cwd,
-			name:      *name,
-			command:   *command,
-			themeHint: themeHint,
+			cwd:            *cwd,
+			name:           *name,
+			command:        *command,
+			themeHint:      themeHint,
+			capabilityHint: capabilityHint,
 		},
 		policy,
 		*restoreYolo,
@@ -970,14 +1002,15 @@ func attachCommand(args []string) {
 	defer conn.Close()
 
 	hello := controlMessage{
-		Role:         "attach",
-		Session:      session,
-		ClientID:     resolvedClientID,
-		Width:        width,
-		Height:       height,
-		Data:         string(themeHint),
-		NoPrefix:     *noPrefix,
-		ClipViewport: *clipViewport,
+		Role:           "attach",
+		Session:        session,
+		ClientID:       resolvedClientID,
+		Width:          width,
+		Height:         height,
+		Data:           string(themeHint),
+		CapabilityHint: string(capabilityHint),
+		NoPrefix:       *noPrefix,
+		ClipViewport:   *clipViewport,
 	}
 	if !*quiet {
 		fmt.Fprintf(
@@ -1374,11 +1407,16 @@ func serveCommand(args []string) {
 	width := fs.Int("width", defaultColumns, "initial terminal columns")
 	height := fs.Int("height", defaultRows, "initial terminal rows")
 	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme reports")
+	capabilityHintBase64 := fs.String("capability-hint-base64", "", "base64-encoded terminal capability reports")
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*session) == "" {
 		usageAndExit()
 	}
 	themeHint, err := decodeThemeHintBase64(*themeHintBase64)
+	if err != nil {
+		fatal(err)
+	}
+	capabilityHint, err := decodeCapabilityHintBase64(*capabilityHintBase64)
 	if err != nil {
 		fatal(err)
 	}
@@ -1391,11 +1429,12 @@ func serveCommand(args []string) {
 		fatal(err)
 	}
 	if err := serveSession(*session, createWindowOptions{
-		cwd:       *cwd,
-		name:      *name,
-		command:   *command,
-		args:      initialArgs,
-		themeHint: themeHint,
+		cwd:            *cwd,
+		name:           *name,
+		command:        *command,
+		args:           initialArgs,
+		themeHint:      themeHint,
+		capabilityHint: capabilityHint,
 	}, restore, *width, *height); err != nil {
 		fatal(err)
 	}
@@ -1412,6 +1451,21 @@ func decodeThemeHintBase64(encoded string) ([]byte, error) {
 	}
 	if len(decoded) > themeHintLimitBytes {
 		return nil, fmt.Errorf("theme hint is too large")
+	}
+	return decoded, nil
+}
+
+func decodeCapabilityHintBase64(encoded string) ([]byte, error) {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("invalid capability hint: %w", err)
+	}
+	if len(decoded) > capabilityHintLimitBytes {
+		return nil, errors.New("capability hint is too large")
 	}
 	return decoded, nil
 }
@@ -1593,6 +1647,13 @@ func ensureServer(
 	}
 	if len(initialWindow.themeHint) > 0 {
 		serveArgs = append(serveArgs, "--theme-hint-base64", base64.StdEncoding.EncodeToString(initialWindow.themeHint))
+	}
+	if len(initialWindow.capabilityHint) > 0 {
+		serveArgs = append(
+			serveArgs,
+			"--capability-hint-base64",
+			base64.StdEncoding.EncodeToString(initialWindow.capabilityHint),
+		)
 	}
 	daemonEnv := inheritedEnvironment(os.Environ())
 	buildServeCmd := func() *exec.Cmd {
@@ -3675,6 +3736,7 @@ func serveSession(
 
 	server := newMuxServerWithSize(session, width, height)
 	server.themeHint = append([]byte(nil), initialWindow.themeHint...)
+	server.capabilityHint = append([]byte(nil), initialWindow.capabilityHint...)
 	server.listener = listener
 	if err := server.restoreOrCreateInitialWindow(restore, initialWindow); err != nil {
 		return err
@@ -4031,6 +4093,7 @@ type createWindowOptions struct {
 	applicationKeypadEnabled bool
 	applicationKeypadKnown   bool
 	themeHint                []byte
+	capabilityHint           []byte
 }
 
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
@@ -4214,6 +4277,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var terminalQueries []byte
 	var themeHint []byte
 	var themeHintData []byte
+	var capabilityHintData []byte
 	var shouldWrite bool
 	var refreshPendingFocus bool
 	var refreshPendingResize bool
@@ -4286,13 +4350,22 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 			window.secondaryQueryCarry = nil
 			window.secondaryQueryPrimary = nil
 		}
-		window.appendPendingTerminalQueriesLocked(forwarded)
-	} else if len(window.pendingTerminalQueryCarry) > 0 {
-		forwarded = append(
-			append([]byte(nil), window.pendingTerminalQueryCarry...),
-			forwarded...,
+		capabilityHintData = window.appendPendingTerminalQueriesLocked(
+			forwarded,
+			s.capabilityHintLocked(),
 		)
-		window.pendingTerminalQueryCarry = nil
+	} else {
+		// A terminal is showing this window again, so it answers the child's
+		// queries directly. Reset the synthetic-answer budget for the next time
+		// the window goes back to running unwatched.
+		window.capabilityAnswerBytes = 0
+		if len(window.pendingTerminalQueryCarry) > 0 {
+			forwarded = append(
+				append([]byte(nil), window.pendingTerminalQueryCarry...),
+				forwarded...,
+			)
+			window.pendingTerminalQueryCarry = nil
+		}
 	}
 	after := window.broadcastIdentityLocked()
 	if before != after ||
@@ -4368,6 +4441,13 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 
 	if len(themeHintData) > 0 {
 		_ = s.writeWindow(windowID, themeHintData)
+	}
+	// Answers to capability probes the child emitted while no terminal was
+	// showing this window. Delivering them now (rather than only replaying the
+	// queries on the next attach/switch) is what lets a restored agent see a
+	// timely reply and keep its richer rendering mode.
+	if len(capabilityHintData) > 0 {
+		_ = s.writeWindow(windowID, capabilityHintData)
 	}
 
 	if shouldWrite {
@@ -4594,6 +4674,7 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 		terminalHeight: terminalHeight,
 		clipViewport:   hello.ClipViewport,
 		prefixEnabled:  !hello.NoPrefix,
+		capabilityHint: capabilityHintDataFromString(hello.CapabilityHint),
 		queueReady:     make(chan struct{}, 1),
 		done:           make(chan struct{}),
 	}
@@ -5694,6 +5775,20 @@ func (s *muxServer) isAttachConnectionLocked(conn net.Conn) bool {
 	return ok
 }
 
+// capabilityHintLocked returns the static terminal replies to answer a window's
+// capability probes with. The primary attached client's hint wins, including
+// when it has none: a client that did not declare its capabilities (an older
+// helper, or a plain terminal running `monkeymux attach`) must not have another
+// client's terminal identity advertised on its behalf. The session-level hint
+// is only used while no attach client is registered — the upgrade-restore
+// window this whole mechanism exists for.
+func (s *muxServer) capabilityHintLocked() []byte {
+	if client, ok := s.attachClients[s.attachConn]; ok && client != nil {
+		return client.capabilityHint
+	}
+	return s.capabilityHint
+}
+
 func (s *muxServer) attachCountLocked() int {
 	if len(s.attachClients) > 0 {
 		return len(s.attachClients)
@@ -6029,6 +6124,9 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	s.attachConn = conn
 	if themeHint := themeHintDataFromString(hello.Data); len(themeHint) > 0 {
 		s.themeHint = append(s.themeHint[:0], themeHint...)
+	}
+	if hint := capabilityHintDataFromString(hello.CapabilityHint); len(hint) > 0 {
+		s.capabilityHint = append(s.capabilityHint[:0], hint...)
 	}
 	width, height := s.primaryAttachSizeLocked()
 	window := s.windowByIDLocked(s.activeID)
@@ -8495,6 +8593,15 @@ func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID st
 	window := s.windowByIDLocked(windowID)
 	var pending []byte
 	if window != nil && !window.closed &&
+		s.activeID == windowID && s.attachConn == conn {
+		// This terminal is now showing the window, so it answers the child's
+		// queries itself from here on. Clear the synthetic-answer budget so a
+		// window that spent it while unwatched can be answered again the next
+		// time it goes back to running in the background — even if it produced
+		// no output while it was visible.
+		window.capabilityAnswerBytes = 0
+	}
+	if window != nil && !window.closed &&
 		s.activeID == windowID && s.attachConn == conn &&
 		len(window.pendingTerminalQueriesInFlight) == 0 &&
 		len(window.pendingTerminalQueries) > 0 {
@@ -8919,6 +9026,14 @@ func (s *muxServer) sendThemeHintToActiveWindow(data string) (string, bool) {
 func themeHintDataFromString(data string) []byte {
 	data = strings.TrimSpace(data)
 	if data == "" || len(data) > themeHintLimitBytes {
+		return nil
+	}
+	return []byte(data)
+}
+
+func capabilityHintDataFromString(data string) []byte {
+	data = strings.TrimSpace(data)
+	if data == "" || len(data) > capabilityHintLimitBytes {
 		return nil
 	}
 	return []byte(data)
@@ -11423,6 +11538,87 @@ func isReplayUnsafeCsiQuery(sequence []byte) bool {
 	}
 }
 
+const (
+	capabilityHintRecordSeparator = 0x1e
+	capabilityHintFieldSeparator  = 0x1f
+
+	capabilityHintKeyPrimaryDeviceAttributes   = "da1"
+	capabilityHintKeySecondaryDeviceAttributes = "da2"
+	capabilityHintKeyTertiaryDeviceAttributes  = "da3"
+	capabilityHintKeyTerminalVersion           = "xtversion"
+	capabilityHintKeyDeviceStatus              = "dsr"
+)
+
+// capabilityHintResponseMap parses the attaching client's static terminal
+// capability replies into a query-key -> reply map. The wire format is
+// `key US reply` records joined by RS; both separators are C0 controls that
+// never occur inside a terminal reply, so no escaping is needed.
+func capabilityHintResponseMap(hint []byte) map[string][]byte {
+	if len(hint) == 0 {
+		return nil
+	}
+	responses := map[string][]byte{}
+	for _, record := range bytes.Split(
+		hint,
+		[]byte{capabilityHintRecordSeparator},
+	) {
+		key, response, found := bytes.Cut(
+			record,
+			[]byte{capabilityHintFieldSeparator},
+		)
+		if !found {
+			continue
+		}
+		name := strings.TrimSpace(string(key))
+		if name == "" || len(response) == 0 {
+			continue
+		}
+		responses[name] = append([]byte(nil), response...)
+	}
+	if len(responses) == 0 {
+		return nil
+	}
+	return responses
+}
+
+// capabilityQueryKey maps a terminal query sequence to the capability hint key
+// whose cached reply answers it, or "" when the answer is not constant for a
+// terminal (cursor position, window metrics, kitty keyboard flags, ...) and so
+// must come from the client itself.
+func capabilityQueryKey(sequence []byte) string {
+	bodyStart := 0
+	switch {
+	case len(sequence) >= 3 && sequence[0] == '\x1b' && sequence[1] == '[':
+		bodyStart = 2
+	case len(sequence) >= 2 && sequence[0] == 0x9b:
+		bodyStart = 1
+	default:
+		return ""
+	}
+	final := sequence[len(sequence)-1]
+	params := string(sequence[bodyStart : len(sequence)-1])
+	switch final {
+	case 'c':
+		switch params {
+		case "", "0":
+			return capabilityHintKeyPrimaryDeviceAttributes
+		case ">", ">0":
+			return capabilityHintKeySecondaryDeviceAttributes
+		case "=", "=0":
+			return capabilityHintKeyTertiaryDeviceAttributes
+		}
+	case 'q':
+		if params == ">" || params == ">0" {
+			return capabilityHintKeyTerminalVersion
+		}
+	case 'n':
+		if params == "5" {
+			return capabilityHintKeyDeviceStatus
+		}
+	}
+	return ""
+}
+
 // Bracketed-paste start/end markers in ESC-based and single-byte C1 forms.
 var (
 	bracketedPasteStart7Bit = []byte("\x1b[200~")
@@ -12613,16 +12809,74 @@ func (w *muxWindow) storePartialCsiLocked(data []byte) {
 }
 
 // appendPendingTerminalQueriesLocked scans a chunk of the window's child output
-// for terminal capability/status queries (CSI, OSC, and DCS)
-// and buffers them in pendingTerminalQueries. It is called only while no
-// terminal is showing the window, so these queries are not being forwarded to a
-// terminal that could answer them; flushPendingTerminalQueriesLocked re-delivers
-// them once one attaches. A query split across pty reads is carried in
+// for terminal capability/status queries (CSI, OSC, and DCS). It is called only
+// while no terminal is showing the window, so these queries are not being
+// forwarded to a terminal that could answer them.
+//
+// Queries whose reply is constant for the attached terminal are answered right
+// away from [hint]: the returned bytes must be written to the window's pty by
+// the caller. This is what keeps an agent relaunched by an upgrade restore from
+// timing out on its startup XTVERSION/device-attribute probes and settling on a
+// less capable rendering mode while it waits in a background (or not yet
+// attached) window.
+//
+// The remaining queries are buffered in pendingTerminalQueries, and
+// flushPendingTerminalQueriesLocked re-delivers them once a terminal attaches
+// or the window is selected. A query split across pty reads is carried in
 // pendingTerminalQueryCarry until the rest arrives. Queries answered from the
 // cached theme hint are stripped before reaching this scanner.
-func (w *muxWindow) appendPendingTerminalQueriesLocked(chunk []byte) {
+//
+// A capability probe group is conventionally terminated by a fence query — DA1
+// or DSR — that the child reads as "the terminal has answered everything it
+// supports". Answering a fence from the hint while an earlier probe of the same
+// group is still buffered would close the group before those answers exist, so
+// fence queries are only answered while nothing is already waiting on the
+// terminal. That keeps a probe group the daemon cannot fully answer (XTGETTCAP,
+// DECRQM, kitty graphics) on the buffer-and-replay path, in emission order,
+// exactly as before.
+func (w *muxWindow) appendPendingTerminalQueriesLocked(
+	chunk []byte,
+	hint []byte,
+) []byte {
 	if len(chunk) == 0 {
-		return
+		return nil
+	}
+	var answers []byte
+	var hintResponses map[string][]byte
+	hintParsed := false
+	answerFor := func(sequence []byte) []byte {
+		key := capabilityQueryKey(sequence)
+		if key == "" {
+			return nil
+		}
+		// DA1/DA2/DA3 and DSR are the conventional group terminators, so they
+		// are only answered while nothing is already waiting on the terminal.
+		// XTVERSION is never used as a terminator — its DCS reply identifies
+		// itself — so it is answered even behind a buffered probe, which is
+		// what actually restores an agent's richer rendering mode.
+		if key != capabilityHintKeyTerminalVersion &&
+			(len(w.pendingTerminalQueries) > 0 ||
+				len(w.pendingTerminalQueriesInFlight) > 0) {
+			return nil
+		}
+		if !hintParsed {
+			hintResponses = capabilityHintResponseMap(hint)
+			hintParsed = true
+		}
+		response := hintResponses[key]
+		// Bound what a window running unwatched can push into its own child's
+		// stdin. Output replayed into a background window (an ANSI art file, a
+		// terminal recording) can carry an unbounded stream of device attribute
+		// queries, and synthesizing a reply for each would block the window's
+		// reader goroutine on a child that is not draining its input. Queries
+		// past the budget fall through to the buffer, whose own limit then
+		// closes the fence gate above for the rest of the stream.
+		if len(response) == 0 ||
+			w.capabilityAnswerBytes+len(answers)+len(response) >
+				pendingTerminalQueryLimitBytes {
+			return nil
+		}
+		return response
 	}
 	data := chunk
 	previousUtf8Remaining := w.queryUtf8Remaining
@@ -12649,16 +12903,24 @@ func (w *muxWindow) appendPendingTerminalQueriesLocked(chunk []byte) {
 		if incomplete {
 			w.queryUtf8Remaining = 0
 			w.storePartialPendingTerminalQueryLocked(data[index:])
-			return
+			w.capabilityAnswerBytes += len(answers)
+			return answers
 		}
 		if !recognized {
 			index++
 			continue
 		}
 		sequence := data[index:sequenceEnd]
-		if isQuery &&
-			len(w.pendingTerminalQueries)+len(sequence) <= pendingTerminalQueryLimitBytes {
-			w.pendingTerminalQueries = append(w.pendingTerminalQueries, sequence...)
+		if isQuery {
+			if response := answerFor(sequence); len(response) > 0 {
+				answers = append(answers, response...)
+			} else if len(w.pendingTerminalQueries)+len(sequence) <=
+				pendingTerminalQueryLimitBytes {
+				w.pendingTerminalQueries = append(
+					w.pendingTerminalQueries,
+					sequence...,
+				)
+			}
 		}
 		index = sequenceEnd
 	}
@@ -12667,6 +12929,8 @@ func (w *muxWindow) appendPendingTerminalQueriesLocked(chunk []byte) {
 		previousUtf8Remaining,
 		leadingUtf8Prefix,
 	)
+	w.capabilityAnswerBytes += len(answers)
+	return answers
 }
 
 func (w *muxWindow) storePartialPendingTerminalQueryLocked(data []byte) {
