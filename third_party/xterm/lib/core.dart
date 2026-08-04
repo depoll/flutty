@@ -10,6 +10,7 @@ export 'src/core/cell.dart';
 export 'src/core/graphics_manager.dart';
 export 'src/core/color.dart';
 export 'src/core/cursor.dart';
+export 'src/core/escape/emitter.dart';
 export 'src/core/escape/handler.dart';
 export 'src/core/escape/parser.dart';
 export 'src/core/input/handler.dart';

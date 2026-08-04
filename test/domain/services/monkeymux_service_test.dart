@@ -89,6 +89,22 @@ void main() {
       );
     });
 
+    test('passes terminal capability reports as base64 data', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: '/home/me/.monkeyssh/bin/monkeymux',
+        sessionName: 'work',
+        terminalCapabilityReports: 'da1\x1f\x1b[?62;22c',
+      );
+
+      expect(
+        command,
+        "'/home/me/.monkeyssh/bin/monkeymux' attach --quiet "
+        '--capability-hint-base64 '
+        '${base64Encode(utf8.encode('da1\x1f\x1b[?62;22c'))} '
+        "'work'",
+      );
+    });
+
     test('passes explicit viewport dimensions for raw SSH attach', () {
       final command = buildMonkeyMuxAttachCommand(
         executablePath: r'C:\Users\me\monkeymux.exe',
