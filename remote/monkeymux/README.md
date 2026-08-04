@@ -66,14 +66,19 @@ All structured state and commands belong on the control backchannel.
 `attach` and `new-session` can start a session server. Optional `--cwd`,
 `--name`, and `--command` flags seed the initial window only when a new server
 is created, so MonkeySSH can launch a coding agent without creating a duplicate
-window on reconnect. The server inherits the environment from the shell that
-launched it exactly, so profile-managed values such as `PATH` and tool-specific
-variables remain user-owned. PTY windows inherit that environment and add
-terminal defaults such as `TERM=xterm-256color` and `COLORTERM=truecolor` only
-when the launch environment does not already provide usable terminal hints.
-They also advertise `FORCE_HYPERLINK=1` (unless already set) so OSC 8 capable
-CLIs such as Copilot and `gh` emit clickable hyperlinks, which MonkeySSH renders
-and opens.
+window on reconnect. If a session process is still alive but its socket is not
+accepting connections, `attach` refuses to steal the socket path and create a
+replacement server — on Windows that race previously orphaned the real windows
+behind an unreachable helper while auto-connect surfaced a fresh one-window
+workspace. Helper upgrades similarly refuse to replace a running server when a
+window snapshot cannot be collected. The server inherits the environment from
+the shell that launched it exactly, so profile-managed values such as `PATH`
+and tool-specific variables remain user-owned. PTY windows inherit that
+environment and add terminal defaults such as `TERM=xterm-256color` and
+`COLORTERM=truecolor` only when the launch environment does not already provide
+usable terminal hints. They also advertise `FORCE_HYPERLINK=1` (unless already
+set) so OSC 8 capable CLIs such as Copilot and `gh` emit clickable hyperlinks,
+which MonkeySSH renders and opens.
 
 Window switching and reconnect repaint from raw byte history for the selected
 window. Main-screen shell history is capped for responsive switching; active

@@ -264,6 +264,38 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       <_MonkeyMuxWatchKey, _AppReviewDemoMonkeyMuxState>{};
   static const _agentSessionMetadataFreshTtl = Duration(seconds: 5);
 
+  @override
+  Future<String?> detectedVersion(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    if (isAppReviewDemoSession(session)) {
+      return null;
+    }
+    try {
+      final installation = await _installer.ensureInstalled(session);
+      final status = await runningServerStatus(
+        session,
+        installation,
+        sessionName,
+        priority: SshExecPriority.low,
+      );
+      final version = status?.version?.trim();
+      return version == null || version.isEmpty ? null : version;
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.status',
+        'version_unavailable',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return null;
+    }
+  }
+
   /// Clears MonkeyMux caches and watchers for a connection.
   Future<void> clearCache(int connectionId) async {
     DiagnosticsLogService.instance.info(

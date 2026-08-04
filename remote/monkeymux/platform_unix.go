@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -140,6 +141,29 @@ func killCommandProcessGroup(cmd *exec.Cmd) {
 	signalCommandProcessGroup(cmd, syscall.SIGKILL)
 }
 
+func processIDAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil
+}
+
+func terminateProcessID(pid int) {
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if !processIDAlive(pid) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+}
+
 func signalCommandProcessGroup(cmd *exec.Cmd, signal syscall.Signal) {
 	if cmd == nil || cmd.Process == nil {
 		return
@@ -149,6 +173,9 @@ func signalCommandProcessGroup(cmd *exec.Cmd, signal syscall.Signal) {
 	}
 	_ = cmd.Process.Signal(signal)
 }
+
+const supportsExplicitForegroundResizeSignal = true
+const prefersVerticalForegroundRedrawResize = false
 
 var signalForegroundResize = func(processGroup int) {
 	if processGroup <= 0 {

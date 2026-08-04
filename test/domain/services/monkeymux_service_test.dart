@@ -798,6 +798,39 @@ void main() {
     });
   });
 
+  group('MonkeyMuxService.detectedVersion', () {
+    setUpAll(() => registerFallbackValue(Uint8List(0)));
+
+    test('reads the running server version from the control hello', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 909);
+      final commands = <String>[];
+      when(
+        () => installer.ensureInstalled(session),
+      ).thenAnswer((_) async => _fakeInstallation);
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        commands.add(invocation.positionalArguments.single as String);
+        return _buildOutputSession(
+          '{"type":"hello","status":"ok","version":"0.2.4",'
+          '"capabilities":[]}\n',
+        );
+      });
+
+      final version = await MonkeyMuxService(
+        installer: installer,
+      ).detectedVersion(session, 'work');
+
+      expect(version, '0.2.4');
+      expect(
+        commands.single,
+        "'/home/tester/.monkeyssh/bin/monkeymux' control --json 'work'",
+      );
+    });
+  });
+
   group('MonkeyMuxService.installedHelperVersion', () {
     setUpAll(() => registerFallbackValue(Uint8List(0)));
 

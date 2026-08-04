@@ -183,6 +183,13 @@ class _FakeRemoteMultiplexerService implements RemoteMultiplexerService {
   final List<String> calls = <String>[];
 
   @override
+  Future<String?> detectedVersion(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async => null;
+
+  @override
   Future<List<TmuxWindow>> listWindows(
     SshSession session,
     String sessionName, {
