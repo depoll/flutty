@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.138"
+	monkeyMuxVersion                  = "0.1.139"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -7054,7 +7054,12 @@ func (s *muxServer) resizeWithRedraw(
 	sizeChanged := dimensionsChanged || hadPendingResize
 	s.width = width
 	s.height = height
-	if sizeChanged && serializeViewport {
+	// Publish the canonical grid on every resize, not only when the server
+	// believes it changed. Clipping clients size their terminal buffer solely
+	// from this sequence, so a single missed or dropped publish would otherwise
+	// leave a client rendering the wrong grid for the rest of the session with
+	// no way to ask for a correction.
+	if serializeViewport {
 		s.enqueueAttachViewportResizeLocked(width, height)
 	}
 	s.publishedWidth = width
@@ -8000,10 +8005,13 @@ func (s *muxServer) enqueueAttachViewportTransitionLocked(
 		return
 	}
 	for _, client := range s.attachClients {
-		if !client.clipViewport ||
-			(client.terminalWidth == width && client.terminalHeight == height) {
+		if !client.clipViewport {
 			continue
 		}
+		// Deliberately not suppressed when the tracked size already matches:
+		// that value records what was queued, never what the client actually
+		// applied, so trusting it can silence the only message able to repair a
+		// client whose grid drifted.
 		client.terminalWidth = width
 		client.terminalHeight = height
 		_, _ = client.enqueue(sequence, false)
