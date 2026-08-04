@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.139"
+	monkeyMuxVersion                  = "0.1.140"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -248,6 +248,30 @@ var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 	window.resizePtyIfCurrent(generation, width, height)
 }
 
+// deliverForegroundGeometry gives a window's foreground app this geometry and
+// makes sure it notices.
+//
+// A genuine size change is its own redraw notification, so it is applied
+// directly. Manufacturing a temporary size on top of it would make the app lay
+// out and emit an entire frame for a geometry that never existed, which the
+// client paints before the real one replaces it. Only when the size is already
+// current is there nothing for the app to notice, and the synthetic size is
+// then the sole way left to ask for a repaint.
+var deliverForegroundGeometry = func(
+	window *muxWindow,
+	width int,
+	height int,
+) {
+	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
+		return
+	}
+	if !window.ptySizeIs(width, height) {
+		window.resizePty(width, height)
+		return
+	}
+	simulateForegroundResize(window, width, height)
+}
+
 func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, false
@@ -287,7 +311,21 @@ func (w *muxWindow) resizePty(width int, height int) {
 	w.resizeGeneration.Add(1)
 	w.ptyResizeMu.Lock()
 	_ = w.pty.Resize(width, height)
+	w.ptyWidth = width
+	w.ptyHeight = height
 	w.ptyResizeMu.Unlock()
+}
+
+// ptySizeIs reports whether the PTY already holds this geometry, so callers can
+// tell a genuine resize (which notifies the foreground app by itself) apart
+// from a repeat that the app would ignore.
+func (w *muxWindow) ptySizeIs(width int, height int) bool {
+	if w == nil {
+		return false
+	}
+	w.ptyResizeMu.Lock()
+	defer w.ptyResizeMu.Unlock()
+	return w.ptyWidth == width && w.ptyHeight == height
 }
 
 func (w *muxWindow) resizePtyIfCurrent(
@@ -304,6 +342,8 @@ func (w *muxWindow) resizePtyIfCurrent(
 		return
 	}
 	_ = w.pty.Resize(width, height)
+	w.ptyWidth = width
+	w.ptyHeight = height
 }
 
 func (w *muxWindow) closePty(ptyFile muxPty) error {
@@ -543,6 +583,8 @@ type muxWindow struct {
 	paneTitle                   string
 	pty                         muxPty
 	ptyResizeMu                 sync.Mutex
+	ptyWidth                    int
+	ptyHeight                   int
 	resizeGeneration            atomic.Uint64
 	proc                        muxProcess
 	history                     []byte
@@ -4078,6 +4120,8 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		foregroundCommand:        filepath.Base(cmd.Path),
 		paneTitle:                paneTitle,
 		pty:                      windowPty,
+		ptyWidth:                 cols,
+		ptyHeight:                rows,
 		proc:                     proc,
 		history:                  append([]byte(nil), options.history...),
 		lastActivity:             time.Now(),
@@ -6807,7 +6851,8 @@ func (s *muxServer) selectWindowWithSkip(
 	}
 	s.publishedWidth = s.width
 	s.publishedHeight = s.height
-	s.resizeActiveLocked(s.width, s.height)
+	targetWidth := s.width
+	targetHeight := s.height
 	if s.attachCountLocked() > 1 {
 		clientHas = nil
 	}
@@ -6816,7 +6861,16 @@ func (s *muxServer) selectWindowWithSkip(
 	foregroundProcessGroup = window.foregroundProcessGroupLocked()
 	redrawWindow = window
 	s.mu.Unlock()
+	// The redraw below owns delivering this geometry to the PTY. Resizing here
+	// first would leave it already at the target, forcing that redraw to
+	// manufacture a temporary size and making the foreground app render a whole
+	// extra frame for a geometry that never existed.
 	redrew := s.broadcastAttachReplayAndResizeLocked(replay, redrawWindow)
+	if !redrew {
+		s.mu.Lock()
+		s.resizeWindowLocked(window, targetWidth, targetHeight)
+		s.mu.Unlock()
+	}
 	s.flushPendingTerminalQueriesLocked(primary, windowID)
 	s.attachMu.Unlock()
 	s.broadcastWindowList("active_window_changed")
@@ -6838,6 +6892,8 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var windowPty muxPty
 	var snapshots []windowSnapshot
 	var resetViewportParser bool
+	var targetWidth int
+	var targetHeight int
 
 	s.attachMu.Lock()
 	s.mu.Lock()
@@ -6877,7 +6933,8 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			}
 			s.publishedWidth = s.width
 			s.publishedHeight = s.height
-			s.resizeActiveLocked(s.width, s.height)
+			targetWidth = s.width
+			targetHeight = s.height
 			replay = s.replayBytesLocked(replacement)
 			foregroundProcessGroup = replacement.foregroundProcessGroupLocked()
 			redrawWindow = replacement
@@ -6906,7 +6963,14 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
 	s.mu.Unlock()
 	if activeChanged {
+		// The redraw owns delivering the geometry so the replacement window's
+		// foreground app repaints once, at the final size.
 		redrew = s.broadcastAttachReplayAndResizeLocked(replay, redrawWindow)
+		if !redrew {
+			s.mu.Lock()
+			s.resizeWindowLocked(redrawWindow, targetWidth, targetHeight)
+			s.mu.Unlock()
+		}
 	}
 	s.attachMu.Unlock()
 
@@ -7182,7 +7246,7 @@ func (s *muxServer) deferAttachReplayForRedrawLocked(
 		window.redrawForwardingReplay[:0],
 		replay...,
 	)
-	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
+	deliverForegroundGeometry(window, s.publishedWidth, s.publishedHeight)
 	return true
 }
 
@@ -7200,7 +7264,7 @@ func (s *muxServer) simulateForegroundResizeIfAttached(
 		s.publishedWidth,
 		s.publishedHeight,
 	)
-	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
+	deliverForegroundGeometry(window, s.publishedWidth, s.publishedHeight)
 	return true
 }
 
@@ -7215,7 +7279,7 @@ func (s *muxServer) simulateForegroundResizeIfAnyAttached(window *muxWindow) boo
 		s.publishedWidth,
 		s.publishedHeight,
 	)
-	simulateForegroundResize(window, s.publishedWidth, s.publishedHeight)
+	deliverForegroundGeometry(window, s.publishedWidth, s.publishedHeight)
 	return true
 }
 
@@ -7265,9 +7329,17 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 		// Snapshot the pre-resize frame for every redraw pause, not just
 		// deferred window-switch replays: restore and theme redraws start the
 		// same transaction directly and hit the same coalesced-SIGWINCH
-		// failure.
-		window.redrawForwardingFallbackHistory =
-			s.foregroundHistoryFallbackHistoryLocked(window)
+		// failure. Only a frame with visible content is worth retaining: a
+		// snapshot taken in the instant after the child cleared but before it
+		// repainted would hand the user exactly the emptiness this fallback
+		// exists to avoid.
+		if snapshot := s.foregroundHistoryFallbackHistoryLocked(
+			window,
+		); terminalOutputHasVisibleContent(snapshot) {
+			window.redrawForwardingFallbackHistory = snapshot
+		} else {
+			window.redrawForwardingFallbackHistory = nil
+		}
 	} else if refreshed := s.foregroundHistoryFallbackHistoryLocked(
 		window,
 	); terminalOutputHasVisibleContent(refreshed) {
@@ -7347,7 +7419,13 @@ func (s *muxServer) resumePausedAttachForwarding(
 			window,
 			window.redrawForwardingFallbackHistory,
 		)
-		if len(fallbackReplay) > 0 {
+		// Substitute only a frame that actually paints something. An
+		// escape-only snapshot (a clear the child had just emitted) is long
+		// enough to look like a frame while rendering exactly the blank screen
+		// this fallback exists to prevent.
+		if terminalOutputHasVisibleContent(
+			window.redrawForwardingFallbackHistory,
+		) && len(fallbackReplay) > 0 {
 			replay = nil
 			buffered = append(
 				append([]byte(nil), fallbackReplay...),

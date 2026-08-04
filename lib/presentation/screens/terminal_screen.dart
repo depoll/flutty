@@ -257,6 +257,9 @@ const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
 // Bounds how often a mismatched shared grid is re-asserted, so a peer client
 // that legitimately owns a different grid cannot start a resize tug-of-war.
 const _monkeyMuxHostGridReconcileLimit = 3;
+// Bounds how often an empty pane is escalated to a forced redraw, so a pane the
+// user genuinely cleared cannot loop.
+const _monkeyMuxBlankPaneRecoveryLimit = 2;
 const _appResumeTerminalMetricsSettleDelay = Duration(milliseconds: 350);
 const _monkeyMuxSettledRedrawDisplayRefreshDelays = <Duration>[
   Duration(milliseconds: 450),
@@ -3659,6 +3662,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isSettlingTerminalMetricsAfterAppResume = false;
   Timer? _monkeyMuxResizeSyncCooldownTimer;
   int _monkeyMuxHostGridReconcileAttempts = 0;
+  int _monkeyMuxBlankPaneRecoveryAttempts = 0;
   bool _monkeyMuxResizeSyncInFlight = false;
   bool _monkeyMuxResizeSyncThrottled = false;
   bool _monkeyMuxResizeSyncPending = false;
@@ -7660,6 +7664,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
         _monkeyMuxHostGridReconcileAttempts = 0;
+        _monkeyMuxBlankPaneRecoveryAttempts = 0;
         if (session.monkeyMuxViewportClippingEnabled &&
             (_terminal.viewWidth != width || _terminal.viewHeight != height)) {
           // The shared grid disagrees with this viewport, so the duplicate-size
@@ -7925,6 +7930,64 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session,
       columns: viewport.columns,
       rows: viewport.rows,
+    );
+  }
+
+  /// Whether the terminal is showing nothing at all.
+  ///
+  /// A MonkeyMux replay clears the screen and its scrollback before the pane's
+  /// new content arrives, so an entirely empty buffer means that content never
+  /// came.
+  bool _monkeyMuxTerminalRendersNothing() {
+    final lines = _terminal.buffer.lines;
+    for (var row = 0; row < lines.length; row++) {
+      if (lines[row].getTrimmedLength() != 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Asks the server to repaint a pane that came up blank.
+  ///
+  /// For panes whose foreground app owns its own pixels, MonkeyMux clears the
+  /// client and relies on that app repainting in response to a resize. When the
+  /// app coalesces or ignores that resize the pane stays empty, and because the
+  /// grid is already correct nothing else on either side has a reason to speak
+  /// up: the blank screen is a stable state that only an unrelated real resize
+  /// (opening the keyboard) escapes. Detecting emptiness gives the client the
+  /// evidence it needs to ask for the frame it never received.
+  void _recoverBlankMonkeyMuxPane(
+    SshSession session, {
+    required String reason,
+  }) {
+    if (!mounted || _connectionId != session.connectionId) {
+      return;
+    }
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux &&
+        session.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    if (!_monkeyMuxTerminalRendersNothing()) {
+      _monkeyMuxBlankPaneRecoveryAttempts = 0;
+      return;
+    }
+    if (_monkeyMuxBlankPaneRecoveryAttempts >=
+        _monkeyMuxBlankPaneRecoveryLimit) {
+      return;
+    }
+    _monkeyMuxBlankPaneRecoveryAttempts += 1;
+    DiagnosticsLogService.instance.info(
+      'monkeymux.redraw',
+      'blank_pane_recovery',
+      fields: {
+        'connectionId': session.connectionId,
+        'reason': reason,
+        'attempt': _monkeyMuxBlankPaneRecoveryAttempts,
+      },
+    );
+    unawaited(
+      _syncActiveMonkeyMuxTerminalSize(session, refreshVisibleTerminal: true),
     );
   }
 
@@ -8324,6 +8387,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final connectionId = session.connectionId;
     final generation = _monkeyMuxRefreshAndResizeGeneration;
+    final outputSequence = session.shellOutputChunkSequence;
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
     _monkeyMuxResizeRedrawFollowUpTimer = Timer(
       _monkeyMuxResizeRedrawFollowUpDelay,
@@ -8332,6 +8396,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted ||
             generation != _monkeyMuxRefreshAndResizeGeneration ||
             _connectionId != connectionId) {
+          return;
+        }
+        if (session.shellOutputChunkSequence != outputSequence) {
+          // The resize reached the foreground app and it repainted. Forcing
+          // another redraw would make it lay out and re-emit its whole frame a
+          // second time for nothing, which on a long agent transcript is
+          // hundreds of kilobytes over the wire.
           return;
         }
         unawaited(
@@ -8391,6 +8462,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           reason: reason,
           delay: delay,
         );
+        _recoverBlankMonkeyMuxPane(session, reason: reason);
       });
       _monkeyMuxSettledRedrawDisplayRefreshTimers.add(timer);
     }
@@ -8419,6 +8491,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxResizeSyncColumns = null;
     _monkeyMuxResizeSyncRows = null;
     _monkeyMuxHostGridReconcileAttempts = 0;
+    _monkeyMuxBlankPaneRecoveryAttempts = 0;
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _monkeyMuxPostRedrawDisplayRefreshTimer = null;
     _cancelMonkeyMuxSettledRedrawDisplayRefreshes();

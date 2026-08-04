@@ -4309,6 +4309,165 @@ void main() {
     );
 
     testWidgets(
+      'MonkeyMux asks for a repaint when a window switch leaves the pane blank',
+      (tester) async {
+        // A pane whose foreground app owns its own pixels is cleared on a
+        // window switch and refilled only when that app repaints. When the app
+        // coalesces or ignores the resize that was supposed to provoke it, the
+        // pane stays empty with a perfectly correct grid, so nothing on either
+        // side has a reason to speak up and only opening the keyboard escapes.
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
+          TmuxWindow(index: 1, name: 'agent', isActive: false, id: '@1'),
+        ];
+        const activeAgentWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: false, id: '@0'),
+          TmuxWindow(index: 1, name: 'agent', isActive: true, id: '@1'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        for (var row = 0; row < 120; row += 1) {
+          session.terminal!.write('row $row\r\n');
+        }
+
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.currentPaneContext(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.selectWindow(
+            session,
+            sessionName,
+            1,
+            extraFlags: any(named: 'extraFlags'),
+            clientImageSignatures: any(named: 'clientImageSignatures'),
+          ),
+        ).thenAnswer((_) async {
+          monkeyMuxService.controlOperations.add('select');
+        });
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+
+        session
+          ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+          ..remoteMuxSessionName = sessionName;
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.tap(find.text('agent'));
+        await tester.pump();
+        await tester.pump();
+
+        windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        // The switch replay clears the screen and its scrollback; the frame
+        // that should have replaced it never arrives.
+        session.terminal!.write('\x1b[H\x1b[2J\x1b[3J');
+        await tester.pump();
+        monkeyMuxService.resizeTerminalCalls.clear();
+
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+
+        expect(
+          monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
+          isTrue,
+          reason:
+              'an empty pane is the evidence the client needs to ask for the '
+              'frame it never received, instead of waiting for the user to '
+              'open the keyboard',
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'MonkeyMux terminal resizes schedule a settled redraw sync',
       (tester) async {
         final tmuxService = _MockTmuxService();
