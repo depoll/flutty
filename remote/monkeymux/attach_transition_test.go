@@ -217,6 +217,47 @@ func TestAttachBarrierDoesNotHoldResizeLockWhileWaiting(t *testing.T) {
 	}
 }
 
+func TestResizeRepublishesGridForUnchangedRequest(t *testing.T) {
+	// A client whose grid drifted can only ask for a correction by re-sending
+	// its viewport. If the server suppresses an unchanged size, that request is
+	// silently dropped and the client stays corrupted until the user resizes.
+	server := newMuxServerWithSize("test", 80, 24)
+	window := &muxWindow{id: "@1", index: 0, lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
+	conn := &recordingConn{}
+	client := newAttachClient(conn, controlMessage{
+		ClientID:     "phone",
+		Width:        80,
+		Height:       24,
+		ClipViewport: true,
+	})
+	t.Cleanup(client.close)
+	server.mu.Lock()
+	server.attachClients[conn] = client
+	server.attachConn = conn
+	client.terminalWidth = 80
+	client.terminalHeight = 24
+	server.mu.Unlock()
+
+	server.resizeForClient("phone", 80, 24, false)
+
+	want := string(terminalViewportResizeSequence(80, 24, false))
+	deadline := time.Now().Add(time.Second)
+	for {
+		if strings.Contains(conn.String(), want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf(
+				"unchanged-size resize did not republish the grid: %q",
+				conn.String(),
+			)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestAttachBarrierAbortsWhenServerCloses(t *testing.T) {
 	server := newMuxServerWithSize("test", 59, 47)
 	window := &muxWindow{

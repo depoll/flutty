@@ -254,6 +254,9 @@ double resolveTmuxBarMaxContentHeight(
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
 const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
+// Bounds how often a mismatched shared grid is re-asserted, so a peer client
+// that legitimately owns a different grid cannot start a resize tug-of-war.
+const _monkeyMuxHostGridReconcileLimit = 3;
 const _appResumeTerminalMetricsSettleDelay = Duration(milliseconds: 350);
 const _monkeyMuxSettledRedrawDisplayRefreshDelays = <Duration>[
   Duration(milliseconds: 450),
@@ -3655,6 +3658,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _appResumeTerminalMetricsSettleTimer;
   bool _isSettlingTerminalMetricsAfterAppResume = false;
   Timer? _monkeyMuxResizeSyncCooldownTimer;
+  int _monkeyMuxHostGridReconcileAttempts = 0;
   bool _monkeyMuxResizeSyncInFlight = false;
   bool _monkeyMuxResizeSyncThrottled = false;
   bool _monkeyMuxResizeSyncPending = false;
@@ -7655,6 +7659,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
+        _monkeyMuxHostGridReconcileAttempts = 0;
+        if (session.monkeyMuxViewportClippingEnabled &&
+            (_terminal.viewWidth != width || _terminal.viewHeight != height)) {
+          // The shared grid disagrees with this viewport, so the duplicate-size
+          // cache must not silence the correction.
+          _lastMonkeyMuxResizeSync = null;
+        }
         _scheduleMonkeyMuxResizeSync(session, columns: width, rows: height);
         if (!_isSettlingTerminalMetricsAfterAppResume) {
           _scheduleMonkeyMuxResizeRedrawFollowUp(session);
@@ -7666,23 +7677,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal.onResize = handleTerminalResize;
 
     void handleTerminalHostResize(int width, int height) {
-      if (session.remoteMuxBackend != RemoteMuxBackend.monkeyMux ||
-          session.monkeyMuxViewportClippingEnabled) {
+      if (session.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
         return;
       }
-      session.monkeyMuxViewportClippingEnabled = true;
-      DiagnosticsLogService.instance.debug(
-        'monkeymux.viewport',
-        'clipping_enabled',
-        fields: {
-          'connectionId': session.connectionId,
-          'columns': width,
-          'rows': height,
-        },
-      );
-      if (mounted) {
-        setState(() {});
+      if (!session.monkeyMuxViewportClippingEnabled) {
+        session.monkeyMuxViewportClippingEnabled = true;
+        DiagnosticsLogService.instance.debug(
+          'monkeymux.viewport',
+          'clipping_enabled',
+          fields: {
+            'connectionId': session.connectionId,
+            'columns': width,
+            'rows': height,
+          },
+        );
+        if (mounted) {
+          setState(() {});
+        }
       }
+      _reconcileMonkeyMuxHostGrid(session, columns: width, rows: height);
     }
 
     _terminalHostResizeHandler = handleTerminalHostResize;
@@ -7855,6 +7868,64 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     });
     WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  /// Re-asserts the local viewport when MonkeyMux publishes a smaller grid.
+  ///
+  /// Once viewport clipping is on, the terminal buffer is sized entirely by the
+  /// server's private host-resize sequence while Flutter keeps painting its own
+  /// viewport. If the published grid is smaller than the viewport, output is
+  /// laid out into too few cells and the remainder renders blank, and nothing
+  /// corrects it because the client never resizes its own buffer again. Rather
+  /// than depending on every publish being perfectly ordered, push the real
+  /// viewport back whenever the grid is short: the server answers with a
+  /// matching grid, so the exchange settles instead of staying corrupted until
+  /// the user happens to resize.
+  ///
+  /// A larger published grid is left alone; that is clipping doing its job for
+  /// a bigger peer client.
+  void _reconcileMonkeyMuxHostGrid(
+    SshSession session, {
+    required int columns,
+    required int rows,
+  }) {
+    if (!mounted || _connectionId != session.connectionId) {
+      return;
+    }
+    final viewport = _terminalViewKey.currentState?.viewportCellSize;
+    if (viewport == null || viewport.columns <= 0 || viewport.rows <= 0) {
+      return;
+    }
+    if (viewport.columns <= columns && viewport.rows <= rows) {
+      _monkeyMuxHostGridReconcileAttempts = 0;
+      return;
+    }
+    if (_monkeyMuxHostGridReconcileAttempts >=
+        _monkeyMuxHostGridReconcileLimit) {
+      return;
+    }
+    _monkeyMuxHostGridReconcileAttempts += 1;
+    // The duplicate-size cache exists to suppress viewport spam, but here the
+    // server has demonstrably diverged from this client, so the very same
+    // dimensions must be allowed onto the wire again.
+    _lastMonkeyMuxResizeSync = null;
+    DiagnosticsLogService.instance.info(
+      'monkeymux.viewport',
+      'grid_reconcile',
+      fields: {
+        'connectionId': session.connectionId,
+        'publishedColumns': columns,
+        'publishedRows': rows,
+        'viewportColumns': viewport.columns,
+        'viewportRows': viewport.rows,
+        'attempt': _monkeyMuxHostGridReconcileAttempts,
+      },
+    );
+    _scheduleMonkeyMuxResizeSync(
+      session,
+      columns: viewport.columns,
+      rows: viewport.rows,
+    );
   }
 
   bool _isWindowsMonkeyMuxSession(SshSession? session) =>
@@ -8347,6 +8418,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxResizeSyncPending = false;
     _monkeyMuxResizeSyncColumns = null;
     _monkeyMuxResizeSyncRows = null;
+    _monkeyMuxHostGridReconcileAttempts = 0;
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _monkeyMuxPostRedrawDisplayRefreshTimer = null;
     _cancelMonkeyMuxSettledRedrawDisplayRefreshes();
