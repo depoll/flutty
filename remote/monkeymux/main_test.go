@@ -2046,14 +2046,14 @@ func TestClientFocusHandoffImmediatelyReplaysAndRedrawsWindow(t *testing.T) {
 	)
 
 	originalSignalForegroundResize := signalForegroundResize
-	originalSimulateForegroundResize := simulateForegroundResize
+	originalDeliverForegroundGeometry := deliverForegroundGeometry
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
-		simulateForegroundResize = originalSimulateForegroundResize
+		deliverForegroundGeometry = originalDeliverForegroundGeometry
 	}()
 	var simulated []string
 	signalForegroundResize = func(int) {}
-	simulateForegroundResize = func(
+	deliverForegroundGeometry = func(
 		window *muxWindow,
 		width int,
 		height int,
@@ -4561,11 +4561,11 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	inactiveWindow.history = []byte("background output")
 
 	originalSignalForegroundResize := signalForegroundResize
-	originalSimulateForegroundResize := simulateForegroundResize
+	originalDeliverForegroundGeometry := deliverForegroundGeometry
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
-		simulateForegroundResize = originalSimulateForegroundResize
+		deliverForegroundGeometry = originalDeliverForegroundGeometry
 		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
 	}()
 
@@ -4579,7 +4579,7 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 		}
 		return 0
 	}
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	deliverForegroundGeometry = func(window *muxWindow, width int, height int) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -4664,13 +4664,13 @@ func TestSelectWindowSimulatedResizeUsesLatestServerSize(t *testing.T) {
 	server.activeID = "@1"
 	server.attachConn = attach
 
-	originalSimulateForegroundResize := simulateForegroundResize
+	originalDeliverForegroundGeometry := deliverForegroundGeometry
 	defer func() {
-		simulateForegroundResize = originalSimulateForegroundResize
+		deliverForegroundGeometry = originalDeliverForegroundGeometry
 	}()
 
 	var simulated []string
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	deliverForegroundGeometry = func(window *muxWindow, width int, height int) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -5166,11 +5166,11 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	server.activeID = "@1"
 
 	originalSignalForegroundResize := signalForegroundResize
-	originalSimulateForegroundResize := simulateForegroundResize
+	originalDeliverForegroundGeometry := deliverForegroundGeometry
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
-		simulateForegroundResize = originalSimulateForegroundResize
+		deliverForegroundGeometry = originalDeliverForegroundGeometry
 		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
 	}()
 
@@ -5184,7 +5184,7 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 		}
 		return 0
 	}
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	deliverForegroundGeometry = func(window *muxWindow, width int, height int) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),

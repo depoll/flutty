@@ -572,6 +572,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     _resize(newWidth, newHeight, notify: false);
     _hostResizeGeneration++;
     onHostResize?.call(viewWidth, viewHeight);
+    // Applying the host grid re-lays-out both buffers. Without a repaint the
+    // reflowed content is never drawn, so a grid publish that arrives as the
+    // last bytes of a burst would leave the view showing the pre-resize frame.
+    notifyListeners();
   }
 
   void _resize(

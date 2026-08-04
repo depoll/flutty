@@ -251,3 +251,76 @@ func TestDeferredChangedSizeRedrawSkipsSyntheticWindowsFallback(
 		)
 	}
 }
+
+func TestSelectWindowDeliversTargetGeometryWithoutIntermediateSize(t *testing.T) {
+	// Manufacturing a temporary size on top of a real geometry change makes the
+	// foreground app lay out and emit an entire frame for a geometry that never
+	// existed. The client paints that frame before the real one replaces it,
+	// which is the "wrong size, then it resizes" flash, and on a long agent
+	// transcript it doubles the bytes crossing the wire.
+	server := newMuxServerWithSize("test", 80, 24)
+	pty := &resizeRecordingPty{}
+	target := &muxWindow{
+		id:                "@2",
+		index:             1,
+		foregroundCommand: "codex",
+		pty:               pty,
+		ptyWidth:          59,
+		ptyHeight:         47,
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		target,
+	}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	client := newAttachClient(conn, controlMessage{
+		ClientID:     "phone",
+		Width:        80,
+		Height:       24,
+		ClipViewport: true,
+	})
+	t.Cleanup(client.close)
+	server.mu.Lock()
+	server.attachClients[conn] = client
+	server.attachConn = conn
+	server.mu.Unlock()
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(4 * foregroundRedrawResizeDelay)
+	want := []recordedTerminalSize{{width: 80, height: 24}}
+	if got := pty.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("switch resizes = %#v, want %#v", got, want)
+	}
+}
+
+func TestForegroundRedrawKeepsSyntheticSizeWhenGeometryIsUnchanged(t *testing.T) {
+	// With no real size change to deliver there is nothing for the app to
+	// notice, so the temporary size is the only way to ask for a repaint.
+	pty := &resizeRecordingPty{}
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "codex",
+		pty:               pty,
+		ptyWidth:          80,
+		ptyHeight:         24,
+	}
+
+	deliverForegroundGeometry(window, 80, 24)
+
+	deadline := time.Now().Add(time.Second)
+	for len(pty.snapshot()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	want := []recordedTerminalSize{
+		{width: 80, height: 23},
+		{width: 80, height: 24},
+	}
+	if got := pty.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("same-size redraw sizes = %#v, want %#v", got, want)
+	}
+}

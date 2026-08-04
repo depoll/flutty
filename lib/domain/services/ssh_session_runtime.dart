@@ -38,6 +38,7 @@ class _SshSessionRuntime {
   int _pendingTerminalWriteChars = 0;
   int _shellStdoutChunkCount = 0;
   int _shellStdoutCharCount = 0;
+  int _shellOutputChunkSequence = 0;
   int _shellStderrChunkCount = 0;
   int _shellStderrCharCount = 0;
   int _shellStdinWriteCount = 0;
@@ -643,6 +644,7 @@ if(!$__flResolved){$__flResolved='cmd'}
         .listen(
           (data) {
             _recordShellIo(stdoutChars: data.length);
+            _shellOutputChunkSequence += 1;
             final terminalData = _unwrapTerminalTmuxPassthrough(data);
             if (identical(_shell, shell) &&
                 (terminalData.isNotEmpty || data.isNotEmpty)) {
@@ -904,6 +906,12 @@ if(!$__flResolved){$__flResolved='cmd'}
     }
     doneController.add(null);
   }
+
+  /// Monotonic count of shell output chunks received from the remote.
+  ///
+  /// Callers use it as evidence that the remote actually sent something, so a
+  /// repaint can be demanded only when one demonstrably never arrived.
+  int get shellOutputChunkSequence => _shellOutputChunkSequence;
 
   void _recordShellIo({
     int stdoutChars = 0,

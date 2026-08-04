@@ -349,3 +349,52 @@ func TestAttachTransitionLockReleasesWhileClientRemainsConnected(t *testing.T) {
 		t.Fatal("second attach blocked behind connected first client")
 	}
 }
+
+// TestRedrawFallbackRejectsFrameWithoutVisibleContent pins the fallback against
+// painting emptiness.
+//
+// A pane whose foreground app owns its own pixels is cleared before its new
+// content arrives, and the retained frame is what rescues the client when that
+// app never repaints. Substituting a frame that draws nothing hands the user
+// exactly the blank viewport the fallback exists to prevent, and because the
+// grid is already correct nothing else on either side has a reason to speak up.
+func TestRedrawFallbackRejectsFrameWithoutVisibleContent(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      []byte("\x1b[H\x1b[2J"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
+	conn := &recordingConn{}
+	client := newAttachClient(conn, controlMessage{
+		ClientID:     "phone",
+		Width:        120,
+		Height:       40,
+		ClipViewport: true,
+	})
+	t.Cleanup(client.close)
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	t.Cleanup(func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	})
+	simulateForegroundResize = func(*muxWindow, int, int) {}
+
+	server.mu.Lock()
+	server.attachClients[conn] = client
+	server.attachConn = conn
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	captured := append([]byte(nil), window.redrawForwardingFallbackHistory...)
+	server.mu.Unlock()
+
+	if len(captured) != 0 {
+		t.Fatalf(
+			"pause retained a frame with nothing to paint: %q",
+			string(captured),
+		)
+	}
+}
