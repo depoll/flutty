@@ -254,6 +254,13 @@ double resolveTmuxBarMaxContentHeight(
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
 const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
+// Bounds how often a mismatched shared grid is re-asserted, so a peer client
+// that legitimately owns a different grid cannot start a resize tug-of-war.
+const _monkeyMuxHostGridReconcileLimit = 3;
+// Bounds how often an empty pane is escalated to a forced redraw, so a pane the
+// user genuinely cleared cannot loop.
+const _monkeyMuxBlankPaneRecoveryLimit = 2;
+const _appResumeTerminalMetricsSettleDelay = Duration(milliseconds: 350);
 const _monkeyMuxSettledRedrawDisplayRefreshDelays = <Duration>[
   Duration(milliseconds: 450),
   Duration(milliseconds: 850),
@@ -3532,6 +3539,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
+  double _terminalViewportReservedWidth = 0;
+  double _terminalViewportReservedBottomPadding = 0;
+  bool _reserveMuxChromeBeforeActivation = false;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
@@ -3648,7 +3658,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalSizeRefreshSuppressesAutoScroll = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   Timer? _monkeyMuxResizeRedrawFollowUpTimer;
+  Timer? _appResumeTerminalMetricsSettleTimer;
+  bool _isSettlingTerminalMetricsAfterAppResume = false;
   Timer? _monkeyMuxResizeSyncCooldownTimer;
+  int _monkeyMuxHostGridReconcileAttempts = 0;
+  int _monkeyMuxBlankPaneRecoveryAttempts = 0;
   bool _monkeyMuxResizeSyncInFlight = false;
   bool _monkeyMuxResizeSyncThrottled = false;
   bool _monkeyMuxResizeSyncPending = false;
@@ -3747,6 +3761,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalThemeDependencyReload = false;
   bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
   String _pendingTerminalThemeDependencyReason = 'unknown';
+  bool _terminalThemeRefreshRequiredAfterResume = false;
   // Guards the build-path theme application so the same theme is not pushed
   // to the session on every rebuild.  Cleared at connect-time so the safety-
   // net call in build() still fires once for each new connection.
@@ -5765,9 +5780,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _monkeyMuxForcedThemeRedrawPending = false;
         }
         if (forceForegroundRedraw) {
-          // The server repaints the foreground TUI as part of this theme change,
-          // so drop any resize-redraw follow-up a very recent viewport change
-          // armed to avoid a second, redundant synthetic repaint.
+          // The helper already performs the platform-appropriate synthetic
+          // redraw atomically with the theme hint. A second resize-redraw can
+          // replay a large agent transcript twice and temporarily erase the
+          // composer, so discard any older viewport follow-up instead.
           _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
           _monkeyMuxResizeRedrawFollowUpTimer = null;
         }
@@ -5948,6 +5964,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String reason = 'unknown',
   }) {
     if (!mounted) {
+      return;
+    }
+    final session = _observedSession ?? _activeSession();
+    if (forceRemoteRefresh &&
+        _wasBackgrounded &&
+        _isWindowsMonkeyMuxSession(session)) {
+      _terminalThemeRefreshRequiredAfterResume = true;
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'dependency_deferred',
+        fields: {
+          'reason': reason,
+          'connectionId': session?.connectionId ?? _connectionId,
+          'until': 'app_resumed',
+        },
+      );
       return;
     }
     _pendingTerminalThemeDependencyReload = true;
@@ -7394,6 +7426,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         reason: 'open_new_terminal',
       );
+      final host = _host;
+      final reserveMuxChromeBeforeActivation =
+          host != null && _expectsPreparedMonkeyMuxOnInitialShell(host);
+      final sessionFontSizeOverride = session.terminalFontSize;
+      if (_reserveMuxChromeBeforeActivation !=
+              reserveMuxChromeBeforeActivation ||
+          _sessionFontSizeOverride != sessionFontSizeOverride) {
+        setState(() {
+          _reserveMuxChromeBeforeActivation = reserveMuxChromeBeforeActivation;
+          _sessionFontSizeOverride = sessionFontSizeOverride;
+        });
+      }
+      await _waitForInitialTerminalViewportLayout(
+        refreshLayout: _reserveMuxChromeBeforeActivation,
+      );
+      if (!mounted) {
+        return;
+      }
       final initialAutoConnect = await _prepareNewShellInitialAutoConnect(
         session,
       );
@@ -7401,6 +7451,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           initialAutoConnect.command?.backend == RemoteMuxBackend.monkeyMux
           ? initialAutoConnect.command
           : null;
+      if (startupCommand == null && _reserveMuxChromeBeforeActivation) {
+        setState(() => _reserveMuxChromeBeforeActivation = false);
+      }
       final handledInitialAutoConnect =
           initialAutoConnect.handled ||
           _suppressRemoteMuxDetectionConnectionId == session.connectionId;
@@ -7610,8 +7663,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
+        _monkeyMuxHostGridReconcileAttempts = 0;
+        _monkeyMuxBlankPaneRecoveryAttempts = 0;
+        if (session.monkeyMuxViewportClippingEnabled &&
+            (_terminal.viewWidth != width || _terminal.viewHeight != height)) {
+          // The shared grid disagrees with this viewport, so the duplicate-size
+          // cache must not silence the correction.
+          _lastMonkeyMuxResizeSync = null;
+        }
         _scheduleMonkeyMuxResizeSync(session, columns: width, rows: height);
-        _scheduleMonkeyMuxResizeRedrawFollowUp(session);
+        if (!_isSettlingTerminalMetricsAfterAppResume) {
+          _scheduleMonkeyMuxResizeRedrawFollowUp(session);
+        }
       }
     }
 
@@ -7619,23 +7682,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal.onResize = handleTerminalResize;
 
     void handleTerminalHostResize(int width, int height) {
-      if (session.remoteMuxBackend != RemoteMuxBackend.monkeyMux ||
-          session.monkeyMuxViewportClippingEnabled) {
+      if (session.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
         return;
       }
-      session.monkeyMuxViewportClippingEnabled = true;
-      DiagnosticsLogService.instance.debug(
-        'monkeymux.viewport',
-        'clipping_enabled',
-        fields: {
-          'connectionId': session.connectionId,
-          'columns': width,
-          'rows': height,
-        },
-      );
-      if (mounted) {
-        setState(() {});
+      if (!session.monkeyMuxViewportClippingEnabled) {
+        session.monkeyMuxViewportClippingEnabled = true;
+        DiagnosticsLogService.instance.debug(
+          'monkeymux.viewport',
+          'clipping_enabled',
+          fields: {
+            'connectionId': session.connectionId,
+            'columns': width,
+            'rows': height,
+          },
+        );
+        if (mounted) {
+          setState(() {});
+        }
       }
+      _reconcileMonkeyMuxHostGrid(session, columns: width, rows: height);
     }
 
     _terminalHostResizeHandler = handleTerminalHostResize;
@@ -7810,6 +7875,161 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
+  /// Re-asserts the local viewport when MonkeyMux publishes a smaller grid.
+  ///
+  /// Once viewport clipping is on, the terminal buffer is sized entirely by the
+  /// server's private host-resize sequence while Flutter keeps painting its own
+  /// viewport. If the published grid is smaller than the viewport, output is
+  /// laid out into too few cells and the remainder renders blank, and nothing
+  /// corrects it because the client never resizes its own buffer again. Rather
+  /// than depending on every publish being perfectly ordered, push the real
+  /// viewport back whenever the grid is short: the server answers with a
+  /// matching grid, so the exchange settles instead of staying corrupted until
+  /// the user happens to resize.
+  ///
+  /// A larger published grid is left alone; that is clipping doing its job for
+  /// a bigger peer client.
+  void _reconcileMonkeyMuxHostGrid(
+    SshSession session, {
+    required int columns,
+    required int rows,
+  }) {
+    if (!mounted || _connectionId != session.connectionId) {
+      return;
+    }
+    final viewport = _terminalViewKey.currentState?.viewportCellSize;
+    if (viewport == null || viewport.columns <= 0 || viewport.rows <= 0) {
+      return;
+    }
+    if (viewport.columns <= columns && viewport.rows <= rows) {
+      _monkeyMuxHostGridReconcileAttempts = 0;
+      return;
+    }
+    if (_monkeyMuxHostGridReconcileAttempts >=
+        _monkeyMuxHostGridReconcileLimit) {
+      return;
+    }
+    _monkeyMuxHostGridReconcileAttempts += 1;
+    // The duplicate-size cache exists to suppress viewport spam, but here the
+    // server has demonstrably diverged from this client, so the very same
+    // dimensions must be allowed onto the wire again.
+    _lastMonkeyMuxResizeSync = null;
+    DiagnosticsLogService.instance.info(
+      'monkeymux.viewport',
+      'grid_reconcile',
+      fields: {
+        'connectionId': session.connectionId,
+        'publishedColumns': columns,
+        'publishedRows': rows,
+        'viewportColumns': viewport.columns,
+        'viewportRows': viewport.rows,
+        'attempt': _monkeyMuxHostGridReconcileAttempts,
+      },
+    );
+    _scheduleMonkeyMuxResizeSync(
+      session,
+      columns: viewport.columns,
+      rows: viewport.rows,
+    );
+  }
+
+  /// Whether the terminal is showing nothing at all.
+  ///
+  /// A MonkeyMux replay clears the screen and its scrollback before the pane's
+  /// new content arrives, so an entirely empty buffer means that content never
+  /// came.
+  bool _monkeyMuxTerminalRendersNothing() {
+    final lines = _terminal.buffer.lines;
+    for (var row = 0; row < lines.length; row++) {
+      if (lines[row].getTrimmedLength() != 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Asks the server to repaint a pane that came up blank.
+  ///
+  /// For panes whose foreground app owns its own pixels, MonkeyMux clears the
+  /// client and relies on that app repainting in response to a resize. When the
+  /// app coalesces or ignores that resize the pane stays empty, and because the
+  /// grid is already correct nothing else on either side has a reason to speak
+  /// up: the blank screen is a stable state that only an unrelated real resize
+  /// (opening the keyboard) escapes. Detecting emptiness gives the client the
+  /// evidence it needs to ask for the frame it never received.
+  void _recoverBlankMonkeyMuxPane(
+    SshSession session, {
+    required String reason,
+  }) {
+    if (!mounted || _connectionId != session.connectionId) {
+      return;
+    }
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux &&
+        session.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    if (!_monkeyMuxTerminalRendersNothing()) {
+      _monkeyMuxBlankPaneRecoveryAttempts = 0;
+      return;
+    }
+    if (_monkeyMuxBlankPaneRecoveryAttempts >=
+        _monkeyMuxBlankPaneRecoveryLimit) {
+      return;
+    }
+    _monkeyMuxBlankPaneRecoveryAttempts += 1;
+    DiagnosticsLogService.instance.info(
+      'monkeymux.redraw',
+      'blank_pane_recovery',
+      fields: {
+        'connectionId': session.connectionId,
+        'reason': reason,
+        'attempt': _monkeyMuxBlankPaneRecoveryAttempts,
+      },
+    );
+    unawaited(
+      _syncActiveMonkeyMuxTerminalSize(session, refreshVisibleTerminal: true),
+    );
+  }
+
+  bool _isWindowsMonkeyMuxSession(SshSession? session) =>
+      session != null &&
+      session.remoteIsWindows &&
+      (_activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+          session.remoteMuxBackend == RemoteMuxBackend.monkeyMux);
+
+  void _refreshTerminalAfterWindowsMonkeyMuxResume() {
+    _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxResizeRedrawFollowUpTimer = null;
+    _followNextLiveOutputWithoutScrolling();
+    _scheduleTerminalSizeRefresh(
+      forceDisplayRefresh: true,
+      suppressMonkeyMuxResizeSync: true,
+      suppressAutoScroll: true,
+    );
+  }
+
+  void _beginAppResumeTerminalMetricsSettle() {
+    _isSettlingTerminalMetricsAfterAppResume = true;
+    _scheduleAppResumeTerminalMetricsSettleEnd();
+  }
+
+  void _scheduleAppResumeTerminalMetricsSettleEnd() {
+    _appResumeTerminalMetricsSettleTimer?.cancel();
+    _appResumeTerminalMetricsSettleTimer = Timer(
+      _appResumeTerminalMetricsSettleDelay,
+      () {
+        _appResumeTerminalMetricsSettleTimer = null;
+        _isSettlingTerminalMetricsAfterAppResume = false;
+      },
+    );
+  }
+
+  void _endAppResumeTerminalMetricsSettle() {
+    _appResumeTerminalMetricsSettleTimer?.cancel();
+    _appResumeTerminalMetricsSettleTimer = null;
+    _isSettlingTerminalMetricsAfterAppResume = false;
+  }
+
   void _refreshTerminalAfterMonkeyMuxWindowChange(
     SshSession session, {
     bool revealLatestOutput = false,
@@ -7834,14 +8054,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       suppressMonkeyMuxResizeSync: true,
       suppressAutoScroll: !revealLatestOutput,
     );
-    // A MonkeyMux window selection can replay a retained frame before the
-    // foreground TUI has fully repainted at the shared PTY size. A real later
-    // resize (for example opening/closing the software keyboard) reliably heals
-    // the corruption, while switches that happen not to trigger an onResize
-    // callback can remain stale indefinitely. Always schedule the same settled
-    // force-redraw after a window replay; the scheduler coalesces with any real
-    // resize already in flight.
-    _scheduleMonkeyMuxResizeRedrawFollowUp(session);
+    // The helper owns the synthetic redraw for a window switch. Do not request
+    // another remote redraw here: long agent transcripts can produce hundreds
+    // of kilobytes per repaint. The settled callbacks below only relayout and
+    // repaint the already-received local buffer.
     _scheduleMonkeyMuxSettledRedrawDisplayRefreshes(
       session,
       reason: 'window_change_replay',
@@ -8164,8 +8380,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!isMonkeyMuxSession) {
       return;
     }
+    if (_wasBackgrounded || _isSettlingTerminalMetricsAfterAppResume) {
+      _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+      _monkeyMuxResizeRedrawFollowUpTimer = null;
+      return;
+    }
     final connectionId = session.connectionId;
     final generation = _monkeyMuxRefreshAndResizeGeneration;
+    final outputSequence = session.shellOutputChunkSequence;
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
     _monkeyMuxResizeRedrawFollowUpTimer = Timer(
       _monkeyMuxResizeRedrawFollowUpDelay,
@@ -8174,6 +8396,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted ||
             generation != _monkeyMuxRefreshAndResizeGeneration ||
             _connectionId != connectionId) {
+          return;
+        }
+        if (session.shellOutputChunkSequence != outputSequence) {
+          // The resize reached the foreground app and it repainted. Forcing
+          // another redraw would make it lay out and re-emit its whole frame a
+          // second time for nothing, which on a long agent transcript is
+          // hundreds of kilobytes over the wire.
           return;
         }
         unawaited(
@@ -8233,6 +8462,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           reason: reason,
           delay: delay,
         );
+        _recoverBlankMonkeyMuxPane(session, reason: reason);
       });
       _monkeyMuxSettledRedrawDisplayRefreshTimers.add(timer);
     }
@@ -8252,6 +8482,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxWindowRefreshFollowUpTimer = null;
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
     _monkeyMuxResizeRedrawFollowUpTimer = null;
+    _endAppResumeTerminalMetricsSettle();
     _monkeyMuxResizeSyncCooldownTimer?.cancel();
     _monkeyMuxResizeSyncCooldownTimer = null;
     _monkeyMuxResizeSyncInFlight = false;
@@ -8259,6 +8490,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxResizeSyncPending = false;
     _monkeyMuxResizeSyncColumns = null;
     _monkeyMuxResizeSyncRows = null;
+    _monkeyMuxHostGridReconcileAttempts = 0;
+    _monkeyMuxBlankPaneRecoveryAttempts = 0;
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _monkeyMuxPostRedrawDisplayRefreshTimer = null;
     _cancelMonkeyMuxSettledRedrawDisplayRefreshes();
@@ -8357,8 +8590,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ),
         textScaler: mediaQuery.textScaler,
       );
-      final availableWidth = layoutSize.width - viewportPadding.horizontal;
-      final availableHeight = layoutSize.height - viewportPadding.vertical;
+      final availableWidth =
+          layoutSize.width -
+          viewportPadding.horizontal -
+          _terminalViewportReservedWidth;
+      final availableHeight =
+          layoutSize.height -
+          viewportPadding.vertical -
+          _terminalViewportReservedBottomPadding;
       final columns = availableWidth ~/ painter.cellSize.width;
       final rows = availableHeight ~/ painter.cellSize.height;
       if (columns > 0 && rows > 0) {
@@ -8366,6 +8605,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
     return (columns: _terminal.viewWidth, rows: _terminal.viewHeight);
+  }
+
+  Future<void> _waitForInitialTerminalViewportLayout({
+    bool refreshLayout = false,
+  }) async {
+    if (!refreshLayout &&
+        (_terminalViewKey.currentState?.viewportCellSize != null ||
+            _terminalViewportLayoutSize != null)) {
+      return;
+    }
+    for (var attempt = 0; attempt < 3 && mounted; attempt += 1) {
+      WidgetsBinding.instance.ensureVisualUpdate();
+      await WidgetsBinding.instance.endOfFrame;
+      if (_terminalViewKey.currentState?.viewportCellSize != null ||
+          _terminalViewportLayoutSize != null) {
+        return;
+      }
+    }
+  }
+
+  bool _expectsPreparedMonkeyMuxOnInitialShell(Host host) {
+    if (_monkeyMuxReconnectSessionName != null) {
+      return true;
+    }
+    final sessionName = _initialTmuxSessionName ?? host.tmuxSessionName;
+    if (sessionName != null && sessionName.trim().isNotEmpty) {
+      return _configuredRemoteMuxBackend(host) != RemoteMuxBackend.tmux;
+    }
+    return _autoConnectAgentPreset?.usesMonkeyMuxSession ?? false;
   }
 
   Future<void> _syncActiveMonkeyMuxTerminalSize(
@@ -10266,6 +10534,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isTmuxActive &&
         _showTmuxBar &&
         connectionState == SshConnectionState.connected;
+    final configuredMuxExpected = _reserveMuxChromeBeforeActivation;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -10280,13 +10549,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           0,
           constraints.maxWidth - tmuxBarSafeInsets.horizontal,
         ).toDouble();
-        final tmuxBarPlacement = showTmux
+        final expectedTmuxBarPlacement = showTmux || configuredMuxExpected
             ? resolveTmuxBarPlacement(tmuxBarAvailableWidth)
+            : TmuxBarPlacement.bottomOverlay;
+        final tmuxBarPlacement = showTmux
+            ? expectedTmuxBarPlacement
             : TmuxBarPlacement.bottomOverlay;
         final availableHeight = max(
           0,
           constraints.maxHeight - tmuxBarSafeInsets.bottom,
         ).toDouble();
+        _terminalViewportReservedWidth =
+            expectedTmuxBarPlacement == TmuxBarPlacement.sidebar
+            ? resolveTmuxSidebarWidth(
+                isExpanded: _isTmuxBarExpanded,
+                dragOffset: _tmuxSidebarDragOffset,
+              )
+            : 0.0;
+        _terminalViewportReservedBottomPadding =
+            expectedTmuxBarPlacement == TmuxBarPlacement.bottomOverlay &&
+                (showTmux || configuredMuxExpected)
+            ? _TmuxExpandableBar.handleHeight + tmuxBarSafeInsets.bottom
+            : 0.0;
 
         if (tmuxBarPlacement == TmuxBarPlacement.sidebar) {
           return _buildTerminalWithTmuxSidebar(
@@ -11759,6 +12043,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _restoreKeyboardAfterAppResume =
           _restoreKeyboardAfterAppResume || shouldRestoreKeyboard;
       _wasBackgrounded = true;
+      _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+      _monkeyMuxResizeRedrawFollowUpTimer = null;
       _stopSharedClipboardSync();
       _syncTerminalWakeLock();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
@@ -11767,10 +12053,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _wasBackgrounded = false;
       _syncTerminalWakeLock();
       final session = _observedSession;
+      final isWindowsMonkeyMux = _isWindowsMonkeyMuxSession(session);
+      final forceThemeRefresh =
+          !isWindowsMonkeyMux || _terminalThemeRefreshRequiredAfterResume;
+      _terminalThemeRefreshRequiredAfterResume = false;
       if (_isTmuxActive &&
           _activeMuxBackend == RemoteMuxBackend.monkeyMux &&
           session != null) {
-        _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        if (isWindowsMonkeyMux) {
+          _beginAppResumeTerminalMetricsSettle();
+          _refreshTerminalAfterWindowsMonkeyMuxResume();
+        } else {
+          _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        }
       } else {
         _scheduleTerminalSizeRefresh();
       }
@@ -11782,11 +12077,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.write('\r\n[reconnecting...]\r\n');
         unawaited(_reconnect(showProgressDialog: false));
       } else if (session != null) {
-        unawaited(
-          _reloadTerminalThemeForDependencies(
-            forceRemoteRefresh: true,
-            reason: 'app_resumed',
-          ),
+        _handleTerminalThemeDependenciesChanged(
+          forceRemoteRefresh: forceThemeRefresh,
+          reason: 'app_resumed',
         );
       }
       _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
@@ -11805,6 +12098,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void didChangeMetrics() {
     super.didChangeMetrics();
+    if (_isSettlingTerminalMetricsAfterAppResume) {
+      _scheduleAppResumeTerminalMetricsSettleEnd();
+    }
     _scheduleTerminalSizeRefresh();
   }
 
