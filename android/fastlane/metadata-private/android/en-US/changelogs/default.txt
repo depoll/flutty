@@ -1,8 +1,8 @@
-What's new in this 0.3.1 beta
+What's new in this 0.3.2 beta
 
-- Terminal Enter matches physical keyboard and toolbar modifiers.
-- TUI box borders stay on the monospace grid.
-- Simpler MonkeyMux theme focus defaults.
-- Cursor Agent and Copilot CLI theme refresh fixes.
-- Terminal shrink keeps rows and images intact.
-- Keyboard, MonkeyMux, and window-switching stability fixes.
+- Launch presets for Pi, Hermes, and OpenClaw.
+- Mux version shown in terminal info.
+- MonkeyMux reconnect preserves your session.
+- Windows remotes: titles, Escape, Kitty graphics, steadier redraws.
+- More reliable paste and capability handling.
+- Window switching and control-channel stability fixes.
