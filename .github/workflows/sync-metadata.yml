@@ -7,8 +7,13 @@ on:
       - 'assets/icons/**'
       - 'android/fastlane/metadata-*/**'
       - 'ios/fastlane/metadata-*/**'
-      - 'ios/fastlane/app-previews/**'
-      - 'ios/fastlane/screenshots/**'
+      - '.github/workflows/sync-metadata.yml'
+      - 'scripts/store_assets.sh'
+      - 'scripts/validate_store_screenshots.py'
+      - 'scripts/validate_store_demo_videos.py'
+      - 'scripts/validate_app_store_metadata.py'
+      - 'scripts/validate_play_store_metadata.py'
+      - 'scripts/sync_play_store_icons.py'
   workflow_dispatch:
     inputs:
       platform:
@@ -27,6 +32,16 @@ on:
           - both
           - private
           - production
+  workflow_call:
+    inputs:
+      platform:
+        description: 'Platform to sync'
+        required: true
+        type: string
+      app:
+        description: 'Which app listing to sync'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -41,6 +56,7 @@ jobs:
       ios_screenshots: ${{ steps.filter.outputs.ios_screenshots }}
       android: ${{ steps.filter.outputs.android }}
       android_screenshots: ${{ steps.filter.outputs.android_screenshots }}
+      app: ${{ steps.filter.outputs.app }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,65 +66,75 @@ jobs:
       - id: filter
         name: Detect platform metadata changes
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PLATFORM: ${{ inputs.platform || '' }}
+          INPUT_APP: ${{ inputs.app || '' }}
+          BEFORE_SHA: ${{ github.event.before || '' }}
+          AFTER_SHA: ${{ github.sha }}
         run: |
           ios=false
           ios_app_previews=false
           ios_screenshots=false
           android=false
           android_screenshots=false
+          app='both'
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            case "${{ inputs.platform }}" in
+          # workflow_dispatch and reusable workflow_call both provide inputs.*.
+          # github.event_name stays the caller's event for workflow_call, so key off
+          # the platform input instead of event_name.
+          if [[ -n "$INPUT_PLATFORM" ]]; then
+            app="${INPUT_APP:-both}"
+            case "${INPUT_PLATFORM}" in
               both)
                 ios=true
                 ios_screenshots=true
+                ios_app_previews=true
                 android=true
                 android_screenshots=true
                 ;;
               ios)
                 ios=true
                 ios_screenshots=true
+                ios_app_previews=true
                 ;;
               android)
                 android=true
                 android_screenshots=true
                 ;;
+              *)
+                echo "::error title=Invalid platform::Unsupported platform '${INPUT_PLATFORM}'"
+                exit 1
+                ;;
             esac
           else
-            changed_files="$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")"
+            # Push to main: text metadata / icons changed. Always refresh media from
+            # the published store-assets release so screenshots stay in sync.
+            changed_files="$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")"
             while IFS= read -r changed_path; do
               case "$changed_path" in
-                ios/fastlane/metadata-*|ios/fastlane/metadata-*/*|ios/fastlane/screenshots/*)
+                ios/fastlane/metadata-*|ios/fastlane/metadata-*/*)
                   ios=true
-                  ;;
-              esac
-              case "$changed_path" in
-                ios/fastlane/app-previews/*)
-                  ios=true
-                  ;;
-              esac
-              case "$changed_path" in
-                ios/fastlane/screenshots/*)
                   ios_screenshots=true
+                  ios_app_previews=true
                   ;;
               esac
               case "$changed_path" in
                 assets/icons/*|android/fastlane/metadata-*|android/fastlane/metadata-*/*)
                   android=true
+                  android_screenshots=true
                   ;;
               esac
               case "$changed_path" in
-                android/fastlane/metadata-*/android/*/images/*Screenshots/*)
+                scripts/store_assets.sh|scripts/validate_store_screenshots.py|scripts/validate_store_demo_videos.py|.github/workflows/sync-metadata.yml)
+                  ios=true
+                  ios_screenshots=true
+                  ios_app_previews=true
+                  android=true
                   android_screenshots=true
                   ;;
               esac
             done <<< "$changed_files"
-          fi
-          if [ "$ios" = true ] && [ -d ios/fastlane/app-previews ] && \
-            find ios/fastlane/app-previews \
-            -type f \( -name '*.mov' -o -name '*.mp4' -o -name '*.m4v' \) \
-            | grep -q .; then
-            ios_app_previews=true
           fi
 
           echo "ios=$ios" >> "$GITHUB_OUTPUT"
@@ -116,16 +142,60 @@ jobs:
           echo "ios_screenshots=$ios_screenshots" >> "$GITHUB_OUTPUT"
           echo "android=$android" >> "$GITHUB_OUTPUT"
           echo "android_screenshots=$android_screenshots" >> "$GITHUB_OUTPUT"
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+
+  restore-store-assets:
+    name: Restore Store Assets
+    needs: changes
+    if: >-
+      needs.changes.outputs.ios == 'true' ||
+      needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download published store assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x scripts/store_assets.sh
+          scripts/store_assets.sh download
+
+      - name: Upload restored store-assets workspace
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: restored-store-assets
+          path: |
+            ios/fastlane/screenshots/
+            ios/fastlane/app-previews/
+            android/fastlane/metadata-private/android/en-US/images/phoneScreenshots/
+            android/fastlane/metadata-private/android/en-US/images/sevenInchScreenshots/
+            android/fastlane/metadata-private/android/en-US/images/tenInchScreenshots/
+            android/fastlane/metadata-production/android/en-US/images/phoneScreenshots/
+            android/fastlane/metadata-production/android/en-US/images/sevenInchScreenshots/
+            android/fastlane/metadata-production/android/en-US/images/tenInchScreenshots/
+            store/demo-videos/
+            store-assets-manifest.json
+          if-no-files-found: error
+          retention-days: 14
 
   validate_ios_screenshots:
     name: Validate iOS Store Screenshots
-    needs: changes
+    needs: [changes, restore-store-assets]
     if: needs.changes.outputs.ios_screenshots == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Download restored store assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: restored-store-assets
+          path: .
 
       - name: Install screenshot validation dependencies
         run: |
@@ -138,13 +208,19 @@ jobs:
 
   validate_android_screenshots:
     name: Validate Android Store Screenshots
-    needs: changes
+    needs: [changes, restore-store-assets]
     if: needs.changes.outputs.android_screenshots == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Download restored store assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: restored-store-assets
+          path: .
 
       - name: Install screenshot validation dependencies
         run: |
@@ -157,7 +233,7 @@ jobs:
 
   validate_ios_app_previews:
     name: Validate iOS App Previews
-    needs: changes
+    needs: [changes, restore-store-assets]
     if: needs.changes.outputs.ios_app_previews == 'true'
     runs-on: macos-latest
     steps:
@@ -165,12 +241,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Download restored store assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: restored-store-assets
+          path: .
+
       - name: Validate App Preview videos
-        run: python3 scripts/validate_store_demo_videos.py ios
+        run: |
+          if [ -d ios/fastlane/app-previews ] && \
+            find ios/fastlane/app-previews -type f \( -name '*.mov' -o -name '*.mp4' -o -name '*.m4v' \) | grep -q .; then
+            python3 scripts/validate_store_demo_videos.py ios
+          else
+            echo "No iOS App Preview videos present in published store assets; skipping."
+          fi
 
   sync-ios:
     name: Sync iOS Metadata
-    needs: [changes, validate_ios_screenshots, validate_ios_app_previews]
+    needs: [changes, restore-store-assets, validate_ios_screenshots, validate_ios_app_previews]
     if: >-
       !cancelled() &&
       needs.changes.outputs.ios == 'true' &&
@@ -187,17 +275,23 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Download restored store assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: restored-store-assets
+          path: .
+
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
 
       - name: Validate App Store metadata
-        run: python3 scripts/validate_app_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
+        run: python3 scripts/validate_app_store_metadata.py ${{ needs.changes.outputs.app }}
 
       - name: Start private App Store metadata GitHub deployment
         id: start-private-ios-metadata-deployment
-        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
+        if: needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'private'
         continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
@@ -209,7 +303,7 @@ jobs:
 
       - name: Sync private app metadata
         id: sync-private-ios-metadata
-        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
+        if: needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'private'
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
@@ -224,7 +318,7 @@ jobs:
           bundle exec fastlane sync_metadata app_identifier:xyz.depollsoft.monkeyssh.private
 
       - name: Finish private App Store metadata GitHub deployment
-        if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private') && steps.start-private-ios-metadata-deployment.outputs['deployment-id'] != ''
+        if: always() && (needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'private') && steps.start-private-ios-metadata-deployment.outputs['deployment-id'] != ''
         continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
@@ -236,7 +330,7 @@ jobs:
 
       - name: Start production App Store metadata GitHub deployment
         id: start-production-ios-metadata-deployment
-        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
+        if: needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'production'
         continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
@@ -248,7 +342,7 @@ jobs:
 
       - name: Sync production app metadata
         id: sync-production-ios-metadata
-        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
+        if: needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'production'
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
@@ -263,7 +357,7 @@ jobs:
           bundle exec fastlane sync_metadata app_identifier:xyz.depollsoft.monkeyssh
 
       - name: Finish production App Store metadata GitHub deployment
-        if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production') && steps.start-production-ios-metadata-deployment.outputs['deployment-id'] != ''
+        if: always() && (needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'production') && steps.start-production-ios-metadata-deployment.outputs['deployment-id'] != ''
         continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
@@ -275,7 +369,7 @@ jobs:
 
   sync-android:
     name: Sync Android Metadata
-    needs: [changes, validate_android_screenshots]
+    needs: [changes, restore-store-assets, validate_android_screenshots]
     if: >-
       !cancelled() &&
       needs.changes.outputs.android == 'true' &&
@@ -290,6 +384,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Download restored store assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: restored-store-assets
+          path: .
+
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: '3.3'
@@ -303,11 +403,11 @@ jobs:
           .venv/bin/python scripts/sync_play_store_icons.py
 
       - name: Validate Play Store metadata
-        run: python3 scripts/validate_play_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
+        run: python3 scripts/validate_play_store_metadata.py ${{ needs.changes.outputs.app }}
 
       - name: Start private Play Store metadata GitHub deployment
         id: start-private-android-metadata-deployment
-        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
+        if: needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'private'
         continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
@@ -319,7 +419,7 @@ jobs:
 
       - name: Sync private app metadata
         id: sync-private-android-metadata
-        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
+        if: needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'private'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
@@ -328,7 +428,7 @@ jobs:
           bundle exec fastlane sync_metadata package_name:xyz.depollsoft.monkeyssh.private
 
       - name: Finish private Play Store metadata GitHub deployment
-        if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private') && steps.start-private-android-metadata-deployment.outputs['deployment-id'] != ''
+        if: always() && (needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'private') && steps.start-private-android-metadata-deployment.outputs['deployment-id'] != ''
         continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
@@ -340,7 +440,7 @@ jobs:
 
       - name: Start production Play Store metadata GitHub deployment
         id: start-production-android-metadata-deployment
-        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
+        if: needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'production'
         continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
@@ -354,7 +454,7 @@ jobs:
 
       - name: Sync production app metadata
         id: sync-production-android-metadata
-        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
+        if: needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'production'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
@@ -363,7 +463,7 @@ jobs:
           bundle exec fastlane sync_metadata package_name:xyz.depollsoft.monkeyssh
 
       - name: Finish production Play Store metadata GitHub deployment
-        if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production') && steps.start-production-android-metadata-deployment.outputs['deployment-id'] != ''
+        if: always() && (needs.changes.outputs.app == 'both' || needs.changes.outputs.app == 'production') && steps.start-production-android-metadata-deployment.outputs['deployment-id'] != ''
         continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
