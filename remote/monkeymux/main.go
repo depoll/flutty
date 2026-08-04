@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.141"
+	monkeyMuxVersion                  = "0.1.142"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -810,13 +810,19 @@ func (r *attachInputRouting) addUserInput(data []byte) {
 }
 
 type attachClient struct {
-	conn                               net.Conn
-	id                                 string
-	width                              int
-	height                             int
-	terminalWidth                      int
-	terminalHeight                     int
-	clipViewport                       bool
+	conn           net.Conn
+	id             string
+	width          int
+	height         int
+	terminalWidth  int
+	terminalHeight int
+	clipViewport   bool
+	// capabilityHint holds this client's replies to static terminal capability
+	// queries. It is per client because the answer describes *this* terminal:
+	// a client that sends no hint (an older helper, or a plain terminal running
+	// `monkeymux attach`) must not have a previous client's identity advertised
+	// on its behalf.
+	capabilityHint                     []byte
 	sequence                           uint64
 	focusSequence                      atomic.Uint64
 	prefixEnabled                      bool
@@ -4346,7 +4352,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		}
 		capabilityHintData = window.appendPendingTerminalQueriesLocked(
 			forwarded,
-			s.capabilityHint,
+			s.capabilityHintLocked(),
 		)
 	} else {
 		// A terminal is showing this window again, so it answers the child's
@@ -4668,6 +4674,7 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 		terminalHeight: terminalHeight,
 		clipViewport:   hello.ClipViewport,
 		prefixEnabled:  !hello.NoPrefix,
+		capabilityHint: capabilityHintDataFromString(hello.CapabilityHint),
 		queueReady:     make(chan struct{}, 1),
 		done:           make(chan struct{}),
 	}
@@ -5766,6 +5773,20 @@ func (s *muxServer) isAttachConnectionLocked(conn net.Conn) bool {
 	}
 	_, ok := s.attachClients[conn]
 	return ok
+}
+
+// capabilityHintLocked returns the static terminal replies to answer a window's
+// capability probes with. The primary attached client's hint wins, including
+// when it has none: a client that did not declare its capabilities (an older
+// helper, or a plain terminal running `monkeymux attach`) must not have another
+// client's terminal identity advertised on its behalf. The session-level hint
+// is only used while no attach client is registered — the upgrade-restore
+// window this whole mechanism exists for.
+func (s *muxServer) capabilityHintLocked() []byte {
+	if client, ok := s.attachClients[s.attachConn]; ok && client != nil {
+		return client.capabilityHint
+	}
+	return s.capabilityHint
 }
 
 func (s *muxServer) attachCountLocked() int {
@@ -8571,6 +8592,15 @@ func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID st
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	var pending []byte
+	if window != nil && !window.closed &&
+		s.activeID == windowID && s.attachConn == conn {
+		// This terminal is now showing the window, so it answers the child's
+		// queries itself from here on. Clear the synthetic-answer budget so a
+		// window that spent it while unwatched can be answered again the next
+		// time it goes back to running in the background — even if it produced
+		// no output while it was visible.
+		window.capabilityAnswerBytes = 0
+	}
 	if window != nil && !window.closed &&
 		s.activeID == windowID && s.attachConn == conn &&
 		len(window.pendingTerminalQueriesInFlight) == 0 &&
