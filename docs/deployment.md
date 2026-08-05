@@ -281,6 +281,20 @@ After generation, **do not commit the binaries**. Publish them instead:
 
 That uploads a rolling `store-assets` GitHub Release archive. CI downloads it during Sync Metadata / production releases and also exposes the media as Actions artifacts. Restore into a checkout with `./scripts/store_assets.sh download`.
 
+### Agent slash command
+
+For an end-to-end guided release (copy review, media publish, optional ship),
+invoke the repo skill:
+
+```text
+/prepare-release
+/prepare-release --ship
+/prepare-release --media-only --sync
+/prepare-release v1.2.3 --skip-media --skip-copy --ship
+```
+
+Skill source: `.github/skills/prepare-release/SKILL.md`.
+
 The future refresh prompt lives in `docs/store-assets-prompt.md`.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.

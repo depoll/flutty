@@ -141,6 +141,18 @@ on the Apple previews, and that the live app region actually advances through
 scenes. Sync Store Metadata and production releases download the published
 archive automatically before uploading to the stores.
 
+### One-shot release prep
+
+Agents can run the full prepare/ship flow via:
+
+```text
+/prepare-release
+/prepare-release --ship
+/prepare-release --media-only --sync
+```
+
+See `.github/skills/prepare-release/SKILL.md`.
+
 ### Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
