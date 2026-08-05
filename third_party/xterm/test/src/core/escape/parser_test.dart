@@ -311,6 +311,27 @@ void main() {
         verifyNever(handler.sendTermcapReport(any));
       });
 
+      test('ESC is not taken as a charset designation name', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b(\x1b]2;title\x07');
+        verify(handler.setTitle('title')).called(1);
+        verifyNever(handler.designateCharset(any, any));
+      });
+
+      test('an aborted APC cancels an open m=1 graphics transmission', () {
+        // Without the cancel, `_graphicsActive` stays set and Terminal swallows
+        // the next image's args as a continuation of the broken transmission.
+        final handler = MockEscapeHandler();
+        final parser = EscapeParser(handler)
+          ..write('\x1b_Ga=T,f=100,m=1;AAAA\x1b\\')
+          ..write('\x1b_Gm=0;BBBB\x1b[0m');
+        verify(handler.graphicsCommandAbort()).called(1);
+        verifyNever(handler.graphicsCommandEnd());
+
+        parser.write('\x1b_Ga=T,f=100;CCCC\x1b\\');
+        verify(handler.graphicsCommandEnd()).called(1);
+      });
+
       test('a trailing lone ESC is still buffered across writes', () {
         final handler = MockEscapeHandler();
         EscapeParser(handler)

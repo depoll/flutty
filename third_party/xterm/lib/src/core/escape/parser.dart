@@ -190,35 +190,31 @@ class EscapeParser {
     return true;
   }
 
-  bool _escHandleDesignateCharset0() {
+  /// `ESC ( / ) / * / +  <name>` Designate character set (SCS).
+  ///
+  /// An ESC in the name slot re-enters the escape state instead of being taken
+  /// as the charset name, so a stray or duplicated ESC cannot swallow the
+  /// introducer of the sequence that follows.
+  bool _escHandleDesignateCharset(int g) {
     if (_queue.isEmpty) return false;
-    int name = _queue.consume();
-    handler.designateCharset(0, name);
+    final name = _queue.consume();
+    if (name == Ascii.ESC) {
+      _queue.rollback();
+      return true;
+    }
+    handler.designateCharset(g, name);
     return true;
   }
 
-  bool _escHandleDesignateCharset1() {
-    if (_queue.isEmpty) return false;
-    int name = _queue.consume();
-    handler.designateCharset(1, name);
-    return true;
-  }
+  bool _escHandleDesignateCharset0() => _escHandleDesignateCharset(0);
+
+  bool _escHandleDesignateCharset1() => _escHandleDesignateCharset(1);
 
   /// `ESC * <name>` Designate G2 Character Set (SCS)
-  bool _escHandleDesignateCharset2() {
-    if (_queue.isEmpty) return false;
-    int name = _queue.consume();
-    handler.designateCharset(2, name);
-    return true;
-  }
+  bool _escHandleDesignateCharset2() => _escHandleDesignateCharset(2);
 
   /// `ESC + <name>` Designate G3 Character Set (SCS)
-  bool _escHandleDesignateCharset3() {
-    if (_queue.isEmpty) return false;
-    int name = _queue.consume();
-    handler.designateCharset(3, name);
-    return true;
-  }
+  bool _escHandleDesignateCharset3() => _escHandleDesignateCharset(3);
 
   /// `ESC =` Set Application Keypad Mode (DECKPAM)
   ///
@@ -1436,13 +1432,19 @@ class EscapeParser {
     final args = <String, String>{};
     final argsResult = _parseGraphicsArgs(args);
     if (argsResult == _ApcParse.incomplete) return false;
-    if (argsResult == _ApcParse.aborted) return true;
+    if (argsResult == _ApcParse.aborted) {
+      handler.graphicsCommandAbort();
+      return true;
+    }
 
     final payload = <int>[];
     if (argsResult == _ApcParse.payloadFollows) {
       final payloadResult = _parseGraphicsPayload(payload);
       if (payloadResult == _SeqParse.incomplete) return false;
-      if (payloadResult == _SeqParse.aborted) return true;
+      if (payloadResult == _SeqParse.aborted) {
+        handler.graphicsCommandAbort();
+        return true;
+      }
     }
 
     // The full command is buffered before dispatching so an incomplete payload

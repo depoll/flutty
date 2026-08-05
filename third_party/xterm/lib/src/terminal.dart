@@ -1430,6 +1430,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   @override
+  void graphicsCommandAbort() {
+    // An ESC ended the command before its terminator, so whatever an earlier
+    // `m=1` chunk opened can never be completed. Dropping it keeps the next
+    // real image from being swallowed as a continuation of this one.
+    if (!_graphicsActive) return;
+    _graphicsActive = false;
+    _graphicsData.clear();
+  }
+
+  @override
   void graphicsCommandEnd() {
     if (!_graphicsActive) return;
     _graphicsActive = false;
