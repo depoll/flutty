@@ -134,6 +134,19 @@ jobs:
                   android_screenshots=true
                   ;;
               esac
+              case "$changed_path" in
+                scripts/validate_app_store_metadata.py)
+                  ios=true
+                  ios_screenshots=true
+                  ios_app_previews=true
+                  ;;
+              esac
+              case "$changed_path" in
+                scripts/validate_play_store_metadata.py|scripts/sync_play_store_icons.py)
+                  android=true
+                  android_screenshots=true
+                  ;;
+              esac
             done <<< "$changed_files"
           fi
 
