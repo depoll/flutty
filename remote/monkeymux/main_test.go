@@ -12061,3 +12061,48 @@ func (a testAddr) Network() string {
 func (a testAddr) String() string {
 	return string(a)
 }
+
+func TestReplayDropsAttachOscBufferAlreadyDeliveredByHistory(t *testing.T) {
+	// stripLocallyAnsweredThemeQueriesLocked withholds a partial OSC from the
+	// live stream until its tail arrives, but appendHistoryLocked keeps the
+	// whole chunk. A replay landing in that window delivers the withheld bytes,
+	// so forwarding them again with the next chunk duplicated them. For the ESC
+	// that opens an OSC 8 hyperlink that meant the client received
+	// "\x1b\x1b]8;id=..." and printed the introducer as literal text.
+	server := &muxServer{}
+	window := &muxWindow{id: "@1"}
+
+	chunkA := []byte("Seeded release: \x1b")
+	window.appendHistoryLocked(chunkA)
+	forwardedA := window.stripLocallyAnsweredThemeQueriesLocked(chunkA, nil)
+	if string(forwardedA) != "Seeded release: " {
+		t.Fatalf("forwarded first chunk = %q, want the ESC withheld", forwardedA)
+	}
+	if string(window.attachOscBuffer) != "\x1b" {
+		t.Fatalf("attach OSC buffer = %q, want the withheld ESC", window.attachOscBuffer)
+	}
+
+	replay := server.replayBytesLocked(window)
+	if !bytes.Contains(replay, chunkA) {
+		t.Fatalf("replay = %q, want it to contain the full history %q", replay, chunkA)
+	}
+	if len(window.attachOscBuffer) != 0 {
+		t.Fatalf("attach OSC buffer = %q, want dropped after replay",
+			window.attachOscBuffer)
+	}
+
+	chunkB := []byte("]8;id=md-7nao1v;https://example.com/x\x1b\\label\x1b]8;;\x1b\\")
+	window.appendHistoryLocked(chunkB)
+	forwardedB := window.stripLocallyAnsweredThemeQueriesLocked(chunkB, nil)
+
+	if string(forwardedB) != string(chunkB) {
+		t.Fatalf("forwarded second chunk = %q, want %q without the replayed ESC",
+			forwardedB, chunkB)
+	}
+	if got := string(replay) + string(forwardedB); strings.Contains(
+		got,
+		"\x1b\x1b]8;",
+	) {
+		t.Fatalf("replay+live stream = %q, want no duplicated ESC", got)
+	}
+}
