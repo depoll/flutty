@@ -158,7 +158,7 @@ Quality bar (fail the run if violated — see `docs/store-assets-prompt.md`):
 
 - Real app + live temporary SSH/MonkeyMux workspace
 - Copilot scenes show an image inline (no streamer mode / placeholder session renames)
-- MonkeyMux selector shows current agent family: Copilot CLI, Gemini CLI, Claude Code, Codex, OpenCode, Antigravity, Cursor Agent
+- MonkeyMux selector shows current agent family: Copilot CLI, Gemini CLI, Claude Code, Codex, OpenCode, Antigravity, Cursor Agent, Pi, Hermes, and OpenClaw
 - No port-forward/subscription/checkout as primary scenes unless product direction changed
 - No secrets, local private paths, API keys, crash dialogs, empty shells
 

@@ -1,10 +1,10 @@
-What's new in this 0.3.1 beta
+What's new in this 0.3.2 beta
 
-- Terminal Enter now matches the physical keyboard, including toolbar modifiers and Alt+Enter.
-- TUI box borders stay locked to the monospace grid instead of drifting off-cell.
-- MonkeyMux theme focus defaults are simpler and no longer special-case agent names.
-- Cursor Agent and Copilot CLI theme refresh fixes on window focus and Windows hosts.
-- Terminal height shrinks no longer wipe rows below the cursor or drop image rows.
-- Stability fixes across keyboard input, MonkeyMux window titles, and agent window switching.
+- Launch presets for Pi, Hermes, and OpenClaw join the existing agent family.
+- Terminal info now shows the active MonkeyMux helper version.
+- MonkeyMux reconnect keeps your session instead of starting over.
+- Windows remotes: session titles, Escape key, Kitty graphics, and steadier redraws.
+- Bracketed paste and terminal capability handling are more reliable.
+- Stability fixes for window switching, control-channel recovery, and agent detection.
 
 Thanks for testing the beta — please report anything that feels off.
