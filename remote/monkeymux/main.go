@@ -7525,7 +7525,6 @@ func (s *muxServer) resumePausedAttachForwarding(
 			window.redrawForwardingFallbackHistory,
 		) && len(fallbackReplay) > 0 {
 			replay = nil
-			window.discardDeliveredAttachOscBufferLocked()
 			buffered = append(
 				append([]byte(nil), fallbackReplay...),
 				queryData...,
@@ -7772,7 +7771,7 @@ func (s *muxServer) replayBytesLockedWithSkip(
 	} else {
 		history = trimReplayHistoryForAttachWithParser(history, historyStart)
 		history = stripTerminalQueriesFromReplay(history)
-		window.discardDeliveredAttachOscBufferLocked()
+		history = window.withheldAttachOscSuffixTrimmedLocked(history)
 	}
 	return buildWindowReplay(window, history)
 }
@@ -7829,6 +7828,7 @@ func (s *muxServer) foregroundHistoryFallbackReplayLocked(
 		return nil
 	}
 	images := window.kittyImageReplayLocked(nil)
+	history = window.withheldAttachOscSuffixTrimmedLocked(history)
 	replayHistory := make([]byte, 0, len(images)+len(history))
 	replayHistory = append(replayHistory, images...)
 	replayHistory = append(replayHistory, history...)
@@ -10073,23 +10073,35 @@ func (w *muxWindow) storeAttachPartialOscLocked(data []byte) bool {
 	return true
 }
 
-// discardDeliveredAttachOscBufferLocked drops the partial OSC that
-// stripLocallyAnsweredThemeQueriesLocked held back from the live stream once a
-// history replay has delivered those same bytes.
+// withheldAttachOscSuffixTrimmedLocked removes from a replay the partial OSC
+// that stripLocallyAnsweredThemeQueriesLocked is still holding back from the
+// live stream, so the replay ends exactly where the live stream did.
 //
 // The buffer exists so a colour query split across two PTY reads can still be
-// recognised (and stripped) when its tail arrives, which means the leading
+// recognised (and stripped) when its tail arrives, which means its leading
 // bytes are withheld from the forwarded output until then. appendHistoryLocked
-// always records the whole chunk, so a replay that lands in that window sends
-// the withheld bytes to the client — and forwarding them again with the next
-// chunk would duplicate them. A duplicated `ESC` is not cosmetic: `ESC ESC ] 8
-// ; ...` makes the terminal consume both escapes and print the rest of the
-// hyperlink introducer as literal text.
-func (w *muxWindow) discardDeliveredAttachOscBufferLocked() {
-	if w == nil {
-		return
+// records the whole chunk regardless, so a replay built straight from history
+// would hand the client bytes the live stream is about to send again. A
+// duplicated `ESC` is not cosmetic: `ESC ESC ] 8 ; ...` makes the terminal
+// consume both escapes and print the rest of the hyperlink introducer as
+// literal text.
+//
+// Trimming the replay rather than dropping the buffer keeps this correct for
+// every client. A replay is built per client, so releasing window-global state
+// when one client reattaches would strand the clients that never saw it, and a
+// replay whose history was trimmed away entirely (which
+// trimReplayHistoryForAttachWithParser does when it finds no terminal ground
+// state — the very case that fills this buffer) would strand all of them.
+func (w *muxWindow) withheldAttachOscSuffixTrimmedLocked(
+	history []byte,
+) []byte {
+	if w == nil || len(w.attachOscBuffer) == 0 {
+		return history
 	}
-	w.attachOscBuffer = nil
+	if !bytes.HasSuffix(history, w.attachOscBuffer) {
+		return history
+	}
+	return history[:len(history)-len(w.attachOscBuffer)]
 }
 
 func stripTerminalQueriesFromReplay(data []byte) []byte {

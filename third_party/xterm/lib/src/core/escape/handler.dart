@@ -263,4 +263,11 @@ abstract class EscapeHandler {
 
   /// End of the current Kitty graphics command (final chunk received).
   void graphicsCommandEnd();
+
+  /// A Kitty graphics command was cut short by an ESC before its terminator.
+  ///
+  /// Any transmission still open from an earlier `m=1` chunk is unrecoverable
+  /// at that point, so it must be discarded rather than left active for the
+  /// next command to be appended to.
+  void graphicsCommandAbort();
 }

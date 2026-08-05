@@ -12062,13 +12062,13 @@ func (a testAddr) String() string {
 	return string(a)
 }
 
-func TestReplayDropsAttachOscBufferAlreadyDeliveredByHistory(t *testing.T) {
+func TestReplayOmitsTheAttachOscTailStillWithheldFromLiveOutput(t *testing.T) {
 	// stripLocallyAnsweredThemeQueriesLocked withholds a partial OSC from the
 	// live stream until its tail arrives, but appendHistoryLocked keeps the
-	// whole chunk. A replay landing in that window delivers the withheld bytes,
-	// so forwarding them again with the next chunk duplicated them. For the ESC
-	// that opens an OSC 8 hyperlink that meant the client received
-	// "\x1b\x1b]8;id=..." and printed the introducer as literal text.
+	// whole chunk. A replay built straight from history would hand the client
+	// bytes the live stream is about to send again; for the ESC that opens an
+	// OSC 8 hyperlink that means the client receives "\x1b\x1b]8;id=..." and
+	// prints the introducer as literal text.
 	server := &muxServer{}
 	window := &muxWindow{id: "@1"}
 
@@ -12083,26 +12083,82 @@ func TestReplayDropsAttachOscBufferAlreadyDeliveredByHistory(t *testing.T) {
 	}
 
 	replay := server.replayBytesLocked(window)
-	if !bytes.Contains(replay, chunkA) {
-		t.Fatalf("replay = %q, want it to contain the full history %q", replay, chunkA)
+	if !bytes.Contains(replay, []byte("Seeded release: ")) {
+		t.Fatalf("replay = %q, want it to carry the delivered history", replay)
 	}
-	if len(window.attachOscBuffer) != 0 {
-		t.Fatalf("attach OSC buffer = %q, want dropped after replay",
+
+	withheld := window.attachOscBuffer
+	window.attachOscBuffer = nil
+	untrimmed := server.replayBytesLocked(window)
+	window.attachOscBuffer = withheld
+	if len(untrimmed)-len(replay) != len(withheld) {
+		t.Fatalf("replay = %q (%d bytes), untrimmed = %d bytes; want %d fewer",
+			replay, len(replay), len(untrimmed), len(withheld))
+	}
+	// The buffer is window-global while replays are per client, so it must
+	// survive: the live stream still owes those bytes to every attached client.
+	if string(window.attachOscBuffer) != "\x1b" {
+		t.Fatalf("attach OSC buffer = %q, want it kept for the live stream",
 			window.attachOscBuffer)
 	}
 
 	chunkB := []byte("]8;id=md-7nao1v;https://example.com/x\x1b\\label\x1b]8;;\x1b\\")
 	window.appendHistoryLocked(chunkB)
 	forwardedB := window.stripLocallyAnsweredThemeQueriesLocked(chunkB, nil)
-
-	if string(forwardedB) != string(chunkB) {
-		t.Fatalf("forwarded second chunk = %q, want %q without the replayed ESC",
-			forwardedB, chunkB)
+	if !bytes.HasPrefix(forwardedB, []byte("\x1b]8;")) {
+		t.Fatalf("forwarded second chunk = %q, want it to lead with the ESC", forwardedB)
 	}
 	if got := string(replay) + string(forwardedB); strings.Contains(
 		got,
 		"\x1b\x1b]8;",
 	) {
 		t.Fatalf("replay+live stream = %q, want no duplicated ESC", got)
+	}
+}
+
+func TestReplayKeepsWithheldTailWhenHistoryIsTrimmedAway(t *testing.T) {
+	// trimReplayHistoryForAttachWithParser returns nil when it finds no
+	// terminal ground state after the size-based cut, which is exactly the
+	// condition that fills attachOscBuffer: history ending mid-sequence. There
+	// is then nothing to trim, and the buffer must still be owed to the client.
+	window := &muxWindow{}
+	window.history = bytes.Repeat(
+		[]byte("\x1b_Ga=T,f=100;AAAA"),
+		1+windowReplayLimitBytes/16,
+	)
+	window.attachOscBuffer = []byte("\x1b")
+
+	history, historyStart := window.historyTailWithParserLocked()
+	trimmed := trimReplayHistoryForAttachWithParser(history, historyStart)
+	if len(trimmed) != 0 {
+		t.Skipf("replay retained history (%d bytes); nothing to assert", len(trimmed))
+	}
+
+	if got := window.withheldAttachOscSuffixTrimmedLocked(trimmed); len(got) != 0 {
+		t.Fatalf("trimmed replay = %q, want it left empty", got)
+	}
+	if string(window.attachOscBuffer) != "\x1b" {
+		t.Fatalf("attach OSC buffer = %q, want it kept when the replay omits it",
+			window.attachOscBuffer)
+	}
+}
+
+func TestWithheldAttachOscSuffixTrimmedRequiresSuffixMatch(t *testing.T) {
+	window := &muxWindow{attachOscBuffer: []byte("\x1b]11;?")}
+
+	// A snapshot taken before the partial arrived has nothing to trim.
+	if got := window.withheldAttachOscSuffixTrimmedLocked(
+		[]byte("earlier frame"),
+	); string(got) != "earlier frame" {
+		t.Fatalf("trimmed replay = %q, want it unchanged", got)
+	}
+
+	if got := window.withheldAttachOscSuffixTrimmedLocked(
+		[]byte("earlier frame\x1b]11;?"),
+	); string(got) != "earlier frame" {
+		t.Fatalf("trimmed replay = %q, want the withheld tail removed", got)
+	}
+	if string(window.attachOscBuffer) != "\x1b]11;?" {
+		t.Fatalf("attach OSC buffer = %q, want it left intact", window.attachOscBuffer)
 	}
 }
