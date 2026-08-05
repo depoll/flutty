@@ -20,7 +20,7 @@ usage() {
 Usage: scripts/store_assets.sh <command> [options]
 
 Commands:
-  paths                 Print tracked regenerated store-media paths
+  paths                 Print regenerated store-media globs
   package [options]     Create a tar.gz of local regenerated store media
   download [options]    Download + extract the latest published store assets
   publish [options]     Package local media, upload to the store-assets release,
@@ -31,6 +31,7 @@ package options:
   -o, --output <path>   Archive path (default: build/store-assets/store-assets.tar.gz)
   --require-screenshots Fail if screenshot sets are incomplete
   --require-videos      Fail if demo/app-preview videos are incomplete
+  --platform <target>   ios|android|both (default: both); scopes validators
 
 download options:
   -o, --output <dir>    Directory to extract into (default: repo root)
@@ -41,14 +42,14 @@ download options:
 
 publish options:
   --generate <target>   Generate before packaging: none|screenshots|videos|all
-                        (default: none). screenshots/videos/all accept
-                        ios|android|both via --platform.
-  --platform <target>   ios|android|both (default: both); used with --generate
+                        (default: none). Partial generation first restores the
+                        current store-assets release so other media is kept.
+  --platform <target>   ios|android|both (default: both)
   --skip-validate       Skip local validators before upload
   --sync                Trigger Sync Store Metadata after publishing
   --app <target>        private|production|both when --sync (default: both)
   --no-workflow         Do not dispatch publish-store-assets.yml
-  -o, --output <path>   Archive path to build/upload
+  -o, --output <path>   Archive path to build (basename must be store-assets.tar.gz)
 
 Environment:
   STORE_ASSETS_RELEASE_TAG   Override release tag (default: store-assets)
@@ -77,6 +78,20 @@ repo_slug() {
   fi
   require_command gh
   gh repo view --json nameWithOwner --jq .nameWithOwner
+}
+
+managed_media_roots() {
+  cat <<'EOF'
+ios/fastlane/screenshots
+ios/fastlane/app-previews
+store/demo-videos
+android/fastlane/metadata-private/android/en-US/images/phoneScreenshots
+android/fastlane/metadata-private/android/en-US/images/sevenInchScreenshots
+android/fastlane/metadata-private/android/en-US/images/tenInchScreenshots
+android/fastlane/metadata-production/android/en-US/images/phoneScreenshots
+android/fastlane/metadata-production/android/en-US/images/sevenInchScreenshots
+android/fastlane/metadata-production/android/en-US/images/tenInchScreenshots
+EOF
 }
 
 screenshot_globs() {
@@ -109,7 +124,6 @@ all_globs() {
 expand_existing() {
   local pattern
   local path
-  local matches=0
   while IFS= read -r pattern; do
     [ -n "$pattern" ] || continue
     shopt -s nullglob
@@ -117,12 +131,10 @@ expand_existing() {
     for path in $pattern; do
       if [ -f "$path" ]; then
         printf '%s\n' "$path"
-        matches=$((matches + 1))
       fi
     done
     shopt -u nullglob
   done
-  return 0
 }
 
 list_media_files() {
@@ -133,14 +145,29 @@ count_media_files() {
   list_media_files | wc -l | tr -d ' '
 }
 
+normalize_platform() {
+  case "${1:-}" in
+    ios|android|both) printf '%s\n' "$1" ;;
+    *) fail "platform must be ios, android, or both (got: ${1:-})" ;;
+  esac
+}
+
 assert_screenshots_present() {
+  local platform
+  platform="$(normalize_platform "${1:-both}")"
   require_command python3
-  python3 scripts/validate_store_screenshots.py both >/dev/null
+  python3 scripts/validate_store_screenshots.py "$platform" >/dev/null
 }
 
 assert_videos_present() {
+  local platform
+  platform="$(normalize_platform "${1:-both}")"
   require_command python3
-  python3 scripts/validate_store_demo_videos.py all >/dev/null
+  if [ "$platform" = both ]; then
+    python3 scripts/validate_store_demo_videos.py all >/dev/null
+  else
+    python3 scripts/validate_store_demo_videos.py "$platform" >/dev/null
+  fi
 }
 
 cmd_paths() {
@@ -161,10 +188,8 @@ cmd_present() {
 write_manifest() {
   local archive_path="$1"
   local manifest_path="$2"
-  local file_count
-  file_count="$(count_media_files)"
   require_command python3
-  python3 - "$archive_path" "$manifest_path" "$file_count" "$RELEASE_TAG" <<'PY'
+  python3 - "$archive_path" "$manifest_path" "$RELEASE_TAG" <<'PY'
 import hashlib
 import json
 import os
@@ -174,8 +199,7 @@ from pathlib import Path
 
 archive_path = Path(sys.argv[1])
 manifest_path = Path(sys.argv[2])
-file_count = int(sys.argv[3])
-release_tag = sys.argv[4]
+release_tag = sys.argv[3]
 root = Path.cwd()
 
 files = []
@@ -184,7 +208,7 @@ for line in os.popen('scripts/store_assets.sh paths'):
     if not pattern:
         continue
     for path in sorted(root.glob(pattern)):
-        if not path.is_file():
+        if not path.is_file() or path.is_symlink():
             continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         rel = path.relative_to(root).as_posix()
@@ -202,9 +226,6 @@ payload = {
     'file_count': len(files),
     'files': files,
 }
-if file_count != len(files):
-    # paths may include unmatched globs; prefer discovered files.
-    payload['file_count'] = len(files)
 manifest_path.parent.mkdir(parents=True, exist_ok=True)
 manifest_path.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
 print(f'Wrote manifest with {len(files)} file(s) to {manifest_path}')
@@ -215,6 +236,7 @@ cmd_package() {
   local output="$DEFAULT_OUTPUT"
   local require_screenshots=false
   local require_videos=false
+  local platform="both"
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -228,6 +250,11 @@ cmd_package() {
         ;;
       --require-videos)
         require_videos=true
+        ;;
+      --platform)
+        shift
+        [ "$#" -gt 0 ] || fail "--platform requires ios|android|both"
+        platform="$(normalize_platform "$1")"
         ;;
       -h|--help)
         usage
@@ -248,16 +275,15 @@ cmd_package() {
   fi
 
   if [ "$require_screenshots" = true ]; then
-    assert_screenshots_present
+    assert_screenshots_present "$platform"
   fi
   if [ "$require_videos" = true ]; then
-    assert_videos_present
+    assert_videos_present "$platform"
   fi
 
   mkdir -p "$(dirname "$output")"
   local staging
   staging="$(mktemp -d)"
-  # Expand the path when registering the trap so nounset cleanup is safe.
   # shellcheck disable=SC2064
   trap "rm -rf $(printf %q "$staging")" RETURN
 
@@ -269,17 +295,203 @@ cmd_package() {
 
   write_manifest "$output" "$staging/store-assets-manifest.json"
 
-  tar -C "$staging" -czf "$output" .
+  # Avoid macOS AppleDouble "._*" entries in the archive.
+  COPYFILE_DISABLE=1 tar -C "$staging" --exclude '._*' --exclude '.DS_Store' -czf "$output" .
   local size
   size="$(wc -c <"$output" | tr -d ' ')"
   echo "Packaged store assets -> $output ($size bytes)"
 }
 
+# Safely extract a store-assets archive into dest.
+# - Clears managed media roots first (no stale overlay)
+# - Rejects paths outside the allowlist, absolute paths, .., and symlinks
+# - Verifies store-assets-manifest.json hashes when present
 extract_archive() {
   local archive="$1"
   local dest="$2"
+  require_command python3
+  require_command tar
   mkdir -p "$dest"
-  tar -C "$dest" -xzf "$archive"
+
+  python3 - "$archive" "$dest" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+archive = Path(sys.argv[1])
+dest = Path(sys.argv[2]).resolve()
+
+ALLOWED_EXACT = {'store-assets-manifest.json'}
+ALLOWED_PREFIXES = (
+    'ios/fastlane/screenshots/',
+    'ios/fastlane/app-previews/',
+    'store/demo-videos/',
+    'android/fastlane/metadata-private/android/en-US/images/phoneScreenshots/',
+    'android/fastlane/metadata-private/android/en-US/images/sevenInchScreenshots/',
+    'android/fastlane/metadata-private/android/en-US/images/tenInchScreenshots/',
+    'android/fastlane/metadata-production/android/en-US/images/phoneScreenshots/',
+    'android/fastlane/metadata-production/android/en-US/images/sevenInchScreenshots/',
+    'android/fastlane/metadata-production/android/en-US/images/tenInchScreenshots/',
+)
+
+
+def normalize_member_name(name: str) -> str:
+    normalized = name.replace('\\', '/')
+    while normalized.startswith('./'):
+        normalized = normalized[2:]
+    return normalized.lstrip('/')
+
+
+def is_ignored_junk(path: str) -> bool:
+    parts = Path(path).parts
+    base = Path(path).name
+    if base in {'.DS_Store', '.gitkeep'}:
+        return True
+    if base.startswith('._'):
+        return True
+    if any(part.startswith('._') for part in parts):
+        return True
+    return False
+
+
+def is_allowed(path: str) -> bool:
+    if path in ALLOWED_EXACT:
+        return True
+    return any(path.startswith(prefix) for prefix in ALLOWED_PREFIXES)
+
+
+def clear_managed(dest_root: Path) -> None:
+    roots = [
+        'ios/fastlane/screenshots',
+        'ios/fastlane/app-previews',
+        'store/demo-videos',
+        'android/fastlane/metadata-private/android/en-US/images/phoneScreenshots',
+        'android/fastlane/metadata-private/android/en-US/images/sevenInchScreenshots',
+        'android/fastlane/metadata-private/android/en-US/images/tenInchScreenshots',
+        'android/fastlane/metadata-production/android/en-US/images/phoneScreenshots',
+        'android/fastlane/metadata-production/android/en-US/images/sevenInchScreenshots',
+        'android/fastlane/metadata-production/android/en-US/images/tenInchScreenshots',
+    ]
+    for rel in roots:
+        target = dest_root / rel
+        if target.exists() or target.is_symlink():
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+    manifest = dest_root / 'store-assets-manifest.json'
+    if manifest.exists() or manifest.is_symlink():
+        manifest.unlink()
+
+
+def main() -> None:
+    if not archive.is_file():
+        raise SystemExit(f'Archive not found: {archive}')
+
+    with tarfile.open(archive, 'r:*') as tf:
+        members = tf.getmembers()
+        approved: list[tarfile.TarInfo] = []
+        for member in members:
+            name = normalize_member_name(member.name)
+            if not name or name.endswith('/'):
+                continue
+            if is_ignored_junk(name):
+                continue
+            if member.issym() or member.islnk():
+                raise SystemExit(f'Refusing archive member symlink/hardlink: {member.name}')
+            if not member.isfile():
+                continue
+            if name != Path(name).as_posix() or '..' in Path(name).parts:
+                raise SystemExit(f'Refusing unsafe archive path: {member.name}')
+            if os.path.isabs(member.name) or member.name.startswith(('/', '\\')):
+                raise SystemExit(f'Refusing absolute archive path: {member.name}')
+            if not is_allowed(name):
+                raise SystemExit(f'Refusing non-allowlisted archive path: {name}')
+            member.name = name
+            approved.append(member)
+
+        if not approved:
+            raise SystemExit('Archive contained no approved store media files')
+
+        with tempfile.TemporaryDirectory(prefix='store-assets-safe-') as tmp:
+            tmp_path = Path(tmp)
+            # filter='data' blocks special files on Python 3.12+
+            try:
+                tf.extractall(tmp_path, members=approved, filter='data')
+            except TypeError:
+                tf.extractall(tmp_path, members=approved)
+
+            extracted_files: list[Path] = []
+            for path in tmp_path.rglob('*'):
+                if path.is_symlink():
+                    raise SystemExit(
+                        f'Refusing extracted symlink: {path.relative_to(tmp_path)}',
+                    )
+                if path.is_file():
+                    rel = path.relative_to(tmp_path).as_posix()
+                    if not is_allowed(rel):
+                        raise SystemExit(f'Refusing extracted non-allowlisted path: {rel}')
+                    extracted_files.append(path)
+
+            manifest_path = tmp_path / 'store-assets-manifest.json'
+            if manifest_path.is_file():
+                payload = json.loads(manifest_path.read_text(encoding='utf-8'))
+                entries = payload.get('files') or []
+                if not isinstance(entries, list) or not entries:
+                    raise SystemExit('store-assets-manifest.json is missing file entries')
+                by_path = {
+                    entry['path']: entry
+                    for entry in entries
+                    if isinstance(entry, dict) and 'path' in entry
+                }
+                for path in extracted_files:
+                    rel = path.relative_to(tmp_path).as_posix()
+                    if rel == 'store-assets-manifest.json':
+                        continue
+                    entry = by_path.get(rel)
+                    if entry is None:
+                        raise SystemExit(f'Extracted file missing from manifest: {rel}')
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                    expected = str(entry.get('sha256', ''))
+                    if digest != expected:
+                        raise SystemExit(f'Manifest hash mismatch for {rel}')
+                    expected_size = entry.get('size')
+                    if expected_size is not None and int(expected_size) != path.stat().st_size:
+                        raise SystemExit(f'Manifest size mismatch for {rel}')
+
+            clear_managed(dest)
+
+            for path in extracted_files:
+                rel = path.relative_to(tmp_path).as_posix()
+                target = dest / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+
+            print(f'Safely extracted {len(extracted_files)} store media file(s) into {dest}')
+
+
+if __name__ == '__main__':
+    main()
+PY
+}
+
+install_extracted_tree() {
+  local source="$1"
+  local dest="$2"
+  local tmp_archive
+  tmp_archive="$(mktemp -t store-assets-repack.XXXXXX.tar.gz)"
+  # shellcheck disable=SC2064
+  trap "rm -f $(printf %q "$tmp_archive")" RETURN
+  require_command tar
+  tar -C "$source" -czf "$tmp_archive" .
+  extract_archive "$tmp_archive" "$dest"
 }
 
 cmd_download() {
@@ -355,13 +567,10 @@ cmd_download() {
       extract_archive "$tmp/$ASSET_NAME" "$dest"
     elif [ -f "$tmp/store-assets/$ASSET_NAME" ]; then
       extract_archive "$tmp/store-assets/$ASSET_NAME" "$dest"
+    elif [ -d "$tmp/ios" ] || [ -d "$tmp/store" ] || [ -d "$tmp/android" ]; then
+      install_extracted_tree "$tmp" "$dest"
     else
-      # Artifact may already be the extracted tree.
-      if [ -d "$tmp/ios" ] || [ -d "$tmp/store" ] || [ -d "$tmp/android" ]; then
-        cp -R "$tmp"/. "$dest"/
-      else
-        fail "Could not find store assets inside workflow artifact for run $run_id"
-      fi
+      fail "Could not find store assets inside workflow artifact for run $run_id"
     fi
     echo "Restored store assets from workflow run $run_id into $dest"
     return 0
@@ -377,6 +586,27 @@ cmd_download() {
   fi
   extract_archive "$tmp/$ASSET_NAME" "$dest"
   echo "Restored store assets from release $tag into $dest"
+}
+
+ensure_canonical_output_name() {
+  local output="$1"
+  local base
+  base="$(basename "$output")"
+  if [ "$base" != "$ASSET_NAME" ]; then
+    fail "Publish archive basename must be '$ASSET_NAME' (got '$base'). CI always downloads that asset name from the store-assets release."
+  fi
+}
+
+restore_current_release_if_present() {
+  local repo="$1"
+  if gh release view "$RELEASE_TAG" --repo "$repo" >/dev/null 2>&1; then
+    echo "Restoring current $RELEASE_TAG release before partial generation/publish..."
+    if ! cmd_download --repo "$repo"; then
+      echo "warning: could not restore current $RELEASE_TAG release; continuing with local media only" >&2
+    fi
+  else
+    echo "No existing $RELEASE_TAG release found; packaging whatever media is local."
+  fi
 }
 
 cmd_publish() {
@@ -403,7 +633,7 @@ cmd_publish() {
       --platform)
         shift
         [ "$#" -gt 0 ] || fail "--platform requires ios|android|both"
-        platform="$1"
+        platform="$(normalize_platform "$1")"
         ;;
       --skip-validate)
         skip_validate=true
@@ -430,8 +660,28 @@ cmd_publish() {
     shift
   done
 
+  case "$app" in
+    private|production|both) ;;
+    *) fail "--app must be private, production, or both" ;;
+  esac
+  case "$generate" in
+    none|screenshots|videos|all) ;;
+    *) fail "--generate must be one of: none, screenshots, videos, all" ;;
+  esac
+
+  ensure_canonical_output_name "$output"
+
   require_command gh
   require_command python3
+
+  local repo
+  repo="$(repo_slug)"
+
+  # Partial generation/platform must start from the current complete archive so
+  # we never clobber the rolling release with a one-platform subset.
+  if [ "$generate" != none ] || [ "$platform" != both ]; then
+    restore_current_release_if_present "$repo"
+  fi
 
   case "$generate" in
     none) ;;
@@ -445,23 +695,19 @@ cmd_publish() {
       python3 scripts/generate_store_screenshots.py "$platform"
       python3 scripts/generate_store_demo_videos.py "$platform"
       ;;
-    *)
-      fail "--generate must be one of: none, screenshots, videos, all"
-      ;;
   esac
 
-  local package_args=()
+  # Published rolling archives must stay complete for CI consumers.
+  local package_args=(--platform both)
   if [ "$skip_validate" = false ]; then
-    # Validate whatever is present; require screenshots always for publish.
     package_args+=(--require-screenshots)
-    if all_globs | expand_existing | grep -E '\.(mov|mp4|m4v)$' >/dev/null 2>&1; then
+    if video_globs | expand_existing | grep -E '\.(mov|mp4|m4v)$' >/dev/null 2>&1 \
+      || [ "$generate" = videos ] || [ "$generate" = all ]; then
       package_args+=(--require-videos)
     fi
   fi
-  cmd_package -o "$output" "${package_args[@]+"${package_args[@]}"}"
+  cmd_package -o "$output" "${package_args[@]}"
 
-  local repo
-  repo="$(repo_slug)"
   local notes
   notes="$(mktemp)"
   cat >"$notes" <<EOF
@@ -494,24 +740,22 @@ EOF
   echo "Published $output to release $RELEASE_TAG on $repo"
 
   if [ "$dispatch_workflow" = true ]; then
-    local -a workflow_args=(
-      publish-store-assets.yml
-      --repo "$repo"
-      -f "sync=$( [ "$sync" = true ] && echo true || echo false )"
-      -f "app=$app"
-      -f "platform=both"
-    )
-    if gh workflow run "${workflow_args[@]}"; then
-      echo "Dispatched publish-store-assets.yml"
-    else
-      echo "warning: failed to dispatch publish-store-assets.yml" >&2
+    local sync_value=false
+    if [ "$sync" = true ]; then
+      sync_value=true
     fi
+    gh workflow run publish-store-assets.yml \
+      --repo "$repo" \
+      -f "sync=$sync_value" \
+      -f "app=$app" \
+      -f "platform=$platform"
+    echo "Dispatched publish-store-assets.yml (platform=$platform, sync=$sync_value, app=$app)"
   elif [ "$sync" = true ]; then
     gh workflow run sync-metadata.yml \
       --repo "$repo" \
-      -f "platform=both" \
+      -f "platform=$platform" \
       -f "app=$app"
-    echo "Dispatched sync-metadata.yml"
+    echo "Dispatched sync-metadata.yml (platform=$platform, app=$app)"
   fi
 }
 
