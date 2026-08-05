@@ -70,6 +70,18 @@ class EscapeParser {
     if (_queue.isEmpty) return false;
 
     final escapeChar = _queue.consume();
+
+    // ECMA-48/VT500: ESC re-enters the escape state from anywhere, so `ESC ESC`
+    // abandons the first introducer and starts a fresh sequence rather than
+    // consuming the second ESC as this sequence's final byte. Roll it back so
+    // the main loop dispatches it; without this a stray or duplicated ESC makes
+    // the whole following sequence (e.g. `ESC ESC ] 8 ; id=...`) render as
+    // literal text.
+    if (escapeChar == Ascii.ESC) {
+      _queue.rollback();
+      return true;
+    }
+
     final escapeHandler = _escHandlers[escapeChar];
 
     if (escapeHandler == null) {
@@ -78,6 +90,23 @@ class EscapeParser {
     }
 
     return escapeHandler();
+  }
+
+  /// Consumes the terminator of a string sequence (OSC/DCS/APC/SOS/PM) once its
+  /// leading ESC has already been consumed.
+  ///
+  /// Returns [_SeqParse.complete] for a full ST (`ESC \`), [_SeqParse.incomplete]
+  /// when the byte after ESC has not arrived yet, and [_SeqParse.aborted] for
+  /// any other byte — in which case the ESC is rolled back so it can start a new
+  /// sequence, as ECMA-48 requires.
+  _SeqParse _consumeStringTerminator() {
+    if (_queue.isEmpty) return _SeqParse.incomplete;
+    if (_queue.peek() == Ascii.backslash) {
+      _queue.consume();
+      return _SeqParse.complete;
+    }
+    _queue.rollback();
+    return _SeqParse.aborted;
   }
 
   late final _sbcHandlers = FastLookupTable<_SbcHandler>({
@@ -161,35 +190,31 @@ class EscapeParser {
     return true;
   }
 
-  bool _escHandleDesignateCharset0() {
+  /// `ESC ( / ) / * / +  <name>` Designate character set (SCS).
+  ///
+  /// An ESC in the name slot re-enters the escape state instead of being taken
+  /// as the charset name, so a stray or duplicated ESC cannot swallow the
+  /// introducer of the sequence that follows.
+  bool _escHandleDesignateCharset(int g) {
     if (_queue.isEmpty) return false;
-    int name = _queue.consume();
-    handler.designateCharset(0, name);
+    final name = _queue.consume();
+    if (name == Ascii.ESC) {
+      _queue.rollback();
+      return true;
+    }
+    handler.designateCharset(g, name);
     return true;
   }
 
-  bool _escHandleDesignateCharset1() {
-    if (_queue.isEmpty) return false;
-    int name = _queue.consume();
-    handler.designateCharset(1, name);
-    return true;
-  }
+  bool _escHandleDesignateCharset0() => _escHandleDesignateCharset(0);
+
+  bool _escHandleDesignateCharset1() => _escHandleDesignateCharset(1);
 
   /// `ESC * <name>` Designate G2 Character Set (SCS)
-  bool _escHandleDesignateCharset2() {
-    if (_queue.isEmpty) return false;
-    int name = _queue.consume();
-    handler.designateCharset(2, name);
-    return true;
-  }
+  bool _escHandleDesignateCharset2() => _escHandleDesignateCharset(2);
 
   /// `ESC + <name>` Designate G3 Character Set (SCS)
-  bool _escHandleDesignateCharset3() {
-    if (_queue.isEmpty) return false;
-    int name = _queue.consume();
-    handler.designateCharset(3, name);
-    return true;
-  }
+  bool _escHandleDesignateCharset3() => _escHandleDesignateCharset(3);
 
   /// `ESC =` Set Application Keypad Mode (DECKPAM)
   ///
@@ -208,8 +233,9 @@ class EscapeParser {
   }
 
   bool _escHandleCSI() {
-    final consumed = _consumeCsi();
-    if (!consumed) return false;
+    final result = _consumeCsi();
+    if (result == _SeqParse.incomplete) return false;
+    if (result == _SeqParse.aborted) return true;
 
     if (_csi.finalByte == Ascii.u && _handleKittyKeyboardProtocol()) {
       return true;
@@ -251,11 +277,12 @@ class EscapeParser {
   /// object allocations.
   final _csi = _Csi(finalByte: 0, params: []);
 
-  /// Parse a CSI from the head of the queue. Return false if the CSI isn't
-  /// complete. After a CSI is successfully parsed, [_csi] is updated.
-  bool _consumeCsi() {
+  /// Parse a CSI from the head of the queue. Returns [_SeqParse.incomplete] if
+  /// the CSI isn't complete and [_SeqParse.aborted] if an ESC cut it short.
+  /// After a CSI is successfully parsed, [_csi] is updated.
+  _SeqParse _consumeCsi() {
     if (_queue.isEmpty) {
-      return false;
+      return _SeqParse.incomplete;
     }
 
     _csi.params.clear();
@@ -298,10 +325,18 @@ class EscapeParser {
     while (true) {
       // The sequence isn't completed, just ignore it.
       if (_queue.isEmpty) {
-        return false;
+        return _SeqParse.incomplete;
       }
 
       final char = _queue.consume();
+
+      // ESC aborts the CSI and starts a new sequence. Without this the ESC
+      // falls into the intermediate-byte range below and is silently absorbed,
+      // letting a truncated CSI swallow the sequence that follows it.
+      if (char == Ascii.ESC) {
+        _queue.rollback();
+        return _SeqParse.aborted;
+      }
 
       if (char == Ascii.semicolon) {
         commitParam(emptyAsZero: true);
@@ -347,7 +382,7 @@ class EscapeParser {
         commitParam(emptyAsZero: pendingEmptyParam);
 
         _csi.finalByte = char;
-        return true;
+        return _SeqParse.complete;
       }
     }
   }
@@ -1256,9 +1291,14 @@ class EscapeParser {
   /// Parse a OSC sequence from the queue. Returns true if a sequence was
   /// found and handled.
   bool _escHandleOSC() {
-    final consumed = _consumeOsc();
-    if (!consumed) {
+    final result = _consumeOsc();
+    if (result == _SeqParse.incomplete) {
       return false;
+    }
+    // An ESC cut the OSC short, so its parameters are truncated (a hyperlink
+    // URL, a title, ...). Discard them rather than acting on a partial payload.
+    if (result == _SeqParse.aborted) {
+      return true;
     }
 
     if (_osc.isEmpty) {
@@ -1292,13 +1332,13 @@ class EscapeParser {
 
   final _osc = <String>[];
 
-  bool _consumeOsc() {
+  _SeqParse _consumeOsc() {
     _osc.clear();
     final param = StringBuffer();
 
     while (true) {
       if (_queue.isEmpty) {
-        return false;
+        return _SeqParse.incomplete;
       }
 
       final char = _queue.consume();
@@ -1306,20 +1346,16 @@ class EscapeParser {
       // OSC terminates with BEL
       if (char == Ascii.BEL) {
         _osc.add(param.toString());
-        return true;
+        return _SeqParse.complete;
       }
 
       /// OSC terminates with ST
       if (char == Ascii.ESC) {
-        if (_queue.isEmpty) {
-          return false;
-        }
-
-        if (_queue.consume() == Ascii.backslash) {
+        final terminator = _consumeStringTerminator();
+        if (terminator == _SeqParse.complete) {
           _osc.add(param.toString());
         }
-
-        return true;
+        return terminator;
       }
 
       /// Parse next parameter
@@ -1351,9 +1387,11 @@ class EscapeParser {
 
       // DCS terminates with ST (`ESC \`).
       if (char == Ascii.ESC) {
-        if (_queue.isEmpty) return false;
-        if (_queue.consume() == Ascii.backslash) break;
-        continue;
+        final terminator = _consumeStringTerminator();
+        if (terminator == _SeqParse.complete) break;
+        // Incomplete: wait for more data. Aborted: the ESC starts a new
+        // sequence and this DCS is discarded without reporting.
+        return terminator != _SeqParse.incomplete;
       }
       // BEL is tolerated as a terminator for robustness.
       if (char == Ascii.BEL) break;
@@ -1394,10 +1432,19 @@ class EscapeParser {
     final args = <String, String>{};
     final argsResult = _parseGraphicsArgs(args);
     if (argsResult == _ApcParse.incomplete) return false;
+    if (argsResult == _ApcParse.aborted) {
+      handler.graphicsCommandAbort();
+      return true;
+    }
 
     final payload = <int>[];
     if (argsResult == _ApcParse.payloadFollows) {
-      if (!_parseGraphicsPayload(payload)) return false;
+      final payloadResult = _parseGraphicsPayload(payload);
+      if (payloadResult == _SeqParse.incomplete) return false;
+      if (payloadResult == _SeqParse.aborted) {
+        handler.graphicsCommandAbort();
+        return true;
+      }
     }
 
     // The full command is buffered before dispatching so an incomplete payload
@@ -1437,12 +1484,14 @@ class EscapeParser {
         return _ApcParse.payloadFollows;
       }
       if (char == Ascii.ESC) {
-        if (_queue.isEmpty) return _ApcParse.incomplete;
-        if (_queue.consume() == Ascii.backslash) {
+        final terminator = _consumeStringTerminator();
+        if (terminator == _SeqParse.complete) {
           flush();
           return _ApcParse.terminated;
         }
-        continue;
+        return terminator == _SeqParse.aborted
+            ? _ApcParse.aborted
+            : _ApcParse.incomplete;
       }
       if (char == Ascii.BEL) {
         flush();
@@ -1475,18 +1524,18 @@ class EscapeParser {
   /// the payload decode, the sooner the screen repaints. Non-base64 bytes
   /// (whitespace, stray padding) are skipped, matching the previous lenient
   /// decoder.
-  bool _parseGraphicsPayload(List<int> out) {
+  _SeqParse _parseGraphicsPayload(List<int> out) {
     var accumulator = 0;
     var bits = 0;
 
     while (true) {
-      if (_queue.isEmpty) return false;
+      if (_queue.isEmpty) return _SeqParse.incomplete;
       final char = _queue.consume();
 
       if (char == Ascii.ESC) {
-        if (_queue.isEmpty) return false;
-        if (_queue.consume() == Ascii.backslash) break;
-        continue;
+        final terminator = _consumeStringTerminator();
+        if (terminator == _SeqParse.complete) break;
+        return terminator;
       }
       if (char == Ascii.BEL) break;
 
@@ -1501,7 +1550,7 @@ class EscapeParser {
       }
     }
 
-    return true;
+    return _SeqParse.complete;
   }
 
   /// Skips an unrecognized string sequence up to ST. Returns false when the
@@ -1511,9 +1560,9 @@ class EscapeParser {
       if (_queue.isEmpty) return false;
       final char = _queue.consume();
       if (char == Ascii.ESC) {
-        if (_queue.isEmpty) return false;
-        if (_queue.consume() == Ascii.backslash) return true;
-        continue;
+        final terminator = _consumeStringTerminator();
+        // Aborted counts as handled: the rolled-back ESC starts a new sequence.
+        return terminator != _SeqParse.incomplete;
       }
       if (char == Ascii.BEL) return true;
     }
@@ -1537,7 +1586,15 @@ List<int> _buildBase64DecodeTable() {
 }
 
 /// Result of parsing the key/value header of an APC graphics command.
-enum _ApcParse { incomplete, payloadFollows, terminated }
+enum _ApcParse { incomplete, payloadFollows, terminated, aborted }
+
+/// Outcome of parsing a sequence whose end is only known once its terminator
+/// arrives.
+///
+/// [aborted] means an ESC appeared where the terminator was expected. ECMA-48
+/// treats that ESC as the start of a new sequence, so the consumer rolls it
+/// back and discards whatever it had gathered.
+enum _SeqParse { complete, incomplete, aborted }
 
 class _Csi {
   _Csi({

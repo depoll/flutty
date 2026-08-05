@@ -683,4 +683,9 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   void graphicsCommandEnd() {
     onCommand('graphicsCommandEnd');
   }
+
+  @override
+  void graphicsCommandAbort() {
+    onCommand('graphicsCommandAbort');
+  }
 }
