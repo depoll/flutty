@@ -44,6 +44,27 @@ void main() {
       );
     });
 
+    test('renders a link whose introducer is preceded by a stray ESC', () {
+      // A MonkeyMux replay could deliver the ESC that opens an OSC 8 sequence
+      // and then have the live stream forward it a second time. The duplicated
+      // ESC must not make the terminal print the introducer as text
+      // (`]8;id=md-...;https://...`) instead of following the hyperlink.
+      const url = 'https://github.com/depollsoft/MonkeySSH/releases/tag/x';
+      terminal.write(
+        [
+          'Seeded release: ',
+          '\u001b\u001b]8;id=md-7nao1v;$url\u001b\\',
+          url,
+          '\u001b]8;;\u001b\\',
+        ].join(),
+      );
+
+      final firstLine = terminal.buffer.lines[0].toString();
+      expect(firstLine, startsWith('Seeded release: $url'));
+      expect(firstLine, isNot(contains(']8;')));
+      expect(tracker.resolveLinkAt(const CellOffset(20, 0)), url);
+    });
+
     test('resolves OSC 8 links terminated with ST (ESC backslash)', () {
       terminal.write(
         [

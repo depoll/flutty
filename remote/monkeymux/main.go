@@ -7525,6 +7525,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 			window.redrawForwardingFallbackHistory,
 		) && len(fallbackReplay) > 0 {
 			replay = nil
+			window.discardDeliveredAttachOscBufferLocked()
 			buffered = append(
 				append([]byte(nil), fallbackReplay...),
 				queryData...,
@@ -7771,6 +7772,7 @@ func (s *muxServer) replayBytesLockedWithSkip(
 	} else {
 		history = trimReplayHistoryForAttachWithParser(history, historyStart)
 		history = stripTerminalQueriesFromReplay(history)
+		window.discardDeliveredAttachOscBufferLocked()
 	}
 	return buildWindowReplay(window, history)
 }
@@ -10069,6 +10071,25 @@ func (w *muxWindow) storeAttachPartialOscLocked(data []byte) bool {
 	}
 	w.attachOscBuffer = append(w.attachOscBuffer[:0], data...)
 	return true
+}
+
+// discardDeliveredAttachOscBufferLocked drops the partial OSC that
+// stripLocallyAnsweredThemeQueriesLocked held back from the live stream once a
+// history replay has delivered those same bytes.
+//
+// The buffer exists so a colour query split across two PTY reads can still be
+// recognised (and stripped) when its tail arrives, which means the leading
+// bytes are withheld from the forwarded output until then. appendHistoryLocked
+// always records the whole chunk, so a replay that lands in that window sends
+// the withheld bytes to the client — and forwarding them again with the next
+// chunk would duplicate them. A duplicated `ESC` is not cosmetic: `ESC ESC ] 8
+// ; ...` makes the terminal consume both escapes and print the rest of the
+// hyperlink introducer as literal text.
+func (w *muxWindow) discardDeliveredAttachOscBufferLocked() {
+	if w == nil {
+		return
+	}
+	w.attachOscBuffer = nil
 }
 
 func stripTerminalQueriesFromReplay(data []byte) []byte {
