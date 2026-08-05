@@ -144,11 +144,31 @@ Android release workflows fail early if the signing secrets or local `android/ap
 
 ### Sync Metadata (`sync-metadata.yml`)
 
-Triggered automatically on pushes to `main` that touch repository-managed store assets, and can also be run manually to sync store metadata without a new build. Useful for updating app descriptions, screenshots, iOS App Preview videos, Android listing icons, or other listing details.
+Triggered automatically on pushes to `main` that touch repository-managed store
+**copy**/icons, and can also be run manually to sync store metadata without a
+new build. Useful for updating app descriptions, Android listing icons, or
+other listing text.
+
+Regenerated screenshots, iOS App Preview videos, and demo videos are **not**
+stored in git. CI downloads the latest rolling `store-assets` GitHub Release
+archive (published by `scripts/store_assets.sh publish` / the Publish Store
+Assets workflow) before validation and Fastlane upload, and re-hosts that media
+as workflow artifacts.
 
 Supports selecting:
 - **Platform**: iOS, Android, or both
 - **App**: private, production, or both
+
+### Publish Store Assets (`publish-store-assets.yml`)
+
+Validates the rolling `store-assets` release archive and uploads Actions
+artifacts (`store-assets`, platform screenshot sets, App Previews, demo
+videos). Optionally chains into Sync Store Metadata. Local publishers should
+prefer:
+
+```bash
+./scripts/store_assets.sh publish --generate all --platform both --sync
+```
 
 ### GitHub Deployment Environments
 
@@ -183,10 +203,10 @@ copy. Android also has per-variant Play Store icon metadata.
 
 ```
 ios/fastlane/
-├── screenshots/
-│   └── en-US/                  # Shared App Store iPhone and iPad screenshots
-├── app-previews/
-│   └── en-US/                  # Optional App Store product demo videos
+├── screenshots/             # NOT in git — restored from store-assets release
+│   └── en-US/               # Shared App Store iPhone and iPad screenshots
+├── app-previews/            # NOT in git — restored from store-assets release
+│   └── en-US/               # Optional App Store product demo videos
 ├── metadata-private/        # MonkeySSH β (preview app)
 │   ├── en-US/
 │   │   ├── name.txt         # "MonkeySSH β"
@@ -234,8 +254,8 @@ android/fastlane/
 │       ├── full_description.txt
 │       ├── icon.png         # 512x512 (private banner icon)
 │       ├── images/
-│       │   ├── featureGraphic.png
-│       │   ├── phoneScreenshots/
+│       │   ├── featureGraphic.png   # in git
+│       │   ├── phoneScreenshots/    # NOT in git — store-assets release
 │       │   ├── sevenInchScreenshots/
 │       │   └── tenInchScreenshots/
 │       └── changelogs/
@@ -245,13 +265,36 @@ android/fastlane/
         └── (same structure)
 ```
 
-Edit these files and metadata will sync on the next release deploy, or trigger the **Sync Metadata** workflow manually.
+Edit committed listing copy and metadata will sync on the next release deploy, or trigger the **Sync Metadata** workflow manually. Publish regenerated screenshots/videos with `scripts/store_assets.sh publish` instead of committing them.
 Android `icon.png` files are auto-regenerated from `assets/icons/monkeyssh_icon*.png` during deploy/metadata-sync workflows, so marketplace icons stay aligned with the app icon assets.
 Google Play text limits still apply to the repository files: `title.txt` must stay within 30 characters, `short_description.txt` within 80 characters, and `full_description.txt` within 4000 characters. You can validate them locally with `python3 scripts/validate_play_store_metadata.py`.
 App Store text limits can be validated locally with `python3 scripts/validate_app_store_metadata.py`.
 Store screenshots can be regenerated locally with `python3 scripts/generate_store_screenshots.py` after installing Pillow (`python3 -m pip install Pillow`). The generator starts a temporary local `sshd` and uniquely named MonkeyMux workspace, boots the normal MonkeySSH app on iOS simulators and an Android emulator with release-demo data, drives real app navigation through a real Copilot CLI terminal, hosts, snippets, the MonkeyMux window selector with the current supported agent family, SFTP, and a real Claude Code terminal, then captures native device screenshots into the Fastlane folders. The generator fails instead of substituting mock screenshots if the real SSH/MonkeyMux workspace cannot be created.
 Generated screenshot counts, dimensions, and OCR content can be validated locally on macOS with `python3 scripts/validate_store_screenshots.py` after installing Pillow.
 Short product demo videos can be recorded with `python3 scripts/generate_store_demo_videos.py [ios|android|both]` and validated with `python3 scripts/validate_store_demo_videos.py [ios|android|all]`. The video generator reuses the real screenshot capture environment, records native simulator/emulator screen video while the app walks Claude Code, the MonkeyMux window switcher, OpenCode, a real image paste into Copilot CLI, and a Copilot prompt against that screenshot, then composes that single recording into store-compliant deliverables. Copilot screenshot/video scenes must show the CLI displaying the image inline; the harness must not enable streamer mode or rename sessions to placeholders. App Store **app previews** are full-screen native captures at the exact device slot resolution — `ios/fastlane/app-previews/en-US/iphone_67_1.mov` (886x1920) and `ipad_13_1.mov` (1200x1600) — with fading caption overlays and a silent audio track, because App Store Connect validates resolution at upload. The **Google Play preview** is a 16:9 landscape branded promo at `store/demo-videos/google-play/monkeyssh-google-play-promo.mp4` (1920x1080); Google Play videos are externally hosted, so this MP4 is uploaded to YouTube and referenced by URL in Play Console rather than synced by Fastlane. The portrait branded canvas is kept for ads under `store/demo-videos/ads/`. The validator enforces per-slot resolution, 15-30s duration, H.264, an audio track on the Apple previews, and that the live app region advances through scenes.
+
+After generation, **do not commit the binaries**. Publish them instead:
+
+```bash
+./scripts/store_assets.sh publish --sync
+```
+
+That uploads a rolling `store-assets` GitHub Release archive. CI downloads it during Sync Metadata / production releases and also exposes the media as Actions artifacts. Restore into a checkout with `./scripts/store_assets.sh download`.
+
+### Agent slash command
+
+For an end-to-end guided release (copy review, media publish, optional ship),
+invoke the repo skill:
+
+```text
+/prepare-release
+/prepare-release --ship
+/prepare-release --media-only --sync
+/prepare-release v1.2.3 --skip-media --skip-copy --ship
+```
+
+Skill source: `.github/skills/prepare-release/SKILL.md`.
+
 The future refresh prompt lives in `docs/store-assets-prompt.md`.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.

@@ -765,6 +765,14 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
+      - name: Download published store assets
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy && inputs.sync-metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x scripts/store_assets.sh
+          scripts/store_assets.sh download
+
       - name: Refresh Play Store icon metadata
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy && inputs.sync-metadata
         run: |
@@ -1135,6 +1143,14 @@ jobs:
               auto_inactive: false,
             });
             core.setOutput('deployment-id', String(deployment.data.id));
+
+      - name: Download published store assets
+        if: inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy && inputs.sync-metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x scripts/store_assets.sh
+          scripts/store_assets.sh download
 
       - name: Archive, sign & deploy via Fastlane
         id: ios-deploy

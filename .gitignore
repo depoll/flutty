@@ -60,11 +60,16 @@ app.*.map.json
 **/fastlane/report.xml
 **/fastlane/Preview.html
 **/fastlane/screenshots
-!ios/fastlane/screenshots/
-!ios/fastlane/screenshots/**
+**/fastlane/app-previews
 **/fastlane/test_output
 **/fastlane/README.md
 **/android/app/upload-keystore.jks
+
+# Regenerated store media (published via scripts/store_assets.sh + CI artifacts)
+/store/demo-videos/
+/store-assets-manifest.json
+/build/store-assets/
+android/fastlane/metadata-*/android/*/images/*Screenshots/
 
 # Local Go build of the MonkeyMux server (distributed via assets/monkeymux/bin/*.gz)
 /remote/monkeymux/monkeymux
