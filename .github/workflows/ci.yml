@@ -27,7 +27,7 @@ jobs:
   # ---------------------------------------------------------------------------
   changes:
     name: Detect Changes
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4
     timeout-minutes: 5
     outputs:
       run_check: ${{ steps.filter.outputs.run_check }}
@@ -565,7 +565,7 @@ jobs:
     name: CI
     if: ${{ always() && !cancelled() }}
     needs: [changes, check, test, go-test, build-android, build-ios, build-macos, build-windows, build-linux]
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4
     timeout-minutes: 2
     steps:
       - name: Evaluate results
