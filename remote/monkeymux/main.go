@@ -4956,6 +4956,8 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 	if c == nil || windowID == "" {
 		return
 	}
+	c.inputDispatchMu.Lock()
+	defer c.inputDispatchMu.Unlock()
 	if count < 1 {
 		count = 1
 	}
@@ -4964,6 +4966,7 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 	var expiredFocusSequence uint64
 	var claim func(uint64)
 	var passthrough func([]byte)
+	var pastePrefixPassthrough func([]byte)
 	inputLocked := false
 	c.activityMu.Lock()
 	if !c.terminalResponseUntil.IsZero() &&
@@ -4984,6 +4987,7 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 			}
 			claim = c.focusClaim
 			passthrough = c.inputPassthrough
+			pastePrefixPassthrough = c.inputPastePrefixPassthrough
 		} else if len(c.terminalResponsePasteStartCarry) > 0 {
 			c.inputMu.Lock()
 			inputLocked = true
@@ -4996,6 +5000,7 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 			}
 			claim = c.focusClaim
 			passthrough = c.inputPassthrough
+			pastePrefixPassthrough = c.inputPastePrefixPassthrough
 		}
 		c.resetTerminalResponseStateLocked()
 		c.rememberForwardedBracketedPasteStartSuffixLocked(expiredInput)
@@ -5024,8 +5029,15 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 	if claim != nil {
 		claim(expiredFocusSequence)
 	}
-	if passthrough != nil {
-		passthrough(expiredInput)
+	suffixLength := bracketedPasteStartSuffixLength(expiredInput, 0)
+	ordinaryEnd := len(expiredInput) - suffixLength
+	if ordinaryEnd > 0 && passthrough != nil {
+		passthrough(expiredInput[:ordinaryEnd])
+	}
+	if suffixLength > 0 && pastePrefixPassthrough != nil {
+		pastePrefixPassthrough(expiredInput[ordinaryEnd:])
+	} else if suffixLength > 0 && passthrough != nil {
+		passthrough(expiredInput[ordinaryEnd:])
 	}
 }
 
