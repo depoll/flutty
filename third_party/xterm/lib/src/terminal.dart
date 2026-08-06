@@ -572,6 +572,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     _resize(newWidth, newHeight, notify: false);
     _hostResizeGeneration++;
     onHostResize?.call(viewWidth, viewHeight);
+    // Applying the host grid re-lays-out both buffers. Without a repaint the
+    // reflowed content is never drawn, so a grid publish that arrives as the
+    // last bytes of a burst would leave the view showing the pre-resize frame.
+    notifyListeners();
   }
 
   void _resize(
@@ -1423,6 +1427,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
     _graphicsData.addAll(data);
+  }
+
+  @override
+  void graphicsCommandAbort() {
+    // An ESC ended the command before its terminator, so whatever an earlier
+    // `m=1` chunk opened can never be completed. Dropping it keeps the next
+    // real image from being swallowed as a continuation of this one.
+    if (!_graphicsActive) return;
+    _graphicsActive = false;
+    _graphicsData.clear();
   }
 
   @override

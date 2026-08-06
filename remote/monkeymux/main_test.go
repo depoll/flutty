@@ -803,8 +803,8 @@ func TestC1QueryScannerPreservesUtf8SplitAcrossChunks(t *testing.T) {
 func TestPendingQueryScannerIgnoresUtf8SplitAcrossChunks(t *testing.T) {
 	window := &muxWindow{}
 
-	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2})
-	window.appendPendingTerminalQueriesLocked([]byte{0x9b, 'b'})
+	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2}, nil)
+	window.appendPendingTerminalQueriesLocked([]byte{0x9b, 'b'}, nil)
 
 	if len(window.pendingTerminalQueries) != 0 {
 		t.Fatalf(
@@ -840,9 +840,9 @@ func TestQueryScannersPreserveUtf8AcrossThreeChunks(t *testing.T) {
 	}
 
 	pendingWindow := &muxWindow{}
-	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0xe2})
-	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x80})
-	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x9b, 'c'})
+	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0xe2}, nil)
+	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x80}, nil)
+	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x9b, 'c'}, nil)
 	if len(pendingWindow.pendingTerminalQueries) != 0 ||
 		len(pendingWindow.pendingTerminalQueryCarry) != 0 {
 		t.Fatalf(
@@ -856,7 +856,7 @@ func TestQueryScannersPreserveUtf8AcrossThreeChunks(t *testing.T) {
 func TestUtf8QueryStateTransfersFromPendingToLiveRouting(t *testing.T) {
 	window := &muxWindow{}
 
-	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2})
+	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2}, nil)
 	filtered := window.secondaryAttachOutputLocked([]byte{0x9b, 'c'})
 
 	if !bytes.Equal(filtered, []byte{0x9b, 'c'}) {
@@ -2046,14 +2046,14 @@ func TestClientFocusHandoffImmediatelyReplaysAndRedrawsWindow(t *testing.T) {
 	)
 
 	originalSignalForegroundResize := signalForegroundResize
-	originalSimulateForegroundResize := simulateForegroundResize
+	originalDeliverForegroundGeometry := deliverForegroundGeometry
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
-		simulateForegroundResize = originalSimulateForegroundResize
+		deliverForegroundGeometry = originalDeliverForegroundGeometry
 	}()
 	var simulated []string
 	signalForegroundResize = func(int) {}
-	simulateForegroundResize = func(
+	deliverForegroundGeometry = func(
 		window *muxWindow,
 		width int,
 		height int,
@@ -4564,11 +4564,11 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	inactiveWindow.history = []byte("background output")
 
 	originalSignalForegroundResize := signalForegroundResize
-	originalSimulateForegroundResize := simulateForegroundResize
+	originalDeliverForegroundGeometry := deliverForegroundGeometry
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
-		simulateForegroundResize = originalSimulateForegroundResize
+		deliverForegroundGeometry = originalDeliverForegroundGeometry
 		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
 	}()
 
@@ -4582,7 +4582,7 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 		}
 		return 0
 	}
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	deliverForegroundGeometry = func(window *muxWindow, width int, height int) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -4667,13 +4667,13 @@ func TestSelectWindowSimulatedResizeUsesLatestServerSize(t *testing.T) {
 	server.activeID = "@1"
 	server.attachConn = attach
 
-	originalSimulateForegroundResize := simulateForegroundResize
+	originalDeliverForegroundGeometry := deliverForegroundGeometry
 	defer func() {
-		simulateForegroundResize = originalSimulateForegroundResize
+		deliverForegroundGeometry = originalDeliverForegroundGeometry
 	}()
 
 	var simulated []string
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	deliverForegroundGeometry = func(window *muxWindow, width int, height int) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -5169,11 +5169,11 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	server.activeID = "@1"
 
 	originalSignalForegroundResize := signalForegroundResize
-	originalSimulateForegroundResize := simulateForegroundResize
+	originalDeliverForegroundGeometry := deliverForegroundGeometry
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
-		simulateForegroundResize = originalSimulateForegroundResize
+		deliverForegroundGeometry = originalDeliverForegroundGeometry
 		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
 	}()
 
@@ -5187,7 +5187,7 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 		}
 		return 0
 	}
-	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	deliverForegroundGeometry = func(window *muxWindow, width int, height int) {
 		simulated = append(
 			simulated,
 			fmt.Sprintf("%s:%dx%d", window.id, width, height),
@@ -5753,7 +5753,7 @@ func TestClosedUnixPtyUsesInvalidFileDescriptorSentinel(t *testing.T) {
 	}
 }
 
-func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
+func TestForcedSameSizeRedrawUsesExplicitSignalWhenAvailable(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
@@ -5796,12 +5796,14 @@ func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 		signaled = append(signaled, processGroup)
 	}
 
-	// A client "settle" forced redraw (syntheticRedraw=false) must not perform
-	// the synthetic width-1 dance: the size is already current and painted, so a
-	// dance would be a pure visible bounce. It still nudges the TUI via SIGWINCH.
+	// A client "settle" forced redraw uses SIGWINCH on this platform instead of
+	// bouncing the PTY through an intermediate size.
 	server.resizeWithRedraw(120, 40, true, false, "")
 	if len(simulated) != 0 {
-		t.Fatalf("settle redraw performed synthetic dance = %#v, want none", simulated)
+		t.Fatalf(
+			"settle redraw performed synthetic dance = %#v, want none",
+			simulated,
+		)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
@@ -5810,12 +5812,64 @@ func TestForcedSameSizeRedrawDancesOnlyForSyntheticRedraw(t *testing.T) {
 	// A restore-style forced redraw (syntheticRedraw=true) must dance so a
 	// freshly relaunched agent repaints its screen.
 	signaled = nil
+	simulated = nil
 	server.resizeWithRedraw(120, 40, true, true, "")
 	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
 		t.Fatalf("synthetic redraw dance = %#v, want [@1:120x40]", simulated)
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
+func TestShouldSimulateForegroundRedraw(t *testing.T) {
+	tests := []struct {
+		name                   string
+		forceRedraw            bool
+		syntheticRedraw        bool
+		dimensionsChanged      bool
+		supportsExplicitSignal bool
+		want                   bool
+	}{
+		{
+			name:              "normal resize",
+			dimensionsChanged: true,
+		},
+		{
+			name:                   "same-size redraw with explicit signal",
+			forceRedraw:            true,
+			supportsExplicitSignal: true,
+		},
+		{
+			name:        "same-size redraw without explicit signal",
+			forceRedraw: true,
+			want:        true,
+		},
+		{
+			name:                   "changed-size redraw without explicit signal",
+			forceRedraw:            true,
+			dimensionsChanged:      true,
+			supportsExplicitSignal: false,
+		},
+		{
+			name:              "synthetic restore redraw",
+			syntheticRedraw:   true,
+			dimensionsChanged: true,
+			want:              true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := shouldSimulateForegroundRedraw(
+				test.forceRedraw,
+				test.syntheticRedraw,
+				test.dimensionsChanged,
+				test.supportsExplicitSignal,
+			)
+			if got != test.want {
+				t.Fatalf("shouldSimulateForegroundRedraw() = %t, want %t", got, test.want)
+			}
+		})
 	}
 }
 
@@ -6167,12 +6221,12 @@ func TestForegroundRedrawTemporarySize(t *testing.T) {
 			wantOK:     true,
 		},
 		{
-			name:       "cannot shrink single cell",
+			name:       "expands single cell",
 			width:      1,
 			height:     1,
-			wantWidth:  1,
+			wantWidth:  2,
 			wantHeight: 1,
-			wantOK:     false,
+			wantOK:     true,
 		},
 	}
 	for _, test := range tests {
@@ -12025,4 +12079,105 @@ func (a testAddr) Network() string {
 
 func (a testAddr) String() string {
 	return string(a)
+}
+
+func TestReplayOmitsTheAttachOscTailStillWithheldFromLiveOutput(t *testing.T) {
+	// stripLocallyAnsweredThemeQueriesLocked withholds a partial OSC from the
+	// live stream until its tail arrives, but appendHistoryLocked keeps the
+	// whole chunk. A replay built straight from history would hand the client
+	// bytes the live stream is about to send again; for the ESC that opens an
+	// OSC 8 hyperlink that means the client receives "\x1b\x1b]8;id=..." and
+	// prints the introducer as literal text.
+	server := &muxServer{}
+	window := &muxWindow{id: "@1"}
+
+	chunkA := []byte("Seeded release: \x1b")
+	window.appendHistoryLocked(chunkA)
+	forwardedA := window.stripLocallyAnsweredThemeQueriesLocked(chunkA, nil)
+	if string(forwardedA) != "Seeded release: " {
+		t.Fatalf("forwarded first chunk = %q, want the ESC withheld", forwardedA)
+	}
+	if string(window.attachOscBuffer) != "\x1b" {
+		t.Fatalf("attach OSC buffer = %q, want the withheld ESC", window.attachOscBuffer)
+	}
+
+	replay := server.replayBytesLocked(window)
+	if !bytes.Contains(replay, []byte("Seeded release: ")) {
+		t.Fatalf("replay = %q, want it to carry the delivered history", replay)
+	}
+
+	withheld := window.attachOscBuffer
+	window.attachOscBuffer = nil
+	untrimmed := server.replayBytesLocked(window)
+	window.attachOscBuffer = withheld
+	if len(untrimmed)-len(replay) != len(withheld) {
+		t.Fatalf("replay = %q (%d bytes), untrimmed = %d bytes; want %d fewer",
+			replay, len(replay), len(untrimmed), len(withheld))
+	}
+	// The buffer is window-global while replays are per client, so it must
+	// survive: the live stream still owes those bytes to every attached client.
+	if string(window.attachOscBuffer) != "\x1b" {
+		t.Fatalf("attach OSC buffer = %q, want it kept for the live stream",
+			window.attachOscBuffer)
+	}
+
+	chunkB := []byte("]8;id=md-7nao1v;https://example.com/x\x1b\\label\x1b]8;;\x1b\\")
+	window.appendHistoryLocked(chunkB)
+	forwardedB := window.stripLocallyAnsweredThemeQueriesLocked(chunkB, nil)
+	if !bytes.HasPrefix(forwardedB, []byte("\x1b]8;")) {
+		t.Fatalf("forwarded second chunk = %q, want it to lead with the ESC", forwardedB)
+	}
+	if got := string(replay) + string(forwardedB); strings.Contains(
+		got,
+		"\x1b\x1b]8;",
+	) {
+		t.Fatalf("replay+live stream = %q, want no duplicated ESC", got)
+	}
+}
+
+func TestReplayKeepsWithheldTailWhenHistoryIsTrimmedAway(t *testing.T) {
+	// trimReplayHistoryForAttachWithParser returns nil when it finds no
+	// terminal ground state after the size-based cut, which is exactly the
+	// condition that fills attachOscBuffer: history ending mid-sequence. There
+	// is then nothing to trim, and the buffer must still be owed to the client.
+	window := &muxWindow{}
+	window.history = bytes.Repeat(
+		[]byte("\x1b_Ga=T,f=100;AAAA"),
+		1+windowReplayLimitBytes/16,
+	)
+	window.attachOscBuffer = []byte("\x1b")
+
+	history, historyStart := window.historyTailWithParserLocked()
+	trimmed := trimReplayHistoryForAttachWithParser(history, historyStart)
+	if len(trimmed) != 0 {
+		t.Skipf("replay retained history (%d bytes); nothing to assert", len(trimmed))
+	}
+
+	if got := window.withheldAttachOscSuffixTrimmedLocked(trimmed); len(got) != 0 {
+		t.Fatalf("trimmed replay = %q, want it left empty", got)
+	}
+	if string(window.attachOscBuffer) != "\x1b" {
+		t.Fatalf("attach OSC buffer = %q, want it kept when the replay omits it",
+			window.attachOscBuffer)
+	}
+}
+
+func TestWithheldAttachOscSuffixTrimmedRequiresSuffixMatch(t *testing.T) {
+	window := &muxWindow{attachOscBuffer: []byte("\x1b]11;?")}
+
+	// A snapshot taken before the partial arrived has nothing to trim.
+	if got := window.withheldAttachOscSuffixTrimmedLocked(
+		[]byte("earlier frame"),
+	); string(got) != "earlier frame" {
+		t.Fatalf("trimmed replay = %q, want it unchanged", got)
+	}
+
+	if got := window.withheldAttachOscSuffixTrimmedLocked(
+		[]byte("earlier frame\x1b]11;?"),
+	); string(got) != "earlier frame" {
+		t.Fatalf("trimmed replay = %q, want the withheld tail removed", got)
+	}
+	if string(window.attachOscBuffer) != "\x1b]11;?" {
+		t.Fatalf("attach OSC buffer = %q, want it left intact", window.attachOscBuffer)
+	}
 }

@@ -3885,9 +3885,15 @@ class MonkeyRenderTerminal extends RenderBox
     if (!_resizeTerminalToViewport) {
       _viewportSize = viewportSize;
       _viewportPixelSize = pixelSize;
+      // A shared grid that no longer matches this viewport draws content into
+      // the wrong number of cells and leaves the rest blank. The host owns the
+      // buffer size here, so re-report the viewport whenever the two disagree
+      // and let the owner correct it, instead of rendering a mismatched grid
+      // until something else happens to resize.
       if (!hasCachedViewportSize ||
           viewportSizeChanged ||
           pixelSizeChanged ||
+          terminalNeedsResize ||
           notifyIfUnchanged) {
         _notifyTerminalResizeIfNeeded(
           viewportSize: viewportSize,

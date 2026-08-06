@@ -250,5 +250,95 @@ void main() {
         verify(handler.graphicsCommandEnd()).called(1);
       });
     });
+
+    group('ESC re-enters the escape state', () {
+      // ECMA-48/VT500: an ESC aborts whatever sequence is being collected and
+      // starts a new one. Swallowing it instead lets a duplicated or stray ESC
+      // turn the sequence that follows into visible garbage, e.g. `ESC ESC ] 8
+      // ; id=...` printing the hyperlink introducer as literal text.
+      test('duplicated ESC still dispatches the OSC that follows', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write(
+          '\x1b\x1b]8;id=md-7nao1v;https://example.com/x\x1b\\',
+        );
+        verify(
+          handler.unknownOSC('8', ['id=md-7nao1v', 'https://example.com/x']),
+        ).called(1);
+        verifyNever(handler.writeChar(0x5d)); // ']'
+      });
+
+      test('duplicated ESC still dispatches the CSI that follows', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b\x1b[38;5;214m');
+        verify(handler.setForegroundColor256(214)).called(1);
+        verifyNever(handler.writeChar(0x5b)); // '['
+      });
+
+      test('ESC ends a truncated CSI instead of being absorbed by it', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b[38;5\x1b]0;title\x07');
+        verify(handler.setTitle('title')).called(1);
+      });
+
+      test('ESC ends a truncated OSC instead of swallowing the next escape',
+          () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b]0;trunc\x1b]2;title\x07');
+        verify(handler.setTitle('title')).called(1);
+        verifyNever(handler.setTitle('trunc'));
+      });
+
+      test('a truncated OSC does not dispatch its partial parameters', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b]8;id=x;https://cut\x1b[38;5;214m');
+        verifyNever(handler.unknownOSC(any, any));
+        verify(handler.setForegroundColor256(214)).called(1);
+      });
+
+      test('ESC ends a truncated APC instead of swallowing the next escape',
+          () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b_Ga=T;aGk\x1b]2;title\x07');
+        verify(handler.setTitle('title')).called(1);
+        verifyNever(handler.graphicsCommandStart(captureAny));
+      });
+
+      test('ESC ends a truncated DCS instead of swallowing the next escape',
+          () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1bP+q544\x1b]2;title\x07');
+        verify(handler.setTitle('title')).called(1);
+        verifyNever(handler.sendTermcapReport(any));
+      });
+
+      test('ESC is not taken as a charset designation name', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b(\x1b]2;title\x07');
+        verify(handler.setTitle('title')).called(1);
+        verifyNever(handler.designateCharset(any, any));
+      });
+
+      test('an aborted APC cancels an open m=1 graphics transmission', () {
+        // Without the cancel, `_graphicsActive` stays set and Terminal swallows
+        // the next image's args as a continuation of the broken transmission.
+        final handler = MockEscapeHandler();
+        final parser = EscapeParser(handler)
+          ..write('\x1b_Ga=T,f=100,m=1;AAAA\x1b\\')
+          ..write('\x1b_Gm=0;BBBB\x1b[0m');
+        verify(handler.graphicsCommandAbort()).called(1);
+        verifyNever(handler.graphicsCommandEnd());
+
+        parser.write('\x1b_Ga=T,f=100;CCCC\x1b\\');
+        verify(handler.graphicsCommandEnd()).called(1);
+      });
+
+      test('a trailing lone ESC is still buffered across writes', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler)
+          ..write('\x1b\x1b')
+          ..write(']2;title\x07');
+        verify(handler.setTitle('title')).called(1);
+      });
+    });
   });
 }
