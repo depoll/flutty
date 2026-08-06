@@ -6573,12 +6573,41 @@ func TestAttachInputDropsFocusReportsUntilActiveWindowEnablesFocus(t *testing.T)
 	}
 }
 
+func TestBracketedPasteInputPreservesFocusReportBytes(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{id: "@1", index: 0, pty: wrapPty(t, writer), lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.writeActiveFromAttachInput(
+		[]byte("\x1b[200~typed\x1b[I\x1b[Oinput\x1b[201~"),
+		true,
+	)
+	if err := window.pty.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(output); got != "\x1b[200~typed\x1b[I\x1b[Oinput\x1b[201~" {
+		t.Fatalf("pty input = %q, want opaque bracketed paste", got)
+	}
+}
+
 func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T) {
 	server := newMuxServer("test")
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer reader.Close()
 	window := &muxWindow{
 		id:               "@1",
@@ -6601,6 +6630,30 @@ func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T)
 
 	if got := string(output); got != "typed\x1b[I\x1b[Oinput" {
 		t.Fatalf("pty input = %q, want focus reports preserved", got)
+	}
+}
+
+func TestAmbiguousInputPastePrefixEncoding(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{name: "standalone escape stays a physical key", data: []byte{0x1b}},
+		{name: "partial seven bit marker", data: []byte("\x1b[20"), want: true},
+		{name: "partial eight bit marker", data: []byte{0x9b, '2'}, want: true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := shouldEncodeAmbiguousInputAsPastePrefix(testCase.data); got != testCase.want {
+				t.Fatalf(
+					"shouldEncodeAmbiguousInputAsPastePrefix(%q) = %t, want %t",
+					testCase.data,
+					got,
+					testCase.want,
+				)
+			}
+		})
 	}
 }
 

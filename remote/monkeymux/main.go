@@ -6205,7 +6205,10 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		_ = s.handleAttachInput(client, data)
 	}
 	client.inputPastePrefixPassthrough = func(data []byte) {
-		s.writeActiveFromAttachInput(data, true)
+		s.writeActiveFromAttachInput(
+			data,
+			shouldEncodeAmbiguousInputAsPastePrefix(data),
+		)
 	}
 	s.attachTransitionMu.Lock()
 	attachTransitionLocked := true
@@ -6375,6 +6378,10 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 			return
 		}
 	}
+}
+
+func shouldEncodeAmbiguousInputAsPastePrefix(data []byte) bool {
+	return len(data) > 1 || len(data) == 1 && data[0] != 0x1b
 }
 
 func (s *muxServer) handleControl(conn net.Conn, reader *bufio.Reader) {
@@ -9133,7 +9140,7 @@ func (s *muxServer) writeActiveFromAttachInput(
 	window := s.windowByIDLocked(windowID)
 	stripFocusReports := window == nil || !window.focusModeActiveLocked()
 	s.mu.Unlock()
-	if stripFocusReports {
+	if stripFocusReports && !bracketedPaste {
 		data = stripFocusReportsFromAttachInput(data)
 		if len(data) == 0 {
 			return
