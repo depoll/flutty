@@ -857,6 +857,11 @@ type attachClient struct {
 	focusClaim                            func(uint64)
 	inputPassthrough                      func([]byte)
 	inputDispatchMu                       sync.Mutex
+	inputQueueMu                          sync.Mutex
+	inputQueue                            []attachInputAction
+	inputQueueReady                       chan struct{}
+	inputQueuedBytes                      int
+	inputQueueClosed                      bool
 	replayMu                              sync.Mutex
 	replayedWindowID                      string
 	replayedOutputGeneration              uint64
@@ -4675,17 +4680,18 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 		terminalHeight = 0
 	}
 	client := &attachClient{
-		conn:           conn,
-		id:             clientID,
-		width:          hello.Width,
-		height:         hello.Height,
-		terminalWidth:  terminalWidth,
-		terminalHeight: terminalHeight,
-		clipViewport:   hello.ClipViewport,
-		prefixEnabled:  !hello.NoPrefix,
-		capabilityHint: capabilityHintDataFromString(hello.CapabilityHint),
-		queueReady:     make(chan struct{}, 1),
-		done:           make(chan struct{}),
+		conn:            conn,
+		id:              clientID,
+		width:           hello.Width,
+		height:          hello.Height,
+		terminalWidth:   terminalWidth,
+		terminalHeight:  terminalHeight,
+		clipViewport:    hello.ClipViewport,
+		prefixEnabled:   !hello.NoPrefix,
+		capabilityHint:  capabilityHintDataFromString(hello.CapabilityHint),
+		queueReady:      make(chan struct{}, 1),
+		inputQueueReady: make(chan struct{}, 1),
+		done:            make(chan struct{}),
 	}
 	go client.writeLoop()
 	return client
@@ -4771,6 +4777,7 @@ func (c *attachClient) failQueuedWrites(err error) {
 			c.queueMu.Unlock()
 			return
 		}
+
 		write := c.queue[0]
 		c.queue[0] = attachWrite{}
 		c.queue = c.queue[1:]
@@ -4779,6 +4786,58 @@ func (c *attachClient) failQueuedWrites(err error) {
 		if write.complete != nil {
 			write.complete <- err
 			close(write.complete)
+		}
+	}
+}
+
+func (c *attachClient) enqueueInputActions(actions []attachInputAction) bool {
+	if len(actions) == 0 {
+		return true
+	}
+	addedBytes := 0
+	for _, action := range actions {
+		addedBytes += len(action.data)
+	}
+	c.inputQueueMu.Lock()
+	if c.inputQueueClosed ||
+		c.inputQueuedBytes+addedBytes > attachWriteQueueLimitBytes {
+		c.inputQueueMu.Unlock()
+		c.close()
+		return false
+	}
+	queueWasEmpty := len(c.inputQueue) == 0
+	c.inputQueuedBytes += addedBytes
+	c.inputQueue = append(c.inputQueue, actions...)
+	c.inputQueueMu.Unlock()
+	if queueWasEmpty {
+		select {
+		case c.inputQueueReady <- struct{}{}:
+		default:
+		}
+	}
+	return true
+}
+
+func (c *attachClient) nextInputAction() (attachInputAction, bool) {
+	for {
+		c.inputQueueMu.Lock()
+		if len(c.inputQueue) > 0 {
+			action := c.inputQueue[0]
+			c.inputQueue[0] = attachInputAction{}
+			c.inputQueue = c.inputQueue[1:]
+			c.inputQueuedBytes -= len(action.data)
+			c.inputQueueMu.Unlock()
+			return action, true
+		}
+		if c.inputQueueClosed {
+			c.inputQueueMu.Unlock()
+			return attachInputAction{}, false
+		}
+		c.inputQueueMu.Unlock()
+		select {
+		case <-c.inputQueueReady:
+		case <-c.done:
+			return attachInputAction{}, false
 		}
 	}
 }
@@ -4906,8 +4965,11 @@ func (c *attachClient) close() {
 	c.closeOnce.Do(func() {
 		c.queueMu.Lock()
 		c.queueClosed = true
-		close(c.done)
 		c.queueMu.Unlock()
+		c.inputQueueMu.Lock()
+		c.inputQueueClosed = true
+		c.inputQueueMu.Unlock()
+		close(c.done)
 		_ = c.conn.Close()
 	})
 }
@@ -6146,8 +6208,12 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.focusAttachClientIfUnchanged(client, expectedFocusSequence)
 	}
 	client.inputPassthrough = func(data []byte) {
-		_ = s.handleAttachInput(client, data)
+		client.enqueueInputActions([]attachInputAction{{
+			userInput: true,
+			data:      append([]byte(nil), data...),
+		}})
 	}
+	go s.runAttachInputActions(client)
 	s.attachTransitionMu.Lock()
 	attachTransitionLocked := true
 	defer func() {
@@ -6288,33 +6354,40 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 			if routing.claimsFocus {
 				s.promoteAttachClient(client)
 			}
-			shouldClose := false
-			for _, action := range routing.actions {
-				if action.userInput {
-					if s.handleAttachInputSerialized(
-						client,
-						action.data,
-						action.bracketedPaste,
-					) {
-						shouldClose = true
-						break
-					}
-					continue
-				}
-				if action.windowID == "" {
-					s.writeActiveFromAttach(action.data)
-					continue
-				}
-				_ = s.writeWindow(action.windowID, action.data)
-			}
+			enqueued := client.enqueueInputActions(routing.actions)
 			client.inputDispatchMu.Unlock()
-			if shouldClose {
+			if !enqueued {
 				return
 			}
 		}
 		if err != nil {
 			return
 		}
+	}
+}
+
+func (s *muxServer) runAttachInputActions(client *attachClient) {
+	for {
+		action, ok := client.nextInputAction()
+		if !ok {
+			return
+		}
+		if action.userInput {
+			if s.handleAttachInputSerialized(
+				client,
+				action.data,
+				action.bracketedPaste,
+			) {
+				client.close()
+				return
+			}
+			continue
+		}
+		if action.windowID == "" {
+			s.writeActiveFromAttach(action.data)
+			continue
+		}
+		_ = s.writeWindow(action.windowID, action.data)
 	}
 }
 

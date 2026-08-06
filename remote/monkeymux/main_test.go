@@ -6636,6 +6636,55 @@ func TestBracketedPasteInputPreservesFocusReportBytes(t *testing.T) {
 	}
 }
 
+func TestBlockedInputWriteDoesNotBlockTerminalResponseRegistration(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{id: "@1", index: 0, pty: wrapPty(t, writer), lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	clientConn, peerConn := net.Pipe()
+	defer peerConn.Close()
+	client := &attachClient{
+		conn:            clientConn,
+		inputQueueReady: make(chan struct{}, 1),
+		done:            make(chan struct{}),
+	}
+	go server.runAttachInputActions(client)
+	if !client.enqueueInputActions([]attachInputAction{{
+		userInput: true,
+		data:      bytes.Repeat([]byte{'x'}, 1024*1024),
+	}}) {
+		t.Fatal("could not enqueue blocking input action")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for client.inputMu.TryLock() {
+		client.inputMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("input worker did not enter the blocking pty write")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	registered := make(chan struct{})
+	go func() {
+		client.expectTerminalResponse("@1")
+		close(registered)
+	}()
+	select {
+	case <-registered:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("terminal response registration blocked behind pty input")
+	}
+
+	_ = window.pty.Close()
+	client.close()
+}
+
 func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T) {
 	server := newMuxServer("test")
 	reader, writer, err := os.Pipe()
