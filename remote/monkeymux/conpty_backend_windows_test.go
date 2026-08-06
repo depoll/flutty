@@ -268,7 +268,7 @@ func TestAmbiguousPasteStartFlushesAsOrdinaryInput(t *testing.T) {
 	passthrough := make(chan []byte, 1)
 	claims := make(chan uint64, 1)
 	client := &attachClient{
-		inputPastePrefixPassthrough: func(data []byte) {
+		inputPassthrough: func(data []byte) {
 			passthrough <- append([]byte(nil), data...)
 		},
 		focusSequenceSnapshot: func() uint64 {
@@ -301,10 +301,10 @@ func TestAmbiguousPasteStartFlushesAsOrdinaryInput(t *testing.T) {
 	}
 }
 
-func TestLateSplitPasteStartStaysClassified(t *testing.T) {
+func TestLateSplitPasteStartAfterTimeoutStaysOrdinary(t *testing.T) {
 	flushed := make(chan []byte, 1)
 	client := &attachClient{
-		inputPastePrefixPassthrough: func(data []byte) {
+		inputPassthrough: func(data []byte) {
 			flushed <- append([]byte(nil), data...)
 		},
 	}
@@ -323,12 +323,12 @@ func TestLateSplitPasteStartStaysClassified(t *testing.T) {
 
 	routing := client.routeInput([]byte("[200~hello\x1b[201~"))
 	if len(routing.actions) != 1 ||
-		!routing.actions[0].bracketedPaste ||
+		routing.actions[0].bracketedPaste ||
 		!bytes.Equal(
 			routing.actions[0].data,
 			[]byte("[200~hello\x1b[201~"),
 		) {
-		t.Fatalf("late split paste routing = %#v", routing)
+		t.Fatalf("late split ordinary routing = %#v", routing)
 	}
 }
 
