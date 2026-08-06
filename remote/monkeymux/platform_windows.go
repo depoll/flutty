@@ -740,6 +740,9 @@ func terminateProcessID(pid int) {
 	_ = windows.TerminateProcess(handle, 1)
 }
 
+const supportsExplicitForegroundResizeSignal = false
+const prefersVerticalForegroundRedrawResize = true
+
 // signalForegroundResize is a no-op on Windows: ResizePseudoConsole already
 // notifies the attached child of size changes.
 var signalForegroundResize = func(processGroup int) {}

@@ -3631,6 +3631,12 @@ class SshSession {
   /// The persistent terminal for this session. Created on first shell open.
   Terminal? get terminal => _runtime.terminal;
 
+  /// Monotonic count of shell output chunks received from the remote.
+  ///
+  /// Callers use it as evidence that the remote actually sent something, so a
+  /// repaint can be demanded only when one demonstrably never arrived.
+  int get shellOutputChunkSequence => _runtime.shellOutputChunkSequence;
+
   /// A plain-text preview of the latest terminal content.
   String? get terminalPreview => _terminalPreview;
 
