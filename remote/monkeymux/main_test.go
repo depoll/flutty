@@ -3203,15 +3203,11 @@ func TestExpiredHeldResponsePrefixIsPassedThroughBeforeRenewal(t *testing.T) {
 	close(client.done)
 }
 
-func TestExpiredResponseSeparatesForwardedPastePrefix(t *testing.T) {
+func TestExpiredResponseFlushesAmbiguousPrefixAsOrdinaryInput(t *testing.T) {
 	ordinary := make(chan []byte, 1)
-	pastePrefix := make(chan []byte, 1)
 	client := &attachClient{
 		inputPassthrough: func(data []byte) {
 			ordinary <- append([]byte(nil), data...)
-		},
-		inputPastePrefixPassthrough: func(data []byte) {
-			pastePrefix <- append([]byte(nil), data...)
 		},
 	}
 	client.activityMu.Lock()
@@ -3224,29 +3220,21 @@ func TestExpiredResponseSeparatesForwardedPastePrefix(t *testing.T) {
 
 	select {
 	case data := <-ordinary:
-		if !bytes.Equal(data, []byte("reply")) {
-			t.Fatalf("ordinary expired input = %q, want reply", data)
+		if !bytes.Equal(data, []byte("reply\x1b[20")) {
+			t.Fatalf("ordinary expired input = %q, want reply + ESC[20", data)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for ordinary expired input")
 	}
-	select {
-	case data := <-pastePrefix:
-		if !bytes.Equal(data, []byte("\x1b[20")) {
-			t.Fatalf("expired paste prefix = %q, want ESC[20", data)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for expired paste prefix")
-	}
 
 	routing := client.routeInput([]byte("0~hello\x1b[201~"))
 	if len(routing.actions) != 1 ||
-		!routing.actions[0].bracketedPaste ||
+		routing.actions[0].bracketedPaste ||
 		!bytes.Equal(
 			routing.actions[0].data,
 			[]byte("0~hello\x1b[201~"),
 		) {
-		t.Fatalf("late paste remainder routing = %#v", routing)
+		t.Fatalf("late ordinary remainder routing = %#v", routing)
 	}
 }
 
@@ -6677,30 +6665,6 @@ func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T)
 
 	if got := string(output); got != "typed\x1b[I\x1b[Oinput" {
 		t.Fatalf("pty input = %q, want focus reports preserved", got)
-	}
-}
-
-func TestAmbiguousInputPastePrefixEncoding(t *testing.T) {
-	cases := []struct {
-		name string
-		data []byte
-		want bool
-	}{
-		{name: "standalone escape stays a physical key", data: []byte{0x1b}},
-		{name: "partial seven bit marker", data: []byte("\x1b[20"), want: true},
-		{name: "partial eight bit marker", data: []byte{0x9b, '2'}, want: true},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			if got := shouldEncodeAmbiguousInputAsPastePrefix(testCase.data); got != testCase.want {
-				t.Fatalf(
-					"shouldEncodeAmbiguousInputAsPastePrefix(%q) = %t, want %t",
-					testCase.data,
-					got,
-					testCase.want,
-				)
-			}
-		})
 	}
 }
 
