@@ -1,8 +1,6 @@
-What's new in 0.3.2
+What's new in 0.3.3
 
-- Launch presets for Pi, Hermes, and OpenClaw join the existing agent family.
-- Terminal info now shows the active MonkeyMux helper version.
-- MonkeyMux reconnect keeps your session instead of starting over.
-- Windows remotes: session titles, Escape key, Kitty graphics, and steadier redraws.
-- Bracketed paste and terminal capability handling are more reliable.
-- Stability fixes for window switching, control-channel recovery, and agent detection.
+- Pasting into Windows remotes keeps bracketed paste intact, so editors and agents treat it as a paste instead of typed keystrokes.
+- Links no longer show up as stray escape text in the terminal.
+- Escape stays responsive while a paste is still arriving.
+- Keystrokes arrive in order when attaching to a MonkeyMux window.
