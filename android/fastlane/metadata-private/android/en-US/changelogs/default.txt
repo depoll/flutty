@@ -3,4 +3,4 @@ What's new in this 0.3.3 beta
 - Windows remotes keep bracketed paste intact.
 - Links no longer render as stray escape text.
 - Escape stays responsive while a paste is arriving.
-- Keystrokes arrive in order when attaching a MonkeyMux window.
+- Keystrokes arrive in order when attaching to a MonkeyMux window.
