@@ -1,8 +1,6 @@
-What's new in this 0.3.2 beta
+What's new in this 0.3.3 beta
 
-- Launch presets for Pi, Hermes, and OpenClaw.
-- Mux version shown in terminal info.
-- MonkeyMux reconnect preserves your session.
-- Windows remotes: titles, Escape, Kitty graphics, steadier redraws.
-- More reliable paste and capability handling.
-- Window switching and control-channel stability fixes.
+- Windows remotes keep bracketed paste intact.
+- Links no longer render as stray escape text.
+- Escape stays responsive while a paste is arriving.
+- Keystrokes arrive in order when attaching a MonkeyMux window.
