@@ -3203,6 +3203,41 @@ func TestExpiredHeldResponsePrefixIsPassedThroughBeforeRenewal(t *testing.T) {
 	close(client.done)
 }
 
+func TestExpiredResponseFlushesAmbiguousPrefixAsOrdinaryInput(t *testing.T) {
+	ordinary := make(chan []byte, 1)
+	client := &attachClient{
+		inputPassthrough: func(data []byte) {
+			ordinary <- append([]byte(nil), data...)
+		},
+	}
+	client.activityMu.Lock()
+	client.terminalResponseCarry = []byte("reply")
+	client.terminalResponsePasteStartCarry = []byte("\x1b[20")
+	client.terminalResponseUntil = time.Now().Add(-time.Second)
+	client.activityMu.Unlock()
+
+	client.expectTerminalResponse("@2")
+
+	select {
+	case data := <-ordinary:
+		if !bytes.Equal(data, []byte("reply\x1b[20")) {
+			t.Fatalf("ordinary expired input = %q, want reply + ESC[20", data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ordinary expired input")
+	}
+
+	routing := client.routeInput([]byte("0~hello\x1b[201~"))
+	if len(routing.actions) != 1 ||
+		routing.actions[0].bracketedPaste ||
+		!bytes.Equal(
+			routing.actions[0].data,
+			[]byte("0~hello\x1b[201~"),
+		) {
+		t.Fatalf("late ordinary remainder routing = %#v", routing)
+	}
+}
+
 func TestBracketedPasteStartIndex(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -3694,14 +3729,17 @@ func TestSplitPasteStartAfterUserInputActivatesOpaquePaste(t *testing.T) {
 
 	first := []byte("abc\x1b[20")
 	firstRouting := client.routeInput(first)
-	if !bytes.Equal(firstRouting.passthrough, first) ||
+	if !bytes.Equal(firstRouting.passthrough, []byte("abc")) ||
 		len(firstRouting.responses) != 0 {
 		t.Fatalf("partial user paste start routing = %#v", firstRouting)
 	}
 	second := []byte("0~/tmp/a")
 	secondRouting := client.routeInput(second)
-	if !bytes.Equal(secondRouting.passthrough, second) ||
-		len(secondRouting.responses) != 0 {
+	wantSecond := []byte("\x1b[200~/tmp/a")
+	if !bytes.Equal(secondRouting.passthrough, wantSecond) ||
+		len(secondRouting.responses) != 0 ||
+		len(secondRouting.actions) != 1 ||
+		!secondRouting.actions[0].bracketedPaste {
 		t.Fatalf("completed user paste start routing = %#v", secondRouting)
 	}
 	fakeResponseAndEnd := []byte("\x1b[?62;4c.png\x1b[201~")
@@ -6570,12 +6608,90 @@ func TestAttachInputDropsFocusReportsUntilActiveWindowEnablesFocus(t *testing.T)
 	}
 }
 
+func TestBracketedPasteInputPreservesFocusReportBytes(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{id: "@1", index: 0, pty: wrapPty(t, writer), lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.writeActiveFromAttachInput(
+		[]byte("\x1b[200~typed\x1b[I\x1b[Oinput\x1b[201~"),
+		true,
+	)
+	if err := window.pty.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(output); got != "\x1b[200~typed\x1b[I\x1b[Oinput\x1b[201~" {
+		t.Fatalf("pty input = %q, want opaque bracketed paste", got)
+	}
+}
+
+func TestBlockedInputWriteDoesNotBlockTerminalResponseRegistration(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{id: "@1", index: 0, pty: wrapPty(t, writer), lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	clientConn, peerConn := net.Pipe()
+	defer peerConn.Close()
+	client := &attachClient{
+		conn:            clientConn,
+		inputQueueReady: make(chan struct{}, 1),
+		done:            make(chan struct{}),
+	}
+	go server.runAttachInputActions(client)
+	if !client.enqueueInputActions([]attachInputAction{{
+		userInput: true,
+		data:      bytes.Repeat([]byte{'x'}, 1024*1024),
+	}}) {
+		t.Fatal("could not enqueue blocking input action")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for client.inputMu.TryLock() {
+		client.inputMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("input worker did not enter the blocking pty write")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	registered := make(chan struct{})
+	go func() {
+		client.expectTerminalResponse("@1")
+		close(registered)
+	}()
+	select {
+	case <-registered:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("terminal response registration blocked behind pty input")
+	}
+
+	_ = window.pty.Close()
+	client.close()
+}
+
 func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T) {
 	server := newMuxServer("test")
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer reader.Close()
 	window := &muxWindow{
 		id:               "@1",
@@ -8116,6 +8232,22 @@ func TestEncodeTerminalInputForWin32InputMode(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestEncodeBracketedPasteInputForWin32InputMode(t *testing.T) {
+	input := "\x1b[200~hello\x1b[?62;4c\x1b[201~"
+	want := win32InputModeEscapeCharacterEvent + "[200~hello" +
+		win32InputModeEscapeCharacterEvent + "[?62;4c" +
+		win32InputModeEscapeCharacterEvent + "[201~"
+	got := string(encodeBracketedPasteInputForWin32InputMode([]byte(input)))
+	if got != want {
+		t.Fatalf(
+			"encodeBracketedPasteInputForWin32InputMode(%q) = %q, want %q",
+			input,
+			got,
+			want,
+		)
 	}
 }
 

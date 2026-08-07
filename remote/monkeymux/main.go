@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.142"
+	monkeyMuxVersion                  = "0.1.143"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -73,6 +73,7 @@ const (
 	attachWriteChunkBytes             = 32 * 1024
 	terminalResponseFocusGrace        = 2 * time.Second
 	focusInputCarryDelay              = 75 * time.Millisecond
+	bracketedPasteStartCarryDelay     = 20 * time.Millisecond
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
 	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
 	windowUpdateMinInterval           = 750 * time.Millisecond
@@ -770,9 +771,10 @@ type routedTerminalResponse struct {
 }
 
 type attachInputAction struct {
-	userInput bool
-	windowID  string
-	data      []byte
+	userInput      bool
+	bracketedPaste bool
+	windowID       string
+	data           []byte
 }
 
 type attachInputRouting struct {
@@ -797,7 +799,7 @@ func (r *attachInputRouting) addResponse(windowID string, data []byte) {
 	)
 }
 
-func (r *attachInputRouting) addUserInput(data []byte) {
+func (r *attachInputRouting) addUserInput(data []byte, bracketedPaste bool) {
 	if len(data) == 0 {
 		return
 	}
@@ -805,7 +807,11 @@ func (r *attachInputRouting) addUserInput(data []byte) {
 	r.passthrough = append(r.passthrough, copied...)
 	r.actions = append(
 		r.actions,
-		attachInputAction{userInput: true, data: copied},
+		attachInputAction{
+			userInput:      true,
+			bracketedPaste: bracketedPaste,
+			data:           copied,
+		},
 	)
 }
 
@@ -822,35 +828,43 @@ type attachClient struct {
 	// a client that sends no hint (an older helper, or a plain terminal running
 	// `monkeymux attach`) must not have a previous client's identity advertised
 	// on its behalf.
-	capabilityHint                     []byte
-	sequence                           uint64
-	focusSequence                      atomic.Uint64
-	prefixEnabled                      bool
-	prefixPending                      bool
-	confirmCloseID                     string
-	inputMu                            sync.Mutex
-	activityMu                         sync.Mutex
-	terminalResponseUntil              time.Time
-	terminalResponseCarry              []byte
-	terminalResponseContinuation       byte
-	terminalResponseContinuationEscape bool
-	terminalResponseContinuationUtf8   int
-	terminalResponsePasteStartCarry    []byte
-	terminalResponseWindows            []string
-	terminalResponseActiveWindow       string
-	terminalResponseCarryGeneration    uint64
-	inputUtf8Remaining                 int
-	inputBracketedPasteStartCarry      []byte
-	inputBracketedPasteActive          bool
-	inputBracketedPasteEndCarry        []byte
-	focusInputCarry                    []byte
-	focusInputGeneration               uint64
-	focusSequenceSnapshot              func() uint64
-	focusClaim                         func(uint64)
-	inputPassthrough                   func([]byte)
-	replayMu                           sync.Mutex
-	replayedWindowID                   string
-	replayedOutputGeneration           uint64
+	capabilityHint                        []byte
+	sequence                              uint64
+	focusSequence                         atomic.Uint64
+	prefixEnabled                         bool
+	prefixPending                         bool
+	confirmCloseID                        string
+	inputMu                               sync.Mutex
+	activityMu                            sync.Mutex
+	terminalResponseUntil                 time.Time
+	terminalResponseCarry                 []byte
+	terminalResponseContinuation          byte
+	terminalResponseContinuationEscape    bool
+	terminalResponseContinuationUtf8      int
+	terminalResponsePasteStartCarry       []byte
+	terminalResponseWindows               []string
+	terminalResponseActiveWindow          string
+	terminalResponseCarryGeneration       uint64
+	inputUtf8Remaining                    int
+	inputBracketedPasteStartCarry         []byte
+	inputBracketedPasteCarryGeneration    uint64
+	inputBracketedPasteCarryFocusSequence uint64
+	inputBracketedPasteActive             bool
+	inputBracketedPasteEndCarry           []byte
+	focusInputCarry                       []byte
+	focusInputGeneration                  uint64
+	focusSequenceSnapshot                 func() uint64
+	focusClaim                            func(uint64)
+	inputPassthrough                      func([]byte)
+	inputDispatchMu                       sync.Mutex
+	inputQueueMu                          sync.Mutex
+	inputQueue                            []attachInputAction
+	inputQueueReady                       chan struct{}
+	inputQueuedBytes                      int
+	inputQueueClosed                      bool
+	replayMu                              sync.Mutex
+	replayedWindowID                      string
+	replayedOutputGeneration              uint64
 
 	queue       []attachWrite
 	queueReady  chan struct{}
@@ -4666,17 +4680,18 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 		terminalHeight = 0
 	}
 	client := &attachClient{
-		conn:           conn,
-		id:             clientID,
-		width:          hello.Width,
-		height:         hello.Height,
-		terminalWidth:  terminalWidth,
-		terminalHeight: terminalHeight,
-		clipViewport:   hello.ClipViewport,
-		prefixEnabled:  !hello.NoPrefix,
-		capabilityHint: capabilityHintDataFromString(hello.CapabilityHint),
-		queueReady:     make(chan struct{}, 1),
-		done:           make(chan struct{}),
+		conn:            conn,
+		id:              clientID,
+		width:           hello.Width,
+		height:          hello.Height,
+		terminalWidth:   terminalWidth,
+		terminalHeight:  terminalHeight,
+		clipViewport:    hello.ClipViewport,
+		prefixEnabled:   !hello.NoPrefix,
+		capabilityHint:  capabilityHintDataFromString(hello.CapabilityHint),
+		queueReady:      make(chan struct{}, 1),
+		inputQueueReady: make(chan struct{}, 1),
+		done:            make(chan struct{}),
 	}
 	go client.writeLoop()
 	return client
@@ -4762,6 +4777,7 @@ func (c *attachClient) failQueuedWrites(err error) {
 			c.queueMu.Unlock()
 			return
 		}
+
 		write := c.queue[0]
 		c.queue[0] = attachWrite{}
 		c.queue = c.queue[1:]
@@ -4770,6 +4786,58 @@ func (c *attachClient) failQueuedWrites(err error) {
 		if write.complete != nil {
 			write.complete <- err
 			close(write.complete)
+		}
+	}
+}
+
+func (c *attachClient) enqueueInputActions(actions []attachInputAction) bool {
+	if len(actions) == 0 {
+		return true
+	}
+	addedBytes := 0
+	for _, action := range actions {
+		addedBytes += len(action.data)
+	}
+	c.inputQueueMu.Lock()
+	if c.inputQueueClosed ||
+		c.inputQueuedBytes+addedBytes > attachWriteQueueLimitBytes {
+		c.inputQueueMu.Unlock()
+		c.close()
+		return false
+	}
+	queueWasEmpty := len(c.inputQueue) == 0
+	c.inputQueuedBytes += addedBytes
+	c.inputQueue = append(c.inputQueue, actions...)
+	c.inputQueueMu.Unlock()
+	if queueWasEmpty {
+		select {
+		case c.inputQueueReady <- struct{}{}:
+		default:
+		}
+	}
+	return true
+}
+
+func (c *attachClient) nextInputAction() (attachInputAction, bool) {
+	for {
+		c.inputQueueMu.Lock()
+		if len(c.inputQueue) > 0 {
+			action := c.inputQueue[0]
+			c.inputQueue[0] = attachInputAction{}
+			c.inputQueue = c.inputQueue[1:]
+			c.inputQueuedBytes -= len(action.data)
+			c.inputQueueMu.Unlock()
+			return action, true
+		}
+		if c.inputQueueClosed {
+			c.inputQueueMu.Unlock()
+			return attachInputAction{}, false
+		}
+		c.inputQueueMu.Unlock()
+		select {
+		case <-c.inputQueueReady:
+		case <-c.done:
+			return attachInputAction{}, false
 		}
 	}
 }
@@ -4897,8 +4965,11 @@ func (c *attachClient) close() {
 	c.closeOnce.Do(func() {
 		c.queueMu.Lock()
 		c.queueClosed = true
-		close(c.done)
 		c.queueMu.Unlock()
+		c.inputQueueMu.Lock()
+		c.inputQueueClosed = true
+		c.inputQueueMu.Unlock()
+		close(c.done)
 		_ = c.conn.Close()
 	})
 }
@@ -4945,6 +5016,8 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 	if c == nil || windowID == "" {
 		return
 	}
+	c.inputDispatchMu.Lock()
+	defer c.inputDispatchMu.Unlock()
 	if count < 1 {
 		count = 1
 	}
@@ -4987,7 +5060,6 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 			passthrough = c.inputPassthrough
 		}
 		c.resetTerminalResponseStateLocked()
-		c.rememberForwardedBracketedPasteStartSuffixLocked(expiredInput)
 	}
 	c.terminalResponseUntil = now.Add(terminalResponseFocusGrace)
 	for range count {
@@ -5028,7 +5100,7 @@ func (c *attachClient) routeInput(data []byte) attachInputRouting {
 		return result
 	}
 	if c == nil {
-		result.addUserInput(data)
+		result.addUserInput(data, false)
 		result.claimsFocus = true
 		return result
 	}
@@ -5064,34 +5136,32 @@ func (c *attachClient) routeInputLocked(
 		)
 		combined = append(combined, c.inputBracketedPasteStartCarry...)
 		combined = append(combined, data...)
+		c.inputBracketedPasteCarryGeneration++
+		c.inputBracketedPasteCarryFocusSequence = 0
 		paste := bracketedPasteStart(combined, 0)
 		if paste.index == 0 {
-			startRemainder := paste.length -
-				len(c.inputBracketedPasteStartCarry)
 			c.inputBracketedPasteStartCarry = nil
 			pastePayloadLength := c.beginBracketedPasteLocked(
-				data[startRemainder:],
+				combined[paste.length:],
 			)
-			pasteEnd := startRemainder + pastePayloadLength
+			pasteEnd := paste.length + pastePayloadLength
 			if c.hasExpectedTerminalResponseLocked() {
 				c.renewTerminalResponseDeadlineLocked()
 			}
-			c.routeUserInputLocked(data[:pasteEnd], result)
-			c.routePostPasteInputLocked(data[pasteEnd:], result)
+			c.routeBracketedPasteInputLocked(combined[:pasteEnd], result)
+			c.routePostPasteInputLocked(combined[pasteEnd:], result)
 			return
 		}
 		if suffixLength := bracketedPasteStartSuffixLength(
 			combined,
 			0,
 		); suffixLength == len(combined) {
-			c.routeUserInputLocked(data, result)
-			c.inputBracketedPasteStartCarry = append(
-				c.inputBracketedPasteStartCarry[:0],
-				combined...,
-			)
+			c.storeBracketedPasteStartCarryLocked(combined)
 			return
 		}
 		c.inputBracketedPasteStartCarry = nil
+		c.routeInputLocked(combined, 0, result)
+		return
 	}
 	if c.inputBracketedPasteActive {
 		pasteLength := c.continueBracketedPasteLocked(
@@ -5103,7 +5173,7 @@ func (c *attachClient) routeInputLocked(
 			c.terminalResponseContinuation != 0 {
 			c.renewTerminalResponseDeadlineLocked()
 		}
-		c.routeUserInputLocked(data[:pasteLength], result)
+		c.routeBracketedPasteInputLocked(data[:pasteLength], result)
 		c.routePostPasteInputLocked(data[pasteLength:], result)
 		return
 	}
@@ -5168,6 +5238,8 @@ func (c *attachClient) routeInputLocked(
 		c.routeUserInputLockedWithUtf8Prefix(
 			data,
 			leadingInputUtf8Prefix,
+			false,
+			true,
 			result,
 		)
 		return
@@ -5426,6 +5498,8 @@ func (c *attachClient) routeInputLocked(
 	c.routeUserInputLockedWithUtf8Prefix(
 		combined[passthroughStart:],
 		userLeadingUtf8Prefix,
+		false,
+		true,
 		result,
 	)
 }
@@ -5444,7 +5518,11 @@ func (c *attachClient) routeUserInputWithPasteLocked(
 	if c.hasExpectedTerminalResponseLocked() {
 		c.renewTerminalResponseDeadlineLocked()
 	}
-	c.routeUserInputLocked(userInput[:pasteEnd], result)
+	c.routeUserInputWithoutPasteCarryLocked(
+		userInput[:pasteOffset],
+		result,
+	)
+	c.routeBracketedPasteInputLocked(userInput[pasteOffset:pasteEnd], result)
 	c.routePostPasteInputLocked(userInput[pasteEnd:], result)
 }
 
@@ -5478,31 +5556,52 @@ func (c *attachClient) routeUserInputLocked(
 	data []byte,
 	result *attachInputRouting,
 ) {
-	c.routeUserInputLockedWithUtf8Prefix(data, 0, result)
+	c.routeUserInputLockedWithUtf8Prefix(data, 0, false, true, result)
+}
+
+func (c *attachClient) routeUserInputWithoutPasteCarryLocked(
+	data []byte,
+	result *attachInputRouting,
+) {
+	c.routeUserInputLockedWithUtf8Prefix(data, 0, false, false, result)
+}
+
+func (c *attachClient) routeBracketedPasteInputLocked(
+	data []byte,
+	result *attachInputRouting,
+) {
+	c.routeUserInputLockedWithUtf8Prefix(data, 0, true, false, result)
 }
 
 func (c *attachClient) routeUserInputLockedWithUtf8Prefix(
 	data []byte,
 	leadingUtf8Prefix int,
+	bracketedPaste bool,
+	holdPasteStart bool,
 	result *attachInputRouting,
 ) {
 	if len(data) == 0 {
 		return
 	}
-	result.addUserInput(data)
-	if !c.inputBracketedPasteActive {
+	if holdPasteStart {
 		if suffixLength := bracketedPasteStartSuffixLength(
 			data,
 			leadingUtf8Prefix,
 		); suffixLength > 0 {
-			c.inputBracketedPasteStartCarry = append(
-				c.inputBracketedPasteStartCarry[:0],
-				data[len(data)-suffixLength:]...,
+			c.storeBracketedPasteStartCarryLocked(
+				data[len(data)-suffixLength:],
 			)
+			data = data[:len(data)-suffixLength]
 		} else {
 			c.inputBracketedPasteStartCarry = nil
+			c.inputBracketedPasteCarryGeneration++
+			c.inputBracketedPasteCarryFocusSequence = 0
 		}
 	}
+	if len(data) == 0 {
+		return
+	}
+	result.addUserInput(data, bracketedPaste)
 	c.focusInputGeneration++
 	focusGeneration := c.focusInputGeneration
 	combinedFocusInput := data
@@ -5528,6 +5627,64 @@ func (c *attachClient) routeUserInputLockedWithUtf8Prefix(
 		})
 	}
 	result.claimsFocus = result.claimsFocus || len(filteredInput) > 0
+}
+
+func (c *attachClient) storeBracketedPasteStartCarryLocked(data []byte) {
+	c.inputBracketedPasteStartCarry = append(
+		c.inputBracketedPasteStartCarry[:0],
+		data...,
+	)
+	c.inputBracketedPasteCarryGeneration++
+	if c.focusSequenceSnapshot != nil {
+		c.inputBracketedPasteCarryFocusSequence = c.focusSequenceSnapshot()
+	} else {
+		c.inputBracketedPasteCarryFocusSequence = 0
+	}
+	generation := c.inputBracketedPasteCarryGeneration
+	time.AfterFunc(bracketedPasteStartCarryDelay, func() {
+		c.resolveAmbiguousBracketedPasteStart(generation)
+	})
+}
+
+func (c *attachClient) resolveAmbiguousBracketedPasteStart(generation uint64) {
+	c.inputDispatchMu.Lock()
+	defer c.inputDispatchMu.Unlock()
+	c.activityMu.Lock()
+	if c.inputBracketedPasteCarryGeneration != generation ||
+		len(c.inputBracketedPasteStartCarry) == 0 {
+		c.activityMu.Unlock()
+		return
+	}
+	if c.inputBracketedPasteActive {
+		c.inputBracketedPasteCarryGeneration++
+		nextGeneration := c.inputBracketedPasteCarryGeneration
+		time.AfterFunc(bracketedPasteStartCarryDelay, func() {
+			c.resolveAmbiguousBracketedPasteStart(nextGeneration)
+		})
+		c.activityMu.Unlock()
+		return
+	}
+	c.inputMu.Lock()
+	data := append([]byte(nil), c.inputBracketedPasteStartCarry...)
+	c.inputBracketedPasteStartCarry = nil
+	c.inputBracketedPasteCarryGeneration++
+	focusSequence := c.inputBracketedPasteCarryFocusSequence
+	c.inputBracketedPasteCarryFocusSequence = 0
+	claim := c.focusClaim
+	passthrough := c.inputPassthrough
+	c.activityMu.Unlock()
+	c.inputMu.Unlock()
+	select {
+	case <-c.done:
+		return
+	default:
+	}
+	if claim != nil {
+		claim(focusSequence)
+	}
+	if passthrough != nil {
+		passthrough(data)
+	}
 }
 
 func (c *attachClient) hasExpectedTerminalResponseLocked() bool {
@@ -5582,6 +5739,8 @@ func (c *attachClient) resolveAmbiguousTerminalResponseInput(
 	generation uint64,
 	focusSequence uint64,
 ) {
+	c.inputDispatchMu.Lock()
+	defer c.inputDispatchMu.Unlock()
 	c.activityMu.Lock()
 	if c.terminalResponseCarryGeneration != generation ||
 		(len(c.terminalResponseCarry) == 0 &&
@@ -5610,7 +5769,6 @@ func (c *attachClient) resolveAmbiguousTerminalResponseInput(
 		time.Now().After(c.terminalResponseUntil) {
 		c.resetTerminalResponseStateLocked()
 	}
-	c.rememberForwardedBracketedPasteStartSuffixLocked(data)
 	claim := c.focusClaim
 	passthrough := c.inputPassthrough
 	c.activityMu.Unlock()
@@ -5627,19 +5785,6 @@ func (c *attachClient) resolveAmbiguousTerminalResponseInput(
 	if passthrough != nil {
 		passthrough(data)
 	}
-}
-
-func (c *attachClient) rememberForwardedBracketedPasteStartSuffixLocked(
-	data []byte,
-) {
-	suffixLength := bracketedPasteStartSuffixLength(data, 0)
-	if suffixLength == 0 {
-		return
-	}
-	c.inputBracketedPasteStartCarry = append(
-		c.inputBracketedPasteStartCarry[:0],
-		data[len(data)-suffixLength:]...,
-	)
 }
 
 func (c *attachClient) currentTerminalResponseWindowLocked() string {
@@ -6063,8 +6208,12 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.focusAttachClientIfUnchanged(client, expectedFocusSequence)
 	}
 	client.inputPassthrough = func(data []byte) {
-		_ = s.handleAttachInput(client, data)
+		client.enqueueInputActions([]attachInputAction{{
+			userInput: true,
+			data:      append([]byte(nil), data...),
+		}})
 	}
+	go s.runAttachInputActions(client)
 	s.attachTransitionMu.Lock()
 	attachTransitionLocked := true
 	defer func() {
@@ -6200,27 +6349,45 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
+			client.inputDispatchMu.Lock()
 			routing := client.routeInput(buf[:n])
 			if routing.claimsFocus {
 				s.promoteAttachClient(client)
 			}
-			for _, action := range routing.actions {
-				if action.userInput {
-					if s.handleAttachInputSerialized(client, action.data) {
-						return
-					}
-					continue
-				}
-				if action.windowID == "" {
-					s.writeActiveFromAttach(action.data)
-					continue
-				}
-				_ = s.writeWindow(action.windowID, action.data)
+			enqueued := client.enqueueInputActions(routing.actions)
+			client.inputDispatchMu.Unlock()
+			if !enqueued {
+				return
 			}
 		}
 		if err != nil {
 			return
 		}
+	}
+}
+
+func (s *muxServer) runAttachInputActions(client *attachClient) {
+	for {
+		action, ok := client.nextInputAction()
+		if !ok {
+			return
+		}
+		if action.userInput {
+			if s.handleAttachInputSerialized(
+				client,
+				action.data,
+				action.bracketedPaste,
+			) {
+				client.close()
+				return
+			}
+			continue
+		}
+		if action.windowID == "" {
+			s.writeActiveFromAttach(action.data)
+			continue
+		}
+		_ = s.writeWindow(action.windowID, action.data)
 	}
 }
 
@@ -8688,9 +8855,14 @@ func (s *muxServer) writeActive(data []byte) {
 func (s *muxServer) handleAttachInputSerialized(
 	client *attachClient,
 	data []byte,
+	bracketedPaste bool,
 ) bool {
 	client.inputMu.Lock()
 	defer client.inputMu.Unlock()
+	if bracketedPaste {
+		s.writeActiveFromAttachInput(data, true)
+		return false
+	}
 	return s.handleAttachInput(client, data)
 }
 
@@ -8960,6 +9132,13 @@ func (s *muxServer) ringAttachBell(client *attachClient) {
 }
 
 func (s *muxServer) writeActiveFromAttach(data []byte) {
+	s.writeActiveFromAttachInput(data, false)
+}
+
+func (s *muxServer) writeActiveFromAttachInput(
+	data []byte,
+	bracketedPaste bool,
+) {
 	if len(data) == 0 {
 		return
 	}
@@ -8968,13 +9147,13 @@ func (s *muxServer) writeActiveFromAttach(data []byte) {
 	window := s.windowByIDLocked(windowID)
 	stripFocusReports := window == nil || !window.focusModeActiveLocked()
 	s.mu.Unlock()
-	if stripFocusReports {
+	if stripFocusReports && !bracketedPaste {
 		data = stripFocusReportsFromAttachInput(data)
 		if len(data) == 0 {
 			return
 		}
 	}
-	_ = s.writeWindow(windowID, data)
+	_ = s.writeWindowInput(windowID, data, bracketedPaste)
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {
@@ -9050,6 +9229,14 @@ func (s *muxServer) sendFocusTransition(windowID string) {
 }
 
 func (s *muxServer) writeWindow(windowID string, data []byte) error {
+	return s.writeWindowInput(windowID, data, false)
+}
+
+func (s *muxServer) writeWindowInput(
+	windowID string,
+	data []byte,
+	bracketedPaste bool,
+) error {
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	win32InputMode := window != nil && window.win32InputMode
@@ -9063,7 +9250,11 @@ func (s *muxServer) writeWindow(windowID string, data []byte) error {
 		// replies (theme hints, clipboard responses, relayed query answers)
 		// must be re-encoded as win32-input-mode key events to survive the
 		// trip through conhost to the child process.
-		data = encodeTerminalInputForWin32InputMode(data)
+		if bracketedPaste {
+			data = encodeBracketedPasteInputForWin32InputMode(data)
+		} else {
+			data = encodeTerminalInputForWin32InputMode(data)
+		}
 		data = encodeTerminalResponsesForWin32InputMode(data)
 	}
 	_, err := window.pty.Write(data)
@@ -9111,6 +9302,8 @@ func writeWin32InputModeKeyEvents(output *bytes.Buffer, sequence []byte) {
 // physical Escape.
 const win32InputModeEscapeKeyEvents = "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_"
 
+const win32InputModeEscapeCharacterEvent = "\x1b[0;0;27;1;0;1_"
+
 // encodeTerminalInputForWin32InputMode re-encodes a standalone Escape keystroke
 // as win32-input-mode key events.
 //
@@ -9119,13 +9312,37 @@ const win32InputModeEscapeKeyEvents = "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_"
 // it. A lone Escape therefore only reaches the window's child once the next key
 // is pressed, which reads as "Escape stopped working" (TUIs never leave their
 // mode, and Ctrl+C is the only way out). An explicit key event has no such
-// ambiguity. Only a payload that is exactly ESC is rewritten; escape sequences
-// are already unambiguous and pass through untouched.
+// ambiguity.
 func encodeTerminalInputForWin32InputMode(data []byte) []byte {
 	if len(data) != 1 || data[0] != 0x1b {
 		return data
 	}
 	return []byte(win32InputModeEscapeKeyEvents)
+}
+
+// encodeBracketedPasteInputForWin32InputMode re-encodes every ESC in an
+// already-classified bracketed paste as a generic Unicode character event.
+// ConPTY otherwise consumes the CSI 200~/201~ framing (and can interpret escape
+// sequences inside the paste body) before the child sees it.
+func encodeBracketedPasteInputForWin32InputMode(data []byte) []byte {
+	if !bytes.Contains(data, []byte{0x1b}) {
+		return data
+	}
+	var output bytes.Buffer
+	cursor := 0
+	for index := 0; index < len(data); index++ {
+		if data[index] != 0x1b {
+			continue
+		}
+		output.Write(data[cursor:index])
+		output.WriteString(win32InputModeEscapeCharacterEvent)
+		cursor = index + 1
+	}
+	if cursor == 0 {
+		return data
+	}
+	output.Write(data[cursor:])
+	return output.Bytes()
 }
 
 // win32InputModeRequests are the DEC private mode 9001 (win32-input-mode)
