@@ -40,6 +40,12 @@ permissions:
 jobs:
   compute-version:
     name: Compute Version
+    # `store-assets` is a rolling prerelease that re-hosts regenerated store
+    # media. Publishing it fires `release: published`, but it is not an app
+    # release and its tag is not an x.y.z version, so skip the deploy entirely.
+    if: >-
+      github.event_name != 'release' ||
+      github.event.release.tag_name != 'store-assets'
     runs-on: ubuntu-latest
     outputs:
       build-name: ${{ steps.version.outputs.build-name }}
