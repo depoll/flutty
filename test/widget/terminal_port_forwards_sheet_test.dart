@@ -13,6 +13,7 @@ import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
 import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
+import 'package:monkeyssh/presentation/widgets/brand_list_skeleton.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_port_forwards_sheet.dart';
 
 class _MockPortForwardRepository extends Mock
@@ -99,15 +100,18 @@ class _LiveTestSession extends SshSession {
 }
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
-  _TestActiveSessionsNotifier(this.sessions);
+  _TestActiveSessionsNotifier(
+    this.sessions, {
+    this.connectionState = SshConnectionState.connected,
+  });
 
   final List<SshSession> sessions;
+  final SshConnectionState connectionState;
   final List<int> reconfiguredHostIds = [];
 
   @override
   Map<int, SshConnectionState> build() => {
-    for (final session in sessions)
-      session.connectionId: SshConnectionState.connected,
+    for (final session in sessions) session.connectionId: connectionState,
   };
 
   @override
@@ -144,6 +148,39 @@ Host _host({bool autoForwardPorts = false}) => Host(
   isFavorite: false,
   autoConnectRequiresConfirmation: false,
   sortOrder: 0,
+);
+
+Widget _buildSheetHost({
+  required _LiveTestSession session,
+  required _TestActiveSessionsNotifier notifier,
+  required PortForwardRepository portForwardRepository,
+  required HostRepository hostRepository,
+  required Stream<Host?> hostStream,
+}) => ProviderScope(
+  overrides: [
+    portForwardRepositoryProvider.overrideWithValue(portForwardRepository),
+    hostRepositoryProvider.overrideWithValue(hostRepository),
+    hostByIdProvider(session.hostId).overrideWith((ref) => hostStream),
+    activeSessionsProvider.overrideWith(() => notifier),
+  ],
+  child: MaterialApp(
+    home: Scaffold(
+      body: Builder(
+        builder: (context) => FilledButton(
+          onPressed: () => unawaited(
+            showTerminalPortForwardsSheet(
+              context: context,
+              hostId: session.hostId,
+              connectionId: session.connectionId,
+              session: session,
+              onOpenInBrowser: (_) async {},
+            ),
+          ),
+          child: const Text('Open'),
+        ),
+      ),
+    ),
+  ),
 );
 
 PortForward _portForward() => PortForward(
@@ -233,7 +270,9 @@ void main() {
       ProviderScope(
         overrides: [
           portForwardRepositoryProvider.overrideWithValue(repository),
-          allHostsProvider.overrideWith((ref) => Stream.value([_host()])),
+          hostByIdProvider(
+            session.hostId,
+          ).overrideWith((ref) => Stream.value(_host())),
           activeSessionsProvider.overrideWith(
             () => _TestActiveSessionsNotifier([session, automaticOwner]),
           ),
@@ -373,7 +412,7 @@ void main() {
         client: _MockSshClient(),
       );
       addTearDown(session.changes.close);
-      final hosts = StreamController<List<Host>>.broadcast();
+      final hosts = StreamController<Host?>.broadcast();
       addTearDown(hosts.close);
       final notifier = _TestActiveSessionsNotifier([session]);
 
@@ -386,7 +425,7 @@ void main() {
           enabled: any(named: 'enabled'),
         ),
       ).thenAnswer((_) async {
-        hosts.add([_host(autoForwardPorts: true)]);
+        hosts.add(_host(autoForwardPorts: true));
         return true;
       });
 
@@ -397,8 +436,8 @@ void main() {
               portForwardRepository,
             ),
             hostRepositoryProvider.overrideWithValue(hostRepository),
-            allHostsProvider.overrideWith((ref) async* {
-              yield [_host()];
+            hostByIdProvider(session.hostId).overrideWith((ref) async* {
+              yield _host();
               yield* hosts.stream;
             }),
             activeSessionsProvider.overrideWith(() => notifier),
@@ -452,4 +491,146 @@ void main() {
       expect(find.text('Detecting open ports on this host.'), findsOneWidget);
     },
   );
+
+  testWidgets('auto-forward switch stays usable while saved forwards load', (
+    tester,
+  ) async {
+    final portForwardRepository = _MockPortForwardRepository();
+    final hostRepository = _MockHostRepository();
+    final session = _LiveTestSession(
+      connectionId: 7,
+      hostId: 10,
+      client: _MockSshClient(),
+    );
+    addTearDown(session.changes.close);
+    final notifier = _TestActiveSessionsNotifier([session]);
+
+    // Saved forwards never resolve, so the sheet stays in its loading state.
+    when(
+      () => portForwardRepository.watchByHostId(session.hostId),
+    ).thenAnswer((_) => const Stream<List<PortForward>>.empty());
+    when(
+      () => hostRepository.setAutoForwardPorts(
+        any(),
+        enabled: any(named: 'enabled'),
+      ),
+    ).thenAnswer((_) async => true);
+
+    await tester.pumpWidget(
+      _buildSheetHost(
+        session: session,
+        notifier: notifier,
+        portForwardRepository: portForwardRepository,
+        hostRepository: hostRepository,
+        hostStream: Stream.value(_host()),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(BrandListSkeleton), findsOneWidget);
+    final autoSwitch = find.byKey(
+      const Key('terminal-auto-forward-ports-switch'),
+    );
+    expect(autoSwitch, findsOneWidget);
+
+    await tester.tap(autoSwitch);
+    await tester.pumpAndSettle();
+
+    verify(
+      () => hostRepository.setAutoForwardPorts(10, enabled: true),
+    ).called(1);
+    expect(notifier.reconfiguredHostIds, [10]);
+  });
+
+  testWidgets('auto-forward subtitle reflects a disconnected session', (
+    tester,
+  ) async {
+    final portForwardRepository = _MockPortForwardRepository();
+    final hostRepository = _MockHostRepository();
+    final session = _LiveTestSession(
+      connectionId: 7,
+      hostId: 10,
+      client: _MockSshClient(),
+    );
+    addTearDown(session.changes.close);
+
+    when(
+      () => portForwardRepository.watchByHostId(session.hostId),
+    ).thenAnswer((_) => Stream.value([_portForward()]));
+
+    await tester.pumpWidget(
+      _buildSheetHost(
+        session: session,
+        notifier: _TestActiveSessionsNotifier([
+          session,
+        ], connectionState: SshConnectionState.disconnected),
+        portForwardRepository: portForwardRepository,
+        hostRepository: hostRepository,
+        hostStream: Stream.value(_host(autoForwardPorts: true)),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Will watch for new remote listeners once connected'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('dismissing the sheet mid-save still reconfigures sessions', (
+    tester,
+  ) async {
+    final portForwardRepository = _MockPortForwardRepository();
+    final hostRepository = _MockHostRepository();
+    final session = _LiveTestSession(
+      connectionId: 7,
+      hostId: 10,
+      client: _MockSshClient(),
+    );
+    addTearDown(session.changes.close);
+    final notifier = _TestActiveSessionsNotifier([session]);
+    final saveCompleter = Completer<bool>();
+
+    when(
+      () => portForwardRepository.watchByHostId(session.hostId),
+    ).thenAnswer((_) => Stream.value([_portForward()]));
+    when(
+      () => hostRepository.setAutoForwardPorts(
+        any(),
+        enabled: any(named: 'enabled'),
+      ),
+    ).thenAnswer((_) => saveCompleter.future);
+
+    await tester.pumpWidget(
+      _buildSheetHost(
+        session: session,
+        notifier: notifier,
+        portForwardRepository: portForwardRepository,
+        hostRepository: hostRepository,
+        hostStream: Stream.value(_host()),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const Key('terminal-auto-forward-ports-switch')),
+    );
+    await tester.pump();
+
+    // Dismiss the sheet while the write is still in flight.
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Detect open ports'), findsNothing);
+
+    saveCompleter.complete(true);
+    await tester.pumpAndSettle();
+
+    expect(notifier.reconfiguredHostIds, [10]);
+  });
 }

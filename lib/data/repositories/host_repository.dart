@@ -100,6 +100,14 @@ class HostRepository {
     return _decryptHost(host);
   }
 
+  /// Watch a single host by ID.
+  Stream<Host?> watchById(int id) =>
+      (_db.select(
+        _db.hosts,
+      )..where((h) => h.id.equals(id))).watchSingleOrNull().asyncMap(
+        (host) => host == null ? Future.value() : _decryptHost(host),
+      );
+
   /// Resolves this host's collision-free custom or generated proxy name.
   Future<String> resolveProxyName({
     required int hostId,
@@ -325,13 +333,26 @@ class HostRepository {
     return update(host.copyWith(isFavorite: !host.isFavorite));
   }
 
-  /// Enable or disable automatic forwarding of newly opened remote ports.
-  Future<bool> setAutoForwardPorts(int id, {required bool enabled}) async {
-    final host = await getById(id);
-    if (host == null) return false;
-    if (host.autoForwardPorts == enabled) return true;
-    return update(host.copyWith(autoForwardPorts: enabled));
+  /// Applies a partial column update to a single host.
+  ///
+  /// Unlike [update], this never rewrites columns the caller did not set, so a
+  /// stale in-memory [Host] snapshot cannot clobber fields changed elsewhere.
+  /// The `password` column is always left untouched here; use [update] for
+  /// credential changes so the secret is encrypted and cached correctly.
+  Future<bool> updateFields(int id, HostsCompanion changes) async {
+    final updatedRows =
+        await (_db.update(_db.hosts)..where((h) => h.id.equals(id))).write(
+          changes.copyWith(
+            id: const Value.absent(),
+            password: const Value.absent(),
+          ),
+        );
+    return updatedRows > 0;
   }
+
+  /// Enable or disable automatic forwarding of newly opened remote ports.
+  Future<bool> setAutoForwardPorts(int id, {required bool enabled}) =>
+      updateFields(id, HostsCompanion(autoForwardPorts: Value(enabled)));
 
   /// Update last connected timestamp.
   Future<bool> updateLastConnected(int id) async {

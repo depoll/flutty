@@ -916,12 +916,89 @@ void main() {
       host = await repository.getById(id);
       expect(host!.autoForwardPorts, isTrue);
 
-      // A no-op update still reports success without rewriting the row.
-      expect(await repository.setAutoForwardPorts(id, enabled: true), isTrue);
       expect(await repository.setAutoForwardPorts(id, enabled: false), isTrue);
 
       host = await repository.getById(id);
       expect(host!.autoForwardPorts, isFalse);
+    });
+
+    test('setAutoForwardPorts leaves the stored password untouched', () async {
+      const plaintextPassword = 'auto-forward-pass';
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Host',
+          hostname: '10.0.0.9',
+          username: 'admin',
+          password: const Value(plaintextPassword),
+        ),
+      );
+
+      Future<String?> storedPassword() async => (await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle()).password;
+
+      final ciphertextBefore = await storedPassword();
+      expect(ciphertextBefore, startsWith('ENCv1:'));
+
+      await repository.setAutoForwardPorts(id, enabled: true);
+
+      // The column write must not re-encrypt (or double-encrypt) the secret.
+      expect(await storedPassword(), ciphertextBefore);
+      expect((await repository.getById(id))!.password, plaintextPassword);
+    });
+
+    test(
+      'setAutoForwardPorts does not clobber concurrent field edits',
+      () async {
+        final id = await repository.insert(
+          HostsCompanion.insert(
+            label: 'Host',
+            hostname: '10.0.0.10',
+            username: 'admin',
+          ),
+        );
+
+        // Simulates a stale snapshot held elsewhere in the app.
+        final staleHost = (await repository.getById(id))!;
+
+        await repository.setAutoForwardPorts(id, enabled: true);
+        await repository.updateFields(
+          id,
+          const HostsCompanion(label: Value('Renamed')),
+        );
+
+        final host = await repository.getById(id);
+        expect(host!.autoForwardPorts, isTrue);
+        expect(host.label, 'Renamed');
+        expect(staleHost.autoForwardPorts, isFalse);
+      },
+    );
+
+    test('updateFields ignores password changes', () async {
+      const plaintextPassword = 'field-update-pass';
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Host',
+          hostname: '10.0.0.11',
+          username: 'admin',
+          password: const Value(plaintextPassword),
+        ),
+      );
+
+      await repository.updateFields(
+        id,
+        const HostsCompanion(
+          label: Value('Renamed'),
+          password: Value('plaintext-leak'),
+        ),
+      );
+
+      final rawHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(rawHost.label, 'Renamed');
+      expect(rawHost.password, startsWith('ENCv1:'));
+      expect((await repository.getById(id))!.password, plaintextPassword);
     });
 
     test('setAutoForwardPorts returns false when host not exists', () async {
