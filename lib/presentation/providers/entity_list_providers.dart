@@ -16,6 +16,12 @@ final allHostsProvider = StreamProvider<List<Host>>((ref) {
   return repo.watchAll();
 });
 
+/// Stream of a single saved host, or `null` when it no longer exists.
+final hostByIdProvider = StreamProvider.family<Host?, int>((ref, hostId) {
+  final repo = ref.watch(hostRepositoryProvider);
+  return repo.watchById(hostId);
+});
+
 /// Shared stream of all saved SSH keys for presentation screens.
 final allKeysProvider = StreamProvider<List<SshKey>>((ref) {
   final repo = ref.watch(keyRepositoryProvider);
