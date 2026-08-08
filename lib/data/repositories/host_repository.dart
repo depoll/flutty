@@ -325,6 +325,14 @@ class HostRepository {
     return update(host.copyWith(isFavorite: !host.isFavorite));
   }
 
+  /// Enable or disable automatic forwarding of newly opened remote ports.
+  Future<bool> setAutoForwardPorts(int id, {required bool enabled}) async {
+    final host = await getById(id);
+    if (host == null) return false;
+    if (host.autoForwardPorts == enabled) return true;
+    return update(host.copyWith(autoForwardPorts: enabled));
+  }
+
   /// Update last connected timestamp.
   Future<bool> updateLastConnected(int id) async {
     final host = await getById(id);

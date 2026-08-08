@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
+import '../../data/repositories/host_repository.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 import 'brand_empty_state.dart';
@@ -65,11 +66,22 @@ class _TerminalPortForwardsSheet extends ConsumerStatefulWidget {
 class _TerminalPortForwardsSheetState
     extends ConsumerState<_TerminalPortForwardsSheet> {
   final Set<int> _pendingPortForwardIds = {};
+  bool _isUpdatingAutoForwardPorts = false;
 
   @override
   Widget build(BuildContext context) {
     final portForwards = ref.watch(portForwardsForHostProvider(widget.hostId));
     final activeSessionStates = ref.watch(activeSessionsProvider);
+    final autoForwardPorts = ref.watch(
+      allHostsProvider.select((hosts) {
+        for (final host in hosts.asData?.value ?? const <Host>[]) {
+          if (host.id == widget.hostId) {
+            return host.autoForwardPorts;
+          }
+        }
+        return null;
+      }),
+    );
     final isConnected =
         activeSessionStates[widget.connectionId] ==
         SshConnectionState.connected;
@@ -163,17 +175,27 @@ class _TerminalPortForwardsSheetState
                 onRetry: () =>
                     ref.invalidate(portForwardsForHostProvider(widget.hostId)),
               ),
-              data: (forwards) {
-                if (forwards.isEmpty && automaticTunnels.isEmpty) {
-                  return _buildEmptyState(context);
-                }
-                return _buildForwardList(
-                  context,
-                  forwards: forwards,
-                  automaticTunnels: automaticTunnels,
-                  isConnected: isConnected,
-                );
-              },
+              data: (forwards) => ListView(
+                controller: widget.scrollController,
+                padding: const EdgeInsets.only(bottom: FluttyTheme.spacingSm),
+                children: [
+                  _buildAutoForwardToggle(
+                    context,
+                    autoForwardPorts: autoForwardPorts,
+                    hasAutomaticTunnels: automaticTunnels.isNotEmpty,
+                  ),
+                  const Divider(height: 1),
+                  if (forwards.isEmpty && automaticTunnels.isEmpty)
+                    _buildEmptyState(context)
+                  else
+                    ..._buildForwardRows(
+                      context,
+                      forwards: forwards,
+                      automaticTunnels: automaticTunnels,
+                      isConnected: isConnected,
+                    ),
+                ],
+              ),
             ),
           ),
         ),
@@ -197,56 +219,128 @@ class _TerminalPortForwardsSheetState
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) => Center(
-    child: SingleChildScrollView(
-      controller: widget.scrollController,
-      padding: const EdgeInsets.all(FluttyTheme.spacingLg),
-      child: BrandEmptyState(
-        title: 'no forwards for this host',
-        message: 'Add a rule, then start it without leaving the terminal.',
-        primaryLabel: 'Add Forward',
-        onPrimary: _addForward,
-      ),
+  Widget _buildAutoForwardToggle(
+    BuildContext context, {
+    required bool? autoForwardPorts,
+    required bool hasAutomaticTunnels,
+  }) {
+    final theme = Theme.of(context);
+    final isEnabled = autoForwardPorts ?? false;
+    return SwitchListTile.adaptive(
+      key: const Key('terminal-auto-forward-ports-switch'),
+      secondary: _isUpdatingAutoForwardPorts
+          ? const SizedBox.square(
+              dimension: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(
+              Icons.radar_rounded,
+              color: isEnabled
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.onSurfaceVariant,
+            ),
+      title: const Text('Detect open ports'),
+      subtitle: Text(switch ((isEnabled, hasAutomaticTunnels)) {
+        (false, _) => 'Automatically proxy new remote listeners on this host',
+        (true, true) => 'Proxying new remote listeners while connected',
+        (true, false) => 'Watching this host for new remote listeners',
+      }, style: theme.textTheme.bodySmall),
+      value: isEnabled,
+      onChanged: autoForwardPorts == null || _isUpdatingAutoForwardPorts
+          ? null
+          : (enabled) => unawaited(_setAutoForwardPorts(enabled: enabled)),
+    );
+  }
+
+  Future<void> _setAutoForwardPorts({required bool enabled}) async {
+    if (_isUpdatingAutoForwardPorts) {
+      return;
+    }
+    setState(() => _isUpdatingAutoForwardPorts = true);
+    try {
+      final updated = await ref
+          .read(hostRepositoryProvider)
+          .setAutoForwardPorts(widget.hostId, enabled: enabled);
+      if (!updated) {
+        if (mounted) {
+          _showMessage('Could not update automatic port detection.');
+        }
+        return;
+      }
+      await ref
+          .read(activeSessionsProvider.notifier)
+          .reconfigureAutomaticPortForwardingForHost(widget.hostId);
+      if (mounted) {
+        _showMessage(
+          enabled
+              ? 'Detecting open ports on this host.'
+              : 'Stopped detecting open ports on this host.',
+        );
+      }
+    } on Object catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'port forwards',
+          context: ErrorDescription(
+            'while changing automatic port forwarding for a host',
+          ),
+        ),
+      );
+      if (mounted) {
+        _showMessage('Could not update automatic port detection.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isUpdatingAutoForwardPorts = false);
+      }
+    }
+  }
+
+  Widget _buildEmptyState(BuildContext context) => Padding(
+    padding: const EdgeInsets.all(FluttyTheme.spacingLg),
+    child: BrandEmptyState(
+      title: 'no forwards for this host',
+      message: 'Add a rule, then start it without leaving the terminal.',
+      primaryLabel: 'Add Forward',
+      onPrimary: _addForward,
     ),
   );
 
-  Widget _buildForwardList(
+  List<Widget> _buildForwardRows(
     BuildContext context, {
     required List<PortForward> forwards,
     required List<ActiveTunnelInfo> automaticTunnels,
     required bool isConnected,
-  }) => ListView(
-    controller: widget.scrollController,
-    padding: const EdgeInsets.symmetric(vertical: FluttyTheme.spacingSm),
-    children: [
-      if (automaticTunnels.any((tunnel) => tunnel.isShellRelated)) ...[
-        _buildGroupLabel(context, 'This saved host'),
-        for (final tunnel in automaticTunnels.where(
-          (tunnel) => tunnel.isShellRelated,
-        )) ...[
-          _buildAutomaticForwardRow(context, tunnel),
-          const Divider(height: 1),
-        ],
-      ],
-      if (automaticTunnels.any((tunnel) => !tunnel.isShellRelated)) ...[
-        _buildGroupLabel(context, 'Shared host services'),
-        for (final tunnel in automaticTunnels.where(
-          (tunnel) => !tunnel.isShellRelated,
-        )) ...[
-          _buildAutomaticForwardRow(context, tunnel),
-          const Divider(height: 1),
-        ],
-      ],
-      if (forwards.isNotEmpty) ...[
-        if (automaticTunnels.isNotEmpty)
-          _buildGroupLabel(context, 'Saved forwards'),
-        for (var index = 0; index < forwards.length; index++) ...[
-          _buildForwardRow(context, forwards[index], isConnected: isConnected),
-          if (index < forwards.length - 1) const Divider(height: 1),
-        ],
+  }) => [
+    if (automaticTunnels.any((tunnel) => tunnel.isShellRelated)) ...[
+      _buildGroupLabel(context, 'This saved host'),
+      for (final tunnel in automaticTunnels.where(
+        (tunnel) => tunnel.isShellRelated,
+      )) ...[
+        _buildAutomaticForwardRow(context, tunnel),
+        const Divider(height: 1),
       ],
     ],
-  );
+    if (automaticTunnels.any((tunnel) => !tunnel.isShellRelated)) ...[
+      _buildGroupLabel(context, 'Shared host services'),
+      for (final tunnel in automaticTunnels.where(
+        (tunnel) => !tunnel.isShellRelated,
+      )) ...[
+        _buildAutomaticForwardRow(context, tunnel),
+        const Divider(height: 1),
+      ],
+    ],
+    if (forwards.isNotEmpty) ...[
+      if (automaticTunnels.isNotEmpty)
+        _buildGroupLabel(context, 'Saved forwards'),
+      for (var index = 0; index < forwards.length; index++) ...[
+        _buildForwardRow(context, forwards[index], isConnected: isConnected),
+        if (index < forwards.length - 1) const Divider(height: 1),
+      ],
+    ],
+  ];
 
   Widget _buildGroupLabel(BuildContext context, String label) => Padding(
     padding: const EdgeInsets.fromLTRB(
@@ -434,6 +528,7 @@ class _TerminalPortForwardsSheetState
                               : 'Start ${portForward.name}',
                           toggled: isActive,
                           child: Switch(
+                            key: Key('port-forward-switch-${portForward.id}'),
                             value: isActive,
                             onChanged: !isConnected
                                 ? null
