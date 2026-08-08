@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
+import '../../data/repositories/host_repository.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 import 'brand_empty_state.dart';
@@ -65,11 +66,17 @@ class _TerminalPortForwardsSheet extends ConsumerStatefulWidget {
 class _TerminalPortForwardsSheetState
     extends ConsumerState<_TerminalPortForwardsSheet> {
   final Set<int> _pendingPortForwardIds = {};
+  bool _isUpdatingAutoForwardPorts = false;
 
   @override
   Widget build(BuildContext context) {
     final portForwards = ref.watch(portForwardsForHostProvider(widget.hostId));
     final activeSessionStates = ref.watch(activeSessionsProvider);
+    final autoForwardPorts = ref.watch(
+      hostByIdProvider(
+        widget.hostId,
+      ).select((host) => host.asData?.value?.autoForwardPorts),
+    );
     final isConnected =
         activeSessionStates[widget.connectionId] ==
         SshConnectionState.connected;
@@ -152,6 +159,13 @@ class _TerminalPortForwardsSheetState
               ],
             ),
           ),
+        _buildAutoForwardToggle(
+          context,
+          autoForwardPorts: autoForwardPorts,
+          hasAutomaticTunnels: automaticTunnels.isNotEmpty,
+          isConnected: isConnected,
+        ),
+        const Divider(height: 1),
         Expanded(
           child: StreamBuilder<void>(
             stream: widget.session.portForwardChanges,
@@ -195,6 +209,93 @@ class _TerminalPortForwardsSheetState
         ],
       ],
     );
+  }
+
+  Widget _buildAutoForwardToggle(
+    BuildContext context, {
+    required bool? autoForwardPorts,
+    required bool hasAutomaticTunnels,
+    required bool isConnected,
+  }) {
+    final theme = Theme.of(context);
+    final isEnabled = autoForwardPorts ?? false;
+    return SwitchListTile.adaptive(
+      key: const Key('terminal-auto-forward-ports-switch'),
+      dense: true,
+      secondary: _isUpdatingAutoForwardPorts
+          ? const SizedBox.square(
+              dimension: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(
+              Icons.radar_rounded,
+              color: isEnabled
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.onSurfaceVariant,
+            ),
+      title: const Text('Detect open ports'),
+      subtitle: Text(switch ((isEnabled, isConnected, hasAutomaticTunnels)) {
+        (false, _, _) =>
+          'Automatically proxy new remote listeners on this host',
+        (true, false, _) =>
+          'Will watch for new remote listeners once connected',
+        (true, true, true) => 'Proxying new remote listeners while connected',
+        (true, true, false) => 'Watching this host for new remote listeners',
+      }, style: theme.textTheme.bodySmall),
+      value: isEnabled,
+      onChanged: autoForwardPorts == null || _isUpdatingAutoForwardPorts
+          ? null
+          : (enabled) => unawaited(_setAutoForwardPorts(enabled: enabled)),
+    );
+  }
+
+  Future<void> _setAutoForwardPorts({required bool enabled}) async {
+    if (_isUpdatingAutoForwardPorts) {
+      return;
+    }
+    // Captured before the first await so dismissing the sheet mid-save still
+    // applies the change to live sessions.
+    final hostRepository = ref.read(hostRepositoryProvider);
+    final sessions = ref.read(activeSessionsProvider.notifier);
+    setState(() => _isUpdatingAutoForwardPorts = true);
+    try {
+      final updated = await hostRepository.setAutoForwardPorts(
+        widget.hostId,
+        enabled: enabled,
+      );
+      if (!updated) {
+        if (mounted) {
+          _showMessage('Could not update automatic port detection.');
+        }
+        return;
+      }
+      await sessions.reconfigureAutomaticPortForwardingForHost(widget.hostId);
+      if (mounted) {
+        _showMessage(
+          enabled
+              ? 'Detecting open ports on this host.'
+              : 'Stopped detecting open ports on this host.',
+        );
+      }
+    } on Object catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'port forwards',
+          context: ErrorDescription(
+            'while changing automatic port forwarding for a host',
+          ),
+        ),
+      );
+      if (mounted) {
+        _showMessage('Could not update automatic port detection.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isUpdatingAutoForwardPorts = false);
+      }
+    }
   }
 
   Widget _buildEmptyState(BuildContext context) => Center(
@@ -434,6 +535,7 @@ class _TerminalPortForwardsSheetState
                               : 'Start ${portForward.name}',
                           toggled: isActive,
                           child: Switch(
+                            key: Key('port-forward-switch-${portForward.id}'),
                             value: isActive,
                             onChanged: !isConnected
                                 ? null

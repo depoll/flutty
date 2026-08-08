@@ -9077,7 +9077,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final updatedHost = host.copyWith(
           autoConnectRequiresConfirmation: false,
         );
-        await ref.read(hostRepositoryProvider).update(updatedHost);
+        await ref
+            .read(hostRepositoryProvider)
+            .updateFields(
+              updatedHost.id,
+              const HostsCompanion(
+                autoConnectRequiresConfirmation: drift.Value(false),
+              ),
+            );
         _host = updatedHost;
       }
     }
@@ -9125,7 +9132,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final updatedHost = host.copyWith(
           autoConnectRequiresConfirmation: false,
         );
-        await ref.read(hostRepositoryProvider).update(updatedHost);
+        await ref
+            .read(hostRepositoryProvider)
+            .updateFields(
+              updatedHost.id,
+              const HostsCompanion(
+                autoConnectRequiresConfirmation: drift.Value(false),
+              ),
+            );
         _host = updatedHost;
       }
     }
@@ -9770,7 +9784,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final updatedHost = host.copyWith(
           autoConnectRequiresConfirmation: false,
         );
-        await ref.read(hostRepositoryProvider).update(updatedHost);
+        await ref
+            .read(hostRepositoryProvider)
+            .updateFields(
+              updatedHost.id,
+              const HostsCompanion(
+                autoConnectRequiresConfirmation: drift.Value(false),
+              ),
+            );
         _host = updatedHost;
       }
     }
@@ -13078,7 +13099,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ? _host!.copyWith(terminalThemeDarkId: drift.Value(theme.id))
         : _host!.copyWith(terminalThemeLightId: drift.Value(theme.id));
 
-    await hostRepo.update(updatedHost);
+    await hostRepo.updateFields(
+      updatedHost.id,
+      isDark
+          ? HostsCompanion(terminalThemeDarkId: drift.Value(theme.id))
+          : HostsCompanion(terminalThemeLightId: drift.Value(theme.id)),
+    );
     _host = updatedHost;
 
     if (mounted) {
