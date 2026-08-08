@@ -8,13 +8,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
 import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_port_forwards_sheet.dart';
 
 class _MockPortForwardRepository extends Mock
     implements PortForwardRepository {}
+
+class _MockHostRepository extends Mock implements HostRepository {}
 
 class _MockSshClient extends Mock implements SSHClient {}
 
@@ -98,6 +102,7 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   _TestActiveSessionsNotifier(this.sessions);
 
   final List<SshSession> sessions;
+  final List<int> reconfiguredHostIds = [];
 
   @override
   Map<int, SshConnectionState> build() => {
@@ -116,11 +121,30 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   }
 
   @override
+  Future<void> reconfigureAutomaticPortForwardingForHost(int hostId) async {
+    reconfiguredHostIds.add(hostId);
+  }
+
+  @override
   List<int> getConnectionsForHost(int hostId) => sessions
       .where((session) => session.hostId == hostId)
       .map((session) => session.connectionId)
       .toList(growable: false);
 }
+
+Host _host({bool autoForwardPorts = false}) => Host(
+  id: 10,
+  label: 'Dev box',
+  hostname: 'example.com',
+  port: 22,
+  username: 'user',
+  createdAt: DateTime(2026),
+  updatedAt: DateTime(2026),
+  autoForwardPorts: autoForwardPorts,
+  isFavorite: false,
+  autoConnectRequiresConfirmation: false,
+  sortOrder: 0,
+);
 
 PortForward _portForward() => PortForward(
   id: 1,
@@ -209,6 +233,7 @@ void main() {
       ProviderScope(
         overrides: [
           portForwardRepositoryProvider.overrideWithValue(repository),
+          allHostsProvider.overrideWith((ref) => Stream.value([_host()])),
           activeSessionsProvider.overrideWith(
             () => _TestActiveSessionsNotifier([session, automaticOwner]),
           ),
@@ -249,28 +274,34 @@ void main() {
     expect(find.text('Web preview'), findsOneWidget);
     expect(find.text('Stopped • Auto-start'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('Port 3000'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Port 3000'));
     await tester.pump();
 
     expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000]);
 
+    await tester.ensureVisible(find.text('Web preview'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Web preview'));
     await tester.pump();
 
     expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000]);
 
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('port-forward-switch-1')));
     await tester.pumpAndSettle();
 
     expect(session.starts, [1]);
     expect(find.text('Active now • Auto-start'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('Web preview'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Web preview'));
     await tester.pump();
 
     expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000, 1]);
 
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('port-forward-switch-1')));
     await tester.pumpAndSettle();
 
     expect(session.stops, [1]);
@@ -322,4 +353,103 @@ void main() {
             as PortForwardsCompanion;
     expect(inserted.forwardType.value, 'remote');
   });
+
+  testWidgets(
+    'auto-forward switch persists the host setting and reconfigures',
+    (tester) async {
+      tester.view
+        ..physicalSize = const Size(390, 844)
+        ..devicePixelRatio = 1;
+      addTearDown(() {
+        tester.view
+          ..resetPhysicalSize()
+          ..resetDevicePixelRatio();
+      });
+      final portForwardRepository = _MockPortForwardRepository();
+      final hostRepository = _MockHostRepository();
+      final session = _LiveTestSession(
+        connectionId: 7,
+        hostId: 10,
+        client: _MockSshClient(),
+      );
+      addTearDown(session.changes.close);
+      final hosts = StreamController<List<Host>>.broadcast();
+      addTearDown(hosts.close);
+      final notifier = _TestActiveSessionsNotifier([session]);
+
+      when(
+        () => portForwardRepository.watchByHostId(session.hostId),
+      ).thenAnswer((_) => Stream.value([_portForward()]));
+      when(
+        () => hostRepository.setAutoForwardPorts(
+          any(),
+          enabled: any(named: 'enabled'),
+        ),
+      ).thenAnswer((_) async {
+        hosts.add([_host(autoForwardPorts: true)]);
+        return true;
+      });
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            portForwardRepositoryProvider.overrideWithValue(
+              portForwardRepository,
+            ),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            allHostsProvider.overrideWith((ref) async* {
+              yield [_host()];
+              yield* hosts.stream;
+            }),
+            activeSessionsProvider.overrideWith(() => notifier),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => FilledButton(
+                  onPressed: () => unawaited(
+                    showTerminalPortForwardsSheet(
+                      context: context,
+                      hostId: session.hostId,
+                      connectionId: session.connectionId,
+                      session: session,
+                      onOpenInBrowser: (_) async {},
+                    ),
+                  ),
+                  child: const Text('Open'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      final autoSwitch = find.byKey(
+        const Key('terminal-auto-forward-ports-switch'),
+      );
+      expect(autoSwitch, findsOneWidget);
+      expect(
+        find.text('Automatically proxy new remote listeners on this host'),
+        findsOneWidget,
+      );
+      expect(tester.widget<SwitchListTile>(autoSwitch).value, isFalse);
+
+      await tester.tap(autoSwitch);
+      await tester.pumpAndSettle();
+
+      verify(
+        () => hostRepository.setAutoForwardPorts(10, enabled: true),
+      ).called(1);
+      expect(notifier.reconfiguredHostIds, [10]);
+      expect(tester.widget<SwitchListTile>(autoSwitch).value, isTrue);
+      expect(
+        find.text('Watching this host for new remote listeners'),
+        findsOneWidget,
+      );
+      expect(find.text('Detecting open ports on this host.'), findsOneWidget);
+    },
+  );
 }

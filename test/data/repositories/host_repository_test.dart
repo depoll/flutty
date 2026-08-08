@@ -899,6 +899,35 @@ void main() {
       expect(result, isFalse);
     });
 
+    test('setAutoForwardPorts persists automatic port detection', () async {
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Test Server',
+          hostname: '192.168.1.2',
+          username: 'admin',
+        ),
+      );
+
+      var host = await repository.getById(id);
+      expect(host!.autoForwardPorts, isFalse);
+
+      expect(await repository.setAutoForwardPorts(id, enabled: true), isTrue);
+
+      host = await repository.getById(id);
+      expect(host!.autoForwardPorts, isTrue);
+
+      // A no-op update still reports success without rewriting the row.
+      expect(await repository.setAutoForwardPorts(id, enabled: true), isTrue);
+      expect(await repository.setAutoForwardPorts(id, enabled: false), isTrue);
+
+      host = await repository.getById(id);
+      expect(host!.autoForwardPorts, isFalse);
+    });
+
+    test('setAutoForwardPorts returns false when host not exists', () async {
+      expect(await repository.setAutoForwardPorts(999, enabled: true), isFalse);
+    });
+
     test('getFavorites returns only favorite hosts', () async {
       await repository.insert(
         HostsCompanion.insert(
