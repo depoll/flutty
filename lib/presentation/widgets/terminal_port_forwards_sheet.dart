@@ -73,14 +73,9 @@ class _TerminalPortForwardsSheetState
     final portForwards = ref.watch(portForwardsForHostProvider(widget.hostId));
     final activeSessionStates = ref.watch(activeSessionsProvider);
     final autoForwardPorts = ref.watch(
-      allHostsProvider.select((hosts) {
-        for (final host in hosts.asData?.value ?? const <Host>[]) {
-          if (host.id == widget.hostId) {
-            return host.autoForwardPorts;
-          }
-        }
-        return null;
-      }),
+      hostByIdProvider(
+        widget.hostId,
+      ).select((host) => host.asData?.value?.autoForwardPorts),
     );
     final isConnected =
         activeSessionStates[widget.connectionId] ==
@@ -164,6 +159,13 @@ class _TerminalPortForwardsSheetState
               ],
             ),
           ),
+        _buildAutoForwardToggle(
+          context,
+          autoForwardPorts: autoForwardPorts,
+          hasAutomaticTunnels: automaticTunnels.isNotEmpty,
+          isConnected: isConnected,
+        ),
+        const Divider(height: 1),
         Expanded(
           child: StreamBuilder<void>(
             stream: widget.session.portForwardChanges,
@@ -175,27 +177,17 @@ class _TerminalPortForwardsSheetState
                 onRetry: () =>
                     ref.invalidate(portForwardsForHostProvider(widget.hostId)),
               ),
-              data: (forwards) => ListView(
-                controller: widget.scrollController,
-                padding: const EdgeInsets.only(bottom: FluttyTheme.spacingSm),
-                children: [
-                  _buildAutoForwardToggle(
-                    context,
-                    autoForwardPorts: autoForwardPorts,
-                    hasAutomaticTunnels: automaticTunnels.isNotEmpty,
-                  ),
-                  const Divider(height: 1),
-                  if (forwards.isEmpty && automaticTunnels.isEmpty)
-                    _buildEmptyState(context)
-                  else
-                    ..._buildForwardRows(
-                      context,
-                      forwards: forwards,
-                      automaticTunnels: automaticTunnels,
-                      isConnected: isConnected,
-                    ),
-                ],
-              ),
+              data: (forwards) {
+                if (forwards.isEmpty && automaticTunnels.isEmpty) {
+                  return _buildEmptyState(context);
+                }
+                return _buildForwardList(
+                  context,
+                  forwards: forwards,
+                  automaticTunnels: automaticTunnels,
+                  isConnected: isConnected,
+                );
+              },
             ),
           ),
         ),
@@ -223,11 +215,13 @@ class _TerminalPortForwardsSheetState
     BuildContext context, {
     required bool? autoForwardPorts,
     required bool hasAutomaticTunnels,
+    required bool isConnected,
   }) {
     final theme = Theme.of(context);
     final isEnabled = autoForwardPorts ?? false;
     return SwitchListTile.adaptive(
       key: const Key('terminal-auto-forward-ports-switch'),
+      dense: true,
       secondary: _isUpdatingAutoForwardPorts
           ? const SizedBox.square(
               dimension: 20,
@@ -240,10 +234,13 @@ class _TerminalPortForwardsSheetState
                   : theme.colorScheme.onSurfaceVariant,
             ),
       title: const Text('Detect open ports'),
-      subtitle: Text(switch ((isEnabled, hasAutomaticTunnels)) {
-        (false, _) => 'Automatically proxy new remote listeners on this host',
-        (true, true) => 'Proxying new remote listeners while connected',
-        (true, false) => 'Watching this host for new remote listeners',
+      subtitle: Text(switch ((isEnabled, isConnected, hasAutomaticTunnels)) {
+        (false, _, _) =>
+          'Automatically proxy new remote listeners on this host',
+        (true, false, _) =>
+          'Will watch for new remote listeners once connected',
+        (true, true, true) => 'Proxying new remote listeners while connected',
+        (true, true, false) => 'Watching this host for new remote listeners',
       }, style: theme.textTheme.bodySmall),
       value: isEnabled,
       onChanged: autoForwardPorts == null || _isUpdatingAutoForwardPorts
@@ -256,20 +253,23 @@ class _TerminalPortForwardsSheetState
     if (_isUpdatingAutoForwardPorts) {
       return;
     }
+    // Captured before the first await so dismissing the sheet mid-save still
+    // applies the change to live sessions.
+    final hostRepository = ref.read(hostRepositoryProvider);
+    final sessions = ref.read(activeSessionsProvider.notifier);
     setState(() => _isUpdatingAutoForwardPorts = true);
     try {
-      final updated = await ref
-          .read(hostRepositoryProvider)
-          .setAutoForwardPorts(widget.hostId, enabled: enabled);
+      final updated = await hostRepository.setAutoForwardPorts(
+        widget.hostId,
+        enabled: enabled,
+      );
       if (!updated) {
         if (mounted) {
           _showMessage('Could not update automatic port detection.');
         }
         return;
       }
-      await ref
-          .read(activeSessionsProvider.notifier)
-          .reconfigureAutomaticPortForwardingForHost(widget.hostId);
+      await sessions.reconfigureAutomaticPortForwardingForHost(widget.hostId);
       if (mounted) {
         _showMessage(
           enabled
@@ -298,49 +298,56 @@ class _TerminalPortForwardsSheetState
     }
   }
 
-  Widget _buildEmptyState(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(FluttyTheme.spacingLg),
-    child: BrandEmptyState(
-      title: 'no forwards for this host',
-      message: 'Add a rule, then start it without leaving the terminal.',
-      primaryLabel: 'Add Forward',
-      onPrimary: _addForward,
+  Widget _buildEmptyState(BuildContext context) => Center(
+    child: SingleChildScrollView(
+      controller: widget.scrollController,
+      padding: const EdgeInsets.all(FluttyTheme.spacingLg),
+      child: BrandEmptyState(
+        title: 'no forwards for this host',
+        message: 'Add a rule, then start it without leaving the terminal.',
+        primaryLabel: 'Add Forward',
+        onPrimary: _addForward,
+      ),
     ),
   );
 
-  List<Widget> _buildForwardRows(
+  Widget _buildForwardList(
     BuildContext context, {
     required List<PortForward> forwards,
     required List<ActiveTunnelInfo> automaticTunnels,
     required bool isConnected,
-  }) => [
-    if (automaticTunnels.any((tunnel) => tunnel.isShellRelated)) ...[
-      _buildGroupLabel(context, 'This saved host'),
-      for (final tunnel in automaticTunnels.where(
-        (tunnel) => tunnel.isShellRelated,
-      )) ...[
-        _buildAutomaticForwardRow(context, tunnel),
-        const Divider(height: 1),
+  }) => ListView(
+    controller: widget.scrollController,
+    padding: const EdgeInsets.symmetric(vertical: FluttyTheme.spacingSm),
+    children: [
+      if (automaticTunnels.any((tunnel) => tunnel.isShellRelated)) ...[
+        _buildGroupLabel(context, 'This saved host'),
+        for (final tunnel in automaticTunnels.where(
+          (tunnel) => tunnel.isShellRelated,
+        )) ...[
+          _buildAutomaticForwardRow(context, tunnel),
+          const Divider(height: 1),
+        ],
+      ],
+      if (automaticTunnels.any((tunnel) => !tunnel.isShellRelated)) ...[
+        _buildGroupLabel(context, 'Shared host services'),
+        for (final tunnel in automaticTunnels.where(
+          (tunnel) => !tunnel.isShellRelated,
+        )) ...[
+          _buildAutomaticForwardRow(context, tunnel),
+          const Divider(height: 1),
+        ],
+      ],
+      if (forwards.isNotEmpty) ...[
+        if (automaticTunnels.isNotEmpty)
+          _buildGroupLabel(context, 'Saved forwards'),
+        for (var index = 0; index < forwards.length; index++) ...[
+          _buildForwardRow(context, forwards[index], isConnected: isConnected),
+          if (index < forwards.length - 1) const Divider(height: 1),
+        ],
       ],
     ],
-    if (automaticTunnels.any((tunnel) => !tunnel.isShellRelated)) ...[
-      _buildGroupLabel(context, 'Shared host services'),
-      for (final tunnel in automaticTunnels.where(
-        (tunnel) => !tunnel.isShellRelated,
-      )) ...[
-        _buildAutomaticForwardRow(context, tunnel),
-        const Divider(height: 1),
-      ],
-    ],
-    if (forwards.isNotEmpty) ...[
-      if (automaticTunnels.isNotEmpty)
-        _buildGroupLabel(context, 'Saved forwards'),
-      for (var index = 0; index < forwards.length; index++) ...[
-        _buildForwardRow(context, forwards[index], isConnected: isConnected),
-        if (index < forwards.length - 1) const Divider(height: 1),
-      ],
-    ],
-  ];
+  );
 
   Widget _buildGroupLabel(BuildContext context, String label) => Padding(
     padding: const EdgeInsets.fromLTRB(
