@@ -720,15 +720,32 @@ func TestReadPIDRecordReportsFileTimestamp(t *testing.T) {
 }
 
 func TestProcessImageMatching(t *testing.T) {
+	// The helper installs under ~/.monkeyssh, so the install path contains the
+	// name of the session from the original bug report. Ownership must come
+	// from the --session value, never from a substring of the command line.
+	const install = "/home/u/.monkeyssh/bin/monkeymux/0.1.144/linux-amd64/monkeymux"
 	cases := []struct {
 		image   string
 		monkey  bool
 		session string
 		serves  bool
 	}{
-		{"/home/u/.monkeyssh/bin/monkeymux/0.1.144/linux-amd64/monkeymux serve --session Work", true, "Work", true},
+		{install + " serve --session MonkeySSH", true, "MonkeySSH", true},
+		{install + " serve --session=MonkeySSH", true, "MonkeySSH", true},
+		{install + " serve -session MonkeySSH", true, "MonkeySSH", true},
+		// Another session's server, on a path that contains "monkeyssh".
+		{install + " serve --session agents", true, "MonkeySSH", false},
+		{install + " serve --session Work2", true, "Work", false},
+		{install + " serve --session Work", true, "Work2", false},
+		// Session names are case-sensitive; they hash to different sockets.
+		{install + " serve --session work", true, "Work", false},
+		// A session name containing spaces survives command line flattening.
+		{install + " serve --session My Session --width 80", true, "My Session", true},
+		{install + " serve --session My Session --width 80", true, "My", false},
+		// An attach or other subcommand is not a server for the session.
+		{install + " attach --session MonkeySSH", true, "MonkeySSH", false},
+		{install, true, "MonkeySSH", false},
 		{"/usr/bin/monkeymux.exe serve --session Work", true, "Work", true},
-		{"/home/u/.monkeyssh/bin/monkeymux/0.1.144/linux-amd64/monkeymux serve --session Other", true, "Work", false},
 		{"/usr/bin/vim /home/u/.monkeyssh/bin/monkeymux/notes.txt", false, "Work", false},
 		{"/usr/bin/grep -r monkeymux serve --session Work /etc", false, "Work", false},
 		{"/bin/sleep 120", false, "Work", false},
@@ -739,7 +756,13 @@ func TestProcessImageMatching(t *testing.T) {
 			t.Errorf("processImageIsMonkeyMux(%q) = %v, want %v", tc.image, got, tc.monkey)
 		}
 		if got := processImageServesSession(tc.image, tc.session); got != tc.serves {
-			t.Errorf("processImageServesSession(%q, %q) = %v, want %v", tc.image, tc.session, got, tc.serves)
+			t.Errorf(
+				"processImageServesSession(%q, %q) = %v, want %v",
+				tc.image,
+				tc.session,
+				got,
+				tc.serves,
+			)
 		}
 	}
 }

@@ -2091,12 +2091,15 @@ const (
 
 // processSnapshot is what a platform could learn about a pid. When known is
 // false nothing could be determined and no ownership decision may be based on
-// it. started and image are zero when only part of the answer was available.
+// it. started and image are zero when only part of the answer was available,
+// and arguments reports whether image is the full command line or only the
+// executable, which is all some platforms expose.
 type processSnapshot struct {
-	known   bool
-	running bool
-	started time.Time
-	image   string
+	known     bool
+	running   bool
+	arguments bool
+	started   time.Time
+	image     string
 }
 
 func (r pidRecord) confirmedOwner(session string) bool {
@@ -2126,7 +2129,8 @@ func pidRecordOwnership(record pidRecord, session string) pidOwnership {
 	if !processImageIsMonkeyMux(snapshot.image) {
 		return pidOwnershipGone
 	}
-	if session != "" && processImageServesSession(snapshot.image, session) {
+	if session != "" && snapshot.arguments &&
+		processImageServesSession(snapshot.image, session) {
 		// The command line names this session, which identifies the process
 		// itself rather than merely its kind. Nothing else is needed, and in
 		// particular no clock is consulted, so a host whose wall clock moved
@@ -2134,12 +2138,15 @@ func pidRecordOwnership(record pidRecord, session string) pidOwnership {
 		return pidOwnershipLive
 	}
 	if processStartedAfterRecord(snapshot, record) {
-		// A MonkeyMux process that does not identify itself as this session's
+		// A MonkeyMux process that did not identify itself as this session's
 		// server, and that started after the record was written, cannot be the
 		// process that wrote it: it inherited a recycled pid.
 		return pidOwnershipGone
 	}
-	if session == "" {
+	if session == "" || !snapshot.arguments {
+		// Only the kind of process could be checked: the caller asked about a
+		// lock, whose holder is an ordinary helper rather than a server, or
+		// this platform does not expose command lines.
 		return pidOwnershipLive
 	}
 	return pidOwnershipUnknown
@@ -2160,8 +2167,9 @@ func processStartedAfterRecord(snapshot processSnapshot, record pidRecord) bool 
 // the helper is not mistaken for one.
 func processImageIsMonkeyMux(image string) bool {
 	executable, _, _ := strings.Cut(strings.TrimSpace(image), " ")
-	base := strings.ToLower(
-		strings.TrimSuffix(strings.ToLower(filepath.Base(executable)), ".exe"),
+	base := strings.TrimSuffix(
+		strings.ToLower(filepath.Base(executable)),
+		".exe",
 	)
 	if base == "" || base == "." || base == string(filepath.Separator) {
 		return false
@@ -2180,18 +2188,51 @@ func processImageIsMonkeyMux(image string) bool {
 }
 
 // processImageServesSession reports whether a command line is that of a
-// MonkeyMux server for this session, which ensureServer spawns as
-// "serve --session <name>".
+// MonkeyMux server for exactly this session. The name is compared with the
+// value of the serve command's --session flag rather than searched for in the
+// command line: the helper installs under ~/.monkeyssh, so a substring search
+// would match the install path for a session named "MonkeySSH", and would also
+// accept a session whose name merely extends this one.
 func processImageServesSession(image string, session string) bool {
 	if !processImageIsMonkeyMux(image) {
 		return false
 	}
-	arguments := strings.ToLower(image)
-	session = strings.ToLower(strings.TrimSpace(session))
-	if session == "" || !strings.Contains(arguments, "serve") {
+	session = strings.TrimSpace(session)
+	if session == "" {
 		return false
 	}
-	return strings.Contains(arguments, session)
+	fields := strings.Fields(image)
+	if len(fields) < 2 || fields[1] != "serve" {
+		return false
+	}
+	value, ok := sessionArgumentValue(fields[2:])
+	return ok && value == session
+}
+
+// sessionArgumentValue returns the --session value from a command line that has
+// already been flattened to a single string. Quoting is lost in that form, so a
+// name containing spaces is recovered by reading arguments up to the next flag,
+// which is how the server is always invoked.
+func sessionArgumentValue(arguments []string) (string, bool) {
+	for i, argument := range arguments {
+		name, inline, hasInline := strings.Cut(argument, "=")
+		if name != "--session" && name != "-session" {
+			continue
+		}
+		if hasInline {
+			return inline, inline != ""
+		}
+		value := arguments[i+1:]
+		for end, word := range value {
+			if strings.HasPrefix(word, "-") {
+				value = value[:end]
+				break
+			}
+		}
+		joined := strings.Join(value, " ")
+		return joined, joined != ""
+	}
+	return "", false
 }
 
 // clearStalePIDFile removes a session file whose owner is confirmed gone and

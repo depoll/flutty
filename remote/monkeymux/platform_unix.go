@@ -195,9 +195,10 @@ func inspectProcFSProcess(pid int) (processSnapshot, bool) {
 		return processSnapshot{}, false
 	}
 	snapshot := processSnapshot{
-		known:   true,
-		running: fields[stateOffset] != "Z",
-		image:   strings.ToLower(linuxProcessImage(pid, text[:end+1])),
+		known:     true,
+		running:   fields[stateOffset] != "Z",
+		arguments: true,
+		image:     linuxProcessImage(pid, text[:end+1]),
 	}
 	if ticks, err := strconv.ParseInt(fields[startTimeOffset], 10, 64); err == nil {
 		if boot, ok := linuxBootTime(); ok {
@@ -290,8 +291,9 @@ func inspectPSProcess(pid int) processSnapshot {
 		return processSnapshot{known: true}
 	}
 	snapshot := processSnapshot{
-		known:   true,
-		running: !strings.HasPrefix(fields[0], "Z"),
+		known:     true,
+		running:   !strings.HasPrefix(fields[0], "Z"),
+		arguments: true,
 	}
 	// lstart always occupies exactly five fields ("Mon Jan  2 15:04:05 2006"),
 	// so anything after it is the argument list, which may be absent.
@@ -300,9 +302,7 @@ func inspectPSProcess(pid int) processSnapshot {
 		snapshot.started = parseProcessStartTime(
 			strings.Join(fields[1:1+lstartFields], " "),
 		)
-		snapshot.image = strings.ToLower(
-			strings.Join(fields[1+lstartFields:], " "),
-		)
+		snapshot.image = strings.Join(fields[1+lstartFields:], " ")
 	}
 	return snapshot
 }

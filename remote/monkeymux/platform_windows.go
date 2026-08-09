@@ -759,8 +759,10 @@ func inspectProcess(pid int) processSnapshot {
 	); err == nil {
 		snapshot.started = time.Unix(0, creation.Nanoseconds()).UTC()
 	}
+	// Toolhelp exposes the executable but not the argument list, so the image
+	// cannot identify which session a helper serves.
 	if info, ok := cachedProcessTable(time.Now())[pid]; ok {
-		snapshot.image = strings.ToLower(info.comm + " " + info.args)
+		snapshot.image = info.comm
 	}
 	return snapshot
 }
