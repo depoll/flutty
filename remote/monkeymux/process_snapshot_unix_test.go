@@ -3,8 +3,10 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -40,7 +42,7 @@ func TestInspectProcessReportsZombieAsNotRunning(t *testing.T) {
 		t.Skip("the zombie was reaped before ownership could be checked")
 	}
 	record := pidRecord{pid: pid, writtenAt: time.Now()}
-	if got := pidRecordOwnership(record); got != pidOwnershipGone {
+	if got := pidRecordOwnership(record, ""); got != pidOwnershipGone {
 		t.Fatalf("ownership of a zombie = %v, want %v", got, pidOwnershipGone)
 	}
 }
@@ -124,12 +126,12 @@ func TestPidRecordOwnershipRejectsProcessStartedAfterTheRecord(t *testing.T) {
 		pid:       os.Getpid(),
 		writtenAt: snapshot.started.Add(-time.Hour),
 	}
-	if got := pidRecordOwnership(record); got != pidOwnershipGone {
+	if got := pidRecordOwnership(record, ""); got != pidOwnershipGone {
 		t.Fatalf("ownership = %v, want %v for a record older than the process", got, pidOwnershipGone)
 	}
 
 	current := pidRecord{pid: os.Getpid(), writtenAt: time.Now()}
-	if got := pidRecordOwnership(current); got == pidOwnershipGone {
+	if got := pidRecordOwnership(current, ""); got == pidOwnershipGone {
 		t.Fatalf("ownership = %v, want a live or unknown owner for this process", got)
 	}
 }
@@ -149,7 +151,7 @@ func TestPidRecordOwnershipRejectsForeignProcess(t *testing.T) {
 	if !snapshot.known || snapshot.image == "" {
 		t.Skip("this host does not report process images")
 	}
-	if got := pidRecordOwnership(record); got != pidOwnershipGone {
+	if got := pidRecordOwnership(record, ""); got != pidOwnershipGone {
 		t.Fatalf("ownership of %q = %v, want %v", snapshot.image, got, pidOwnershipGone)
 	}
 }
@@ -160,7 +162,23 @@ func TestInspectProcessHandlesUnknownPID(t *testing.T) {
 	if snapshot.running {
 		t.Fatalf("pid 0 reported as running: %#v", snapshot)
 	}
-	if got := pidRecordOwnership(pidRecord{pid: 0}); got != pidOwnershipGone {
+	if got := pidRecordOwnership(pidRecord{pid: 0}, ""); got != pidOwnershipGone {
 		t.Fatalf("ownership of pid 0 = %v, want %v", got, pidOwnershipGone)
+	}
+}
+
+// kill(pid, 0) reports EPERM for a live process owned by another user. Reading
+// that as "gone" would let a helper reclaim a session another user's server
+// still owns.
+func TestProcessIDAliveTreatsPermissionDeniedAsAlive(t *testing.T) {
+	// pid 1 always exists and is owned by root, so an unprivileged test run
+	// exercises the EPERM path and a privileged one still succeeds outright.
+	if !processIDAlive(1) {
+		t.Fatal("pid 1 reported as not alive")
+	}
+	if err := syscall.Kill(1, 0); err == nil {
+		t.Log("running privileged; EPERM path not exercised")
+	} else if !errors.Is(err, syscall.EPERM) {
+		t.Skipf("pid 1 is not signal-protected on this host: %v", err)
 	}
 }

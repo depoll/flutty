@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -702,6 +703,9 @@ func killCommandProcessGroup(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
+// processIDAlive reports whether a process with this pid exists. An access
+// error means it exists but cannot be opened by this caller, which is still
+// evidence that the pid is taken; only a missing process counts as gone.
 func processIDAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -712,7 +716,7 @@ func processIDAlive(pid int) bool {
 		uint32(pid),
 	)
 	if err != nil {
-		return false
+		return errors.Is(err, windows.ERROR_ACCESS_DENIED)
 	}
 	defer windows.CloseHandle(handle)
 	var code uint32
