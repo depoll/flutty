@@ -803,8 +803,8 @@ func TestC1QueryScannerPreservesUtf8SplitAcrossChunks(t *testing.T) {
 func TestPendingQueryScannerIgnoresUtf8SplitAcrossChunks(t *testing.T) {
 	window := &muxWindow{}
 
-	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2}, nil)
-	window.appendPendingTerminalQueriesLocked([]byte{0x9b, 'b'}, nil)
+	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2}, nil, nil)
+	window.appendPendingTerminalQueriesLocked([]byte{0x9b, 'b'}, nil, nil)
 
 	if len(window.pendingTerminalQueries) != 0 {
 		t.Fatalf(
@@ -840,9 +840,9 @@ func TestQueryScannersPreserveUtf8AcrossThreeChunks(t *testing.T) {
 	}
 
 	pendingWindow := &muxWindow{}
-	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0xe2}, nil)
-	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x80}, nil)
-	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x9b, 'c'}, nil)
+	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0xe2}, nil, nil)
+	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x80}, nil, nil)
+	pendingWindow.appendPendingTerminalQueriesLocked([]byte{0x9b, 'c'}, nil, nil)
 	if len(pendingWindow.pendingTerminalQueries) != 0 ||
 		len(pendingWindow.pendingTerminalQueryCarry) != 0 {
 		t.Fatalf(
@@ -856,7 +856,7 @@ func TestQueryScannersPreserveUtf8AcrossThreeChunks(t *testing.T) {
 func TestUtf8QueryStateTransfersFromPendingToLiveRouting(t *testing.T) {
 	window := &muxWindow{}
 
-	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2}, nil)
+	window.appendPendingTerminalQueriesLocked([]byte{'a', 0xc2}, nil, nil)
 	filtered := window.secondaryAttachOutputLocked([]byte{0x9b, 'c'})
 
 	if !bytes.Equal(filtered, []byte{0x9b, 'c'}) {

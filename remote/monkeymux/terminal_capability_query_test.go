@@ -56,7 +56,7 @@ func TestC1CapabilityQueryBufferedWhileDetached(t *testing.T) {
 	window := &muxWindow{id: "@1", index: 0, lastActivity: time.Now()}
 	query := []byte{0x9b, 'c'}
 
-	window.appendPendingTerminalQueriesLocked(query, nil)
+	window.appendPendingTerminalQueriesLocked(query, nil, nil)
 
 	if got := string(window.pendingTerminalQueries); got != string(query) {
 		t.Fatalf("pending C1 query = %q, want %q", got, query)
@@ -740,5 +740,261 @@ func stubForegroundResize(t *testing.T) func() {
 		signalForegroundResize = originalSignal
 		simulateForegroundResize = originalSimulate
 		foregroundProcessGroupForWindow = originalProcessGroup
+	}
+}
+
+// themeHintFixture is the wire-format theme hint MonkeySSH sends on attach: the
+// colour-scheme mode report for the client's current theme followed by the OSC
+// colour replies the daemon answers palette queries from.
+const themeHintFixture = "\x1b[?997;1n" +
+	"\x1b]10;rgb:d7d7/e7e7/e3e3\x1b\\" +
+	"\x1b]11;rgb:0d0d/1a1a/2020\x1b\\"
+
+// colorSchemeQuery is the DEC colour-scheme status query (CSI ? 996 n). Agents
+// such as Copilot CLI emit it at startup to pick a light or dark theme.
+const colorSchemeQuery = "\x1b[?996n"
+
+// TestThemeHintAnswersColorSchemeQueryWhileDetached covers the stray-report
+// regression: an agent asks whether the terminal is light or dark while its
+// window runs unwatched. Buffering that query replays it to the terminal on the
+// next attach, and by then the agent may be gone — leaving its `CSI ?997;1n`
+// reply echoed as literal `^[[?997;1n` text at the window's shell prompt. The
+// cached theme hint holds the answer, so the daemon must answer it right away.
+func TestThemeHintAnswersColorSchemeQueryWhileDetached(t *testing.T) {
+	server := newMuxServer("theme-hint-detached")
+	pty := &recordingPty{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		pty:          pty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.themeHint = []byte(themeHintFixture)
+	server.capabilityHint = []byte(capabilityHintFixture)
+
+	server.handleWindowOutput("@1", []byte(colorSchemeQuery))
+
+	if got := pty.String(); got != "\x1b[?997;1n" {
+		t.Fatalf("window pty got = %q, want the dark colour-scheme report", got)
+	}
+	server.mu.Lock()
+	pending := string(window.pendingTerminalQueries)
+	server.mu.Unlock()
+	if pending != "" {
+		t.Fatalf("answered colour-scheme query still buffered: %q", pending)
+	}
+}
+
+// TestThemeHintAnswersColorSchemeQueryBehindBufferedProbe pins the ordering
+// contract: the colour-scheme query is a standalone probe, never a probe group
+// terminator, so — like XTVERSION — it is answered even while an unanswerable
+// query is already waiting on the terminal.
+func TestThemeHintAnswersColorSchemeQueryBehindBufferedProbe(t *testing.T) {
+	server := newMuxServer("theme-hint-behind-probe")
+	pty := &recordingPty{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		pty:          pty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.themeHint = []byte(themeHintFixture)
+
+	const cursorPositionQuery = "\x1b[6n"
+	server.handleWindowOutput("@1", []byte(cursorPositionQuery+colorSchemeQuery))
+
+	if got := pty.String(); got != "\x1b[?997;1n" {
+		t.Fatalf("window pty got = %q, want the colour-scheme report", got)
+	}
+	server.mu.Lock()
+	pending := string(window.pendingTerminalQueries)
+	server.mu.Unlock()
+	if pending != cursorPositionQuery {
+		t.Fatalf("pending queries = %q, want only the cursor position query", pending)
+	}
+}
+
+// TestColorSchemeQueryBufferedWithoutThemeHint keeps the fallback: a client that
+// sent no theme hint (an older helper, or a plain `monkeymux attach`) leaves the
+// daemon without an answer, so the query must still reach the terminal.
+func TestColorSchemeQueryBufferedWithoutThemeHint(t *testing.T) {
+	server := newMuxServer("theme-hint-missing")
+	pty := &recordingPty{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		pty:          pty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@1", []byte(colorSchemeQuery))
+
+	if got := pty.String(); got != "" {
+		t.Fatalf("window pty got = %q, want no synthesized answer", got)
+	}
+	server.mu.Lock()
+	pending := string(window.pendingTerminalQueries)
+	server.mu.Unlock()
+	if pending != colorSchemeQuery {
+		t.Fatalf("pending queries = %q, want the colour-scheme query buffered", pending)
+	}
+}
+
+// TestColorSchemeQueryForwardedLiveWhenTerminalAttached verifies the live path
+// is untouched: a terminal showing the window answers the query itself with its
+// current theme, so the daemon must not short circuit it from a cached hint.
+func TestColorSchemeQueryForwardedLiveWhenTerminalAttached(t *testing.T) {
+	server := newMuxServer("theme-hint-live")
+	pty := &recordingPty{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		pty:          pty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	attach := &recordingConn{}
+	server.attachConn = attach
+	server.themeHint = []byte(themeHintFixture)
+
+	server.handleWindowOutput("@1", []byte(colorSchemeQuery))
+
+	if got := pty.String(); got != "" {
+		t.Fatalf("window pty got = %q, want no synthesized answer", got)
+	}
+	if got := attach.String(); !strings.Contains(got, colorSchemeQuery) {
+		t.Fatalf("attach output = %q, want the live-forwarded query", got)
+	}
+	server.mu.Lock()
+	pending := len(window.pendingTerminalQueries)
+	server.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("queries buffered while terminal attached: %d bytes", pending)
+	}
+}
+
+// TestIsTerminalColorSchemeQuery covers the sequence matcher, including the C1
+// form and the neighbouring DSR queries it must not claim.
+func TestIsTerminalColorSchemeQuery(t *testing.T) {
+	cases := []struct {
+		name     string
+		sequence string
+		want     bool
+	}{
+		{"csi form", colorSchemeQuery, true},
+		{"c1 form", string([]byte{0x9b}) + "?996n", true},
+		{"colour scheme report is not a query", "\x1b[?997;1n", false},
+		{"cursor position dsr", "\x1b[6n", false},
+		{"private cursor position dsr", "\x1b[?6n", false},
+		{"other private dsr", "\x1b[?9960n", false},
+		{"not a dsr final byte", "\x1b[?996c", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTerminalColorSchemeQuery([]byte(tc.sequence)); got != tc.want {
+				t.Fatalf(
+					"isTerminalColorSchemeQuery(%q) = %v, want %v",
+					tc.sequence,
+					got,
+					tc.want,
+				)
+			}
+		})
+	}
+}
+
+// TestBufferedColorSchemeQueryDroppedOnFlush covers a session the daemon had no
+// theme hint for when the query was emitted — one started outside MonkeySSH, or
+// by a client that declared no theme. The query is buffered, and by the time a
+// terminal attaches its reply can no longer be timely: it reaches the window pty
+// as input, so a shell now sitting at the prompt would echo it as literal
+// `^[[?997;1n` text. Drop it on flush and replay only the rest.
+func TestBufferedColorSchemeQueryDroppedOnFlush(t *testing.T) {
+	server := newMuxServer("theme-hint-late")
+	pty := &recordingPty{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		pty:          pty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	// No theme hint cached yet, so the query has to be buffered.
+	server.handleWindowOutput("@1", []byte(colorSchemeQuery+da1Query))
+
+	server.mu.Lock()
+	pending := string(window.pendingTerminalQueries)
+	server.mu.Unlock()
+	if pending != colorSchemeQuery+da1Query {
+		t.Fatalf("pending queries = %q, want both queries buffered", pending)
+	}
+
+	restore := stubForegroundResize(t)
+	defer restore()
+
+	attach := &recordingConn{}
+	server.handleAttach(
+		attach,
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{Width: 80, Height: 24, Data: themeHintFixture},
+	)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(attach.String(), da1Query) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := attach.String(); !strings.Contains(got, da1Query) {
+		t.Fatalf("attach output = %q, want DA1 still replayed to the terminal", got)
+	}
+	if got := attach.String(); strings.Contains(got, colorSchemeQuery) {
+		t.Fatalf("attach output = %q, want the stale colour-scheme query dropped", got)
+	}
+	if got := pty.String(); strings.Contains(got, "\x1b[?997;1n") {
+		t.Fatalf("window pty got = %q, want no late colour-scheme report", got)
+	}
+}
+
+// TestDropColorSchemeQueries covers the flush-time filter directly, including a
+// buffer that holds nothing else and one whose tail is a partial sequence.
+func TestDropColorSchemeQueries(t *testing.T) {
+	cases := []struct {
+		name    string
+		pending string
+		want    string
+	}{
+		{
+			name:    "keeps other queries in order",
+			pending: xtversionQuery + colorSchemeQuery + da1Query + colorSchemeQuery,
+			want:    xtversionQuery + da1Query,
+		},
+		{"drops a colour-scheme only buffer", colorSchemeQuery, ""},
+		{"keeps a buffer with no colour-scheme query", da1Query, da1Query},
+		{"preserves a partial trailing sequence", colorSchemeQuery + "\x1b[>", "\x1b[>"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(dropColorSchemeQueries([]byte(tc.pending)))
+			if got != tc.want {
+				t.Fatalf("dropColorSchemeQueries(%q) = %q, want %q", tc.pending, got, tc.want)
+			}
+		})
 	}
 }
