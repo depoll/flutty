@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.145"
+	monkeyMuxVersion                  = "0.1.146"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -95,8 +95,30 @@ const (
 	ensureServerDialInterval  = 50 * time.Millisecond
 	ensureServerLockTimeout   = 5 * time.Second
 	ensureServerLockRetryWait = 50 * time.Millisecond
-	sessionPIDFileMode        = 0o600
-	sessionLockFileMode       = 0o600
+	// How often a contended session lock re-checks whether its holder died, and
+	// how many times a freed lock may be claimed before the wait deadline wins.
+	sessionLockStaleCheckInterval = 250 * time.Millisecond
+	ensureServerLockClearRetries  = 8
+	// How long a session file that cannot be parsed at all must sit untouched
+	// before it is treated as abandoned. Kept well under the lock timeout so a
+	// waiter can still reclaim it, and well over the gap between creating a
+	// lock file and writing the pid into it.
+	abandonedPIDFileAge = 2 * time.Second
+	// How far a process may appear to have started after the session file that
+	// names it before the two are treated as different processes. Only a few
+	// seconds of skew is plausible between a file timestamp and an operating
+	// system's start time, and a small window means a pid would have to be
+	// recycled almost immediately to be mistaken for its previous holder.
+	pidRecordStartSlack = 5 * time.Second
+	// How many times ownership is re-resolved when a reclaim loses a race with
+	// another helper installing its own record.
+	pidRecordResolveAttempts = 3
+	// Cap on how much of a session file is read before it is called invalid.
+	pidFileReadLimitBytes = 4096
+	// How long an upgrade snapshot must sit unused before gc reclaims it.
+	abandonedRestoreFileAge = time.Hour
+	sessionPIDFileMode      = 0o600
+	sessionLockFileMode     = 0o600
 	// Per-window Kitty image retention, used to survive history eviction across
 	// reattaches and to back placeholder cells the foreground app re-emits.
 	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
@@ -1413,6 +1435,10 @@ func controlCommand(args []string) {
 func serveCommand(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	session := fs.String("session", "", "session name")
+	// Accepted so the flag set does not reject it; the session name itself
+	// remains authoritative. It exists to identify this process's session in
+	// its command line.
+	_ = fs.String("session-token", "", "session identity token")
 	cwd := fs.String("cwd", "", "initial working directory")
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
@@ -1523,6 +1549,25 @@ func gcCommand() {
 			continue
 		}
 		path := filepath.Join(runDir, entry.Name())
+		// Only sockets are probed by dialling. The sibling .pid and .lock files
+		// are never dialable, so probing them here would delete the bookkeeping
+		// of a perfectly healthy server, and restore snapshots are deleted by
+		// the helper that wrote them unless it died mid-upgrade.
+		switch filepath.Ext(entry.Name()) {
+		case ".pid", ".lock":
+			clearStalePIDFile(path, "")
+			continue
+		case ".json":
+			removeAbandonedRestoreFile(path)
+			continue
+		case ".staging":
+			// Residue of a helper that died while installing a lock file.
+			removeAbandonedStagingFile(path)
+			continue
+		case ".sock":
+		default:
+			continue
+		}
 		conn, err := net.DialTimeout("unix", path, 150*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
@@ -1532,9 +1577,31 @@ func gcCommand() {
 	}
 }
 
+// removeAbandonedRestoreFile deletes an upgrade snapshot left behind by a
+// helper that died mid-restart. Snapshots still being handed to a starting
+// server are kept, otherwise gc would make that server come up empty.
+func removeAbandonedRestoreFile(path string) {
+	if !strings.HasPrefix(filepath.Base(path), "monkeymux-restore-") {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) < abandonedRestoreFileAge {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+func removeAbandonedStagingFile(path string) {
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) < abandonedPIDFileAge {
+		return
+	}
+	_ = os.Remove(path)
+}
+
 type ensureServerReplacement struct {
 	restore *serverRestore
-	oldPID  int
+	oldPID  pidRecord
 }
 
 func ensureServer(
@@ -1569,7 +1636,8 @@ func ensureServer(
 	case existingOnly:
 		return fmt.Errorf("MonkeyMux session %q is not running", session)
 	default:
-		if pid := readSessionPID(session); pid > 0 && processIDAlive(pid) {
+		owner, ownership := sessionServerOwner(session)
+		if ownership != pidOwnershipGone {
 			// A previous serve still owns the windows but the socket path is not
 			// answering. Stealing the path would orphan those windows forever and
 			// surface a brand-new one-window workspace to MonkeySSH.
@@ -1586,9 +1654,9 @@ func ensureServer(
 				replacement = outcome
 			} else {
 				return fmt.Errorf(
-					"MonkeyMux session %q is running (pid %d) but not accepting connections",
+					"MonkeyMux session %q is running (%s) but not accepting connections",
 					session,
-					pid,
+					describeSessionOwner(owner, ownership),
 				)
 			}
 		}
@@ -1612,12 +1680,21 @@ func ensureServer(
 	if err != nil {
 		return err
 	}
-	serveArgs := []string{"serve", "--session", session}
+	serveArgs := []string{
+		"serve",
+		// A whitespace-free identity for the session, so another helper can
+		// tell from this command line which session is served no matter what
+		// the name contains. It precedes the name deliberately: the name is
+		// user supplied, and a name containing its own --session-token would
+		// otherwise shadow this one. See processImageServesSession.
+		"--session-token", sessionToken(session),
+		"--session", session,
+	}
 	if width > 0 && height > 0 {
 		serveArgs = append(serveArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
 	}
 	var restore *serverRestore
-	var previousPID int
+	var previousPID pidRecord
 	if replacement != nil {
 		restore = replacement.restore
 		previousPID = replacement.oldPID
@@ -1698,6 +1775,10 @@ func ensureServer(
 	if startErr != nil {
 		return startErr
 	}
+	startedPID := 0
+	if cmd.Process != nil {
+		startedPID = cmd.Process.Pid
+	}
 	_ = cmd.Process.Release()
 
 	deadline := time.Now().Add(socketTimeout)
@@ -1705,8 +1786,12 @@ func ensureServer(
 		conn, err := dialSession(session)
 		if err == nil {
 			_ = conn.Close()
-			if previousPID > 0 && processIDAlive(previousPID) {
-				terminateProcessID(previousPID)
+			// Only signal a process still proven to be the previous server.
+			// The old pid may have been recycled while it shut down — possibly
+			// onto the replacement that just answered this dial.
+			if previousPID.pid != startedPID &&
+				previousPID.confirmedOwner(session) {
+				terminateProcessID(previousPID.pid)
 			}
 			return nil
 		}
@@ -1753,7 +1838,7 @@ func prepareRunningServerReplacement(
 		)
 		return nil, nil
 	}
-	oldPID := readSessionPID(session)
+	oldPID, _ := sessionServerOwner(session)
 	if status.supportsCapability("shutdown") {
 		requestServerShutdown(session)
 		if !waitForServerExit(session, 2*time.Second) {
@@ -1820,15 +1905,13 @@ func acquireSessionLock(session string) (func(), error) {
 		return nil, err
 	}
 	deadline := time.Now().Add(ensureServerLockTimeout)
-	for {
-		file, err := os.OpenFile(
-			path,
-			os.O_CREATE|os.O_EXCL|os.O_WRONLY,
-			sessionLockFileMode,
-		)
-		if err == nil {
-			_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
-			_ = file.Close()
+	var nextStaleCheck time.Time
+	for clears := 0; ; {
+		acquired, err := installSessionLockFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if acquired {
 			return func() {
 				current, readErr := readPIDFile(path)
 				if readErr == nil && current != os.Getpid() {
@@ -1837,8 +1920,19 @@ func acquireSessionLock(session string) (func(), error) {
 				_ = os.Remove(path)
 			}, nil
 		}
-		if pid := readPIDFileOrZero(path); pid > 0 && !processIDAlive(pid) {
-			_ = os.Remove(path)
+		// Validating the holder can cost a process lookup, so throttle it
+		// rather than repeating it on every retry. The holder of a lock is an
+		// ordinary helper process rather than this session's server, so no
+		// session is expected in its command line.
+		if now := time.Now(); !now.Before(nextStaleCheck) {
+			nextStaleCheck = now.Add(sessionLockStaleCheckInterval)
+			if clearStalePIDFile(path, "") && clears < ensureServerLockClearRetries {
+				// Claim the freed name immediately: the deadline may already
+				// have passed, and failing now would report a timeout for a
+				// lock nobody holds any more.
+				clears++
+				continue
+			}
 		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf(
@@ -1848,6 +1942,60 @@ func acquireSessionLock(session string) (func(), error) {
 		}
 		time.Sleep(ensureServerLockRetryWait)
 	}
+}
+
+// sessionLockStagingSequence makes each lock installation attempt use a
+// distinct staging file, even when several run concurrently in one process.
+var sessionLockStagingSequence atomic.Uint64
+
+// installSessionLockFile publishes a lock file that already names its holder.
+// The file is written under a private name and hard linked into place, because
+// link fails when the target exists just as an exclusive create does, but never
+// exposes an empty file: a lock that was visible before its pid was written
+// could be mistaken by another helper for the residue of a crash and reclaimed
+// while its holder was still inside the critical section. Filesystems without
+// hard links fall back to an exclusive create.
+func installSessionLockFile(path string) (bool, error) {
+	contents := []byte(strconv.Itoa(os.Getpid()) + "\n")
+	// The staging name is unique per attempt, not merely per process: two
+	// goroutines in one helper can contend for the same session, and sharing a
+	// staging path would make them delete or fail to open each other's file.
+	staging := fmt.Sprintf(
+		"%s.%d.%d.staging",
+		path,
+		os.Getpid(),
+		sessionLockStagingSequence.Add(1),
+	)
+	if err := os.WriteFile(staging, contents, sessionLockFileMode); err != nil {
+		return false, err
+	}
+	defer os.Remove(staging)
+
+	switch err := os.Link(staging, path); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, os.ErrExist):
+		return false, nil
+	}
+
+	file, err := os.OpenFile(
+		path,
+		os.O_CREATE|os.O_EXCL|os.O_WRONLY,
+		sessionLockFileMode,
+	)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	_, writeErr := file.Write(contents)
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		return false, errors.Join(writeErr, closeErr)
+	}
+	return true, nil
 }
 
 func writeSessionPIDFile(session string, pid int) error {
@@ -1888,6 +2036,319 @@ func readSessionPID(session string) int {
 	return readPIDFileOrZero(path)
 }
 
+// A record is only
+// discarded once its process is confirmed gone: a file left behind by a server
+// that died without cleaning up (SIGKILL, crash, host reboot) names a pid the
+// operating system later recycles for an unrelated process, and trusting that
+// pid makes ensureServer believe the session is served forever, so MonkeyMux
+// can never start again and every attach falls back to a plain login shell.
+// sessionServerOwner resolves who owns session's server, reclaiming the record
+// when its process is confirmed gone. A file left behind by a server that died
+// without cleaning up (SIGKILL, crash, host reboot) names a pid the operating
+// system later recycles for an unrelated process, and trusting that pid makes
+// ensureServer believe the session is served forever, so MonkeyMux can never
+// start again and every attach falls back to a plain login shell. Ownership is
+// therefore proven rather than assumed, in both directions.
+func sessionServerOwner(session string) (pidRecord, pidOwnership) {
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		return pidRecord{}, pidOwnershipUnknown
+	}
+	// A reclaim that loses a race against another helper is retried against
+	// whatever that helper installed rather than reported as "no owner".
+	for attempt := 0; attempt < pidRecordResolveAttempts; attempt++ {
+		record, err := readPIDRecord(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return pidRecord{}, pidOwnershipGone
+			}
+			if clearAbandonedPIDFile(path) {
+				return pidRecord{}, pidOwnershipGone
+			}
+			// Unreadable but too young to abandon: a transient read error must
+			// not hand the session to a second server while the first one
+			// still owns the windows.
+			return pidRecord{}, pidOwnershipUnknown
+		}
+		ownership := pidRecordOwnership(record, session)
+		if ownership != pidOwnershipGone {
+			return record, ownership
+		}
+		if removePIDFileIfUnchanged(path, record) {
+			return pidRecord{}, pidOwnershipGone
+		}
+	}
+	return pidRecord{}, pidOwnershipUnknown
+}
+
+// describeSessionOwner renders the owner for an error message. An owner that
+// could not be resolved has no pid worth quoting.
+func describeSessionOwner(owner pidRecord, ownership pidOwnership) string {
+	if owner.pid <= 0 {
+		return "owner unknown"
+	}
+	if ownership == pidOwnershipUnknown {
+		return fmt.Sprintf("pid %d, unconfirmed", owner.pid)
+	}
+	return fmt.Sprintf("pid %d", owner.pid)
+}
+
+// pidRecord identifies the process that owns a session file. writtenAt is the
+// file's modification time, which bounds when the recorded process must have
+// started: the writer always starts before it writes, so a process that
+// started later cannot be the writer.
+type pidRecord struct {
+	pid       int
+	writtenAt time.Time
+}
+
+// pidOwnership is the confidence with which a session file's owner could be
+// resolved. Ownership is never inferred from a failed lookup: reclaiming a
+// session needs proof that the owner is gone, and terminating or deferring to
+// one needs proof that it is alive.
+type pidOwnership int
+
+const (
+	pidOwnershipGone pidOwnership = iota
+	pidOwnershipUnknown
+	pidOwnershipLive
+)
+
+// processSnapshot is what a platform could learn about a pid. When known is
+// false nothing could be determined and no ownership decision may be based on
+// it. started and image are zero when only part of the answer was available,
+// and arguments reports whether image is the full command line or only the
+// executable, which is all some platforms expose.
+type processSnapshot struct {
+	known     bool
+	running   bool
+	arguments bool
+	started   time.Time
+	image     string
+}
+
+func (r pidRecord) confirmedOwner(session string) bool {
+	return r.pid > 0 && pidRecordOwnership(r, session) == pidOwnershipLive
+}
+
+// pidRecordOwnership resolves whether the process named by a session file is
+// still that file's owner. session is the session the file belongs to when the
+// owner is expected to be a server for it; the empty string asks only whether
+// the process is a MonkeyMux helper at all, which is all that can be said
+// about the holder of a session lock.
+func pidRecordOwnership(record pidRecord, session string) pidOwnership {
+	if record.pid <= 0 || !processIDAlive(record.pid) {
+		return pidOwnershipGone
+	}
+	snapshot := inspectProcess(record.pid)
+	if !snapshot.known {
+		return pidOwnershipUnknown
+	}
+	if !snapshot.running {
+		// Exited, or a zombie still waiting to be reaped by its parent.
+		return pidOwnershipGone
+	}
+	if snapshot.image == "" {
+		return pidOwnershipUnknown
+	}
+	if !processImageIsMonkeyMux(snapshot.image) {
+		return pidOwnershipGone
+	}
+	if session != "" && snapshot.arguments &&
+		processImageServesSession(snapshot.image, session) {
+		// The command line names this session, which identifies the process
+		// itself rather than merely its kind. Nothing else is needed, and in
+		// particular no clock is consulted, so a host whose wall clock moved
+		// can never mistake a live server for a recycled pid.
+		return pidOwnershipLive
+	}
+	if processStartedAfterRecord(snapshot, record) {
+		// A MonkeyMux process that did not identify itself as this session's
+		// server, and that started after the record was written, cannot be the
+		// process that wrote it: it inherited a recycled pid.
+		return pidOwnershipGone
+	}
+	if session == "" || !snapshot.arguments {
+		// Only the kind of process could be checked: the caller asked about a
+		// lock, whose holder is an ordinary helper rather than a server, or
+		// this platform does not expose command lines.
+		return pidOwnershipLive
+	}
+	return pidOwnershipUnknown
+}
+
+// processStartedAfterRecord reports whether a process demonstrably started
+// after a session file was written. The writer always starts before it writes,
+// so this can only be true of a different process.
+func processStartedAfterRecord(snapshot processSnapshot, record pidRecord) bool {
+	if snapshot.started.IsZero() || record.writtenAt.IsZero() {
+		return false
+	}
+	return snapshot.started.After(record.writtenAt.Add(pidRecordStartSlack))
+}
+
+// processImageIsMonkeyMux matches on the executable the process is running,
+// not on its whole command line, so an editor or a grep that merely mentions
+// the helper is not mistaken for one.
+func processImageIsMonkeyMux(image string) bool {
+	_, _, _, ok := parseHelperCommandLine(image)
+	return ok
+}
+
+// parseHelperCommandLine splits a MonkeyMux command line into its executable,
+// subcommand and remaining arguments, reporting whether it is one at all.
+//
+// A command line reaches this function already flattened into a single string,
+// so an install path containing spaces (a home directory such as
+// "/Users/Jane Doe") is indistinguishable from several arguments. The
+// executable is therefore allowed to span leading words, up to the first one
+// that looks like a flag. Failing to recognise a helper here is not harmless:
+// it is read as proof that a live server is gone, and its windows would be
+// orphaned by the replacement that follows.
+func parseHelperCommandLine(
+	image string,
+) (executable string, subcommand string, arguments []string, ok bool) {
+	fields := strings.Fields(image)
+	for k := 1; k <= len(fields); k++ {
+		if k > 1 && strings.HasPrefix(fields[k-1], "-") {
+			// The executable cannot extend across a flag.
+			break
+		}
+		candidate := strings.Join(fields[:k], " ")
+		if !isMonkeyMuxExecutable(candidate) {
+			continue
+		}
+		if k < len(fields) {
+			return candidate, fields[k], fields[k+1:], true
+		}
+		return candidate, "", nil, true
+	}
+	return "", "", nil, false
+}
+
+func isMonkeyMuxExecutable(path string) bool {
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(path)), ".exe")
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return false
+	}
+	if base == "monkeymux" {
+		return true
+	}
+	// Tolerate a helper installed under another name by comparing with this
+	// process, which is that same binary.
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	self := strings.TrimSuffix(strings.ToLower(filepath.Base(exe)), ".exe")
+	return self != "" && base == self
+}
+
+// processImageServesSession reports whether a command line is that of a
+// MonkeyMux server for exactly this session. The helper installs under
+// ~/.monkeyssh, so searching the command line for the name would match the
+// install path for a session called "MonkeySSH"; and once a command line is
+// flattened to a single string, argument boundaries are gone, so a name
+// containing spaces or flag-like words cannot be recovered from it reliably.
+// The server therefore also carries a whitespace-free token for its session,
+// which is matched first. Servers predating that token fall back to the
+// --session value, which is exact for every name that does not itself look
+// like a flag.
+func processImageServesSession(image string, session string) bool {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return false
+	}
+	_, subcommand, arguments, ok := parseHelperCommandLine(image)
+	if !ok || subcommand != "serve" {
+		return false
+	}
+	if token, ok := flagArgumentValue(arguments, "session-token"); ok {
+		return token == sessionToken(session)
+	}
+	value, ok := flagArgumentValue(arguments, "session")
+	return ok && value == session
+}
+
+// flagArgumentValue returns the value of a flag in a command line that has
+// already been flattened to a single string. A value is read up to the next
+// flag-like argument, which recovers names containing spaces.
+func flagArgumentValue(arguments []string, flag string) (string, bool) {
+	for i, argument := range arguments {
+		name, inline, hasInline := strings.Cut(argument, "=")
+		if name != "--"+flag && name != "-"+flag {
+			continue
+		}
+		if hasInline {
+			return inline, inline != ""
+		}
+		value := arguments[i+1:]
+		for end, word := range value {
+			if strings.HasPrefix(word, "-") {
+				value = value[:end]
+				break
+			}
+		}
+		joined := strings.Join(value, " ")
+		return joined, joined != ""
+	}
+	return "", false
+}
+
+// clearStalePIDFile removes a session file whose owner is confirmed gone and
+// reports whether it did. session may be empty; see pidRecordOwnership.
+func clearStalePIDFile(path string, session string) bool {
+	record, err := readPIDRecord(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+		return clearAbandonedPIDFile(path)
+	}
+	if pidRecordOwnership(record, session) != pidOwnershipGone {
+		return false
+	}
+	return removePIDFileIfUnchanged(path, record)
+}
+
+// removePIDFileIfUnchanged deletes path only while it still holds the record
+// that was validated. Resolving an owner can take a process lookup, and in that
+// window another helper may have reclaimed the file and become its live owner;
+// unlinking by name alone would delete that helper's file and let two helpers
+// hold the same session at once.
+func removePIDFileIfUnchanged(path string, record pidRecord) bool {
+	current, err := readPIDRecord(path)
+	if err != nil ||
+		current.pid != record.pid ||
+		!current.writtenAt.Equal(record.writtenAt) {
+		return false
+	}
+	return os.Remove(path) == nil
+}
+
+// clearAbandonedPIDFile removes a session file that cannot be parsed at all,
+// once it is old enough that no helper can still be writing it. Lock files are
+// installed already populated, so an unparseable one is the residue of a
+// crash; leaving it would block the session forever. The content is re-checked
+// immediately before unlinking for the same reason as
+// removePIDFileIfUnchanged: a helper that has since installed a valid record
+// must not have its file deleted.
+func clearAbandonedPIDFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) < abandonedPIDFileAge {
+		return false
+	}
+	modTime := info.ModTime()
+	if _, err := readPIDRecord(path); err == nil {
+		return false
+	}
+	current, err := os.Stat(path)
+	if err != nil || !current.ModTime().Equal(modTime) {
+		return false
+	}
+	return os.Remove(path) == nil
+}
+
 func readPIDFileOrZero(path string) int {
 	pid, err := readPIDFile(path)
 	if err != nil {
@@ -1897,19 +2358,45 @@ func readPIDFileOrZero(path string) int {
 }
 
 func readPIDFile(path string) (int, error) {
-	data, err := os.ReadFile(path)
+	record, err := readPIDRecord(path)
 	if err != nil {
 		return 0, err
 	}
-	text := strings.TrimSpace(string(data))
+	return record.pid, nil
+}
+
+// readPIDRecord parses a session file. The format is a bare pid so that older
+// helpers sharing the same host still read these files correctly; everything
+// needed to validate ownership is derived from the running process and the
+// file's own modification time instead. Content and timestamp are taken from
+// one open file so they always describe the same generation of the file.
+func readPIDRecord(path string) (pidRecord, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return pidRecord{}, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, pidFileReadLimitBytes))
+	if err != nil {
+		return pidRecord{}, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return pidRecord{}, err
+	}
+	line, _, _ := strings.Cut(
+		strings.ReplaceAll(string(data), "\r\n", "\n"),
+		"\n",
+	)
+	text := strings.TrimSpace(line)
 	if text == "" {
-		return 0, errors.New("empty pid file")
+		return pidRecord{}, errors.New("empty pid file")
 	}
 	pid, err := strconv.Atoi(text)
 	if err != nil || pid <= 0 {
-		return 0, fmt.Errorf("invalid pid file %q", path)
+		return pidRecord{}, fmt.Errorf("invalid pid file %q", path)
 	}
-	return pid, nil
+	return pidRecord{pid: pid, writtenAt: info.ModTime()}, nil
 }
 
 func collectServerRestore(session string, status runningServerStatus) *serverRestore {
@@ -3853,7 +4340,7 @@ func writeRestoreFile(session string, restore *serverRestore) (string, error) {
 		runDir,
 		fmt.Sprintf(
 			"monkeymux-restore-%s-%d.json",
-			restoreSessionToken(session),
+			sessionToken(session),
 			time.Now().UnixNano(),
 		),
 	)
@@ -3863,7 +4350,11 @@ func writeRestoreFile(session string, restore *serverRestore) (string, error) {
 	return path, nil
 }
 
-func restoreSessionToken(session string) string {
+// sessionToken is a stable, whitespace-free identifier for a session name. It
+// names restore snapshots and is passed to the server so its command line can
+// identify the session it serves without depending on how argument boundaries
+// survive being rendered as one string.
+func sessionToken(session string) string {
 	sum := sha256.Sum256([]byte(session))
 	return hex.EncodeToString(sum[:])[:24]
 }

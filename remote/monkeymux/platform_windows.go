@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -702,6 +703,9 @@ func killCommandProcessGroup(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
+// processIDAlive reports whether a process with this pid exists. An access
+// error means it exists but cannot be opened by this caller, which is still
+// evidence that the pid is taken; only a missing process counts as gone.
 func processIDAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -712,7 +716,7 @@ func processIDAlive(pid int) bool {
 		uint32(pid),
 	)
 	if err != nil {
-		return false
+		return errors.Is(err, windows.ERROR_ACCESS_DENIED)
 	}
 	defer windows.CloseHandle(handle)
 	var code uint32
@@ -721,6 +725,51 @@ func processIDAlive(pid int) bool {
 	}
 	const stillActive = 259
 	return code == stillActive
+}
+
+// inspectProcess reports what can be learned about pid. Windows has no zombie
+// state: a terminated process reports a real exit code even while a handle to
+// it is open.
+func inspectProcess(pid int) processSnapshot {
+	if pid <= 0 {
+		return processSnapshot{known: true}
+	}
+	handle, err := windows.OpenProcess(
+		windows.PROCESS_QUERY_LIMITED_INFORMATION,
+		false,
+		uint32(pid),
+	)
+	if err != nil {
+		return processSnapshot{}
+	}
+	defer windows.CloseHandle(handle)
+	var code uint32
+	if err := windows.GetExitCodeProcess(handle, &code); err != nil {
+		return processSnapshot{}
+	}
+	const stillActive = 259
+	snapshot := processSnapshot{known: true, running: code == stillActive}
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(
+		handle,
+		&creation,
+		&exit,
+		&kernel,
+		&user,
+	); err == nil {
+		snapshot.started = time.Unix(0, creation.Nanoseconds()).UTC()
+	}
+	// Toolhelp exposes the executable but not the argument list, so the image
+	// cannot identify which session a helper serves. A pid missing from the
+	// cached table may simply have started since it was taken, and reporting
+	// no image at all would leave ownership unresolved, so the table is read
+	// again before giving up.
+	if info, ok := cachedProcessTable(time.Now())[pid]; ok {
+		snapshot.image = info.comm
+	} else if info, ok := readProcessTable()[pid]; ok {
+		snapshot.image = info.comm
+	}
+	return snapshot
 }
 
 func terminateProcessID(pid int) {
