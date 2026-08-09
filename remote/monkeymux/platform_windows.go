@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -724,13 +723,12 @@ func processIDAlive(pid int) bool {
 	return code == stillActive
 }
 
-// processIdentity returns a token that identifies one incarnation of pid,
-// derived from the process creation time. A pid that Windows later reuses for
-// an unrelated process yields a different token, so stale session files can be
-// told apart from a live MonkeyMux server.
-func processIdentity(pid int) string {
+// inspectProcess reports what can be learned about pid. Windows has no zombie
+// state: a terminated process reports a real exit code even while a handle to
+// it is open.
+func inspectProcess(pid int) processSnapshot {
 	if pid <= 0 {
-		return ""
+		return processSnapshot{known: true}
 	}
 	handle, err := windows.OpenProcess(
 		windows.PROCESS_QUERY_LIMITED_INFORMATION,
@@ -738,9 +736,15 @@ func processIdentity(pid int) string {
 		uint32(pid),
 	)
 	if err != nil {
-		return ""
+		return processSnapshot{}
 	}
 	defer windows.CloseHandle(handle)
+	var code uint32
+	if err := windows.GetExitCodeProcess(handle, &code); err != nil {
+		return processSnapshot{}
+	}
+	const stillActive = 259
+	snapshot := processSnapshot{known: true, running: code == stillActive}
 	var creation, exit, kernel, user windows.Filetime
 	if err := windows.GetProcessTimes(
 		handle,
@@ -748,24 +752,13 @@ func processIdentity(pid int) string {
 		&exit,
 		&kernel,
 		&user,
-	); err != nil {
-		return ""
+	); err == nil {
+		snapshot.started = time.Unix(0, creation.Nanoseconds()).UTC()
 	}
-	return strconv.FormatInt(creation.Nanoseconds(), 10)
-}
-
-// processIsMonkeyMux reports whether pid looks like a MonkeyMux helper. It is
-// the fallback check for session files written before process identities were
-// recorded.
-func processIsMonkeyMux(pid int) bool {
-	if pid <= 0 {
-		return false
+	if info, ok := cachedProcessTable(time.Now())[pid]; ok {
+		snapshot.image = strings.ToLower(info.comm + " " + info.args)
 	}
-	info, ok := readProcessTable()[pid]
-	if !ok {
-		return false
-	}
-	return strings.Contains(strings.ToLower(info.comm), "monkeymux")
+	return snapshot
 }
 
 func terminateProcessID(pid int) {

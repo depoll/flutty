@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -263,10 +264,10 @@ func TestLiveSessionServerPIDRecordClearsRecycledPID(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	contents := fmt.Sprintf("%d\nstale-identity-from-a-previous-boot\n", os.Getpid())
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(recycledPIDFileContents()), 0o600); err != nil {
 		t.Fatalf("write pid file: %v", err)
 	}
+	agePIDFileBeforeThisProcess(t, path)
 	if owner := liveSessionServerPIDRecord(session); owner.pid != 0 {
 		t.Fatalf("owner pid = %d, want 0 for a recycled pid", owner.pid)
 	}
@@ -318,10 +319,10 @@ func TestEnsureServerClearsRecycledPIDInsteadOfFailing(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	contents := fmt.Sprintf("%d\nstale-identity-from-a-previous-boot\n", os.Getpid())
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(recycledPIDFileContents()), 0o600); err != nil {
 		t.Fatalf("write pid file: %v", err)
 	}
+	agePIDFileBeforeThisProcess(t, path)
 
 	// ensureServer spawns a real helper here, which the sandboxed test host may
 	// refuse; only the refusal-to-start path is asserted.
@@ -338,6 +339,14 @@ func TestEnsureServerClearsRecycledPIDInsteadOfFailing(t *testing.T) {
 		t.Fatalf("ensureServer refused to start because of a recycled pid: %v", err)
 	}
 	requestServerShutdown(session)
+
+	// The recycled record must be gone either way, so a helper that never gets
+	// as far as spawning still recovers on the next attempt.
+	if record, readErr := readPIDRecord(path); readErr == nil &&
+		record.pid == os.Getpid() &&
+		record.writtenAt.Before(time.Now().Add(-time.Hour)) {
+		t.Fatal("ensureServer kept the recycled pid record")
+	}
 }
 
 func TestAcquireSessionLockClearsLockHeldByRecycledPID(t *testing.T) {
@@ -354,10 +363,10 @@ func TestAcquireSessionLockClearsLockHeldByRecycledPID(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	contents := fmt.Sprintf("%d\nstale-identity-from-a-previous-boot\n", os.Getpid())
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(recycledPIDFileContents()), 0o600); err != nil {
 		t.Fatalf("write lock file: %v", err)
 	}
+	agePIDFileBeforeThisProcess(t, path)
 
 	unlock, err := acquireSessionLock(session)
 	if err != nil {
@@ -456,5 +465,87 @@ func TestGCKeepsInFlightRestoreSnapshots(t *testing.T) {
 	}
 	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
 		t.Fatalf("gc kept an abandoned restore snapshot: %v", err)
+	}
+}
+
+// recycledPIDFileContents names this process, which is alive but is not the
+// process that wrote the file in the scenario under test.
+func recycledPIDFileContents() string {
+	return fmt.Sprintf("%d\n", os.Getpid())
+}
+
+// agePIDFileBeforeThisProcess backdates a session file so it predates the
+// process it names. That is what a recycled pid looks like: the file was
+// written by a server that has since died, and the pid now belongs to a
+// process that started later.
+func agePIDFileBeforeThisProcess(t *testing.T, path string) {
+	t.Helper()
+	old := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+}
+
+// Reclaiming a stale session file must not be able to unlink a file that
+// another helper has already taken over, or two helpers would hold the same
+// session lock at once and could both start a server for it.
+func TestAcquireSessionLockIsExclusiveUnderContention(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("lock-race-%d", time.Now().UnixNano())
+	path, err := sessionLockPath(session)
+	if err != nil {
+		t.Fatalf("sessionLockPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Seed a stale lock so every contender races through the reclaim path.
+	if err := os.WriteFile(path, []byte("99999999\n"), 0o600); err != nil {
+		t.Fatalf("write stale lock: %v", err)
+	}
+
+	const (
+		contenders = 4
+		rounds     = 3
+	)
+	var (
+		mu        sync.Mutex
+		held      int
+		conflicts int
+		wg        sync.WaitGroup
+	)
+	for i := 0; i < contenders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := 0; r < rounds; r++ {
+				unlock, err := acquireSessionLock(session)
+				if err != nil {
+					t.Errorf("acquireSessionLock: %v", err)
+					return
+				}
+				mu.Lock()
+				held++
+				if held > 1 {
+					conflicts++
+				}
+				mu.Unlock()
+				mu.Lock()
+				held--
+				mu.Unlock()
+				unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if conflicts > 0 {
+		t.Fatalf("session lock was held by more than one holder %d times", conflicts)
 	}
 }
