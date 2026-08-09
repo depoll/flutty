@@ -913,3 +913,88 @@ func TestIsTerminalColorSchemeQuery(t *testing.T) {
 		})
 	}
 }
+
+// TestBufferedColorSchemeQueryDroppedOnFlush covers a session the daemon had no
+// theme hint for when the query was emitted — one started outside MonkeySSH, or
+// by a client that declared no theme. The query is buffered, and by the time a
+// terminal attaches its reply can no longer be timely: it reaches the window pty
+// as input, so a shell now sitting at the prompt would echo it as literal
+// `^[[?997;1n` text. Drop it on flush and replay only the rest.
+func TestBufferedColorSchemeQueryDroppedOnFlush(t *testing.T) {
+	server := newMuxServer("theme-hint-late")
+	pty := &recordingPty{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		pty:          pty,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	// No theme hint cached yet, so the query has to be buffered.
+	server.handleWindowOutput("@1", []byte(colorSchemeQuery+da1Query))
+
+	server.mu.Lock()
+	pending := string(window.pendingTerminalQueries)
+	server.mu.Unlock()
+	if pending != colorSchemeQuery+da1Query {
+		t.Fatalf("pending queries = %q, want both queries buffered", pending)
+	}
+
+	restore := stubForegroundResize(t)
+	defer restore()
+
+	attach := &recordingConn{}
+	server.handleAttach(
+		attach,
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{Width: 80, Height: 24, Data: themeHintFixture},
+	)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(attach.String(), da1Query) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := attach.String(); !strings.Contains(got, da1Query) {
+		t.Fatalf("attach output = %q, want DA1 still replayed to the terminal", got)
+	}
+	if got := attach.String(); strings.Contains(got, colorSchemeQuery) {
+		t.Fatalf("attach output = %q, want the stale colour-scheme query dropped", got)
+	}
+	if got := pty.String(); strings.Contains(got, "\x1b[?997;1n") {
+		t.Fatalf("window pty got = %q, want no late colour-scheme report", got)
+	}
+}
+
+// TestDropColorSchemeQueries covers the flush-time filter directly, including a
+// buffer that holds nothing else and one whose tail is a partial sequence.
+func TestDropColorSchemeQueries(t *testing.T) {
+	cases := []struct {
+		name    string
+		pending string
+		want    string
+	}{
+		{
+			name:    "keeps other queries in order",
+			pending: xtversionQuery + colorSchemeQuery + da1Query + colorSchemeQuery,
+			want:    xtversionQuery + da1Query,
+		},
+		{"drops a colour-scheme only buffer", colorSchemeQuery, ""},
+		{"keeps a buffer with no colour-scheme query", da1Query, da1Query},
+		{"preserves a partial trailing sequence", colorSchemeQuery + "\x1b[>", "\x1b[>"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(dropColorSchemeQueries([]byte(tc.pending)))
+			if got != tc.want {
+				t.Fatalf("dropColorSchemeQueries(%q) = %q, want %q", tc.pending, got, tc.want)
+			}
+		})
+	}
+}
