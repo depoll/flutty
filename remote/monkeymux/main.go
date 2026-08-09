@@ -95,8 +95,20 @@ const (
 	ensureServerDialInterval  = 50 * time.Millisecond
 	ensureServerLockTimeout   = 5 * time.Second
 	ensureServerLockRetryWait = 50 * time.Millisecond
-	// How often a contended session lock re-checks whether its holder died.
+	// How often a contended session lock re-checks whether its holder died, and
+	// how many times a freed lock may be claimed before the wait deadline wins.
 	sessionLockStaleCheckInterval = 250 * time.Millisecond
+	ensureServerLockClearRetries  = 8
+	// How long a session file that cannot be parsed at all must sit untouched
+	// before it is treated as abandoned. Kept well under the lock timeout so a
+	// waiter can still reclaim it, and well over the gap between creating a
+	// lock file and writing the pid into it.
+	abandonedPIDFileAge = 2 * time.Second
+	// How far a process may appear to have started after the session file that
+	// names it before the two are treated as different processes. This absorbs
+	// clock adjustments between the file's timestamp and the start time
+	// reported by the operating system.
+	pidRecordStartSlack = 2 * time.Minute
 	// How long an upgrade snapshot must sit unused before gc reclaims it.
 	abandonedRestoreFileAge = time.Hour
 	sessionPIDFileMode      = 0o600
@@ -1731,6 +1743,10 @@ func ensureServer(
 	if startErr != nil {
 		return startErr
 	}
+	startedPID := 0
+	if cmd.Process != nil {
+		startedPID = cmd.Process.Pid
+	}
 	_ = cmd.Process.Release()
 
 	deadline := time.Now().Add(socketTimeout)
@@ -1738,7 +1754,10 @@ func ensureServer(
 		conn, err := dialSession(session)
 		if err == nil {
 			_ = conn.Close()
-			if previousPID.alive() {
+			// Only signal a process still proven to be the previous server.
+			// The old pid may have been recycled while it shut down — possibly
+			// onto the replacement that just answered this dial.
+			if previousPID.pid != startedPID && previousPID.confirmedOwner() {
 				terminateProcessID(previousPID.pid)
 			}
 			return nil
@@ -1854,14 +1873,14 @@ func acquireSessionLock(session string) (func(), error) {
 	}
 	deadline := time.Now().Add(ensureServerLockTimeout)
 	var nextStaleCheck time.Time
-	for {
+	for clears := 0; ; {
 		file, err := os.OpenFile(
 			path,
 			os.O_CREATE|os.O_EXCL|os.O_WRONLY,
 			sessionLockFileMode,
 		)
 		if err == nil {
-			_, _ = file.WriteString(encodePIDRecord(os.Getpid()))
+			_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
 			_ = file.Close()
 			return func() {
 				current, readErr := readPIDFile(path)
@@ -1874,8 +1893,14 @@ func acquireSessionLock(session string) (func(), error) {
 		// Validating the holder can cost a process lookup, so throttle it
 		// rather than repeating it on every retry.
 		if now := time.Now(); !now.Before(nextStaleCheck) {
-			clearStalePIDFile(path)
 			nextStaleCheck = now.Add(sessionLockStaleCheckInterval)
+			if clearStalePIDFile(path) && clears < ensureServerLockClearRetries {
+				// Claim the freed name immediately: the deadline may already
+				// have passed, and failing now would report a timeout for a
+				// lock nobody holds any more.
+				clears++
+				continue
+			}
 		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf(
@@ -1900,7 +1925,7 @@ func writeSessionPIDFile(session string, pid int) error {
 	}
 	return os.WriteFile(
 		path,
-		[]byte(encodePIDRecord(pid)),
+		[]byte(strconv.Itoa(pid)+"\n"),
 		sessionPIDFileMode,
 	)
 }
@@ -1926,93 +1951,154 @@ func readSessionPID(session string) int {
 }
 
 // liveSessionServerPIDRecord returns the record of the MonkeyMux server that
-// still owns session, or a zero record when nothing owns it. Records left
-// behind by a server that died without cleaning up (SIGKILL, crash, host
-// reboot) are deleted here. Without that, a pid the operating system later
-// recycles for an unrelated process makes ensureServer believe the session is
-// still served forever, so MonkeyMux can never start again for that session
-// and every attach silently falls back to a plain login shell.
+// still owns session, or a zero record when nothing owns it. A record is only
+// discarded once its process is confirmed gone: a file left behind by a server
+// that died without cleaning up (SIGKILL, crash, host reboot) names a pid the
+// operating system later recycles for an unrelated process, and trusting that
+// pid makes ensureServer believe the session is served forever, so MonkeyMux
+// can never start again and every attach falls back to a plain login shell.
 func liveSessionServerPIDRecord(session string) pidRecord {
 	path, err := sessionPIDPath(session)
 	if err != nil {
 		return pidRecord{}
 	}
 	record, err := readPIDRecord(path)
-	if err != nil || record.pid <= 0 || pidRecordIsStale(record) {
-		_ = os.Remove(path)
+	if err != nil {
+		// Unreadable records are only discarded once they are old enough to be
+		// abandoned. A transient read error must not hand the session to a
+		// second server while the first one still owns the windows.
+		clearAbandonedPIDFile(path, err)
+		return pidRecord{}
+	}
+	if pidRecordOwnership(record) == pidOwnershipGone {
+		removePIDFileIfUnchanged(path, record)
 		return pidRecord{}
 	}
 	return record
 }
 
-// pidRecord identifies the process that owns a session file. identity is a
-// per-process token (see processIdentity) that changes when the operating
-// system reuses the pid, so a stale file cannot be mistaken for a live server.
+// pidRecord identifies the process that owns a session file. writtenAt is the
+// file's modification time, which bounds when the recorded process must have
+// started: a process that started later cannot be the one that wrote the file,
+// so it has to be an unrelated process that inherited a recycled pid.
 type pidRecord struct {
-	pid      int
-	identity string
+	pid       int
+	writtenAt time.Time
 }
 
-func (r pidRecord) alive() bool {
-	return r.pid > 0 && !pidRecordIsStale(r)
+// pidOwnership is the confidence with which a session file's owner could be
+// resolved. Ownership is never inferred from a failed lookup: reclaiming a
+// session needs proof that the owner is gone, and terminating or deferring to
+// one needs proof that it is alive.
+type pidOwnership int
+
+const (
+	pidOwnershipGone pidOwnership = iota
+	pidOwnershipUnknown
+	pidOwnershipLive
+)
+
+// processSnapshot is what a platform could learn about a pid. When known is
+// false nothing could be determined and no ownership decision may be based on
+// it. started and image are zero when only part of the answer was available.
+type processSnapshot struct {
+	known   bool
+	running bool
+	started time.Time
+	image   string
 }
 
-func encodePIDRecord(pid int) string {
-	record := strconv.Itoa(pid) + "\n"
-	if identity := sanitizePIDIdentity(processIdentity(pid)); identity != "" {
-		record += identity + "\n"
+func (r pidRecord) confirmedOwner() bool {
+	return r.pid > 0 && pidRecordOwnership(r) == pidOwnershipLive
+}
+
+func pidRecordOwnership(record pidRecord) pidOwnership {
+	if record.pid <= 0 || !processIDAlive(record.pid) {
+		return pidOwnershipGone
 	}
-	return record
+	snapshot := inspectProcess(record.pid)
+	if !snapshot.known {
+		return pidOwnershipUnknown
+	}
+	if !snapshot.running {
+		// Exited, or a zombie still waiting to be reaped by its parent.
+		return pidOwnershipGone
+	}
+	if !snapshot.started.IsZero() && !record.writtenAt.IsZero() &&
+		snapshot.started.After(record.writtenAt.Add(pidRecordStartSlack)) {
+		// The record predates this process, so the process that wrote it has
+		// exited and its pid has since been handed to this one.
+		return pidOwnershipGone
+	}
+	if snapshot.image == "" {
+		return pidOwnershipUnknown
+	}
+	if !processImageIsMonkeyMux(snapshot.image) {
+		return pidOwnershipGone
+	}
+	return pidOwnershipLive
 }
 
-func sanitizePIDIdentity(identity string) string {
-	identity = strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' {
-			return ' '
-		}
-		return r
-	}, identity)
-	return strings.Join(strings.Fields(identity), " ")
+func processImageIsMonkeyMux(image string) bool {
+	if strings.Contains(image, "monkeymux") {
+		return true
+	}
+	// Tolerate a helper that was installed under another name.
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	base := strings.ToLower(
+		strings.TrimSuffix(filepath.Base(exe), ".exe"),
+	)
+	return base != "" && strings.Contains(image, base)
 }
 
-// pidRecordIsStale reports whether the recorded process is gone. A record
-// without an identity was written by an older helper (or on a host where the
-// identity is unavailable), so it can only be matched against the running
-// process image.
 func pidRecordIsStale(record pidRecord) bool {
-	if record.pid <= 0 {
-		return true
-	}
-	if !processIDAlive(record.pid) {
-		return true
-	}
-	if record.identity != "" {
-		identity := sanitizePIDIdentity(processIdentity(record.pid))
-		return identity != "" && identity != record.identity
-	}
-	return !processIsMonkeyMux(record.pid)
+	return pidRecordOwnership(record) == pidOwnershipGone
 }
 
-// clearStalePIDFile removes a session file whose owner is gone. Unreadable
-// files are removed too once they are older than the lock timeout: a file that
-// is briefly empty belongs to a helper that just created it, but one that
-// stays unparseable would otherwise block the session forever.
-func clearStalePIDFile(path string) {
+// clearStalePIDFile removes a session file whose owner is confirmed gone and
+// reports whether it did.
+func clearStalePIDFile(path string) bool {
 	record, err := readPIDRecord(path)
-	if err == nil {
-		if pidRecordIsStale(record) {
-			_ = os.Remove(path)
-		}
-		return
+	if err != nil {
+		return clearAbandonedPIDFile(path, err)
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return
+	if pidRecordOwnership(record) != pidOwnershipGone {
+		return false
 	}
-	info, statErr := os.Stat(path)
-	if statErr != nil || time.Since(info.ModTime()) < ensureServerLockTimeout {
-		return
+	return removePIDFileIfUnchanged(path, record)
+}
+
+// removePIDFileIfUnchanged deletes path only while it still holds the record
+// that was validated. Resolving an owner can take a process lookup, and in that
+// window another helper may have reclaimed the file and become its live owner;
+// unlinking by name alone would delete that helper's file and let two helpers
+// hold the same session at once.
+func removePIDFileIfUnchanged(path string, record pidRecord) bool {
+	current, err := readPIDRecord(path)
+	if err != nil ||
+		current.pid != record.pid ||
+		!current.writtenAt.Equal(record.writtenAt) {
+		return false
 	}
-	_ = os.Remove(path)
+	return os.Remove(path) == nil
+}
+
+// clearAbandonedPIDFile removes a session file that cannot be parsed at all,
+// once it is old enough that no helper can still be writing it. A file is
+// briefly empty between being created and being written, but one that stays
+// unparseable would otherwise block the session forever.
+func clearAbandonedPIDFile(path string, readErr error) bool {
+	if errors.Is(readErr, os.ErrNotExist) {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) < abandonedPIDFileAge {
+		return false
+	}
+	return os.Remove(path) == nil
 }
 
 func readPIDFileOrZero(path string) int {
@@ -2031,13 +2117,20 @@ func readPIDFile(path string) (int, error) {
 	return record.pid, nil
 }
 
+// readPIDRecord parses a session file. The format is a bare pid so that older
+// helpers sharing the same host keep reading these files correctly; everything
+// needed to validate ownership is derived from the running process and the
+// file's own modification time instead.
 func readPIDRecord(path string) (pidRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return pidRecord{}, err
 	}
-	lines := strings.SplitN(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n", 2)
-	text := strings.TrimSpace(lines[0])
+	line, _, _ := strings.Cut(
+		strings.ReplaceAll(string(data), "\r\n", "\n"),
+		"\n",
+	)
+	text := strings.TrimSpace(line)
 	if text == "" {
 		return pidRecord{}, errors.New("empty pid file")
 	}
@@ -2045,11 +2138,11 @@ func readPIDRecord(path string) (pidRecord, error) {
 	if err != nil || pid <= 0 {
 		return pidRecord{}, fmt.Errorf("invalid pid file %q", path)
 	}
-	identity := ""
-	if len(lines) > 1 {
-		identity = sanitizePIDIdentity(lines[1])
+	record := pidRecord{pid: pid}
+	if info, err := os.Stat(path); err == nil {
+		record.writtenAt = info.ModTime()
 	}
-	return pidRecord{pid: pid, identity: identity}, nil
+	return record, nil
 }
 
 func collectServerRestore(session string, status runningServerStatus) *serverRestore {

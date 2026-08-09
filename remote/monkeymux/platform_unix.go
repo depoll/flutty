@@ -149,73 +149,163 @@ func processIDAlive(pid int) bool {
 	return err == nil
 }
 
-// processIdentity returns a token that identifies one incarnation of pid. It
-// is derived from the process start time, so a pid the kernel later recycles
-// for an unrelated process yields a different token and stale session files
-// can be told apart from a live MonkeyMux server.
-func processIdentity(pid int) string {
+// inspectProcess reports what can be learned about pid. Linux answers from
+// procfs; elsewhere a single ps query is used, pinned to a fixed locale and
+// timezone so the start time it prints does not depend on the environment the
+// caller happened to inherit.
+func inspectProcess(pid int) processSnapshot {
 	if pid <= 0 {
-		return ""
+		return processSnapshot{known: true}
 	}
-	if start := linuxProcessStartTicks(pid); start != "" {
-		return start
+	if snapshot, ok := inspectProcFSProcess(pid); ok {
+		return snapshot
 	}
-	output, err := runProcessQuery("ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(output)
+	return inspectPSProcess(pid)
 }
 
-// linuxProcessStartTicks reads field 22 (starttime) of /proc/<pid>/stat, which
-// is more precise than ps and needs no subprocess. It returns "" on platforms
-// without procfs (notably macOS).
-func linuxProcessStartTicks(pid int) string {
+func inspectProcFSProcess(pid int) (processSnapshot, bool) {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if err != nil {
-		return ""
+		return processSnapshot{}, false
 	}
-	// The comm field is parenthesized and may contain spaces, so fields are
-	// counted from the closing parenthesis.
-	end := strings.LastIndex(string(data), ")")
+	text := string(data)
+	// The comm field is parenthesized and may itself contain spaces and
+	// parentheses, so the numbered fields are counted from its closing brace.
+	end := strings.LastIndex(text, ")")
 	if end < 0 {
-		return ""
+		return processSnapshot{}, false
 	}
-	fields := strings.Fields(string(data)[end+1:])
-	// starttime is field 22 overall; fields here start at field 3 (state).
-	const startTimeOffset = 19
+	fields := strings.Fields(text[end+1:])
+	// These offsets are relative to field 3 (state), the first field after comm.
+	const (
+		stateOffset     = 0
+		startTimeOffset = 19
+	)
 	if len(fields) <= startTimeOffset {
-		return ""
+		return processSnapshot{}, false
 	}
-	return fields[startTimeOffset]
+	snapshot := processSnapshot{
+		known:   true,
+		running: fields[stateOffset] != "Z",
+		image:   strings.ToLower(linuxProcessImage(pid, text[:end+1])),
+	}
+	if ticks, err := strconv.ParseInt(fields[startTimeOffset], 10, 64); err == nil {
+		if boot, ok := linuxBootTime(); ok {
+			snapshot.started = boot.Add(userHZTicksToDuration(ticks))
+		}
+	}
+	return snapshot, true
 }
 
-// processIsMonkeyMux reports whether pid looks like a MonkeyMux helper. It is
-// the fallback check for session files written before process identities were
-// recorded.
-func processIsMonkeyMux(pid int) bool {
-	if pid <= 0 {
-		return false
+// userHZTicksToDuration converts a procfs tick count. The kernel always reports
+// these in USER_HZ, which is 100 regardless of the configured timer frequency.
+func userHZTicksToDuration(ticks int64) time.Duration {
+	const userHZ = 100
+	return time.Duration(ticks/userHZ)*time.Second +
+		time.Duration(ticks%userHZ)*(time.Second/userHZ)
+}
+
+// linuxBootTime reads the boot wall-clock time, which anchors the boot-relative
+// start times in /proc/<pid>/stat. Without it, a pid recycled after a reboot
+// could report the same start tick as the process that first held it.
+func linuxBootTime() (time.Time, bool) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}, false
 	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "btime" {
+			continue
+		}
+		seconds, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return time.Unix(seconds, 0), true
+	}
+	return time.Time{}, false
+}
+
+func linuxProcessImage(pid int, statPrefix string) string {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err == nil {
+		image := strings.TrimSpace(
+			strings.ReplaceAll(string(data), "\x00", " "),
+		)
+		if image != "" {
+			return image
+		}
+	}
+	// Kernel threads have an empty cmdline; fall back to the comm field.
+	if start := strings.Index(statPrefix, "("); start >= 0 {
+		return strings.TrimSuffix(statPrefix[start+1:], ")")
+	}
+	return ""
+}
+
+func inspectPSProcess(pid int) processSnapshot {
 	output, err := runProcessQuery(
 		"ps",
 		"-p",
 		strconv.Itoa(pid),
 		"-o",
-		"comm=",
+		"state=",
+		"-o",
+		"lstart=",
 		"-o",
 		"args=",
 	)
 	if err != nil {
-		return false
+		return processSnapshot{}
 	}
-	return strings.Contains(strings.ToLower(output), "monkeymux")
+	fields := strings.Fields(output)
+	if len(fields) == 0 {
+		// ps ran and reported no such process.
+		return processSnapshot{known: true}
+	}
+	snapshot := processSnapshot{
+		known:   true,
+		running: !strings.HasPrefix(fields[0], "Z"),
+	}
+	// lstart always occupies exactly five fields ("Mon Jan  2 15:04:05 2006"),
+	// so the remainder is the argument list.
+	const lstartFields = 5
+	if len(fields) > 1+lstartFields {
+		snapshot.started = parseProcessStartTime(
+			strings.Join(fields[1:1+lstartFields], " "),
+		)
+		snapshot.image = strings.ToLower(
+			strings.Join(fields[1+lstartFields:], " "),
+		)
+	}
+	return snapshot
+}
+
+// parseProcessStartTime parses the C-locale, UTC output forced by
+// runProcessQuery. A value it cannot parse yields the zero time, which callers
+// treat as "unknown" rather than as evidence about the process.
+func parseProcessStartTime(value string) time.Time {
+	for _, layout := range []string{
+		"Mon Jan _2 15:04:05 2006",
+		"Mon Jan _2 15:04:05 MST 2006",
+	} {
+		if started, err := time.Parse(layout, value); err == nil {
+			return started.UTC()
+		}
+	}
+	return time.Time{}
 }
 
 func runProcessQuery(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, name, args...).Output()
+	cmd := exec.CommandContext(ctx, name, args...)
+	// Pin the timezone and locale so timestamps are comparable no matter what
+	// the SSH session exported. os/exec keeps the last value for a duplicated
+	// name, so these override anything inherited.
+	cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
+	output, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
@@ -223,6 +313,7 @@ func runProcessQuery(name string, args ...string) (string, error) {
 		return "", ctx.Err()
 	}
 	return string(output), nil
+
 }
 
 func terminateProcessID(pid int) {
