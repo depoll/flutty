@@ -1,6 +1,6 @@
-What's new in this 0.3.3 beta
+What's new in this 0.4.0 beta
 
-- Windows remotes keep bracketed paste intact.
-- Links no longer render as stray escape text.
-- Escape stays responsive while a paste is arriving.
-- Keystrokes arrive in order when attaching to a MonkeyMux window.
+- New "Detect open ports" switch turns on automatic port forwarding from the terminal.
+- The tmux/MonkeyMux bar only appears for the connection you are actually attached to.
+- Agents get the right light/dark colour scheme in background windows, with no stray escape text.
+- MonkeyMux sessions recover from recycled process IDs instead of locking you out.

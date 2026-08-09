@@ -1,9 +1,6 @@
-What's new in 0.3.3
+What's new in 0.4.0
 
-- Windows remotes: bracketed paste survives the round trip, plus session titles, Escape, and Kitty graphics.
-- Links no longer render as stray escape text.
-- Escape stays responsive while a paste is arriving.
-- Keystrokes arrive in order when attaching to a MonkeyMux window.
-- Launch presets for Pi, Hermes, and OpenClaw.
-- MonkeyMux reconnect preserves your session.
-- Window switching and control-channel stability fixes.
+- New "Detect open ports" switch turns on automatic port forwarding from the terminal's Port Forwards sheet.
+- The tmux/MonkeyMux bar only appears for the connection you are actually attached to.
+- Agents get the right light/dark colour scheme in background windows, with no stray escape text at the prompt.
+- MonkeyMux sessions recover from recycled process IDs instead of locking you out.
