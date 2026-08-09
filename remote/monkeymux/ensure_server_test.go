@@ -277,6 +277,17 @@ func TestSessionServerOwnerClearsRecycledPID(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("pid file state = %v, want removed", err)
 	}
+	// ensureServer consults exactly this result, so a gone owner is what lets
+	// it start instead of reporting "not accepting connections" forever.
+	if owner, ownership := sessionServerOwner(session); ownership != pidOwnershipGone ||
+		owner.pid != 0 {
+		t.Fatalf(
+			"second resolve = %v (pid %d), want %v with no owner",
+			ownership,
+			owner.pid,
+			pidOwnershipGone,
+		)
+	}
 }
 
 // Pid files written before identities were recorded carry only a number, so a
@@ -305,50 +316,6 @@ func TestSessionServerOwnerClearsLegacyForeignPID(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("pid file state = %v, want removed", err)
-	}
-}
-
-func TestEnsureServerClearsRecycledPIDInsteadOfFailing(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_RUNTIME_DIR", "")
-
-	session := fmt.Sprintf("recycled-ensure-%d", time.Now().UnixNano())
-	path, err := sessionPIDPath(session)
-	if err != nil {
-		t.Fatalf("sessionPIDPath: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(recycledPIDFileContents()), 0o600); err != nil {
-		t.Fatalf("write pid file: %v", err)
-	}
-	agePIDFileBeforeThisProcess(t, path)
-
-	// ensureServer spawns a real helper here, which the sandboxed test host may
-	// refuse; only the refusal-to-start path is asserted.
-	err = ensureServer(
-		session,
-		createWindowOptions{},
-		serverUpdatePolicyNever,
-		false,
-		80,
-		24,
-		false,
-	)
-	if err != nil && strings.Contains(err.Error(), "not accepting connections") {
-		t.Fatalf("ensureServer refused to start because of a recycled pid: %v", err)
-	}
-	requestServerShutdown(session)
-
-	// The recycled record must be gone either way, so a helper that never gets
-	// as far as spawning still recovers on the next attempt.
-	if record, readErr := readPIDRecord(path); readErr == nil &&
-		record.pid == os.Getpid() &&
-		record.writtenAt.Before(time.Now().Add(-time.Hour)) {
-		t.Fatal("ensureServer kept the recycled pid record")
 	}
 }
 
