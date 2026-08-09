@@ -1682,11 +1682,13 @@ func ensureServer(
 	}
 	serveArgs := []string{
 		"serve",
-		"--session", session,
 		// A whitespace-free identity for the session, so another helper can
 		// tell from this command line which session is served no matter what
-		// the name contains. See processImageServesSession.
+		// the name contains. It precedes the name deliberately: the name is
+		// user supplied, and a name containing its own --session-token would
+		// otherwise shadow this one. See processImageServesSession.
 		"--session-token", sessionToken(session),
+		"--session", session,
 	}
 	if width > 0 && height > 0 {
 		serveArgs = append(serveArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))

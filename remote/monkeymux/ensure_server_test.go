@@ -731,12 +731,29 @@ func TestProcessImageMatching(t *testing.T) {
 		serves  bool
 	}{
 		{install + " serve --session MonkeySSH", true, "MonkeySSH", true},
-		// The session token is authoritative and survives any name.
-		{install + " serve --session MonkeySSH --session-token " + sessionToken("MonkeySSH"), true, "MonkeySSH", true},
-		{install + " serve --session agents --session-token " + sessionToken("agents"), true, "MonkeySSH", false},
+		// The session token is authoritative and survives any name. It is
+		// emitted before the name so a name cannot shadow it.
+		{install + " serve --session-token " + sessionToken("MonkeySSH") + " --session MonkeySSH", true, "MonkeySSH", true},
+		{install + " serve --session-token " + sessionToken("agents") + " --session agents", true, "MonkeySSH", false},
 		// A name that itself looks like flags is unambiguous with a token.
-		{install + " serve --session Work --foo --session-token " + sessionToken("Work --foo"), true, "Work", false},
-		{install + " serve --session Work --foo --session-token " + sessionToken("Work --foo"), true, "Work --foo", true},
+		{install + " serve --session-token " + sessionToken("Work --foo") + " --session Work --foo", true, "Work", false},
+		{install + " serve --session-token " + sessionToken("Work --foo") + " --session Work --foo", true, "Work --foo", true},
+		// A name that embeds another session's token must not shadow the real
+		// one, which is why the real token is emitted first.
+		{
+			install + " serve --session-token " + sessionToken("agents") +
+				" --session agents --session-token " + sessionToken("Work"),
+			true,
+			"Work",
+			false,
+		},
+		{
+			install + " serve --session-token " + sessionToken("agents") +
+				" --session agents --session-token " + sessionToken("Work"),
+			true,
+			"agents",
+			true,
+		},
 		{install + " serve --session=MonkeySSH", true, "MonkeySSH", true},
 		{install + " serve -session MonkeySSH", true, "MonkeySSH", true},
 		// Another session's server, on a path that contains "monkeyssh".
