@@ -731,6 +731,12 @@ func TestProcessImageMatching(t *testing.T) {
 		serves  bool
 	}{
 		{install + " serve --session MonkeySSH", true, "MonkeySSH", true},
+		// The session token is authoritative and survives any name.
+		{install + " serve --session MonkeySSH --session-token " + sessionToken("MonkeySSH"), true, "MonkeySSH", true},
+		{install + " serve --session agents --session-token " + sessionToken("agents"), true, "MonkeySSH", false},
+		// A name that itself looks like flags is unambiguous with a token.
+		{install + " serve --session Work --foo --session-token " + sessionToken("Work --foo"), true, "Work", false},
+		{install + " serve --session Work --foo --session-token " + sessionToken("Work --foo"), true, "Work --foo", true},
 		{install + " serve --session=MonkeySSH", true, "MonkeySSH", true},
 		{install + " serve -session MonkeySSH", true, "MonkeySSH", true},
 		// Another session's server, on a path that contains "monkeyssh".
@@ -749,6 +755,12 @@ func TestProcessImageMatching(t *testing.T) {
 		{"/usr/bin/vim /home/u/.monkeyssh/bin/monkeymux/notes.txt", false, "Work", false},
 		{"/usr/bin/grep -r monkeymux serve --session Work /etc", false, "Work", false},
 		{"/bin/sleep 120", false, "Work", false},
+		// A home directory containing spaces flattens into the command line;
+		// failing to recognise the helper here would steal a live session.
+		{"/Users/Jane Doe/.monkeyssh/bin/monkeymux/0.1.144/darwin-arm64/monkeymux serve --session MonkeySSH", true, "MonkeySSH", true},
+		{"/Users/Jane Doe/.monkeyssh/bin/monkeymux/0.1.144/darwin-arm64/monkeymux serve --session agents", true, "MonkeySSH", false},
+		{"/Users/Jane Doe/bin/monkeymux", true, "MonkeySSH", false},
+		{"/Users/Jane Doe/bin/notes.txt serve --session MonkeySSH", false, "MonkeySSH", false},
 		{"", false, "Work", false},
 	}
 	for _, tc := range cases {

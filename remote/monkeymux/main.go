@@ -1435,6 +1435,10 @@ func controlCommand(args []string) {
 func serveCommand(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	session := fs.String("session", "", "session name")
+	// Accepted so the flag set does not reject it; the session name itself
+	// remains authoritative. It exists to identify this process's session in
+	// its command line.
+	_ = fs.String("session-token", "", "session identity token")
 	cwd := fs.String("cwd", "", "initial working directory")
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
@@ -1676,7 +1680,14 @@ func ensureServer(
 	if err != nil {
 		return err
 	}
-	serveArgs := []string{"serve", "--session", session}
+	serveArgs := []string{
+		"serve",
+		"--session", session,
+		// A whitespace-free identity for the session, so another helper can
+		// tell from this command line which session is served no matter what
+		// the name contains. See processImageServesSession.
+		"--session-token", sessionToken(session),
+	}
 	if width > 0 && height > 0 {
 		serveArgs = append(serveArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
 	}
@@ -2166,11 +2177,43 @@ func processStartedAfterRecord(snapshot processSnapshot, record pidRecord) bool 
 // not on its whole command line, so an editor or a grep that merely mentions
 // the helper is not mistaken for one.
 func processImageIsMonkeyMux(image string) bool {
-	executable, _, _ := strings.Cut(strings.TrimSpace(image), " ")
-	base := strings.TrimSuffix(
-		strings.ToLower(filepath.Base(executable)),
-		".exe",
-	)
+	_, _, _, ok := parseHelperCommandLine(image)
+	return ok
+}
+
+// parseHelperCommandLine splits a MonkeyMux command line into its executable,
+// subcommand and remaining arguments, reporting whether it is one at all.
+//
+// A command line reaches this function already flattened into a single string,
+// so an install path containing spaces (a home directory such as
+// "/Users/Jane Doe") is indistinguishable from several arguments. The
+// executable is therefore allowed to span leading words, up to the first one
+// that looks like a flag. Failing to recognise a helper here is not harmless:
+// it is read as proof that a live server is gone, and its windows would be
+// orphaned by the replacement that follows.
+func parseHelperCommandLine(
+	image string,
+) (executable string, subcommand string, arguments []string, ok bool) {
+	fields := strings.Fields(image)
+	for k := 1; k <= len(fields); k++ {
+		if k > 1 && strings.HasPrefix(fields[k-1], "-") {
+			// The executable cannot extend across a flag.
+			break
+		}
+		candidate := strings.Join(fields[:k], " ")
+		if !isMonkeyMuxExecutable(candidate) {
+			continue
+		}
+		if k < len(fields) {
+			return candidate, fields[k], fields[k+1:], true
+		}
+		return candidate, "", nil, true
+	}
+	return "", "", nil, false
+}
+
+func isMonkeyMuxExecutable(path string) bool {
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(path)), ".exe")
 	if base == "" || base == "." || base == string(filepath.Separator) {
 		return false
 	}
@@ -2188,35 +2231,38 @@ func processImageIsMonkeyMux(image string) bool {
 }
 
 // processImageServesSession reports whether a command line is that of a
-// MonkeyMux server for exactly this session. The name is compared with the
-// value of the serve command's --session flag rather than searched for in the
-// command line: the helper installs under ~/.monkeyssh, so a substring search
-// would match the install path for a session named "MonkeySSH", and would also
-// accept a session whose name merely extends this one.
+// MonkeyMux server for exactly this session. The helper installs under
+// ~/.monkeyssh, so searching the command line for the name would match the
+// install path for a session called "MonkeySSH"; and once a command line is
+// flattened to a single string, argument boundaries are gone, so a name
+// containing spaces or flag-like words cannot be recovered from it reliably.
+// The server therefore also carries a whitespace-free token for its session,
+// which is matched first. Servers predating that token fall back to the
+// --session value, which is exact for every name that does not itself look
+// like a flag.
 func processImageServesSession(image string, session string) bool {
-	if !processImageIsMonkeyMux(image) {
-		return false
-	}
 	session = strings.TrimSpace(session)
 	if session == "" {
 		return false
 	}
-	fields := strings.Fields(image)
-	if len(fields) < 2 || fields[1] != "serve" {
+	_, subcommand, arguments, ok := parseHelperCommandLine(image)
+	if !ok || subcommand != "serve" {
 		return false
 	}
-	value, ok := sessionArgumentValue(fields[2:])
+	if token, ok := flagArgumentValue(arguments, "session-token"); ok {
+		return token == sessionToken(session)
+	}
+	value, ok := flagArgumentValue(arguments, "session")
 	return ok && value == session
 }
 
-// sessionArgumentValue returns the --session value from a command line that has
-// already been flattened to a single string. Quoting is lost in that form, so a
-// name containing spaces is recovered by reading arguments up to the next flag,
-// which is how the server is always invoked.
-func sessionArgumentValue(arguments []string) (string, bool) {
+// flagArgumentValue returns the value of a flag in a command line that has
+// already been flattened to a single string. A value is read up to the next
+// flag-like argument, which recovers names containing spaces.
+func flagArgumentValue(arguments []string, flag string) (string, bool) {
 	for i, argument := range arguments {
 		name, inline, hasInline := strings.Cut(argument, "=")
-		if name != "--session" && name != "-session" {
+		if name != "--"+flag && name != "-"+flag {
 			continue
 		}
 		if hasInline {
@@ -4280,7 +4326,7 @@ func writeRestoreFile(session string, restore *serverRestore) (string, error) {
 		runDir,
 		fmt.Sprintf(
 			"monkeymux-restore-%s-%d.json",
-			restoreSessionToken(session),
+			sessionToken(session),
 			time.Now().UnixNano(),
 		),
 	)
@@ -4290,7 +4336,11 @@ func writeRestoreFile(session string, restore *serverRestore) (string, error) {
 	return path, nil
 }
 
-func restoreSessionToken(session string) string {
+// sessionToken is a stable, whitespace-free identifier for a session name. It
+// names restore snapshots and is passed to the server so its command line can
+// identify the session it serves without depending on how argument boundaries
+// survive being rendered as one string.
+func sessionToken(session string) string {
 	sum := sha256.Sum256([]byte(session))
 	return hex.EncodeToString(sum[:])[:24]
 }
