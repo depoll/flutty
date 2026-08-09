@@ -8755,6 +8755,14 @@ func (s *muxServer) storePendingTerminalQueriesLocked(
 // rich rendering mode. Re-emitting just the queries makes the terminal answer
 // them, and the answers route back to the active window's child via the normal
 // attach-input path. Must be called with attachMu held.
+//
+// Colour-scheme queries are dropped rather than replayed, because their reply is
+// the one that cannot be delivered late: it reaches the window pty as input, so
+// if the process that asked has exited by then its shell echoes the reply as
+// literal `^[[?997;1n` text at the prompt. A live agent loses nothing — the
+// daemon answers this query from the cached theme hint the moment it is emitted,
+// and a window that opted into colour-scheme updates (DEC 2031) is sent a fresh
+// mode report by the attach theme-hint path anyway.
 func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID string) {
 	if conn == nil {
 		return
@@ -8775,7 +8783,7 @@ func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID st
 		s.activeID == windowID && s.attachConn == conn &&
 		len(window.pendingTerminalQueriesInFlight) == 0 &&
 		len(window.pendingTerminalQueries) > 0 {
-		pending = append([]byte(nil), window.pendingTerminalQueries...)
+		pending = dropColorSchemeQueries(window.pendingTerminalQueries)
 		window.pendingTerminalQueries = nil
 		window.pendingTerminalQueriesInFlight = append(
 			window.pendingTerminalQueriesInFlight[:0],
@@ -8812,6 +8820,32 @@ func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID st
 		return
 	}
 	s.clearPendingTerminalQueriesInFlight(windowID, pending)
+}
+
+// dropColorSchemeQueries returns pending without the colour-scheme queries,
+// preserving the emission order of the queries that remain.
+func dropColorSchemeQueries(pending []byte) []byte {
+	remaining := make([]byte, 0, len(pending))
+	for index := 0; index < len(pending); {
+		sequenceEnd, _, incomplete, recognized := terminalQuerySequenceAt(
+			pending,
+			index,
+		)
+		if incomplete {
+			remaining = append(remaining, pending[index:]...)
+			break
+		}
+		if !recognized {
+			remaining = append(remaining, pending[index])
+			index++
+			continue
+		}
+		if !isTerminalColorSchemeQuery(pending[index:sequenceEnd]) {
+			remaining = append(remaining, pending[index:sequenceEnd]...)
+		}
+		index = sequenceEnd
+	}
+	return remaining
 }
 
 func (s *muxServer) clearPendingTerminalQueriesInFlight(
