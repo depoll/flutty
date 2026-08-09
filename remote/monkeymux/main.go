@@ -95,8 +95,12 @@ const (
 	ensureServerDialInterval  = 50 * time.Millisecond
 	ensureServerLockTimeout   = 5 * time.Second
 	ensureServerLockRetryWait = 50 * time.Millisecond
-	sessionPIDFileMode        = 0o600
-	sessionLockFileMode       = 0o600
+	// How often a contended session lock re-checks whether its holder died.
+	sessionLockStaleCheckInterval = 250 * time.Millisecond
+	// How long an upgrade snapshot must sit unused before gc reclaims it.
+	abandonedRestoreFileAge = time.Hour
+	sessionPIDFileMode      = 0o600
+	sessionLockFileMode     = 0o600
 	// Per-window Kitty image retention, used to survive history eviction across
 	// reattaches and to back placeholder cells the foreground app re-emits.
 	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
@@ -1523,6 +1527,21 @@ func gcCommand() {
 			continue
 		}
 		path := filepath.Join(runDir, entry.Name())
+		// Only sockets are probed by dialling. The sibling .pid and .lock files
+		// are never dialable, so probing them here would delete the bookkeeping
+		// of a perfectly healthy server, and restore snapshots are deleted by
+		// the helper that wrote them unless it died mid-upgrade.
+		switch filepath.Ext(entry.Name()) {
+		case ".pid", ".lock":
+			clearStalePIDFile(path)
+			continue
+		case ".json":
+			removeAbandonedRestoreFile(path)
+			continue
+		case ".sock":
+		default:
+			continue
+		}
 		conn, err := net.DialTimeout("unix", path, 150*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
@@ -1532,9 +1551,23 @@ func gcCommand() {
 	}
 }
 
+// removeAbandonedRestoreFile deletes an upgrade snapshot left behind by a
+// helper that died mid-restart. Snapshots still being handed to a starting
+// server are kept, otherwise gc would make that server come up empty.
+func removeAbandonedRestoreFile(path string) {
+	if !strings.HasPrefix(filepath.Base(path), "monkeymux-restore-") {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) < abandonedRestoreFileAge {
+		return
+	}
+	_ = os.Remove(path)
+}
+
 type ensureServerReplacement struct {
 	restore *serverRestore
-	oldPID  int
+	oldPID  pidRecord
 }
 
 func ensureServer(
@@ -1569,7 +1602,7 @@ func ensureServer(
 	case existingOnly:
 		return fmt.Errorf("MonkeyMux session %q is not running", session)
 	default:
-		if pid := readSessionPID(session); pid > 0 && processIDAlive(pid) {
+		if owner := liveSessionServerPIDRecord(session); owner.pid > 0 {
 			// A previous serve still owns the windows but the socket path is not
 			// answering. Stealing the path would orphan those windows forever and
 			// surface a brand-new one-window workspace to MonkeySSH.
@@ -1588,7 +1621,7 @@ func ensureServer(
 				return fmt.Errorf(
 					"MonkeyMux session %q is running (pid %d) but not accepting connections",
 					session,
-					pid,
+					owner.pid,
 				)
 			}
 		}
@@ -1617,7 +1650,7 @@ func ensureServer(
 		serveArgs = append(serveArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
 	}
 	var restore *serverRestore
-	var previousPID int
+	var previousPID pidRecord
 	if replacement != nil {
 		restore = replacement.restore
 		previousPID = replacement.oldPID
@@ -1705,8 +1738,8 @@ func ensureServer(
 		conn, err := dialSession(session)
 		if err == nil {
 			_ = conn.Close()
-			if previousPID > 0 && processIDAlive(previousPID) {
-				terminateProcessID(previousPID)
+			if previousPID.alive() {
+				terminateProcessID(previousPID.pid)
 			}
 			return nil
 		}
@@ -1753,7 +1786,7 @@ func prepareRunningServerReplacement(
 		)
 		return nil, nil
 	}
-	oldPID := readSessionPID(session)
+	oldPID := liveSessionServerPIDRecord(session)
 	if status.supportsCapability("shutdown") {
 		requestServerShutdown(session)
 		if !waitForServerExit(session, 2*time.Second) {
@@ -1820,6 +1853,7 @@ func acquireSessionLock(session string) (func(), error) {
 		return nil, err
 	}
 	deadline := time.Now().Add(ensureServerLockTimeout)
+	var nextStaleCheck time.Time
 	for {
 		file, err := os.OpenFile(
 			path,
@@ -1827,7 +1861,7 @@ func acquireSessionLock(session string) (func(), error) {
 			sessionLockFileMode,
 		)
 		if err == nil {
-			_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
+			_, _ = file.WriteString(encodePIDRecord(os.Getpid()))
 			_ = file.Close()
 			return func() {
 				current, readErr := readPIDFile(path)
@@ -1837,8 +1871,11 @@ func acquireSessionLock(session string) (func(), error) {
 				_ = os.Remove(path)
 			}, nil
 		}
-		if pid := readPIDFileOrZero(path); pid > 0 && !processIDAlive(pid) {
-			_ = os.Remove(path)
+		// Validating the holder can cost a process lookup, so throttle it
+		// rather than repeating it on every retry.
+		if now := time.Now(); !now.Before(nextStaleCheck) {
+			clearStalePIDFile(path)
+			nextStaleCheck = now.Add(sessionLockStaleCheckInterval)
 		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf(
@@ -1863,7 +1900,7 @@ func writeSessionPIDFile(session string, pid int) error {
 	}
 	return os.WriteFile(
 		path,
-		[]byte(strconv.Itoa(pid)+"\n"),
+		[]byte(encodePIDRecord(pid)),
 		sessionPIDFileMode,
 	)
 }
@@ -1888,6 +1925,96 @@ func readSessionPID(session string) int {
 	return readPIDFileOrZero(path)
 }
 
+// liveSessionServerPIDRecord returns the record of the MonkeyMux server that
+// still owns session, or a zero record when nothing owns it. Records left
+// behind by a server that died without cleaning up (SIGKILL, crash, host
+// reboot) are deleted here. Without that, a pid the operating system later
+// recycles for an unrelated process makes ensureServer believe the session is
+// still served forever, so MonkeyMux can never start again for that session
+// and every attach silently falls back to a plain login shell.
+func liveSessionServerPIDRecord(session string) pidRecord {
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		return pidRecord{}
+	}
+	record, err := readPIDRecord(path)
+	if err != nil || record.pid <= 0 || pidRecordIsStale(record) {
+		_ = os.Remove(path)
+		return pidRecord{}
+	}
+	return record
+}
+
+// pidRecord identifies the process that owns a session file. identity is a
+// per-process token (see processIdentity) that changes when the operating
+// system reuses the pid, so a stale file cannot be mistaken for a live server.
+type pidRecord struct {
+	pid      int
+	identity string
+}
+
+func (r pidRecord) alive() bool {
+	return r.pid > 0 && !pidRecordIsStale(r)
+}
+
+func encodePIDRecord(pid int) string {
+	record := strconv.Itoa(pid) + "\n"
+	if identity := sanitizePIDIdentity(processIdentity(pid)); identity != "" {
+		record += identity + "\n"
+	}
+	return record
+}
+
+func sanitizePIDIdentity(identity string) string {
+	identity = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		return r
+	}, identity)
+	return strings.Join(strings.Fields(identity), " ")
+}
+
+// pidRecordIsStale reports whether the recorded process is gone. A record
+// without an identity was written by an older helper (or on a host where the
+// identity is unavailable), so it can only be matched against the running
+// process image.
+func pidRecordIsStale(record pidRecord) bool {
+	if record.pid <= 0 {
+		return true
+	}
+	if !processIDAlive(record.pid) {
+		return true
+	}
+	if record.identity != "" {
+		identity := sanitizePIDIdentity(processIdentity(record.pid))
+		return identity != "" && identity != record.identity
+	}
+	return !processIsMonkeyMux(record.pid)
+}
+
+// clearStalePIDFile removes a session file whose owner is gone. Unreadable
+// files are removed too once they are older than the lock timeout: a file that
+// is briefly empty belongs to a helper that just created it, but one that
+// stays unparseable would otherwise block the session forever.
+func clearStalePIDFile(path string) {
+	record, err := readPIDRecord(path)
+	if err == nil {
+		if pidRecordIsStale(record) {
+			_ = os.Remove(path)
+		}
+		return
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil || time.Since(info.ModTime()) < ensureServerLockTimeout {
+		return
+	}
+	_ = os.Remove(path)
+}
+
 func readPIDFileOrZero(path string) int {
 	pid, err := readPIDFile(path)
 	if err != nil {
@@ -1897,19 +2024,32 @@ func readPIDFileOrZero(path string) int {
 }
 
 func readPIDFile(path string) (int, error) {
-	data, err := os.ReadFile(path)
+	record, err := readPIDRecord(path)
 	if err != nil {
 		return 0, err
 	}
-	text := strings.TrimSpace(string(data))
+	return record.pid, nil
+}
+
+func readPIDRecord(path string) (pidRecord, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return pidRecord{}, err
+	}
+	lines := strings.SplitN(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n", 2)
+	text := strings.TrimSpace(lines[0])
 	if text == "" {
-		return 0, errors.New("empty pid file")
+		return pidRecord{}, errors.New("empty pid file")
 	}
 	pid, err := strconv.Atoi(text)
 	if err != nil || pid <= 0 {
-		return 0, fmt.Errorf("invalid pid file %q", path)
+		return pidRecord{}, fmt.Errorf("invalid pid file %q", path)
 	}
-	return pid, nil
+	identity := ""
+	if len(lines) > 1 {
+		identity = sanitizePIDIdentity(lines[1])
+	}
+	return pidRecord{pid: pid, identity: identity}, nil
 }
 
 func collectServerRestore(session string, status runningServerStatus) *serverRestore {

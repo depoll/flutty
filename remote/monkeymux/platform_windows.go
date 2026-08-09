@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -721,6 +722,50 @@ func processIDAlive(pid int) bool {
 	}
 	const stillActive = 259
 	return code == stillActive
+}
+
+// processIdentity returns a token that identifies one incarnation of pid,
+// derived from the process creation time. A pid that Windows later reuses for
+// an unrelated process yields a different token, so stale session files can be
+// told apart from a live MonkeyMux server.
+func processIdentity(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	handle, err := windows.OpenProcess(
+		windows.PROCESS_QUERY_LIMITED_INFORMATION,
+		false,
+		uint32(pid),
+	)
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(handle)
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(
+		handle,
+		&creation,
+		&exit,
+		&kernel,
+		&user,
+	); err != nil {
+		return ""
+	}
+	return strconv.FormatInt(creation.Nanoseconds(), 10)
+}
+
+// processIsMonkeyMux reports whether pid looks like a MonkeyMux helper. It is
+// the fallback check for session files written before process identities were
+// recorded.
+func processIsMonkeyMux(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	info, ok := readProcessTable()[pid]
+	if !ok {
+		return false
+	}
+	return strings.Contains(strings.ToLower(info.comm), "monkeymux")
 }
 
 func terminateProcessID(pid int) {

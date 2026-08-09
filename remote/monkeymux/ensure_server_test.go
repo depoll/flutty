@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -177,5 +180,281 @@ func TestPrepareRunningServerReplacementNoopsForCurrentVersion(t *testing.T) {
 	}
 	if outcome != nil {
 		t.Fatalf("replacement = %#v, want nil for current version", outcome)
+	}
+}
+
+// startForeignProcess starts a long-lived process that is not a MonkeyMux
+// helper, so tests can exercise the recycled-pid paths with a pid that really
+// is alive on this host.
+func startForeignProcess(t *testing.T) int {
+	t.Helper()
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("ping", "-n", "120", "127.0.0.1")
+	} else {
+		cmd = exec.Command("sleep", "120")
+	}
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start helper process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	return cmd.Process.Pid
+}
+
+func TestLiveSessionServerPIDRecordKeepsCurrentOwner(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("owner-%d", time.Now().UnixNano())
+	if err := writeSessionPIDFile(session, os.Getpid()); err != nil {
+		t.Fatalf("writeSessionPIDFile: %v", err)
+	}
+	owner := liveSessionServerPIDRecord(session)
+	if owner.pid != os.Getpid() {
+		t.Fatalf("owner pid = %d, want %d", owner.pid, os.Getpid())
+	}
+}
+
+func TestLiveSessionServerPIDRecordClearsDeadOwner(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("dead-%d", time.Now().UnixNano())
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		t.Fatalf("sessionPIDPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("99999999\n"), 0o600); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+	if owner := liveSessionServerPIDRecord(session); owner.pid != 0 {
+		t.Fatalf("owner pid = %d, want 0 for a dead process", owner.pid)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("pid file state = %v, want removed", err)
+	}
+}
+
+// A pid file that outlives its server (SIGKILL, crash, host reboot) must not
+// permanently block the session once the operating system hands that pid to an
+// unrelated process. Otherwise every attach falls back to a login shell with
+// "is running (pid N) but not accepting connections".
+func TestLiveSessionServerPIDRecordClearsRecycledPID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("recycled-%d", time.Now().UnixNano())
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		t.Fatalf("sessionPIDPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := fmt.Sprintf("%d\nstale-identity-from-a-previous-boot\n", os.Getpid())
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+	if owner := liveSessionServerPIDRecord(session); owner.pid != 0 {
+		t.Fatalf("owner pid = %d, want 0 for a recycled pid", owner.pid)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("pid file state = %v, want removed", err)
+	}
+}
+
+// Pid files written before identities were recorded carry only a number, so a
+// recycled pid is detected by checking the running process image instead.
+func TestLiveSessionServerPIDRecordClearsLegacyForeignPID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("legacy-%d", time.Now().UnixNano())
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		t.Fatalf("sessionPIDPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	foreign := startForeignProcess(t)
+	contents := fmt.Sprintf("%d\n", foreign)
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+	if owner := liveSessionServerPIDRecord(session); owner.pid != 0 {
+		t.Fatalf("owner pid = %d, want 0 for a foreign process", owner.pid)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("pid file state = %v, want removed", err)
+	}
+}
+
+func TestEnsureServerClearsRecycledPIDInsteadOfFailing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("recycled-ensure-%d", time.Now().UnixNano())
+	path, err := sessionPIDPath(session)
+	if err != nil {
+		t.Fatalf("sessionPIDPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := fmt.Sprintf("%d\nstale-identity-from-a-previous-boot\n", os.Getpid())
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+
+	// ensureServer spawns a real helper here, which the sandboxed test host may
+	// refuse; only the refusal-to-start path is asserted.
+	err = ensureServer(
+		session,
+		createWindowOptions{},
+		serverUpdatePolicyNever,
+		false,
+		80,
+		24,
+		false,
+	)
+	if err != nil && strings.Contains(err.Error(), "not accepting connections") {
+		t.Fatalf("ensureServer refused to start because of a recycled pid: %v", err)
+	}
+	requestServerShutdown(session)
+}
+
+func TestAcquireSessionLockClearsLockHeldByRecycledPID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("lock-recycled-%d", time.Now().UnixNano())
+	path, err := sessionLockPath(session)
+	if err != nil {
+		t.Fatalf("sessionLockPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	contents := fmt.Sprintf("%d\nstale-identity-from-a-previous-boot\n", os.Getpid())
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write lock file: %v", err)
+	}
+
+	unlock, err := acquireSessionLock(session)
+	if err != nil {
+		t.Fatalf("acquireSessionLock with recycled pid lock: %v", err)
+	}
+	unlock()
+}
+
+func TestAcquireSessionLockClearsAbandonedUnparseableLock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("lock-corrupt-%d", time.Now().UnixNano())
+	path, err := sessionLockPath(session)
+	if err != nil {
+		t.Fatalf("sessionLockPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write lock file: %v", err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	unlock, err := acquireSessionLock(session)
+	if err != nil {
+		t.Fatalf("acquireSessionLock with abandoned lock: %v", err)
+	}
+	unlock()
+}
+
+func TestGCKeepsPIDAndLockFilesOfLiveOwners(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("gc-%d", time.Now().UnixNano())
+	if err := writeSessionPIDFile(session, os.Getpid()); err != nil {
+		t.Fatalf("writeSessionPIDFile: %v", err)
+	}
+	pidPath, err := sessionPIDPath(session)
+	if err != nil {
+		t.Fatalf("sessionPIDPath: %v", err)
+	}
+
+	dead := fmt.Sprintf("gc-dead-%d", time.Now().UnixNano())
+	deadPath, err := sessionPIDPath(dead)
+	if err != nil {
+		t.Fatalf("sessionPIDPath: %v", err)
+	}
+	if err := os.WriteFile(deadPath, []byte("99999999\n"), 0o600); err != nil {
+		t.Fatalf("write dead pid file: %v", err)
+	}
+
+	gcCommand()
+
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Fatalf("gc removed the pid file of a live owner: %v", err)
+	}
+	if _, err := os.Stat(deadPath); !os.IsNotExist(err) {
+		t.Fatalf("gc kept a dead pid file: %v", err)
+	}
+}
+
+func TestGCKeepsInFlightRestoreSnapshots(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("restore-gc-%d", time.Now().UnixNano())
+	fresh, err := writeRestoreFile(session, &serverRestore{})
+	if err != nil {
+		t.Fatalf("writeRestoreFile: %v", err)
+	}
+	abandoned, err := writeRestoreFile(session, &serverRestore{})
+	if err != nil {
+		t.Fatalf("writeRestoreFile: %v", err)
+	}
+	old := time.Now().Add(-2 * abandonedRestoreFileAge)
+	if err := os.Chtimes(abandoned, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	gcCommand()
+
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("gc removed an in-flight restore snapshot: %v", err)
+	}
+	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
+		t.Fatalf("gc kept an abandoned restore snapshot: %v", err)
 	}
 }
