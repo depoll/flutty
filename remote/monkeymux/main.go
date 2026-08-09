@@ -1944,6 +1944,10 @@ func acquireSessionLock(session string) (func(), error) {
 	}
 }
 
+// sessionLockStagingSequence makes each lock installation attempt use a
+// distinct staging file, even when several run concurrently in one process.
+var sessionLockStagingSequence atomic.Uint64
+
 // installSessionLockFile publishes a lock file that already names its holder.
 // The file is written under a private name and hard linked into place, because
 // link fails when the target exists just as an exclusive create does, but never
@@ -1953,7 +1957,15 @@ func acquireSessionLock(session string) (func(), error) {
 // hard links fall back to an exclusive create.
 func installSessionLockFile(path string) (bool, error) {
 	contents := []byte(strconv.Itoa(os.Getpid()) + "\n")
-	staging := fmt.Sprintf("%s.%d.staging", path, os.Getpid())
+	// The staging name is unique per attempt, not merely per process: two
+	// goroutines in one helper can contend for the same session, and sharing a
+	// staging path would make them delete or fail to open each other's file.
+	staging := fmt.Sprintf(
+		"%s.%d.%d.staging",
+		path,
+		os.Getpid(),
+		sessionLockStagingSequence.Add(1),
+	)
 	if err := os.WriteFile(staging, contents, sessionLockFileMode); err != nil {
 		return false, err
 	}

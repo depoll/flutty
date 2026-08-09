@@ -760,8 +760,13 @@ func inspectProcess(pid int) processSnapshot {
 		snapshot.started = time.Unix(0, creation.Nanoseconds()).UTC()
 	}
 	// Toolhelp exposes the executable but not the argument list, so the image
-	// cannot identify which session a helper serves.
+	// cannot identify which session a helper serves. A pid missing from the
+	// cached table may simply have started since it was taken, and reporting
+	// no image at all would leave ownership unresolved, so the table is read
+	// again before giving up.
 	if info, ok := cachedProcessTable(time.Now())[pid]; ok {
+		snapshot.image = info.comm
+	} else if info, ok := readProcessTable()[pid]; ok {
 		snapshot.image = info.comm
 	}
 	return snapshot
