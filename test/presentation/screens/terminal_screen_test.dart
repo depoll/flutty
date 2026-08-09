@@ -5928,6 +5928,11 @@ void main() {
         when(
           () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
         ).thenAnswer((_) async => true);
+        // The bar only appears once a probe confirms the attached client
+        // belongs to this SSH connection's process tree.
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
         ).thenAnswer((_) async => initialWindows);

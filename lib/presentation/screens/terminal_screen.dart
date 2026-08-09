@@ -387,22 +387,27 @@ double? resolveTerminalOverflowMenuMaxHeight({
 /// Returns whether tmux detection should keep the terminal's current tmux UI.
 ///
 /// A clean inactive result can clear the bar, but transient detection failures
-/// should not hide a bar that was already visible or primed from host settings.
+/// should not hide a bar whose attached client was already confirmed to belong
+/// to this SSH connection. State that was only primed from host settings has no
+/// confirmed client yet, so it must never survive a failed probe.
 @visibleForTesting
 bool shouldPreserveTerminalTmuxStateAfterDetectionFailure({
   required bool preserveExistingTmuxState,
-  required bool hadVisibleOrPrimedTmuxState,
+  required bool hadConfirmedTmuxState,
   required bool confirmedTmuxActive,
   required bool hadDetectionFailure,
 }) {
   if (preserveExistingTmuxState || confirmedTmuxActive) {
     return true;
   }
-  return hadVisibleOrPrimedTmuxState && hadDetectionFailure;
+  return hadConfirmedTmuxState && hadDetectionFailure;
 }
 
 /// Returns whether detection should show the expected tmux UI before exec
 /// probes complete.
+///
+/// Primed state is provisional: it must be confirmed by an ownership-scoped
+/// probe on the very next attempt or it is cleared again.
 @visibleForTesting
 bool shouldPrimeTerminalTmuxStateWhileDetecting({
   required String? candidateSessionName,
@@ -3532,6 +3537,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final TerminalSessionController _sessionController;
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
+  bool _tmuxOwnershipConfirmed = false;
   String? _tmuxSessionName;
   String? _muxVersion;
   String? _monkeyMuxReconnectSessionName;
@@ -9826,6 +9832,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       _monkeyMuxAttachEstablished = false;
       _isTmuxActive = true;
+      // The attach command is only just being issued on this connection's
+      // shell, so no client is confirmed yet.
+      _tmuxOwnershipConfirmed = false;
       _tmuxSessionName = command.sessionName;
       _tmuxStateConnectionId = session.connectionId;
       _showTmuxBar = true;
@@ -9925,6 +9934,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelPendingTmuxWindowThemeRefresh();
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
+    _tmuxOwnershipConfirmed = false;
     _tmuxSessionName = null;
     _monkeyMuxAttachEstablished = false;
     _muxVersion = null;
@@ -10136,8 +10146,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final mux = _remoteMultiplexerServiceForBackend(muxBackend);
     final tmuxStateBelongsToSession =
         _tmuxStateConnectionId == session.connectionId;
+    // Window-list recovery may only keep a bar whose client ownership was
+    // already proven for this connection. Preserving unconfirmed state here
+    // would let a primed bar survive a definitive "not attached" answer.
     final mayPreserveExistingTmuxState =
-        preserveExistingTmuxState && tmuxStateBelongsToSession;
+        preserveExistingTmuxState &&
+        tmuxStateBelongsToSession &&
+        _tmuxOwnershipConfirmed;
     final existingCandidateSessionName =
         resolveOwnedTmuxDetectionExistingSessionName(
           sessionConnectionId: session.connectionId,
@@ -10162,8 +10177,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           mayPreserveExistingTmuxState: mayPreserveExistingTmuxState,
           isReopeningExistingTerminal: isReopeningExistingTerminal,
         );
-    final hadVisibleOrPrimedTmuxState =
-        hasExistingVisibleTmuxState || shouldPrimeTmuxStateWhileDetecting;
+    final hadConfirmedTmuxState =
+        hasExistingVisibleTmuxState &&
+        _tmuxOwnershipConfirmed &&
+        // Only the session whose ownership was actually confirmed may be
+        // preserved; a probe for a different session name proves nothing
+        // about the bar currently on screen.
+        candidateSessionName == existingCandidateSessionName;
     final preferredWorkingDirectory = candidateSessionName == null
         ? null
         : _configuredRemoteMuxWorkingDirectory(
@@ -10171,6 +10191,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sessionName: candidateSessionName,
           );
     var confirmedTmuxActive = false;
+    String? confirmedOwnedSessionName;
     var hadDetectionFailure = false;
 
     if (mounted) {
@@ -10182,6 +10203,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           }
         } else if (shouldPrimeTmuxStateWhileDetecting) {
           _isTmuxActive = true;
+          _tmuxOwnershipConfirmed = false;
           _tmuxSessionName = candidateSessionName;
           _activeMuxBackend = muxBackend;
           _muxVersion = null;
@@ -10193,6 +10215,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         } else if (!mayPreserveExistingTmuxState) {
           _stopTmuxForegroundVerification();
           _isTmuxActive = false;
+          _tmuxOwnershipConfirmed = false;
           _tmuxSessionName = null;
           _muxVersion = null;
           _tmuxStateConnectionId = null;
@@ -10250,7 +10273,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             },
           );
           if (candidateSessionName == null &&
-              !hadVisibleOrPrimedTmuxState &&
+              !hadConfirmedTmuxState &&
               !mayPreserveExistingTmuxState) {
             rethrow;
           }
@@ -10273,6 +10296,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
         if (!active) {
           confirmedTmuxActive = false;
+          confirmedOwnedSessionName = null;
           hadDetectionFailure = false;
           continue;
         }
@@ -10292,6 +10316,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
           continue;
         }
+        confirmedOwnedSessionName = sessionName;
 
         final List<TmuxWindow> windows;
         try {
@@ -10358,6 +10383,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
         setState(() {
           _isTmuxActive = true;
+          _tmuxOwnershipConfirmed = true;
           _tmuxSessionName = sessionName;
           _activeMuxBackend = muxBackend;
           _tmuxStateConnectionId = session.connectionId;
@@ -10417,7 +10443,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
         preserveExistingTmuxState: mayPreserveExistingTmuxState,
-        hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
+        hadConfirmedTmuxState: hadConfirmedTmuxState,
         confirmedTmuxActive: confirmedTmuxActive,
         hadDetectionFailure: hadDetectionFailure,
       )) {
@@ -10439,16 +10465,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             fields: logFields,
           );
         }
+        _latchConfirmedTmuxOwnership(session, confirmedOwnedSessionName);
         return false;
       }
 
       if (!mayPreserveExistingTmuxState) {
-        setState(_clearTmuxState);
+        // A run that only ever errored proves nothing either way, so hide the
+        // unproven bar without tearing down a possibly-live attach.
+        setState(
+          hadDetectionFailure ? _hideUnconfirmedTmuxBar : _clearTmuxState,
+        );
       }
       DiagnosticsLogService.instance.info(
         'tmux.ui',
         'detection_inactive',
-        fields: {'connectionId': session.connectionId},
+        fields: {
+          'connectionId': session.connectionId,
+          'inconclusive': hadDetectionFailure,
+        },
       );
       return false;
     } on Object catch (error) {
@@ -10467,7 +10501,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
         preserveExistingTmuxState: mayPreserveExistingTmuxState,
-        hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
+        hadConfirmedTmuxState: hadConfirmedTmuxState,
         confirmedTmuxActive: confirmedTmuxActive,
         hadDetectionFailure: true,
       )) {
@@ -10480,13 +10514,52 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'hadDetectionFailure': true,
           },
         );
+        _latchConfirmedTmuxOwnership(session, confirmedOwnedSessionName);
         return false;
       }
       if (!mayPreserveExistingTmuxState) {
-        setState(_clearTmuxState);
+        // This path is always inconclusive: the probe threw rather than
+        // reporting that nothing is attached.
+        setState(_hideUnconfirmedTmuxBar);
       }
       return false;
     }
+  }
+
+  /// Hides bar state whose client ownership was never proven for this SSH
+  /// connection, without tearing down session-level mux plumbing.
+  ///
+  /// A detection run whose probes only ever errored is inconclusive: the bar
+  /// must go because ownership is unproven, but a MonkeyMux attach may well be
+  /// live, and [_clearTmuxState] would reset its viewport/host-resize state and
+  /// forget the session name needed to re-detect it.
+  void _hideUnconfirmedTmuxBar() {
+    _stopTmuxForegroundVerification();
+    _isTmuxActive = false;
+    _tmuxOwnershipConfirmed = false;
+    _isTmuxBarExpanded = false;
+    _tmuxSidebarDragOffset = 0;
+    _muxVersion = null;
+  }
+
+  /// Records that an ownership-scoped probe proved this SSH connection owns the
+  /// mux client backing the visible bar, and resumes periodic verification.
+  ///
+  /// Detection can confirm ownership and still fail to list windows. Without
+  /// this latch such a bar would stay visible with no periodic re-check, which
+  /// is exactly the unverified state the bar must never be left in.
+  void _latchConfirmedTmuxOwnership(SshSession session, String? sessionName) {
+    if (sessionName == null ||
+        !mounted ||
+        !_isTmuxActive ||
+        _tmuxStateConnectionId != session.connectionId ||
+        _tmuxSessionName != sessionName) {
+      return;
+    }
+    if (!_tmuxOwnershipConfirmed) {
+      setState(() => _tmuxOwnershipConfirmed = true);
+    }
+    _startTmuxForegroundVerification(session, sessionName);
   }
 
   Future<void> _activateInitialTmuxWindowIfNeeded(
