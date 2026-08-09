@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.143"
+	monkeyMuxVersion                  = "0.1.144"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -4367,6 +4367,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		capabilityHintData = window.appendPendingTerminalQueriesLocked(
 			forwarded,
 			s.capabilityHintLocked(),
+			s.themeHint,
 		)
 	} else {
 		// A terminal is showing this window again, so it answers the child's
@@ -11831,6 +11832,23 @@ func capabilityHintResponseMap(hint []byte) map[string][]byte {
 	return responses
 }
 
+// isTerminalColorSchemeQuery reports whether sequence is the DEC colour-scheme
+// status query (`CSI ? 996 n`), which asks whether the terminal is currently
+// using a dark or a light colour scheme.
+func isTerminalColorSchemeQuery(sequence []byte) bool {
+	bodyStart := 0
+	switch {
+	case len(sequence) >= 3 && sequence[0] == '\x1b' && sequence[1] == '[':
+		bodyStart = 2
+	case len(sequence) >= 2 && sequence[0] == 0x9b:
+		bodyStart = 1
+	default:
+		return false
+	}
+	return sequence[len(sequence)-1] == 'n' &&
+		string(sequence[bodyStart:len(sequence)-1]) == "?996"
+}
+
 // capabilityQueryKey maps a terminal query sequence to the capability hint key
 // whose cached reply answers it, or "" when the answer is not constant for a
 // terminal (cursor position, window metrics, kitty keyboard flags, ...) and so
@@ -13070,6 +13088,13 @@ func (w *muxWindow) storePartialCsiLocked(data []byte) {
 // less capable rendering mode while it waits in a background (or not yet
 // attached) window.
 //
+// The colour-scheme query (`CSI ? 996 n`) is answered from [themeHint], which
+// carries the client's current dark/light mode report. Buffering it instead
+// would replay it to the terminal on the next attach, and the reply lands in
+// the window pty as input: if the process that asked has exited by then (an
+// agent that quit while the window ran unwatched), its shell echoes the reply
+// as literal `^[[?997;1n` text at the prompt.
+//
 // The remaining queries are buffered in pendingTerminalQueries, and
 // flushPendingTerminalQueriesLocked re-delivers them once a terminal attaches
 // or the window is selected. A query split across pty reads is carried in
@@ -13087,6 +13112,7 @@ func (w *muxWindow) storePartialCsiLocked(data []byte) {
 func (w *muxWindow) appendPendingTerminalQueriesLocked(
 	chunk []byte,
 	hint []byte,
+	themeHint []byte,
 ) []byte {
 	if len(chunk) == 0 {
 		return nil
@@ -13094,7 +13120,28 @@ func (w *muxWindow) appendPendingTerminalQueriesLocked(
 	var answers []byte
 	var hintResponses map[string][]byte
 	hintParsed := false
+	withinAnswerBudget := func(response []byte) bool {
+		// Bound what a window running unwatched can push into its own child's
+		// stdin. Output replayed into a background window (an ANSI art file, a
+		// terminal recording) can carry an unbounded stream of device attribute
+		// queries, and synthesizing a reply for each would block the window's
+		// reader goroutine on a child that is not draining its input. Queries
+		// past the budget fall through to the buffer, whose own limit then
+		// closes the fence gate below for the rest of the stream.
+		return len(response) > 0 &&
+			w.capabilityAnswerBytes+len(answers)+len(response) <=
+				pendingTerminalQueryLimitBytes
+	}
 	answerFor := func(sequence []byte) []byte {
+		// Like XTVERSION, the colour-scheme query is never used as a probe
+		// group terminator, so it is answered even behind a buffered probe.
+		if isTerminalColorSchemeQuery(sequence) {
+			response := terminalThemeModeReportFromHint(themeHint)
+			if !withinAnswerBudget(response) {
+				return nil
+			}
+			return response
+		}
 		key := capabilityQueryKey(sequence)
 		if key == "" {
 			return nil
@@ -13114,16 +13161,7 @@ func (w *muxWindow) appendPendingTerminalQueriesLocked(
 			hintParsed = true
 		}
 		response := hintResponses[key]
-		// Bound what a window running unwatched can push into its own child's
-		// stdin. Output replayed into a background window (an ANSI art file, a
-		// terminal recording) can carry an unbounded stream of device attribute
-		// queries, and synthesizing a reply for each would block the window's
-		// reader goroutine on a child that is not draining its input. Queries
-		// past the budget fall through to the buffer, whose own limit then
-		// closes the fence gate above for the rest of the stream.
-		if len(response) == 0 ||
-			w.capabilityAnswerBytes+len(answers)+len(response) >
-				pendingTerminalQueryLimitBytes {
+		if !withinAnswerBudget(response) {
 			return nil
 		}
 		return response
