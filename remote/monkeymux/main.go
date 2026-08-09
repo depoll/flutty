@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.144"
+	monkeyMuxVersion                  = "0.1.145"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -6576,10 +6576,11 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			CurrentCommand: currentCommand,
 		})
 	case "query_attach_state":
-		hasAttach := s.hasAttachClient()
-		if strings.TrimSpace(request.ClientID) != "" {
-			hasAttach = s.hasAttachClientByID(request.ClientID)
-		}
+		// The MonkeySSH mux bar may only appear for the SSH connection whose
+		// own attach client owns the session, so this answer is always scoped
+		// to an exact client ID. A query without one reports no attach rather
+		// than leaking another connection's attach state.
+		hasAttach := s.hasAttachClientByID(request.ClientID)
 		client.send(controlResponse{
 			ID:          request.ID,
 			Type:        "attach_state",
@@ -6640,16 +6641,14 @@ func (s *muxServer) removeControl(client *controlClient) {
 	delete(s.controls, client)
 }
 
-func (s *muxServer) hasAttachClient() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.attachCountLocked() > 0
-}
-
 func (s *muxServer) hasAttachClientByID(clientID string) bool {
+	normalizedID := strings.TrimSpace(clientID)
+	if normalizedID == "" {
+		return false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.attachClientByIDLocked(clientID) != nil
+	return s.attachClientByIDLocked(normalizedID) != nil
 }
 
 func (s *muxServer) attachCount() int {

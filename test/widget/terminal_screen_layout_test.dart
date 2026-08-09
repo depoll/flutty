@@ -372,7 +372,7 @@ void main() {
       expect(
         shouldPreserveTerminalTmuxStateAfterDetectionFailure(
           preserveExistingTmuxState: false,
-          hadVisibleOrPrimedTmuxState: true,
+          hadConfirmedTmuxState: true,
           confirmedTmuxActive: false,
           hadDetectionFailure: true,
         ),
@@ -381,11 +381,23 @@ void main() {
       expect(
         shouldPreserveTerminalTmuxStateAfterDetectionFailure(
           preserveExistingTmuxState: false,
-          hadVisibleOrPrimedTmuxState: true,
+          hadConfirmedTmuxState: true,
           confirmedTmuxActive: false,
           hadDetectionFailure: false,
         ),
         isFalse,
+      );
+      expect(
+        shouldPreserveTerminalTmuxStateAfterDetectionFailure(
+          preserveExistingTmuxState: false,
+          hadConfirmedTmuxState: false,
+          confirmedTmuxActive: false,
+          hadDetectionFailure: true,
+        ),
+        isFalse,
+        reason:
+            'a bar whose client ownership was never confirmed for this SSH '
+            'connection must not survive a failed probe',
       );
     });
 
@@ -393,7 +405,7 @@ void main() {
       expect(
         shouldPreserveTerminalTmuxStateAfterDetectionFailure(
           preserveExistingTmuxState: false,
-          hadVisibleOrPrimedTmuxState: false,
+          hadConfirmedTmuxState: false,
           confirmedTmuxActive: true,
           hadDetectionFailure: false,
         ),
@@ -423,11 +435,14 @@ void main() {
       expect(
         shouldPreserveTerminalTmuxStateAfterDetectionFailure(
           preserveExistingTmuxState: false,
-          hadVisibleOrPrimedTmuxState: true,
+          hadConfirmedTmuxState: false,
           confirmedTmuxActive: false,
           hadDetectionFailure: true,
         ),
-        isTrue,
+        isFalse,
+        reason:
+            'primed state has no confirmed client for this SSH connection yet, '
+            'so a failed probe must hide the bar',
       );
       expect(
         shouldPrimeTerminalTmuxStateWhileDetecting(
