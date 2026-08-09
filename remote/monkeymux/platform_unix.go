@@ -149,6 +149,82 @@ func processIDAlive(pid int) bool {
 	return err == nil
 }
 
+// processIdentity returns a token that identifies one incarnation of pid. It
+// is derived from the process start time, so a pid the kernel later recycles
+// for an unrelated process yields a different token and stale session files
+// can be told apart from a live MonkeyMux server.
+func processIdentity(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	if start := linuxProcessStartTicks(pid); start != "" {
+		return start
+	}
+	output, err := runProcessQuery("ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(output)
+}
+
+// linuxProcessStartTicks reads field 22 (starttime) of /proc/<pid>/stat, which
+// is more precise than ps and needs no subprocess. It returns "" on platforms
+// without procfs (notably macOS).
+func linuxProcessStartTicks(pid int) string {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return ""
+	}
+	// The comm field is parenthesized and may contain spaces, so fields are
+	// counted from the closing parenthesis.
+	end := strings.LastIndex(string(data), ")")
+	if end < 0 {
+		return ""
+	}
+	fields := strings.Fields(string(data)[end+1:])
+	// starttime is field 22 overall; fields here start at field 3 (state).
+	const startTimeOffset = 19
+	if len(fields) <= startTimeOffset {
+		return ""
+	}
+	return fields[startTimeOffset]
+}
+
+// processIsMonkeyMux reports whether pid looks like a MonkeyMux helper. It is
+// the fallback check for session files written before process identities were
+// recorded.
+func processIsMonkeyMux(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	output, err := runProcessQuery(
+		"ps",
+		"-p",
+		strconv.Itoa(pid),
+		"-o",
+		"comm=",
+		"-o",
+		"args=",
+	)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(output), "monkeymux")
+}
+
+func runProcessQuery(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, name, args...).Output()
+	if err != nil {
+		return "", err
+	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	return string(output), nil
+}
+
 func terminateProcessID(pid int) {
 	if pid <= 0 {
 		return
