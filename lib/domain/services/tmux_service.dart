@@ -386,29 +386,23 @@ class TmuxService {
       _buildForegroundTmuxSessionCommand(extraFlags: extraFlags),
       priority: priority,
     );
+    // Only the ancestry-scoped client lookup is authoritative. Any other probe
+    // (for example `tmux display-message`) resolves tmux's most recently used
+    // session on the whole host, which can belong to a different SSH login.
     final sessionName = output
         .split('\n')
         .map((line) => line.trim())
         .where((line) => line.isNotEmpty)
         .firstOrNull;
-    final attachedSessionName =
-        sessionName ??
-        await _directCurrentSessionName(
-          session,
-          priority: priority,
-          extraFlags: extraFlags,
-        );
     DiagnosticsLogService.instance.info(
       'tmux.query',
       'foreground_session_complete',
       fields: {
         'connectionId': session.connectionId,
-        'active': attachedSessionName != null,
-        'usedDirectFallback':
-            sessionName == null && attachedSessionName != null,
+        'active': sessionName != null,
       },
     );
-    return attachedSessionName;
+    return sessionName;
   }
 
   /// Returns `true` if tmux is installed on the remote host.
@@ -658,53 +652,11 @@ class TmuxService {
       return foregroundName;
     }
 
-    final directName = await _directCurrentSessionName(
-      session,
-      extraFlags: extraFlags,
-    );
-    if (directName != null) return directName;
     DiagnosticsLogService.instance.info(
       'tmux.query',
       'current_session_unavailable',
       fields: {'connectionId': session.connectionId},
     );
-    return null;
-  }
-
-  Future<String?> _directCurrentSessionName(
-    SshSession session, {
-    String? extraFlags,
-    SshExecPriority priority = SshExecPriority.normal,
-  }) async {
-    try {
-      // Direct approach — works if the exec channel is itself inside tmux.
-      final output = await _exec(
-        session,
-        _tmuxCommand(
-          "display-message -p '#{session_name}'",
-          extraFlags: extraFlags,
-        ),
-        priority: priority,
-      );
-      final name = output.trim();
-      if (name.isNotEmpty) {
-        DiagnosticsLogService.instance.info(
-          'tmux.query',
-          'current_session_direct',
-          fields: {'connectionId': session.connectionId},
-        );
-        return name;
-      }
-    } on Exception catch (error) {
-      DiagnosticsLogService.instance.debug(
-        'tmux.query',
-        'current_session_direct_failed',
-        fields: {
-          'connectionId': session.connectionId,
-          'errorType': error.runtimeType,
-        },
-      );
-    }
     return null;
   }
 
@@ -2772,8 +2724,21 @@ String _buildForegroundTmuxSessionCommand({String? extraFlags}) {
     extraFlags: extraFlags,
     forceUtf8: true,
   );
-  return r'sep=$(printf "\037"); '
-      r'connection_pid=$(ps -p "$$" -o ppid= 2>/dev/null | tr -d " "); '
+  // BusyBox `ps` (Alpine and most busybox images) has no `-p`, which would make
+  // the ancestry walk silently return "not attached" for our own tmux client.
+  // `/proc/<pid>/status` is an equally exact PPID source, so the ownership
+  // check stays strict rather than gaining a fuzzy fallback.
+  return 'ppid_of() { __p=""; '
+      r'if [ -r "/proc/$1/status" ]; then '
+      r'__p=$(sed -n "s/^PPid:[[:space:]]*\([0-9][0-9]*\).*/\1/p" '
+      r'"/proc/$1/status" 2>/dev/null); '
+      'fi; '
+      r'if [ -z "$__p" ]; then '
+      r'__p=$(ps -p "$1" -o ppid= 2>/dev/null | tr -d " "); '
+      'fi; '
+      r'printf "%s" "$__p"; }; '
+      r'sep=$(printf "\037"); '
+      r'connection_pid=$(ppid_of "$$"); '
       r'if [ -n "$connection_pid" ]; then '
       '$listClients"#{client_pid}\$sep#{session_name}\$sep#{client_control_mode}" '
       '2>/dev/null | '
@@ -2786,7 +2751,7 @@ String _buildForegroundTmuxSessionCommand({String? extraFlags}) {
       r'printf "%s\n" "$session_name"; '
       'break 2; '
       'fi; '
-      r'pid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d " "); '
+      r'pid=$(ppid_of "$pid"); '
       'done; '
       'done; '
       'fi';

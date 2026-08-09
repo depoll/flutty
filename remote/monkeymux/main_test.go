@@ -522,17 +522,21 @@ func TestEnsureServerExistingOnlyRejectsMissingSession(t *testing.T) {
 	}
 }
 
-func TestHasAttachClientReportsAttachConnection(t *testing.T) {
+func TestHasAttachClientByIDRequiresAnExactClientID(t *testing.T) {
 	server := newMuxServer("test")
-	if server.hasAttachClient() {
-		t.Fatal("new server reported attach client")
+	if server.hasAttachClientByID("") {
+		t.Fatal("new server reported attach client for an empty ID")
 	}
 
 	server.mu.Lock()
 	server.attachConn = &recordingConn{}
 	server.mu.Unlock()
-	if !server.hasAttachClient() {
-		t.Fatal("server did not report attach client")
+
+	if server.hasAttachClientByID("") {
+		t.Fatal("unidentified query reported another connection's attach")
+	}
+	if server.hasAttachClientByID("someone-else") {
+		t.Fatal("server reported attach for an unknown client ID")
 	}
 }
 

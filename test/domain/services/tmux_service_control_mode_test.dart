@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -537,6 +538,27 @@ void main() {
       expect(foregroundCommand, isNot(contains('exit 0')));
       expect(foregroundCommand, contains('break 2'));
       expect(foregroundCommand, isNot(contains('#{client_tty}')));
+      // BusyBox `ps` has no `-p`, so the ancestry walk must have an exact
+      // `/proc` PPID source or MonkeySSH's own tmux client stops being found.
+      expect(foregroundCommand, contains(r'/proc/$1/status'));
+      expect(foregroundCommand, contains('PPid:'));
+      expect(
+        foregroundCommand,
+        isNot(contains(r'ps -p "$$"')),
+        reason: 'the connection PID must go through the portable ppid_of()',
+      );
+      // The probe runs on remote POSIX shells, so it must at least parse.
+      final syntaxCheck = Process.runSync('sh', [
+        '-n',
+        '-c',
+        foregroundCommand,
+      ]);
+      expect(
+        syntaxCheck.exitCode,
+        0,
+        reason:
+            'generated probe is not valid POSIX shell: ${syntaxCheck.stderr}',
+      );
       verifyNever(
         () => client.execute(
           any(that: contains('list-sessions')),
@@ -546,7 +568,7 @@ void main() {
     });
 
     test(
-      'foregroundSessionNameOrThrow falls back to direct tmux session',
+      'foregroundSessionNameOrThrow never falls back to another connection',
       () async {
         final client = _MockSshClient();
         final session = _buildSession(client, connectionId: 23);
@@ -554,7 +576,6 @@ void main() {
         final execSessions = Queue<SSHSession>.of([
           _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
           _buildOpenExecSession(stdout: _doneMarker()),
-          _buildOpenExecSession(stdout: 'work\n${_doneMarker()}'),
         ]);
 
         when(
@@ -563,19 +584,22 @@ void main() {
 
         final sessionName = await service.foregroundSessionNameOrThrow(session);
 
-        expect(sessionName, 'work');
+        expect(sessionName, isNull);
         verify(
           () => client.execute(
             any(that: contains('list-clients')),
             pty: any(named: 'pty'),
           ),
         ).called(1);
-        verify(
+        // `tmux display-message` resolves the host's most recently used
+        // session, which may belong to a different SSH login, so it must never
+        // be consulted for foreground ownership.
+        verifyNever(
           () => client.execute(
             any(that: contains('display-message')),
             pty: any(named: 'pty'),
           ),
-        ).called(1);
+        );
       },
     );
 
