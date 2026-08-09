@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -141,12 +142,15 @@ func killCommandProcessGroup(cmd *exec.Cmd) {
 	signalCommandProcessGroup(cmd, syscall.SIGKILL)
 }
 
+// processIDAlive reports whether a process with this pid exists. A permission
+// error means it exists but belongs to another user, which is still evidence
+// that the pid is taken; only a missing process counts as gone.
 func processIDAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	return err == nil
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // inspectProcess reports what can be learned about pid. Linux answers from
@@ -164,6 +168,12 @@ func inspectProcess(pid int) processSnapshot {
 }
 
 func inspectProcFSProcess(pid int) (processSnapshot, bool) {
+	if !procFSDescribesThisNamespace() {
+		// A container that mounted the host's /proc would describe a different
+		// process than the one kill(2) addresses, and its command line would be
+		// bogus "proof" about an unrelated process.
+		return processSnapshot{}, false
+	}
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if err != nil {
 		return processSnapshot{}, false
@@ -196,6 +206,21 @@ func inspectProcFSProcess(pid int) (processSnapshot, bool) {
 	}
 	return snapshot, true
 }
+
+// procFSDescribesThisNamespace reports whether /proc belongs to this process's
+// pid namespace, by checking that it agrees about this process's own pid.
+var procFSDescribesThisNamespace = sync.OnceValue(func() bool {
+	data, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return false
+	}
+	pid, err := strconv.Atoi(fields[0])
+	return err == nil && pid == os.Getpid()
+})
 
 // userHZTicksToDuration converts a procfs tick count. The kernel always reports
 // these in USER_HZ, which is 100 regardless of the configured timer frequency.
@@ -269,9 +294,9 @@ func inspectPSProcess(pid int) processSnapshot {
 		running: !strings.HasPrefix(fields[0], "Z"),
 	}
 	// lstart always occupies exactly five fields ("Mon Jan  2 15:04:05 2006"),
-	// so the remainder is the argument list.
+	// so anything after it is the argument list, which may be absent.
 	const lstartFields = 5
-	if len(fields) > 1+lstartFields {
+	if len(fields) >= 1+lstartFields {
 		snapshot.started = parseProcessStartTime(
 			strings.Join(fields[1:1+lstartFields], " "),
 		)

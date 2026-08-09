@@ -205,7 +205,7 @@ func startForeignProcess(t *testing.T) int {
 	return cmd.Process.Pid
 }
 
-func TestLiveSessionServerPIDRecordKeepsCurrentOwner(t *testing.T) {
+func TestSessionServerOwnerKeepsCurrentOwner(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -215,13 +215,16 @@ func TestLiveSessionServerPIDRecordKeepsCurrentOwner(t *testing.T) {
 	if err := writeSessionPIDFile(session, os.Getpid()); err != nil {
 		t.Fatalf("writeSessionPIDFile: %v", err)
 	}
-	owner := liveSessionServerPIDRecord(session)
+	owner, ownership := sessionServerOwner(session)
 	if owner.pid != os.Getpid() {
 		t.Fatalf("owner pid = %d, want %d", owner.pid, os.Getpid())
 	}
+	if ownership == pidOwnershipGone {
+		t.Fatal("this process reported as a departed owner")
+	}
 }
 
-func TestLiveSessionServerPIDRecordClearsDeadOwner(t *testing.T) {
+func TestSessionServerOwnerClearsDeadOwner(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -238,8 +241,8 @@ func TestLiveSessionServerPIDRecordClearsDeadOwner(t *testing.T) {
 	if err := os.WriteFile(path, []byte("99999999\n"), 0o600); err != nil {
 		t.Fatalf("write pid file: %v", err)
 	}
-	if owner := liveSessionServerPIDRecord(session); owner.pid != 0 {
-		t.Fatalf("owner pid = %d, want 0 for a dead process", owner.pid)
+	if owner, ownership := sessionServerOwner(session); ownership != pidOwnershipGone {
+		t.Fatalf("ownership = %v (pid %d), want %v for a dead process", ownership, owner.pid, pidOwnershipGone)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("pid file state = %v, want removed", err)
@@ -250,7 +253,7 @@ func TestLiveSessionServerPIDRecordClearsDeadOwner(t *testing.T) {
 // permanently block the session once the operating system hands that pid to an
 // unrelated process. Otherwise every attach falls back to a login shell with
 // "is running (pid N) but not accepting connections".
-func TestLiveSessionServerPIDRecordClearsRecycledPID(t *testing.T) {
+func TestSessionServerOwnerClearsRecycledPID(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -268,8 +271,8 @@ func TestLiveSessionServerPIDRecordClearsRecycledPID(t *testing.T) {
 		t.Fatalf("write pid file: %v", err)
 	}
 	agePIDFileBeforeThisProcess(t, path)
-	if owner := liveSessionServerPIDRecord(session); owner.pid != 0 {
-		t.Fatalf("owner pid = %d, want 0 for a recycled pid", owner.pid)
+	if owner, ownership := sessionServerOwner(session); ownership != pidOwnershipGone {
+		t.Fatalf("ownership = %v (pid %d), want %v for a recycled pid", ownership, owner.pid, pidOwnershipGone)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("pid file state = %v, want removed", err)
@@ -278,7 +281,7 @@ func TestLiveSessionServerPIDRecordClearsRecycledPID(t *testing.T) {
 
 // Pid files written before identities were recorded carry only a number, so a
 // recycled pid is detected by checking the running process image instead.
-func TestLiveSessionServerPIDRecordClearsLegacyForeignPID(t *testing.T) {
+func TestSessionServerOwnerClearsLegacyForeignPID(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -297,8 +300,8 @@ func TestLiveSessionServerPIDRecordClearsLegacyForeignPID(t *testing.T) {
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write pid file: %v", err)
 	}
-	if owner := liveSessionServerPIDRecord(session); owner.pid != 0 {
-		t.Fatalf("owner pid = %d, want 0 for a foreign process", owner.pid)
+	if owner, ownership := sessionServerOwner(session); ownership != pidOwnershipGone {
+		t.Fatalf("ownership = %v (pid %d), want %v for a foreign process", ownership, owner.pid, pidOwnershipGone)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("pid file state = %v, want removed", err)
@@ -547,5 +550,196 @@ func TestAcquireSessionLockIsExclusiveUnderContention(t *testing.T) {
 	defer mu.Unlock()
 	if conflicts > 0 {
 		t.Fatalf("session lock was held by more than one holder %d times", conflicts)
+	}
+}
+
+// A lock file is installed already populated, so a contender can never observe
+// an empty one and mistake a live holder for the residue of a crash.
+func TestInstallSessionLockFileIsNeverEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("lock-install-%d", time.Now().UnixNano())
+	path, err := sessionLockPath(session)
+	if err != nil {
+		t.Fatalf("sessionLockPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	acquired, err := installSessionLockFile(path)
+	if err != nil || !acquired {
+		t.Fatalf("installSessionLockFile = %v, %v; want true, nil", acquired, err)
+	}
+	record, err := readPIDRecord(path)
+	if err != nil {
+		t.Fatalf("lock file is not parseable immediately after install: %v", err)
+	}
+	if record.pid != os.Getpid() {
+		t.Fatalf("lock pid = %d, want %d", record.pid, os.Getpid())
+	}
+
+	// A second install must not take a held lock.
+	acquired, err = installSessionLockFile(path)
+	if err != nil {
+		t.Fatalf("installSessionLockFile: %v", err)
+	}
+	if acquired {
+		t.Fatal("installSessionLockFile took a lock that was already held")
+	}
+
+	// No staging residue may be left behind in the run directory.
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*.staging"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("staging files left behind: %v", matches)
+	}
+}
+
+// The abandoned-file path must be as safe as the parseable one: a corrupt lock
+// reclaimed concurrently must never unlink the file a winner just installed.
+func TestAcquireSessionLockIsExclusiveOverAbandonedLock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("lock-abandoned-race-%d", time.Now().UnixNano())
+	path, err := sessionLockPath(session)
+	if err != nil {
+		t.Fatalf("sessionLockPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// An aged, unparseable lock: the residue of a crash mid-install.
+	if err := os.WriteFile(path, []byte("   \n"), 0o600); err != nil {
+		t.Fatalf("write abandoned lock: %v", err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	const (
+		contenders = 4
+		rounds     = 3
+	)
+	var (
+		mu        sync.Mutex
+		held      int
+		conflicts int
+		wg        sync.WaitGroup
+	)
+	for i := 0; i < contenders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := 0; r < rounds; r++ {
+				unlock, err := acquireSessionLock(session)
+				if err != nil {
+					t.Errorf("acquireSessionLock: %v", err)
+					return
+				}
+				mu.Lock()
+				held++
+				if held > 1 {
+					conflicts++
+				}
+				held--
+				mu.Unlock()
+				unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if conflicts > 0 {
+		t.Fatalf("session lock was held by more than one holder %d times", conflicts)
+	}
+}
+
+// clearAbandonedPIDFile must not delete a file that became valid while it was
+// being considered.
+func TestClearAbandonedPIDFileKeepsRepopulatedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monkeymux-test.lock")
+
+	if err := os.WriteFile(path, []byte("not a pid\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if !clearAbandonedPIDFile(path) {
+		t.Fatal("an aged unparseable file was not reclaimed")
+	}
+
+	if err := os.WriteFile(path, []byte("1234\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if clearAbandonedPIDFile(path) {
+		t.Fatal("a valid record was deleted as abandoned")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("valid record removed: %v", err)
+	}
+}
+
+func TestReadPIDRecordReportsFileTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "monkeymux-test.pid")
+	if err := os.WriteFile(path, []byte("4321\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	stamp := time.Now().Add(-90 * time.Minute).Truncate(time.Second)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	record, err := readPIDRecord(path)
+	if err != nil {
+		t.Fatalf("readPIDRecord: %v", err)
+	}
+	if record.pid != 4321 {
+		t.Fatalf("pid = %d, want 4321", record.pid)
+	}
+	if !record.writtenAt.Equal(stamp) {
+		t.Fatalf("writtenAt = %s, want %s", record.writtenAt, stamp)
+	}
+}
+
+func TestProcessImageMatching(t *testing.T) {
+	cases := []struct {
+		image   string
+		monkey  bool
+		session string
+		serves  bool
+	}{
+		{"/home/u/.monkeyssh/bin/monkeymux/0.1.144/linux-amd64/monkeymux serve --session Work", true, "Work", true},
+		{"/usr/bin/monkeymux.exe serve --session Work", true, "Work", true},
+		{"/home/u/.monkeyssh/bin/monkeymux/0.1.144/linux-amd64/monkeymux serve --session Other", true, "Work", false},
+		{"/usr/bin/vim /home/u/.monkeyssh/bin/monkeymux/notes.txt", false, "Work", false},
+		{"/usr/bin/grep -r monkeymux serve --session Work /etc", false, "Work", false},
+		{"/bin/sleep 120", false, "Work", false},
+		{"", false, "Work", false},
+	}
+	for _, tc := range cases {
+		if got := processImageIsMonkeyMux(tc.image); got != tc.monkey {
+			t.Errorf("processImageIsMonkeyMux(%q) = %v, want %v", tc.image, got, tc.monkey)
+		}
+		if got := processImageServesSession(tc.image, tc.session); got != tc.serves {
+			t.Errorf("processImageServesSession(%q, %q) = %v, want %v", tc.image, tc.session, got, tc.serves)
+		}
 	}
 }
