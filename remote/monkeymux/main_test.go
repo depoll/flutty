@@ -6958,6 +6958,29 @@ func TestActiveReplayPrefixClearsMainAndAlternateScreens(t *testing.T) {
 	}
 }
 
+func TestActiveReplayPrefixClearsPhysicalKittyPlacementsOnEveryScreen(t *testing.T) {
+	if got, want := strings.Count(
+		terminalAllScreensClearSequence,
+		terminalGraphicsPlacementClearSequence,
+	), 3; got != want {
+		t.Fatalf(
+			"all-screen clear contains %d Kitty placement clears, want %d: %q",
+			got,
+			want,
+			terminalAllScreensClearSequence,
+		)
+	}
+	if !strings.Contains(
+		activeWindowReplayPrefix,
+		terminalGraphicsPlacementClearSequence,
+	) {
+		t.Fatalf(
+			"replay prefix does not clear stale physical Kitty placements: %q",
+			activeWindowReplayPrefix,
+		)
+	}
+}
+
 func TestActiveReplayCapsExitedAlternateScreenHistory(t *testing.T) {
 	for _, mode := range []string{"1047", "1049"} {
 		t.Run(mode, func(t *testing.T) {
@@ -9181,6 +9204,42 @@ func TestAltScreenReplayRestoresKittyImageButNotHistory(t *testing.T) {
 	}
 }
 
+func TestPiMainScreenReplayRestoresKittyImageButNotHistory(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		name:              "project",
+		paneTitle:         "π - project",
+		foregroundCommand: "node",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	window.appendHistoryLocked([]byte("stale pi frame\r\n"))
+	transmit := []byte(
+		"\x1b_Ga=T,i=2598312274,c=24,r=12,f=100,q=2;iVBORw0KGgo=\x1b\\")
+	window.appendHistoryLocked(transmit)
+	window.observeKittyGraphicsLocked(transmit)
+
+	if !window.usesForegroundRedrawReplayLocked() {
+		t.Fatal("Pi window should use foreground-redraw replay")
+	}
+
+	replay := string(server.replayBytesLocked(window))
+	if !strings.Contains(replay, "i=2598312274") ||
+		!strings.Contains(replay, "iVBORw0KGgo=") {
+		t.Fatalf("Pi replay dropped the retained Kitty image: %q", replay)
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("Pi replay kept display action a=T (would place stale image): %q", replay)
+	}
+	if strings.Contains(replay, "stale pi frame") {
+		t.Fatalf("Pi replay leaked stale visible history: %q", replay)
+	}
+}
+
 func TestTerminalTitleReplaySanitizesControlCharacters(t *testing.T) {
 	window := &muxWindow{name: "bad\x1b\a title"}
 
@@ -9586,10 +9645,22 @@ func TestCommandNameFromProcessFieldsDetectsNodeBackedAgents(t *testing.T) {
 			want:    "codex",
 		},
 		{
+			name:    "pi node shim",
+			command: "node",
+			args:    "node /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
+			want:    "pi",
+		},
+		{
 			name:    "plain node script",
 			command: "node",
 			args:    "node /tmp/build.js",
 			want:    "node",
+		},
+		{
+			name:    "plain process with pi argument",
+			command: "python",
+			args:    "python worker.py pi",
+			want:    "python",
 		},
 	}
 
@@ -9628,6 +9699,7 @@ func TestAgentToolFromCommandTextDetectsWrappedNodeAgents(t *testing.T) {
 	}{
 		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: "gemini"},
 		{command: "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js", want: "codex"},
+		{command: "node /usr/local/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js", want: "pi"},
 	}
 
 	for _, tt := range tests {
@@ -9651,12 +9723,267 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 		{tool: "antigravity", args: `agy --conversation "antigravity session"`, want: "antigravity session"},
 		{tool: "cursor-agent", args: "cursor-agent --resume chat-7", want: "chat-7"},
 		{tool: "cursor-agent", args: `cursor-agent --resume="chat eight"`, want: "chat eight"},
+		{tool: "pi", args: "pi --session pi-session", want: "pi-session"},
+		{tool: "pi", args: `pi --session-id="pi session two"`, want: "pi session two"},
 	}
 
 	for _, tt := range tests {
 		if got := agentSessionIDFromArgs(tt.tool, tt.args); got != tt.want {
 			t.Fatalf("agentSessionIDFromArgs(%q, %q) = %q, want %q", tt.tool, tt.args, got, tt.want)
 		}
+	}
+}
+
+func TestDiscoverPiSessionIDsUsesOpenSessionFile(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	processOpenFilePathsForMetadata = func(pid int) []string {
+		if pid != 200 {
+			return nil
+		}
+		return []string{
+			"/Users/alice/.pi/agent/sessions/--Users-alice-project--/" +
+				"2026-08-10T07-30-00-000Z_pi-session.jsonl",
+		}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		t.Fatalf(
+			"processWorkingDirectoryForMetadata(%d) was called; open file match should win",
+			pid,
+		)
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {
+			pid:  200,
+			ppid: 100,
+			comm: "node",
+			args: "node /usr/local/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
+		},
+	}
+
+	sessions := discoverPiSessionIDs(
+		processes,
+		map[int]struct{}{100: {}},
+	)
+
+	if got := sessions[100]; got != "pi-session" {
+		t.Fatalf("Pi session id = %q, want pi-session", got)
+	}
+}
+
+func TestDiscoverPiSessionIDsFallsBackToRecentSessionForCwd(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionDir := filepath.Join(
+		home,
+		".pi",
+		"agent",
+		"sessions",
+		"--work-project--",
+	)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(
+		sessionDir,
+		"2026-08-10T07-30-00-000Z_recent-pi-session.jsonl",
+	)
+	if err := os.WriteFile(
+		sessionPath,
+		[]byte(`{"type":"session","id":"recent-pi-session","cwd":"/work/project"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {
+			pid:  200,
+			ppid: 100,
+			comm: "node",
+			args: "node /usr/local/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
+		},
+	}
+
+	sessions := discoverPiSessionIDs(
+		processes,
+		map[int]struct{}{100: {}},
+	)
+
+	if got := sessions[100]; got != "recent-pi-session" {
+		t.Fatalf("Pi session id = %q, want recent-pi-session", got)
+	}
+}
+
+func TestDiscoverPiSessionIDsDoesNotReuseClaimedSession(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionDir := filepath.Join(
+		home,
+		".pi",
+		"agent",
+		"sessions",
+		"--work-project--",
+	)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSession := func(name string, sessionID string, modified time.Time) {
+		t.Helper()
+		path := filepath.Join(sessionDir, name)
+		if err := os.WriteFile(
+			path,
+			[]byte(
+				`{"type":"session","id":"`+
+					sessionID+
+					`","cwd":"/work/project"}`+
+					"\n",
+			),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, modified, modified); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	writeSession(
+		"2026-08-10T07-20-00-000Z_unclaimed-session.jsonl",
+		"unclaimed-session",
+		now.Add(-time.Minute),
+	)
+	writeSession(
+		"2026-08-10T07-30-00-000Z_claimed-session.jsonl",
+		"claimed-session",
+		now,
+	)
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 300 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {
+			pid:  200,
+			ppid: 100,
+			comm: "pi",
+			args: "pi --session claimed",
+		},
+		101: {pid: 101, ppid: 1, comm: "zsh", args: "zsh"},
+		300: {
+			pid:  300,
+			ppid: 101,
+			comm: "node",
+			args: "node /usr/local/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
+		},
+	}
+
+	sessions := discoverPiSessionIDs(
+		processes,
+		map[int]struct{}{100: {}, 101: {}},
+	)
+
+	if got := sessions[100]; got != "claimed-session" {
+		t.Fatalf("canonical Pi session id = %q, want claimed-session", got)
+	}
+	if got := sessions[101]; got != "unclaimed-session" {
+		t.Fatalf("fallback Pi session id = %q, want unclaimed-session", got)
+	}
+}
+
+func TestDiscoverPiSessionIDsDoesNotGuessAmbiguousSelector(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionDir := filepath.Join(
+		home,
+		".pi",
+		"agent",
+		"sessions",
+		"--work-project--",
+	)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, sessionID := range []string{"shared-session-one", "shared-session-two"} {
+		if err := os.WriteFile(
+			filepath.Join(
+				sessionDir,
+				"2026-08-10T07-30-00-000Z_"+sessionID+".jsonl",
+			),
+			[]byte(
+				`{"type":"session","id":"`+
+					sessionID+
+					`","cwd":"/work/project"}`+
+					"\n",
+			),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {
+			pid:  200,
+			ppid: 100,
+			comm: "pi",
+			args: "pi --session shared",
+		},
+	}
+
+	sessions := discoverPiSessionIDs(
+		processes,
+		map[int]struct{}{100: {}},
+	)
+
+	if got := sessions[100]; got != "" {
+		t.Fatalf("ambiguous Pi selector resolved to %q, want empty", got)
 	}
 }
 
@@ -10421,6 +10748,53 @@ func TestCursorAgentToolMapping(t *testing.T) {
 	}
 }
 
+func TestPiAgentToolMapping(t *testing.T) {
+	for _, name := range []string{
+		"pi",
+		"/Users/demo/.local/bin/pi",
+	} {
+		if got := agentToolFromCommandName(name); got != "pi" {
+			t.Fatalf("agentToolFromCommandName(%q) = %q, want pi", name, got)
+		}
+	}
+	if got := agentToolFromTerminalTitle("π - project"); got != "pi" {
+		t.Fatalf("agentToolFromTerminalTitle = %q, want pi", got)
+	}
+	if got := agentToolFromTerminalTitle("Pi project"); got != "" {
+		t.Fatalf("generic Pi title = %q, want empty", got)
+	}
+	if got := agentToolFromWindowName("Pi"); got != "" {
+		t.Fatalf("generic Pi window name = %q, want empty", got)
+	}
+	if got := createWindowAgentTool(
+		createWindowOptions{name: "Pi"},
+		"Pi",
+	); got != "" {
+		t.Fatalf("named shell agent tool = %q, want empty", got)
+	}
+	if got := createWindowAgentTool(
+		createWindowOptions{
+			name: "project",
+			args: []string{"/Users/demo/.local/bin/pi"},
+		},
+		"project",
+	); got != "pi" {
+		t.Fatalf("Pi executable agent tool = %q, want pi", got)
+	}
+	if got := agentLaunchCommand("pi", false); got != "pi" {
+		t.Fatalf("agentLaunchCommand = %q, want pi", got)
+	}
+	if got := agentLaunchCommand("pi", true); got != "pi" {
+		t.Fatalf("agentLaunchCommand yolo = %q, want pi", got)
+	}
+	if got := agentResumeCommand("pi", "session-9", true); got != "pi --session 'session-9'" {
+		t.Fatalf("agentResumeCommand = %q, want Pi session resume", got)
+	}
+	if got := agentResumeCommand("pi", "_continue", false); got != "pi --continue" {
+		t.Fatalf("agentResumeCommand continue = %q, want Pi continue", got)
+	}
+}
+
 func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -10649,6 +11023,17 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			},
 			want:      "cursor-agent --force --continue || cursor-agent --force",
 			agentTool: "cursor-agent",
+		},
+		{
+			name: "pi resume",
+			state: restoreWindowState{
+				Name:           "Pi",
+				CurrentCommand: "pi",
+				AgentTool:      "pi",
+				AgentSessionID: "pi-session",
+			},
+			want:      "pi --session 'pi-session' || pi",
+			agentTool: "pi",
 		},
 	}
 

@@ -84,6 +84,10 @@ Window switching and reconnect repaint from raw byte history for the selected
 window. Main-screen shell history is capped for responsive switching; active
 alternate-screen, agent, and non-shell foreground program windows replay the
 larger retained history so scrollback is restored before the next resize/redraw.
+Replay clears physical Kitty image placements on both terminal buffers before
+drawing the selected window, while retaining reusable image bytes. Pi is
+recognized as an agent window, so its main-screen TUI redraws its current frame
+instead of replaying stale image placement history.
 MonkeyMux still does not parse terminal state; the history is
 only a best-effort direct replay so the foreground terminal visibly moves to
 the selected PTY. Replay strips old terminal response queries, such as device
