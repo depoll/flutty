@@ -1197,7 +1197,8 @@ Future<_ComparisonResult> _runTerminalSequence(
           terminal: terminal,
           focusNode: focusNode,
           deleteDetection: true,
-          child: const SizedBox.expand(),
+          manageFocus: false,
+          child: Focus(focusNode: focusNode, child: const SizedBox.expand()),
         ),
       ),
     ),
@@ -5021,6 +5022,12 @@ void main() {
         focusNode.requestFocus();
         await tester.pump();
 
+        tester.testTextInput.updateEditingValue(
+          _editingValue('C', selectionOffset: 1),
+        );
+        await tester.pump();
+        terminalOutput.clear();
+
         HardwareKeyboard.instance.handleKeyEvent(
           const KeyDownEvent(
             logicalKey: LogicalKeyboardKey.enter,
@@ -5174,6 +5181,755 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets('Android IME HID controls bypass Kitty hardware key encoding', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add)
+        ..write('\x1b[>1u');
+      final focusNode = FocusNode();
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Focus(
+                focusNode: focusNode,
+                child: TerminalTextInputHandler(
+                  terminal: terminal,
+                  focusNode: focusNode,
+                  deleteDetection: true,
+                  manageFocus: false,
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('CC', selectionOffset: 2),
+        );
+        await tester.pump();
+        terminalOutput.clear();
+
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyDownEvent(
+            logicalKey: LogicalKeyboardKey.shiftLeft,
+            physicalKey: PhysicalKeyboardKey.shiftLeft,
+            timeStamp: Duration.zero,
+          ),
+        );
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyDownEvent(
+            logicalKey: LogicalKeyboardKey.backspace,
+            physicalKey: PhysicalKeyboardKey.backspace,
+            timeStamp: Duration.zero,
+          ),
+        );
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyRepeatEvent(
+            logicalKey: LogicalKeyboardKey.backspace,
+            physicalKey: PhysicalKeyboardKey.backspace,
+            timeStamp: Duration.zero,
+          ),
+        );
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyUpEvent(
+            logicalKey: LogicalKeyboardKey.backspace,
+            physicalKey: PhysicalKeyboardKey.backspace,
+            timeStamp: Duration.zero,
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, <String>['\x7f', '\x7f']);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('', selectionOffset: 0),
+        );
+        await tester.pump();
+
+        expect(
+          terminalOutput.join(),
+          '${_terminalKeyOutput(TerminalKey.backspace)}'
+          '${_terminalKeyOutput(TerminalKey.backspace)}',
+        );
+
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyUpEvent(
+            logicalKey: LogicalKeyboardKey.shiftLeft,
+            physicalKey: PhysicalKeyboardKey.shiftLeft,
+            timeStamp: Duration.zero,
+          ),
+        );
+      } finally {
+        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+        await tester.pump();
+        focusNode.dispose();
+        tester.view.resetViewInsets();
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets(
+      'Android external HID Backspace keeps Kitty encoding with visible IME',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add)
+          ..write('\x1b[>9u');
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: Focus(
+                  focusNode: focusNode,
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    controller: controller,
+                    deleteDetection: true,
+                    manageFocus: false,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+            ),
+          );
+
+          focusNode.requestFocus();
+          await tester.pump();
+
+          expect(tester.testTextInput.isVisible, isTrue);
+          expect(tester.view.viewInsets.bottom, greaterThan(0));
+
+          controller.debugRecordAndroidPhysicalKey(
+            TerminalKey.shiftLeft,
+            TerminalKeyEventType.press,
+          );
+          HardwareKeyboard.instance.handleKeyEvent(
+            const KeyDownEvent(
+              logicalKey: LogicalKeyboardKey.shiftLeft,
+              physicalKey: PhysicalKeyboardKey.shiftLeft,
+              timeStamp: Duration.zero,
+            ),
+          );
+          controller.debugRecordAndroidPhysicalKey(
+            TerminalKey.backspace,
+            TerminalKeyEventType.press,
+          );
+          HardwareKeyboard.instance.handleKeyEvent(
+            const KeyDownEvent(
+              logicalKey: LogicalKeyboardKey.backspace,
+              physicalKey: PhysicalKeyboardKey.backspace,
+              timeStamp: Duration.zero,
+            ),
+          );
+          controller.debugRecordAndroidPhysicalKey(
+            TerminalKey.backspace,
+            TerminalKeyEventType.release,
+          );
+          HardwareKeyboard.instance.handleKeyEvent(
+            const KeyUpEvent(
+              logicalKey: LogicalKeyboardKey.backspace,
+              physicalKey: PhysicalKeyboardKey.backspace,
+              timeStamp: Duration.zero,
+            ),
+          );
+          controller.debugRecordAndroidPhysicalKey(
+            TerminalKey.shiftLeft,
+            TerminalKeyEventType.release,
+          );
+          HardwareKeyboard.instance.handleKeyEvent(
+            const KeyUpEvent(
+              logicalKey: LogicalKeyboardKey.shiftLeft,
+              physicalKey: PhysicalKeyboardKey.shiftLeft,
+              timeStamp: Duration.zero,
+            ),
+          );
+          await tester.pump();
+
+          expect(terminalOutput.join(), contains('\x1b[127;2u'));
+        } finally {
+          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+          await tester.pump();
+          focusNode.dispose();
+          controller.dispose();
+          tester.view.resetViewInsets();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
+      'physical Backspace consumes a toolbar modifier with visible IME',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+        var ctrlActive = true;
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add)
+          ..write('\x1b[>1u');
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: Focus(
+                  focusNode: focusNode,
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    controller: controller,
+                    deleteDetection: true,
+                    manageFocus: false,
+                    resolveTerminalKeyModifiers: () =>
+                        (ctrl: ctrlActive, alt: false, shift: false),
+                    consumeTerminalKeyModifiers: () => ctrlActive = false,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+            ),
+          );
+
+          focusNode.requestFocus();
+          await tester.pump();
+
+          controller.debugRecordAndroidPhysicalKey(
+            TerminalKey.backspace,
+            TerminalKeyEventType.press,
+          );
+          HardwareKeyboard.instance.handleKeyEvent(
+            const KeyDownEvent(
+              logicalKey: LogicalKeyboardKey.backspace,
+              physicalKey: PhysicalKeyboardKey.backspace,
+              timeStamp: Duration.zero,
+            ),
+          );
+          controller.debugRecordAndroidPhysicalKey(
+            TerminalKey.backspace,
+            TerminalKeyEventType.release,
+          );
+          HardwareKeyboard.instance.handleKeyEvent(
+            const KeyUpEvent(
+              logicalKey: LogicalKeyboardKey.backspace,
+              physicalKey: PhysicalKeyboardKey.backspace,
+              timeStamp: Duration.zero,
+            ),
+          );
+          await tester.pump();
+
+          expect(terminalOutput, <String>['\x1b[127;5u']);
+          expect(ctrlActive, isFalse);
+        } finally {
+          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+          await tester.pump();
+          focusNode.dispose();
+          controller.dispose();
+          tester.view.resetViewInsets();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets('replacing focus node closes an unfocused input connection', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final firstFocusNode = FocusNode();
+      final replacementFocusNode = FocusNode();
+
+      Widget buildHandler(FocusNode focusNode) => MaterialApp(
+        home: Scaffold(
+          body: TerminalTextInputHandler(
+            terminal: terminal,
+            focusNode: focusNode,
+            deleteDetection: true,
+            child: const SizedBox.expand(),
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(buildHandler(firstFocusNode));
+      firstFocusNode.requestFocus();
+      await tester.pump();
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      await tester.pumpWidget(buildHandler(replacementFocusNode));
+      await tester.pump();
+
+      expect(replacementFocusNode.hasFocus, isFalse);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      firstFocusNode.dispose();
+      replacementFocusNode.dispose();
+    });
+
+    testWidgets(
+      'Android IME replacement after HID Backspace does not delete twice',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add)
+          ..write('\x1b[>1u');
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: Focus(
+                  focusNode: focusNode,
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    controller: controller,
+                    deleteDetection: true,
+                    manageFocus: false,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+            ),
+          );
+
+          focusNode.requestFocus();
+          await tester.pump();
+          tester.testTextInput.updateEditingValue(
+            _editingValue('CC', selectionOffset: 2),
+          );
+          await tester.pump();
+          terminalOutput.clear();
+
+          controller
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.press,
+            )
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.repeat,
+            )
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.release,
+            );
+          await tester.pump();
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('D', selectionOffset: 1),
+          );
+          await tester.pump();
+
+          expect(terminalOutput, <String>['\x7f', '\x7f', 'D']);
+        } finally {
+          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+          await tester.pump();
+          focusNode.dispose();
+          controller.dispose();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
+      'Android IME append after omitted Backspace drops stale buffer text',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add)
+          ..write('\x1b[>1u');
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: Focus(
+                  focusNode: focusNode,
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    controller: controller,
+                    deleteDetection: true,
+                    manageFocus: false,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+            ),
+          );
+
+          focusNode.requestFocus();
+          await tester.pump();
+          tester.testTextInput.updateEditingValue(
+            _editingValue('A', selectionOffset: 1),
+          );
+          await tester.pump();
+          terminalOutput.clear();
+
+          controller
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.press,
+            )
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.release,
+            );
+          tester.testTextInput.updateEditingValue(
+            _editingValue('AB', selectionOffset: 2),
+          );
+          await tester.pump();
+
+          expect(terminalOutput, <String>['\x7f', 'B']);
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _editingValue('B', selectionOffset: 1),
+          );
+        } finally {
+          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+          await tester.pump();
+          focusNode.dispose();
+          controller.dispose();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
+      'rejected replacement preserves an applied Android IME Backspace',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add)
+          ..write('\x1b[>1u');
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: Focus(
+                  focusNode: focusNode,
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    controller: controller,
+                    deleteDetection: true,
+                    manageFocus: false,
+                    onReviewInsertedText: (_) async => false,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+            ),
+          );
+
+          focusNode.requestFocus();
+          await tester.pump();
+          tester.testTextInput.updateEditingValue(
+            _editingValue('AB', selectionOffset: 2),
+          );
+          await tester.pump();
+          terminalOutput.clear();
+
+          controller
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.press,
+            )
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.release,
+            );
+          tester.testTextInput.updateEditingValue(
+            _editingValue('x\ny', selectionOffset: 3),
+          );
+          await tester.pump();
+
+          expect(terminalOutput, <String>['\x7f']);
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _editingValue('A', selectionOffset: 1),
+          );
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('AC', selectionOffset: 2),
+          );
+          await tester.pump();
+
+          expect(terminalOutput, <String>['\x7f', 'C']);
+        } finally {
+          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+          await tester.pump();
+          focusNode.dispose();
+          controller.dispose();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets('Android composing IME Backspace sends raw DEL immediately', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add)
+        ..write('\x1b[>1u');
+      final focusNode = FocusNode();
+      final controller = TerminalTextInputHandlerController();
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Focus(
+                focusNode: focusNode,
+                child: TerminalTextInputHandler(
+                  terminal: terminal,
+                  focusNode: focusNode,
+                  controller: controller,
+                  deleteDetection: true,
+                  manageFocus: false,
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+        tester.testTextInput.updateEditingValue(
+          _editingValue('CC', selectionOffset: 2),
+        );
+        await tester.pump();
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            'CC',
+            selectionOffset: 2,
+            composing: const TextRange(start: 0, end: 2),
+          ),
+        );
+        await tester.pump();
+        terminalOutput.clear();
+
+        controller.debugHandleAndroidImeKey(
+          TerminalKey.backspace,
+          TerminalKeyEventType.press,
+        );
+        await tester.pump();
+
+        expect(terminalOutput, <String>['\x7f']);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            'C',
+            selectionOffset: 1,
+            composing: const TextRange(start: 0, end: 1),
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, <String>['\x7f']);
+
+        controller.debugHandleAndroidImeKey(
+          TerminalKey.backspace,
+          TerminalKeyEventType.release,
+        );
+      } finally {
+        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+        await tester.pump();
+        focusNode.dispose();
+        controller.dispose();
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('toolbar modifier applies to composing Android IME Backspace', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      var ctrlActive = true;
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add)
+        ..write('\x1b[>1u');
+      final focusNode = FocusNode();
+      final controller = TerminalTextInputHandlerController();
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Focus(
+                focusNode: focusNode,
+                child: TerminalTextInputHandler(
+                  terminal: terminal,
+                  focusNode: focusNode,
+                  controller: controller,
+                  deleteDetection: true,
+                  manageFocus: false,
+                  resolveTerminalKeyModifiers: () =>
+                      (ctrl: ctrlActive, alt: false, shift: false),
+                  consumeTerminalKeyModifiers: () => ctrlActive = false,
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+        tester.testTextInput.updateEditingValue(
+          _editingValue('CC', selectionOffset: 2),
+        );
+        await tester.pump();
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            'CC',
+            selectionOffset: 2,
+            composing: const TextRange(start: 0, end: 2),
+          ),
+        );
+        await tester.pump();
+        terminalOutput.clear();
+
+        controller.debugHandleAndroidImeKey(
+          TerminalKey.backspace,
+          TerminalKeyEventType.press,
+        );
+        await tester.pump();
+
+        expect(terminalOutput, <String>['\x1b[127;5u']);
+        expect(ctrlActive, isFalse);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            'C',
+            selectionOffset: 1,
+            composing: const TextRange(start: 0, end: 1),
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, <String>['\x1b[127;5u']);
+
+        controller.debugHandleAndroidImeKey(
+          TerminalKey.backspace,
+          TerminalKeyEventType.release,
+        );
+      } finally {
+        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+        await tester.pump();
+        focusNode.dispose();
+        controller.dispose();
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets(
+      'toolbar modifier keeps Android IME Backspace on hardware path',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        var ctrlActive = true;
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add)
+          ..write('\x1b[>11u');
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: Focus(
+                  focusNode: focusNode,
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    controller: controller,
+                    deleteDetection: true,
+                    manageFocus: false,
+                    resolveTerminalKeyModifiers: () =>
+                        (ctrl: ctrlActive, alt: false, shift: false),
+                    consumeTerminalKeyModifiers: () => ctrlActive = false,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+            ),
+          );
+
+          focusNode.requestFocus();
+          await tester.pump();
+          tester.testTextInput.updateEditingValue(
+            _editingValue('CC', selectionOffset: 2),
+          );
+          await tester.pump();
+          terminalOutput.clear();
+
+          controller
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.press,
+            )
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.repeat,
+            )
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.release,
+            );
+          await tester.pump();
+
+          expect(terminalOutput, <String>[
+            '\x1b[127;5u',
+            '\x1b[127;5:2u',
+            '\x1b[127;5:3u',
+          ]);
+          expect(ctrlActive, isFalse);
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('', selectionOffset: 0),
+          );
+          await tester.pump();
+
+          expect(terminalOutput, <String>[
+            '\x1b[127;5u',
+            '\x1b[127;5:2u',
+            '\x1b[127;5:3u',
+          ]);
+        } finally {
+          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+          await tester.pump();
+          focusNode.dispose();
+          controller.dispose();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
 
     testWidgets('physical shifted text keeps Kitty hardware key encoding', (
       tester,
