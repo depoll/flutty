@@ -5550,6 +5550,72 @@ void main() {
     );
 
     testWidgets(
+      'Android IME append after omitted Backspace drops stale buffer text',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add)
+          ..write('\x1b[>1u');
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: Focus(
+                  focusNode: focusNode,
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    controller: controller,
+                    deleteDetection: true,
+                    manageFocus: false,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+            ),
+          );
+
+          focusNode.requestFocus();
+          await tester.pump();
+          tester.testTextInput.updateEditingValue(
+            _editingValue('A', selectionOffset: 1),
+          );
+          await tester.pump();
+          terminalOutput.clear();
+
+          controller
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.press,
+            )
+            ..debugHandleAndroidImeKey(
+              TerminalKey.backspace,
+              TerminalKeyEventType.release,
+            );
+          tester.testTextInput.updateEditingValue(
+            _editingValue('AB', selectionOffset: 2),
+          );
+          await tester.pump();
+
+          expect(terminalOutput, <String>['\x7f', 'B']);
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _editingValue('B', selectionOffset: 1),
+          );
+        } finally {
+          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+          await tester.pump();
+          focusNode.dispose();
+          controller.dispose();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
       'rejected replacement preserves an applied Android IME Backspace',
       (tester) async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
