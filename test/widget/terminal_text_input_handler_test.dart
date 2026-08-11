@@ -5175,6 +5175,66 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets('Android IME HID Shift bypasses Kitty hardware key encoding', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add)
+        ..write('\x1b[>9u');
+      final focusNode = FocusNode();
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyDownEvent(
+            logicalKey: LogicalKeyboardKey.shiftLeft,
+            physicalKey: PhysicalKeyboardKey.shiftLeft,
+            timeStamp: Duration.zero,
+          ),
+        );
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyUpEvent(
+            logicalKey: LogicalKeyboardKey.shiftLeft,
+            physicalKey: PhysicalKeyboardKey.shiftLeft,
+            timeStamp: Duration.zero,
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, isEmpty);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('C', selectionOffset: 1),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, <String>['C']);
+      } finally {
+        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+        await tester.pump();
+        focusNode.dispose();
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
     testWidgets('physical shifted text keeps Kitty hardware key encoding', (
       tester,
     ) async {
