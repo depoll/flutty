@@ -168,9 +168,33 @@ class MainActivity : FlutterFragmentActivity() {
             channel.invokeMethod(
                 "onPhysicalKeyEvent",
                 mapOf("key" to key, "type" to type),
+                object : MethodChannel.Result {
+                    override fun success(result: Any?) {
+                        redispatchPhysicalKeyEvent(event)
+                    }
+
+                    override fun error(
+                        errorCode: String,
+                        errorMessage: String?,
+                        errorDetails: Any?,
+                    ) {
+                        redispatchPhysicalKeyEvent(event)
+                    }
+
+                    override fun notImplemented() {
+                        redispatchPhysicalKeyEvent(event)
+                    }
+                },
             )
+            return true
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun redispatchPhysicalKeyEvent(event: KeyEvent) {
+        runOnUiThread {
+            super.dispatchKeyEvent(event)
+        }
     }
 
     override fun onResume() {
