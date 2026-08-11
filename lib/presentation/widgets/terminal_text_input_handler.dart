@@ -768,7 +768,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final isImeOwnedKeyEvent =
-        _isVirtualTextInputKeyEvent(event) || _isAndroidImeShiftKeyEvent(key);
+        _isVirtualTextInputKeyEvent(event) || _isAndroidImeControlKeyEvent(key);
     if (!isImeOwnedKeyEvent) {
       return false;
     }
@@ -798,6 +798,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   /// hardware key that only sees [HardwareKeyboard] state.
   bool _isTextInputManagedTerminalKey(TerminalKey key) {
     if (key == TerminalKey.enter || key == TerminalKey.numpadEnter) {
+      return true;
+    }
+    if (widget.deleteDetection && key == TerminalKey.backspace) {
       return true;
     }
     return _isTextInputManagedCharacterKey(key);
@@ -856,15 +859,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _isVirtualTextInputKeyEvent(KeyEvent event) =>
       event.physicalKey.usbHidUsage >= LogicalKeyboardKey.startOfPlatformPlanes;
 
-  bool _isAndroidImeShiftKeyEvent(TerminalKey key) {
+  bool _isAndroidImeControlKeyEvent(TerminalKey key) {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
       return false;
     }
-    // Some Android IMEs report their on-screen Shift key with the standard HID
-    // identity. Keep it on the IME path so Kitty modifier reports do not leak.
-    return key == TerminalKey.shiftLeft ||
-        key == TerminalKey.shiftRight ||
-        key == TerminalKey.shift;
+    // Some Android IMEs report on-screen controls with standard HID identities.
+    // Keep them on the IME path so stale Shift state cannot leak Kitty reports.
+    return switch (key) {
+      TerminalKey.shiftLeft ||
+      TerminalKey.shiftRight ||
+      TerminalKey.shift ||
+      TerminalKey.backspace => true,
+      _ => false,
+    };
   }
 
   void _trackHandledHardwareCursorKey(

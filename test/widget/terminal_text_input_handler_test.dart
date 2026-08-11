@@ -5175,13 +5175,13 @@ void main() {
       focusNode.dispose();
     });
 
-    testWidgets('Android IME HID Shift bypasses Kitty hardware key encoding', (
+    testWidgets('Android IME HID controls bypass Kitty hardware key encoding', (
       tester,
     ) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       final terminalOutput = <String>[];
       final terminal = Terminal(onOutput: terminalOutput.add)
-        ..write('\x1b[>9u');
+        ..write('\x1b[>1u');
       final focusNode = FocusNode();
 
       try {
@@ -5203,6 +5203,12 @@ void main() {
 
         expect(tester.testTextInput.isVisible, isTrue);
 
+        tester.testTextInput.updateEditingValue(
+          _editingValue('C', selectionOffset: 1),
+        );
+        await tester.pump();
+        terminalOutput.clear();
+
         HardwareKeyboard.instance.handleKeyEvent(
           const KeyDownEvent(
             logicalKey: LogicalKeyboardKey.shiftLeft,
@@ -5211,9 +5217,16 @@ void main() {
           ),
         );
         HardwareKeyboard.instance.handleKeyEvent(
+          const KeyDownEvent(
+            logicalKey: LogicalKeyboardKey.backspace,
+            physicalKey: PhysicalKeyboardKey.backspace,
+            timeStamp: Duration.zero,
+          ),
+        );
+        HardwareKeyboard.instance.handleKeyEvent(
           const KeyUpEvent(
-            logicalKey: LogicalKeyboardKey.shiftLeft,
-            physicalKey: PhysicalKeyboardKey.shiftLeft,
+            logicalKey: LogicalKeyboardKey.backspace,
+            physicalKey: PhysicalKeyboardKey.backspace,
             timeStamp: Duration.zero,
           ),
         );
@@ -5222,11 +5235,22 @@ void main() {
         expect(terminalOutput, isEmpty);
 
         tester.testTextInput.updateEditingValue(
-          _editingValue('C', selectionOffset: 1),
+          _editingValue('', selectionOffset: 0),
         );
         await tester.pump();
 
-        expect(terminalOutput, <String>['C']);
+        expect(
+          terminalOutput.join(),
+          _terminalKeyOutput(TerminalKey.backspace),
+        );
+
+        HardwareKeyboard.instance.handleKeyEvent(
+          const KeyUpEvent(
+            logicalKey: LogicalKeyboardKey.shiftLeft,
+            physicalKey: PhysicalKeyboardKey.shiftLeft,
+            timeStamp: Duration.zero,
+          ),
+        );
       } finally {
         await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
         await tester.pump();
