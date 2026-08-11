@@ -1130,46 +1130,78 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     widget.consumeTerminalKeyModifiers?.call();
   }
 
-  ({int deletedCount, String appendedText, int deleteCursorOffset})
+  ({
+    String currentText,
+    int? cursorOffset,
+    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
+  })
   _synchronizeAndroidHardwareBackspace({
+    required String currentText,
+    required int? cursorOffset,
     required ({int deletedCount, String appendedText, int deleteCursorOffset})
     delta,
   }) {
     if (_pendingAndroidHardwareBackspaces == 0) {
-      return delta;
+      return (
+        currentText: currentText,
+        cursorOffset: cursorOffset,
+        delta: delta,
+      );
     }
-    if (delta.deletedCount == 0) {
-      if (delta.appendedText.isNotEmpty) {
-        _pendingAndroidHardwareBackspaces = 0;
-      }
-      return delta;
-    }
-    if (delta.deleteCursorOffset != _lastSentCursorOffset) {
-      _pendingAndroidHardwareBackspaces = 0;
-      return delta;
+    if (delta.deletedCount == 0 && delta.appendedText.isEmpty) {
+      return (
+        currentText: currentText,
+        cursorOffset: cursorOffset,
+        delta: delta,
+      );
     }
 
-    final suppressedCount =
-        delta.deletedCount < _pendingAndroidHardwareBackspaces
-        ? delta.deletedCount
-        : _pendingAndroidHardwareBackspaces;
-    _pendingAndroidHardwareBackspaces -= suppressedCount;
     final previousGraphemes = _lastSentText.characters.toList(growable: true);
     final deletionEnd = _clampTextOffset(
-      delta.deleteCursorOffset,
+      _lastSentCursorOffset,
       previousGraphemes.length,
     );
+    final suppressedCount = _pendingAndroidHardwareBackspaces < deletionEnd
+        ? _pendingAndroidHardwareBackspaces
+        : deletionEnd;
     final deletionStart = _clampTextOffset(
       deletionEnd - suppressedCount,
+      deletionEnd,
+    );
+    final deletedGraphemes = previousGraphemes.sublist(
+      deletionStart,
       deletionEnd,
     );
     previousGraphemes.removeRange(deletionStart, deletionEnd);
     _lastSentText = previousGraphemes.join();
     _lastSentCursorOffset = deletionStart;
+    _pendingAndroidHardwareBackspaces = 0;
+
+    final currentGraphemes = currentText.characters.toList(growable: true);
+    var normalizedCursorOffset = cursorOffset;
+    if (delta.deletedCount == 0 &&
+        deletionEnd <= currentGraphemes.length &&
+        listEquals(
+          currentGraphemes.sublist(deletionStart, deletionEnd),
+          deletedGraphemes,
+        )) {
+      currentGraphemes.removeRange(deletionStart, deletionEnd);
+      if (normalizedCursorOffset != null &&
+          normalizedCursorOffset > deletionStart) {
+        normalizedCursorOffset = _clampTextOffset(
+          normalizedCursorOffset - suppressedCount,
+          currentGraphemes.length,
+        );
+      }
+    }
+    final normalizedCurrentText = currentGraphemes.join();
     return (
-      deletedCount: delta.deletedCount - suppressedCount,
-      appendedText: delta.appendedText,
-      deleteCursorOffset: delta.deleteCursorOffset - suppressedCount,
+      currentText: normalizedCurrentText,
+      cursorOffset: normalizedCursorOffset,
+      delta: _computeTextDelta(
+        normalizedCurrentText,
+        cursorOffsetHint: normalizedCursorOffset,
+      ),
     );
   }
 
@@ -3061,14 +3093,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return false;
     }
 
-    delta = _synchronizeAndroidHardwareBackspace(delta: delta);
+    final synchronizedBackspace = _synchronizeAndroidHardwareBackspace(
+      currentText: currentText,
+      cursorOffset: targetCursorOffset,
+      delta: delta,
+    );
+    delta = synchronizedBackspace.delta;
     if (delta.deletedCount > 0) {
       _notifyUserInput();
     }
-    _sendInputDelta(currentText, delta);
-    if (targetCursorOffset != null &&
-        targetCursorOffset != _lastSentCursorOffset) {
-      _moveTerminalCursorTo(targetCursorOffset);
+    _sendInputDelta(synchronizedBackspace.currentText, delta);
+    if (synchronizedBackspace.cursorOffset != null &&
+        synchronizedBackspace.cursorOffset != _lastSentCursorOffset) {
+      _moveTerminalCursorTo(synchronizedBackspace.cursorOffset!);
     }
     _trimLeadingSuggestionSpaceAfterDelete = true;
     _trimLeadingSwipeSpaceAfterBufferClear = currentText.isEmpty;
@@ -3430,9 +3467,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         normalizedCurrentText,
         cursorOffsetHint: normalizedTargetCursorOffset,
       );
-      final effectiveCurrentText =
+      var effectiveCurrentText =
           deleteResetContinuation?.currentText ?? normalizedCurrentText;
-      final effectiveTargetCursorOffset =
+      var effectiveTargetCursorOffset =
           deleteResetContinuation?.cursorOffset ?? normalizedTargetCursorOffset;
       final deltaPreviousText =
           deleteResetContinuation?.previousText ?? _lastSentText;
@@ -3446,7 +3483,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
       );
       if (deleteResetContinuation == null) {
-        delta = _synchronizeAndroidHardwareBackspace(delta: delta);
+        final synchronizedBackspace = _synchronizeAndroidHardwareBackspace(
+          currentText: effectiveCurrentText,
+          cursorOffset: effectiveTargetCursorOffset,
+          delta: delta,
+        );
+        effectiveCurrentText = synchronizedBackspace.currentText;
+        effectiveTargetCursorOffset = synchronizedBackspace.cursorOffset;
+        delta = synchronizedBackspace.delta;
       } else {
         _pendingAndroidHardwareBackspaces = 0;
       }
