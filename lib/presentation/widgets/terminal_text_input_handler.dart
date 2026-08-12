@@ -18,6 +18,9 @@ const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
 final _splitLeadingTokenCandidatePattern = RegExp(r'^\s*\S\s+\S');
 const _enterCommitNewlineSequences = <String>['\r\n', '\n', '\r'];
+const _androidTerminalImeKeyChannel = MethodChannel(
+  'xyz.depollsoft.monkeyssh/terminal_ime_keys',
+);
 
 bool _isAsciiLetterOrDigitCodeUnit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
@@ -70,6 +73,120 @@ DateTime Function()? _modifierChordClockOverride;
 
 DateTime _readModifierChordClock() =>
     (_modifierChordClockOverride ?? DateTime.now).call();
+
+class _AndroidTerminalImeKeyBridge {
+  static _TerminalTextInputHandlerState? _state;
+  static bool _handlerInstalled = false;
+  static final List<({TerminalKey key, TerminalKeyEventType type})>
+  _pendingPhysicalEvents = <({TerminalKey key, TerminalKeyEventType type})>[];
+
+  static void attach() {
+    if (_handlerInstalled) {
+      return;
+    }
+    _handlerInstalled = true;
+    _androidTerminalImeKeyChannel.setMethodCallHandler(_handleMethodCall);
+  }
+
+  static void detach(_TerminalTextInputHandlerState state) {
+    if (identical(_state, state)) {
+      _state = null;
+      _pendingPhysicalEvents.clear();
+    }
+  }
+
+  static void setEnabled(
+    _TerminalTextInputHandlerState state, {
+    required bool enabled,
+  }) {
+    if (enabled) {
+      _state = state;
+    } else if (identical(_state, state)) {
+      _state = null;
+      _pendingPhysicalEvents.clear();
+    } else {
+      return;
+    }
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    unawaited(_setEnabled(enabled));
+  }
+
+  static Future<void> _setEnabled(bool enabled) async {
+    try {
+      await _androidTerminalImeKeyChannel.invokeMethod<void>(
+        'setInterceptionEnabled',
+        enabled,
+      );
+    } on MissingPluginException {
+      DiagnosticsLogService.instance.warning(
+        'terminal.keyboard',
+        'android_ime_key_bridge_unavailable',
+      );
+    }
+  }
+
+  static Future<Object?> _handleMethodCall(MethodCall call) async {
+    if (call.method == 'getInterceptionEnabled') {
+      return _state != null;
+    }
+    if (call.method != 'onVirtualKeyEvent' &&
+        call.method != 'onPhysicalKeyEvent') {
+      throw MissingPluginException('Unsupported terminal IME key method');
+    }
+    final arguments = call.arguments;
+    if (arguments is! Map<Object?, Object?>) {
+      return null;
+    }
+    final key = switch (arguments['key']) {
+      'shiftLeft' => TerminalKey.shiftLeft,
+      'shiftRight' => TerminalKey.shiftRight,
+      'backspace' => TerminalKey.backspace,
+      _ => null,
+    };
+    final type = switch (arguments['type']) {
+      'press' => TerminalKeyEventType.press,
+      'repeat' => TerminalKeyEventType.repeat,
+      'release' => TerminalKeyEventType.release,
+      _ => null,
+    };
+    if (key == null || type == null) {
+      return null;
+    }
+    if (call.method == 'onPhysicalKeyEvent') {
+      _recordPhysicalEvent(key, type);
+      return null;
+    }
+    _state?._handleAndroidImeKey(key, type);
+    return null;
+  }
+
+  static void _recordPhysicalEvent(TerminalKey key, TerminalKeyEventType type) {
+    _pendingPhysicalEvents.add((key: key, type: type));
+    if (_pendingPhysicalEvents.length > 32) {
+      _pendingPhysicalEvents.removeAt(0);
+    }
+  }
+
+  static bool consumePhysicalEvent(TerminalKey key, TerminalKeyEventType type) {
+    final index = _pendingPhysicalEvents.indexWhere(
+      (event) => event.key == key && event.type == type,
+    );
+    if (index < 0) {
+      return false;
+    }
+    _pendingPhysicalEvents.removeAt(index);
+    return true;
+  }
+
+  static void debugRecordPhysicalEvent(
+    TerminalKey key,
+    TerminalKeyEventType type,
+  ) {
+    _recordPhysicalEvent(key, type);
+  }
+}
 
 /// Overrides the modifier chord clock in tests.
 @visibleForTesting
@@ -185,6 +302,21 @@ class TerminalTextInputHandlerController extends ChangeNotifier {
   /// Resets stale IME context after remote terminal output returns to a prompt.
   void handleExternalTerminalOutput() {
     _state?._handleExternalTerminalOutput();
+  }
+
+  /// Dispatches a native Android IME key event in tests.
+  @visibleForTesting
+  void debugHandleAndroidImeKey(TerminalKey key, TerminalKeyEventType type) {
+    _state?._handleAndroidImeKey(key, type);
+  }
+
+  /// Records a native Android physical-key source marker in tests.
+  @visibleForTesting
+  void debugRecordAndroidPhysicalKey(
+    TerminalKey key,
+    TerminalKeyEventType type,
+  ) {
+    _AndroidTerminalImeKeyBridge.debugRecordPhysicalEvent(key, type);
   }
 }
 
@@ -336,6 +468,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   Timer? _hardwareKeyRepeatStartTimer;
   Timer? _hardwareKeyRepeatTimer;
   LogicalKeyboardKey? _hardwareRepeatingLogicalKey;
+  int _pendingAndroidHardwareBackspaces = 0;
+  ({bool raw, bool ctrl, bool alt, bool shift})? _activeAndroidImeBackspace;
   final Set<LogicalKeyboardKey> _textInputHandledHardwareKeys =
       <LogicalKeyboardKey>{};
   ({
@@ -370,6 +504,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void initState() {
     super.initState();
+    _AndroidTerminalImeKeyBridge.attach();
     widget.focusNode.addListener(_onFocusChange);
     widget.controller?._attach(this);
     if (!widget.manageFocus) {
@@ -383,6 +518,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (widget.focusNode != oldWidget.focusNode) {
       oldWidget.focusNode.removeListener(_onFocusChange);
       widget.focusNode.addListener(_onFocusChange);
+      _onFocusChange();
     }
     if (widget.controller != oldWidget.controller) {
       oldWidget.controller?._detach(this);
@@ -434,6 +570,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _touchPointersMovedBeyondTapSlop.clear();
     _touchPointersPressedBeyondLongPressTimeout.clear();
     _closeInputConnectionIfNeeded();
+    _AndroidTerminalImeKeyBridge.detach(this);
     super.dispose();
   }
 
@@ -754,6 +891,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _hardwareRepeatingLogicalKey = null;
     _hardwareRepeatInput = null;
     if (logicalKey == null) {
+      _activeAndroidImeBackspace = null;
       _textInputHandledHardwareKeys.clear();
     }
   }
@@ -767,8 +905,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return false;
     }
 
-    final isVirtual = _isVirtualTextInputKeyEvent(event);
-    if (!isVirtual) {
+    if (!_isVirtualTextInputKeyEvent(event)) {
       return false;
     }
 
@@ -852,8 +989,221 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
   }
 
+  bool _isTerminalModifierKey(TerminalKey key) => switch (key) {
+    TerminalKey.controlLeft ||
+    TerminalKey.controlRight ||
+    TerminalKey.control ||
+    TerminalKey.shiftLeft ||
+    TerminalKey.shiftRight ||
+    TerminalKey.shift ||
+    TerminalKey.altLeft ||
+    TerminalKey.altRight ||
+    TerminalKey.alt ||
+    TerminalKey.metaLeft ||
+    TerminalKey.metaRight ||
+    TerminalKey.meta => true,
+    _ => false,
+  };
+
   bool _isVirtualTextInputKeyEvent(KeyEvent event) =>
       event.physicalKey.usbHidUsage >= LogicalKeyboardKey.startOfPlatformPlanes;
+
+  bool _isAndroidImeFallbackControlKey(
+    TerminalKey key, {
+    required bool isNativePhysicalEvent,
+    required bool hasShortcutModifier,
+  }) {
+    if (kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android ||
+        isNativePhysicalEvent ||
+        hasShortcutModifier ||
+        !_isInputConnectionShown ||
+        View.of(context).viewInsets.bottom <= 0) {
+      return false;
+    }
+    return key == TerminalKey.shiftLeft ||
+        key == TerminalKey.shiftRight ||
+        key == TerminalKey.backspace;
+  }
+
+  void _handleAndroidImeKey(TerminalKey key, TerminalKeyEventType type) {
+    if (widget.readOnly ||
+        !widget.focusNode.hasFocus ||
+        !_isInputConnectionShown) {
+      _activeAndroidImeBackspace = null;
+      return;
+    }
+    if (key == TerminalKey.shiftLeft || key == TerminalKey.shiftRight) {
+      return;
+    }
+    if (key != TerminalKey.backspace) {
+      return;
+    }
+    _handleAndroidImeBackspace(
+      type,
+      toolbarModifiers: widget.resolveTerminalKeyModifiers?.call(),
+    );
+  }
+
+  void _handleAndroidImeBackspace(
+    TerminalKeyEventType type, {
+    required ({bool ctrl, bool alt, bool shift})? toolbarModifiers,
+  }) {
+    final activeBackspace = _activeAndroidImeBackspace;
+    if (type == TerminalKeyEventType.repeat && activeBackspace != null) {
+      if (activeBackspace.raw) {
+        _notifyUserInput();
+        widget.terminal.textInput('\x7f');
+        _pendingAndroidHardwareBackspaces++;
+      } else if (_sendHardwareTerminalKey(
+        TerminalKey.backspace,
+        ctrl: activeBackspace.ctrl,
+        alt: activeBackspace.alt,
+        shift: activeBackspace.shift,
+        meta: false,
+        hasShortcutModifier: false,
+        type: TerminalKeyEventType.repeat,
+      )) {
+        _pendingAndroidHardwareBackspaces++;
+      }
+      return;
+    }
+    if (type == TerminalKeyEventType.release && activeBackspace != null) {
+      if (!activeBackspace.raw) {
+        _sendHardwareTerminalKey(
+          TerminalKey.backspace,
+          ctrl: activeBackspace.ctrl,
+          alt: activeBackspace.alt,
+          shift: activeBackspace.shift,
+          meta: false,
+          hasShortcutModifier: false,
+          type: TerminalKeyEventType.release,
+        );
+      }
+      _activeAndroidImeBackspace = null;
+      return;
+    }
+    if (type != TerminalKeyEventType.press) {
+      return;
+    }
+
+    final hasToolbarModifier =
+        toolbarModifiers != null &&
+        (toolbarModifiers.ctrl ||
+            toolbarModifiers.alt ||
+            toolbarModifiers.shift);
+    if (!hasToolbarModifier) {
+      _activeAndroidImeBackspace = (
+        raw: true,
+        ctrl: false,
+        alt: false,
+        shift: false,
+      );
+      _notifyUserInput();
+      // Some Android IMEs omit the editing-value deletion after emitting a
+      // standard-HID Backspace. Send DEL immediately, bypassing Kitty mode,
+      // and only use a later IME deletion to synchronize local state.
+      widget.terminal.textInput('\x7f');
+      _pendingAndroidHardwareBackspaces++;
+      return;
+    }
+
+    _activeAndroidImeBackspace = (
+      raw: false,
+      ctrl: toolbarModifiers.ctrl,
+      alt: toolbarModifiers.alt,
+      shift: toolbarModifiers.shift,
+    );
+    final handled = _sendHardwareTerminalKey(
+      TerminalKey.backspace,
+      ctrl: toolbarModifiers.ctrl,
+      alt: toolbarModifiers.alt,
+      shift: toolbarModifiers.shift,
+      meta: false,
+      hasShortcutModifier: false,
+    );
+    if (!handled) {
+      _activeAndroidImeBackspace = null;
+      return;
+    }
+    _pendingAndroidHardwareBackspaces++;
+    widget.consumeTerminalKeyModifiers?.call();
+  }
+
+  ({
+    String currentText,
+    int? cursorOffset,
+    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
+  })
+  _synchronizeAndroidHardwareBackspace({
+    required String currentText,
+    required int? cursorOffset,
+    required ({int deletedCount, String appendedText, int deleteCursorOffset})
+    delta,
+  }) {
+    if (_pendingAndroidHardwareBackspaces == 0) {
+      return (
+        currentText: currentText,
+        cursorOffset: cursorOffset,
+        delta: delta,
+      );
+    }
+    if (delta.deletedCount == 0 && delta.appendedText.isEmpty) {
+      return (
+        currentText: currentText,
+        cursorOffset: cursorOffset,
+        delta: delta,
+      );
+    }
+
+    final previousGraphemes = _lastSentText.characters.toList(growable: true);
+    final deletionEnd = _clampTextOffset(
+      _lastSentCursorOffset,
+      previousGraphemes.length,
+    );
+    final suppressedCount = _pendingAndroidHardwareBackspaces < deletionEnd
+        ? _pendingAndroidHardwareBackspaces
+        : deletionEnd;
+    final deletionStart = _clampTextOffset(
+      deletionEnd - suppressedCount,
+      deletionEnd,
+    );
+    final deletedGraphemes = previousGraphemes.sublist(
+      deletionStart,
+      deletionEnd,
+    );
+    previousGraphemes.removeRange(deletionStart, deletionEnd);
+    _lastSentText = previousGraphemes.join();
+    _lastSentCursorOffset = deletionStart;
+    _pendingAndroidHardwareBackspaces = 0;
+
+    final currentGraphemes = currentText.characters.toList(growable: true);
+    var normalizedCursorOffset = cursorOffset;
+    if (delta.deletedCount == 0 &&
+        deletionEnd <= currentGraphemes.length &&
+        listEquals(
+          currentGraphemes.sublist(deletionStart, deletionEnd),
+          deletedGraphemes,
+        )) {
+      currentGraphemes.removeRange(deletionStart, deletionEnd);
+      if (normalizedCursorOffset != null &&
+          normalizedCursorOffset > deletionStart) {
+        normalizedCursorOffset = _clampTextOffset(
+          normalizedCursorOffset - suppressedCount,
+          currentGraphemes.length,
+        );
+      }
+    }
+    final normalizedCurrentText = currentGraphemes.join();
+    return (
+      currentText: normalizedCurrentText,
+      cursorOffset: normalizedCursorOffset,
+      delta: _computeTextDelta(
+        normalizedCurrentText,
+        cursorOffsetHint: normalizedCursorOffset,
+      ),
+    );
+  }
 
   void _trackHandledHardwareCursorKey(
     TerminalKey key, {
@@ -914,6 +1264,22 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         hardwareKeyboard.isControlPressed ||
         hardwareKeyboard.isAltPressed ||
         hardwareKeyboard.isMetaPressed;
+
+    final key = keyToTerminalKey(event.logicalKey);
+    if (key == null) {
+      return KeyEventResult.ignored;
+    }
+    final type = _terminalKeyEventType(event);
+    final isNativePhysicalEvent =
+        _AndroidTerminalImeKeyBridge.consumePhysicalEvent(key, type);
+    if (_isAndroidImeFallbackControlKey(
+      key,
+      isNativePhysicalEvent: isNativePhysicalEvent,
+      hasShortcutModifier: hasShortcutModifier,
+    )) {
+      _handleAndroidImeKey(key, type);
+      return KeyEventResult.skipRemainingHandlers;
+    }
     if (!_currentEditingState.composing.isCollapsed && !hasShortcutModifier) {
       return KeyEventResult.skipRemainingHandlers;
     }
@@ -925,11 +1291,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
     }
 
-    final key = keyToTerminalKey(event.logicalKey);
-    if (key == null) {
-      return KeyEventResult.ignored;
-    }
-
     if (_shouldLetTextInputHandleHardwareKey(
       event,
       key,
@@ -939,6 +1300,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final toolbarModifiers = widget.resolveTerminalKeyModifiers?.call();
+    final hasToolbarModifier =
+        toolbarModifiers != null &&
+        (toolbarModifiers.ctrl ||
+            toolbarModifiers.alt ||
+            toolbarModifiers.shift);
     final isEnter = key == TerminalKey.enter || key == TerminalKey.numpadEnter;
     final isVirtual = _isVirtualTextInputKeyEvent(event);
     // Toolbar modifiers are not mirrored into HardwareKeyboard. Merge them so
@@ -957,7 +1323,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         ? ((toolbarModifiers?.shift ?? false) || (physicalShift && !isVirtual))
         : (physicalShift || (toolbarModifiers?.shift ?? false));
     final meta = HardwareKeyboard.instance.isMetaPressed;
-    final type = _terminalKeyEventType(event);
     final useCustomRepeat =
         _shouldUseCustomHardwareKeyRepeat &&
         _isRepeatableHardwareTerminalKey(key);
@@ -977,18 +1342,17 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     );
 
     if (handled &&
-        isEnter &&
         type == TerminalKeyEventType.press &&
-        toolbarModifiers != null &&
-        (toolbarModifiers.ctrl ||
-            toolbarModifiers.alt ||
-            toolbarModifiers.shift)) {
+        hasToolbarModifier &&
+        !_isTerminalModifierKey(key)) {
       widget.consumeTerminalKeyModifiers?.call();
-      // Soft keyboards often also deliver newline via IME after the key event.
-      if (_pendingEnterActionSuppressions < 1) {
-        _pendingEnterActionSuppressions = 1;
+      if (isEnter) {
+        // Soft keyboards often also deliver newline via IME after the key event.
+        if (_pendingEnterActionSuppressions < 1) {
+          _pendingEnterActionSuppressions = 1;
+        }
+        _pendingPerformedEnterText = _lastSentText;
       }
-      _pendingPerformedEnterText = _lastSentText;
     }
 
     if (handled && event is KeyDownEvent && useCustomRepeat) {
@@ -1130,6 +1494,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _stopHardwareKeyRepeat();
       _closeInputConnectionIfNeeded();
     }
+    _reconcileAndroidImeKeyBridge();
   }
 
   // -- Input connection management --
@@ -1151,7 +1516,18 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return;
     }
     _isInputConnectionShown = shown;
+    _reconcileAndroidImeKeyBridge();
     widget.controller?._notifyKeyboardVisibilityChanged();
+  }
+
+  void _reconcileAndroidImeKeyBridge() {
+    _AndroidTerminalImeKeyBridge.setEnabled(
+      this,
+      enabled:
+          _isInputConnectionShown &&
+          widget.focusNode.hasFocus &&
+          !widget.readOnly,
+    );
   }
 
   void _openInputConnection({bool show = true}) {
@@ -1185,6 +1561,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _clearPendingComposingEnterAction();
       _pendingPerformedEnterText = null;
       _pendingEnterActionSuppressions = 0;
+      _pendingAndroidHardwareBackspaces = 0;
+      _activeAndroidImeBackspace = null;
       _currentEditingState = _initEditingState.copyWith();
       _connection!.setEditingState(_initEditingState);
     }
@@ -1238,6 +1616,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _clearPendingComposingEnterAction();
     _pendingPerformedEnterText = null;
     _pendingEnterActionSuppressions = 0;
+    _pendingAndroidHardwareBackspaces = 0;
+    _activeAndroidImeBackspace = null;
     _currentEditingState = _initEditingState.copyWith();
   }
 
@@ -1630,6 +2010,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _pendingPerformedEnterText = null;
     }
     _pendingEnterActionSuppressions = pendingEnterSuppressions;
+    _pendingAndroidHardwareBackspaces = 0;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _clearImeAfterNextTouchCursorMove = false;
@@ -2704,7 +3085,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       currentText,
       value,
     );
-    final delta = _computeTextDelta(
+    var delta = _computeTextDelta(
       currentText,
       cursorOffsetHint: targetCursorOffset,
     );
@@ -2712,11 +3093,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return false;
     }
 
-    _notifyUserInput();
-    _sendInputDelta(currentText, delta);
-    if (targetCursorOffset != null &&
-        targetCursorOffset != _lastSentCursorOffset) {
-      _moveTerminalCursorTo(targetCursorOffset);
+    final synchronizedBackspace = _synchronizeAndroidHardwareBackspace(
+      currentText: currentText,
+      cursorOffset: targetCursorOffset,
+      delta: delta,
+    );
+    delta = synchronizedBackspace.delta;
+    if (delta.deletedCount > 0) {
+      _notifyUserInput();
+    }
+    _sendInputDelta(synchronizedBackspace.currentText, delta);
+    if (synchronizedBackspace.cursorOffset != null &&
+        synchronizedBackspace.cursorOffset != _lastSentCursorOffset) {
+      _moveTerminalCursorTo(synchronizedBackspace.cursorOffset!);
     }
     _trimLeadingSuggestionSpaceAfterDelete = true;
     _trimLeadingSwipeSpaceAfterBufferClear = currentText.isEmpty;
@@ -2971,14 +3360,18 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (_editingPrefixLength(value.text) < _initEditingState.text.length) {
         final deletedCount = _textLengthInGraphemes(_lastSentText);
         final clearedBufferedInput = deletedCount > 0;
-        _notifyUserInput();
-        _moveTerminalCursorTo(deletedCount);
-        if (clearedBufferedInput) {
-          for (var index = 0; index < deletedCount; index++) {
+        if (_pendingAndroidHardwareBackspaces > 0) {
+          _pendingAndroidHardwareBackspaces--;
+        } else {
+          _notifyUserInput();
+          _moveTerminalCursorTo(deletedCount);
+          if (clearedBufferedInput) {
+            for (var index = 0; index < deletedCount; index++) {
+              widget.terminal.keyInput(TerminalKey.backspace);
+            }
+          } else {
             widget.terminal.keyInput(TerminalKey.backspace);
           }
-        } else {
-          widget.terminal.keyInput(TerminalKey.backspace);
         }
         _sawImeComposition = false;
         _resetCommittedInputState(
@@ -3074,21 +3467,33 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         normalizedCurrentText,
         cursorOffsetHint: normalizedTargetCursorOffset,
       );
-      final effectiveCurrentText =
+      var effectiveCurrentText =
           deleteResetContinuation?.currentText ?? normalizedCurrentText;
-      final effectiveTargetCursorOffset =
+      var effectiveTargetCursorOffset =
           deleteResetContinuation?.cursorOffset ?? normalizedTargetCursorOffset;
       final deltaPreviousText =
           deleteResetContinuation?.previousText ?? _lastSentText;
       final deltaPreviousCursorOffset =
           deleteResetContinuation?.previousCursorOffset ??
           _lastSentCursorOffset;
-      final delta = _computeTextDelta(
+      var delta = _computeTextDelta(
         effectiveCurrentText,
         cursorOffsetHint: effectiveTargetCursorOffset,
         previousTextOverride: deleteResetContinuation?.previousText,
         lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
       );
+      if (deleteResetContinuation == null) {
+        final synchronizedBackspace = _synchronizeAndroidHardwareBackspace(
+          currentText: effectiveCurrentText,
+          cursorOffset: effectiveTargetCursorOffset,
+          delta: delta,
+        );
+        effectiveCurrentText = synchronizedBackspace.currentText;
+        effectiveTargetCursorOffset = synchronizedBackspace.cursorOffset;
+        delta = synchronizedBackspace.delta;
+      } else {
+        _pendingAndroidHardwareBackspaces = 0;
+      }
       final pendingEnterActionOwnedBeforeReview =
           revision == _pendingComposingEnterRevision;
       final hadActiveToolbarModifier =
@@ -3425,6 +3830,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void connectionClosed() {
     _connection = null;
     _isInputConnectionShown = false;
+    _AndroidTerminalImeKeyBridge.setEnabled(this, enabled: false);
     _stopHardwareKeyRepeat();
     _cancelDeferredTrailingBackspaceImeClear();
     _invalidatePendingEditingUpdates();
@@ -3442,6 +3848,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _allowSplitLeadingTokenNormalization = false;
     _modifierChordResetTime = null;
     _pendingEnterActionSuppressions = 0;
+    _pendingAndroidHardwareBackspaces = 0;
+    _activeAndroidImeBackspace = null;
     _currentEditingState = _initEditingState.copyWith();
   }
 
