@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.view.KeyCharacterMap
+import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -20,6 +22,8 @@ class MainActivity : FlutterFragmentActivity() {
         private const val MAX_CLIPBOARD_CONTENT_URI_BYTES = 512 * 1024
         private const val MONKEYSSH_TRANSFER_MIME_TYPE = "application/x-monkeyssh-transfer"
         private const val MONKEYSSH_TRANSFER_EXTENSION = ".monkeysshx"
+        private const val TERMINAL_IME_KEY_CHANNEL =
+            "xyz.depollsoft.monkeyssh/terminal_ime_keys"
     }
 
     private val clipboardChannel = "xyz.depollsoft.monkeyssh/clipboard_content"
@@ -27,6 +31,8 @@ class MainActivity : FlutterFragmentActivity() {
     private val maxTransferPayloadBytes = 10 * 1024 * 1024
     private var clipboardMethodChannel: MethodChannel? = null
     private var transferMethodChannel: MethodChannel? = null
+    private var terminalImeKeyMethodChannel: MethodChannel? = null
+    private var terminalImeKeyInterceptionEnabled = false
     private var pendingTransferPayload: String? = null
     private var hasRequestedNotificationPermission = false
 
@@ -99,7 +105,96 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
 
+        terminalImeKeyMethodChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            TERMINAL_IME_KEY_CHANNEL,
+        )
+        terminalImeKeyMethodChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "setInterceptionEnabled" -> {
+                    terminalImeKeyInterceptionEnabled = call.arguments == true
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+        terminalImeKeyMethodChannel?.invokeMethod(
+            "getInterceptionEnabled",
+            null,
+            object : MethodChannel.Result {
+                override fun success(result: Any?) {
+                    terminalImeKeyInterceptionEnabled = result == true
+                }
+
+                override fun error(
+                    errorCode: String,
+                    errorMessage: String?,
+                    errorDetails: Any?,
+                ) {
+                    terminalImeKeyInterceptionEnabled = false
+                }
+
+                override fun notImplemented() {
+                    terminalImeKeyInterceptionEnabled = false
+                }
+            },
+        )
+
         notifyIncomingTransferPayload()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val channel = terminalImeKeyMethodChannel
+        val key = terminalImeKeyName(event)
+        val type = when {
+            event.action == KeyEvent.ACTION_UP -> "release"
+            event.action == KeyEvent.ACTION_DOWN && event.repeatCount > 0 -> "repeat"
+            event.action == KeyEvent.ACTION_DOWN -> "press"
+            else -> null
+        }
+        if (
+            terminalImeKeyInterceptionEnabled &&
+            channel != null &&
+            key != null &&
+            type != null
+        ) {
+            if (isVirtualKeyboardEvent(event)) {
+                channel.invokeMethod(
+                    "onVirtualKeyEvent",
+                    mapOf("key" to key, "type" to type),
+                )
+                return true
+            }
+            channel.invokeMethod(
+                "onPhysicalKeyEvent",
+                mapOf("key" to key, "type" to type),
+                object : MethodChannel.Result {
+                    override fun success(result: Any?) {
+                        redispatchPhysicalKeyEvent(event)
+                    }
+
+                    override fun error(
+                        errorCode: String,
+                        errorMessage: String?,
+                        errorDetails: Any?,
+                    ) {
+                        redispatchPhysicalKeyEvent(event)
+                    }
+
+                    override fun notImplemented() {
+                        redispatchPhysicalKeyEvent(event)
+                    }
+                },
+            )
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun redispatchPhysicalKeyEvent(event: KeyEvent) {
+        runOnUiThread {
+            super.dispatchKeyEvent(event)
+        }
     }
 
     override fun onResume() {
@@ -120,8 +215,22 @@ class MainActivity : FlutterFragmentActivity() {
         clipboardMethodChannel = null
         transferMethodChannel?.setMethodCallHandler(null)
         transferMethodChannel = null
+        terminalImeKeyInterceptionEnabled = false
+        terminalImeKeyMethodChannel?.setMethodCallHandler(null)
+        terminalImeKeyMethodChannel = null
         super.onDestroy()
     }
+
+    private fun terminalImeKeyName(event: KeyEvent): String? = when (event.keyCode) {
+        KeyEvent.KEYCODE_SHIFT_LEFT -> "shiftLeft"
+        KeyEvent.KEYCODE_SHIFT_RIGHT -> "shiftRight"
+        KeyEvent.KEYCODE_DEL -> "backspace"
+        else -> null
+    }
+
+    private fun isVirtualKeyboardEvent(event: KeyEvent): Boolean =
+        event.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD ||
+            event.device?.isVirtual == true
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
