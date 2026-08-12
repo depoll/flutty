@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/agent_launch_preset.dart';
 import '../models/terminal_backend.dart';
+import '../models/terminal_progress.dart';
 import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
 import 'diagnostics_log_service.dart';
@@ -2425,8 +2426,35 @@ TmuxWindow? _windowFromJson(Object? value) {
     terminalReportsMouseWheel: terminalReportsMouseWheel,
     terminalMouseReportSgr: terminalMouseReportSgr,
     terminalBracketedPasteMode: terminalBracketedPasteMode,
+    terminalProgress: _terminalProgressFromJson(value['terminalProgress']),
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,
   );
+}
+
+TerminalProgress? _terminalProgressFromJson(Object? value) {
+  if (value is! Map<String, Object?>) {
+    return null;
+  }
+  final state = switch (value['state']) {
+    1 => TerminalProgressState.normal,
+    2 => TerminalProgressState.error,
+    3 => TerminalProgressState.indeterminate,
+    4 => TerminalProgressState.pausedOrWarning,
+    _ => null,
+  };
+  if (state == null) {
+    return null;
+  }
+  final rawPercentage = value['percentage'];
+  if (rawPercentage != null &&
+      (rawPercentage is! int || rawPercentage < 0 || rawPercentage > 100)) {
+    return null;
+  }
+  final percentage = rawPercentage as int?;
+  if (state == TerminalProgressState.normal && percentage == null) {
+    return null;
+  }
+  return TerminalProgress(state: state, percentage: percentage);
 }
 
 Map<String, bool> _privateModesFromJson(Object? value) {

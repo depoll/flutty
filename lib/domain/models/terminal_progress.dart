@@ -5,13 +5,13 @@ enum TerminalProgressState {
   /// A normal determinate progress update.
   normal,
 
-  /// A determinate progress update in an error state.
+  /// A progress update in an error state, optionally with a percentage.
   error,
 
   /// Progress is active but cannot be quantified.
   indeterminate,
 
-  /// A determinate progress update in a paused/warning state.
+  /// A progress update in a paused/warning state, optionally with a percentage.
   ///
   /// ConEmu calls OSC 9;4 state 4 paused; Windows Terminal calls it warning.
   pausedOrWarning,
@@ -26,7 +26,7 @@ class TerminalProgress {
   /// The visual state requested by the remote program.
   final TerminalProgressState state;
 
-  /// The reported whole-number percentage, or `null` when indeterminate.
+  /// The reported whole-number percentage, or `null` when none was provided.
   final int? percentage;
 
   /// Progress normalized for Flutter progress indicators.
