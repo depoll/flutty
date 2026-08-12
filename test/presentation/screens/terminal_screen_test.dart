@@ -21,6 +21,7 @@ import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/terminal_progress.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
@@ -1424,6 +1425,7 @@ void main() {
       ThemeMode themeMode = ThemeMode.light,
       ActiveSessionsNotifier? activeSessions,
       TmuxService? tmuxService,
+      MonkeyMuxService? monkeyMuxService,
       ShellCompletionService? shellCompletionService,
       AndroidDeviceDebugPlatform? deviceDebugPlatform,
       RemoteAdbCommandRunner? remoteAdbCommandRunner,
@@ -1446,6 +1448,8 @@ void main() {
             ),
             if (tmuxService != null)
               tmuxServiceProvider.overrideWithValue(tmuxService),
+            if (monkeyMuxService != null)
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             if (shellCompletionService != null)
               shellCompletionServiceProvider.overrideWithValue(
                 shellCompletionService,
@@ -7208,6 +7212,380 @@ void main() {
         expect(tester.takeException(), isNull);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'shows per-window MonkeyMux progress in expanded and collapsed bars',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1100, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        const windows = <TmuxWindow>[
+          TmuxWindow(
+            index: 0,
+            id: '@1',
+            name: 'build',
+            isActive: true,
+            terminalProgress: TerminalProgress(
+              state: TerminalProgressState.error,
+              percentage: 45,
+            ),
+          ),
+          TmuxWindow(
+            index: 1,
+            id: '@2',
+            name: 'tests',
+            isActive: false,
+            terminalProgress: TerminalProgress(
+              state: TerminalProgressState.indeterminate,
+            ),
+          ),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: 'work',
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(session, 'work'),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, 'work'),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, 'work'),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await pumpScreen(
+          tester,
+          tmuxService: tmuxService,
+          monkeyMuxService: monkeyMuxService,
+        );
+        session.terminal!.write('\x1b]9;4;2;45\x07');
+        await tester.pump(const Duration(milliseconds: 100));
+
+        final activeCollapsed = find.byKey(
+          const ValueKey('monkeymux-sidebar-progress-0'),
+        );
+        final inactiveCollapsed = find.byKey(
+          const ValueKey('monkeymux-sidebar-progress-1'),
+        );
+        expect(activeCollapsed, findsOneWidget);
+        expect(inactiveCollapsed, findsOneWidget);
+        final collapsedButtons = <Finder>[
+          find.byKey(const ValueKey('tmux-sidebar-window-0')),
+          find.byKey(const ValueKey('tmux-sidebar-window-1')),
+        ];
+        final collapsedIndicators = <Finder>[
+          activeCollapsed,
+          inactiveCollapsed,
+        ];
+        for (var index = 0; index < collapsedIndicators.length; index++) {
+          final buttonRect = tester.getRect(collapsedButtons[index]);
+          final indicatorRect = tester.getRect(collapsedIndicators[index]);
+          expect(indicatorRect.left, greaterThanOrEqualTo(buttonRect.left));
+          expect(indicatorRect.right, lessThanOrEqualTo(buttonRect.right));
+          expect(indicatorRect.top, greaterThanOrEqualTo(buttonRect.top));
+          expect(indicatorRect.bottom, lessThanOrEqualTo(buttonRect.bottom));
+          final indexRect = tester.getRect(
+            find.byKey(ValueKey('tmux-sidebar-window-index-$index')),
+          );
+          expect(indicatorRect.overlaps(indexRect), isFalse);
+          for (var other = 0; other < collapsedButtons.length; other++) {
+            if (other != index) {
+              expect(
+                indicatorRect.overlaps(tester.getRect(collapsedButtons[other])),
+                isFalse,
+              );
+            }
+          }
+        }
+        expect(
+          find.bySemanticsLabel('Terminal task progress, error'),
+          findsOneWidget,
+        );
+        expect(
+          tester.getSemantics(inactiveCollapsed).label,
+          contains('MonkeyMux window 1: tests, progress, indeterminate'),
+        );
+        expect(
+          tester.getSemantics(activeCollapsed).role,
+          isNot(SemanticsRole.progressBar),
+        );
+        expect(
+          tester
+              .widget<LinearProgressIndicator>(
+                find.descendant(
+                  of: activeCollapsed,
+                  matching: find.byType(LinearProgressIndicator),
+                ),
+              )
+              .color,
+          Theme.of(tester.element(activeCollapsed)).colorScheme.error,
+        );
+        expect(
+          tester.getSemantics(inactiveCollapsed).role,
+          SemanticsRole.loadingSpinner,
+        );
+
+        await tester.drag(
+          find.byKey(const ValueKey('tmux-sidebar-window-0')),
+          const Offset(80, 0),
+          kind: PointerDeviceKind.mouse,
+          touchSlopX: 0,
+        );
+        await tester.pump();
+
+        final activeExpanded = find.byKey(
+          const ValueKey('monkeymux-window-progress-0'),
+        );
+        final inactiveExpanded = find.byKey(
+          const ValueKey('monkeymux-window-progress-1'),
+        );
+        expect(activeExpanded, findsOneWidget);
+        expect(inactiveExpanded, findsOneWidget);
+        expect(
+          find.bySemanticsLabel('Terminal task progress, error'),
+          findsOneWidget,
+        );
+        expect(
+          tester.getSemantics(inactiveExpanded).label,
+          contains('MonkeyMux window 1: tests, progress, indeterminate'),
+        );
+        expect(
+          tester.getSemantics(activeExpanded).role,
+          isNot(SemanticsRole.progressBar),
+        );
+        expect(
+          tester
+              .widget<LinearProgressIndicator>(
+                find.descendant(
+                  of: activeExpanded,
+                  matching: find.byType(LinearProgressIndicator),
+                ),
+              )
+              .value,
+          0.45,
+        );
+        expect(
+          tester.getSemantics(inactiveExpanded).label,
+          contains('MonkeyMux window 1: tests, progress, indeterminate'),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
+      'applies and clears inactive MonkeyMux progress from live window events',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1100, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, id: '@1', name: 'shell', isActive: true),
+          TmuxWindow(index: 1, id: '@2', name: 'build', isActive: false),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: 'work',
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(session, 'work'),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, 'work'),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, 'work'),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await pumpScreen(
+          tester,
+          tmuxService: tmuxService,
+          monkeyMuxService: monkeyMuxService,
+        );
+        const progressKey = ValueKey('monkeymux-sidebar-progress-1');
+        expect(find.byKey(progressKey), findsNothing);
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 1,
+              id: '@2',
+              name: 'build',
+              isActive: false,
+              terminalProgress: TerminalProgress(
+                state: TerminalProgressState.normal,
+                percentage: 20,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(tester.getSemantics(find.byKey(progressKey)).value, '20');
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 1,
+              id: '@2',
+              name: 'build',
+              isActive: false,
+              terminalProgress: TerminalProgress(
+                state: TerminalProgressState.error,
+                percentage: 80,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(tester.getSemantics(find.byKey(progressKey)).value, '80');
+        expect(
+          tester
+              .widget<LinearProgressIndicator>(
+                find.descendant(
+                  of: find.byKey(progressKey),
+                  matching: find.byType(LinearProgressIndicator),
+                ),
+              )
+              .color,
+          Theme.of(tester.element(find.byKey(progressKey))).colorScheme.error,
+        );
+
+        windowEvents.add(const TmuxWindowListEvent(initialWindows));
+        await tester.pump();
+        expect(find.byKey(progressKey), findsNothing);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
+      'keeps inactive mux progress semantics percentage-free with reduced motion',
+      (tester) async {
+        tester.platformDispatcher.accessibilityFeaturesTestValue =
+            const FakeAccessibilityFeatures(disableAnimations: true);
+        addTearDown(
+          tester.platformDispatcher.clearAccessibilityFeaturesTestValue,
+        );
+        await tester.binding.setSurfaceSize(const Size(1100, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, id: '@1', name: 'shell', isActive: true),
+          TmuxWindow(
+            index: 1,
+            id: '@2',
+            name: 'build',
+            isActive: false,
+            terminalProgress: TerminalProgress(
+              state: TerminalProgressState.pausedOrWarning,
+            ),
+          ),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: 'work',
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(session, 'work'),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, 'work'),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, 'work'),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await pumpScreen(
+          tester,
+          tmuxService: tmuxService,
+          monkeyMuxService: monkeyMuxService,
+        );
+        final progress = find.byKey(
+          const ValueKey('monkeymux-sidebar-progress-1'),
+        );
+        expect(
+          tester
+              .widget<LinearProgressIndicator>(
+                find.descendant(
+                  of: progress,
+                  matching: find.byType(LinearProgressIndicator),
+                ),
+              )
+              .value,
+          0.5,
+        );
+        final semantics = tester.getSemantics(progress);
+        expect(
+          semantics.label,
+          contains('MonkeyMux window 1: build, progress, paused or warning'),
+        );
+        expect(semantics.value, isEmpty);
+        expect(semantics.role, SemanticsRole.loadingSpinner);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
+      'plain tmux does not render MonkeyMux per-window progress',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1100, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final tmuxService = _MockTmuxService();
+        const windows = <TmuxWindow>[
+          TmuxWindow(
+            index: 0,
+            name: 'build',
+            isActive: true,
+            terminalProgress: TerminalProgress(
+              state: TerminalProgressState.normal,
+              percentage: 45,
+            ),
+          ),
+        ];
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => 'work');
+        when(
+          () => tmuxService.listWindows(session, 'work'),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, 'work'),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: 'work',
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
+
+        await pumpScreen(tester, tmuxService: tmuxService);
+
+        expect(
+          find.byKey(const ValueKey('monkeymux-sidebar-progress-0')),
+          findsNothing,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );
 
     testWidgets(
