@@ -983,3 +983,16 @@ func forwardResizeSignals(
 	}()
 	return func() { close(done) }
 }
+
+func (id socketIdentity) valid() bool {
+	return id.device != 0 || id.inode != 0
+}
+
+func socketInfoIdentity(info os.FileInfo) (socketIdentity, error) {
+	// Windows AF_UNIX still uses a filesystem path, but inodes are not a
+	// reliable identity there. Callers treat an invalid identity as "path
+	// only", which is still enough to avoid deleting a rebound replacement
+	// after SetUnlinkOnClose(false) stops Close() from unlinking by name.
+	_ = info
+	return socketIdentity{}, errors.New("windows socket identity unavailable")
+}

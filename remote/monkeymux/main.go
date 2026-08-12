@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.146"
+	monkeyMuxVersion                  = "0.1.148"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -117,6 +117,14 @@ const (
 	pidFileReadLimitBytes = 4096
 	// How long an upgrade snapshot must sit unused before gc reclaims it.
 	abandonedRestoreFileAge = time.Hour
+	// How long an upgrade waits for the outgoing helper to leave its pid
+	// behind. Dial failure is not enough: the old process can still be in
+	// close() and later unlink the replacement's freshly rebound socket.
+	serverExitWaitTimeout = 2 * time.Second
+	// How often a live server checks that its socket path still names the
+	// inode it is accepting on. An upgrade that unlinked by path leaves the
+	// replacement listening on an orphaned inode; republishing heals that.
+	socketRepublishInterval = 250 * time.Millisecond
 	sessionPIDFileMode      = 0o600
 	sessionLockFileMode     = 0o600
 	// Per-window Kitty image retention, used to survive history eviction across
@@ -556,6 +564,8 @@ type muxServer struct {
 	lastActiveID                     string
 	nextID                           int
 	listener                         net.Listener
+	socketPath                       string
+	socketIdentity                   socketIdentity
 	attachConn                       net.Conn
 	attachMu                         sync.Mutex
 	attachClients                    map[net.Conn]*attachClient
@@ -1250,7 +1260,7 @@ func killSessionCommand(args []string) {
 		fatal(fmt.Errorf("session %q is not running", session))
 	}
 	requestServerShutdown(session)
-	if !waitForServerExit(session, 2*time.Second) {
+	if !waitForServerExit(session, serverExitWaitTimeout) {
 		fatal(fmt.Errorf("session %q did not stop", session))
 	}
 	fmt.Fprintf(os.Stdout, "monkeymux: session %s stopped\r\n", safeDisplayText(session))
@@ -1674,7 +1684,7 @@ func ensureServer(
 			return nil
 		}
 	}
-	_ = os.Remove(socket)
+	removeAbandonedSessionSocket(socket)
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -1841,7 +1851,7 @@ func prepareRunningServerReplacement(
 	oldPID, _ := sessionServerOwner(session)
 	if status.supportsCapability("shutdown") {
 		requestServerShutdown(session)
-		if !waitForServerExit(session, 2*time.Second) {
+		if !waitForServerProcessExit(session, oldPID, serverExitWaitTimeout) {
 			fmt.Fprintf(
 				os.Stderr,
 				"monkeymux: running session did not exit; continuing with helper %s\r\n",
@@ -4223,14 +4233,16 @@ func serveSession(
 	if err != nil {
 		return err
 	}
+	disableUnixListenerUnlink(listener)
+	identity, _ := socketFileIdentity(socket)
 	if err := writeSessionPIDFile(session, os.Getpid()); err != nil {
 		_ = listener.Close()
-		_ = os.Remove(socket)
+		removeSocketPathIfUnchanged(socket, identity)
 		return err
 	}
 	defer func() {
 		_ = listener.Close()
-		_ = os.Remove(socket)
+		removeSocketPathIfUnchanged(socket, identity)
 		removeSessionPIDFile(session)
 	}()
 	_ = os.Chmod(socket, 0o600)
@@ -4239,6 +4251,8 @@ func serveSession(
 	server.themeHint = append([]byte(nil), initialWindow.themeHint...)
 	server.capabilityHint = append([]byte(nil), initialWindow.capabilityHint...)
 	server.listener = listener
+	server.socketPath = socket
+	server.socketIdentity = identity
 	if err := server.restoreOrCreateInitialWindow(restore, initialWindow); err != nil {
 		return err
 	}
@@ -4250,13 +4264,13 @@ func serveSession(
 	go func() {
 		<-signals
 		server.close()
-		_ = listener.Close()
 	}()
+	go server.republishSocketLoop()
 
 	for {
-		conn, err := listener.Accept()
+		conn, err := server.acceptConnection()
 		if err != nil {
-			if server.isClosed() {
+			if server.isClosed() || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
 			return err
@@ -14194,6 +14208,8 @@ func (s *muxServer) close() {
 	s.closeDone = make(chan struct{})
 	closeDone := s.closeDone
 	listener := s.listener
+	socket := s.socketPath
+	identity := s.socketIdentity
 	s.listener = nil
 	attach := net.Conn(nil)
 	attachClients := make([]*attachClient, 0, len(s.attachClients))
@@ -14223,6 +14239,9 @@ func (s *muxServer) close() {
 
 	if listener != nil {
 		_ = listener.Close()
+	}
+	if socket != "" {
+		removeSocketPathIfUnchanged(socket, identity)
 	}
 	if attach != nil {
 		_ = attach.Close()
@@ -14274,6 +14293,93 @@ func (s *muxServer) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closed
+}
+
+func (s *muxServer) currentListener() net.Listener {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listener
+}
+
+func (s *muxServer) acceptConnection() (net.Conn, error) {
+	for {
+		listener := s.currentListener()
+		if listener == nil {
+			return nil, net.ErrClosed
+		}
+		conn, err := listener.Accept()
+		if err == nil {
+			return conn, nil
+		}
+		if s.isClosed() {
+			return nil, err
+		}
+		if current := s.currentListener(); current != nil && current != listener {
+			continue
+		}
+		return nil, err
+	}
+}
+
+// republishSocketLoop puts the session path back when it no longer names this
+// listener. An outgoing helper that still unlinks by path can delete the name
+// after this process rebound it, leaving a live server that nobody can dial.
+func (s *muxServer) republishSocketLoop() {
+	ticker := time.NewTicker(socketRepublishInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if !s.republishSocketIfMissing() {
+				return
+			}
+		}
+	}
+}
+
+func (s *muxServer) republishSocketIfMissing() bool {
+	s.mu.Lock()
+	closed := s.closed
+	listener := s.listener
+	path := s.socketPath
+	identity := s.socketIdentity
+	s.mu.Unlock()
+	if closed || listener == nil || path == "" {
+		return false
+	}
+	if current, err := socketFileIdentity(path); err == nil {
+		if !identity.valid() || current == identity {
+			return true
+		}
+		// Another process already rebound the name. Leave it alone.
+		return true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	replacement, err := net.Listen("unix", path)
+	if err != nil {
+		return true
+	}
+	disableUnixListenerUnlink(replacement)
+	rebound, reboundErr := socketFileIdentity(path)
+	_ = os.Chmod(path, 0o600)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.listener != listener {
+		_ = replacement.Close()
+		if reboundErr == nil {
+			removeSocketPathIfUnchanged(path, rebound)
+		} else {
+			_ = os.Remove(path)
+		}
+		return !s.closed
+	}
+	s.listener = replacement
+	if reboundErr == nil {
+		s.socketIdentity = rebound
+	}
+	_ = listener.Close()
+	return true
 }
 
 type runningServerStatus struct {
@@ -14412,13 +14518,31 @@ func requestServerShutdown(session string) {
 }
 
 func waitForServerExit(session string, timeout time.Duration) bool {
+	owner, _ := sessionServerOwner(session)
+	return waitForServerProcessExit(session, owner, timeout)
+}
+
+// waitForServerProcessExit waits until the outgoing helper is gone, not just
+// until its socket path stops answering. After an upgrade the old process can
+// still be inside close() and later unlink a replacement that already rebound
+// the same path.
+func waitForServerProcessExit(
+	session string,
+	owner pidRecord,
+	timeout time.Duration,
+) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		conn, err := dialSession(session)
-		if err != nil {
+		switch {
+		case owner.pid > 0 && pidRecordOwnership(owner, session) == pidOwnershipGone:
 			return true
+		case owner.pid <= 0:
+			conn, err := dialSession(session)
+			if err != nil {
+				return true
+			}
+			_ = conn.Close()
 		}
-		_ = conn.Close()
 		time.Sleep(50 * time.Millisecond)
 	}
 	return false
@@ -14637,6 +14761,56 @@ func socketPath(session string) (string, error) {
 	}
 	sum := sha256.Sum256([]byte(session))
 	return filepath.Join(dir, "monkeymux-"+hex.EncodeToString(sum[:])[:24]+".sock"), nil
+}
+
+// socketIdentity names a specific unix-socket inode so a helper can tell
+// whether the path still refers to the listener it created. Go's default
+// UnixListener.Close unlinks by path, so an outgoing upgrade that still
+// holds the old fd will delete a replacement's freshly rebound name.
+type socketIdentity struct {
+	device uint64
+	inode  uint64
+}
+
+func socketFileIdentity(path string) (socketIdentity, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return socketIdentity{}, err
+	}
+	return socketInfoIdentity(info)
+}
+
+func disableUnixListenerUnlink(listener net.Listener) {
+	unix, ok := listener.(*net.UnixListener)
+	if !ok {
+		return
+	}
+	unix.SetUnlinkOnClose(false)
+}
+
+func removeSocketPathIfUnchanged(path string, identity socketIdentity) {
+	if identity.valid() {
+		current, err := socketFileIdentity(path)
+		if err != nil || current != identity {
+			return
+		}
+		_ = os.Remove(path)
+		return
+	}
+	removeAbandonedSessionSocket(path)
+}
+
+// removeAbandonedSessionSocket deletes a session socket only when nothing is
+// accepting on it. An upgrade that rebound the path must not be unlinked by
+// the outgoing helper, or the replacement is left listening on an orphaned
+// inode and attach reports "not accepting connections".
+func removeAbandonedSessionSocket(path string) {
+	conn, err := net.DialTimeout("unix", path, 150*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		return
+	}
+	_ = os.Remove(path)
 }
 
 func runtimeDirectory() (string, error) {

@@ -71,7 +71,11 @@ accepting connections, `attach` refuses to steal the socket path and create a
 replacement server — on Windows that race previously orphaned the real windows
 behind an unreachable helper while auto-connect surfaced a fresh one-window
 workspace. Helper upgrades similarly refuse to replace a running server when a
-window snapshot cannot be collected. The server inherits the environment from
+window snapshot cannot be collected. An upgrade also waits for the outgoing
+helper's process to exit and only unlinks the socket inode it created, so a
+still-closing old helper cannot delete the replacement's rebound path. If that
+path does disappear, the live server republishes it instead of staying
+unreachable. The server inherits the environment from
 the shell that launched it exactly, so profile-managed values such as `PATH`
 and tool-specific variables remain user-owned. PTY windows inherit that
 environment and add terminal defaults such as `TERM=xterm-256color` and
