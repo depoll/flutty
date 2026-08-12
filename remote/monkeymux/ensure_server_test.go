@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -134,6 +135,97 @@ func TestEnsureServerRefusesToStealLivePIDWithoutSocket(t *testing.T) {
 	if _, err := os.Stat(socket); !os.IsNotExist(err) {
 		t.Fatalf("socket path state = %v, want missing", err)
 	}
+}
+
+func TestRemoveSocketPathIfUnchangedKeepsReboundListener(t *testing.T) {
+	dir := shortUnixSocketDir(t)
+	path := filepath.Join(dir, "old.sock")
+
+	old, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen old: %v", err)
+	}
+	disableUnixListenerUnlink(old)
+	oldIdentity, err := socketFileIdentity(path)
+	if err != nil {
+		t.Fatalf("old identity: %v", err)
+	}
+
+	_ = os.Remove(path)
+	replacement, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen replacement: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = replacement.Close()
+		_ = os.Remove(path)
+	})
+	disableUnixListenerUnlink(replacement)
+
+	removeSocketPathIfUnchanged(path, oldIdentity)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("outgoing close deleted the rebound socket: %v", err)
+	}
+	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("dial rebound socket: %v", err)
+	}
+	_ = conn.Close()
+	_ = old.Close()
+}
+
+func TestRepublishSocketIfMissingRestoresUnlinkedPath(t *testing.T) {
+	dir := shortUnixSocketDir(t)
+	path := filepath.Join(dir, "new.sock")
+
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	disableUnixListenerUnlink(listener)
+	identity, err := socketFileIdentity(path)
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+
+	server := newMuxServerWithSize("republish", 80, 24)
+	server.listener = listener
+	server.socketPath = path
+	server.socketIdentity = identity
+	t.Cleanup(func() {
+		server.close()
+	})
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+	if !server.republishSocketIfMissing() {
+		t.Fatal("republish stopped while the server was still open")
+	}
+	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("dial republished socket: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestWaitForServerProcessExitWaitsForLiveOwner(t *testing.T) {
+	owner := pidRecord{pid: os.Getpid(), writtenAt: time.Now()}
+	if waitForServerProcessExit("wait-owner", owner, 150*time.Millisecond) {
+		t.Fatal("waitForServerProcessExit treated a live pid as exited")
+	}
+}
+
+func shortUnixSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "mmx-")
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	return dir
 }
 
 func TestPrepareRunningServerReplacementKeepsServerWithoutSnapshot(
