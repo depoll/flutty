@@ -4908,6 +4908,52 @@ void main() {
     });
 
     testWidgets(
+      'native Android IME Enter sends one terminal Enter and suppresses a later action',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        final controller = TerminalTextInputHandlerController();
+        final harness = await _pumpTerminalHarness(
+          tester,
+          manageFocus: false,
+          controller: controller,
+        );
+
+        try {
+          tester.testTextInput.updateEditingValue(
+            _editingValue('pwd', selectionOffset: 3),
+          );
+          await tester.pump();
+          harness.terminalOutput.clear();
+
+          controller.debugHandleAndroidImeKey(
+            TerminalKey.enter,
+            TerminalKeyEventType.release,
+          );
+          await tester.pump();
+
+          expect(
+            harness.terminalOutput.join(),
+            _terminalKeyOutput(TerminalKey.enter),
+          );
+
+          _terminalTextInputClient(
+            tester,
+          ).performAction(TextInputAction.newline);
+          await tester.pump();
+
+          expect(
+            harness.terminalOutput.join(),
+            _terminalKeyOutput(TerminalKey.enter),
+          );
+        } finally {
+          await _disposeTerminalHarness(tester, harness);
+          controller.dispose();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
       'virtual Enter ignores stale soft-keyboard Shift and submits via IME',
       (tester) async {
         const virtualShiftKey = PhysicalKeyboardKey(

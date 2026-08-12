@@ -225,6 +225,7 @@ class MainActivity : FlutterFragmentActivity() {
         KeyEvent.KEYCODE_SHIFT_LEFT -> "shiftLeft"
         KeyEvent.KEYCODE_SHIFT_RIGHT -> "shiftRight"
         KeyEvent.KEYCODE_DEL -> "backspace"
+        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "enter"
         else -> null
     }
 
