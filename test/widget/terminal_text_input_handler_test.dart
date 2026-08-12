@@ -71,7 +71,9 @@ enum _ResetTrigger {
   markerLoss,
 }
 
-int _graphemeLength(String text) => text.characters.length;
+// Flutter text editing offsets are UTF-16 code-unit indexes, not grapheme
+// indexes. Keep grapheme-aware mutations separate from selection math.
+int _textEditingOffset(String text) => text.length;
 
 TextEditingValue _userValue(
   String text, {
@@ -96,12 +98,12 @@ String _dropLastGrapheme(String text) {
 
 _MatrixScenario _insertBeforeMiddleScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
-  final insertionOffset = _graphemeLength(seed.before);
+  final insertionOffset = _textEditingOffset(seed.before);
   final updated = '${seed.before}X${seed.middle}${seed.after}';
   return (
     name: '${seed.name}: inserts before the edited segment',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: _textEditingOffset(initial)),
       _userValue(initial, selectionBase: insertionOffset),
       _userValue(updated, selectionBase: insertionOffset + 1),
     ],
@@ -112,12 +114,12 @@ _MatrixScenario _insertBeforeMiddleScenario(_SegmentSeed seed) {
 
 _MatrixScenario _insertAfterMiddleScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
-  final insertionOffset = _graphemeLength('${seed.before}${seed.middle}');
+  final insertionOffset = _textEditingOffset('${seed.before}${seed.middle}');
   final updated = '${seed.before}${seed.middle};${seed.after}';
   return (
     name: '${seed.name}: inserts after the edited segment',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: _textEditingOffset(initial)),
       _userValue(initial, selectionBase: insertionOffset),
       _userValue(updated, selectionBase: insertionOffset + 1),
     ],
@@ -128,13 +130,13 @@ _MatrixScenario _insertAfterMiddleScenario(_SegmentSeed seed) {
 
 _MatrixScenario _replaceMiddleScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
-  final selectionBase = _graphemeLength(seed.before);
-  final selectionExtent = selectionBase + _graphemeLength(seed.middle);
+  final selectionBase = _textEditingOffset(seed.before);
+  final selectionExtent = selectionBase + _textEditingOffset(seed.middle);
   final updated = '${seed.before}ZX${seed.after}';
   return (
     name: '${seed.name}: replaces the edited segment',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: _textEditingOffset(initial)),
       _userValue(
         initial,
         selectionBase: selectionBase,
@@ -150,16 +152,16 @@ _MatrixScenario _replaceMiddleScenario(_SegmentSeed seed) {
 _MatrixScenario _backspaceWithinMiddleScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
   final shortenedMiddle = _dropLastGrapheme(seed.middle);
-  final caretOffset = _graphemeLength('${seed.before}${seed.middle}');
+  final caretOffset = _textEditingOffset('${seed.before}${seed.middle}');
   final updated = '${seed.before}$shortenedMiddle${seed.after}';
   return (
     name: '${seed.name}: backspaces within the edited segment',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: _textEditingOffset(initial)),
       _userValue(initial, selectionBase: caretOffset),
       _userValue(
         updated,
-        selectionBase: _graphemeLength('${seed.before}$shortenedMiddle'),
+        selectionBase: _textEditingOffset('${seed.before}$shortenedMiddle'),
       ),
     ],
     textFieldEchoes: null,
@@ -169,13 +171,13 @@ _MatrixScenario _backspaceWithinMiddleScenario(_SegmentSeed seed) {
 
 _MatrixScenario _deleteMiddleSelectionScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
-  final selectionBase = _graphemeLength(seed.before);
-  final selectionExtent = selectionBase + _graphemeLength(seed.middle);
+  final selectionBase = _textEditingOffset(seed.before);
+  final selectionExtent = selectionBase + _textEditingOffset(seed.middle);
   final updated = '${seed.before}${seed.after}';
   return (
     name: '${seed.name}: deletes the edited segment selection',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: _textEditingOffset(initial)),
       _userValue(
         initial,
         selectionBase: selectionBase,
@@ -7178,7 +7180,11 @@ void main() {
       (tester) async {
         final terminal = Terminal();
         final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+        var visibilityNotifications = 0;
+        controller.addListener(() => visibilityNotifications++);
         addTearDown(focusNode.dispose);
+        addTearDown(controller.dispose);
 
         await tester.pumpWidget(
           MaterialApp(
@@ -7186,6 +7192,7 @@ void main() {
               body: TerminalTextInputHandler(
                 terminal: terminal,
                 focusNode: focusNode,
+                controller: controller,
                 deleteDetection: true,
                 child: const SizedBox.expand(key: ValueKey('terminal-child')),
               ),
@@ -7198,6 +7205,8 @@ void main() {
 
         expect(focusNode.hasFocus, isTrue);
         expect(tester.testTextInput.isVisible, isTrue);
+        expect(controller.isKeyboardVisible, isTrue);
+        visibilityNotifications = 0;
 
         tester.testTextInput.log.clear();
         (tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient)
@@ -7205,6 +7214,8 @@ void main() {
         await tester.pump();
 
         expect(focusNode.hasFocus, isTrue);
+        expect(controller.isKeyboardVisible, isFalse);
+        expect(visibilityNotifications, 1);
         expect(
           tester.testTextInput.log.where(
             (call) => call.method == 'TextInput.show',

@@ -3829,7 +3829,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void connectionClosed() {
     _connection = null;
-    _isInputConnectionShown = false;
+    _setInputConnectionShown(shown: false);
     _AndroidTerminalImeKeyBridge.setEnabled(this, enabled: false);
     _stopHardwareKeyRepeat();
     _cancelDeferredTrailingBackspaceImeClear();
