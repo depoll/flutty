@@ -1511,6 +1511,105 @@ void main() {
       session.terminal!.write('\x1b[?1004h');
     }
 
+    testWidgets('shows and clears OSC 9;4 progress under the app bar', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+
+      session.terminal!.write('\x1b]9;4;1;50\x07');
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final progressFinder = find.byKey(
+        const ValueKey<String>('terminal-osc-progress'),
+      );
+      expect(progressFinder, findsOneWidget);
+      expect(tester.widget<LinearProgressIndicator>(progressFinder).value, 0.5);
+
+      session.terminal!.write('\x1b]9;4;2;75\x07');
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final errorProgress = tester.widget<LinearProgressIndicator>(
+        progressFinder,
+      );
+      expect(errorProgress.value, 0.75);
+      expect(
+        errorProgress.color,
+        Theme.of(tester.element(progressFinder)).colorScheme.error,
+      );
+      final errorSemantics = tester.getSemantics(progressFinder);
+      expect(errorSemantics.value, '75');
+      expect(errorSemantics.role, SemanticsRole.progressBar);
+
+      session.terminal!.write('\x1b]9;4;0\x07');
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(progressFinder, findsNothing);
+
+      session.terminal!.write('\x1b]9;4;4\x07');
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final pausedProgress = tester.widget<LinearProgressIndicator>(
+        progressFinder,
+      );
+      expect(pausedProgress.value, isNull);
+      expect(
+        pausedProgress.color,
+        Theme.of(tester.element(progressFinder)).colorScheme.tertiary,
+      );
+      final pausedSemantics = tester.getSemantics(progressFinder);
+      expect(
+        pausedSemantics.label,
+        'Terminal task progress, paused or warning',
+      );
+      expect(pausedSemantics.value, isEmpty);
+      expect(pausedSemantics.role, SemanticsRole.loadingSpinner);
+
+      session.terminal!.write('\x1b]9;4;3\x07');
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(
+        tester.widget<LinearProgressIndicator>(progressFinder).value,
+        isNull,
+      );
+      final indeterminateSemantics = tester.getSemantics(progressFinder);
+      expect(
+        indeterminateSemantics.label,
+        'Terminal task progress, indeterminate',
+      );
+      expect(indeterminateSemantics.value, isEmpty);
+      expect(indeterminateSemantics.role, SemanticsRole.loadingSpinner);
+
+      session.terminal!.write('\x1b]9;4;0\x07');
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(progressFinder, findsNothing);
+    });
+
+    testWidgets(
+      'keeps percentage-null progress semantic values empty with reduced motion',
+      (tester) async {
+        tester.platformDispatcher.accessibilityFeaturesTestValue =
+            const FakeAccessibilityFeatures(disableAnimations: true);
+        addTearDown(
+          tester.platformDispatcher.clearAccessibilityFeaturesTestValue,
+        );
+        await pumpScreen(tester);
+
+        session.terminal!.write('\x1b]9;4;3\x07');
+        await tester.pump(const Duration(milliseconds: 100));
+
+        final progressFinder = find.byKey(
+          const ValueKey<String>('terminal-osc-progress'),
+        );
+        expect(
+          tester.widget<LinearProgressIndicator>(progressFinder).value,
+          0.5,
+        );
+        final semantics = tester.getSemantics(progressFinder);
+        expect(semantics.label, 'Terminal task progress, indeterminate');
+        expect(semantics.value, isEmpty);
+        expect(semantics.role, SemanticsRole.loadingSpinner);
+      },
+    );
+
     testWidgets(
       'opens a Copilot-style underlined URL when tapped',
       (tester) async {
@@ -3976,6 +4075,8 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
+        session.debugHandlePrivateOsc('9', ['4', '1', '50']);
+        expect(session.terminalProgress, isNotNull);
         for (var row = 0; row < 120; row += 1) {
           session.terminal!.write('row $row\r\n');
         }
@@ -4096,6 +4197,7 @@ void main() {
         await tester.pump();
         await tester.pump();
         expect(position.pixels, 0);
+        expect(session.terminalProgress, isNull);
         expect(
           monkeyMuxService.resizeTerminalCalls.skip(resizeCallsBeforeSwitch),
           isEmpty,

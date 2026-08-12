@@ -1,6 +1,7 @@
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/terminal_progress.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/terminal_notification.dart';
 
@@ -33,6 +34,60 @@ void main() {
     final request = await next;
     expect(request.title, 'Deploy');
     expect(request.body, 'Succeeded');
+  });
+
+  test('routes OSC 9;4 to terminal progress metadata', () async {
+    final session = _session();
+    var metadataChanges = 0;
+    session
+      ..addMetadataListener(() => metadataChanges += 1)
+      ..debugHandlePrivateOsc('9', ['4', '1', '50']);
+
+    expect(
+      session.terminalProgress,
+      const TerminalProgress(
+        state: TerminalProgressState.normal,
+        percentage: 50,
+      ),
+    );
+    expect(metadataChanges, 1);
+
+    session.debugHandlePrivateOsc('9', ['4', '0']);
+
+    expect(session.terminalProgress, isNull);
+    expect(metadataChanges, 2);
+  });
+
+  test('clears active progress once and notifies metadata once', () {
+    final session = _session();
+    var metadataChanges = 0;
+    session
+      ..addMetadataListener(() => metadataChanges += 1)
+      ..debugHandlePrivateOsc('9', ['4', '1', '50']);
+    expect(metadataChanges, 1);
+
+    expect(session.clearTerminalProgress(), isTrue);
+    expect(session.terminalProgress, isNull);
+    expect(metadataChanges, 2);
+
+    expect(session.clearTerminalProgress(), isFalse);
+    expect(metadataChanges, 2);
+  });
+
+  test('OSC 9;4 progress does not emit a notification', () async {
+    final session = _session();
+    var emitted = false;
+    final sub = session.terminalNotifications.listen((_) => emitted = true);
+
+    session.debugHandlePrivateOsc('9', ['4', '3']);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(emitted, isFalse);
+    expect(
+      session.terminalProgress,
+      const TerminalProgress(state: TerminalProgressState.indeterminate),
+    );
+    await sub.cancel();
   });
 
   test('assembles a chunked OSC 99 notification', () async {
