@@ -138,6 +138,11 @@ func TestEnsureServerRefusesToStealLivePIDWithoutSocket(t *testing.T) {
 }
 
 func TestRemoveSocketPathIfUnchangedKeepsReboundListener(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows AF_UNIX has no inode identity, so this path-only cleanup
+		// cannot distinguish the outgoing helper's socket from a rebound one.
+		t.Skip("windows socket identity is path-only")
+	}
 	dir := shortUnixSocketDir(t)
 	path := filepath.Join(dir, "old.sock")
 
@@ -218,7 +223,15 @@ func TestWaitForServerProcessExitWaitsForLiveOwner(t *testing.T) {
 
 func shortUnixSocketDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "mmx-")
+	// Keep the path well under the AF_UNIX sun_path limit. t.TempDir() on
+	// macOS lives under a long /var/folders prefix and bind() fails there.
+	root := os.TempDir()
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat("/tmp"); err == nil {
+			root = "/tmp"
+		}
+	}
+	dir, err := os.MkdirTemp(root, "mmx-")
 	if err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
