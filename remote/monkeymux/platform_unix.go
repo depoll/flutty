@@ -605,3 +605,19 @@ func forwardResizeSignals(
 		signal.Stop(signals)
 	}
 }
+
+func (id socketIdentity) valid() bool {
+	return id.device != 0 || id.inode != 0
+}
+
+func socketInfoIdentity(info os.FileInfo) (socketIdentity, error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return socketIdentity{}, errors.New("unix socket identity unavailable")
+	}
+	return socketIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, nil
+}
+
+func isStaleUnixSocketError(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED)
+}
