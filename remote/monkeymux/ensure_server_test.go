@@ -533,6 +533,9 @@ func TestGCKeepsInFlightRestoreSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeRestoreFile: %v", err)
 	}
+	if fresh == abandoned {
+		t.Fatalf("writeRestoreFile reused in-flight snapshot path %q", fresh)
+	}
 	old := time.Now().Add(-2 * abandonedRestoreFileAge)
 	if err := os.Chtimes(abandoned, old, old); err != nil {
 		t.Fatalf("chtimes: %v", err)
