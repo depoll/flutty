@@ -996,3 +996,8 @@ func socketInfoIdentity(info os.FileInfo) (socketIdentity, error) {
 	_ = info
 	return socketIdentity{}, errors.New("windows socket identity unavailable")
 }
+
+func isStaleUnixSocketError(err error) bool {
+	return errors.Is(err, windows.WSAECONNREFUSED) ||
+		errors.Is(err, windows.ERROR_CONNECTION_REFUSED)
+}
