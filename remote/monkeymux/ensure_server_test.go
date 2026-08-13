@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -134,6 +136,210 @@ func TestEnsureServerRefusesToStealLivePIDWithoutSocket(t *testing.T) {
 	if _, err := os.Stat(socket); !os.IsNotExist(err) {
 		t.Fatalf("socket path state = %v, want missing", err)
 	}
+}
+
+func TestRemoveSocketPathIfUnchangedKeepsReboundListener(t *testing.T) {
+	dir := shortUnixSocketDir(t)
+	path := filepath.Join(dir, "old.sock")
+
+	old, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen old: %v", err)
+	}
+	disableUnixListenerUnlink(old)
+	oldIdentity, err := socketFileIdentity(path)
+	if err != nil && runtime.GOOS != "windows" {
+		t.Fatalf("old identity: %v", err)
+	}
+
+	_ = os.Remove(path)
+	replacement, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen replacement: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = replacement.Close()
+		_ = os.Remove(path)
+	})
+	disableUnixListenerUnlink(replacement)
+
+	removeSocketPathIfUnchanged(path, oldIdentity)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("outgoing close deleted the rebound socket: %v", err)
+	}
+	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("dial rebound socket: %v", err)
+	}
+	_ = conn.Close()
+	_ = old.Close()
+}
+
+func TestRepublishSocketIfMissingRestoresUnlinkedPath(t *testing.T) {
+	dir := shortUnixSocketDir(t)
+	path := filepath.Join(dir, "new.sock")
+
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	disableUnixListenerUnlink(listener)
+	identity, err := socketFileIdentity(path)
+	if err != nil && runtime.GOOS != "windows" {
+		t.Fatalf("identity: %v", err)
+	}
+
+	server := newMuxServerWithSize("republish", 80, 24)
+	server.listener = listener
+	server.socketPath = path
+	server.socketIdentity = identity
+	t.Cleanup(func() {
+		server.close()
+	})
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := server.acceptConnection()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+	if !server.republishSocketIfMissing() {
+		t.Fatal("republish stopped while the server was still open")
+	}
+	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("dial republished socket: %v", err)
+	}
+	defer conn.Close()
+	select {
+	case acceptedConn := <-accepted:
+		_ = acceptedConn.Close()
+	case err := <-acceptErr:
+		t.Fatalf("accept republished socket: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("acceptConnection stayed blocked on the unlinked listener")
+	}
+}
+
+func TestCloseWaitsForInFlightSocketRepublisher(t *testing.T) {
+	dir := shortUnixSocketDir(t)
+	path := filepath.Join(dir, "closing.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	disableUnixListenerUnlink(listener)
+	identity, err := socketFileIdentity(path)
+	if err != nil && runtime.GOOS != "windows" {
+		t.Fatalf("identity: %v", err)
+	}
+
+	server := newMuxServerWithSize("closing-republish", 80, 24)
+	server.listener = listener
+	server.socketPath = path
+	server.socketIdentity = identity
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblockRepublisher := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	server.beforeInstallRepublishedSocket = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() {
+		unblockRepublisher()
+		server.close()
+	})
+
+	server.socketRepublishers.Add(1)
+	go func() {
+		defer server.socketRepublishers.Done()
+		server.republishSocketIfMissing()
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("republisher did not bind a replacement listener")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		server.close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("close returned before the republisher finished")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	unblockRepublisher()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("close did not finish after republisher cleanup")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("republisher left socket path after close: %v", err)
+	}
+}
+
+func TestWaitForServerProcessExitWaitsForLiveOwner(t *testing.T) {
+	owner := pidRecord{pid: os.Getpid(), writtenAt: time.Now()}
+	if waitForServerProcessExit("wait-owner", owner, 150*time.Millisecond) {
+		t.Fatal("waitForServerProcessExit treated a live pid as exited")
+	}
+}
+
+func TestWaitForServerProcessExitChecksOnceAtDeadline(t *testing.T) {
+	owner := pidRecord{pid: 99999999, writtenAt: time.Now()}
+	if !waitForServerProcessExit("wait-dead-owner", owner, 0) {
+		t.Fatal("waitForServerProcessExit skipped the final ownership check")
+	}
+}
+
+func TestServerExitWaitAllowsWindowWatcherShutdownMargin(t *testing.T) {
+	if serverExitWaitTimeout <= windowWatcherShutdownTimeout {
+		t.Fatalf(
+			"server exit wait %s must exceed watcher shutdown bound %s",
+			serverExitWaitTimeout,
+			windowWatcherShutdownTimeout,
+		)
+	}
+}
+
+func shortUnixSocketDir(t *testing.T) string {
+	t.Helper()
+	// Keep the path well under the AF_UNIX sun_path limit. t.TempDir() on
+	// macOS lives under a long /var/folders prefix and bind() fails there.
+	root := os.TempDir()
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat("/tmp"); err == nil {
+			root = "/tmp"
+		}
+	}
+	dir, err := os.MkdirTemp(root, "mmx-")
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	return dir
 }
 
 func TestPrepareRunningServerReplacementKeepsServerWithoutSnapshot(
@@ -423,6 +629,9 @@ func TestGCKeepsInFlightRestoreSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeRestoreFile: %v", err)
 	}
+	if fresh == abandoned {
+		t.Fatalf("writeRestoreFile reused in-flight snapshot path %q", fresh)
+	}
 	old := time.Now().Add(-2 * abandonedRestoreFileAge)
 	if err := os.Chtimes(abandoned, old, old); err != nil {
 		t.Fatalf("chtimes: %v", err)
@@ -520,6 +729,79 @@ func TestAcquireSessionLockIsExclusiveUnderContention(t *testing.T) {
 	}
 }
 
+func TestAcquireSessionLockUnlockDoesNotDeleteAnotherSameProcessHolder(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("lock-same-pid-%d", time.Now().UnixNano())
+	firstUnlock, err := acquireSessionLock(session)
+	if err != nil {
+		t.Fatalf("first acquireSessionLock: %v", err)
+	}
+
+	secondAcquired := make(chan func(), 1)
+	secondErr := make(chan error, 1)
+	go func() {
+		unlock, err := acquireSessionLock(session)
+		if err != nil {
+			secondErr <- err
+			return
+		}
+		secondAcquired <- unlock
+	}()
+
+	select {
+	case <-secondAcquired:
+		t.Fatal("second lock acquired while first held")
+	case err := <-secondErr:
+		t.Fatalf("second lock failed while waiting: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	firstUnlock()
+	var secondUnlock func()
+	select {
+	case secondUnlock = <-secondAcquired:
+	case err := <-secondErr:
+		t.Fatalf("second lock after first unlock: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("second lock did not acquire after first unlock")
+	}
+
+	// Calling the stale unlock again must not delete the second holder's file.
+	firstUnlock()
+	thirdAcquired := make(chan func(), 1)
+	thirdErr := make(chan error, 1)
+	go func() {
+		unlock, err := acquireSessionLock(session)
+		if err != nil {
+			thirdErr <- err
+			return
+		}
+		thirdAcquired <- unlock
+	}()
+	select {
+	case unlock := <-thirdAcquired:
+		unlock()
+		t.Fatal("stale first unlock deleted the second holder's lock")
+	case err := <-thirdErr:
+		t.Fatalf("third lock failed while waiting: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	secondUnlock()
+	select {
+	case unlock := <-thirdAcquired:
+		unlock()
+	case err := <-thirdErr:
+		t.Fatalf("third lock after second unlock: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("third lock did not acquire after second unlock")
+	}
+}
+
 // A lock file is installed already populated, so a contender can never observe
 // an empty one and mistake a live holder for the residue of a crash.
 func TestInstallSessionLockFileIsNeverEmpty(t *testing.T) {
@@ -537,9 +819,9 @@ func TestInstallSessionLockFileIsNeverEmpty(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	acquired, err := installSessionLockFile(path)
+	installed, acquired, err := installSessionLockFile(path)
 	if err != nil || !acquired {
-		t.Fatalf("installSessionLockFile = %v, %v; want true, nil", acquired, err)
+		t.Fatalf("installSessionLockFile = %#v, %v, %v; want record, true, nil", installed, acquired, err)
 	}
 	record, err := readPIDRecord(path)
 	if err != nil {
@@ -548,9 +830,12 @@ func TestInstallSessionLockFileIsNeverEmpty(t *testing.T) {
 	if record.pid != os.Getpid() {
 		t.Fatalf("lock pid = %d, want %d", record.pid, os.Getpid())
 	}
+	if installed.pid != record.pid || !installed.writtenAt.Equal(record.writtenAt) {
+		t.Fatalf("installed = %#v, want %#v", installed, record)
+	}
 
 	// A second install must not take a held lock.
-	acquired, err = installSessionLockFile(path)
+	_, acquired, err = installSessionLockFile(path)
 	if err != nil {
 		t.Fatalf("installSessionLockFile: %v", err)
 	}
