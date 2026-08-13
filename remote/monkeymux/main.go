@@ -1934,11 +1934,14 @@ func acquireSessionLock(session string) (func(), error) {
 			return nil, err
 		}
 		if acquired {
+			var unlockOnce sync.Once
 			return func() {
-				// Unlock only the generation this waiter installed. Same-process
-				// contenders share a pid, so comparing pid alone can delete a lock
-				// that another goroutine already holds and leave waiters spinning.
-				_ = removePIDFileIfUnchanged(path, record)
+				// An unlock callback owns exactly one acquisition. Making it
+				// idempotent prevents a stale second invocation from deleting a
+				// later same-process holder, whose lock necessarily has the same pid.
+				unlockOnce.Do(func() {
+					_ = removePIDFileIfUnchanged(path, record)
+				})
 			}, nil
 		}
 		// Validating the holder can cost a process lookup, so throttle it
@@ -1979,8 +1982,7 @@ var sessionLockStagingSequence atomic.Uint64
 func installSessionLockFile(path string) (pidRecord, bool, error) {
 	sequence := sessionLockStagingSequence.Add(1)
 	// Keep the file as a bare pid so older helpers sharing this runtime
-	// directory can parse it. readPIDRecord captures OS file identity to
-	// distinguish same-process lock generations without changing the format.
+	// directory can parse it.
 	contents := []byte(strconv.Itoa(os.Getpid()) + "\n")
 	// The staging name is unique per attempt, not merely per process: two
 	// goroutines in one helper can contend for the same session, and sharing a
@@ -2135,7 +2137,6 @@ func describeSessionOwner(owner pidRecord, ownership pidOwnership) string {
 type pidRecord struct {
 	pid       int
 	writtenAt time.Time
-	fileInfo  os.FileInfo
 }
 
 // pidOwnership is the confidence with which a session file's owner could be
@@ -2354,14 +2355,9 @@ func clearStalePIDFile(path string, session string) bool {
 // hold the same session at once.
 func removePIDFileIfUnchanged(path string, record pidRecord) bool {
 	current, err := readPIDRecord(path)
-	if err != nil || current.pid != record.pid {
-		return false
-	}
-	if record.fileInfo != nil && current.fileInfo != nil {
-		if !os.SameFile(record.fileInfo, current.fileInfo) {
-			return false
-		}
-	} else if !current.writtenAt.Equal(record.writtenAt) {
+	if err != nil ||
+		current.pid != record.pid ||
+		!current.writtenAt.Equal(record.writtenAt) {
 		return false
 	}
 	return os.Remove(path) == nil
@@ -2406,10 +2402,11 @@ func readPIDFile(path string) (int, error) {
 	return record.pid, nil
 }
 
-// readPIDRecord parses a bare-pid session file. Content, timestamp, and OS file
-// identity are taken from one open file so they describe the same generation.
-// The identity prevents a stale same-process unlock from matching a replacement
-// file when the filesystem's modification timestamps are too coarse.
+// readPIDRecord parses a session file. The format is a bare pid so that older
+// helpers sharing the same host still read these files correctly; everything
+// needed to validate ownership is derived from the running process and the
+// file's own modification time instead. Content and timestamp are taken from
+// one open file so they always describe the same generation of the file.
 func readPIDRecord(path string) (pidRecord, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -2434,11 +2431,7 @@ func readPIDRecord(path string) (pidRecord, error) {
 	if err != nil || pid <= 0 {
 		return pidRecord{}, fmt.Errorf("invalid pid file %q", path)
 	}
-	return pidRecord{
-		pid:       pid,
-		writtenAt: info.ModTime(),
-		fileInfo:  info,
-	}, nil
+	return pidRecord{pid: pid, writtenAt: info.ModTime()}, nil
 }
 
 func collectServerRestore(session string, status runningServerStatus) *serverRestore {

@@ -753,12 +753,8 @@ func TestInstallSessionLockFileIsNeverEmpty(t *testing.T) {
 	if record.pid != os.Getpid() {
 		t.Fatalf("lock pid = %d, want %d", record.pid, os.Getpid())
 	}
-	if installed.pid != record.pid ||
-		!installed.writtenAt.Equal(record.writtenAt) ||
-		installed.fileInfo == nil ||
-		record.fileInfo == nil ||
-		!os.SameFile(installed.fileInfo, record.fileInfo) {
-		t.Fatalf("installed record does not identify the published lock file")
+	if installed.pid != record.pid || !installed.writtenAt.Equal(record.writtenAt) {
+		t.Fatalf("installed = %#v, want %#v", installed, record)
 	}
 
 	// A second install must not take a held lock.
