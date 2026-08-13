@@ -14886,7 +14886,7 @@ func removeAbandonedSessionSocket(path string) {
 	// A timeout, permission failure, full backlog, or local resource error does
 	// not prove the listener is abandoned. Only remove when the OS conclusively
 	// reports a missing path or a socket with no listener.
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+	if errors.Is(err, os.ErrNotExist) || isStaleUnixSocketError(err) {
 		_ = os.Remove(path)
 	}
 }

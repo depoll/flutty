@@ -617,3 +617,7 @@ func socketInfoIdentity(info os.FileInfo) (socketIdentity, error) {
 	}
 	return socketIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, nil
 }
+
+func isStaleUnixSocketError(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED)
+}
