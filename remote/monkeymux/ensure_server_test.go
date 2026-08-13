@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -228,10 +229,86 @@ func TestRepublishSocketIfMissingRestoresUnlinkedPath(t *testing.T) {
 	}
 }
 
+func TestCloseWaitsForInFlightSocketRepublisher(t *testing.T) {
+	dir := shortUnixSocketDir(t)
+	path := filepath.Join(dir, "closing.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	disableUnixListenerUnlink(listener)
+	identity, err := socketFileIdentity(path)
+	if err != nil && runtime.GOOS != "windows" {
+		t.Fatalf("identity: %v", err)
+	}
+
+	server := newMuxServerWithSize("closing-republish", 80, 24)
+	server.listener = listener
+	server.socketPath = path
+	server.socketIdentity = identity
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblockRepublisher := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	server.beforeInstallRepublishedSocket = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() {
+		unblockRepublisher()
+		server.close()
+	})
+
+	server.socketRepublishers.Add(1)
+	go func() {
+		defer server.socketRepublishers.Done()
+		server.republishSocketIfMissing()
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("republisher did not bind a replacement listener")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		server.close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("close returned before the republisher finished")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	unblockRepublisher()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("close did not finish after republisher cleanup")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("republisher left socket path after close: %v", err)
+	}
+}
+
 func TestWaitForServerProcessExitWaitsForLiveOwner(t *testing.T) {
 	owner := pidRecord{pid: os.Getpid(), writtenAt: time.Now()}
 	if waitForServerProcessExit("wait-owner", owner, 150*time.Millisecond) {
 		t.Fatal("waitForServerProcessExit treated a live pid as exited")
+	}
+}
+
+func TestWaitForServerProcessExitChecksOnceAtDeadline(t *testing.T) {
+	owner := pidRecord{pid: 99999999, writtenAt: time.Now()}
+	if !waitForServerProcessExit("wait-dead-owner", owner, 0) {
+		t.Fatal("waitForServerProcessExit skipped the final ownership check")
 	}
 }
 

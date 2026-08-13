@@ -614,6 +614,12 @@ type muxServer struct {
 	// server and keep mutating its state (markWindowClosed) after shutdown,
 	// which races whatever runs next in the same process.
 	windowWatchers sync.WaitGroup
+	// socketRepublishers tracks the path-healing goroutine so close cannot
+	// return while it still owns a replacement listener with unlink disabled.
+	socketRepublishers sync.WaitGroup
+	// beforeInstallRepublishedSocket is a test seam for the narrow interval
+	// after a replacement is bound but before it is installed under s.mu.
+	beforeInstallRepublishedSocket func()
 }
 
 type muxWindow struct {
@@ -4290,7 +4296,7 @@ func serveSession(
 		<-signals
 		server.close()
 	}()
-	go server.republishSocketLoop()
+	server.startSocketRepublisher()
 
 	for {
 		conn, err := server.acceptConnection()
@@ -14311,6 +14317,10 @@ func (s *muxServer) close() {
 	// marking the windows closed above is what makes overrunning a watcher
 	// harmless rather than a late mutation of server state.
 	s.waitForWindowWatchers(windowWatcherShutdownTimeout)
+	// A republisher may already have bound a replacement and be waiting to
+	// reacquire s.mu. Join it before close returns so it can observe closed and
+	// remove that listener's path rather than leaving stale socket residue.
+	s.socketRepublishers.Wait()
 }
 
 // windowWatcherShutdownTimeout bounds how long close waits for the per-window
@@ -14365,6 +14375,14 @@ func (s *muxServer) acceptConnection() (net.Conn, error) {
 	}
 }
 
+func (s *muxServer) startSocketRepublisher() {
+	s.socketRepublishers.Add(1)
+	go func() {
+		defer s.socketRepublishers.Done()
+		s.republishSocketLoop()
+	}()
+}
+
 // republishSocketLoop puts the session path back when it no longer names this
 // listener. An outgoing helper that still unlinks by path can delete the name
 // after this process rebound it, leaving a live server that nobody can dial.
@@ -14407,6 +14425,9 @@ func (s *muxServer) republishSocketIfMissing() bool {
 	disableUnixListenerUnlink(replacement)
 	rebound, reboundErr := socketFileIdentity(path)
 	_ = os.Chmod(path, 0o600)
+	if hook := s.beforeInstallRepublishedSocket; hook != nil {
+		hook()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.listener != listener {
@@ -14575,7 +14596,7 @@ func waitForServerProcessExit(
 	timeout time.Duration,
 ) bool {
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	hasExited := func() bool {
 		switch {
 		case owner.pid > 0 && pidRecordOwnership(owner, session) == pidOwnershipGone:
 			return true
@@ -14586,9 +14607,18 @@ func waitForServerProcessExit(
 			}
 			_ = conn.Close()
 		}
+		return false
+	}
+	for time.Now().Before(deadline) {
+		if hasExited() {
+			return true
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return false
+	// The process can exit during the final sleep that crosses the deadline.
+	// Check once more before reporting a timeout and retaining a helper that is
+	// no longer running.
+	return hasExited()
 }
 
 func inheritedEnvironment(base []string) []string {
