@@ -180,6 +180,11 @@ func TestRemoveSocketPathIfUnchangedKeepsReboundListener(t *testing.T) {
 }
 
 func TestRepublishSocketIfMissingRestoresUnlinkedPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Republish tracks the bound Unix socket by inode so it can replace an
+		// unlinked path without disturbing a listener that rebound the name.
+		t.Skip("windows socket identity is unavailable")
+	}
 	dir := shortUnixSocketDir(t)
 	path := filepath.Join(dir, "new.sock")
 
