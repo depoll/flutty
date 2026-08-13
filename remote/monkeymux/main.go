@@ -120,7 +120,7 @@ const (
 	// How long an upgrade waits for the outgoing helper to leave its pid
 	// behind. Dial failure is not enough: the old process can still be in
 	// close() and later unlink the replacement's freshly rebound socket.
-	serverExitWaitTimeout = 2 * time.Second
+	serverExitWaitTimeout = windowWatcherShutdownTimeout + time.Second
 	// How often a live server checks that its socket path still names the
 	// inode it is accepting on. An upgrade that unlinked by path leaves the
 	// replacement listening on an orphaned inode; republishing heals that.
@@ -1610,8 +1610,9 @@ func removeAbandonedStagingFile(path string) {
 }
 
 type ensureServerReplacement struct {
-	restore *serverRestore
-	oldPID  pidRecord
+	restore       *serverRestore
+	oldPID        pidRecord
+	legacyHandoff bool
 }
 
 func ensureServer(
@@ -1684,7 +1685,14 @@ func ensureServer(
 			return nil
 		}
 	}
-	removeAbandonedSessionSocket(socket)
+	if replacement != nil && replacement.legacyHandoff {
+		// Helpers predating shutdown keep accepting until their path is
+		// explicitly removed. The replacement's republish loop repairs the path
+		// if that outgoing helper later unlinks it during close.
+		_ = os.Remove(socket)
+	} else {
+		removeAbandonedSessionSocket(socket)
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -1867,7 +1875,11 @@ func prepareRunningServerReplacement(
 			monkeyMuxVersion,
 		)
 	}
-	return &ensureServerReplacement{restore: restore, oldPID: oldPID}, nil
+	return &ensureServerReplacement{
+		restore:       restore,
+		oldPID:        oldPID,
+		legacyHandoff: !status.supportsCapability("shutdown"),
+	}, nil
 }
 
 func queryRunningServerStatusWithRetry(
@@ -1965,6 +1977,10 @@ var sessionLockStagingSequence atomic.Uint64
 // while its holder was still inside the critical section. Filesystems without
 // hard links fall back to an exclusive create.
 func installSessionLockFile(path string) (pidRecord, bool, error) {
+	sequence := sessionLockStagingSequence.Add(1)
+	// Keep the file as a bare pid so older helpers sharing this runtime
+	// directory can parse it. readPIDRecord captures OS file identity to
+	// distinguish same-process lock generations without changing the format.
 	contents := []byte(strconv.Itoa(os.Getpid()) + "\n")
 	// The staging name is unique per attempt, not merely per process: two
 	// goroutines in one helper can contend for the same session, and sharing a
@@ -1973,7 +1989,7 @@ func installSessionLockFile(path string) (pidRecord, bool, error) {
 		"%s.%d.%d.staging",
 		path,
 		os.Getpid(),
-		sessionLockStagingSequence.Add(1),
+		sequence,
 	)
 	if err := os.WriteFile(staging, contents, sessionLockFileMode); err != nil {
 		return pidRecord{}, false, err
@@ -2119,6 +2135,7 @@ func describeSessionOwner(owner pidRecord, ownership pidOwnership) string {
 type pidRecord struct {
 	pid       int
 	writtenAt time.Time
+	fileInfo  os.FileInfo
 }
 
 // pidOwnership is the confidence with which a session file's owner could be
@@ -2337,9 +2354,14 @@ func clearStalePIDFile(path string, session string) bool {
 // hold the same session at once.
 func removePIDFileIfUnchanged(path string, record pidRecord) bool {
 	current, err := readPIDRecord(path)
-	if err != nil ||
-		current.pid != record.pid ||
-		!current.writtenAt.Equal(record.writtenAt) {
+	if err != nil || current.pid != record.pid {
+		return false
+	}
+	if record.fileInfo != nil && current.fileInfo != nil {
+		if !os.SameFile(record.fileInfo, current.fileInfo) {
+			return false
+		}
+	} else if !current.writtenAt.Equal(record.writtenAt) {
 		return false
 	}
 	return os.Remove(path) == nil
@@ -2384,11 +2406,10 @@ func readPIDFile(path string) (int, error) {
 	return record.pid, nil
 }
 
-// readPIDRecord parses a session file. The format is a bare pid so that older
-// helpers sharing the same host still read these files correctly; everything
-// needed to validate ownership is derived from the running process and the
-// file's own modification time instead. Content and timestamp are taken from
-// one open file so they always describe the same generation of the file.
+// readPIDRecord parses a bare-pid session file. Content, timestamp, and OS file
+// identity are taken from one open file so they describe the same generation.
+// The identity prevents a stale same-process unlock from matching a replacement
+// file when the filesystem's modification timestamps are too coarse.
 func readPIDRecord(path string) (pidRecord, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -2403,10 +2424,8 @@ func readPIDRecord(path string) (pidRecord, error) {
 	if err != nil {
 		return pidRecord{}, err
 	}
-	line, _, _ := strings.Cut(
-		strings.ReplaceAll(string(data), "\r\n", "\n"),
-		"\n",
-	)
+	normalized := strings.ReplaceAll(string(data), "\r\n", "\n")
+	line, _, _ := strings.Cut(normalized, "\n")
 	text := strings.TrimSpace(line)
 	if text == "" {
 		return pidRecord{}, errors.New("empty pid file")
@@ -2415,7 +2434,11 @@ func readPIDRecord(path string) (pidRecord, error) {
 	if err != nil || pid <= 0 {
 		return pidRecord{}, fmt.Errorf("invalid pid file %q", path)
 	}
-	return pidRecord{pid: pid, writtenAt: info.ModTime()}, nil
+	return pidRecord{
+		pid:       pid,
+		writtenAt: info.ModTime(),
+		fileInfo:  info,
+	}, nil
 }
 
 func collectServerRestore(session string, status runningServerStatus) *serverRestore {
@@ -14395,11 +14418,10 @@ func (s *muxServer) republishSocketIfMissing() bool {
 	defer s.mu.Unlock()
 	if s.closed || s.listener != listener {
 		_ = replacement.Close()
-		if reboundErr == nil {
-			removeSocketPathIfUnchanged(path, rebound)
-		} else {
-			_ = os.Remove(path)
-		}
+		// Even without inode identity, use the guarded path-only cleanup. A
+		// different helper may have rebound the name while this goroutine waited
+		// for s.mu; unlinking by name would orphan that live listener.
+		removeSocketPathIfUnchanged(path, rebound)
 		return !s.closed
 	}
 	s.listener = replacement
@@ -14838,7 +14860,12 @@ func removeAbandonedSessionSocket(path string) {
 		_ = conn.Close()
 		return
 	}
-	_ = os.Remove(path)
+	// A timeout, permission failure, full backlog, or local resource error does
+	// not prove the listener is abandoned. Only remove when the OS conclusively
+	// reports a missing path or a socket with no listener.
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+		_ = os.Remove(path)
+	}
 }
 
 func runtimeDirectory() (string, error) {

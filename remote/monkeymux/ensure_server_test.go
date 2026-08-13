@@ -138,11 +138,6 @@ func TestEnsureServerRefusesToStealLivePIDWithoutSocket(t *testing.T) {
 }
 
 func TestRemoveSocketPathIfUnchangedKeepsReboundListener(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// Windows AF_UNIX has no inode identity, so this path-only cleanup
-		// cannot distinguish the outgoing helper's socket from a rebound one.
-		t.Skip("windows socket identity is path-only")
-	}
 	dir := shortUnixSocketDir(t)
 	path := filepath.Join(dir, "old.sock")
 
@@ -152,7 +147,7 @@ func TestRemoveSocketPathIfUnchangedKeepsReboundListener(t *testing.T) {
 	}
 	disableUnixListenerUnlink(old)
 	oldIdentity, err := socketFileIdentity(path)
-	if err != nil {
+	if err != nil && runtime.GOOS != "windows" {
 		t.Fatalf("old identity: %v", err)
 	}
 
@@ -180,11 +175,6 @@ func TestRemoveSocketPathIfUnchangedKeepsReboundListener(t *testing.T) {
 }
 
 func TestRepublishSocketIfMissingRestoresUnlinkedPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// Republish tracks the bound Unix socket by inode so it can replace an
-		// unlinked path without disturbing a listener that rebound the name.
-		t.Skip("windows socket identity is unavailable")
-	}
 	dir := shortUnixSocketDir(t)
 	path := filepath.Join(dir, "new.sock")
 
@@ -194,7 +184,7 @@ func TestRepublishSocketIfMissingRestoresUnlinkedPath(t *testing.T) {
 	}
 	disableUnixListenerUnlink(listener)
 	identity, err := socketFileIdentity(path)
-	if err != nil {
+	if err != nil && runtime.GOOS != "windows" {
 		t.Fatalf("identity: %v", err)
 	}
 
@@ -206,6 +196,17 @@ func TestRepublishSocketIfMissingRestoresUnlinkedPath(t *testing.T) {
 		server.close()
 	})
 
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := server.acceptConnection()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("unlink: %v", err)
 	}
@@ -216,13 +217,31 @@ func TestRepublishSocketIfMissingRestoresUnlinkedPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial republished socket: %v", err)
 	}
-	_ = conn.Close()
+	defer conn.Close()
+	select {
+	case acceptedConn := <-accepted:
+		_ = acceptedConn.Close()
+	case err := <-acceptErr:
+		t.Fatalf("accept republished socket: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("acceptConnection stayed blocked on the unlinked listener")
+	}
 }
 
 func TestWaitForServerProcessExitWaitsForLiveOwner(t *testing.T) {
 	owner := pidRecord{pid: os.Getpid(), writtenAt: time.Now()}
 	if waitForServerProcessExit("wait-owner", owner, 150*time.Millisecond) {
 		t.Fatal("waitForServerProcessExit treated a live pid as exited")
+	}
+}
+
+func TestServerExitWaitAllowsWindowWatcherShutdownMargin(t *testing.T) {
+	if serverExitWaitTimeout <= windowWatcherShutdownTimeout {
+		t.Fatalf(
+			"server exit wait %s must exceed watcher shutdown bound %s",
+			serverExitWaitTimeout,
+			windowWatcherShutdownTimeout,
+		)
 	}
 }
 
@@ -645,31 +664,64 @@ func TestAcquireSessionLockUnlockDoesNotDeleteAnotherSameProcessHolder(t *testin
 		t.Fatalf("first acquireSessionLock: %v", err)
 	}
 
-	second := make(chan error, 1)
+	secondAcquired := make(chan func(), 1)
+	secondErr := make(chan error, 1)
 	go func() {
 		unlock, err := acquireSessionLock(session)
 		if err != nil {
-			second <- err
+			secondErr <- err
 			return
 		}
-		unlock()
-		second <- nil
+		secondAcquired <- unlock
 	}()
 
 	select {
-	case err := <-second:
-		t.Fatalf("second lock acquired while first held: %v", err)
+	case <-secondAcquired:
+		t.Fatal("second lock acquired while first held")
+	case err := <-secondErr:
+		t.Fatalf("second lock failed while waiting: %v", err)
 	case <-time.After(150 * time.Millisecond):
 	}
 
 	firstUnlock()
+	var secondUnlock func()
 	select {
-	case err := <-second:
-		if err != nil {
-			t.Fatalf("second lock after first unlock: %v", err)
-		}
+	case secondUnlock = <-secondAcquired:
+	case err := <-secondErr:
+		t.Fatalf("second lock after first unlock: %v", err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("second lock did not acquire after first unlock")
+	}
+
+	// Calling the stale unlock again must not delete the second holder's file.
+	firstUnlock()
+	thirdAcquired := make(chan func(), 1)
+	thirdErr := make(chan error, 1)
+	go func() {
+		unlock, err := acquireSessionLock(session)
+		if err != nil {
+			thirdErr <- err
+			return
+		}
+		thirdAcquired <- unlock
+	}()
+	select {
+	case unlock := <-thirdAcquired:
+		unlock()
+		t.Fatal("stale first unlock deleted the second holder's lock")
+	case err := <-thirdErr:
+		t.Fatalf("third lock failed while waiting: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	secondUnlock()
+	select {
+	case unlock := <-thirdAcquired:
+		unlock()
+	case err := <-thirdErr:
+		t.Fatalf("third lock after second unlock: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("third lock did not acquire after second unlock")
 	}
 }
 
@@ -701,8 +753,12 @@ func TestInstallSessionLockFileIsNeverEmpty(t *testing.T) {
 	if record.pid != os.Getpid() {
 		t.Fatalf("lock pid = %d, want %d", record.pid, os.Getpid())
 	}
-	if installed.pid != record.pid || !installed.writtenAt.Equal(record.writtenAt) {
-		t.Fatalf("installed = %#v, want %#v", installed, record)
+	if installed.pid != record.pid ||
+		!installed.writtenAt.Equal(record.writtenAt) ||
+		installed.fileInfo == nil ||
+		record.fileInfo == nil ||
+		!os.SameFile(installed.fileInfo, record.fileInfo) {
+		t.Fatalf("installed record does not identify the published lock file")
 	}
 
 	// A second install must not take a held lock.
