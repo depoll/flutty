@@ -4359,18 +4359,37 @@ func writeRestoreFile(session string, restore *serverRestore) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(
-		runDir,
-		fmt.Sprintf(
-			"monkeymux-restore-%s-%d.json",
-			sessionToken(session),
-			time.Now().UnixNano(),
-		),
-	)
-	if err := os.WriteFile(path, data, restoreFileMode); err != nil {
-		return "", err
+	// Windows clocks can return the same UnixNano value for consecutive calls.
+	// Create exclusively and advance the numeric suffix on collision so one
+	// in-flight upgrade can never overwrite another snapshot.
+	for suffix := time.Now().UnixNano(); ; suffix++ {
+		path := filepath.Join(
+			runDir,
+			fmt.Sprintf(
+				"monkeymux-restore-%s-%d.json",
+				sessionToken(session),
+				suffix,
+			),
+		)
+		file, openErr := os.OpenFile(
+			path,
+			os.O_CREATE|os.O_EXCL|os.O_WRONLY,
+			restoreFileMode,
+		)
+		if errors.Is(openErr, os.ErrExist) {
+			continue
+		}
+		if openErr != nil {
+			return "", openErr
+		}
+		_, writeErr := file.Write(data)
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			_ = os.Remove(path)
+			return "", errors.Join(writeErr, closeErr)
+		}
+		return path, nil
 	}
-	return path, nil
 }
 
 // sessionToken is a stable, whitespace-free identifier for a session name. It
