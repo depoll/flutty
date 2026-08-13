@@ -1917,17 +1917,16 @@ func acquireSessionLock(session string) (func(), error) {
 	deadline := time.Now().Add(ensureServerLockTimeout)
 	var nextStaleCheck time.Time
 	for clears := 0; ; {
-		acquired, err := installSessionLockFile(path)
+		record, acquired, err := installSessionLockFile(path)
 		if err != nil {
 			return nil, err
 		}
 		if acquired {
 			return func() {
-				current, readErr := readPIDFile(path)
-				if readErr == nil && current != os.Getpid() {
-					return
-				}
-				_ = os.Remove(path)
+				// Unlock only the generation this waiter installed. Same-process
+				// contenders share a pid, so comparing pid alone can delete a lock
+				// that another goroutine already holds and leave waiters spinning.
+				_ = removePIDFileIfUnchanged(path, record)
 			}, nil
 		}
 		// Validating the holder can cost a process lookup, so throttle it
@@ -1965,7 +1964,7 @@ var sessionLockStagingSequence atomic.Uint64
 // could be mistaken by another helper for the residue of a crash and reclaimed
 // while its holder was still inside the critical section. Filesystems without
 // hard links fall back to an exclusive create.
-func installSessionLockFile(path string) (bool, error) {
+func installSessionLockFile(path string) (pidRecord, bool, error) {
 	contents := []byte(strconv.Itoa(os.Getpid()) + "\n")
 	// The staging name is unique per attempt, not merely per process: two
 	// goroutines in one helper can contend for the same session, and sharing a
@@ -1977,15 +1976,20 @@ func installSessionLockFile(path string) (bool, error) {
 		sessionLockStagingSequence.Add(1),
 	)
 	if err := os.WriteFile(staging, contents, sessionLockFileMode); err != nil {
-		return false, err
+		return pidRecord{}, false, err
 	}
 	defer os.Remove(staging)
 
 	switch err := os.Link(staging, path); {
 	case err == nil:
-		return true, nil
+		record, readErr := readPIDRecord(path)
+		if readErr != nil {
+			_ = os.Remove(path)
+			return pidRecord{}, false, readErr
+		}
+		return record, true, nil
 	case errors.Is(err, os.ErrExist):
-		return false, nil
+		return pidRecord{}, false, nil
 	}
 
 	file, err := os.OpenFile(
@@ -1995,17 +1999,22 @@ func installSessionLockFile(path string) (bool, error) {
 	)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return false, nil
+			return pidRecord{}, false, nil
 		}
-		return false, err
+		return pidRecord{}, false, err
 	}
 	_, writeErr := file.Write(contents)
 	closeErr := file.Close()
 	if writeErr != nil || closeErr != nil {
 		_ = os.Remove(path)
-		return false, errors.Join(writeErr, closeErr)
+		return pidRecord{}, false, errors.Join(writeErr, closeErr)
 	}
-	return true, nil
+	record, readErr := readPIDRecord(path)
+	if readErr != nil {
+		_ = os.Remove(path)
+		return pidRecord{}, false, readErr
+	}
+	return record, true, nil
 }
 
 func writeSessionPIDFile(session string, pid int) error {

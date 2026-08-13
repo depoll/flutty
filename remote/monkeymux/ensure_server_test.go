@@ -625,6 +625,46 @@ func TestAcquireSessionLockIsExclusiveUnderContention(t *testing.T) {
 	}
 }
 
+func TestAcquireSessionLockUnlockDoesNotDeleteAnotherSameProcessHolder(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	session := fmt.Sprintf("lock-same-pid-%d", time.Now().UnixNano())
+	firstUnlock, err := acquireSessionLock(session)
+	if err != nil {
+		t.Fatalf("first acquireSessionLock: %v", err)
+	}
+
+	second := make(chan error, 1)
+	go func() {
+		unlock, err := acquireSessionLock(session)
+		if err != nil {
+			second <- err
+			return
+		}
+		unlock()
+		second <- nil
+	}()
+
+	select {
+	case err := <-second:
+		t.Fatalf("second lock acquired while first held: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	firstUnlock()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("second lock after first unlock: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second lock did not acquire after first unlock")
+	}
+}
+
 // A lock file is installed already populated, so a contender can never observe
 // an empty one and mistake a live holder for the residue of a crash.
 func TestInstallSessionLockFileIsNeverEmpty(t *testing.T) {
@@ -642,9 +682,9 @@ func TestInstallSessionLockFileIsNeverEmpty(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	acquired, err := installSessionLockFile(path)
+	installed, acquired, err := installSessionLockFile(path)
 	if err != nil || !acquired {
-		t.Fatalf("installSessionLockFile = %v, %v; want true, nil", acquired, err)
+		t.Fatalf("installSessionLockFile = %#v, %v, %v; want record, true, nil", installed, acquired, err)
 	}
 	record, err := readPIDRecord(path)
 	if err != nil {
@@ -653,9 +693,12 @@ func TestInstallSessionLockFileIsNeverEmpty(t *testing.T) {
 	if record.pid != os.Getpid() {
 		t.Fatalf("lock pid = %d, want %d", record.pid, os.Getpid())
 	}
+	if installed.pid != record.pid || !installed.writtenAt.Equal(record.writtenAt) {
+		t.Fatalf("installed = %#v, want %#v", installed, record)
+	}
 
 	// A second install must not take a held lock.
-	acquired, err = installSessionLockFile(path)
+	_, acquired, err = installSessionLockFile(path)
 	if err != nil {
 		t.Fatalf("installSessionLockFile: %v", err)
 	}
