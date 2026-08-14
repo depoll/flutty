@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.150"
+	monkeyMuxVersion                  = "0.1.151"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3176,6 +3176,11 @@ type piSessionEntry struct {
 	cwd       string
 	path      string
 	modTime   time.Time
+	createdAt time.Time
+}
+
+var processStartedAtForMetadata = func(pid int) time.Time {
+	return inspectProcess(pid).started
 }
 
 type piRestoreSession struct {
@@ -3183,10 +3188,12 @@ type piRestoreSession struct {
 	sessionDir string
 }
 
-// discoverPiSessions first correlates each pane with its live Pi process and
-// open JSONL file. It only falls back to an on-disk cwd match when exactly one
-// unresolved pane and one unused primary session are possible, because mtime
-// ordering cannot safely distinguish concurrent conversations in one project.
+// discoverPiSessions first correlates each pane with its live Pi process. Pi
+// writes JSONL entries with short-lived append calls, so an open-file match is
+// only a best-effort shortcut. When that is unavailable, the session header
+// creation time (or, for resumed sessions, file mtime) is matched against the
+// process start time. Plain cwd fallback remains limited to one unambiguous
+// unused primary session.
 func discoverPiSessions(
 	restore *serverRestore,
 	processes map[int]processInfo,
@@ -3203,6 +3210,7 @@ func discoverPiSessions(
 	}
 	piProcesses := piProcessesByPane(processes, panePids)
 	sessions := map[int]piRestoreSession{}
+	processStarts := map[int]time.Time{}
 	type fallbackKey struct {
 		root string
 		cwd  string
@@ -3225,6 +3233,7 @@ func discoverPiSessions(
 				used[entry.sessionID] = true
 				continue
 			}
+			processStarts[i] = processStartedAtForMetadata(process.pid)
 		}
 		cwd := normalizedPiWorkingDirectory(window.Cwd)
 		if cwd == "" {
@@ -3244,28 +3253,71 @@ func discoverPiSessions(
 	}
 	entriesByRoot := map[string][]piSessionEntry{}
 	for key, indices := range fallbackWindows {
-		if len(indices) != 1 {
-			continue
-		}
 		entries, ok := entriesByRoot[key.root]
 		if !ok {
 			entries = readPiSessionEntries(key.root)
 			entriesByRoot[key.root] = entries
 		}
-		candidates := []piSessionEntry{}
-		for _, entry := range entries {
-			if entry.cwd == key.cwd && !used[entry.sessionID] {
-				candidates = append(candidates, entry)
+		candidates := func() []piSessionEntry {
+			matches := []piSessionEntry{}
+			for _, entry := range entries {
+				if entry.cwd == key.cwd && !used[entry.sessionID] {
+					matches = append(matches, entry)
+				}
+			}
+			return matches
+		}
+		for _, index := range indices {
+			candidate, ok := piSessionForProcessStart(candidates(), processStarts[index])
+			if !ok {
+				continue
+			}
+			sessions[index] = piRestoreSession{sessionID: candidate.sessionID, sessionDir: filepath.Dir(candidate.path)}
+			used[candidate.sessionID] = true
+		}
+		unresolved := []int{}
+		for _, index := range indices {
+			if _, ok := sessions[index]; !ok {
+				unresolved = append(unresolved, index)
 			}
 		}
-		if len(candidates) != 1 {
-			continue
+		remaining := candidates()
+		if len(unresolved) == 1 && len(remaining) == 1 {
+			candidate := remaining[0]
+			sessions[unresolved[0]] = piRestoreSession{sessionID: candidate.sessionID, sessionDir: filepath.Dir(candidate.path)}
+			used[candidate.sessionID] = true
 		}
-		candidate := candidates[0]
-		sessions[indices[0]] = piRestoreSession{sessionID: candidate.sessionID, sessionDir: filepath.Dir(candidate.path)}
-		used[candidate.sessionID] = true
 	}
 	return sessions
+}
+
+func piSessionForProcessStart(entries []piSessionEntry, processStarted time.Time) (piSessionEntry, bool) {
+	if processStarted.IsZero() {
+		return piSessionEntry{}, false
+	}
+	createdMatches := []piSessionEntry{}
+	for _, entry := range entries {
+		if entry.createdAt.IsZero() {
+			continue
+		}
+		if !entry.createdAt.Before(processStarted.Add(-2*time.Second)) &&
+			!entry.createdAt.After(processStarted.Add(10*time.Second)) {
+			createdMatches = append(createdMatches, entry)
+		}
+	}
+	if len(createdMatches) == 1 {
+		return createdMatches[0], true
+	}
+	modifiedMatches := []piSessionEntry{}
+	for _, entry := range entries {
+		if !entry.modTime.Before(processStarted.Add(-2 * time.Second)) {
+			modifiedMatches = append(modifiedMatches, entry)
+		}
+	}
+	if len(modifiedMatches) == 1 {
+		return modifiedMatches[0], true
+	}
+	return piSessionEntry{}, false
 }
 
 func piProcessesByPane(processes map[int]processInfo, panePids map[int]struct{}) map[int]processInfo {
@@ -3452,9 +3504,10 @@ func readPiSessionEntry(path string) (piSessionEntry, bool) {
 			continue
 		}
 		var header struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-			Cwd  string `json:"cwd"`
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			Timestamp string `json:"timestamp"`
+			Cwd       string `json:"cwd"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &header) != nil || header.Type != "session" {
 			continue
@@ -3468,7 +3521,14 @@ func readPiSessionEntry(path string) (piSessionEntry, bool) {
 		if err != nil {
 			return piSessionEntry{}, false
 		}
-		return piSessionEntry{sessionID: sessionID, cwd: cwd, path: filepath.Clean(path), modTime: info.ModTime()}, true
+		createdAt, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(header.Timestamp))
+		return piSessionEntry{
+			sessionID: sessionID,
+			cwd:       cwd,
+			path:      filepath.Clean(path),
+			modTime:   info.ModTime(),
+			createdAt: createdAt,
+		}, true
 	}
 	return piSessionEntry{}, false
 }
@@ -13707,6 +13767,11 @@ func agentCommandNameFromProcessArgs(args string) string {
 	case strings.Contains(lowered, "@anthropic-ai/claude-code") ||
 		strings.Contains(lowered, "/claude-code/"):
 		return "claude"
+	case strings.Contains(lowered, "@earendil-works/pi-coding-agent") ||
+		strings.Contains(lowered, "@earendil-works\\pi-coding-agent") ||
+		strings.Contains(lowered, "@mariozechner/pi-coding-agent") ||
+		strings.Contains(lowered, "@mariozechner\\pi-coding-agent"):
+		return "pi"
 	case strings.Contains(lowered, "cursor-agent/versions/"):
 		// The `cursor-agent`/`agent` launchers are Node wrappers whose argv[0]
 		// (often the generic `agent`) is ambiguous, so match the versioned
@@ -13935,7 +14000,7 @@ func agentToolFromTerminalTitle(title string) string {
 		normalized == "cursor-agent" || normalized == "cursor cli" ||
 		strings.HasPrefix(normalized, "cursor agent "):
 		return "cursor-agent"
-	case normalized == "pi":
+	case normalized == "pi" || strings.HasPrefix(normalized, "pi - "):
 		return "pi"
 	default:
 		return ""
