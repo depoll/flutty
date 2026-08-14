@@ -394,6 +394,22 @@ var foregroundProcessGroupForWindow = func(window *muxWindow) int {
 	return pty.foregroundProcessGroup()
 }
 
+func shellArgument(value string) (string, bool) {
+	return shellQuote(value), true
+}
+
+func piResumeCommandWithFreshFallback(resume string, launch string) string {
+	resume = strings.TrimSpace(resume)
+	launch = strings.TrimSpace(launch)
+	if resume == "" {
+		return launch
+	}
+	if launch == "" || launch == resume {
+		return resume
+	}
+	return resume + " || " + launch
+}
+
 func defaultShellPath() string {
 	shell := os.Getenv("SHELL")
 	if strings.TrimSpace(shell) == "" {

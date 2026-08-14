@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.149"
+	monkeyMuxVersion                  = "0.1.150"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -420,6 +420,8 @@ var (
 	leadingEnvPattern             = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)\s+`)
 	restoreFileNamePattern        = regexp.MustCompile(`^monkeymux-restore-[a-f0-9]{24}-[0-9]+\.json$`)
 	codexSessionIDPattern         = regexp.MustCompile(`(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
+	piSessionDirArgumentPattern   = regexp.MustCompile(`(?:^|\s)--session-dir(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`)
+	safePiSessionIDPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`)
 	agentSessionIDArgumentPattern = map[string][]*regexp.Regexp{
 		"claude": {
 			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
@@ -434,6 +436,9 @@ var (
 			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
 		},
 		"opencode": {
+			regexp.MustCompile(`(?:^|\s)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"pi": {
 			regexp.MustCompile(`(?:^|\s)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
 		},
 		"antigravity": {
@@ -543,6 +548,7 @@ type restoreWindowState struct {
 	PaneTitle                string                    `json:"paneTitle,omitempty"`
 	AgentTool                string                    `json:"agentTool,omitempty"`
 	AgentSessionID           string                    `json:"agentSessionId,omitempty"`
+	AgentSessionDir          string                    `json:"agentSessionDir,omitempty"`
 	HistoryBase64            string                    `json:"historyBase64,omitempty"`
 	HistoryStartsAtGround    bool                      `json:"historyStartsAtGround,omitempty"`
 	CursorVisible            bool                      `json:"cursorVisible,omitempty"`
@@ -2784,21 +2790,23 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	panePids := map[int]struct{}{}
 	hasAntigravityWindows := false
 	hasCursorWindows := false
+	hasPiWindows := false
 	for _, window := range restore.Windows {
 		if strings.TrimSpace(window.AgentSessionID) != "" {
 			continue
 		}
 		tool := agentToolForRestore(window)
-		if tool == "antigravity" {
+		switch tool {
+		case "antigravity":
 			hasAntigravityWindows = true
-		}
-		if tool == "cursor-agent" {
+		case "cursor-agent":
 			hasCursorWindows = true
+		case "pi":
+			hasPiWindows = true
 		}
-		if tool == "" || window.PanePid <= 0 {
-			continue
+		if tool != "" && window.PanePid > 0 {
+			panePids[window.PanePid] = struct{}{}
 		}
-		panePids[window.PanePid] = struct{}{}
 	}
 	antigravitySessions := map[int]string{}
 	if hasAntigravityWindows {
@@ -2808,6 +2816,14 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	if hasCursorWindows {
 		cursorSessions = discoverCursorSessionIDs(restore)
 	}
+	processes := map[int]processInfo{}
+	if len(panePids) > 0 {
+		processes = readProcessTable()
+	}
+	piSessions := map[int]piRestoreSession{}
+	if hasPiWindows {
+		piSessions = discoverPiSessions(restore, processes, panePids)
+	}
 	if len(panePids) == 0 {
 		for i, sessionID := range antigravitySessions {
 			restore.Windows[i].AgentSessionID = sessionID
@@ -2815,15 +2831,13 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		for i, sessionID := range cursorSessions {
 			restore.Windows[i].AgentSessionID = sessionID
 		}
+		for i, session := range piSessions {
+			restore.Windows[i].AgentSessionID = session.sessionID
+			restore.Windows[i].AgentSessionDir = session.sessionDir
+		}
 		assignCopilotSessionsByWorkingDirectory(restore)
 		return
 	}
-	processes := readProcessTable()
-	// Each entry maps a pane PID to the agent session ID discovered for the
-	// agent running inside that pane. Tools that launch fresh (without a
-	// resumable session ID in their process arguments) are recovered from
-	// their own on-disk session stores so they keep resuming after a
-	// MonkeyMux helper update restarts the session server.
 	processDiscoveredSessions := map[string]map[int]string{}
 	if len(processes) > 0 {
 		processDiscoveredSessions = map[string]map[int]string{
@@ -2842,6 +2856,13 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		panePid := restore.Windows[i].PanePid
 		if tool == "" {
 			continue
+		}
+		if tool == "pi" {
+			if session, ok := piSessions[i]; ok {
+				restore.Windows[i].AgentSessionID = session.sessionID
+				restore.Windows[i].AgentSessionDir = session.sessionDir
+				continue
+			}
 		}
 		if panePid > 0 {
 			if sessionID := processDiscoveredSessions[tool][panePid]; sessionID != "" {
@@ -3147,6 +3168,324 @@ func normalizedCursorWorkspacePath(value string) string {
 		workspace = expanded
 	}
 	return filepath.Clean(workspace)
+}
+
+// piSessionEntry is the resumable metadata stored in a primary Pi JSONL file.
+type piSessionEntry struct {
+	sessionID string
+	cwd       string
+	path      string
+	modTime   time.Time
+}
+
+type piRestoreSession struct {
+	sessionID  string
+	sessionDir string
+}
+
+// discoverPiSessions first correlates each pane with its live Pi process and
+// open JSONL file. It only falls back to an on-disk cwd match when exactly one
+// unresolved pane and one unused primary session are possible, because mtime
+// ordering cannot safely distinguish concurrent conversations in one project.
+func discoverPiSessions(
+	restore *serverRestore,
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) map[int]piRestoreSession {
+	if restore == nil {
+		return nil
+	}
+	used := map[string]bool{}
+	for _, window := range restore.Windows {
+		if id := strings.TrimSpace(window.AgentSessionID); id != "" {
+			used[id] = true
+		}
+	}
+	piProcesses := piProcessesByPane(processes, panePids)
+	sessions := map[int]piRestoreSession{}
+	type fallbackKey struct {
+		root string
+		cwd  string
+	}
+	fallbackWindows := map[fallbackKey][]int{}
+	for i, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) != "" || agentToolForRestore(window) != "pi" {
+			continue
+		}
+		process, hasProcess := piProcesses[window.PanePid]
+		if hasProcess {
+			if sessionID := agentSessionIDFromArgs("pi", process.args); sessionID != "" && !used[sessionID] {
+				sessionDir := piSessionDirFromArgs(process.args, window.Cwd)
+				sessions[i] = piRestoreSession{sessionID: sessionID, sessionDir: sessionDir}
+				used[sessionID] = true
+				continue
+			}
+			if entry, ok := piSessionFromOpenFiles(process.pid); ok && !used[entry.sessionID] {
+				sessions[i] = piRestoreSession{sessionID: entry.sessionID, sessionDir: filepath.Dir(entry.path)}
+				used[entry.sessionID] = true
+				continue
+			}
+		}
+		cwd := normalizedPiWorkingDirectory(window.Cwd)
+		if cwd == "" {
+			continue
+		}
+		root := ""
+		if hasProcess {
+			root = piSessionDirFromArgs(process.args, window.Cwd)
+		}
+		if root == "" {
+			root = piSessionRootForWorkingDirectory(window.Cwd)
+		}
+		if root != "" {
+			key := fallbackKey{root: root, cwd: cwd}
+			fallbackWindows[key] = append(fallbackWindows[key], i)
+		}
+	}
+	entriesByRoot := map[string][]piSessionEntry{}
+	for key, indices := range fallbackWindows {
+		if len(indices) != 1 {
+			continue
+		}
+		entries, ok := entriesByRoot[key.root]
+		if !ok {
+			entries = readPiSessionEntries(key.root)
+			entriesByRoot[key.root] = entries
+		}
+		candidates := []piSessionEntry{}
+		for _, entry := range entries {
+			if entry.cwd == key.cwd && !used[entry.sessionID] {
+				candidates = append(candidates, entry)
+			}
+		}
+		if len(candidates) != 1 {
+			continue
+		}
+		candidate := candidates[0]
+		sessions[indices[0]] = piRestoreSession{sessionID: candidate.sessionID, sessionDir: filepath.Dir(candidate.path)}
+		used[candidate.sessionID] = true
+	}
+	return sessions
+}
+
+func piProcessesByPane(processes map[int]processInfo, panePids map[int]struct{}) map[int]processInfo {
+	selected := map[int]processInfo{}
+	depths := map[int]int{}
+	for _, process := range processes {
+		panePid := ancestorPanePID(processes, process.pid, panePids)
+		if panePid <= 0 || agentToolFromCommandName(commandNameFromProcessFields(process.comm, process.args)) != "pi" {
+			continue
+		}
+		depth := processDepthFromAncestor(processes, process.pid, panePid)
+		if depth < 0 {
+			continue
+		}
+		if prior, ok := depths[panePid]; ok && prior <= depth {
+			continue
+		}
+		selected[panePid] = process
+		depths[panePid] = depth
+	}
+	return selected
+}
+
+func processDepthFromAncestor(processes map[int]processInfo, pid int, ancestor int) int {
+	seen := map[int]struct{}{}
+	depth := 0
+	for current := pid; current > 0; depth++ {
+		if current == ancestor {
+			return depth
+		}
+		if _, ok := seen[current]; ok {
+			return -1
+		}
+		seen[current] = struct{}{}
+		process, ok := processes[current]
+		if !ok {
+			return -1
+		}
+		current = process.ppid
+	}
+	return -1
+}
+
+func piSessionFromOpenFiles(pid int) (piSessionEntry, bool) {
+	matches := map[string]piSessionEntry{}
+	for _, path := range processOpenFilePathsForMetadata(pid) {
+		if !strings.HasSuffix(strings.ToLower(path), ".jsonl") {
+			continue
+		}
+		if entry, ok := readPiSessionEntry(path); ok {
+			matches[entry.sessionID] = entry
+		}
+	}
+	if len(matches) != 1 {
+		return piSessionEntry{}, false
+	}
+	for _, entry := range matches {
+		return entry, true
+	}
+	return piSessionEntry{}, false
+}
+
+func readPiSessionEntries(root string) []piSessionEntry {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil
+	}
+	entries := []piSessionEntry{}
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		depth := 0
+		if relative != "." {
+			depth = len(strings.Split(relative, string(filepath.Separator)))
+		}
+		if entry.IsDir() {
+			if depth >= 2 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if depth > 2 || !strings.HasSuffix(strings.ToLower(entry.Name()), ".jsonl") {
+			return nil
+		}
+		if session, ok := readPiSessionEntry(path); ok {
+			entries = append(entries, session)
+		}
+		return nil
+	})
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].modTime.After(entries[j].modTime) })
+	return entries
+}
+
+func piSessionRootForWorkingDirectory(cwd string) string {
+	if configured := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_SESSION_DIR")); configured != "" {
+		return normalizedPiSessionDirectory(configured, cwd)
+	}
+	agentDirectory := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+	if agentDirectory == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		agentDirectory = filepath.Join(home, ".pi", "agent")
+	} else {
+		agentDirectory = normalizedPiSessionDirectory(agentDirectory, cwd)
+	}
+	setting := readPiSessionDirectorySetting(filepath.Join(agentDirectory, "settings.json"))
+	projectDirectory := normalizedPiWorkingDirectory(cwd)
+	if projectDirectory != "" {
+		if projectSetting := readPiSessionDirectorySetting(filepath.Join(projectDirectory, ".pi", "settings.json")); projectSetting != "" {
+			setting = projectSetting
+		}
+	}
+	if setting != "" {
+		return normalizedPiSessionDirectory(setting, cwd)
+	}
+	return filepath.Join(agentDirectory, "sessions")
+}
+
+func readPiSessionDirectorySetting(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var settings struct {
+		SessionDir string `json:"sessionDir"`
+	}
+	if json.Unmarshal(data, &settings) != nil {
+		return ""
+	}
+	return strings.TrimSpace(settings.SessionDir)
+}
+
+func piSessionDirFromArgs(args string, cwd string) string {
+	match := piSessionDirArgumentPattern.FindStringSubmatch(args)
+	if match == nil {
+		return ""
+	}
+	for _, group := range match[1:] {
+		if value := strings.TrimSpace(group); value != "" {
+			return normalizedPiSessionDirectory(value, cwd)
+		}
+	}
+	return ""
+}
+
+func normalizedPiSessionDirectory(path string, cwd string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	if expanded, err := expandHomePath(trimmed); err == nil {
+		trimmed = expanded
+	}
+	if !filepath.IsAbs(trimmed) {
+		base := normalizedPiWorkingDirectory(cwd)
+		if base == "" {
+			if absolute, err := filepath.Abs(trimmed); err == nil {
+				return filepath.Clean(absolute)
+			}
+			return filepath.Clean(trimmed)
+		}
+		trimmed = filepath.Join(base, trimmed)
+	}
+	return filepath.Clean(trimmed)
+}
+
+func readPiSessionEntry(path string) (piSessionEntry, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return piSessionEntry{}, false
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for lines := 0; lines < 100 && scanner.Scan(); lines++ {
+		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+			continue
+		}
+		var header struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+			Cwd  string `json:"cwd"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &header) != nil || header.Type != "session" {
+			continue
+		}
+		sessionID := strings.TrimSpace(header.ID)
+		cwd := normalizedPiWorkingDirectory(header.Cwd)
+		if sessionID == "" || cwd == "" {
+			return piSessionEntry{}, false
+		}
+		info, err := file.Stat()
+		if err != nil {
+			return piSessionEntry{}, false
+		}
+		return piSessionEntry{sessionID: sessionID, cwd: cwd, path: filepath.Clean(path), modTime: info.ModTime()}, true
+	}
+	return piSessionEntry{}, false
+}
+
+func normalizedPiWorkingDirectory(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	if expanded, err := expandHomePath(trimmed); err == nil {
+		trimmed = expanded
+	}
+	cleaned := filepath.Clean(trimmed)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+	return cleaned
 }
 
 func agentToolForRestore(window restoreWindowState) string {
@@ -4597,10 +4936,18 @@ func createWindowOptionsForRestore(
 	command := ""
 	if agentTool != "" {
 		launch := agentLaunchCommand(agentTool, startInYoloMode)
+		if agentTool == "pi" {
+			launch = piLaunchCommand(state.AgentSessionDir)
+		}
 		command = launch
 		if sessionID := strings.TrimSpace(state.AgentSessionID); sessionID != "" {
 			resume := agentResumeCommand(agentTool, sessionID, startInYoloMode)
-			command = agentResumeCommandWithFreshFallback(resume, launch)
+			if agentTool == "pi" {
+				resume = piResumeCommand(sessionID, state.AgentSessionDir)
+				command = piResumeCommandWithFreshFallback(resume, launch)
+			} else {
+				command = agentResumeCommandWithFreshFallback(resume, launch)
+			}
 		}
 	}
 	history := []byte(nil)
@@ -4615,20 +4962,16 @@ func createWindowOptionsForRestore(
 		)
 	}
 	return createWindowOptions{
-		name:                     firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
-		cwd:                      state.Cwd,
-		command:                  command,
-		history:                  history,
-		paneTitle:                firstNonEmptyString(state.PaneTitle, state.Name),
-		agentTool:                agentTool,
-		cursorVisible:            state.CursorVisible,
-		cursorVisibilityKnown:    state.CursorVisibilityKnown,
-		privateModes:             privateModesForRestore(state.PrivateModes),
-		terminalProgress:         copyTerminalProgressSnapshot(state.TerminalProgress),
-		insertModeEnabled:        state.InsertModeEnabled,
-		insertModeKnown:          state.InsertModeKnown,
-		applicationKeypadEnabled: state.ApplicationKeypadEnabled,
-		applicationKeypadKnown:   state.ApplicationKeypadKnown,
+		name:                  firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
+		cwd:                   state.Cwd,
+		command:               command,
+		history:               history,
+		paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
+		agentTool:             agentTool,
+		cursorVisible:         state.CursorVisible,
+		cursorVisibilityKnown: state.CursorVisibilityKnown,
+		privateModes:          privateModesForRestore(state.PrivateModes),
+		terminalProgress:      copyTerminalProgressSnapshot(state.TerminalProgress),
 	}
 }
 
@@ -8662,18 +9005,20 @@ func copyPrivateModes(privateModes map[string]bool) map[string]bool {
 	return copied
 }
 
-// privateModesForRestore copies tracked modes for a restored window but drops
-// mouse-tracking modes (1000/1002/1003/1006). A restore spawns a fresh process:
-// agent windows are relaunched and re-enable mouse tracking themselves, while
-// shell windows do not want it. Carrying a dead process's mouse modes forward
-// would make a plain shell prompt report mouse wheel and spew SGR reports on
-// scroll.
+// privateModesForRestore keeps display-only state needed to replay retained
+// shell history, but drops every process-owned input/query mode. A restore
+// starts a fresh process, which re-enables the modes it needs. Carrying DEC 2031
+// forward caused theme refreshes to write CSI ?997 replies into the replacement
+// shell, where they appeared as literal ^[[?997;1n text; stale mouse, focus,
+// paste, cursor-key, and alternate-scroll modes can corrupt input similarly.
 func privateModesForRestore(privateModes map[string]bool) map[string]bool {
 	copied := copyPrivateModes(privateModes)
 	if copied == nil {
 		return nil
 	}
-	for _, mode := range []string{"1000", "1002", "1003", "1006"} {
+	for _, mode := range []string{
+		"1", "1000", "1002", "1003", "1004", "1006", "1007", "2004", "2031",
+	} {
 		delete(copied, mode)
 	}
 	if len(copied) == 0 {
@@ -13396,6 +13741,8 @@ func agentToolFromCommandName(command string) string {
 		return "antigravity"
 	case "cursor-agent":
 		return "cursor-agent"
+	case "pi":
+		return "pi"
 	default:
 		return ""
 	}
@@ -13438,9 +13785,34 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 			return "cursor-agent --force"
 		}
 		return "cursor-agent"
+	case "pi":
+		return "pi"
 	default:
 		return ""
 	}
+}
+
+func piLaunchCommand(sessionDir string) string {
+	sessionDir = strings.TrimSpace(sessionDir)
+	if sessionDir == "" {
+		return "pi"
+	}
+	argument, ok := shellArgument(sessionDir)
+	if !ok {
+		return "pi"
+	}
+	return "pi --session-dir " + argument
+}
+
+func piResumeCommand(sessionID string, sessionDir string) string {
+	if !safePiSessionIDPattern.MatchString(strings.TrimSpace(sessionID)) {
+		return ""
+	}
+	launch := piLaunchCommand(sessionDir)
+	if strings.TrimSpace(sessionDir) != "" && launch == "pi" {
+		return ""
+	}
+	return launch + " --session " + sessionID
 }
 
 func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) string {
@@ -13495,6 +13867,11 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 			return commandPrefix + " --continue"
 		}
 		return commandPrefix + " --resume " + quotedSessionID
+	case "pi":
+		if !safePiSessionIDPattern.MatchString(sessionID) {
+			return ""
+		}
+		return "pi --session " + sessionID
 	default:
 		return ""
 	}
@@ -13558,6 +13935,8 @@ func agentToolFromTerminalTitle(title string) string {
 		normalized == "cursor-agent" || normalized == "cursor cli" ||
 		strings.HasPrefix(normalized, "cursor agent "):
 		return "cursor-agent"
+	case normalized == "pi":
+		return "pi"
 	default:
 		return ""
 	}
