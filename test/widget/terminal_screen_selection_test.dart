@@ -559,32 +559,76 @@ void main() {
       expect(result.stopReason, isNull);
     });
 
-    test(
-      'falls back to terminal output when control injection fails',
-      () async {
-        var inputGeneration = 0;
-        final terminalOutput = <String>[];
-        final errors = <Object>[];
+    test('falls back when control declines before dispatch', () async {
+      var inputGeneration = 0;
+      final terminalOutput = <String>[];
 
-        final result = await deliverTerminalAttachmentPasteSegments(
+      final result = await deliverTerminalAttachmentPasteSegments(
+        segments: const ['first'],
+        injectViaMonkeyMuxControl: true,
+        injectInput: (_) async => false,
+        writeTerminalOutput: terminalOutput.add,
+        initialInputGeneration: inputGeneration,
+        currentInputGeneration: () => inputGeneration,
+        recordDeliveredInput: () => inputGeneration++,
+        blockedReason: () => null,
+        waitBetweenSegments: () async {},
+      );
+
+      expect(terminalOutput, const ['first']);
+      expect(result.deliveredSegmentCount, 1);
+      expect(result.stopReason, isNull);
+    });
+
+    test('does not retry an indeterminate control failure', () async {
+      var inputGeneration = 0;
+      final terminalOutput = <String>[];
+
+      await expectLater(
+        deliverTerminalAttachmentPasteSegments(
           segments: const ['first'],
           injectViaMonkeyMuxControl: true,
-          injectInput: (_) async => throw StateError('control unavailable'),
+          injectInput: (_) async => throw StateError('acknowledgement lost'),
           writeTerminalOutput: terminalOutput.add,
           initialInputGeneration: inputGeneration,
           currentInputGeneration: () => inputGeneration,
           recordDeliveredInput: () => inputGeneration++,
           blockedReason: () => null,
           waitBetweenSegments: () async {},
-          onControlInjectionError: errors.add,
-        );
+        ),
+        throwsA(isA<StateError>()),
+      );
 
-        expect(terminalOutput, const ['first']);
-        expect(errors.single, isA<StateError>());
-        expect(result.deliveredSegmentCount, 1);
-        expect(result.stopReason, isNull);
-      },
-    );
+      expect(terminalOutput, isEmpty);
+      expect(inputGeneration, 0);
+    });
+
+    test('rechecks input before a declined-control fallback', () async {
+      var inputGeneration = 0;
+      final terminalOutput = <String>[];
+
+      final result = await deliverTerminalAttachmentPasteSegments(
+        segments: const ['first'],
+        injectViaMonkeyMuxControl: true,
+        injectInput: (_) async {
+          inputGeneration++;
+          return false;
+        },
+        writeTerminalOutput: terminalOutput.add,
+        initialInputGeneration: inputGeneration,
+        currentInputGeneration: () => inputGeneration,
+        recordDeliveredInput: () => inputGeneration++,
+        blockedReason: () => null,
+        waitBetweenSegments: () async {},
+      );
+
+      expect(terminalOutput, isEmpty);
+      expect(result.deliveredSegmentCount, 0);
+      expect(
+        result.stopReason,
+        TerminalAttachmentPasteStopReason.interveningInput,
+      );
+    });
 
     test('stops after input arrives during the first control await', () async {
       var inputGeneration = 0;

@@ -1016,7 +1016,6 @@ deliverTerminalAttachmentPasteSegments({
   required void Function() recordDeliveredInput,
   required TerminalAttachmentPasteStopReason? Function() blockedReason,
   required Future<void> Function() waitBetweenSegments,
-  void Function(Object error)? onControlInjectionError,
 }) async {
   var expectedInputGeneration = initialInputGeneration;
   var deliveredSegmentCount = 0;
@@ -1032,15 +1031,22 @@ deliverTerminalAttachmentPasteSegments({
       );
     }
 
-    var injected = false;
-    if (injectViaMonkeyMuxControl) {
-      try {
-        injected = await injectInput(segments[index]);
-      } on Object catch (error) {
-        onControlInjectionError?.call(error);
-      }
-    }
+    final injected =
+        injectViaMonkeyMuxControl && await injectInput(segments[index]);
     if (!injected) {
+      final fallbackReason = blockedReason();
+      if (fallbackReason != null) {
+        return (
+          deliveredSegmentCount: deliveredSegmentCount,
+          stopReason: fallbackReason,
+        );
+      }
+      if (currentInputGeneration() != expectedInputGeneration) {
+        return (
+          deliveredSegmentCount: deliveredSegmentCount,
+          stopReason: TerminalAttachmentPasteStopReason.interveningInput,
+        );
+      }
       writeTerminalOutput(segments[index]);
     }
 
@@ -17230,16 +17236,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
       waitBetweenSegments: () =>
           Future<void>.delayed(_uploadedAttachmentPasteStagger),
-      onControlInjectionError: (error) {
-        DiagnosticsLogService.instance.warning(
-          'terminal.clipboard',
-          'attachment_control_injection_failed',
-          fields: {
-            'connectionId': _connectionId,
-            'errorType': error.runtimeType,
-          },
-        );
-      },
     );
     sentCount = usedBracketedPaste
         ? delivery.deliveredSegmentCount
