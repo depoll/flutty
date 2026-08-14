@@ -36,6 +36,12 @@ migrate_working_dir/
 # Local MonkeyMux build output
 /remote/monkeymux/monkeymux
 
+# Local agent runtime state
+/.pi/
+
+# Local Bundler dependencies
+/vendor/bundle/
+
 # Symbolication related
 app.*.symbols
 
