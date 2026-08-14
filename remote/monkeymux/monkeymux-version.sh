@@ -5,9 +5,9 @@
 # into the helper and reported to clients in the server `hello` frame, and the
 # helper only restarts a running server when that constant differs from the
 # running version. Deriving the packaging version from the same constant keeps
-# assets/monkeymux/manifest.json in step with the binary it ships. When the two
-# drift, MonkeySSH offers "update and restore" that the helper then declines as
-# a no-op, so the prompt reappears on every connect.
+# the generated assets/monkeymux/manifest.json in step with the binary it ships.
+# When the two drift, MonkeySSH offers "update and restore" that the helper then
+# declines as a no-op, so the prompt reappears on every connect.
 set -e
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"

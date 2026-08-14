@@ -149,12 +149,14 @@ comparison: it is compiled into the binary, reported in the server `hello`
 frame, and checked by `attach` before it restarts anything.
 `monkeymux-version.sh` derives the packaging version from that same constant so
 `assets/monkeymux/manifest.json` always describes the binary it ships. Bump the
-constant and re-run `scripts/build_monkeymux_assets.sh`; never edit the version
-in the script or the manifest by hand. If the manifest ever claims a version the
-binary does not report, MonkeySSH offers an "update and restore" that `attach`
-then skips as a no-op, so the prompt returns on every connect without ever
-applying. `flutter test test/domain/services/monkeymux_assets_test.dart` and
-`go test ./remote/monkeymux/` both fail when they drift.
+constant and run `scripts/ensure_monkeymux_assets.sh`; never edit the version in
+the generated manifest by hand. The manifest and compressed binaries are
+ignored build outputs. CI builds them once from the checked-out source and
+fans the resulting artifact out to every Flutter package job. If the manifest
+ever claims a version the binary does not report, MonkeySSH offers an "update
+and restore" that `attach` then skips as a no-op, so the prompt returns on every
+connect without ever applying. The targeted Flutter asset test and the
+MonkeyMux Go tests both fail when generated assets drift.
 
 The target matrix covers Linux and macOS on amd64 and arm64, plus Windows on
 amd64 and arm64. On Windows the foreground path is backed by a ConPTY
