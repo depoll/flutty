@@ -166,6 +166,8 @@ if(!$__flResolved){$__flResolved='cmd'}
 
   bool get terminalWin32InputMode => _terminalWin32InputMode;
 
+  TerminalWindowMetrics? get terminalWindowMetrics => _terminalWindowMetrics;
+
   Stream<String> get shellStdoutStream =>
       _shellStdoutController?.stream ?? const Stream.empty();
 
@@ -206,6 +208,7 @@ if(!$__flResolved){$__flResolved='cmd'}
       ..canResizeFromHost = _session._canTerminalResizeFromHost
       ..kittyGraphicsEnabled = !_session.remoteIsWindows || !_shellHasPty;
     _session.terminalHyperlinkTracker.attach(_terminal!);
+    _session.terminalCommandMarkTracker.attach(_terminal!);
     _terminal!.onPrivateOSC = _session._handlePrivateOsc;
     _refreshTerminalPreview();
     return _terminal!;

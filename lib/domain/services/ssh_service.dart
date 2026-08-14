@@ -33,9 +33,12 @@ import 'port_forward_browser_service.dart';
 import 'settings_service.dart';
 import 'ssh_exec_queue.dart';
 import 'telemetry_service.dart';
+import 'terminal_command_mark_tracker.dart';
 import 'terminal_hyperlink_tracker.dart';
+import 'terminal_iterm2_control.dart';
 import 'terminal_iterm2_image.dart';
 import 'terminal_notification.dart';
+import 'terminal_osc_color_overrides.dart';
 import 'terminal_preview_graphics.dart';
 import 'wifi_network_service.dart';
 import 'windows_remote_powershell.dart';
@@ -3662,7 +3665,9 @@ class SshSession {
 
   late final _SshSessionRuntime _runtime = _SshSessionRuntime(this);
 
+  TerminalThemeData? _configuredTerminalTheme;
   TerminalThemeData? _terminalTheme;
+  final _terminalColorOverrides = TerminalOscColorOverrides();
 
   /// The active terminal theme used to answer remote OSC color queries.
   TerminalThemeData? get terminalTheme => _terminalTheme;
@@ -3685,6 +3690,12 @@ class SshSession {
 
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
+
+  /// Tracks semantic command locations for previous-command navigation.
+  final terminalCommandMarkTracker = TerminalCommandMarkTracker();
+
+  /// Number of semantic command marks retained in terminal scrollback.
+  int get terminalCommandMarkCount => terminalCommandMarkTracker.markCount;
 
   final _previewListeners = <VoidCallback>{};
   final _metadataListeners = <VoidCallback>{};
@@ -3842,13 +3853,24 @@ class SshSession {
   ///
   /// Returns `true` when the theme changed enough to repaint previews.
   bool setTerminalTheme(TerminalThemeData? theme) {
-    if (_sameTerminalTheme(_terminalTheme, theme)) {
-      _terminalTheme = theme;
+    _configuredTerminalTheme = theme;
+    final effectiveTheme = theme == null
+        ? null
+        : _terminalColorOverrides.applyTo(theme);
+    if (_sameTerminalTheme(_terminalTheme, effectiveTheme)) {
+      _terminalTheme = effectiveTheme;
       return false;
     }
-    _terminalTheme = theme;
+    _terminalTheme = effectiveTheme;
     _notifyPreviewChanged();
     return true;
+  }
+
+  void _recomputeTerminalThemeAfterRemoteColorChange() {
+    final configuredTheme = _configuredTerminalTheme;
+    _terminalTheme = configuredTheme == null
+        ? null
+        : _terminalColorOverrides.applyTo(configuredTheme);
   }
 
   /// Ensure a [Terminal] exists and is wired to the shell streams.
@@ -4082,10 +4104,15 @@ class SshSession {
         _shellStatus != null ||
         _lastExitCode != null ||
         _terminalProgress != null ||
-        _windowTitle != null;
+        terminalCommandMarkTracker.markCount > 0 ||
+        _windowTitle != null ||
+        _terminalColorOverrides.isNotEmpty;
     final hadPreview =
         _terminalPreview != null || _terminalPreviewSnapshot != null;
     terminalHyperlinkTracker.reset(keepTerminalReference: false);
+    terminalCommandMarkTracker.reset(keepTerminalReference: false);
+    final hadRemoteColors = _terminalColorOverrides.clear();
+    _recomputeTerminalThemeAfterRemoteColorChange();
     _iconName = null;
     _workingDirectory = null;
     _terminalReportedRemoteHost = null;
@@ -4096,7 +4123,7 @@ class SshSession {
     _terminalPreviewSnapshot = null;
     _windowTitle = null;
     _lastVolunteeredThemeDefaultsAt = null;
-    if (hadMetadata) {
+    if (hadMetadata || hadRemoteColors) {
       _notifyMetadataChanged();
     } else if (hadPreview) {
       _notifyPreviewChanged();
@@ -4222,7 +4249,25 @@ class SshSession {
       return;
     }
 
+    final colorMutation = _terminalColorOverrides.handle(code, args);
+    if (colorMutation.handled) {
+      if (colorMutation.changed) {
+        _recomputeTerminalThemeAfterRemoteColorChange();
+        DiagnosticsLogService.instance.debug(
+          'terminal.osc',
+          'palette_changed',
+          fields: {'connectionId': connectionId, 'code': code},
+        );
+        _notifyMetadataChanged();
+      }
+      return;
+    }
+
     terminalHyperlinkTracker.handlePrivateOsc(code, args);
+    final commandMarkAdded = terminalCommandMarkTracker.handlePrivateOsc(
+      code,
+      args,
+    );
     if (code == '8') {
       return;
     }
@@ -4236,8 +4281,41 @@ class SshSession {
     }
 
     if (code == '1337') {
+      final metrics = _runtime.terminalWindowMetrics;
+      final cellPixelWidth = metrics == null || metrics.columns <= 0
+          ? null
+          : metrics.pixelWidth / metrics.columns;
+      final cellPixelHeight = metrics == null || metrics.rows <= 0
+          ? null
+          : metrics.pixelHeight / metrics.rows;
+      final cellSizeResponse = buildIterm2ReportCellSizeResponse(
+        args,
+        cellWidth: cellPixelWidth,
+        cellHeight: cellPixelHeight,
+      );
+      if (cellSizeResponse != null) {
+        if (_runtime.hasShell) _runtime.writeToShell(cellSizeResponse);
+        return;
+      }
+      final attentionRequest = parseIterm2AttentionRequest(args);
+      if (attentionRequest != null) {
+        if (!_terminalNotifications.isClosed) {
+          _terminalNotifications.add(attentionRequest);
+        }
+        return;
+      }
+      if (args.firstOrNull == 'SetMark') {
+        if (commandMarkAdded) _notifyMetadataChanged();
+        return;
+      }
       final terminal = _runtime.terminal;
-      if (terminal != null && handleIterm2InlineImageOsc(terminal, args)) {
+      if (terminal != null &&
+          handleIterm2InlineImageOsc(
+            terminal,
+            args,
+            cellPixelWidth: cellPixelWidth,
+            cellPixelHeight: cellPixelHeight,
+          )) {
         return;
       }
       final nextRemoteHost = parseTerminalReportedRemoteHost(args);
@@ -4262,7 +4340,11 @@ class SshSession {
     }
 
     if (code == '133' || code == '633') {
-      _handleShellIntegrationOsc(code, args);
+      _handleShellIntegrationOsc(
+        code,
+        args,
+        commandMarkAdded: commandMarkAdded,
+      );
       return;
     }
 
@@ -4303,7 +4385,17 @@ class SshSession {
       return;
     }
 
-    if (code == '99' || code == '777') {
+    if (code == '99') {
+      final capabilityResponse = buildKittyNotificationCapabilityResponse(args);
+      if (capabilityResponse != null) {
+        if (_runtime.hasShell) _runtime.writeToShell(capabilityResponse);
+        return;
+      }
+      _handleTerminalNotificationOsc(code, args);
+      return;
+    }
+
+    if (code == '777') {
       _handleTerminalNotificationOsc(code, args);
       return;
     }
@@ -4311,7 +4403,11 @@ class SshSession {
     _logUnhandledPrivateOsc(code, args);
   }
 
-  void _handleShellIntegrationOsc(String code, List<String> args) {
+  void _handleShellIntegrationOsc(
+    String code,
+    List<String> args, {
+    required bool commandMarkAdded,
+  }) {
     final nextShellState = applyTerminalShellIntegrationOsc(
       args,
       previousStatus: _shellStatus,
@@ -4328,7 +4424,7 @@ class SshSession {
     final workingDirectoryChanged =
         nextWorkingDirectory != null &&
         nextWorkingDirectory.toString() != _workingDirectory?.toString();
-    if (!shellStateChanged && !workingDirectoryChanged) {
+    if (!shellStateChanged && !workingDirectoryChanged && !commandMarkAdded) {
       return;
     }
     _shellStatus = nextShellState.status;
@@ -8188,7 +8284,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     final notificationService = ref.read(localNotificationServiceProvider);
     final notificationId = buildTerminalNotificationId(
       session.connectionId,
-      identifier: request.identifier,
+      identifier: request.platformIdentifier,
     );
     if (request.action == TerminalNotificationAction.close) {
       await notificationService.clearTerminalNotification(notificationId);
@@ -8204,6 +8300,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       payload: TerminalNotificationPayload(
         hostId: session.hostId,
         connectionId: session.connectionId,
+        notificationIdentifier: request.identifier,
+        reportsActivation: request.reportsActivation,
       ),
     );
   }

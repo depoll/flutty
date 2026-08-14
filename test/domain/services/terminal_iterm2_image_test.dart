@@ -65,6 +65,28 @@ void main() {
     },
   );
 
+  test('translates pixel dimensions using terminal cell metrics', () async {
+    final terminal = Terminal()
+      ..resize(80, 24)
+      ..kittyGraphicsEnabled = true;
+
+    handleIterm2InlineImageOsc(
+      terminal,
+      ['File=inline=1', 'width=18px:$_pngBase64'],
+      cellPixelWidth: 8,
+      cellPixelHeight: 16,
+    );
+
+    for (
+      var attempt = 0;
+      attempt < 20 && !terminal.graphics.hasPlacements;
+      attempt += 1
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(terminal.graphics.placements.single.cols, 3);
+  });
+
   test('consumes downloads and rejects malformed or oversized payloads', () {
     final terminal = Terminal()..kittyGraphicsEnabled = true;
 

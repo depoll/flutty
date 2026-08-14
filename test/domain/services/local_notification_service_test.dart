@@ -56,9 +56,24 @@ void main() {
 
   group('TerminalNotificationPayload', () {
     test('round-trips terminal notification routing fields', () {
-      const payload = TerminalNotificationPayload(hostId: 7, connectionId: 21);
+      const payload = TerminalNotificationPayload(
+        hostId: 7,
+        connectionId: 21,
+        notificationIdentifier: 'build',
+        reportsActivation: true,
+      );
 
       expect(TerminalNotificationPayload.decode(payload.encode()), payload);
+    });
+
+    test('decodes legacy navigation-only payloads', () {
+      expect(
+        TerminalNotificationPayload.decode(
+          '{"type":"terminal-notification","version":1,'
+          '"hostId":7,"connectionId":21}',
+        ),
+        const TerminalNotificationPayload(hostId: 7, connectionId: 21),
+      );
     });
 
     test('ignores malformed and unrelated payloads', () {

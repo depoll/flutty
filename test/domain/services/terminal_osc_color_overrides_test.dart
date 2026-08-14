@@ -1,0 +1,81 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
+import 'package:monkeyssh/domain/services/terminal_osc_color_overrides.dart';
+
+void main() {
+  test('parses xterm color formats', () {
+    expect(parseTerminalOscColor('#1aF'), const Color(0xFF11AAFF));
+    expect(parseTerminalOscColor('#123456'), const Color(0xFF123456));
+    expect(
+      parseTerminalOscColor('rgb:ffff/8000/0000'),
+      const Color(0xFFFF8000),
+    );
+    expect(parseTerminalOscColor('?'), isNull);
+    expect(parseTerminalOscColor('not-a-color'), isNull);
+  });
+
+  test('sets and selectively resets ANSI palette colors', () {
+    final overrides = TerminalOscColorOverrides();
+    expect(overrides.handle('4', const ['1', '#123456', '2', 'rgb:0/f/0']), (
+      handled: true,
+      changed: true,
+    ));
+    var effective = overrides.applyTo(TerminalThemes.dracula);
+    expect(effective.red, const Color(0xFF123456));
+    expect(effective.green, const Color(0xFF00FF00));
+
+    expect(overrides.handle('104', const ['1']), (
+      handled: true,
+      changed: true,
+    ));
+    effective = overrides.applyTo(TerminalThemes.dracula);
+    expect(effective.red, TerminalThemes.dracula.red);
+    expect(effective.green, const Color(0xFF00FF00));
+
+    overrides.handle('104', const []);
+    expect(overrides.isNotEmpty, isFalse);
+  });
+
+  test('sets and resets dynamic terminal colors', () {
+    final overrides = TerminalOscColorOverrides();
+    // Consecutive setter groups are intentionally separated by assertions.
+    // ignore: cascade_invocations
+    overrides
+      ..handle('10', const ['#fedcba'])
+      ..handle('11', const ['#102030'])
+      ..handle('12', const ['#abcdef'])
+      ..handle('17', const ['#334455']);
+    var effective = overrides.applyTo(TerminalThemes.dracula);
+    expect(effective.foreground, const Color(0xFFFEDCBA));
+    expect(effective.background, const Color(0xFF102030));
+    expect(effective.cursor, const Color(0xFFABCDEF));
+    expect(effective.selection, const Color(0xFF334455));
+
+    overrides
+      ..handle('110', const [])
+      ..handle('111', const [])
+      ..handle('112', const [])
+      ..handle('117', const []);
+    effective = overrides.applyTo(TerminalThemes.dracula);
+    expect(effective.foreground, TerminalThemes.dracula.foreground);
+    expect(effective.background, TerminalThemes.dracula.background);
+    expect(effective.cursor, TerminalThemes.dracula.cursor);
+    expect(effective.selection, TerminalThemes.dracula.selection);
+  });
+
+  test(
+    'queries and unsupported extended palette entries are not mutations',
+    () {
+      final overrides = TerminalOscColorOverrides();
+      expect(overrides.handle('4', const ['1', '?']), (
+        handled: false,
+        changed: false,
+      ));
+      expect(overrides.handle('4', const ['200', '#ffffff']), (
+        handled: false,
+        changed: false,
+      ));
+    },
+  );
+}

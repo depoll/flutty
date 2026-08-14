@@ -93,21 +93,45 @@ void main() {
       expect(req!.body, 'Encoded title');
     });
 
-    test('create/update and close actions preserve a bounded identifier', () {
-      final created = parser.handleOsc('99', ['i=build-3:a=create', 'Started']);
+    test('same identifiers update and p=close clears a notification', () {
+      final created = parser.handleOsc('99', ['i=build-3', 'Started']);
       expect(created?.identifier, 'build-3');
       expect(created?.action, TerminalNotificationAction.show);
 
-      final updated = parser.handleOsc('99', [
-        'i=build-3:a=update:p=body',
-        'Finished',
-      ]);
+      final updated = parser.handleOsc('99', ['i=build-3:p=body', 'Finished']);
       expect(updated?.identifier, 'build-3');
       expect(updated?.body, 'Finished');
 
       expect(
-        parser.handleOsc('99', ['i=build-3:a=close']),
+        parser.handleOsc('99', ['i=build-3:p=close']),
         const TerminalNotificationRequest.close(identifier: 'build-3'),
+      );
+    });
+
+    test('a=report requests activation feedback', () {
+      final request = parser.handleOsc('99', [
+        'i=build:a=focus,report',
+        'Ready',
+      ]);
+      expect(request?.reportsActivation, isTrue);
+      expect(
+        buildKittyNotificationActivationReport(request?.identifier),
+        '\x1b]99;i=build;\x1b\\',
+      );
+    });
+
+    test('unidentified notifications receive distinct local identities', () {
+      final first = parser.handleOsc('99', ['', 'One']);
+      final second = parser.handleOsc('99', ['', 'Two']);
+      expect(first?.identifier, isNull);
+      expect(second?.identifier, isNull);
+      expect(first?.platformIdentifier, isNot(second?.platformIdentifier));
+    });
+
+    test('builds a truthful capability response', () {
+      expect(
+        buildKittyNotificationCapabilityResponse(const ['i=q1:p=?']),
+        '\x1b]99;i=q1:p=?;a=focus,report:o=always:p=title,body\x1b\\',
       );
     });
 

@@ -12344,24 +12344,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !_isConnecting &&
         connectionState == SshConnectionState.disconnected;
 
-    // Use session override, or loaded theme, or fallback.
-    final terminalTheme = _resolveEffectiveTerminalTheme();
-    // Only push the theme to the session when it differs from what was last
-    // applied via this path.  Explicit callers (_openShell, _loadTheme, etc.)
-    // use their own call sites and do not update _lastBuildAppliedTheme, so
-    // a theme change from those paths will still trigger one build-path call
-    // on the next rebuild.
-    if (!_sameTerminalTheme(terminalTheme, _lastBuildAppliedTheme)) {
-      _lastBuildAppliedTheme = terminalTheme;
-      _applyTerminalThemeToSession(terminalTheme, reason: 'build');
+    final activeSession = _connectionId == null
+        ? null
+        : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
+    // Keep the user-selected theme as the session base. Remote OSC color
+    // setters are applied only to the session's effective terminal theme.
+    final configuredTerminalTheme = _resolveEffectiveTerminalTheme();
+    if (!_sameTerminalTheme(configuredTerminalTheme, _lastBuildAppliedTheme)) {
+      _lastBuildAppliedTheme = configuredTerminalTheme;
+      _applyTerminalThemeToSession(configuredTerminalTheme, reason: 'build');
     }
+    final terminalTheme =
+        (_sessionController.observedSession ?? activeSession)?.terminalTheme ??
+        configuredTerminalTheme;
     final connectionLabel = describeTerminalConnectionState(
       connectionState,
       isConnecting: _isConnecting,
     );
-    final activeSession = _connectionId == null
-        ? null
-        : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
     final deviceDebugController = _isAndroidPlatform
         ? _deviceDebugControllerFor(activeSession)
         : null;
@@ -12392,6 +12391,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
     final terminalProgress = _terminalProgress;
+    final commandMarkCount =
+        (_sessionController.observedSession ?? activeSession)
+            ?.terminalCommandMarkCount ??
+        0;
     final isOpeningSftpBrowser = _isExclusiveTerminalActionRunning(
       _TerminalExclusiveAction.sftpBrowser,
     );
@@ -12617,6 +12620,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         ? 'Exit Native Selection'
                         : 'Native Selection',
                     action: 'native_select',
+                  ),
+                if (commandMarkCount > 0)
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.history_rounded,
+                    label: commandMarkCount == 1
+                        ? 'Previous Command'
+                        : 'Previous Command ($commandMarkCount)',
+                    action: 'previous_command',
                   ),
                 if (_workingDirectoryPath != null)
                   _terminalOverflowMenuItem(
@@ -13818,6 +13830,36 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return paneDirectory;
   }
 
+  Future<void> _jumpToPreviousCommandMark() async {
+    final session = _sessionController.observedSession ?? _activeSession();
+    final viewState = _terminalViewKey.currentState;
+    if (session == null ||
+        viewState == null ||
+        !_terminalScrollController.hasClients) {
+      return;
+    }
+    final lineHeight = viewState.renderTerminal.lineHeight;
+    if (!lineHeight.isFinite || lineHeight <= 0) return;
+    final position = _terminalScrollController.position;
+    final currentTopRow = (position.pixels / lineHeight).floor();
+    final beforeRow = position.pixels >= position.maxScrollExtent - 1
+        ? _terminal.buffer.height
+        : currentTopRow;
+    final targetRow = session.terminalCommandMarkTracker.previousMarkRow(
+      beforeRow,
+    );
+    if (targetRow == null) return;
+    final targetOffset = (targetRow * lineHeight).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    await _terminalScrollController.animateTo(
+      targetOffset,
+      duration: const Duration(milliseconds: 150),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
       case 'snippets':
@@ -13861,6 +13903,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'native_select':
         _toggleNativeSelectionMode();
+        break;
+      case 'previous_command':
+        await _jumpToPreviousCommandMark();
         break;
       case 'copy_working_directory':
         await _copyWorkingDirectory();

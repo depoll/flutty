@@ -2023,6 +2023,52 @@ void main() {
       expect(utf8.decode(shellWrites.expand((chunk) => chunk).toList()), 'x');
     });
 
+    testWidgets('remote OSC palette changes repaint and reset the terminal', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+      final initialTheme = tester
+          .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+          .theme;
+
+      session.debugHandlePrivateOsc('11', const ['#102030']);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        tester
+            .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+            .theme
+            .background,
+        const Color(0xFF102030),
+      );
+
+      session.debugHandlePrivateOsc('111', const []);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        tester
+            .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+            .theme
+            .background,
+        initialTheme.background,
+      );
+    });
+
+    testWidgets('terminal overflow exposes previous command marks', (
+      tester,
+    ) async {
+      final terminal = session.terminal!;
+      void markCommand() => session.debugHandlePrivateOsc('133', const ['C']);
+      terminal.write('prompt\r\n');
+      markCommand();
+
+      await pumpScreen(tester);
+      await openTerminalOverflowMenu(tester);
+
+      final previousCommand = terminalMenuItemButton('Previous Command');
+      expect(previousCommand, findsOneWidget);
+      await tester.tap(previousCommand);
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('terminal overflow menu folds out paste actions', (
       tester,
     ) async {

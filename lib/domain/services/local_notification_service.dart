@@ -134,10 +134,12 @@ class TerminalNotificationPayload {
   const TerminalNotificationPayload({
     required this.hostId,
     required this.connectionId,
+    this.notificationIdentifier,
+    this.reportsActivation = false,
   });
 
   static const _type = 'terminal-notification';
-  static const _version = 1;
+  static const _version = 2;
 
   /// Host that owns the connection that emitted the notification.
   final int hostId;
@@ -145,34 +147,47 @@ class TerminalNotificationPayload {
   /// Existing SSH connection that emitted the notification.
   final int connectionId;
 
+  /// Kitty identifier to echo when activation reporting was requested.
+  final String? notificationIdentifier;
+
+  /// Whether tapping this notification sends an OSC 99 activation report.
+  final bool reportsActivation;
+
   /// Encodes this payload for the notification plugin.
   String encode() => jsonEncode(<String, Object>{
     'type': _type,
     'version': _version,
     'hostId': hostId,
     'connectionId': connectionId,
+    'notificationIdentifier': ?notificationIdentifier,
+    'reportsActivation': reportsActivation,
   });
 
-  /// Decodes a notification payload, returning `null` for other payload types.
+  /// Decodes current payloads and navigation-only version 1 payloads.
   static TerminalNotificationPayload? decode(String? payload) {
-    if (payload == null || payload.isEmpty) {
-      return null;
-    }
+    if (payload == null || payload.isEmpty) return null;
     try {
       final decoded = jsonDecode(payload);
-      if (decoded is! Map<String, Object?> ||
-          decoded['type'] != _type ||
-          decoded['version'] != _version) {
+      if (decoded is! Map<String, Object?> || decoded['type'] != _type) {
         return null;
       }
+      final version = decoded['version'];
+      if (version != 1 && version != _version) return null;
       final hostId = decoded['hostId'];
       final connectionId = decoded['connectionId'];
-      if (hostId is! int || connectionId is! int) {
+      final identifier = decoded['notificationIdentifier'];
+      final reportsActivation = decoded['reportsActivation'];
+      if (hostId is! int ||
+          connectionId is! int ||
+          (identifier != null && identifier is! String) ||
+          (reportsActivation != null && reportsActivation is! bool)) {
         return null;
       }
       return TerminalNotificationPayload(
         hostId: hostId,
         connectionId: connectionId,
+        notificationIdentifier: identifier as String?,
+        reportsActivation: reportsActivation as bool? ?? false,
       );
     } on FormatException {
       return null;
@@ -184,10 +199,17 @@ class TerminalNotificationPayload {
       identical(this, other) ||
       other is TerminalNotificationPayload &&
           hostId == other.hostId &&
-          connectionId == other.connectionId;
+          connectionId == other.connectionId &&
+          notificationIdentifier == other.notificationIdentifier &&
+          reportsActivation == other.reportsActivation;
 
   @override
-  int get hashCode => Object.hash(hostId, connectionId);
+  int get hashCode => Object.hash(
+    hostId,
+    connectionId,
+    notificationIdentifier,
+    reportsActivation,
+  );
 }
 
 /// Builds a local notification identifier scoped to one SSH connection.

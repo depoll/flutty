@@ -3622,6 +3622,28 @@ LISTEN ::1:4201
         .getText(0, terminal.buffer.viewWidth)
         .trimRight();
 
+    test('answers Kitty capabilities and iTerm2 cell-size reports', () async {
+      final opened = await openShell();
+      opened.session
+        ..updateTerminalWindowMetrics(
+          columns: 80,
+          rows: 24,
+          pixelWidth: 640,
+          pixelHeight: 408,
+        )
+        ..debugHandlePrivateOsc('99', const ['i=query:p=?'])
+        ..debugHandlePrivateOsc('1337', const ['ReportCellSize']);
+
+      expect(
+        utf8.decode(opened.shellWrites[0]),
+        '\x1b]99;i=query:p=?;a=focus,report:o=always:p=title,body\x1b\\',
+      );
+      expect(
+        utf8.decode(opened.shellWrites[1]),
+        '\x1b]1337;ReportCellSize=17.00;8.00\x1b\\',
+      );
+    });
+
     test(
       'shell reset clears active progress and notifies metadata once',
       () async {

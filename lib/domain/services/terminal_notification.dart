@@ -20,6 +20,8 @@ class TerminalNotificationRequest {
     required this.body,
     this.title,
     this.identifier,
+    this.localIdentifier,
+    this.reportsActivation = false,
     this.action = TerminalNotificationAction.show,
   });
 
@@ -31,18 +33,29 @@ class TerminalNotificationRequest {
         action: TerminalNotificationAction.close,
       );
 
-  /// The notification title. When `null`, the presenter supplies a default
-  /// (typically the host or session name).
+  /// The notification title. When `null`, the presenter supplies a default.
   final String? title;
 
   /// The notification body text.
   final String body;
 
-  /// Protocol identifier used to replace or close this notification.
+  /// Kitty protocol identifier used for update, close, and activation reports.
   final String? identifier;
+
+  /// Local-only identity for an unidentified Kitty notification.
+  ///
+  /// Kitty requires notifications without `i=` to remain distinct rather than
+  /// replacing one another.
+  final String? localIdentifier;
+
+  /// Whether a tap should report activation to the foreground application.
+  final bool reportsActivation;
 
   /// Whether to show/update or clear the addressed notification.
   final TerminalNotificationAction action;
+
+  /// Identity used only for the platform notification record.
+  String? get platformIdentifier => identifier ?? localIdentifier;
 
   @override
   bool operator ==(Object other) =>
@@ -51,42 +64,51 @@ class TerminalNotificationRequest {
           title == other.title &&
           body == other.body &&
           identifier == other.identifier &&
+          localIdentifier == other.localIdentifier &&
+          reportsActivation == other.reportsActivation &&
           action == other.action;
 
   @override
-  int get hashCode => Object.hash(title, body, identifier, action);
+  int get hashCode => Object.hash(
+    title,
+    body,
+    identifier,
+    localIdentifier,
+    reportsActivation,
+    action,
+  );
 
   @override
   String toString() =>
       'TerminalNotificationRequest(title: $title, body: $body, '
-      'identifier: $identifier, action: $action)';
+      'identifier: $identifier, localIdentifier: $localIdentifier, '
+      'reportsActivation: $reportsActivation, action: $action)';
 }
 
-/// Parses terminal desktop-notification OSC sequences into
-/// [TerminalNotificationRequest]s.
-///
-/// Supports:
-/// * **OSC 9** (iTerm2): `OSC 9 ; <message> ST`.
-/// * **OSC 777** (rxvt-unicode): `OSC 777 ; notify ; <title> ; <body> ST`.
-/// * **OSC 99** (kitty): `OSC 99 ; <metadata> ; <payload> ST`, including
-///   multi-chunk assembly keyed by the `i=` identifier.
-///
-/// The parser holds the partial state needed to assemble chunked OSC 99
-/// notifications, so a single instance must be used per terminal session.
-class TerminalNotificationParser {
-  /// Maximum number of in-flight (chunked) OSC 99 notifications retained.
-  static const _maxPending = 8;
+/// Builds a Kitty OSC 99 capability response when [args] contain `p=?`.
+String? buildKittyNotificationCapabilityResponse(List<String> args) {
+  final metadata = _parseKittyNotificationMetadata(
+    args.isNotEmpty ? args.first : '',
+  );
+  if (metadata['p'] != '?') return null;
+  final id = _sanitizeKittyIdentifier(metadata['i'] ?? '');
+  return '\x1b]99;${id.isEmpty ? '' : 'i=$id:'}p=?;'
+      'a=focus,report:o=always:p=title,body\x1b\\';
+}
 
-  /// Maximum length retained for an assembled title or body.
+/// Builds the activation report required by Kitty's `a=report` action.
+String buildKittyNotificationActivationReport(String? identifier) =>
+    '\x1b]99;i=${(identifier?.isNotEmpty ?? false) ? identifier : '0'};\x1b\\';
+
+/// Parses terminal desktop-notification OSC sequences into requests.
+class TerminalNotificationParser {
+  static const _maxPending = 8;
   static const _maxFieldLength = 1024;
 
   final Map<String, _PendingKittyNotification> _pending = {};
+  int _unidentifiedSequence = 0;
 
-  /// Handles an OSC notification sequence. [code] is the OSC number (e.g. `'9'`)
-  /// and [args] are the remaining `;`-separated parameters.
-  ///
-  /// Returns a [TerminalNotificationRequest] when a complete notification is
-  /// available, or `null` when the sequence is not a (complete) notification.
+  /// Handles one OSC notification sequence.
   TerminalNotificationRequest? handleOsc(String code, List<String> args) {
     switch (code) {
       case '9':
@@ -102,15 +124,12 @@ class TerminalNotificationParser {
 
   TerminalNotificationRequest? _handleOsc9(List<String> args) {
     if (args.isEmpty) return null;
-    // ConEmu reuses OSC 9 for structured commands (`OSC 9 ; <n> ; ...`, e.g.
-    // progress or working directory). Those start with a numeric sub-command,
-    // so don't treat them as iTerm2 notifications.
+    // Numeric OSC 9 subcommands belong to ConEmu/Windows Terminal metadata.
     if (args.length >= 2 && int.tryParse(args.first.trim()) != null) {
       return null;
     }
     final message = _sanitize(args.join(';'));
-    if (message.isEmpty) return null;
-    return TerminalNotificationRequest(body: message);
+    return message.isEmpty ? null : TerminalNotificationRequest(body: message);
   }
 
   TerminalNotificationRequest? _handleOsc777(List<String> args) {
@@ -121,21 +140,19 @@ class TerminalNotificationParser {
   }
 
   TerminalNotificationRequest? _handleOsc99(List<String> args) {
-    final metadata = _parseMetadata(args.isNotEmpty ? args.first : '');
-    final id = _sanitizeIdentifier(metadata['i'] ?? '');
-    final action = metadata['a'];
-    if (action == 'close') {
+    final metadata = _parseKittyNotificationMetadata(
+      args.isNotEmpty ? args.first : '',
+    );
+    final id = _sanitizeKittyIdentifier(metadata['i'] ?? '');
+    final payloadType = metadata['p'] ?? 'title';
+    if (payloadType == '?' || payloadType == 'alive') return null;
+    if (payloadType == 'close') {
       _pending.remove(id);
       return id.isEmpty
           ? null
           : TerminalNotificationRequest.close(identifier: id);
     }
-    // Capability, focus, and activation reports require a bidirectional
-    // protocol exchange and must not produce local notifications.
-    if (action != null && action != 'create' && action != 'update') {
-      _pending.remove(id);
-      return null;
-    }
+    if (payloadType != 'title' && payloadType != 'body') return null;
 
     var payload = args.length > 1 ? args.sublist(1).join(';') : '';
     if (metadata['e'] == '1' && payload.isNotEmpty) {
@@ -143,14 +160,14 @@ class TerminalNotificationParser {
     }
 
     final pending = _pending.putIfAbsent(id, _PendingKittyNotification.new);
-    final isBody = metadata['p'] == 'body';
-    if (isBody) {
+    pending.reportsActivation =
+        pending.reportsActivation || _reportsActivation(metadata['a']);
+    if (payloadType == 'body') {
       pending.body = _appendCapped(pending.body, payload);
     } else {
       pending.title = _appendCapped(pending.title, payload);
     }
 
-    // `d=0` means more chunks follow; anything else (default) completes it.
     final done = (metadata['d'] ?? '1') != '0';
     if (!done) {
       _enforcePendingBound(id);
@@ -162,36 +179,49 @@ class TerminalNotificationParser {
       title: _sanitize(pending.title),
       body: _sanitize(pending.body),
       identifier: id.isEmpty ? null : id,
+      localIdentifier: id.isEmpty
+          ? 'kitty-unidentified-${_unidentifiedSequence++}'
+          : null,
+      reportsActivation: pending.reportsActivation,
     );
   }
 
-  /// Builds a request, demoting a title-only notification to a body so the
-  /// presenter can supply a default title.
   TerminalNotificationRequest? _build({
     required String title,
     required String body,
     String? identifier,
+    String? localIdentifier,
+    bool reportsActivation = false,
   }) {
     if (title.isEmpty && body.isEmpty) return null;
     if (body.isEmpty) {
-      return TerminalNotificationRequest(body: title, identifier: identifier);
+      return TerminalNotificationRequest(
+        body: title,
+        identifier: identifier,
+        localIdentifier: localIdentifier,
+        reportsActivation: reportsActivation,
+      );
     }
     return TerminalNotificationRequest(
       title: title.isEmpty ? null : title,
       body: body,
       identifier: identifier,
+      localIdentifier: localIdentifier,
+      reportsActivation: reportsActivation,
     );
   }
 
-  Map<String, String> _parseMetadata(String raw) {
-    final result = <String, String>{};
-    if (raw.isEmpty) return result;
-    for (final pair in raw.split(':')) {
-      final eq = pair.indexOf('=');
-      if (eq <= 0) continue;
-      result[pair.substring(0, eq)] = pair.substring(eq + 1);
+  bool _reportsActivation(String? actions) {
+    var reports = false;
+    for (final action in (actions ?? '').split(',')) {
+      switch (action.trim()) {
+        case 'report':
+          reports = true;
+        case '-report':
+          reports = false;
+      }
     }
-    return result;
+    return reports;
   }
 
   String _decodeBase64(String value) {
@@ -216,19 +246,9 @@ class TerminalNotificationParser {
       (key) => key != keepId,
       orElse: () => keepId,
     );
-    if (removable != keepId) {
-      _pending.remove(removable);
-    }
+    if (removable != keepId) _pending.remove(removable);
   }
 
-  String _sanitizeIdentifier(String value) {
-    final bounded = value.length > 128 ? value.substring(0, 128) : value;
-    final sanitized = bounded.replaceAll(RegExp('[^A-Za-z0-9_.-]'), '_').trim();
-    return sanitized.length > 128 ? sanitized.substring(0, 128) : sanitized;
-  }
-
-  /// Strips control characters and trims, so remote output can't inject control
-  /// sequences into the notification UI.
   String _sanitize(String value) {
     final cleaned = value.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), ' ').trim();
     return cleaned.length > _maxFieldLength
@@ -237,7 +257,24 @@ class TerminalNotificationParser {
   }
 }
 
+Map<String, String> _parseKittyNotificationMetadata(String raw) {
+  final result = <String, String>{};
+  if (raw.isEmpty) return result;
+  for (final pair in raw.split(':')) {
+    final separator = pair.indexOf('=');
+    if (separator <= 0) continue;
+    result[pair.substring(0, separator)] = pair.substring(separator + 1);
+  }
+  return result;
+}
+
+String _sanitizeKittyIdentifier(String value) {
+  final bounded = value.length > 128 ? value.substring(0, 128) : value;
+  return bounded.replaceAll(RegExp('[^A-Za-z0-9_.-]'), '_').trim();
+}
+
 class _PendingKittyNotification {
   String title = '';
   String body = '';
+  bool reportsActivation = false;
 }

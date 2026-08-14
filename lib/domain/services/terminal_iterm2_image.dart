@@ -16,7 +16,12 @@ const int maxIterm2InlineImageBytes = 16 * 1024 * 1024;
 /// malformed payloads, so the caller can consume the command without logging
 /// user-controlled file metadata. Only `inline=1` payloads are decoded; remote
 /// file downloads are deliberately not supported.
-bool handleIterm2InlineImageOsc(Terminal terminal, List<String> args) {
+bool handleIterm2InlineImageOsc(
+  Terminal terminal,
+  List<String> args, {
+  double? cellPixelWidth,
+  double? cellPixelHeight,
+}) {
   if (args.isEmpty || !args.first.startsWith('File=')) {
     return false;
   }
@@ -58,10 +63,12 @@ bool handleIterm2InlineImageOsc(Terminal terminal, List<String> args) {
   final columns = _parseIterm2CellDimension(
     metadata['width'],
     availableCells: terminal.viewWidth,
+    cellPixelExtent: cellPixelWidth,
   );
   final rows = _parseIterm2CellDimension(
     metadata['height'],
     availableCells: terminal.viewHeight,
+    cellPixelExtent: cellPixelHeight,
   );
   final preservesAspectRatio = metadata['preserveAspectRatio'] != '0';
   if (columns != null) {
@@ -97,7 +104,11 @@ Map<String, String> _parseIterm2FileMetadata(String raw) {
   return metadata;
 }
 
-int? _parseIterm2CellDimension(String? raw, {required int availableCells}) {
+int? _parseIterm2CellDimension(
+  String? raw, {
+  required int availableCells,
+  required double? cellPixelExtent,
+}) {
   if (raw == null || raw.isEmpty || raw == 'auto' || availableCells <= 0) {
     return null;
   }
@@ -106,11 +117,16 @@ int? _parseIterm2CellDimension(String? raw, {required int availableCells}) {
     final value = int.parse(percentage.group(1)!).clamp(1, 100);
     return ((availableCells * value) / 100).ceil().clamp(1, availableCells);
   }
-  final cells = int.tryParse(raw);
-  if (cells == null || cells <= 0) {
-    // Pixel dimensions cannot be translated until the view has supplied cell
-    // metrics, so retain natural image sizing instead of guessing.
-    return null;
+  final pixels = RegExp(r'^(\d+)px$').firstMatch(raw);
+  if (pixels != null &&
+      cellPixelExtent != null &&
+      cellPixelExtent.isFinite &&
+      cellPixelExtent > 0) {
+    final pixelValue = int.parse(pixels.group(1)!);
+    if (pixelValue <= 0) return null;
+    return (pixelValue / cellPixelExtent).ceil().clamp(1, availableCells);
   }
+  final cells = int.tryParse(raw);
+  if (cells == null || cells <= 0) return null;
   return cells.clamp(1, availableCells);
 }

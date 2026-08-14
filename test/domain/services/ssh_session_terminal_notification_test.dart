@@ -1,7 +1,9 @@
 import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/terminal_progress.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/terminal_notification.dart';
 
@@ -129,6 +131,42 @@ void main() {
     );
   });
 
+  test('applies and resets remote OSC palette overrides per session', () {
+    final session = _session()..terminalTheme = TerminalThemes.dracula;
+    var metadataChanges = 0;
+    void handleOsc(String code, List<String> args) =>
+        session.debugHandlePrivateOsc(code, args);
+    session.addMetadataListener(() => metadataChanges += 1);
+
+    handleOsc('11', const ['#102030']);
+    expect(session.terminalTheme?.background, const Color(0xFF102030));
+    handleOsc('4', const ['1', '#abcdef']);
+    expect(session.terminalTheme?.red, const Color(0xFFABCDEF));
+
+    handleOsc('111', const []);
+    handleOsc('104', const []);
+    expect(
+      session.terminalTheme?.background,
+      TerminalThemes.dracula.background,
+    );
+    expect(session.terminalTheme?.red, TerminalThemes.dracula.red);
+    expect(metadataChanges, 4);
+  });
+
+  test('tracks shell and explicit command marks', () {
+    final session = _session();
+    final terminal = session.getOrCreateTerminal();
+    void handleOsc(String code, List<String> args) =>
+        session.debugHandlePrivateOsc(code, args);
+    terminal.write('prompt\r\n');
+    handleOsc('133', const ['C']);
+    terminal.write('result\r\n');
+    handleOsc('1337', const ['SetMark']);
+
+    expect(session.terminalCommandMarkCount, 2);
+    expect(session.terminalCommandMarkTracker.debugMarkRows, [1, 2]);
+  });
+
   test('routes OSC 9;4 to terminal progress metadata', () async {
     final session = _session();
     var metadataChanges = 0;
@@ -208,7 +246,7 @@ void main() {
     () async {
       final session = _session();
       final next = session.terminalNotifications.first;
-      session.debugHandlePrivateOsc('99', const ['i=build:a=close']);
+      session.debugHandlePrivateOsc('99', const ['i=build:p=close']);
       expect(
         await next,
         const TerminalNotificationRequest.close(identifier: 'build'),
