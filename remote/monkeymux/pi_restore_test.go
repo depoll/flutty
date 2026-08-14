@@ -82,6 +82,24 @@ func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
 	}
 }
 
+func TestNewWindowAgentToolDoesNotConfirmNameOnlyMatch(t *testing.T) {
+	if tool, confirmed := newWindowAgentTool(createWindowOptions{}, "Pi"); tool != "pi" || confirmed {
+		t.Fatalf("name-only classification = %q, %v; want pi, false", tool, confirmed)
+	}
+	if tool, confirmed := newWindowAgentTool(
+		createWindowOptions{agentTool: "pi"},
+		"shell",
+	); tool != "pi" || !confirmed {
+		t.Fatalf("explicit classification = %q, %v; want pi, true", tool, confirmed)
+	}
+	if tool, confirmed := newWindowAgentTool(
+		createWindowOptions{command: "pi"},
+		"shell",
+	); tool != "pi" || !confirmed {
+		t.Fatalf("command classification = %q, %v; want pi, true", tool, confirmed)
+	}
+}
+
 func TestPiResumeCommandRejectsShellMetacharacters(t *testing.T) {
 	for _, id := range []string{"session's-id", "session&id", "$(touch-pwned)", "session id"} {
 		if got := piResumeCommand(id, ""); got != "" {
