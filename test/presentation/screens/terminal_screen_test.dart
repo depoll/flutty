@@ -180,6 +180,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
   bool hasLiveControlChannelValue = false;
+  bool supportsBracketedPasteControlInputValue = false;
   bool focusClientChangedValue = true;
   MonkeyMuxImageReplayResult imageReplayResult = MonkeyMuxImageReplayResult(
     served: const <int>{},
@@ -205,6 +206,12 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   @override
   bool hasLiveControlChannel(SshSession session, String sessionName) =>
       hasLiveControlChannelValue;
+
+  @override
+  bool supportsBracketedPasteControlInput(
+    SshSession session,
+    String sessionName,
+  ) => supportsBracketedPasteControlInputValue;
 
   @override
   Future<MonkeyMuxServerStatus?> runningServerStatus(

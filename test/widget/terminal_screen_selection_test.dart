@@ -473,8 +473,20 @@ void main() {
           muxBackend: RemoteMuxBackend.monkeyMux,
           hasSession: true,
           hasSessionName: true,
+          supportsBracketedPasteControlInput: true,
         ),
         isTrue,
+      );
+      expect(
+        shouldInjectTerminalAttachmentViaMonkeyMuxControl(
+          bracketedPasteMode: true,
+          isMuxActive: true,
+          muxBackend: RemoteMuxBackend.monkeyMux,
+          hasSession: true,
+          hasSessionName: true,
+          supportsBracketedPasteControlInput: false,
+        ),
+        isFalse,
       );
       expect(
         shouldInjectTerminalAttachmentViaMonkeyMuxControl(
@@ -483,6 +495,7 @@ void main() {
           muxBackend: RemoteMuxBackend.monkeyMux,
           hasSession: true,
           hasSessionName: true,
+          supportsBracketedPasteControlInput: true,
         ),
         isFalse,
       );
@@ -493,6 +506,7 @@ void main() {
           muxBackend: RemoteMuxBackend.tmux,
           hasSession: true,
           hasSessionName: true,
+          supportsBracketedPasteControlInput: true,
         ),
         isFalse,
       );
@@ -503,8 +517,104 @@ void main() {
           muxBackend: RemoteMuxBackend.monkeyMux,
           hasSession: false,
           hasSessionName: false,
+          supportsBracketedPasteControlInput: true,
         ),
         isFalse,
+      );
+    });
+  });
+
+  group('deliverTerminalAttachmentPasteSegments', () {
+    test('injects once without writing the raw terminal fallback', () async {
+      var inputGeneration = 0;
+      final injected = <String>[];
+      final terminalOutput = <String>[];
+
+      final result = await deliverTerminalAttachmentPasteSegments(
+        segments: const ['first'],
+        injectViaMonkeyMuxControl:
+            shouldInjectTerminalAttachmentViaMonkeyMuxControl(
+              bracketedPasteMode: true,
+              isMuxActive: true,
+              muxBackend: RemoteMuxBackend.monkeyMux,
+              hasSession: true,
+              hasSessionName: true,
+              supportsBracketedPasteControlInput: true,
+            ),
+        injectInput: (segment) async {
+          injected.add(segment);
+          return true;
+        },
+        writeTerminalOutput: terminalOutput.add,
+        initialInputGeneration: inputGeneration,
+        currentInputGeneration: () => inputGeneration,
+        recordDeliveredInput: () => inputGeneration++,
+        blockedReason: () => null,
+        waitBetweenSegments: () async {},
+      );
+
+      expect(injected, const ['first']);
+      expect(terminalOutput, isEmpty);
+      expect(result.deliveredSegmentCount, 1);
+      expect(result.stopReason, isNull);
+    });
+
+    test(
+      'falls back to terminal output when control injection fails',
+      () async {
+        var inputGeneration = 0;
+        final terminalOutput = <String>[];
+        final errors = <Object>[];
+
+        final result = await deliverTerminalAttachmentPasteSegments(
+          segments: const ['first'],
+          injectViaMonkeyMuxControl: true,
+          injectInput: (_) async => throw StateError('control unavailable'),
+          writeTerminalOutput: terminalOutput.add,
+          initialInputGeneration: inputGeneration,
+          currentInputGeneration: () => inputGeneration,
+          recordDeliveredInput: () => inputGeneration++,
+          blockedReason: () => null,
+          waitBetweenSegments: () async {},
+          onControlInjectionError: errors.add,
+        );
+
+        expect(terminalOutput, const ['first']);
+        expect(errors.single, isA<StateError>());
+        expect(result.deliveredSegmentCount, 1);
+        expect(result.stopReason, isNull);
+      },
+    );
+
+    test('stops after input arrives during the first control await', () async {
+      var inputGeneration = 0;
+      var waits = 0;
+      final injected = <String>[];
+      final terminalOutput = <String>[];
+
+      final result = await deliverTerminalAttachmentPasteSegments(
+        segments: const ['first', 'second'],
+        injectViaMonkeyMuxControl: true,
+        injectInput: (segment) async {
+          injected.add(segment);
+          inputGeneration++;
+          return true;
+        },
+        writeTerminalOutput: terminalOutput.add,
+        initialInputGeneration: inputGeneration,
+        currentInputGeneration: () => inputGeneration,
+        recordDeliveredInput: () => inputGeneration++,
+        blockedReason: () => null,
+        waitBetweenSegments: () async => waits++,
+      );
+
+      expect(injected, const ['first']);
+      expect(terminalOutput, isEmpty);
+      expect(waits, 0);
+      expect(result.deliveredSegmentCount, 1);
+      expect(
+        result.stopReason,
+        TerminalAttachmentPasteStopReason.interveningInput,
       );
     });
   });

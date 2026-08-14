@@ -973,12 +973,94 @@ bool shouldInjectTerminalAttachmentViaMonkeyMuxControl({
   required RemoteMuxBackend muxBackend,
   required bool hasSession,
   required bool hasSessionName,
+  required bool supportsBracketedPasteControlInput,
 }) =>
     bracketedPasteMode &&
     isMuxActive &&
     muxBackend == RemoteMuxBackend.monkeyMux &&
     hasSession &&
-    hasSessionName;
+    hasSessionName &&
+    supportsBracketedPasteControlInput;
+
+/// Why attachment segment delivery stopped before all segments were sent.
+enum TerminalAttachmentPasteStopReason {
+  /// The terminal screen was disposed before delivery completed.
+  unavailable,
+
+  /// The active SSH connection or multiplexer context changed.
+  contextChanged,
+
+  /// A different multiplexer window became active.
+  windowChanged,
+
+  /// User or terminal input arrived between attachment segments.
+  interveningInput,
+}
+
+/// Delivers pre-built attachment [segments] through control input or fallback.
+///
+/// This owns the async boundary around control injection so user input arriving
+/// while a segment is in flight prevents subsequent attachments from being
+/// appended after that input.
+@visibleForTesting
+Future<
+  ({int deliveredSegmentCount, TerminalAttachmentPasteStopReason? stopReason})
+>
+deliverTerminalAttachmentPasteSegments({
+  required List<String> segments,
+  required bool injectViaMonkeyMuxControl,
+  required Future<bool> Function(String segment) injectInput,
+  required void Function(String segment) writeTerminalOutput,
+  required int initialInputGeneration,
+  required int Function() currentInputGeneration,
+  required void Function() recordDeliveredInput,
+  required TerminalAttachmentPasteStopReason? Function() blockedReason,
+  required Future<void> Function() waitBetweenSegments,
+  void Function(Object error)? onControlInjectionError,
+}) async {
+  var expectedInputGeneration = initialInputGeneration;
+  var deliveredSegmentCount = 0;
+  for (var index = 0; index < segments.length; index++) {
+    final reason = blockedReason();
+    if (reason != null) {
+      return (deliveredSegmentCount: deliveredSegmentCount, stopReason: reason);
+    }
+    if (currentInputGeneration() != expectedInputGeneration) {
+      return (
+        deliveredSegmentCount: deliveredSegmentCount,
+        stopReason: TerminalAttachmentPasteStopReason.interveningInput,
+      );
+    }
+
+    var injected = false;
+    if (injectViaMonkeyMuxControl) {
+      try {
+        injected = await injectInput(segments[index]);
+      } on Object catch (error) {
+        onControlInjectionError?.call(error);
+      }
+    }
+    if (!injected) {
+      writeTerminalOutput(segments[index]);
+    }
+
+    final hadInterveningInput =
+        currentInputGeneration() != expectedInputGeneration;
+    recordDeliveredInput();
+    expectedInputGeneration = currentInputGeneration();
+    deliveredSegmentCount++;
+    if (hadInterveningInput && index < segments.length - 1) {
+      return (
+        deliveredSegmentCount: deliveredSegmentCount,
+        stopReason: TerminalAttachmentPasteStopReason.interveningInput,
+      );
+    }
+    if (index < segments.length - 1) {
+      await waitBetweenSegments();
+    }
+  }
+  return (deliveredSegmentCount: deliveredSegmentCount, stopReason: null);
+}
 
 /// Pastes [text] using an explicitly resolved bracketed-paste mode.
 @visibleForTesting
@@ -17028,7 +17110,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     List<String> remotePaths, {
     required bool windows,
   }) async {
-    var inputGeneration = _terminalUserInputGeneration;
+    final inputGeneration = _terminalUserInputGeneration;
     final pathCount = remotePaths
         .where((remotePath) => remotePath.isNotEmpty)
         .length;
@@ -17078,6 +17160,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           muxBackend: pasteMode.muxBackend,
           hasSession: pasteMode.session != null,
           hasSessionName: pasteMode.muxSessionName != null,
+          supportsBracketedPasteControlInput:
+              pasteMode.session != null &&
+              pasteMode.muxSessionName != null &&
+              _monkeyMuxService.supportsBracketedPasteControlInput(
+                pasteMode.session!,
+                pasteMode.muxSessionName!,
+              ),
         );
     final sendablePathCount = countTerminalAttachmentPastePaths(remotePaths);
     final segments = buildTerminalAttachmentPasteSegments(
@@ -17111,79 +17200,74 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'modeRefreshSucceeded': pasteMode.refreshSucceeded,
       },
     );
-    for (var i = 0; i < segments.length; i++) {
-      if (!mounted) {
-        return result(sentCount);
-      }
-      if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
+    final delivery = await deliverTerminalAttachmentPasteSegments(
+      segments: segments,
+      injectViaMonkeyMuxControl: injectViaMonkeyMuxControl,
+      injectInput: (segment) => _monkeyMuxService.injectInput(
+        pasteMode.session!,
+        pasteMode.muxSessionName!,
+        segment,
+        windowId: pasteMode.activeWindowKey,
+        bracketedPaste: true,
+      ),
+      writeTerminalOutput: (segment) =>
+          pasteMode.terminal.onOutput?.call(segment),
+      initialInputGeneration: inputGeneration,
+      currentInputGeneration: () => _terminalUserInputGeneration,
+      recordDeliveredInput: () => _terminalUserInputGeneration++,
+      blockedReason: () {
+        if (!mounted) {
+          return TerminalAttachmentPasteStopReason.unavailable;
+        }
+        if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
+          return TerminalAttachmentPasteStopReason.contextChanged;
+        }
+        if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
+          _syncTerminalModesFromActiveMuxWindow();
+          return TerminalAttachmentPasteStopReason.windowChanged;
+        }
+        return null;
+      },
+      waitBetweenSegments: () =>
+          Future<void>.delayed(_uploadedAttachmentPasteStagger),
+      onControlInjectionError: (error) {
         DiagnosticsLogService.instance.warning(
           'terminal.clipboard',
+          'attachment_control_injection_failed',
+          fields: {
+            'connectionId': _connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+      },
+    );
+    sentCount = usedBracketedPaste
+        ? delivery.deliveredSegmentCount
+        : delivery.deliveredSegmentCount == 0
+        ? 0
+        : sendablePathCount;
+    final stopReason = delivery.stopReason;
+    if (stopReason != null &&
+        stopReason != TerminalAttachmentPasteStopReason.unavailable) {
+      final event = switch (stopReason) {
+        TerminalAttachmentPasteStopReason.contextChanged =>
           'attachment_input_stopped_context_changed',
-          fields: {
-            'connectionId': _connectionId,
-            'pathCount': pathCount,
-            'sentCount': i,
-          },
-        );
-        return result(sentCount);
-      }
-      if (!_terminalPasteModeTargetsCurrentWindow(pasteMode)) {
-        _syncTerminalModesFromActiveMuxWindow();
-        DiagnosticsLogService.instance.warning(
-          'terminal.clipboard',
+        TerminalAttachmentPasteStopReason.windowChanged =>
           'attachment_input_stopped_window_changed',
-          fields: {
-            'connectionId': _connectionId,
-            'pathCount': pathCount,
-            'sentCount': i,
-          },
-        );
-        return result(sentCount);
-      }
-      if (_terminalUserInputGeneration != inputGeneration) {
-        DiagnosticsLogService.instance.warning(
-          'terminal.clipboard',
+        TerminalAttachmentPasteStopReason.interveningInput =>
           'attachment_input_stopped_intervening_input',
-          fields: {
-            'connectionId': _connectionId,
-            'pathCount': pathCount,
-            'sentCount': i,
-          },
-        );
-        return result(sentCount);
-      }
-      final injected =
-          injectViaMonkeyMuxControl &&
-          await _monkeyMuxService.injectInput(
-            pasteMode.session!,
-            pasteMode.muxSessionName!,
-            segments[i],
-            windowId: pasteMode.activeWindowKey,
-            bracketedPaste: true,
-          );
-      if (!injected) {
-        pasteMode.terminal.onOutput?.call(segments[i]);
-      }
-      final hadInterveningInput =
-          _terminalUserInputGeneration != inputGeneration;
-      _terminalUserInputGeneration++;
-      inputGeneration = _terminalUserInputGeneration;
-      sentCount = usedBracketedPaste ? sentCount + 1 : sendablePathCount;
-      if (hadInterveningInput && i < segments.length - 1) {
-        DiagnosticsLogService.instance.warning(
-          'terminal.clipboard',
-          'attachment_input_stopped_intervening_input',
-          fields: {
-            'connectionId': _connectionId,
-            'pathCount': pathCount,
-            'sentCount': sentCount,
-          },
-        );
-        return result(sentCount);
-      }
-      if (i < segments.length - 1) {
-        await Future<void>.delayed(_uploadedAttachmentPasteStagger);
-      }
+        TerminalAttachmentPasteStopReason.unavailable =>
+          'attachment_input_stopped_unavailable',
+      };
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        event,
+        fields: {
+          'connectionId': _connectionId,
+          'pathCount': pathCount,
+          'sentCount': sentCount,
+        },
+      );
     }
     return result(sentCount);
   }

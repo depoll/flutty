@@ -12129,6 +12129,15 @@ func TestPromptForServerUpdateSkipsOnReadError(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesAdvertiseBracketedPasteControlInput(t *testing.T) {
+	for _, capability := range capabilities {
+		if capability == "inject-input-bracketed-paste" {
+			return
+		}
+	}
+	t.Fatal("bracketed-paste control input capability is not advertised")
+}
+
 func TestRunningServerStatusSupportsCapability(t *testing.T) {
 	status := runningServerStatus{
 		version:      "0.1.0",

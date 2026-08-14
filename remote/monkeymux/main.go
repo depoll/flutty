@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.150"
+	monkeyMuxVersion                  = "0.1.151"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -231,6 +231,7 @@ var capabilities = []string{
 	"window-close",
 	"active-context",
 	"inject-input",
+	"inject-input-bracketed-paste",
 	"run-command",
 	"client-scoped-run-command",
 	"focus-hint",

@@ -98,6 +98,10 @@ class MonkeyMuxServerStatus {
   bool get supportsViewportClipping =>
       capabilities.contains('client-viewport-clipping');
 
+  /// Whether control input can preserve explicit bracketed-paste semantics.
+  bool get supportsBracketedPasteControlInput =>
+      capabilities.contains('inject-input-bracketed-paste');
+
   /// Whether this server differs from the app-bundled helper version.
   bool needsUpdate(String bundledVersion) {
     final runningVersion = version?.trim();
@@ -249,6 +253,8 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _observers =
       <_MonkeyMuxWatchKey, _MonkeyMuxWindowChangeObserver>{};
   static final _windowSnapshotCache = <_MonkeyMuxWatchKey, List<TmuxWindow>>{};
+  static final _serverStatusCache =
+      <_MonkeyMuxWatchKey, MonkeyMuxServerStatus>{};
   static final _windowListRequests =
       <_MonkeyMuxWatchKey, Future<List<TmuxWindow>>>{};
   static final _agentMetadataRequests = <_MonkeyMuxWatchKey, Future<void>>{};
@@ -312,6 +318,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       _appReviewDemoMuxStates.remove(key)?.dispose();
     }
     _windowSnapshotCache.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
+    _serverStatusCache.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
     _windowSnapshotGenerations.removeWhere(
@@ -497,6 +506,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         _cacheWindows(key, windows);
         _scheduleAgentMetadataRefresh(session, sessionName, key, windows);
       },
+      onServerStatus: (status) => _serverStatusCache[key] = status,
       onWindowSnapshot: (window) {
         final cachedWindows = _windowSnapshotCache[key];
         final forceAgentMetadataRefresh =
@@ -521,6 +531,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         // would orphan a live control channel.
         if (!identical(_observers[key], observer)) return;
         _observers.remove(key);
+        _serverStatusCache.remove(key);
         _cancelAgentMetadataPeriodicRefresh(key);
       },
       controlResponseTimeoutOverride: _controlResponseTimeout,
@@ -598,6 +609,15 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         'cwd': workingDirectory.trim(),
     });
   }
+
+  /// Whether the active server explicitly supports bracketed control input.
+  bool supportsBracketedPasteControlInput(
+    SshSession session,
+    String sessionName,
+  ) =>
+      _serverStatusCache[_MonkeyMuxWatchKey(session.connectionId, sessionName)]
+          ?.supportsBracketedPasteControlInput ??
+      false;
 
   /// Atomically writes [data] to a MonkeyMux window through the framed control
   /// channel.
@@ -925,10 +945,18 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       sessionName,
     );
     try {
-      return await session.runQueuedExec(
+      final status = await session.runQueuedExec(
         () => _readRunningServerStatus(session, controlCommand),
         priority: priority,
       );
+      if (status != null) {
+        _serverStatusCache[_MonkeyMuxWatchKey(
+              session.connectionId,
+              sessionName,
+            )] =
+            status;
+      }
+      return status;
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'monkeymux.status',
@@ -1004,10 +1032,18 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         '${_shellQuote(sessionName)}'
         ' 2>/dev/null && exit 0; done; exit 1';
     try {
-      return await session.runQueuedExec(
+      final status = await session.runQueuedExec(
         () => _readRunningServerStatus(session, command),
         priority: priority,
       );
+      if (status != null) {
+        _serverStatusCache[_MonkeyMuxWatchKey(
+              session.connectionId,
+              sessionName,
+            )] =
+            status;
+      }
+      return status;
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'monkeymux.status',
@@ -1027,8 +1063,8 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     Map<String, Object?> command, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
-    final observer =
-        _observers[_MonkeyMuxWatchKey(session.connectionId, sessionName)];
+    final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
+    final observer = _observers[key];
     if (observer != null && !observer.isDisposed) {
       return observer.runCommand(command, priority: priority);
     }
@@ -1043,7 +1079,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     final commandId = _nextControlRequestId();
     final request = <String, Object?>{'id': commandId, ...command};
     return session.runQueuedExec(
-      () => _runOneShotControlCommand(session, controlCommand, request),
+      () => _runOneShotControlCommand(
+        session,
+        controlCommand,
+        request,
+        onServerStatus: (status) => _serverStatusCache[key] = status,
+      ),
       priority: priority,
     );
   }
@@ -1344,8 +1385,9 @@ List<TmuxWindow> applyMonkeyMuxAgentSessionMetadataForTesting(
 Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
   SshSession session,
   String command,
-  Map<String, Object?> request,
-) async {
+  Map<String, Object?> request, {
+  ValueChanged<MonkeyMuxServerStatus>? onServerStatus,
+}) async {
   final execSession = await session.execute(command);
   try {
     execSession.stderr.drain<void>().ignore();
@@ -1359,7 +1401,19 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
             .transform(const LineSplitter())
             .timeout(responseTimeout)) {
       final response = _MonkeyMuxControlResponse.tryParse(line);
-      if (response == null || response.id != requestId) {
+      if (response == null) {
+        continue;
+      }
+      if (response.type == 'hello') {
+        onServerStatus?.call(
+          MonkeyMuxServerStatus(
+            version: response.version,
+            capabilities: response.capabilities.toSet(),
+          ),
+        );
+        continue;
+      }
+      if (response.id != requestId) {
         continue;
       }
       if (response.isError) {
@@ -1534,6 +1588,7 @@ class _MonkeyMuxWindowChangeObserver {
     required this.sessionName,
     required this.installer,
     required this.onWindowList,
+    required this.onServerStatus,
     required this.onWindowSnapshot,
     required this.onDispose,
     this.controlResponseTimeoutOverride,
@@ -1547,6 +1602,7 @@ class _MonkeyMuxWindowChangeObserver {
   final String sessionName;
   final MonkeyMuxInstallerService installer;
   final ValueChanged<List<TmuxWindow>> onWindowList;
+  final ValueChanged<MonkeyMuxServerStatus> onServerStatus;
   final ValueChanged<TmuxWindow> onWindowSnapshot;
   final VoidCallback onDispose;
 
@@ -1783,6 +1839,13 @@ class _MonkeyMuxWindowChangeObserver {
       return;
     }
     switch (response.type) {
+      case 'hello':
+        onServerStatus(
+          MonkeyMuxServerStatus(
+            version: response.version,
+            capabilities: response.capabilities.toSet(),
+          ),
+        );
       case 'window_updated':
       case 'window_added':
         final window = response.window;

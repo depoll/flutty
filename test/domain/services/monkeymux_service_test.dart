@@ -13,6 +13,7 @@ import 'package:monkeyssh/domain/models/terminal_progress.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
+import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
 void main() {
@@ -178,11 +179,17 @@ void main() {
     test('detects version mismatches and shutdown capability', () {
       const status = MonkeyMuxServerStatus(
         version: '0.1.13',
-        capabilities: {'window-list', 'shutdown', 'client-viewport-clipping'},
+        capabilities: {
+          'window-list',
+          'shutdown',
+          'client-viewport-clipping',
+          'inject-input-bracketed-paste',
+        },
       );
 
       expect(status.supportsShutdown, isTrue);
       expect(status.supportsViewportClipping, isTrue);
+      expect(status.supportsBracketedPasteControlInput, isTrue);
       expect(status.needsUpdate('0.1.13'), isFalse);
       expect(status.needsUpdate('0.1.14'), isTrue);
     });
@@ -566,6 +573,63 @@ void main() {
   group('MonkeyMux input injection', () {
     setUpAll(() => registerFallbackValue(Uint8List(0)));
 
+    test('caches bracketed input support from a one-shot hello', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 898);
+      final stdoutController = StreamController<Uint8List>();
+      final controlSession = _buildSilentControlSession(stdoutController);
+
+      when(
+        () => installer.ensureInstalled(
+          session,
+          priority: SshExecPriority.normal,
+        ),
+      ).thenAnswer((_) async => _fakeInstallation);
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => controlSession);
+      when(() => controlSession.write(any())).thenAnswer((invocation) {
+        final data = invocation.positionalArguments.single as List<int>;
+        final request = jsonDecode(utf8.decode(data)) as Map<String, Object?>;
+        final hello = jsonEncode({
+          'type': 'hello',
+          'status': 'ok',
+          'version': '0.1.151',
+          'capabilities': ['inject-input-bracketed-paste'],
+        });
+        final response = jsonEncode({
+          'id': request['id'],
+          'type': 'window_list',
+          'status': 'ok',
+          'windows': const <Object?>[],
+        });
+        scheduleMicrotask(
+          () => stdoutController.add(
+            Uint8List.fromList(utf8.encode('$hello\n$response\n')),
+          ),
+        );
+      });
+
+      final service = MonkeyMuxService(
+        installer: installer,
+        agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+      );
+      expect(
+        service.supportsBracketedPasteControlInput(session, 'work'),
+        isFalse,
+      );
+
+      expect(await service.listWindows(session, 'work'), isEmpty);
+      expect(
+        service.supportsBracketedPasteControlInput(session, 'work'),
+        isTrue,
+      );
+
+      await stdoutController.close();
+      await service.clearCache(898);
+    });
+
     test('preserves an exact bracketed paste in one control request', () async {
       final client = _MockSshClient();
       final installer = _MockMonkeyMuxInstaller();
@@ -584,6 +648,12 @@ void main() {
         final data = invocation.positionalArguments.single as List<int>;
         final request = jsonDecode(utf8.decode(data)) as Map<String, Object?>;
         requests.add(request);
+        final hello = jsonEncode({
+          'type': 'hello',
+          'status': 'ok',
+          'version': '0.1.151',
+          'capabilities': ['inject-input-bracketed-paste'],
+        });
         final response = jsonEncode({
           'id': request['id'],
           'type': 'input_injected',
@@ -591,7 +661,7 @@ void main() {
         });
         scheduleMicrotask(
           () => stdoutController.add(
-            Uint8List.fromList(utf8.encode('$response\n')),
+            Uint8List.fromList(utf8.encode('$hello\n$response\n')),
           ),
         );
       });
@@ -602,6 +672,10 @@ void main() {
       )..watchWindowChanges(session, 'work');
       const paste = '\x1b[200~/tmp/image.png\x1b[201~ ';
 
+      expect(
+        service.supportsBracketedPasteControlInput(session, 'work'),
+        isFalse,
+      );
       expect(
         await service.injectInput(
           session,
@@ -618,9 +692,17 @@ void main() {
       expect(requests.single['windowId'], '@7');
       expect(requests.single['data'], paste);
       expect(requests.single['bracketedPaste'], isTrue);
+      expect(
+        service.supportsBracketedPasteControlInput(session, 'work'),
+        isTrue,
+      );
 
       await stdoutController.close();
       await service.clearCache(899);
+      expect(
+        service.supportsBracketedPasteControlInput(session, 'work'),
+        isFalse,
+      );
     });
   });
 
