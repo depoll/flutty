@@ -563,6 +563,67 @@ void main() {
     });
   });
 
+  group('MonkeyMux input injection', () {
+    setUpAll(() => registerFallbackValue(Uint8List(0)));
+
+    test('preserves an exact bracketed paste in one control request', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 899);
+      final stdoutController = StreamController<Uint8List>();
+      final controlSession = _buildSilentControlSession(stdoutController);
+      final requests = <Map<String, Object?>>[];
+
+      when(
+        () => installer.ensureInstalled(session),
+      ).thenAnswer((_) async => _fakeInstallation);
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => controlSession);
+      when(() => controlSession.write(any())).thenAnswer((invocation) {
+        final data = invocation.positionalArguments.single as List<int>;
+        final request = jsonDecode(utf8.decode(data)) as Map<String, Object?>;
+        requests.add(request);
+        final response = jsonEncode({
+          'id': request['id'],
+          'type': 'input_injected',
+          'status': 'ok',
+        });
+        scheduleMicrotask(
+          () => stdoutController.add(
+            Uint8List.fromList(utf8.encode('$response\n')),
+          ),
+        );
+      });
+
+      final service = MonkeyMuxService(
+        installer: installer,
+        agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+      )..watchWindowChanges(session, 'work');
+      const paste = '\x1b[200~/tmp/image.png\x1b[201~ ';
+
+      expect(
+        await service.injectInput(
+          session,
+          'work',
+          paste,
+          windowId: '@7',
+          bracketedPaste: true,
+        ),
+        isTrue,
+      );
+      expect(requests, hasLength(1));
+      expect(requests.single['type'], 'inject_input');
+      expect(requests.single['clientId'], session.monkeyMuxClientId);
+      expect(requests.single['windowId'], '@7');
+      expect(requests.single['data'], paste);
+      expect(requests.single['bracketedPaste'], isTrue);
+
+      await stdoutController.close();
+      await service.clearCache(899);
+    });
+  });
+
   group('MonkeyMux control channel timeout', () {
     setUpAll(() => registerFallbackValue(Uint8List(0)));
 

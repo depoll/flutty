@@ -965,6 +965,21 @@ refreshTerminalBracketedPasteModeFromMuxWindows({
   );
 }
 
+/// Whether an attachment paste can bypass the ambiguous raw attach stream.
+@visibleForTesting
+bool shouldInjectTerminalAttachmentViaMonkeyMuxControl({
+  required bool bracketedPasteMode,
+  required bool isMuxActive,
+  required RemoteMuxBackend muxBackend,
+  required bool hasSession,
+  required bool hasSessionName,
+}) =>
+    bracketedPasteMode &&
+    isMuxActive &&
+    muxBackend == RemoteMuxBackend.monkeyMux &&
+    hasSession &&
+    hasSessionName;
+
 /// Pastes [text] using an explicitly resolved bracketed-paste mode.
 @visibleForTesting
 void pasteTerminalTextWithBracketedPasteMode({
@@ -17056,6 +17071,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return result(sentCount);
     }
     final usedBracketedPaste = _effectiveTerminalBracketedPasteMode(pasteMode);
+    final injectViaMonkeyMuxControl =
+        shouldInjectTerminalAttachmentViaMonkeyMuxControl(
+          bracketedPasteMode: usedBracketedPaste,
+          isMuxActive: pasteMode.isMuxActive,
+          muxBackend: pasteMode.muxBackend,
+          hasSession: pasteMode.session != null,
+          hasSessionName: pasteMode.muxSessionName != null,
+        );
     final sendablePathCount = countTerminalAttachmentPastePaths(remotePaths);
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
@@ -17083,6 +17106,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'modeReliable': modeReliable,
         'modeUsable': modeUsable,
         'usedBracketedPaste': usedBracketedPaste,
+        'usedMuxControlInjection': injectViaMonkeyMuxControl,
         'modeRefreshAttempted': pasteMode.refreshAttempted,
         'modeRefreshSucceeded': pasteMode.refreshSucceeded,
       },
@@ -17128,10 +17152,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
         return result(sentCount);
       }
-      pasteMode.terminal.onOutput?.call(segments[i]);
+      final injected =
+          injectViaMonkeyMuxControl &&
+          await _monkeyMuxService.injectInput(
+            pasteMode.session!,
+            pasteMode.muxSessionName!,
+            segments[i],
+            windowId: pasteMode.activeWindowKey,
+            bracketedPaste: true,
+          );
+      if (!injected) {
+        pasteMode.terminal.onOutput?.call(segments[i]);
+      }
+      final hadInterveningInput =
+          _terminalUserInputGeneration != inputGeneration;
       _terminalUserInputGeneration++;
       inputGeneration = _terminalUserInputGeneration;
       sentCount = usedBracketedPaste ? sentCount + 1 : sendablePathCount;
+      if (hadInterveningInput && i < segments.length - 1) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.clipboard',
+          'attachment_input_stopped_intervening_input',
+          fields: {
+            'connectionId': _connectionId,
+            'pathCount': pathCount,
+            'sentCount': sentCount,
+          },
+        );
+        return result(sentCount);
+      }
       if (i < segments.length - 1) {
         await Future<void>.delayed(_uploadedAttachmentPasteStagger);
       }

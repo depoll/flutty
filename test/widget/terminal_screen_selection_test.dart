@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/remote_file_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
@@ -459,6 +460,51 @@ void main() {
           '/home/u/.cache/monkeyssh/uploads/a.png',
         ], bracketedPasteMode: terminal.bracketedPasteMode),
         const ['\x1b[200~/home/u/.cache/monkeyssh/uploads/a.png\x1b[201~ '],
+      );
+    });
+  });
+
+  group('shouldInjectTerminalAttachmentViaMonkeyMuxControl', () {
+    test('uses framed control delivery only for active MonkeyMux pastes', () {
+      expect(
+        shouldInjectTerminalAttachmentViaMonkeyMuxControl(
+          bracketedPasteMode: true,
+          isMuxActive: true,
+          muxBackend: RemoteMuxBackend.monkeyMux,
+          hasSession: true,
+          hasSessionName: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldInjectTerminalAttachmentViaMonkeyMuxControl(
+          bracketedPasteMode: false,
+          isMuxActive: true,
+          muxBackend: RemoteMuxBackend.monkeyMux,
+          hasSession: true,
+          hasSessionName: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldInjectTerminalAttachmentViaMonkeyMuxControl(
+          bracketedPasteMode: true,
+          isMuxActive: true,
+          muxBackend: RemoteMuxBackend.tmux,
+          hasSession: true,
+          hasSessionName: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldInjectTerminalAttachmentViaMonkeyMuxControl(
+          bracketedPasteMode: true,
+          isMuxActive: true,
+          muxBackend: RemoteMuxBackend.monkeyMux,
+          hasSession: false,
+          hasSessionName: false,
+        ),
+        isFalse,
       );
     });
   });

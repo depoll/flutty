@@ -6640,6 +6640,75 @@ func TestBracketedPasteInputPreservesFocusReportBytes(t *testing.T) {
 	}
 }
 
+func TestInjectInputControlPreservesBracketedPaste(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{id: "@1", index: 0, pty: wrapPty(t, writer), lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	const paste = "\x1b[200~/tmp/image.png\x1b[201~ "
+
+	server.handleControlRequest(&controlClient{}, controlMessage{
+		Type:           "inject_input",
+		WindowID:       "@1",
+		Data:           paste,
+		BracketedPaste: true,
+	})
+	if err := window.pty.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(output); got != paste {
+		t.Fatalf("injected PTY input = %q, want exact bracketed paste", got)
+	}
+}
+
+func TestInjectInputControlMarksBracketedPasteForWin32InputMode(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{
+		id:             "@1",
+		index:          0,
+		pty:            wrapPty(t, writer),
+		lastActivity:   time.Now(),
+		win32InputMode: true,
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	const paste = "\x1b[200~/tmp/image.png\x1b[201~ "
+
+	server.handleControlRequest(&controlClient{}, controlMessage{
+		Type:           "inject_input",
+		WindowID:       "@1",
+		Data:           paste,
+		BracketedPaste: true,
+	})
+	if err := window.pty.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := encodeBracketedPasteInputForWin32InputMode([]byte(paste))
+	if !bytes.Equal(output, want) {
+		t.Fatalf("injected PTY input = %q, want encoded bracketed paste %q", output, want)
+	}
+}
+
 func TestBlockedInputWriteDoesNotBlockTerminalResponseRegistration(t *testing.T) {
 	server := newMuxServer("test")
 	reader, writer, err := os.Pipe()

@@ -599,6 +599,37 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     });
   }
 
+  /// Atomically writes [data] to a MonkeyMux window through the framed control
+  /// channel.
+  ///
+  /// Unlike the raw attach stream, a control request cannot split a bracketed-
+  /// paste marker across network reads and lose its paste semantics. Returns
+  /// false only for the in-process App Review demo, whose terminal input must
+  /// continue through the simulated shell.
+  Future<bool> injectInput(
+    SshSession session,
+    String sessionName,
+    String data, {
+    String? windowId,
+    bool bracketedPaste = false,
+  }) async {
+    if (data.isEmpty) {
+      return true;
+    }
+    if (isAppReviewDemoSession(session)) {
+      return false;
+    }
+    await _runControlCommand(session, sessionName, {
+      'type': 'inject_input',
+      'clientId': session.monkeyMuxClientId,
+      if (windowId != null && windowId.trim().isNotEmpty)
+        'windowId': windowId.trim(),
+      'data': data,
+      if (bracketedPaste) 'bracketedPaste': true,
+    });
+    return true;
+  }
+
   @override
   Future<void> selectWindow(
     SshSession session,
