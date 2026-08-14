@@ -58,12 +58,20 @@ void main() {
     expect(metadataChanges, 2);
   });
 
-  test('clears active progress once and notifies metadata once', () {
+  test('synchronizes and clears progress without duplicate notifications', () {
     final session = _session();
     var metadataChanges = 0;
-    session
-      ..addMetadataListener(() => metadataChanges += 1)
-      ..debugHandlePrivateOsc('9', ['4', '1', '50']);
+    const progress = TerminalProgress(
+      state: TerminalProgressState.normal,
+      percentage: 50,
+    );
+    session.addMetadataListener(() => metadataChanges += 1);
+
+    expect(session.synchronizeTerminalProgress(progress), isTrue);
+    expect(session.terminalProgress, progress);
+    expect(metadataChanges, 1);
+
+    expect(session.synchronizeTerminalProgress(progress), isFalse);
     expect(metadataChanges, 1);
 
     expect(session.clearTerminalProgress(), isTrue);

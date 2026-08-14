@@ -931,6 +931,10 @@ jobs:
         if: inputs.ios-reuse-ipa-artifact-name == ''
         run: flutter pub get
 
+      - name: Cache SQLite native asset
+        if: inputs.ios-reuse-ipa-artifact-name == ''
+        run: scripts/cache_sqlite3_native_assets.sh ios-arm64
+
       - name: Configure Firebase for iOS
         if: inputs.ios-reuse-ipa-artifact-name == ''
         env:
