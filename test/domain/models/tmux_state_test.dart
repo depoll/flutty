@@ -2,6 +2,7 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/terminal_progress.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 
 void main() {
@@ -670,6 +671,56 @@ void main() {
       expect(updated.firstWhere((window) => window.id == '@7').index, 3);
       expect(updated.firstWhere((window) => window.id == '@8').isActive, false);
     });
+
+    test(
+      'replaces fresh terminal progress without resurrecting stale values',
+      () {
+        const windows = <TmuxWindow>[
+          TmuxWindow(
+            index: 0,
+            id: '@1',
+            name: 'build',
+            isActive: true,
+            terminalProgress: TerminalProgress(
+              state: TerminalProgressState.normal,
+              percentage: 25,
+            ),
+          ),
+        ];
+
+        final updated = applyTmuxWindowChangeEvent(
+          windows,
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 0,
+              id: '@1',
+              name: 'build',
+              isActive: true,
+              terminalProgress: TerminalProgress(
+                state: TerminalProgressState.error,
+                percentage: 80,
+              ),
+            ),
+          ),
+        );
+
+        expect(
+          updated.single.terminalProgress,
+          const TerminalProgress(
+            state: TerminalProgressState.error,
+            percentage: 80,
+          ),
+        );
+
+        final cleared = applyTmuxWindowChangeEvent(
+          updated,
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(index: 0, id: '@1', name: 'build', isActive: true),
+          ),
+        );
+        expect(cleared.single.terminalProgress, isNull);
+      },
+    );
 
     test('adds a new window snapshot in index order', () {
       const windows = <TmuxWindow>[

@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/terminal_progress.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
@@ -295,6 +296,38 @@ void main() {
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
+    });
+
+    test('maps helper terminal progress metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Build',
+        'active': false,
+        'terminalProgress': {'state': 2, 'percentage': 63},
+      });
+
+      expect(window, isNotNull);
+      expect(
+        window!.terminalProgress,
+        const TerminalProgress(
+          state: TerminalProgressState.error,
+          percentage: 63,
+        ),
+      );
+    });
+
+    test('ignores invalid helper terminal progress metadata', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Build',
+        'active': false,
+        'terminalProgress': {'state': 1, 'percentage': 101},
+      });
+
+      expect(window, isNotNull);
+      expect(window!.terminalProgress, isNull);
     });
 
     test('maps helper terminal mouse mode metadata onto tmux windows', () {

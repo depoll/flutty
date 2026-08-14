@@ -1446,6 +1446,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     TmuxWindow window,
   ) {
     final isActive = window.isActive;
+    final progress = widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
+        ? window.terminalProgress
+        : null;
     final title = _redactStoreScreenshotIdentities
         ? _storeScreenshotWindowTitle(window)
         : window.displayTitle;
@@ -1518,6 +1521,22 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                           color: theme.colorScheme.error,
                         ),
                       ),
+                    if (progress != null)
+                      Positioned(
+                        left: -7,
+                        right: 7,
+                        bottom: -11,
+                        child: _MuxWindowProgressIndicator(
+                          key: ValueKey(
+                            'monkeymux-sidebar-progress-${window.index}',
+                          ),
+                          progress: progress,
+                          semanticsWindowLabel: isActive
+                              ? null
+                              : 'MonkeyMux window ${window.index}: $title',
+                          compact: true,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -1535,6 +1554,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }) {
     final colorScheme = theme.colorScheme;
     return DecoratedBox(
+      key: ValueKey('tmux-sidebar-window-index-${window.index}'),
       decoration: BoxDecoration(
         color: isActive
             ? colorScheme.primary
@@ -1789,6 +1809,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final iconColor = isActive
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurfaceVariant;
+    final progress = widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
+        ? window.terminalProgress
+        : null;
 
     return ListTile(
       dense: true,
@@ -1844,16 +1867,33 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           ),
         ],
       ),
-      subtitle: secondaryTitle != null
-          ? Text(
-              secondaryTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            )
-          : null,
+      subtitle: secondaryTitle == null && progress == null
+          ? null
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (secondaryTitle != null)
+                  Text(
+                    secondaryTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                if (progress != null) ...[
+                  if (secondaryTitle != null) const SizedBox(height: 3),
+                  _MuxWindowProgressIndicator(
+                    key: ValueKey('monkeymux-window-progress-${window.index}'),
+                    progress: progress,
+                    semanticsWindowLabel: isActive
+                        ? null
+                        : 'MonkeyMux window ${window.index}: $title',
+                  ),
+                ],
+              ],
+            ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1900,6 +1940,71 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               _startPendingSelectionTimer(window.index);
               unawaited(widget.onAction(TmuxSwitchWindowAction(window.index)));
             },
+    );
+  }
+}
+
+class _MuxWindowProgressIndicator extends StatelessWidget {
+  const _MuxWindowProgressIndicator({
+    required this.progress,
+    required this.semanticsWindowLabel,
+    this.compact = false,
+    super.key,
+  });
+
+  final TerminalProgress progress;
+  final String? semanticsWindowLabel;
+  final bool compact;
+
+  String get _progressLabel => switch (progress.state) {
+    TerminalProgressState.normal => 'progress',
+    TerminalProgressState.error => 'progress, error',
+    TerminalProgressState.indeterminate => 'progress, indeterminate',
+    TerminalProgressState.pausedOrWarning => 'progress, paused or warning',
+  };
+
+  Color _color(ColorScheme colorScheme) => switch (progress.state) {
+    TerminalProgressState.normal ||
+    TerminalProgressState.indeterminate => colorScheme.primary,
+    TerminalProgressState.error => colorScheme.error,
+    TerminalProgressState.pausedOrWarning => colorScheme.tertiary,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final percentage = progress.percentage;
+    final hasPercentage = percentage != null;
+    final disableAnimations =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    final indicatorValue = hasPercentage
+        ? progress.fraction
+        : (disableAnimations ? 0.5 : null);
+
+    final indicator = ExcludeSemantics(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(999),
+        child: LinearProgressIndicator(
+          value: indicatorValue,
+          minHeight: compact ? 2 : 3,
+          color: _color(colorScheme),
+          backgroundColor: colorScheme.surfaceContainerHighest,
+        ),
+      ),
+    );
+    final windowLabel = semanticsWindowLabel;
+    if (windowLabel == null) {
+      return indicator;
+    }
+    return Semantics(
+      label: '$windowLabel, $_progressLabel',
+      value: hasPercentage ? '$percentage' : null,
+      minValue: hasPercentage ? '0' : null,
+      maxValue: hasPercentage ? '100' : null,
+      role: hasPercentage
+          ? SemanticsRole.progressBar
+          : SemanticsRole.loadingSpinner,
+      child: indicator,
     );
   }
 }

@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:ui' show SemanticsRole;
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
@@ -32,6 +33,7 @@ import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_capability_hint.dart';
+import '../../domain/models/terminal_progress.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -4286,6 +4288,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   int? get _lastExitCode => _observedSession?.lastExitCode;
 
+  TerminalProgress? get _terminalProgress => _observedSession?.terminalProgress;
+
   bool get _shouldReviewTerminalCommandInsertion =>
       shouldReviewTerminalCommandInsertion(
         shellStatus: _shellStatus,
@@ -5074,7 +5078,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _markMonkeyMuxReconnectEstablished(session, sessionName);
       _syncTerminalModesFromActiveMuxWindow();
       if (activeWindowChanged) {
-        _prepareTerminalForMuxWindowChange();
+        _prepareTerminalForMuxWindowChange(clearTerminalProgress: false);
         _refreshTerminalAfterMonkeyMuxWindowChange(session);
         _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
           session: session,
@@ -10868,9 +10872,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
       onWindowsChanged: (windows) {
-        if (_activeMuxBackend == RemoteMuxBackend.monkeyMux &&
-            windows.isNotEmpty) {
-          _monkeyMuxAttachEstablished = true;
+        if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+          if (windows.isNotEmpty) {
+            _monkeyMuxAttachEstablished = true;
+          }
+          _syncTerminalProgressFromActiveMonkeyMuxWindow(session, windows);
         }
         _syncAutomaticPortForwardProcessRoots(
           session,
@@ -11195,6 +11201,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       windowIndex,
       windowId: targetWindowId,
     );
+    if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      session.clearTerminalProgress();
+    }
     if (targetWindowId == null) {
       await backend.selectWindow(
         windowIndex,
@@ -11221,7 +11230,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _prepareTerminalForMuxWindowChange();
+      _prepareTerminalForMuxWindowChange(clearTerminalProgress: false);
       _refreshTerminalAfterMonkeyMuxWindowChange(session);
       _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
         session: session,
@@ -11401,6 +11410,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _prepareTerminalForMuxWindowChange(
       workingDirectory: resolvedWorkingDirectory,
+      clearTerminalProgress:
+          backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux,
     );
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       _refreshTerminalAfterMonkeyMuxWindowChange(session);
@@ -11457,8 +11468,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await _handleMuxSessionEnded(session, sessionName);
       return;
     }
-    _prepareTerminalForMuxWindowChange();
-    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+    final isMonkeyMux = _activeMuxBackend == RemoteMuxBackend.monkeyMux;
+    _prepareTerminalForMuxWindowChange(clearTerminalProgress: !isMonkeyMux);
+    if (isMonkeyMux) {
       _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
       _scheduleTerminalSizeRefresh();
@@ -11470,7 +11482,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _prepareTerminalForMuxWindowChange({String? workingDirectory}) {
+  void _syncTerminalProgressFromActiveMonkeyMuxWindow(
+    SshSession session,
+    Iterable<TmuxWindow> windows,
+  ) {
+    final activeWindow = windows.where((window) => window.isActive).firstOrNull;
+    session.synchronizeTerminalProgress(activeWindow?.terminalProgress);
+  }
+
+  void _prepareTerminalForMuxWindowChange({
+    String? workingDirectory,
+    bool clearTerminalProgress = true,
+  }) {
+    if (clearTerminalProgress) {
+      _observedSession?.clearTerminalProgress();
+    }
     _terminalTextInputController.resetImeCompletions();
     _clearTerminalFollowPauseForMuxWindowChange();
     _tmuxWorkingDirectory = workingDirectory;
@@ -12365,6 +12391,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
+    final terminalProgress = _terminalProgress;
     final isOpeningSftpBrowser = _isExclusiveTerminalActionRunning(
       _TerminalExclusiveAction.sftpBrowser,
     );
@@ -12432,27 +12459,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               ),
             ],
           ),
-          bottom: !_showsTerminalMetadata || statusChips.isEmpty
+          bottom:
+              terminalProgress == null &&
+                  (!_showsTerminalMetadata || statusChips.isEmpty)
               ? null
               : PreferredSize(
-                  preferredSize: const Size.fromHeight(40),
-                  child: Container(
-                    alignment: Alignment.centerLeft,
-                    width: double.infinity,
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: statusChips
-                            .map(
-                              (chip) => Padding(
-                                padding: const EdgeInsets.only(right: 8),
-                                child: chip,
-                              ),
-                            )
-                            .toList(growable: false),
-                      ),
-                    ),
+                  preferredSize: Size.fromHeight(
+                    (_showsTerminalMetadata && statusChips.isNotEmpty
+                            ? 40
+                            : 0) +
+                        (terminalProgress == null ? 0 : 3),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_showsTerminalMetadata && statusChips.isNotEmpty)
+                        Container(
+                          alignment: Alignment.centerLeft,
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              children: statusChips
+                                  .map(
+                                    (chip) => Padding(
+                                      padding: const EdgeInsets.only(right: 8),
+                                      child: chip,
+                                    ),
+                                  )
+                                  .toList(growable: false),
+                            ),
+                          ),
+                        ),
+                      if (terminalProgress != null)
+                        _TerminalProgressBar(progress: terminalProgress),
+                    ],
                   ),
                 ),
           actions: [
@@ -17945,6 +17987,59 @@ class _TerminalJumpHostIndicator extends StatelessWidget {
         message: 'Connected through jump host',
         excludeFromSemantics: true,
         child: Icon(Icons.alt_route, size: 18, color: colorScheme.secondary),
+      ),
+    );
+  }
+}
+
+class _TerminalProgressBar extends StatelessWidget {
+  const _TerminalProgressBar({required this.progress});
+
+  final TerminalProgress progress;
+
+  String get _label => switch (progress.state) {
+    TerminalProgressState.normal => 'Terminal task progress',
+    TerminalProgressState.error => 'Terminal task progress, error',
+    TerminalProgressState.indeterminate =>
+      'Terminal task progress, indeterminate',
+    TerminalProgressState.pausedOrWarning =>
+      'Terminal task progress, paused or warning',
+  };
+
+  Color _color(ColorScheme colorScheme) => switch (progress.state) {
+    TerminalProgressState.normal ||
+    TerminalProgressState.indeterminate => colorScheme.primary,
+    TerminalProgressState.error => colorScheme.error,
+    TerminalProgressState.pausedOrWarning => colorScheme.tertiary,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final percentage = progress.percentage;
+    final disableAnimations =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    final hasPercentage = percentage != null;
+    final indicatorValue = hasPercentage
+        ? progress.fraction
+        : (disableAnimations ? 0.5 : null);
+
+    return Semantics(
+      label: _label,
+      value: hasPercentage ? '$percentage' : null,
+      minValue: hasPercentage ? '0' : null,
+      maxValue: hasPercentage ? '100' : null,
+      role: hasPercentage
+          ? SemanticsRole.progressBar
+          : SemanticsRole.loadingSpinner,
+      child: ExcludeSemantics(
+        child: LinearProgressIndicator(
+          key: const ValueKey<String>('terminal-osc-progress'),
+          value: indicatorValue,
+          minHeight: 3,
+          color: _color(colorScheme),
+          backgroundColor: colorScheme.surfaceContainerHighest,
+        ),
       ),
     );
   }

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'agent_launch_preset.dart';
+import 'terminal_progress.dart';
 
 /// Field separator used for tmux format strings.
 ///
@@ -118,6 +119,7 @@ class TmuxWindow {
     this.terminalReportsMouseWheel,
     this.terminalMouseReportSgr,
     this.terminalBracketedPasteMode,
+    this.terminalProgress,
     int? idleSeconds,
     this.lastActivityEpochSeconds,
   }) : _snapshotIdleSeconds = idleSeconds;
@@ -219,6 +221,11 @@ class TmuxWindow {
   /// Whether the foreground application requested bracketed paste mode.
   final bool? terminalBracketedPasteMode;
 
+  /// OSC 9;4 progress reported by this MonkeyMux window, when available.
+  ///
+  /// Plain tmux snapshots leave this unset.
+  final TerminalProgress? terminalProgress;
+
   /// tmux's `window_activity` epoch seconds, if available.
   final int? lastActivityEpochSeconds;
 
@@ -275,6 +282,8 @@ class TmuxWindow {
     bool? terminalReportsMouseWheel,
     bool? terminalMouseReportSgr,
     bool? terminalBracketedPasteMode,
+    TerminalProgress? terminalProgress,
+    bool clearTerminalProgress = false,
     bool clearActiveAgentSessionMetadata = false,
     int? lastActivityEpochSeconds,
   }) => TmuxWindow(
@@ -304,6 +313,9 @@ class TmuxWindow {
         terminalMouseReportSgr ?? this.terminalMouseReportSgr,
     terminalBracketedPasteMode:
         terminalBracketedPasteMode ?? this.terminalBracketedPasteMode,
+    terminalProgress: clearTerminalProgress
+        ? null
+        : terminalProgress ?? this.terminalProgress,
     idleSeconds: _snapshotIdleSeconds,
     lastActivityEpochSeconds:
         lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
@@ -602,6 +614,7 @@ class TmuxWindow {
           terminalReportsMouseWheel == other.terminalReportsMouseWheel &&
           terminalMouseReportSgr == other.terminalMouseReportSgr &&
           terminalBracketedPasteMode == other.terminalBracketedPasteMode &&
+          terminalProgress == other.terminalProgress &&
           lastActivityEpochSeconds == other.lastActivityEpochSeconds &&
           _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
@@ -624,6 +637,7 @@ class TmuxWindow {
     terminalReportsMouseWheel,
     terminalMouseReportSgr,
     terminalBracketedPasteMode,
+    terminalProgress,
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
   );

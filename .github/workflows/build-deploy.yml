@@ -327,6 +327,12 @@ jobs:
         if: inputs.android-reuse-aab-artifact-name == ''
         run: flutter pub get
 
+      - name: Cache SQLite native asset
+        if: inputs.android-reuse-aab-artifact-name == ''
+        run: |
+          scripts/cache_sqlite3_native_assets.sh \
+            android-arm64 android-x64 android-arm android-ia32
+
       - name: Configure Firebase for Android
         if: inputs.android-reuse-aab-artifact-name == ''
         env:
@@ -924,6 +930,10 @@ jobs:
       - name: Install dependencies
         if: inputs.ios-reuse-ipa-artifact-name == ''
         run: flutter pub get
+
+      - name: Cache SQLite native asset
+        if: inputs.ios-reuse-ipa-artifact-name == ''
+        run: scripts/cache_sqlite3_native_assets.sh ios-arm64
 
       - name: Configure Firebase for iOS
         if: inputs.ios-reuse-ipa-artifact-name == ''

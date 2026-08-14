@@ -19,6 +19,7 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../models/port_proxy_name.dart';
 import '../models/remote_multiplexer.dart';
 import '../models/terminal_preview.dart';
+import '../models/terminal_progress.dart';
 import '../models/terminal_theme.dart';
 import 'app_review_demo_service.dart';
 import 'background_ssh_service.dart';
@@ -3625,6 +3626,7 @@ class SshSession {
   Uri? _workingDirectory;
   TerminalShellStatus? _shellStatus;
   int? _lastExitCode;
+  TerminalProgress? _terminalProgress;
   SftpClient? _sftpClient;
   Future<SftpClient>? _sftpClientFuture;
 
@@ -3688,6 +3690,25 @@ class SshSession {
 
   /// The latest command exit code emitted through shell integration.
   int? get lastExitCode => _lastExitCode;
+
+  /// The latest progress update emitted through OSC 9;4.
+  TerminalProgress? get terminalProgress => _terminalProgress;
+
+  /// Synchronizes OSC 9;4 progress metadata from an authoritative source.
+  ///
+  /// Returns whether progress changed. Metadata listeners are notified only
+  /// when this call changes the session state.
+  bool synchronizeTerminalProgress(TerminalProgress? progress) {
+    if (_terminalProgress == progress) {
+      return false;
+    }
+    _terminalProgress = progress;
+    _notifyMetadataChanged();
+    return true;
+  }
+
+  /// Clears active OSC 9;4 progress metadata.
+  bool clearTerminalProgress() => synchronizeTerminalProgress(null);
 
   /// Records visible terminal dimensions used to answer size report queries.
   void updateTerminalWindowMetrics({
@@ -3978,15 +3999,30 @@ class SshSession {
       _runtime.closeShell(waitForStreams: waitForStreams);
 
   void _resetShellRuntimeMetadata() {
+    final hadMetadata =
+        _iconName != null ||
+        _workingDirectory != null ||
+        _shellStatus != null ||
+        _lastExitCode != null ||
+        _terminalProgress != null ||
+        _windowTitle != null;
+    final hadPreview =
+        _terminalPreview != null || _terminalPreviewSnapshot != null;
     terminalHyperlinkTracker.reset(keepTerminalReference: false);
     _iconName = null;
     _workingDirectory = null;
     _shellStatus = null;
     _lastExitCode = null;
+    _terminalProgress = null;
     _terminalPreview = null;
     _terminalPreviewSnapshot = null;
     _windowTitle = null;
     _lastVolunteeredThemeDefaultsAt = null;
+    if (hadMetadata) {
+      _notifyMetadataChanged();
+    } else if (hadPreview) {
+      _notifyPreviewChanged();
+    }
   }
 
   DateTime? _lastVolunteeredThemeDefaultsAt;
@@ -4161,7 +4197,34 @@ class SshSession {
       return;
     }
 
-    if (code == '9' || code == '99' || code == '777') {
+    if (code == '9') {
+      if (args.firstOrNull?.trim() == '4') {
+        final previousProgress = _terminalProgress;
+        final nextProgress = applyTerminalProgressOsc(
+          args,
+          previousProgress: previousProgress,
+        );
+        if (nextProgress != previousProgress) {
+          _terminalProgress = nextProgress;
+          DiagnosticsLogService.instance.debug(
+            'terminal.osc',
+            'progress_changed',
+            fields: {
+              'connectionId': connectionId,
+              'active': nextProgress != null,
+              'state': nextProgress?.state.name,
+              'hasPercentage': nextProgress?.percentage != null,
+            },
+          );
+          _notifyMetadataChanged();
+        }
+        return;
+      }
+      _handleTerminalNotificationOsc(code, args);
+      return;
+    }
+
+    if (code == '99' || code == '777') {
       _handleTerminalNotificationOsc(code, args);
       return;
     }
