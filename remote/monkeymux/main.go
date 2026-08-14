@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.152"
+	monkeyMuxVersion                  = "0.1.153"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3190,10 +3190,10 @@ type piRestoreSession struct {
 
 // discoverPiSessions first correlates each pane with its live Pi process. Pi
 // writes JSONL entries with short-lived append calls, so an open-file match is
-// only a best-effort shortcut. When that is unavailable, the session header
-// creation time (or, for resumed sessions, file mtime) is matched against the
-// process start time. Plain cwd fallback remains limited to one unambiguous
-// unused primary session.
+// only a best-effort shortcut. When that is unavailable, a unique session
+// header creation time is matched against the process start. File mtime is used
+// only to reject a match after later unowned activity, never to infer ownership.
+// Plain cwd fallback remains limited to one unambiguous unused primary session.
 func discoverPiSessions(
 	restore *serverRestore,
 	processes map[int]processInfo,
@@ -3629,15 +3629,15 @@ func normalizedPiWorkingDirectory(path string) string {
 }
 
 func agentToolForRestore(window restoreWindowState) string {
+	if strings.TrimSpace(window.CurrentCommand) != "" &&
+		isShellCommandName(window.CurrentCommand) {
+		return ""
+	}
 	if tool := firstNonEmptyString(
 		window.AgentTool,
 		agentToolFromCommandName(window.CurrentCommand),
 	); tool != "" {
 		return tool
-	}
-	if strings.TrimSpace(window.CurrentCommand) != "" &&
-		isShellCommandName(window.CurrentCommand) {
-		return ""
 	}
 	return firstNonEmptyString(
 		agentToolFromTerminalTitle(window.PaneTitle),
