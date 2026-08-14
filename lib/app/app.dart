@@ -15,7 +15,6 @@ import '../domain/services/monetization_service.dart';
 import '../domain/services/settings_service.dart';
 import '../domain/services/ssh_service.dart';
 import '../domain/services/telemetry_service.dart';
-import '../domain/services/terminal_notification.dart';
 import '../domain/services/terminal_theme_service.dart';
 import 'app_lifecycle_coordinator.dart';
 import 'app_metadata.dart';
@@ -247,22 +246,13 @@ class _BackgroundLifecycleBridgeState
   }
 
   void _handleTerminalNotification(TerminalNotificationPayload payload) {
-    if (payload.reportsActivation) {
-      final session = ref
+    try {
+      ref
           .read(activeSessionsProvider.notifier)
-          .getSession(payload.connectionId);
-      if (session != null) {
-        try {
-          session.writeToShell(
-            buildKittyNotificationActivationReport(
-              payload.notificationIdentifier,
-            ),
-          );
-        } on Object {
-          // The notification can outlive its SSH channel; navigation still
-          // succeeds even when the best-effort protocol report cannot be sent.
-        }
-      }
+          .handleTerminalNotificationTap(payload);
+    } on Object {
+      // The notification can outlive its SSH channel; navigation still
+      // succeeds even when best-effort protocol reports cannot be sent.
     }
     _pendingTerminalNavigation = payload;
     _queuePendingTerminalNavigation();

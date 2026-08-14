@@ -17,6 +17,9 @@ class PaletteBuilder {
 
   /// https://en.wikipedia.org/wiki/ANSI_escape_code#8-bit
   Color paletteColor(int colNum) {
+    final override = theme.paletteOverrides[colNum];
+    if (override != null) return override;
+
     switch (colNum) {
       case 0:
         return theme.black;

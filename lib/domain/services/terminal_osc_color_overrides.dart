@@ -36,7 +36,7 @@ class TerminalOscColorOverrides {
           final color = parseTerminalOscColor(args[index + 1]);
           if (paletteIndex == null ||
               paletteIndex < 0 ||
-              paletteIndex > 15 ||
+              paletteIndex > 255 ||
               color == null) {
             continue;
           }
@@ -77,7 +77,7 @@ class TerminalOscColorOverrides {
         var handled = false;
         for (final arg in args) {
           final paletteIndex = int.tryParse(arg.trim());
-          if (paletteIndex == null || paletteIndex < 0 || paletteIndex > 15) {
+          if (paletteIndex == null || paletteIndex < 0 || paletteIndex > 255) {
             continue;
           }
           handled = true;
@@ -116,10 +116,17 @@ class TerminalOscColorOverrides {
       cursor: _cursor,
       selection: _selection,
     );
+    final extendedPalette = <int, Color>{...base.paletteOverrides};
     for (final entry in _ansi.entries) {
-      theme = _copyWithAnsiColor(theme, entry.key, entry.value);
+      if (entry.key < 16) {
+        theme = _copyWithAnsiColor(theme, entry.key, entry.value);
+      } else {
+        extendedPalette[entry.key] = entry.value;
+      }
     }
-    return theme;
+    return theme.copyWith(
+      paletteOverrides: Map<int, Color>.unmodifiable(extendedPalette),
+    );
   }
 
   TerminalOscColorMutation _setDynamicColor(

@@ -31,6 +31,7 @@ import 'package:monkeyssh/domain/services/interactive_auth_prompt.dart';
 import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/terminal_notification.dart';
 import 'package:monkeyssh/domain/services/wifi_network_service.dart';
 import 'package:xterm/xterm.dart';
 
@@ -3636,13 +3637,55 @@ LISTEN ::1:4201
 
       expect(
         utf8.decode(opened.shellWrites[0]),
-        '\x1b]99;i=query:p=?;a=focus,report:o=always:p=title,body\x1b\\',
+        '\x1b]99;i=query:p=?;a=focus,report:o=always:p=title,body:'
+        's=system,silent:u=0,1,2:w=1\x1b\\',
       );
       expect(
         utf8.decode(opened.shellWrites[1]),
         '\x1b]1337;ReportCellSize=17.00;8.00\x1b\\',
       );
     });
+
+    test(
+      'tracks Kitty alive state and reports activation plus close',
+      () async {
+        final opened = await openShell();
+        const request = TerminalNotificationRequest(
+          body: 'Ready',
+          identifier: 'build',
+          reportsActivation: true,
+          reportsClose: true,
+        );
+
+        opened.session
+          ..markTerminalNotificationPresented(request)
+          ..debugHandlePrivateOsc('99', const ['i=query:p=alive']);
+        expect(
+          utf8.decode(opened.shellWrites[0]),
+          '\x1b]99;i=build:p=close;untracked\x1b\\',
+        );
+        expect(
+          utf8.decode(opened.shellWrites[1]),
+          '\x1b]99;i=query:p=alive;build\x1b\\',
+        );
+
+        opened.session
+          ..handleTerminalNotificationActivated(
+            'build',
+            reportsActivation: true,
+          )
+          ..debugHandlePrivateOsc('99', const ['i=after:p=alive']);
+        expect(
+          utf8.decode(opened.shellWrites[2]),
+          '\x1b]99;i=build;\x1b\\'
+          '\x1b]99;i=build:p=close;\x1b\\',
+        );
+        expect(
+          utf8.decode(opened.shellWrites[3]),
+          '\x1b]99;i=after:p=alive;\x1b\\',
+        );
+      },
+    );
 
     test(
       'shell reset clears active progress and notifies metadata once',

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/terminal_osc_color_overrides.dart';
 
@@ -64,18 +65,46 @@ void main() {
     expect(effective.selection, TerminalThemes.dracula.selection);
   });
 
-  test(
-    'queries and unsupported extended palette entries are not mutations',
-    () {
-      final overrides = TerminalOscColorOverrides();
-      expect(overrides.handle('4', const ['1', '?']), (
-        handled: false,
-        changed: false,
-      ));
-      expect(overrides.handle('4', const ['200', '#ffffff']), (
-        handled: false,
-        changed: false,
-      ));
-    },
-  );
+  test('sets and selectively resets extended palette entries', () {
+    final overrides = TerminalOscColorOverrides();
+    expect(overrides.handle('4', const ['16', '#123456', '200', '#abcdef']), (
+      handled: true,
+      changed: true,
+    ));
+    var effective = overrides.applyTo(TerminalThemes.dracula);
+    expect(effective.paletteOverrides[16], const Color(0xFF123456));
+    expect(effective.paletteOverrides[200], const Color(0xFFABCDEF));
+    expect(terminalThemePaletteColor(effective, 200), const Color(0xFFABCDEF));
+    expect(
+      buildTerminalThemeOscResponse(
+        theme: effective,
+        code: '4',
+        args: const ['200', '?'],
+      ),
+      '\x1b]4;200;rgb:abab/cdcd/efef\x1b\\',
+    );
+
+    expect(overrides.handle('104', const ['16']), (
+      handled: true,
+      changed: true,
+    ));
+    effective = overrides.applyTo(TerminalThemes.dracula);
+    expect(effective.paletteOverrides[16], isNull);
+    expect(effective.paletteOverrides[200], const Color(0xFFABCDEF));
+
+    overrides.handle('104', const []);
+    expect(overrides.isNotEmpty, isFalse);
+  });
+
+  test('queries and out-of-range palette entries are not mutations', () {
+    final overrides = TerminalOscColorOverrides();
+    expect(overrides.handle('4', const ['1', '?']), (
+      handled: false,
+      changed: false,
+    ));
+    expect(overrides.handle('4', const ['256', '#ffffff']), (
+      handled: false,
+      changed: false,
+    ));
+  });
 }

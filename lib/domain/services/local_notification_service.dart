@@ -7,14 +7,83 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/tmux_state.dart';
+import 'terminal_notification.dart';
 
 /// Local notification channel used for tmux activity alerts.
 const tmuxAlertNotificationChannelId = 'tmux-alerts';
 
-/// Local notification channel used for terminal desktop notifications emitted
-/// by the remote shell (OSC 9 / 777 / 99).
-const terminalNotificationChannelId = 'terminal-notifications';
+/// Normal-priority notification channel for remote terminal notifications.
+const terminalNotificationChannelId = 'terminal-notifications-normal-v2';
+
+/// Low-priority notification channel for remote terminal notifications.
+const terminalNotificationLowChannelId = 'terminal-notifications-low';
+
+/// Critical-priority notification channel for remote terminal notifications.
+const terminalNotificationCriticalChannelId = 'terminal-notifications-critical';
+
 const _androidNotificationIcon = 'ic_notification_monkey';
+
+/// Builds native details for a terminal notification's protocol metadata.
+NotificationDetails buildTerminalNotificationDetails({
+  required TerminalNotificationUrgency urgency,
+  required TerminalNotificationSound sound,
+  Duration? timeout,
+}) {
+  final (
+    channelId,
+    channelName,
+    importance,
+    priority,
+    interruptionLevel,
+  ) = switch (urgency) {
+    TerminalNotificationUrgency.low => (
+      terminalNotificationLowChannelId,
+      'Quiet terminal notifications',
+      Importance.low,
+      Priority.low,
+      InterruptionLevel.passive,
+    ),
+    TerminalNotificationUrgency.normal => (
+      terminalNotificationChannelId,
+      'Terminal notifications',
+      Importance.defaultImportance,
+      Priority.defaultPriority,
+      InterruptionLevel.active,
+    ),
+    TerminalNotificationUrgency.critical => (
+      terminalNotificationCriticalChannelId,
+      'Critical terminal notifications',
+      Importance.max,
+      Priority.max,
+      // Critical Alerts require a restricted Apple entitlement. Active is the
+      // highest portable level that does not silently expand app capabilities.
+      InterruptionLevel.active,
+    ),
+  };
+  final playsSound = sound == TerminalNotificationSound.system;
+  final androidDetails = AndroidNotificationDetails(
+    channelId,
+    channelName,
+    channelDescription: 'Notifications sent by the remote shell.',
+    importance: importance,
+    priority: priority,
+    icon: _androidNotificationIcon,
+    playSound: playsSound,
+    timeoutAfter: timeout?.inMilliseconds,
+  );
+  final darwinDetails = DarwinNotificationDetails(
+    presentAlert: true,
+    presentBadge: false,
+    presentSound: playsSound,
+    interruptionLevel: interruptionLevel,
+  );
+  return NotificationDetails(
+    android: androidDetails,
+    iOS: darwinDetails,
+    macOS: darwinDetails,
+  );
+}
+
 const _disableNotificationsForStoreScreenshots = bool.fromEnvironment(
   'STORE_SCREENSHOT_DISABLE_NOTIFICATIONS',
 );
@@ -241,12 +310,25 @@ class LocalNotificationService {
     importance: Importance.high,
   );
 
-  static const _terminalNotificationChannel = AndroidNotificationChannel(
-    terminalNotificationChannelId,
-    'Terminal notifications',
-    description: 'Notifications sent by the remote shell.',
-    importance: Importance.high,
-  );
+  static const _terminalNotificationChannels = <AndroidNotificationChannel>[
+    AndroidNotificationChannel(
+      terminalNotificationLowChannelId,
+      'Quiet terminal notifications',
+      description: 'Low-priority notifications sent by the remote shell.',
+      importance: Importance.low,
+    ),
+    AndroidNotificationChannel(
+      terminalNotificationChannelId,
+      'Terminal notifications',
+      description: 'Notifications sent by the remote shell.',
+    ),
+    AndroidNotificationChannel(
+      terminalNotificationCriticalChannelId,
+      'Critical terminal notifications',
+      description: 'Critical notifications sent by the remote shell.',
+      importance: Importance.max,
+    ),
+  ];
 
   final FlutterLocalNotificationsPlugin _plugin;
   final StreamController<TmuxAlertNotificationPayload> _tmuxAlertTapController =
@@ -356,45 +438,40 @@ class LocalNotificationService {
   }
 
   /// Shows a terminal desktop notification emitted by the remote shell.
-  Future<void> showTerminalNotification({
+  ///
+  /// Returns whether the notification was handed to the platform plugin.
+  Future<bool> showTerminalNotification({
     required int notificationId,
     required String title,
     required String body,
     required TerminalNotificationPayload payload,
+    TerminalNotificationUrgency urgency = TerminalNotificationUrgency.normal,
+    TerminalNotificationSound sound = TerminalNotificationSound.silent,
+    Duration? timeout,
   }) async {
     final didInitialize = await initialize();
-    if (!didInitialize) return;
-    final hasPermission = await _requestNotificationPermission();
-    if (!hasPermission) return;
-
-    const androidDetails = AndroidNotificationDetails(
-      terminalNotificationChannelId,
-      'Terminal notifications',
-      channelDescription: 'Notifications sent by the remote shell.',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: _androidNotificationIcon,
+    if (!didInitialize) return false;
+    final hasPermission = await _requestNotificationPermission(
+      allowSound: sound == TerminalNotificationSound.system,
     );
-    const darwinDetails = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: false,
-      presentSound: false,
-    );
+    if (!hasPermission) return false;
 
     try {
       await _plugin.show(
         id: notificationId,
         title: title,
         body: body,
-        notificationDetails: const NotificationDetails(
-          android: androidDetails,
-          iOS: darwinDetails,
-          macOS: darwinDetails,
+        notificationDetails: buildTerminalNotificationDetails(
+          urgency: urgency,
+          sound: sound,
+          timeout: timeout,
         ),
         payload: payload.encode(),
       );
+      return true;
     } on MissingPluginException {
       // Widget and unit tests don't register platform notification plugins.
+      return false;
     }
   }
 
@@ -449,9 +526,9 @@ class LocalNotificationService {
       await androidImplementation?.createNotificationChannel(
         _tmuxAlertNotificationChannel,
       );
-      await androidImplementation?.createNotificationChannel(
-        _terminalNotificationChannel,
-      );
+      for (final channel in _terminalNotificationChannels) {
+        await androidImplementation?.createNotificationChannel(channel);
+      }
 
       return true;
     } on MissingPluginException {
@@ -459,7 +536,7 @@ class LocalNotificationService {
     }
   }
 
-  Future<bool> _requestNotificationPermission() async {
+  Future<bool> _requestNotificationPermission({bool allowSound = false}) async {
     try {
       final androidImplementation = _plugin
           .resolvePlatformSpecificImplementation<
@@ -475,7 +552,11 @@ class LocalNotificationService {
             IOSFlutterLocalNotificationsPlugin
           >();
       if (iOSImplementation != null) {
-        return await iOSImplementation.requestPermissions(alert: true) ?? false;
+        return await iOSImplementation.requestPermissions(
+              alert: true,
+              sound: allowSound,
+            ) ??
+            false;
       }
 
       final macOSImplementation = _plugin
@@ -483,7 +564,10 @@ class LocalNotificationService {
             MacOSFlutterLocalNotificationsPlugin
           >();
       if (macOSImplementation != null) {
-        return await macOSImplementation.requestPermissions(alert: true) ??
+        return await macOSImplementation.requestPermissions(
+              alert: true,
+              sound: allowSound,
+            ) ??
             false;
       }
 

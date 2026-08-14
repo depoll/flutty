@@ -31,11 +31,13 @@ TerminalNotificationRequest? parseIterm2AttentionRequest(List<String> args) {
       return const TerminalNotificationRequest(
         body: 'The remote terminal requested your attention.',
         identifier: 'iterm2-attention',
+        sound: TerminalNotificationSound.system,
       );
     case 'fireworks':
       return const TerminalNotificationRequest(
         body: 'The remote terminal requested your attention.',
         identifier: 'iterm2-attention',
+        sound: TerminalNotificationSound.system,
       );
     case 'no':
       return const TerminalNotificationRequest.close(

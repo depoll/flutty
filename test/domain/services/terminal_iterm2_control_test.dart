@@ -28,6 +28,7 @@ void main() {
       const TerminalNotificationRequest(
         body: 'The remote terminal requested your attention.',
         identifier: 'iterm2-attention',
+        sound: TerminalNotificationSound.system,
       ),
     );
     expect(

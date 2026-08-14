@@ -4089,6 +4089,33 @@ class SshSession {
   /// Writes text to the currently active shell channel.
   void writeToShell(String data) => _runtime.writeToShell(data);
 
+  /// Records a successfully displayed Kitty notification.
+  void markTerminalNotificationPresented(TerminalNotificationRequest request) {
+    _terminalNotificationParser.markPresented(request.identifier);
+    if (request.reportsClose && _runtime.hasShell) {
+      _runtime.writeToShell(
+        buildKittyNotificationCloseReport(request.identifier, untracked: true),
+      );
+    }
+  }
+
+  /// Records an identified notification as closed without a protocol report.
+  void markTerminalNotificationClosed(String? identifier) =>
+      _terminalNotificationParser.markClosed(identifier);
+
+  /// Records a local notification tap and emits requested Kitty reports.
+  void handleTerminalNotificationActivated(
+    String? identifier, {
+    required bool reportsActivation,
+  }) {
+    _terminalNotificationParser.markClosed(identifier);
+    if (!reportsActivation || !_runtime.hasShell) return;
+    _runtime.writeToShell(
+      buildKittyNotificationActivationReport(identifier) +
+          buildKittyNotificationCloseReport(identifier),
+    );
+  }
+
   /// Resizes the currently active shell channel.
   void resizeShell(int width, int height, int pixelWidth, int pixelHeight) =>
       _runtime.resizeShell(width, height, pixelWidth, pixelHeight);
@@ -4111,6 +4138,7 @@ class SshSession {
         _terminalPreview != null || _terminalPreviewSnapshot != null;
     terminalHyperlinkTracker.reset(keepTerminalReference: false);
     terminalCommandMarkTracker.reset(keepTerminalReference: false);
+    _terminalNotificationParser.reset();
     final hadRemoteColors = _terminalColorOverrides.clear();
     _recomputeTerminalThemeAfterRemoteColorChange();
     _iconName = null;
@@ -4389,6 +4417,14 @@ class SshSession {
       final capabilityResponse = buildKittyNotificationCapabilityResponse(args);
       if (capabilityResponse != null) {
         if (_runtime.hasShell) _runtime.writeToShell(capabilityResponse);
+        return;
+      }
+      final aliveResponse = buildKittyNotificationAliveResponse(
+        args,
+        _terminalNotificationParser.activeIdentifiers,
+      );
+      if (aliveResponse != null) {
+        if (_runtime.hasShell) _runtime.writeToShell(aliveResponse);
         return;
       }
       _handleTerminalNotificationOsc(code, args);
@@ -7392,6 +7428,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   _connectionHealthFailureSubscriptions = {};
   final Map<int, StreamSubscription<TerminalNotificationRequest>>
   _terminalNotificationSubscriptions = {};
+  final Map<({int connectionId, int notificationId}), Timer>
+  _terminalNotificationExpiryTimers = {};
+  final Map<({int connectionId, int notificationId}), int>
+  _terminalNotificationGenerations = {};
   final Map<int, StreamSubscription<void>> _portForwardChangeSubscriptions = {};
   final Map<int, Set<RemoteTcpListenerKey>>
   _automaticForwardDesiredExclusionsByHost = {};
@@ -7422,6 +7462,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         unawaited(subscription.cancel());
       }
       _terminalNotificationSubscriptions.clear();
+      for (final timer in _terminalNotificationExpiryTimers.values) {
+        timer.cancel();
+      }
+      _terminalNotificationExpiryTimers.clear();
+      _terminalNotificationGenerations.clear();
       for (final subscription in _portForwardChangeSubscriptions.values) {
         unawaited(subscription.cancel());
       }
@@ -7718,6 +7763,24 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Get a session.
   SshSession? getSession(int connectionId) =>
       _sshService.getSession(connectionId);
+
+  /// Cancels expiration and reports a native terminal-notification tap.
+  void handleTerminalNotificationTap(TerminalNotificationPayload payload) {
+    final notificationId = buildTerminalNotificationId(
+      payload.connectionId,
+      identifier: payload.notificationIdentifier,
+    );
+    final expiryKey = (
+      connectionId: payload.connectionId,
+      notificationId: notificationId,
+    );
+    _terminalNotificationExpiryTimers.remove(expiryKey)?.cancel();
+    _terminalNotificationGenerations.remove(expiryKey);
+    getSession(payload.connectionId)?.handleTerminalNotificationActivated(
+      payload.notificationIdentifier,
+      reportsActivation: payload.reportsActivation,
+    );
+  }
 
   /// Active tunnels owned by any connected session for [hostId].
   List<ActiveTunnelInfo> getActiveTunnelsForHost(int hostId) =>
@@ -8286,17 +8349,34 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       session.connectionId,
       identifier: request.platformIdentifier,
     );
+    final expiryKey = (
+      connectionId: session.connectionId,
+      notificationId: notificationId,
+    );
+    final generation = (_terminalNotificationGenerations[expiryKey] ?? 0) + 1;
+    _terminalNotificationGenerations[expiryKey] = generation;
+    _terminalNotificationExpiryTimers.remove(expiryKey)?.cancel();
     if (request.action == TerminalNotificationAction.close) {
       await notificationService.clearTerminalNotification(notificationId);
+      _terminalNotificationGenerations.remove(expiryKey);
       return;
     }
-    if (!ref.read(terminalNotificationsNotifierProvider)) return;
+    if (!ref.read(terminalNotificationsNotifierProvider)) {
+      _terminalNotificationGenerations.remove(expiryKey);
+      return;
+    }
     final title = request.title ?? await _resolveSessionLabel(session);
-    if (!ref.mounted) return;
-    await notificationService.showTerminalNotification(
+    if (!ref.mounted ||
+        _terminalNotificationGenerations[expiryKey] != generation) {
+      return;
+    }
+    final didShow = await notificationService.showTerminalNotification(
       notificationId: notificationId,
       title: title,
       body: request.body,
+      urgency: request.urgency,
+      sound: request.sound,
+      timeout: request.timeout,
       payload: TerminalNotificationPayload(
         hostId: session.hostId,
         connectionId: session.connectionId,
@@ -8304,6 +8384,35 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         reportsActivation: request.reportsActivation,
       ),
     );
+    if (_terminalNotificationGenerations[expiryKey] != generation) {
+      if (didShow) {
+        await notificationService.clearTerminalNotification(notificationId);
+      }
+      return;
+    }
+    if (!didShow) {
+      _terminalNotificationGenerations.remove(expiryKey);
+      return;
+    }
+    session.markTerminalNotificationPresented(request);
+    final timeout = request.timeout;
+    if (timeout == null) {
+      _terminalNotificationGenerations.remove(expiryKey);
+      return;
+    }
+    const maxExpiryTimers = 256;
+    if (_terminalNotificationExpiryTimers.length >= maxExpiryTimers) {
+      final oldest = _terminalNotificationExpiryTimers.keys.first;
+      _terminalNotificationExpiryTimers.remove(oldest)?.cancel();
+      _terminalNotificationGenerations.remove(oldest);
+    }
+    _terminalNotificationExpiryTimers[expiryKey] = Timer(timeout, () {
+      if (_terminalNotificationGenerations[expiryKey] != generation) return;
+      _terminalNotificationExpiryTimers.remove(expiryKey);
+      _terminalNotificationGenerations.remove(expiryKey);
+      session.markTerminalNotificationClosed(request.identifier);
+      unawaited(notificationService.clearTerminalNotification(notificationId));
+    });
   }
 
   Future<String> _resolveSessionLabel(SshSession session) async {
@@ -8339,6 +8448,15 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     final notificationSubscription = _terminalNotificationSubscriptions.remove(
       connectionId,
+    );
+    final expiryKeys = _terminalNotificationExpiryTimers.keys
+        .where((key) => key.connectionId == connectionId)
+        .toList(growable: false);
+    for (final key in expiryKeys) {
+      _terminalNotificationExpiryTimers.remove(key)?.cancel();
+    }
+    _terminalNotificationGenerations.removeWhere(
+      (key, _) => key.connectionId == connectionId,
     );
     if (notificationSubscription != null) {
       unawaited(notificationSubscription.cancel());

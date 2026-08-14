@@ -108,16 +108,68 @@ void main() {
       );
     });
 
-    test('a=report requests activation feedback', () {
+    test('notification metadata maps urgency, sound, and reports', () {
+      final silent = base64.encode(utf8.encode('silent'));
       final request = parser.handleOsc('99', [
-        'i=build:a=focus,report',
+        'i=build:a=focus,report:c=1:u=2:s=$silent:w=1500',
         'Ready',
       ]);
+
       expect(request?.reportsActivation, isTrue);
+      expect(request?.reportsClose, isTrue);
+      expect(request?.urgency, TerminalNotificationUrgency.critical);
+      expect(request?.sound, TerminalNotificationSound.silent);
+      expect(request?.timeout, const Duration(milliseconds: 1500));
       expect(
         buildKittyNotificationActivationReport(request?.identifier),
         '\x1b]99;i=build;\x1b\\',
       );
+      expect(
+        buildKittyNotificationCloseReport(request?.identifier),
+        '\x1b]99;i=build:p=close;\x1b\\',
+      );
+      expect(
+        buildKittyNotificationCloseReport(request?.identifier, untracked: true),
+        '\x1b]99;i=build:p=close;untracked\x1b\\',
+      );
+    });
+
+    test('later -report metadata disables activation feedback', () {
+      final system = base64.encode(utf8.encode('system'));
+      expect(
+        parser.handleOsc('99', [
+          'i=build:a=report:d=0:u=0:s=$system',
+          'Working',
+        ]),
+        isNull,
+      );
+      final request = parser.handleOsc('99', ['i=build:a=-report:d=1', '']);
+      expect(request?.reportsActivation, isFalse);
+      expect(request?.urgency, TerminalNotificationUrgency.low);
+      expect(request?.sound, TerminalNotificationSound.system);
+    });
+
+    test('alive queries list only presented identified notifications', () {
+      parser
+        ..markPresented('z-job')
+        ..markPresented('a-job')
+        ..markPresented(null);
+      expect(
+        buildKittyNotificationAliveResponse(const [
+          'i=query:p=alive',
+        ], parser.activeIdentifiers),
+        '\x1b]99;i=query:p=alive;a-job,z-job\x1b\\',
+      );
+
+      parser.handleOsc('99', const ['i=a-job:p=close']);
+      expect(
+        buildKittyNotificationAliveResponse(const [
+          'p=alive',
+        ], parser.activeIdentifiers),
+        '\x1b]99;p=alive;z-job\x1b\\',
+      );
+      parser.reset();
+      expect(parser.activeIdentifiers, isEmpty);
     });
 
     test('unidentified notifications receive distinct local identities', () {
@@ -131,7 +183,8 @@ void main() {
     test('builds a truthful capability response', () {
       expect(
         buildKittyNotificationCapabilityResponse(const ['i=q1:p=?']),
-        '\x1b]99;i=q1:p=?;a=focus,report:o=always:p=title,body\x1b\\',
+        '\x1b]99;i=q1:p=?;a=focus,report:o=always:p=title,body:'
+        's=system,silent:u=0,1,2:w=1\x1b\\',
       );
     });
 
