@@ -3596,6 +3596,24 @@ LISTEN ::1:4201
         .getText(0, terminal.buffer.viewWidth)
         .trimRight();
 
+    test(
+      'shell reset clears active progress and notifies metadata once',
+      () async {
+        final shell = await openShell();
+        final session = shell.session;
+        var metadataChanges = 0;
+        session
+          ..addMetadataListener(() => metadataChanges += 1)
+          ..debugHandlePrivateOsc('9', ['4', '1', '50']);
+        expect(metadataChanges, 1);
+
+        await session.closeShell(waitForStreams: false);
+
+        expect(session.terminalProgress, isNull);
+        expect(metadataChanges, 2);
+      },
+    );
+
     test('coalesces burst stdout into one terminal write per frame', () async {
       final shell = await openShell();
       // Hold coalesced output deterministically: with a long flush interval the

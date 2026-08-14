@@ -8994,6 +8994,201 @@ func TestWindowTitleUpdatesStillBroadcast(t *testing.T) {
 	}
 }
 
+func TestWindowMetadataTracksTerminalProgress(t *testing.T) {
+	window := &muxWindow{name: "zsh"}
+
+	window.observeTerminalMetadataLocked([]byte("\x1b]9;4;1;42\x07"))
+	if window.terminalProgress == nil || window.terminalProgress.State != 1 ||
+		window.terminalProgress.Percentage == nil || *window.terminalProgress.Percentage != 42 {
+		t.Fatalf("normal progress = %#v, want state 1 at 42", window.terminalProgress)
+	}
+
+	window.observeTerminalMetadataLocked([]byte("\x1b]9;4;2\x1b\\"))
+	if window.terminalProgress == nil || window.terminalProgress.State != 2 ||
+		window.terminalProgress.Percentage == nil || *window.terminalProgress.Percentage != 42 {
+		t.Fatalf("error progress = %#v, want state 2 preserving 42", window.terminalProgress)
+	}
+
+	window.observeTerminalMetadataLocked([]byte("\x1b]9;4;3\x07"))
+	if window.terminalProgress == nil || window.terminalProgress.State != 3 ||
+		window.terminalProgress.Percentage != nil {
+		t.Fatalf("indeterminate progress = %#v, want state 3 without percentage", window.terminalProgress)
+	}
+
+	window.observeTerminalMetadataLocked([]byte("\x1b]9;4;4;77\x1b\\"))
+	if window.terminalProgress == nil || window.terminalProgress.State != 4 ||
+		window.terminalProgress.Percentage == nil || *window.terminalProgress.Percentage != 77 {
+		t.Fatalf("paused progress = %#v, want state 4 at 77", window.terminalProgress)
+	}
+
+	window.observeTerminalMetadataLocked([]byte("\x1b]9;4;0\x07"))
+	if window.terminalProgress != nil {
+		t.Fatalf("cleared progress = %#v, want nil", window.terminalProgress)
+	}
+}
+
+func TestWindowMetadataTracksC1TerminalProgress(t *testing.T) {
+	window := &muxWindow{name: "zsh"}
+
+	window.observeTerminalMetadataLocked([]byte{0x9d, '9', ';', '4', ';', '1', ';', '3', '7', 0x9c})
+
+	if window.terminalProgress == nil || window.terminalProgress.State != 1 ||
+		window.terminalProgress.Percentage == nil || *window.terminalProgress.Percentage != 37 {
+		t.Fatalf("C1 progress = %#v, want state 1 at 37", window.terminalProgress)
+	}
+}
+
+func TestWindowMetadataTracksSplitC1TerminalProgress(t *testing.T) {
+	window := &muxWindow{name: "zsh"}
+
+	window.observeTerminalMetadataLocked([]byte{0x9d})
+	window.observeTerminalMetadataLocked([]byte("9;4;1;6"))
+	if window.terminalProgress != nil {
+		t.Fatalf("partial C1 progress applied early: %#v", window.terminalProgress)
+	}
+	window.observeTerminalMetadataLocked([]byte{'5', 0x9c})
+
+	if window.terminalProgress == nil || window.terminalProgress.State != 1 ||
+		window.terminalProgress.Percentage == nil || *window.terminalProgress.Percentage != 65 {
+		t.Fatalf("split C1 progress = %#v, want state 1 at 65", window.terminalProgress)
+	}
+	if len(window.oscBuffer) != 0 {
+		t.Fatalf("OSC buffer = %q, want empty", window.oscBuffer)
+	}
+}
+
+func TestWindowMetadataC1LikeUtf8DoesNotRegressTitleParsing(t *testing.T) {
+	window := &muxWindow{name: "zsh"}
+
+	window.observeTerminalMetadataLocked([]byte{'x', 0xe2, 0x80, 0x9d, '\x1b', ']', '2', ';', 'b', 'u', 'i', 'l', 'd', '\a'})
+
+	if window.paneTitle != "build" {
+		t.Fatalf("pane title = %q, want build", window.paneTitle)
+	}
+}
+
+func TestWindowMetadataSplitC1LikeUtf8DoesNotStartOsc(t *testing.T) {
+	window := &muxWindow{
+		name:                        "zsh",
+		terminalOutputUtf8Remaining: 1,
+	}
+
+	window.observeTerminalMetadataLocked([]byte{0x9d, '9', ';', '4', ';', '1', ';', '8', '0', 0x9c})
+
+	if window.terminalProgress != nil {
+		t.Fatalf("split UTF-8 continuation became OSC progress: %#v", window.terminalProgress)
+	}
+}
+
+func TestWindowMetadataTracksSplitTerminalProgress(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		terminator []byte
+	}{
+		{name: "BEL", terminator: []byte{'\a'}},
+		{name: "ST", terminator: []byte{'\x1b', '\\'}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			window := &muxWindow{name: "zsh"}
+
+			window.observeTerminalMetadataLocked([]byte("prefix\x1b]9;4;1;6"))
+			if window.terminalProgress != nil {
+				t.Fatalf("partial progress applied early: %#v", window.terminalProgress)
+			}
+			window.observeTerminalMetadataLocked(append([]byte("5"), append(testCase.terminator, []byte("after")...)...))
+
+			if window.terminalProgress == nil || window.terminalProgress.State != 1 ||
+				window.terminalProgress.Percentage == nil || *window.terminalProgress.Percentage != 65 {
+				t.Fatalf("split progress = %#v, want state 1 at 65", window.terminalProgress)
+			}
+			if len(window.oscBuffer) != 0 {
+				t.Fatalf("OSC buffer = %q, want empty", window.oscBuffer)
+			}
+		})
+	}
+}
+
+func TestWindowMetadataIgnoresMalformedTerminalProgress(t *testing.T) {
+	percentage := 25
+	window := &muxWindow{
+		name: "zsh",
+		terminalProgress: &terminalProgressSnapshot{
+			State:      1,
+			Percentage: &percentage,
+		},
+	}
+
+	for _, sequence := range []string{
+		"\x1b]9;4;1;101\x07",
+		"\x1b]9;4;1;bad\x07",
+		"\x1b]9;4;2;-1\x07",
+		"\x1b]9;4;8;50\x07",
+	} {
+		window.observeTerminalMetadataLocked([]byte(sequence))
+		if window.terminalProgress == nil || window.terminalProgress.State != 1 ||
+			window.terminalProgress.Percentage == nil || *window.terminalProgress.Percentage != 25 {
+			t.Fatalf("malformed %q changed progress to %#v", sequence, window.terminalProgress)
+		}
+	}
+}
+
+func TestTerminalProgressChangeBroadcastsWindowUpdate(t *testing.T) {
+	server := newMuxServer("test")
+	control := &recordingConn{}
+	client := newControlClient(control)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "build",
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.controls[client] = struct{}{}
+
+	server.handleWindowOutput("@1", []byte("\x1b]9;4;1;50\x07"))
+	if got := strings.Count(control.String(), `"type":"window_updated"`); got != 1 {
+		t.Fatalf("progress broadcasts = %d, want 1", got)
+	}
+	if !strings.Contains(control.String(), `"terminalProgress":{"state":1,"percentage":50}`) {
+		t.Fatalf("progress broadcast missing snapshot: %s", control.String())
+	}
+
+	server.handleWindowOutput("@1", []byte("\x1b]9;4;0\x07"))
+	if got := strings.Count(control.String(), `"type":"window_updated"`); got != 2 {
+		t.Fatalf("clear broadcasts = %d, want 2", got)
+	}
+}
+
+func TestTerminalProgressSurvivesRestoreSnapshot(t *testing.T) {
+	percentage := 73
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{{
+		id:           "@1",
+		index:        0,
+		name:         "build",
+		lastActivity: time.Now(),
+		terminalProgress: &terminalProgressSnapshot{
+			State:      2,
+			Percentage: &percentage,
+		},
+	}}
+	server.activeID = "@1"
+
+	restore := server.restoreSnapshot()
+	if restore.Windows[0].TerminalProgress == nil ||
+		restore.Windows[0].TerminalProgress.State != 2 ||
+		restore.Windows[0].TerminalProgress.Percentage == nil ||
+		*restore.Windows[0].TerminalProgress.Percentage != 73 {
+		t.Fatalf("restore progress = %#v, want state 2 at 73", restore.Windows[0].TerminalProgress)
+	}
+
+	options := createWindowOptionsForRestore(restore.Windows[0], false)
+	if options.terminalProgress == nil || options.terminalProgress.State != 2 ||
+		options.terminalProgress.Percentage == nil || *options.terminalProgress.Percentage != 73 {
+		t.Fatalf("restored options progress = %#v, want state 2 at 73", options.terminalProgress)
+	}
+}
+
 func TestRestoreWindowOptionsDropMouseTrackingModes(t *testing.T) {
 	state := restoreWindowState{
 		ID:    "@1",

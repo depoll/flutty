@@ -177,6 +177,9 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Cache SQLite native asset
+        run: scripts/cache_sqlite3_native_assets.sh linux-x64
+
       - name: Run tests
         run: flutter test --no-pub --total-shards 4 --shard-index ${{ matrix.shard-index }}
 
@@ -313,6 +316,11 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Cache SQLite native asset
+        run: |
+          scripts/cache_sqlite3_native_assets.sh \
+            android-arm64 android-x64 android-arm android-ia32
+
       - name: Configure Firebase for Android
         env:
           FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON }}
@@ -399,6 +407,9 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Cache SQLite native asset
+        run: scripts/cache_sqlite3_native_assets.sh ios-arm64
+
       - name: Configure Firebase for iOS
         env:
           FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST }}
@@ -467,6 +478,9 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Cache SQLite native assets
+        run: scripts/cache_sqlite3_native_assets.sh macos-x64 macos-arm64
+
       - name: Build macOS
         run: |
           for attempt in 1 2 3; do
@@ -509,6 +523,10 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Cache SQLite native asset
+        shell: bash
+        run: scripts/cache_sqlite3_native_assets.sh windows-x64
+
       - name: Build Windows
         run: flutter build windows --release --no-tree-shake-icons
 
@@ -544,6 +562,9 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Cache SQLite native asset
+        run: scripts/cache_sqlite3_native_assets.sh linux-x64
 
       - name: Build Linux
         run: flutter build linux --release --no-tree-shake-icons

@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.148"
+	monkeyMuxVersion                  = "0.1.149"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -504,21 +504,27 @@ type controlResponse struct {
 }
 
 type windowSnapshot struct {
-	ID                        string          `json:"id"`
-	Index                     int             `json:"index"`
-	Name                      string          `json:"name"`
-	Active                    bool            `json:"active"`
-	CurrentCommand            string          `json:"currentCommand,omitempty"`
-	CurrentPath               string          `json:"currentPath,omitempty"`
-	PanePid                   int             `json:"panePid,omitempty"`
-	Flags                     string          `json:"flags,omitempty"`
-	PaneTitle                 string          `json:"paneTitle,omitempty"`
-	AgentTool                 string          `json:"agentTool,omitempty"`
-	LastActivityEpochSeconds  int64           `json:"lastActivityEpochSeconds,omitempty"`
-	TerminalReportsMouseWheel bool            `json:"terminalReportsMouseWheel,omitempty"`
-	TerminalMouseReportSgr    bool            `json:"terminalMouseReportSgr,omitempty"`
-	TerminalBracketedPaste    bool            `json:"terminalBracketedPasteMode,omitempty"`
-	PrivateModes              map[string]bool `json:"privateModes,omitempty"`
+	ID                        string                    `json:"id"`
+	Index                     int                       `json:"index"`
+	Name                      string                    `json:"name"`
+	Active                    bool                      `json:"active"`
+	CurrentCommand            string                    `json:"currentCommand,omitempty"`
+	CurrentPath               string                    `json:"currentPath,omitempty"`
+	PanePid                   int                       `json:"panePid,omitempty"`
+	Flags                     string                    `json:"flags,omitempty"`
+	PaneTitle                 string                    `json:"paneTitle,omitempty"`
+	AgentTool                 string                    `json:"agentTool,omitempty"`
+	LastActivityEpochSeconds  int64                     `json:"lastActivityEpochSeconds,omitempty"`
+	TerminalReportsMouseWheel bool                      `json:"terminalReportsMouseWheel,omitempty"`
+	TerminalMouseReportSgr    bool                      `json:"terminalMouseReportSgr,omitempty"`
+	TerminalBracketedPaste    bool                      `json:"terminalBracketedPasteMode,omitempty"`
+	PrivateModes              map[string]bool           `json:"privateModes,omitempty"`
+	TerminalProgress          *terminalProgressSnapshot `json:"terminalProgress,omitempty"`
+}
+
+type terminalProgressSnapshot struct {
+	State      int  `json:"state"`
+	Percentage *int `json:"percentage,omitempty"`
 }
 
 type serverRestore struct {
@@ -528,25 +534,26 @@ type serverRestore struct {
 }
 
 type restoreWindowState struct {
-	ID                       string          `json:"id,omitempty"`
-	Index                    int             `json:"index,omitempty"`
-	Name                     string          `json:"name,omitempty"`
-	Cwd                      string          `json:"cwd,omitempty"`
-	CurrentCommand           string          `json:"currentCommand,omitempty"`
-	PanePid                  int             `json:"panePid,omitempty"`
-	PaneTitle                string          `json:"paneTitle,omitempty"`
-	AgentTool                string          `json:"agentTool,omitempty"`
-	AgentSessionID           string          `json:"agentSessionId,omitempty"`
-	HistoryBase64            string          `json:"historyBase64,omitempty"`
-	HistoryStartsAtGround    bool            `json:"historyStartsAtGround,omitempty"`
-	CursorVisible            bool            `json:"cursorVisible,omitempty"`
-	CursorVisibilityKnown    bool            `json:"cursorVisibilityKnown,omitempty"`
-	PrivateModes             map[string]bool `json:"privateModes,omitempty"`
-	InsertModeEnabled        bool            `json:"insertModeEnabled,omitempty"`
-	InsertModeKnown          bool            `json:"insertModeKnown,omitempty"`
-	ApplicationKeypadEnabled bool            `json:"applicationKeypadEnabled,omitempty"`
-	ApplicationKeypadKnown   bool            `json:"applicationKeypadKnown,omitempty"`
-	Active                   bool            `json:"active,omitempty"`
+	ID                       string                    `json:"id,omitempty"`
+	Index                    int                       `json:"index,omitempty"`
+	Name                     string                    `json:"name,omitempty"`
+	Cwd                      string                    `json:"cwd,omitempty"`
+	CurrentCommand           string                    `json:"currentCommand,omitempty"`
+	PanePid                  int                       `json:"panePid,omitempty"`
+	PaneTitle                string                    `json:"paneTitle,omitempty"`
+	AgentTool                string                    `json:"agentTool,omitempty"`
+	AgentSessionID           string                    `json:"agentSessionId,omitempty"`
+	HistoryBase64            string                    `json:"historyBase64,omitempty"`
+	HistoryStartsAtGround    bool                      `json:"historyStartsAtGround,omitempty"`
+	CursorVisible            bool                      `json:"cursorVisible,omitempty"`
+	CursorVisibilityKnown    bool                      `json:"cursorVisibilityKnown,omitempty"`
+	PrivateModes             map[string]bool           `json:"privateModes,omitempty"`
+	InsertModeEnabled        bool                      `json:"insertModeEnabled,omitempty"`
+	InsertModeKnown          bool                      `json:"insertModeKnown,omitempty"`
+	ApplicationKeypadEnabled bool                      `json:"applicationKeypadEnabled,omitempty"`
+	ApplicationKeypadKnown   bool                      `json:"applicationKeypadKnown,omitempty"`
+	TerminalProgress         *terminalProgressSnapshot `json:"terminalProgress,omitempty"`
+	Active                   bool                      `json:"active,omitempty"`
 }
 
 type muxServer struct {
@@ -662,6 +669,7 @@ type muxWindow struct {
 	// written into the window pty must be re-encoded while this mode is on.
 	win32InputMode                       bool
 	privateModes                         map[string]bool
+	terminalProgress                     *terminalProgressSnapshot
 	insertModeEnabled                    bool
 	insertModeKnown                      bool
 	applicationKeypadEnabled             bool
@@ -765,13 +773,17 @@ type terminalOutputParserSnapshot struct {
 }
 
 type windowBroadcastIdentity struct {
-	name      string
-	cwd       string
-	command   string
-	paneTitle string
-	agentTool string
-	panePid   int
-	alert     bool
+	name                  string
+	cwd                   string
+	command               string
+	paneTitle             string
+	agentTool             string
+	panePid               int
+	alert                 bool
+	progressActive        bool
+	progressState         int
+	progressPercentage    int
+	progressHasPercentage bool
 }
 
 type controlClient struct {
@@ -2558,16 +2570,17 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 	}
 	for _, window := range windows {
 		restore.Windows = append(restore.Windows, restoreWindowState{
-			ID:             window.ID,
-			Index:          window.Index,
-			Name:           window.Name,
-			Cwd:            window.CurrentPath,
-			CurrentCommand: window.CurrentCommand,
-			PanePid:        window.PanePid,
-			PaneTitle:      window.PaneTitle,
-			AgentTool:      window.AgentTool,
-			PrivateModes:   privateModesFromWindowSnapshot(window),
-			Active:         window.Active,
+			ID:               window.ID,
+			Index:            window.Index,
+			Name:             window.Name,
+			Cwd:              window.CurrentPath,
+			CurrentCommand:   window.CurrentCommand,
+			PanePid:          window.PanePid,
+			PaneTitle:        window.PaneTitle,
+			AgentTool:        window.AgentTool,
+			PrivateModes:     privateModesFromWindowSnapshot(window),
+			TerminalProgress: copyTerminalProgressSnapshot(window.TerminalProgress),
+			Active:           window.Active,
 		})
 	}
 	return restore
@@ -4611,6 +4624,7 @@ func createWindowOptionsForRestore(
 		cursorVisible:            state.CursorVisible,
 		cursorVisibilityKnown:    state.CursorVisibilityKnown,
 		privateModes:             privateModesForRestore(state.PrivateModes),
+		terminalProgress:         copyTerminalProgressSnapshot(state.TerminalProgress),
 		insertModeEnabled:        state.InsertModeEnabled,
 		insertModeKnown:          state.InsertModeKnown,
 		applicationKeypadEnabled: state.ApplicationKeypadEnabled,
@@ -4657,6 +4671,7 @@ type createWindowOptions struct {
 	cursorVisible            bool
 	cursorVisibilityKnown    bool
 	privateModes             map[string]bool
+	terminalProgress         *terminalProgressSnapshot
 	insertModeEnabled        bool
 	insertModeKnown          bool
 	applicationKeypadEnabled bool
@@ -4760,6 +4775,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		cursorVisible:            cursorVisible,
 		cursorVisibilityKnown:    options.cursorVisibilityKnown,
 		privateModes:             copyPrivateModes(options.privateModes),
+		terminalProgress:         copyTerminalProgressSnapshot(options.terminalProgress),
 		insertModeEnabled:        options.insertModeEnabled,
 		insertModeKnown:          options.insertModeKnown,
 		applicationKeypadEnabled: options.applicationKeypadEnabled,
@@ -7391,6 +7407,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			CursorVisible:            window.cursorVisible,
 			CursorVisibilityKnown:    window.cursorVisibilityKnown,
 			PrivateModes:             copyPrivateModes(window.privateModes),
+			TerminalProgress:         copyTerminalProgressSnapshot(window.terminalProgress),
 			InsertModeEnabled:        window.insertModeEnabled,
 			InsertModeKnown:          window.insertModeKnown,
 			ApplicationKeypadEnabled: window.applicationKeypadEnabled,
@@ -7438,6 +7455,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		TerminalMouseReportSgr:    window.mouseTrackingActiveLocked() && window.privateModes["1006"],
 		TerminalBracketedPaste:    window.privateModes["2004"],
 		PrivateModes:              copyPrivateModes(window.privateModes),
+		TerminalProgress:          copyTerminalProgressSnapshot(window.terminalProgress),
 	}
 }
 
@@ -13072,7 +13090,7 @@ func (w *muxWindow) agentToolLocked() string {
 }
 
 func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
-	return windowBroadcastIdentity{
+	identity := windowBroadcastIdentity{
 		name:      w.name,
 		cwd:       w.cwd,
 		command:   w.currentCommandLocked(),
@@ -13081,6 +13099,15 @@ func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
 		panePid:   w.metadataProcessIDLocked(),
 		alert:     w.alert,
 	}
+	if progress := w.terminalProgress; progress != nil {
+		identity.progressActive = true
+		identity.progressState = progress.State
+		if progress.Percentage != nil {
+			identity.progressHasPercentage = true
+			identity.progressPercentage = *progress.Percentage
+		}
+	}
+	return identity
 }
 
 func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
@@ -13897,33 +13924,52 @@ func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) []string {
 		return nil
 	}
 	data := chunk
+	leadingUtf8Prefix := leadingUtf8ContinuationPrefix(
+		chunk,
+		w.terminalOutputUtf8Remaining,
+	)
 	if len(w.oscBuffer) > 0 {
 		combined := make([]byte, 0, len(w.oscBuffer)+len(chunk))
 		combined = append(combined, w.oscBuffer...)
 		combined = append(combined, chunk...)
 		data = combined
+		leadingUtf8Prefix = 0
 		w.oscBuffer = nil
 	}
 
 	var observedThemeQueries []string
 	for len(data) > 0 {
-		escapeIndex := bytes.IndexByte(data, '\x1b')
-		if escapeIndex < 0 {
-			return observedThemeQueries
+		sequenceStart := -1
+		payloadStart := -1
+		for index := 0; index < len(data); index++ {
+			switch data[index] {
+			case '\x1b':
+				if index+1 >= len(data) {
+					w.storePartialOscLocked(data[index:])
+					return observedThemeQueries
+				}
+				if data[index+1] == ']' {
+					sequenceStart = index
+					payloadStart = index + 2
+				}
+			case 0x9d:
+				if index >= leadingUtf8Prefix &&
+					!isUtf8ContinuationAt(data, index) {
+					sequenceStart = index
+					payloadStart = index + 1
+				}
+			}
+			if sequenceStart >= 0 {
+				break
+			}
 		}
-		if escapeIndex+1 >= len(data) {
-			w.storePartialOscLocked(data[escapeIndex:])
+		if sequenceStart < 0 {
 			return observedThemeQueries
-		}
-		if data[escapeIndex+1] != ']' {
-			data = data[escapeIndex+1:]
-			continue
 		}
 
-		payloadStart := escapeIndex + 2
 		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
 		if !ok {
-			w.storePartialOscLocked(data[escapeIndex:])
+			w.storePartialOscLocked(data[sequenceStart:])
 			return observedThemeQueries
 		}
 		observedThemeQueries = appendThemeQueryKeys(
@@ -13933,6 +13979,7 @@ func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) []string {
 			),
 		)
 		data = data[payloadStart+payloadEnd+terminatorLength:]
+		leadingUtf8Prefix = 0
 	}
 	return observedThemeQueries
 }
@@ -13996,6 +14043,73 @@ func (w *muxWindow) storePartialOscLocked(data []byte) {
 	w.oscBuffer = append(w.oscBuffer[:0], data...)
 }
 
+func copyTerminalProgressSnapshot(
+	progress *terminalProgressSnapshot,
+) *terminalProgressSnapshot {
+	if progress == nil {
+		return nil
+	}
+	copied := &terminalProgressSnapshot{State: progress.State}
+	if progress.Percentage != nil {
+		percentage := *progress.Percentage
+		copied.Percentage = &percentage
+	}
+	return copied
+}
+
+func (w *muxWindow) applyTerminalProgressPayloadLocked(value string) {
+	parts := strings.Split(value, ";")
+	if len(parts) < 2 || strings.TrimSpace(parts[0]) != "4" {
+		return
+	}
+	state, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return
+	}
+	switch state {
+	case 0:
+		w.terminalProgress = nil
+	case 1:
+		percentage, ok := terminalProgressPercentage(parts, 2)
+		if !ok {
+			return
+		}
+		w.terminalProgress = &terminalProgressSnapshot{
+			State:      state,
+			Percentage: &percentage,
+		}
+	case 2, 4:
+		var percentage *int
+		if len(parts) > 2 && strings.TrimSpace(parts[2]) != "" {
+			parsed, ok := terminalProgressPercentage(parts, 2)
+			if !ok {
+				return
+			}
+			percentage = &parsed
+		} else if w.terminalProgress != nil && w.terminalProgress.Percentage != nil {
+			parsed := *w.terminalProgress.Percentage
+			percentage = &parsed
+		}
+		w.terminalProgress = &terminalProgressSnapshot{
+			State:      state,
+			Percentage: percentage,
+		}
+	case 3:
+		w.terminalProgress = &terminalProgressSnapshot{State: state}
+	}
+}
+
+func terminalProgressPercentage(parts []string, index int) (int, bool) {
+	if len(parts) <= index {
+		return 0, false
+	}
+	percentage, err := strconv.Atoi(strings.TrimSpace(parts[index]))
+	if err != nil || percentage < 0 || percentage > 100 {
+		return 0, false
+	}
+	return percentage, true
+}
+
 func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 	code, value, ok := strings.Cut(payload, ";")
 	if !ok {
@@ -14013,6 +14127,8 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 		if path != "" {
 			w.cwd = path
 		}
+	case "9":
+		w.applyTerminalProgressPayloadLocked(value)
 	}
 	queryKeys := themeQueryKeysFromOscPayload(payload)
 	if len(queryKeys) == 0 {
