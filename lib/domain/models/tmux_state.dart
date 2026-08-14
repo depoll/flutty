@@ -1176,7 +1176,8 @@ String? agentSessionIdFromLaunchCommand(
       r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
     ],
     AgentLaunchTool.grokBuild => const [
-      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+      r'''(?<!\S)--(?:resume|load)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+      r'''(?<!\S)-r\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
     ],
   };
 

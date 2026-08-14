@@ -632,6 +632,20 @@ void main() {
         ),
         '019f6cb5-f7e4',
       );
+      expect(
+        agentSessionIdFromLaunchCommand(
+          'grok -r 019f6cb5-short',
+          tool: AgentLaunchTool.grokBuild,
+        ),
+        '019f6cb5-short',
+      );
+      expect(
+        agentSessionIdFromLaunchCommand(
+          'grok --load=019f6cb5-compat',
+          tool: AgentLaunchTool.grokBuild,
+        ),
+        '019f6cb5-compat',
+      );
     });
 
     test('equality works correctly', () {

@@ -1054,6 +1054,26 @@ cwd: /tmp/demo
       expect(metadata.isHidden, isTrue);
     });
 
+    test('honors an explicit hidden boolean over the session kind', () {
+      final visibleSubagent = parseGrokSessionMetadata('''
+{
+  "info": {"id": "child", "cwd": "/tmp/repo"},
+  "session_kind": "subagent",
+  "hidden": false
+}
+''');
+      final hiddenRoot = parseGrokSessionMetadata('''
+{
+  "info": {"id": "root", "cwd": "/tmp/repo"},
+  "session_kind": "root",
+  "hidden": true
+}
+''');
+
+      expect(visibleSubagent.isHidden, isFalse);
+      expect(hiddenRoot.isHidden, isTrue);
+    });
+
     test('rejects malformed metadata', () {
       expect(parseGrokSessionMetadata('{broken').parsedAny, isFalse);
     });
@@ -2053,6 +2073,72 @@ branch refs/heads/main
         "cd '/Users/depoll/Code/flutty' && grok --yolo --resume '$sessionId'",
       );
     });
+
+    test(
+      'Grok Build Windows discovery lets GROK_HOME override default',
+      () async {
+        final client = _MockSshClient();
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+
+        const summaryPath =
+            'C:/grok-home/sessions/C%3A%5Cwork%5Crepo/win-session/summary.json';
+        final issuedScripts = <String>[];
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          final script = _decodeEncodedPowerShell(command);
+          issuedScripts.add(script);
+          if (script.contains('[char]0x1f') && script.contains(summaryPath)) {
+            return _buildExecSession(
+              stdout: _remoteSnapshotLine(summaryPath, r'''
+{
+  "info": {"id": "win-session", "cwd": "C:\\work\\repo"},
+  "generated_title": "Resume from custom Grok home",
+  "last_active_at": "2026-08-14T20:04:00Z"
+}
+''', mtime: 1786740000),
+            );
+          }
+          if (script.contains('Get-ChildItem') &&
+              script.contains(r'$env:GROK_HOME') &&
+              script.contains("'summary.json'")) {
+            return _buildExecSession(stdout: '$summaryPath\n');
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+        final result = await discovery.discoverSessions(
+          session,
+          toolName: 'Grok Build',
+        );
+
+        expect(
+          result.sessions,
+          hasLength(1),
+          reason: issuedScripts.join('\n--- command ---\n'),
+        );
+        expect(result.sessions.single.sessionId, 'win-session');
+        expect(result.sessions.single.summary, 'Resume from custom Grok home');
+        final listScripts = issuedScripts
+            .where(
+              (script) =>
+                  script.contains('Get-ChildItem') &&
+                  script.contains("'summary.json'"),
+            )
+            .toList(growable: false);
+        expect(listScripts, hasLength(1));
+        expect(listScripts.single, contains(r'$env:GROK_HOME'));
+        expect(
+          listScripts.single,
+          contains(
+            r'if(![string]::IsNullOrWhiteSpace([string]$__flOverrideBase)){',
+          ),
+        );
+      },
+    );
 
     test('Pi discovery resolves session id, name, and cwd', () async {
       final client = _MockSshClient();

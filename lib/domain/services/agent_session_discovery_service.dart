@@ -663,6 +663,7 @@ parseGrokSessionMetadata(String raw) {
   final generatedTitle = _readStringField(decoded, 'generated_title')?.trim();
   final sessionSummary = _readStringField(decoded, 'session_summary')?.trim();
   final sessionKind = _readStringField(decoded, 'session_kind');
+  final hidden = decoded['hidden'];
   final summary = generatedTitle != null && generatedTitle.isNotEmpty
       ? generatedTitle
       : sessionSummary != null && sessionSummary.isNotEmpty
@@ -676,9 +677,9 @@ parseGrokSessionMetadata(String raw) {
     updatedAt:
         _parseDateTimeValue(decoded['last_active_at']) ??
         _parseDateTimeValue(decoded['updated_at']),
-    isHidden:
-        decoded['hidden'] == true ||
-        (sessionKind?.startsWith('subagent') ?? false),
+    isHidden: hidden is bool
+        ? hidden
+        : (sessionKind?.startsWith('subagent') ?? false),
     parsedAny: true,
   );
 }
@@ -3498,26 +3499,16 @@ print(json.dumps(sessions))
 
       String output;
       if (session.remoteIsWindows) {
-        final outputs = await Future.wait([
-          _execWindowsPowerShell(
-            session,
-            windowsListNewestFilesScript(
-              relativeRoot: '.grok/sessions',
-              includeGlobs: const ['summary.json'],
-              limit: scanLimit,
-            ),
+        output = await _execWindowsPowerShell(
+          session,
+          windowsListNewestFilesScript(
+            relativeRoot: '.grok/sessions',
+            includeGlobs: const ['summary.json'],
+            limit: scanLimit,
+            overrideRootEnvironmentVariable: 'GROK_HOME',
+            overrideRelativeRoot: 'sessions',
           ),
-          _execWindowsPowerShell(
-            session,
-            windowsListNewestFilesScript(
-              relativeRoot: 'sessions',
-              includeGlobs: const ['summary.json'],
-              limit: scanLimit,
-              rootEnvironmentVariables: const ['GROK_HOME'],
-            ),
-          ),
-        ]);
-        output = outputs.join('\n');
+        );
       } else {
         output = await _exec(
           session,
@@ -5157,6 +5148,9 @@ String _windowsNameLikeCondition(List<String> globs) => globs
 /// least one `-like` pattern are emitted (mirroring `find ... -path <pattern>`).
 /// [additionalRelativeRoots] and [rootEnvironmentVariables] let callers include
 /// `%LOCALAPPDATA%` / `%APPDATA%` layouts without duplicating script builders.
+/// When [overrideRootEnvironmentVariable] is non-empty on the remote, its
+/// [overrideRelativeRoot] replaces all fallback roots instead of supplementing
+/// them. This mirrors `${VAR:-fallback}` semantics on POSIX.
 @visibleForTesting
 String windowsListNewestFilesScript({
   required String relativeRoot,
@@ -5166,7 +5160,15 @@ String windowsListNewestFilesScript({
   List<String> pathLikeFilters = const <String>[],
   List<String> rootEnvironmentVariables =
       _windowsUserProfileRootEnvironmentVariables,
+  String? overrideRootEnvironmentVariable,
+  String? overrideRelativeRoot,
 }) {
+  if ((overrideRootEnvironmentVariable == null) !=
+      (overrideRelativeRoot == null)) {
+    throw ArgumentError(
+      'overrideRootEnvironmentVariable and overrideRelativeRoot must be set together',
+    );
+  }
   final relativeRootsLiteral = _windowsPowerShellArrayLiteral([
     relativeRoot,
     ...additionalRelativeRoots,
@@ -5175,7 +5177,20 @@ String windowsListNewestFilesScript({
       _windowsEnvironmentVariableArrayLiteral(rootEnvironmentVariables);
   final body = StringBuffer()
     ..write('\$__flRelRoots=@($relativeRootsLiteral);')
-    ..write('\$__flRootBases=@($rootEnvironmentVariablesLiteral);')
+    ..write('\$__flRootBases=@($rootEnvironmentVariablesLiteral);');
+  if (overrideRootEnvironmentVariable != null) {
+    final overrideRootLiteral = _windowsEnvironmentVariableArrayLiteral([
+      overrideRootEnvironmentVariable,
+    ]);
+    body
+      ..write('\$__flOverrideBase=$overrideRootLiteral;')
+      ..write(r'if(![string]::IsNullOrWhiteSpace([string]$__flOverrideBase)){')
+      ..write(
+        '\$__flRelRoots=@(${powerShellSingleQuote(overrideRelativeRoot!)});',
+      )
+      ..write(r'$__flRootBases=@($__flOverrideBase)}');
+  }
+  body
     ..write(r'$__flRoots=@();')
     ..write(r'foreach($__flBase in $__flRootBases){')
     ..write(r'if([string]::IsNullOrWhiteSpace([string]$__flBase)){continue}')
