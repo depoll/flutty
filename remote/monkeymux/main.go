@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.154"
+	monkeyMuxVersion                  = "0.1.155"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -519,6 +519,7 @@ type windowSnapshot struct {
 	Flags                     string                    `json:"flags,omitempty"`
 	PaneTitle                 string                    `json:"paneTitle,omitempty"`
 	AgentTool                 string                    `json:"agentTool,omitempty"`
+	AgentToolConfirmed        bool                      `json:"agentToolConfirmed,omitempty"`
 	LastActivityEpochSeconds  int64                     `json:"lastActivityEpochSeconds,omitempty"`
 	TerminalReportsMouseWheel bool                      `json:"terminalReportsMouseWheel,omitempty"`
 	TerminalMouseReportSgr    bool                      `json:"terminalMouseReportSgr,omitempty"`
@@ -547,6 +548,7 @@ type restoreWindowState struct {
 	PanePid                  int                       `json:"panePid,omitempty"`
 	PaneTitle                string                    `json:"paneTitle,omitempty"`
 	AgentTool                string                    `json:"agentTool,omitempty"`
+	AgentToolConfirmed       bool                      `json:"agentToolConfirmed,omitempty"`
 	AgentSessionID           string                    `json:"agentSessionId,omitempty"`
 	AgentSessionDir          string                    `json:"agentSessionDir,omitempty"`
 	HistoryBase64            string                    `json:"historyBase64,omitempty"`
@@ -2576,17 +2578,18 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 	}
 	for _, window := range windows {
 		restore.Windows = append(restore.Windows, restoreWindowState{
-			ID:               window.ID,
-			Index:            window.Index,
-			Name:             window.Name,
-			Cwd:              window.CurrentPath,
-			CurrentCommand:   window.CurrentCommand,
-			PanePid:          window.PanePid,
-			PaneTitle:        window.PaneTitle,
-			AgentTool:        window.AgentTool,
-			PrivateModes:     privateModesFromWindowSnapshot(window),
-			TerminalProgress: copyTerminalProgressSnapshot(window.TerminalProgress),
-			Active:           window.Active,
+			ID:                 window.ID,
+			Index:              window.Index,
+			Name:               window.Name,
+			Cwd:                window.CurrentPath,
+			CurrentCommand:     window.CurrentCommand,
+			PanePid:            window.PanePid,
+			PaneTitle:          window.PaneTitle,
+			AgentTool:          window.AgentTool,
+			AgentToolConfirmed: window.AgentToolConfirmed,
+			PrivateModes:       privateModesFromWindowSnapshot(window),
+			TerminalProgress:   copyTerminalProgressSnapshot(window.TerminalProgress),
+			Active:             window.Active,
 		})
 	}
 	return restore
@@ -2792,17 +2795,21 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	hasCursorWindows := false
 	hasPiWindows := false
 	for _, window := range restore.Windows {
+		tool := agentToolCandidateForRestore(window)
+		if tool == "pi" {
+			hasPiWindows = true
+			if window.PanePid > 0 {
+				panePids[window.PanePid] = struct{}{}
+			}
+		}
 		if strings.TrimSpace(window.AgentSessionID) != "" {
 			continue
 		}
-		tool := agentToolForRestore(window)
 		switch tool {
 		case "antigravity":
 			hasAntigravityWindows = true
 		case "cursor-agent":
 			hasCursorWindows = true
-		case "pi":
-			hasPiWindows = true
 		}
 		if tool != "" && window.PanePid > 0 {
 			panePids[window.PanePid] = struct{}{}
@@ -3210,7 +3217,7 @@ func discoverPiSessions(
 	}
 	piPanePids := map[int]struct{}{}
 	for _, window := range restore.Windows {
-		if window.PanePid > 0 && agentToolForRestore(window) == "pi" {
+		if window.PanePid > 0 && agentToolCandidateForRestore(window) == "pi" {
 			piPanePids[window.PanePid] = struct{}{}
 		}
 	}
@@ -3223,10 +3230,16 @@ func discoverPiSessions(
 	}
 	fallbackWindows := map[fallbackKey][]int{}
 	for i, window := range restore.Windows {
-		if strings.TrimSpace(window.AgentSessionID) != "" || agentToolForRestore(window) != "pi" {
+		if agentToolCandidateForRestore(window) != "pi" {
 			continue
 		}
 		process, hasProcess := piProcesses[window.PanePid]
+		if hasProcess {
+			restore.Windows[i].AgentToolConfirmed = true
+		}
+		if strings.TrimSpace(window.AgentSessionID) != "" {
+			continue
+		}
 		if hasProcess {
 			if sessionID := agentSessionIDFromArgs("pi", process.args); sessionID != "" && !used[sessionID] {
 				sessionDir := piSessionDirFromArgs(process.args, window.Cwd)
@@ -3628,21 +3641,24 @@ func normalizedPiWorkingDirectory(path string) string {
 	return cleaned
 }
 
-func agentToolForRestore(window restoreWindowState) string {
-	if strings.TrimSpace(window.CurrentCommand) != "" &&
-		isShellCommandName(window.CurrentCommand) {
-		return ""
-	}
-	if tool := firstNonEmptyString(
+func agentToolCandidateForRestore(window restoreWindowState) string {
+	return firstNonEmptyString(
 		window.AgentTool,
 		agentToolFromCommandName(window.CurrentCommand),
-	); tool != "" {
-		return tool
-	}
-	return firstNonEmptyString(
 		agentToolFromTerminalTitle(window.PaneTitle),
 		agentToolFromCommandName(window.Name),
 	)
+}
+
+func agentToolForRestore(window restoreWindowState) string {
+	tool := agentToolCandidateForRestore(window)
+	if tool == "pi" &&
+		strings.TrimSpace(window.CurrentCommand) != "" &&
+		isShellCommandName(window.CurrentCommand) &&
+		!window.AgentToolConfirmed {
+		return ""
+	}
+	return tool
 }
 
 type processInfo struct {
@@ -7885,6 +7901,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			PanePid:                  window.metadataProcessIDLocked(),
 			PaneTitle:                window.paneTitle,
 			AgentTool:                window.agentToolLocked(),
+			AgentToolConfirmed:       window.agentToolConfirmedLocked(),
 			CursorVisible:            window.cursorVisible,
 			CursorVisibilityKnown:    window.cursorVisibilityKnown,
 			PrivateModes:             copyPrivateModes(window.privateModes),
@@ -7931,6 +7948,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		Flags:                     flags,
 		PaneTitle:                 window.paneTitle,
 		AgentTool:                 window.agentToolLocked(),
+		AgentToolConfirmed:        window.agentToolConfirmedLocked(),
 		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
 		TerminalMouseReportSgr:    window.mouseTrackingActiveLocked() && window.privateModes["1006"],
@@ -13557,6 +13575,13 @@ func (w *muxWindow) currentCommandLocked() string {
 		return w.foregroundCommand
 	}
 	return w.command
+}
+
+func (w *muxWindow) agentToolConfirmedLocked() bool {
+	if agentToolFromCommandName(w.currentCommandLocked()) != "" {
+		return true
+	}
+	return strings.TrimSpace(w.agentTool) != ""
 }
 
 func (w *muxWindow) agentToolLocked() string {

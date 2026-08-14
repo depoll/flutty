@@ -339,8 +339,8 @@ func TestDiscoverPiSessionsAssignsTwoKnownNodeProcessesMutually(t *testing.T) {
 		201: {pid: 201, ppid: 101, comm: "node.exe", args: "node.exe"},
 	}
 	restore := &serverRestore{Windows: []restoreWindowState{
-		{PanePid: 100, CurrentCommand: "node", AgentTool: "pi", Cwd: project},
-		{PanePid: 101, CurrentCommand: "node", AgentTool: "pi", Cwd: project},
+		{PanePid: 100, CurrentCommand: "cmd.exe", AgentTool: "pi", Cwd: project},
+		{PanePid: 101, CurrentCommand: "powershell.exe", AgentTool: "pi", Cwd: project},
 	}}
 
 	got := discoverPiSessions(
@@ -350,6 +350,11 @@ func TestDiscoverPiSessionsAssignsTwoKnownNodeProcessesMutually(t *testing.T) {
 	)
 	if got[0].sessionID != "first-session" || got[1].sessionID != "second-session" {
 		t.Fatalf("mutual Pi assignments = %#v, want first and second sessions", got)
+	}
+	for i := range restore.Windows {
+		if !restore.Windows[i].AgentToolConfirmed || agentToolForRestore(restore.Windows[i]) != "pi" {
+			t.Fatalf("Windows-like Pi pane %d was not process-confirmed: %#v", i, restore.Windows[i])
+		}
 	}
 }
 
