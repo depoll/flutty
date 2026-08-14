@@ -9266,6 +9266,56 @@ void main() {
     );
 
     testWidgets(
+      'Android app resume leaves a system-dismissed keyboard closed',
+      (tester) async {
+        // Android can retain the previous IME inset after app switching even
+        // though the system keyboard itself has been dismissed.
+        tester.view
+          ..physicalSize = const Size(390, 844)
+          ..devicePixelRatio = 1
+          ..viewInsets = const FakeViewPadding(bottom: 500);
+        addTearDown(() {
+          tester.view
+            ..resetPhysicalSize()
+            ..resetDevicePixelRatio()
+            ..resetViewInsets();
+        });
+
+        await pumpScreen(tester);
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+        expect(tester.getBottomLeft(find.byType(KeyboardToolbar)).dy, 344);
+
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        tester.testTextInput.log.clear();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.show',
+          ),
+          isEmpty,
+        );
+        expect(tester.testTextInput.isVisible, isFalse);
+        expect(find.byTooltip('Show system keyboard'), findsOneWidget);
+        expect(find.byTooltip('Hide system keyboard'), findsNothing);
+        expect(tester.getBottomLeft(find.byType(KeyboardToolbar)).dy, 844);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'terminal overflow menu preserves the visible mobile keyboard',
       (tester) async {
         await pumpScreen(tester);
