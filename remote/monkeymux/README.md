@@ -75,12 +75,15 @@ window snapshot cannot be collected. An upgrade also waits for the outgoing
 helper's process to exit and only unlinks the socket inode it created, so a
 still-closing old helper cannot delete the replacement's rebound path. If that
 path does disappear, the live server republishes it instead of staying
-unreachable. Pi windows resume the JSONL file held open by their live process. If
-open-file metadata is unavailable, MonkeyMux resumes only when one window and one
-unused session match the working directory; ambiguous conversations launch fresh
-instead of risking a swap. `--session-dir`, environment, and global/project
-`settings.json` session directories are honored, while nested child-agent stores
-are excluded. The server inherits the environment from
+unreachable. Pi windows first resume an explicit `--session`, then a uniquely
+open JSONL file. Because Pi normally opens session files only for each write,
+MonkeyMux otherwise correlates a unique session-header creation time with the
+live process start. A later unowned write in the same working directory marks
+that match ambiguous (including `/new` and `/resume` rotation), so it launches
+fresh rather than risking the wrong conversation. Plain working-directory
+fallback is used only for one window and one unused session. `--session-dir`,
+environment, and global/project `settings.json` session directories are honored,
+while nested child-agent stores are excluded. The server inherits the environment from
 the shell that launched it exactly, so profile-managed values such as `PATH`
 and tool-specific variables remain user-owned. PTY windows inherit that
 environment and add terminal defaults such as `TERM=xterm-256color` and
