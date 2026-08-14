@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.153"
+	monkeyMuxVersion                  = "0.1.154"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -14096,7 +14096,8 @@ func isGenericRuntimeCommandName(command string) bool {
 
 func isShellCommandName(command string) bool {
 	switch strings.ToLower(cleanProcessCommandName(command)) {
-	case "sh", "bash", "zsh", "fish", "dash", "ksh":
+	case "sh", "bash", "zsh", "fish", "dash", "ksh",
+		"cmd", "powershell", "pwsh":
 		return true
 	default:
 		return false
