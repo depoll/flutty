@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.155"
+	monkeyMuxVersion                  = "0.1.156"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -644,6 +644,7 @@ type muxWindow struct {
 	cwd                         string
 	command                     string
 	agentTool                   string
+	agentToolConfirmed          bool
 	foregroundPid               int
 	foregroundCommand           string
 	paneTitle                   string
@@ -5177,6 +5178,20 @@ type createWindowOptions struct {
 	capabilityHint           []byte
 }
 
+func newWindowAgentTool(
+	options createWindowOptions,
+	name string,
+) (tool string, confirmed bool) {
+	commandTool := agentToolFromCommandText(options.command)
+	tool = firstNonEmptyString(
+		options.agentTool,
+		commandTool,
+		agentToolFromCommandName(name),
+	)
+	confirmed = strings.TrimSpace(options.agentTool) != "" || commandTool != ""
+	return tool, confirmed
+}
+
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
 	var replay []byte
 	var snapshots []windowSnapshot
@@ -5200,11 +5215,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	} else if strings.TrimSpace(options.command) != "" {
 		name = firstShellWord(options.command)
 	}
-	agentTool := firstNonEmptyString(
-		options.agentTool,
-		agentToolFromCommandText(options.command),
-		agentToolFromCommandName(name),
-	)
+	agentTool, agentToolConfirmed := newWindowAgentTool(options, name)
 	// Keep agent windows open when the agent exits abnormally right after
 	// launching, so a fast startup failure (for example a locked macOS login
 	// keychain that makes cursor-agent print an error and exit immediately)
@@ -5260,6 +5271,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		cwd:                      cwd,
 		command:                  filepath.Base(cmd.Path),
 		agentTool:                agentTool,
+		agentToolConfirmed:       agentToolConfirmed,
 		foregroundPid:            proc.Pid(),
 		foregroundCommand:        filepath.Base(cmd.Path),
 		paneTitle:                paneTitle,
@@ -13581,7 +13593,7 @@ func (w *muxWindow) agentToolConfirmedLocked() bool {
 	if agentToolFromCommandName(w.currentCommandLocked()) != "" {
 		return true
 	}
-	return strings.TrimSpace(w.agentTool) != ""
+	return w.agentToolConfirmed
 }
 
 func (w *muxWindow) agentToolLocked() string {
