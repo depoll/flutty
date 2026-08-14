@@ -14,7 +14,12 @@ func writePiTestSession(t *testing.T, path string, id string, cwd string, modifi
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	header := fmt.Sprintf("{\"type\":\"session\",\"id\":%q,\"cwd\":%q}\n", id, cwd)
+	header := fmt.Sprintf(
+		"{\"type\":\"session\",\"id\":%q,\"timestamp\":%q,\"cwd\":%q}\n",
+		id,
+		modified.UTC().Format(time.RFC3339Nano),
+		cwd,
+	)
 	if err := os.WriteFile(path, []byte(header), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -29,8 +34,10 @@ func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
 			t.Fatalf("agentToolFromCommandName(%q) = %q, want pi", name, got)
 		}
 	}
-	if got := agentToolFromTerminalTitle("Pi"); got != "pi" {
-		t.Fatalf("agentToolFromTerminalTitle(Pi) = %q, want pi", got)
+	for _, title := range []string{"Pi", "Pi - restore work - project"} {
+		if got := agentToolFromTerminalTitle(title); got != "pi" {
+			t.Fatalf("agentToolFromTerminalTitle(%q) = %q, want pi", title, got)
+		}
 	}
 	for _, title := range []string{"Pi notes", "Pi calculator", "Pi · restore work"} {
 		if got := agentToolFromTerminalTitle(title); got != "" {
@@ -108,6 +115,69 @@ func TestDiscoverPiSessionsDeclinesAmbiguousCwdFallback(t *testing.T) {
 		if got := discoverPiSessions(restore, nil, nil); len(got) != 0 {
 			t.Fatalf("ambiguous Pi fallback = %#v, want none", got)
 		}
+	}
+}
+
+func TestDiscoverPiSessionsUsesProcessStartWhenPiClosesSessionFile(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	processStarted := time.Now().Add(-time.Minute).UTC()
+	writePiTestSession(
+		t,
+		filepath.Join(root, "project", "old.jsonl"),
+		"old-session",
+		project,
+		processStarted.Add(-time.Hour),
+	)
+	writePiTestSession(
+		t,
+		filepath.Join(root, "project", "current.jsonl"),
+		"current-session",
+		project,
+		processStarted.Add(500*time.Millisecond),
+	)
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return processStarted
+		}
+		return time.Time{}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {
+			pid:  200,
+			ppid: 100,
+			comm: "node",
+			args: "node /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+		},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "node", AgentTool: "pi", Cwd: project,
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "current-session" || got.sessionDir != filepath.Join(root, "project") {
+		t.Fatalf("process-correlated Pi session = %#v, want current-session", got)
+	}
+}
+
+func TestPiSessionForProcessStartDeclinesAmbiguousMatches(t *testing.T) {
+	started := time.Now().UTC()
+	entries := []piSessionEntry{
+		{sessionID: "one", createdAt: started, modTime: started},
+		{sessionID: "two", createdAt: started.Add(time.Second), modTime: started.Add(time.Second)},
+	}
+	if got, ok := piSessionForProcessStart(entries, started); ok {
+		t.Fatalf("ambiguous process match = %#v, want no match", got)
 	}
 }
 
