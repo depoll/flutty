@@ -18,6 +18,7 @@ Be respectful and constructive in all interactions.
 ### Prerequisites
 
 - Flutter 3.x or later
+- Go (the exact MonkeyMux packaging toolchain is pinned in its `go.mod`)
 - Git
 - Your preferred IDE (VS Code, Android Studio, IntelliJ)
 
@@ -35,6 +36,7 @@ Be respectful and constructive in all interactions.
    ```
 4. Install dependencies:
    ```bash
+   ./scripts/ensure_monkeymux_assets.sh
    flutter pub get
    ```
 5. Run the app:
@@ -46,17 +48,16 @@ Be respectful and constructive in all interactions.
 
 ### Branching
 
-- `main` - Stable release branch
-- `develop` - Development branch (PR target)
+- `main` - Stable development branch and pull request target
 - `feature/*` - Feature branches
 - `fix/*` - Bug fix branches
 
 ### Making Changes
 
-1. Create a new branch from `develop`:
+1. Create a new branch from `main`:
    ```bash
-   git checkout develop
-   git pull upstream develop
+   git checkout main
+   git pull upstream main
    git checkout -b feature/your-feature-name
    ```
 

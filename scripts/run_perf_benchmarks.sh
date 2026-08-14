@@ -80,6 +80,7 @@ fi
 echo ""
 
 # Ensure dependencies are up to date before running
+scripts/ensure_monkeymux_assets.sh
 flutter pub get --quiet
 
 flutter test \
