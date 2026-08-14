@@ -12171,7 +12171,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _stopSharedClipboardSync();
       _syncTerminalWakeLock();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
-      final shouldRestoreKeyboard = _restoreKeyboardAfterAppResume;
+      // Android dismisses the IME when the app loses its window. Asking it
+      // to show again from the first resumed callback can be ignored while the
+      // old bottom inset remains, leaving a keyboard-sized blank region. Keep
+      // the keyboard closed there; an explicit terminal tap can reopen it once
+      // the resumed window is ready. iOS continues restoring it automatically.
+      final shouldRestoreKeyboard =
+          _restoreKeyboardAfterAppResume && !_isAndroidPlatform;
       _restoreKeyboardAfterAppResume = false;
       _wasBackgrounded = false;
       _syncTerminalWakeLock();
