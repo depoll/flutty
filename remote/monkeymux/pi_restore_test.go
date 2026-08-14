@@ -56,7 +56,11 @@ func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
 			t.Fatalf("agentToolFromTerminalTitle(%q) = %q, want no classification", title, got)
 		}
 	}
-	shellState := restoreWindowState{CurrentCommand: "zsh", PaneTitle: "Pi - notes"}
+	shellState := restoreWindowState{
+		CurrentCommand: "zsh",
+		PaneTitle:      "Pi - notes",
+		AgentTool:      "pi",
+	}
 	if got := agentToolForRestore(shellState); got != "" {
 		t.Fatalf("shell window with Pi-like title classified as %q", got)
 	}
