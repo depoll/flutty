@@ -1044,6 +1044,7 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
   AgentLaunchTool.pi => const {'pi'},
   AgentLaunchTool.hermes => const {'hermes', 'hermes agent'},
   AgentLaunchTool.openclaw => const {'openclaw', 'openclaw tui'},
+  AgentLaunchTool.grokBuild => const {'grok', 'grok build'},
 };
 
 AgentLaunchTool? _agentToolFromTerminalTitle(String? value) {
@@ -1173,6 +1174,9 @@ String? agentSessionIdFromLaunchCommand(
     ],
     AgentLaunchTool.openclaw => const [
       r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.grokBuild => const [
+      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
     ],
   };
 

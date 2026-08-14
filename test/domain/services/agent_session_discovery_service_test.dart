@@ -524,6 +524,7 @@ branch refs/heads/fix/session-resumption
         'Cursor Agent',
         'Pi',
         'Hermes',
+        'Grok Build',
       ]);
     });
 
@@ -544,6 +545,7 @@ branch refs/heads/fix/session-resumption
         'Cursor Agent',
         'Pi',
         'Hermes',
+        'Grok Build',
         'Custom Tool',
       ]);
     });
@@ -1011,6 +1013,49 @@ cwd: /tmp/demo
 ''');
 
       expect(metadata.parsedAny, isFalse);
+    });
+  });
+
+  group('parseGrokSessionMetadata', () {
+    test('uses generated title, authoritative info, and last activity', () {
+      final metadata = parseGrokSessionMetadata('''
+{
+  "info": {
+    "id": "019f6cb5-f7e4-7bc1-bb25-9985af59619e",
+    "cwd": "/Users/depoll/Code/flutty"
+  },
+  "session_summary": "Older summary",
+  "generated_title": "Fix Grok session resumption",
+  "created_at": "2026-08-14T20:00:00Z",
+  "updated_at": "2026-08-14T20:05:00Z",
+  "last_active_at": "2026-08-14T20:04:00Z"
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.sessionId, '019f6cb5-f7e4-7bc1-bb25-9985af59619e');
+      expect(metadata.summary, 'Fix Grok session resumption');
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(metadata.updatedAt, DateTime.parse('2026-08-14T20:04:00Z'));
+      expect(metadata.isHidden, isFalse);
+    });
+
+    test('falls back to session summary and identifies hidden subagents', () {
+      final metadata = parseGrokSessionMetadata('''
+{
+  "info": {"id": "child", "cwd": "/tmp/repo"},
+  "session_summary": "Child work",
+  "updated_at": "2026-08-14T20:05:00Z",
+  "session_kind": "subagent"
+}
+''');
+
+      expect(metadata.summary, 'Child work');
+      expect(metadata.isHidden, isTrue);
+    });
+
+    test('rejects malformed metadata', () {
+      expect(parseGrokSessionMetadata('{broken').parsedAny, isFalse);
     });
   });
 
@@ -1952,6 +1997,60 @@ branch refs/heads/main
       expect(
         discovery.buildResumeCommand(info),
         "cd '/Users/depoll/Code/flutty' && cursor-agent --resume '$chatId'",
+      );
+    });
+
+    test('Grok Build discovery resolves resumable summary metadata', () async {
+      final client = _MockSshClient();
+      const summaryPath =
+          '/Users/demo/.grok/sessions/%2FUsers%2Fdepoll%2FCode%2Fflutty/'
+          '019f6cb5-f7e4-7bc1-bb25-9985af59619e/summary.json';
+      const sessionId = '019f6cb5-f7e4-7bc1-bb25-9985af59619e';
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('GROK_SESSIONS_ROOT')) {
+          return _buildExecSession(stdout: summaryPath);
+        }
+        if (command.contains(summaryPath)) {
+          return _buildExecSession(
+            stdout: _remoteSnapshotLine(summaryPath, '''
+{
+  "info": {"id": "$sessionId", "cwd": "/Users/depoll/Code/flutty"},
+  "session_summary": "Initial Grok task",
+  "generated_title": "Add Grok Build support",
+  "created_at": "2026-08-14T20:00:00Z",
+  "updated_at": "2026-08-14T20:05:00Z",
+  "last_active_at": "2026-08-14T20:04:00Z",
+  "current_model_id": "grok-code-fast-1",
+  "num_messages": 12
+}
+''', mtime: 1786740000),
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        toolName: 'Grok Build',
+      );
+
+      expect(result.sessions, hasLength(1));
+      final info = result.sessions.single;
+      expect(info.toolName, 'Grok Build');
+      expect(info.sessionId, sessionId);
+      expect(info.summary, 'Add Grok Build support');
+      expect(info.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(info.lastActive, DateTime.parse('2026-08-14T20:04:00Z'));
+      expect(
+        discovery.buildResumeCommand(info),
+        "cd '/Users/depoll/Code/flutty' && grok --resume '$sessionId'",
+      );
+      expect(
+        discovery.buildResumeCommand(info, startInYoloMode: true),
+        "cd '/Users/depoll/Code/flutty' && grok --yolo --resume '$sessionId'",
       );
     });
 

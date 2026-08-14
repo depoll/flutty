@@ -615,6 +615,25 @@ void main() {
       );
     });
 
+    test('recognizes Grok Build windows and resume session IDs', () {
+      const window = TmuxWindow(
+        index: 3,
+        name: 'grok',
+        isActive: false,
+        currentCommand: 'grok',
+        paneTitle: 'Grok Build · session resumption',
+      );
+
+      expect(window.foregroundAgentTool, AgentLaunchTool.grokBuild);
+      expect(
+        agentSessionIdFromLaunchCommand(
+          "grok --resume '019f6cb5-f7e4'",
+          tool: AgentLaunchTool.grokBuild,
+        ),
+        '019f6cb5-f7e4',
+      );
+    });
+
     test('equality works correctly', () {
       const a = TmuxWindow(index: 0, name: 'vim', isActive: true);
       const b = TmuxWindow(index: 0, name: 'vim', isActive: true);

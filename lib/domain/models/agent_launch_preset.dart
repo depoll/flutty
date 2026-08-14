@@ -31,7 +31,10 @@ enum AgentLaunchTool {
   hermes,
 
   /// OpenClaw terminal UI.
-  openclaw;
+  openclaw,
+
+  /// xAI Grok Build CLI.
+  grokBuild;
 
   /// Stable UI order for launch pickers and discovery provider rows.
   ///
@@ -48,6 +51,7 @@ enum AgentLaunchTool {
     pi,
     hermes,
     openclaw,
+    grokBuild,
   ];
 }
 
@@ -65,6 +69,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.pi => 'Pi',
     AgentLaunchTool.hermes => 'Hermes',
     AgentLaunchTool.openclaw => 'OpenClaw',
+    AgentLaunchTool.grokBuild => 'Grok Build',
   };
 
   /// Shell command used to launch this tool.
@@ -79,6 +84,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.pi => 'pi',
     AgentLaunchTool.hermes => 'hermes',
     AgentLaunchTool.openclaw => 'openclaw',
+    AgentLaunchTool.grokBuild => 'grok',
   };
 
   /// Subcommand arguments required to open this tool's interactive terminal
@@ -107,6 +113,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.pi => const ['pi'],
     AgentLaunchTool.hermes => const ['hermes', 'hermes-agent'],
     AgentLaunchTool.openclaw => const ['openclaw'],
+    AgentLaunchTool.grokBuild => const ['grok'],
   };
 
   /// Whether this tool supports session resume.
@@ -130,6 +137,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     // OpenClaw persists sessions in a per-agent SQLite store that has no
     // reliable working directory, so it cannot back the cwd-scoped picker.
     AgentLaunchTool.openclaw => null,
+    AgentLaunchTool.grokBuild => 'Grok Build',
   };
 
   /// Whether this tool supports launching directly into YOLO mode.
@@ -152,6 +160,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     // OpenClaw's YOLO preset is a persisted `openclaw exec-policy` mutation,
     // not a per-launch flag, so there is nothing safe to pass here.
     AgentLaunchTool.openclaw => const [],
+    AgentLaunchTool.grokBuild => const ['--yolo'],
   };
 
   /// Environment variables that enable YOLO mode for this tool.
@@ -196,6 +205,7 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
     'pi' => AgentLaunchTool.pi,
     'hermes' || 'hermes-agent' => AgentLaunchTool.hermes,
     'openclaw' => AgentLaunchTool.openclaw,
+    'grok' => AgentLaunchTool.grokBuild,
     _ => null,
   };
 }
@@ -447,6 +457,15 @@ final _openCodeDangerouslySkipPermissionsPattern = RegExp(
 );
 final _cursorForcePattern = RegExp(r'(?<!\S)(?:--force|--yolo|-f)(?=\s|$)');
 final _hermesYoloPattern = RegExp(r'(?<!\S)--yolo(?=\s|$)');
+final _grokYoloPattern = RegExp(
+  r'(?<!\S)(?:--always-approve|--yolo|--dangerously-skip-permissions)(?=\s|$)',
+);
+final _grokPermissionModeEqualsPattern = RegExp(
+  r'''(?<!\S)--permission-mode=(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _grokPermissionModeSeparatedPattern = RegExp(
+  r'''(?<!\S)--permission-mode\s+(?:"[^"]*"|'[^']*'|\S+)''',
+);
 
 /// Builds the shell command for a saved agent launch preset.
 String buildAgentLaunchCommand(
@@ -562,6 +581,10 @@ List<String> _buildAgentResumeArguments(
     sessionId == '_continue'
         ? const <String>[]
         : ['--session', _quoteShellArgument(sessionId)],
+  AgentLaunchTool.grokBuild =>
+    sessionId == '_continue'
+        ? const ['--resume']
+        : ['--resume', _quoteShellArgument(sessionId)],
 };
 
 String? _normalizeAgentToolArguments({
@@ -614,6 +637,12 @@ String? _normalizeAgentToolArguments({
       trimmedAdditionalArguments,
       [_hermesYoloPattern],
     ),
+    AgentLaunchTool.grokBuild =>
+      _stripArgumentPatterns(trimmedAdditionalArguments, [
+        _grokYoloPattern,
+        _grokPermissionModeEqualsPattern,
+        _grokPermissionModeSeparatedPattern,
+      ]),
   };
 
   final yoloArguments = tool.yoloArguments;

@@ -542,6 +542,11 @@ void main() {
         agentLaunchToolForCommandName('/opt/homebrew/bin/pi'),
         AgentLaunchTool.pi,
       );
+      expect(agentLaunchToolForCommandName('grok'), AgentLaunchTool.grokBuild);
+      expect(
+        agentLaunchToolForCommandText('cd ~/repo && grok --resume abc'),
+        AgentLaunchTool.grokBuild,
+      );
     });
 
     test('builds launch commands for the newly supported CLIs', () {
@@ -562,6 +567,11 @@ void main() {
         buildAgentToolCommand(AgentLaunchTool.openclaw, startInYoloMode: true),
         'openclaw tui',
       );
+      expect(buildAgentToolCommand(AgentLaunchTool.grokBuild), 'grok');
+      expect(
+        buildAgentToolCommand(AgentLaunchTool.grokBuild, startInYoloMode: true),
+        'grok --yolo',
+      );
     });
 
     test('does not duplicate an explicit Hermes yolo argument', () {
@@ -572,6 +582,17 @@ void main() {
           startInYoloMode: true,
         ),
         'hermes --yolo --tui',
+      );
+    });
+
+    test('normalizes explicit Grok permission arguments in yolo mode', () {
+      expect(
+        buildAgentToolCommand(
+          AgentLaunchTool.grokBuild,
+          additionalArguments: '--permission-mode ask --always-approve --trust',
+          startInYoloMode: true,
+        ),
+        'grok --yolo --trust',
       );
     });
 
@@ -604,6 +625,18 @@ void main() {
       expect(
         buildAgentResumeCommand(AgentLaunchTool.openclaw, '_continue'),
         'openclaw tui',
+      );
+      expect(
+        buildAgentResumeCommand(AgentLaunchTool.grokBuild, '019f6cb5-f7e4'),
+        "grok --resume '019f6cb5-f7e4'",
+      );
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.grokBuild,
+          '_continue',
+          startInYoloMode: true,
+        ),
+        'grok --yolo --resume',
       );
     });
 
