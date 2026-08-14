@@ -459,7 +459,6 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         '\x1b[5~',
         withHaptic: false,
         consumeOneShot: false,
-        type: TerminalKeyEventType.repeat,
       ),
       tooltip: 'Page Up',
     ),
@@ -474,7 +473,6 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         '\x1b[6~',
         withHaptic: false,
         consumeOneShot: false,
-        type: TerminalKeyEventType.repeat,
       ),
       tooltip: 'Page Down',
     ),
@@ -488,7 +486,6 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         '\x1b[H',
         withHaptic: false,
         consumeOneShot: false,
-        type: TerminalKeyEventType.repeat,
       ),
       tooltip: 'Home',
     ),
@@ -502,7 +499,6 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         '\x1b[F',
         withHaptic: false,
         consumeOneShot: false,
-        type: TerminalKeyEventType.repeat,
       ),
       tooltip: 'End',
     ),
@@ -514,12 +510,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       label: '',
       onTap: () => _sendArrow(_Arrow.left),
       onLongPressStart: () => _sendArrow(_Arrow.left),
-      onLongPressRepeat: () => _sendArrow(
-        _Arrow.left,
-        withHaptic: false,
-        consumeOneShot: false,
-        type: TerminalKeyEventType.repeat,
-      ),
+      onLongPressRepeat: () =>
+          _sendArrow(_Arrow.left, withHaptic: false, consumeOneShot: false),
       tooltip: 'Left',
     ),
     _ToolbarButton(
@@ -527,12 +519,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       label: '',
       onTap: () => _sendArrow(_Arrow.right),
       onLongPressStart: () => _sendArrow(_Arrow.right),
-      onLongPressRepeat: () => _sendArrow(
-        _Arrow.right,
-        withHaptic: false,
-        consumeOneShot: false,
-        type: TerminalKeyEventType.repeat,
-      ),
+      onLongPressRepeat: () =>
+          _sendArrow(_Arrow.right, withHaptic: false, consumeOneShot: false),
       tooltip: 'Right',
     ),
     _ToolbarButton(
@@ -540,12 +528,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       label: '',
       onTap: () => _sendArrow(_Arrow.up),
       onLongPressStart: () => _sendArrow(_Arrow.up),
-      onLongPressRepeat: () => _sendArrow(
-        _Arrow.up,
-        withHaptic: false,
-        consumeOneShot: false,
-        type: TerminalKeyEventType.repeat,
-      ),
+      onLongPressRepeat: () =>
+          _sendArrow(_Arrow.up, withHaptic: false, consumeOneShot: false),
       tooltip: 'Up',
     ),
     _ToolbarButton(
@@ -553,12 +537,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       label: '',
       onTap: () => _sendArrow(_Arrow.down),
       onLongPressStart: () => _sendArrow(_Arrow.down),
-      onLongPressRepeat: () => _sendArrow(
-        _Arrow.down,
-        withHaptic: false,
-        consumeOneShot: false,
-        type: TerminalKeyEventType.repeat,
-      ),
+      onLongPressRepeat: () =>
+          _sendArrow(_Arrow.down, withHaptic: false, consumeOneShot: false),
       tooltip: 'Down',
     ),
   ];
