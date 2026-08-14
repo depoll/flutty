@@ -9311,6 +9311,49 @@ void main() {
         expect(find.byTooltip('Show system keyboard'), findsOneWidget);
         expect(find.byTooltip('Hide system keyboard'), findsNothing);
         expect(tester.getBottomLeft(find.byType(KeyboardToolbar)).dy, 844);
+        final inputHandler = tester.widget<TerminalTextInputHandler>(
+          find.byType(TerminalTextInputHandler),
+        );
+        expect(inputHandler.focusNode.hasFocus, isTrue);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'Android app background invalidates a queued keyboard request',
+      (tester) async {
+        tester.view
+          ..physicalSize = const Size(390, 844)
+          ..devicePixelRatio = 1
+          ..viewInsets = const FakeViewPadding(bottom: 500);
+        addTearDown(() {
+          tester.view
+            ..resetPhysicalSize()
+            ..resetDevicePixelRatio()
+            ..resetViewInsets();
+        });
+
+        await pumpScreen(tester);
+        tester.testTextInput.log.clear();
+
+        // Queue the post-frame keyboard request, then background the app before
+        // Flutter can run it. It must not replay in the resumed window.
+        await tester.tap(find.byTooltip('Show system keyboard'));
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.show',
+          ),
+          isEmpty,
+        );
+        expect(tester.testTextInput.isVisible, isFalse);
+        expect(tester.getBottomLeft(find.byType(KeyboardToolbar)).dy, 844);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
