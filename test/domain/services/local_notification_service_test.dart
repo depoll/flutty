@@ -82,6 +82,21 @@ void main() {
     });
   });
 
+  test('Kitty identifiers replace within a connection without collisions', () {
+    expect(
+      buildTerminalNotificationId(21, identifier: 'build'),
+      buildTerminalNotificationId(21, identifier: 'build'),
+    );
+    expect(
+      buildTerminalNotificationId(21, identifier: 'build'),
+      isNot(buildTerminalNotificationId(21, identifier: 'deploy')),
+    );
+    expect(
+      buildTerminalNotificationId(21, identifier: 'build'),
+      isNot(buildTerminalNotificationId(22, identifier: 'build')),
+    );
+  });
+
   test('buildTerminalNotificationLocation targets the source connection', () {
     final location = buildTerminalNotificationLocation(
       const TerminalNotificationPayload(hostId: 7, connectionId: 21),

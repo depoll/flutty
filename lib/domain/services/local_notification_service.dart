@@ -190,6 +190,13 @@ class TerminalNotificationPayload {
   int get hashCode => Object.hash(hostId, connectionId);
 }
 
+/// Builds a local notification identifier scoped to one SSH connection.
+///
+/// Kitty's protocol identifier makes create/update/close actions address the
+/// same local notification without exposing that user-controlled string.
+int buildTerminalNotificationId(int connectionId, {String? identifier}) =>
+    Object.hash('terminal-notification', connectionId, identifier) & 0x7fffffff;
+
 /// Builds the terminal route location for a terminal notification tap.
 String buildTerminalNotificationLocation(TerminalNotificationPayload payload) =>
     Uri(
@@ -364,6 +371,18 @@ class LocalNotificationService {
         ),
         payload: payload.encode(),
       );
+    } on MissingPluginException {
+      // Widget and unit tests don't register platform notification plugins.
+    }
+  }
+
+  /// Clears a terminal desktop notification by its local identifier.
+  Future<void> clearTerminalNotification(int notificationId) async {
+    final didInitialize = await initialize();
+    if (!didInitialize) return;
+
+    try {
+      await _plugin.cancel(id: notificationId);
     } on MissingPluginException {
       // Widget and unit tests don't register platform notification plugins.
     }

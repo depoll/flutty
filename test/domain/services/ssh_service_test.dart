@@ -1728,6 +1728,32 @@ LISTEN ::1:4201
       );
     });
 
+    test('parses OSC 633, OSC 9;9, and iTerm2 working directories', () {
+      final vscode = parseTerminalShellWorkingDirectoryOsc('633', const [
+        'P',
+        'Cwd=/home/demo/project',
+      ]);
+      final conEmu = parseTerminalShellWorkingDirectoryOsc('9', const [
+        '9',
+        r'C:\Users\demo\project',
+      ]);
+      final remoteHost = parseTerminalReportedRemoteHost(const [
+        'RemoteHost=demo@build.example.com',
+      ]);
+      final iterm = parseTerminalShellWorkingDirectoryOsc('1337', const [
+        'CurrentDir=/srv/project',
+      ], remoteHost: remoteHost);
+
+      expect(resolveTerminalWorkingDirectoryPath(vscode), '/home/demo/project');
+      expect(
+        resolveTerminalWorkingDirectoryPath(conEmu),
+        '/C:/Users/demo/project',
+      );
+      expect(iterm?.host, 'build.example.com');
+      expect(resolveTerminalWorkingDirectoryPath(iterm), '/srv/project');
+      expect(parseTerminalWorkingDirectoryValue('relative/path'), isNull);
+    });
+
     test('falls back to the raw working-directory path on bad encoding', () {
       final uri = Uri.parse('file://remote.example.com/Users/tester/100%');
 

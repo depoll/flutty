@@ -34,6 +34,7 @@ import 'settings_service.dart';
 import 'ssh_exec_queue.dart';
 import 'telemetry_service.dart';
 import 'terminal_hyperlink_tracker.dart';
+import 'terminal_iterm2_image.dart';
 import 'terminal_notification.dart';
 import 'terminal_preview_graphics.dart';
 import 'wifi_network_service.dart';
@@ -1112,6 +1113,80 @@ Uri? parseTerminalWorkingDirectoryUri(List<String> args) {
   }
 
   return uri;
+}
+
+/// Parses working-directory metadata used by OSC 9;9, OSC 633, and OSC 1337.
+///
+/// These protocols commonly send a native path instead of OSC 7's file URI.
+/// Absolute POSIX and Windows paths are normalized to file URIs so downstream
+/// session discovery can use one representation on every platform.
+Uri? parseTerminalWorkingDirectoryValue(String value, {String? remoteHost}) {
+  final candidate = value.trim();
+  if (candidate.isEmpty || candidate.length > 4096) {
+    return null;
+  }
+
+  final uri = Uri.tryParse(candidate);
+  if (uri != null && uri.hasScheme && uri.scheme.toLowerCase() == 'file') {
+    return uri;
+  }
+
+  final isWindowsPath = RegExp(r'^[A-Za-z]:[\\/]').hasMatch(candidate);
+  if (!candidate.startsWith('/') && !isWindowsPath) {
+    return null;
+  }
+  final pathUri = Uri.file(candidate, windows: isWindowsPath);
+  final host = remoteHost?.trim() ?? '';
+  if (host.isEmpty) {
+    return pathUri;
+  }
+  return pathUri.replace(host: host);
+}
+
+/// Extracts working-directory metadata from supported shell OSC extensions.
+Uri? parseTerminalShellWorkingDirectoryOsc(
+  String code,
+  List<String> args, {
+  String? remoteHost,
+}) {
+  String? value;
+  if (code == '9' && args.firstOrNull?.trim() == '9' && args.length > 1) {
+    value = args.skip(1).join(';');
+  } else if (code == '633' && args.firstOrNull == 'P') {
+    final propertyIndex = args.indexWhere((arg) => arg.startsWith('Cwd='));
+    if (propertyIndex >= 0) {
+      value = [
+        args[propertyIndex].substring('Cwd='.length),
+        ...args.skip(propertyIndex + 1),
+      ].join(';');
+    }
+  } else if (code == '1337' &&
+      (args.firstOrNull?.startsWith('CurrentDir=') ?? false)) {
+    value = [
+      args.first.substring('CurrentDir='.length),
+      ...args.skip(1),
+    ].join(';');
+  }
+  return value == null
+      ? null
+      : parseTerminalWorkingDirectoryValue(value, remoteHost: remoteHost);
+}
+
+/// Extracts the hostname from iTerm2's `OSC 1337;RemoteHost=user@host`.
+String? parseTerminalReportedRemoteHost(List<String> args) {
+  if (args.isEmpty || !args.first.startsWith('RemoteHost=')) {
+    return null;
+  }
+  final candidate = [
+    args.first.substring('RemoteHost='.length),
+    ...args.skip(1),
+  ].join(';').trim();
+  if (candidate.isEmpty || candidate.length > 1024) {
+    return null;
+  }
+  final uri = Uri.tryParse('ssh://$candidate');
+  final host = uri?.host.trim() ?? '';
+  return host.isEmpty ? null : host;
 }
 
 /// Resolves the decoded directory path from a terminal working-directory URI.
@@ -3624,6 +3699,7 @@ class SshSession {
   String? _windowTitle;
   String? _iconName;
   Uri? _workingDirectory;
+  String? _terminalReportedRemoteHost;
   TerminalShellStatus? _shellStatus;
   int? _lastExitCode;
   TerminalProgress? _terminalProgress;
@@ -3682,10 +3758,11 @@ class SshSession {
   /// The latest terminal icon name emitted by the remote session.
   String? get iconName => _iconName;
 
-  /// The latest working-directory URI emitted through OSC 7.
+  /// The latest working-directory URI emitted through OSC 7, OSC 9;9,
+  /// OSC 633, or OSC 1337.
   Uri? get workingDirectory => _workingDirectory;
 
-  /// The latest shell integration status emitted through OSC 133.
+  /// The latest shell integration status emitted through OSC 133 or OSC 633.
   TerminalShellStatus? get shellStatus => _shellStatus;
 
   /// The latest command exit code emitted through shell integration.
@@ -4011,6 +4088,7 @@ class SshSession {
     terminalHyperlinkTracker.reset(keepTerminalReference: false);
     _iconName = null;
     _workingDirectory = null;
+    _terminalReportedRemoteHost = null;
     _shellStatus = null;
     _lastExitCode = null;
     _terminalProgress = null;
@@ -4150,21 +4228,32 @@ class SshSession {
     }
 
     if (code == '7') {
-      final nextWorkingDirectory = parseTerminalWorkingDirectoryUri(args);
-      if (nextWorkingDirectory?.toString() == _workingDirectory?.toString()) {
+      _setWorkingDirectory(
+        parseTerminalWorkingDirectoryUri(args),
+        allowClear: true,
+      );
+      return;
+    }
+
+    if (code == '1337') {
+      final terminal = _runtime.terminal;
+      if (terminal != null && handleIterm2InlineImageOsc(terminal, args)) {
         return;
       }
-      _workingDirectory = nextWorkingDirectory;
-      DiagnosticsLogService.instance.debug(
-        'ssh.metadata',
-        'working_directory_changed',
-        fields: {
-          'connectionId': connectionId,
-          'hasWorkingDirectory': nextWorkingDirectory != null,
-        },
+      final nextRemoteHost = parseTerminalReportedRemoteHost(args);
+      if (nextRemoteHost != null) {
+        _terminalReportedRemoteHost = nextRemoteHost;
+        return;
+      }
+      final nextWorkingDirectory = parseTerminalShellWorkingDirectoryOsc(
+        code,
+        args,
+        remoteHost: _terminalReportedRemoteHost,
       );
-      _notifyMetadataChanged();
-      return;
+      if (nextWorkingDirectory != null) {
+        _setWorkingDirectory(nextWorkingDirectory);
+        return;
+      }
     }
 
     if (code == ClipboardSharingService.oscCode) {
@@ -4172,28 +4261,8 @@ class SshSession {
       return;
     }
 
-    if (code == '133') {
-      final nextShellState = applyTerminalShellIntegrationOsc(
-        args,
-        previousStatus: _shellStatus,
-        previousExitCode: _lastExitCode,
-      );
-      if (nextShellState.status == _shellStatus &&
-          nextShellState.lastExitCode == _lastExitCode) {
-        return;
-      }
-      _shellStatus = nextShellState.status;
-      _lastExitCode = nextShellState.lastExitCode;
-      DiagnosticsLogService.instance.debug(
-        'ssh.metadata',
-        'shell_status_changed',
-        fields: {
-          'connectionId': connectionId,
-          'shellStatus': nextShellState.status,
-          'lastExitCode': nextShellState.lastExitCode,
-        },
-      );
-      _notifyMetadataChanged();
+    if (code == '133' || code == '633') {
+      _handleShellIntegrationOsc(code, args);
       return;
     }
 
@@ -4220,6 +4289,16 @@ class SshSession {
         }
         return;
       }
+      if (args.firstOrNull?.trim() == '9') {
+        _setWorkingDirectory(
+          parseTerminalShellWorkingDirectoryOsc(
+            code,
+            args,
+            remoteHost: _terminalReportedRemoteHost,
+          ),
+        );
+        return;
+      }
       _handleTerminalNotificationOsc(code, args);
       return;
     }
@@ -4230,6 +4309,66 @@ class SshSession {
     }
 
     _logUnhandledPrivateOsc(code, args);
+  }
+
+  void _handleShellIntegrationOsc(String code, List<String> args) {
+    final nextShellState = applyTerminalShellIntegrationOsc(
+      args,
+      previousStatus: _shellStatus,
+      previousExitCode: _lastExitCode,
+    );
+    final nextWorkingDirectory = parseTerminalShellWorkingDirectoryOsc(
+      code,
+      args,
+      remoteHost: _terminalReportedRemoteHost,
+    );
+    final shellStateChanged =
+        nextShellState.status != _shellStatus ||
+        nextShellState.lastExitCode != _lastExitCode;
+    final workingDirectoryChanged =
+        nextWorkingDirectory != null &&
+        nextWorkingDirectory.toString() != _workingDirectory?.toString();
+    if (!shellStateChanged && !workingDirectoryChanged) {
+      return;
+    }
+    _shellStatus = nextShellState.status;
+    _lastExitCode = nextShellState.lastExitCode;
+    if (workingDirectoryChanged) {
+      _workingDirectory = nextWorkingDirectory;
+    }
+    DiagnosticsLogService.instance.debug(
+      'ssh.metadata',
+      'shell_integration_changed',
+      fields: {
+        'connectionId': connectionId,
+        'protocol': code == '633' ? 'vscode' : 'finalterm',
+        'shellStatus': nextShellState.status,
+        'lastExitCode': nextShellState.lastExitCode,
+        'workingDirectoryChanged': workingDirectoryChanged,
+      },
+    );
+    _notifyMetadataChanged();
+  }
+
+  bool _setWorkingDirectory(
+    Uri? nextWorkingDirectory, {
+    bool allowClear = false,
+  }) {
+    if ((nextWorkingDirectory == null && !allowClear) ||
+        nextWorkingDirectory?.toString() == _workingDirectory?.toString()) {
+      return false;
+    }
+    _workingDirectory = nextWorkingDirectory;
+    DiagnosticsLogService.instance.debug(
+      'ssh.metadata',
+      'working_directory_changed',
+      fields: {
+        'connectionId': connectionId,
+        'hasWorkingDirectory': nextWorkingDirectory != null,
+      },
+    );
+    _notifyMetadataChanged();
+    return true;
   }
 
   void _handleTerminalNotificationOsc(String code, List<String> args) {
@@ -8046,20 +8185,27 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     TerminalNotificationRequest request,
   ) async {
     if (!ref.mounted) return;
+    final notificationService = ref.read(localNotificationServiceProvider);
+    final notificationId = buildTerminalNotificationId(
+      session.connectionId,
+      identifier: request.identifier,
+    );
+    if (request.action == TerminalNotificationAction.close) {
+      await notificationService.clearTerminalNotification(notificationId);
+      return;
+    }
     if (!ref.read(terminalNotificationsNotifierProvider)) return;
     final title = request.title ?? await _resolveSessionLabel(session);
     if (!ref.mounted) return;
-    await ref
-        .read(localNotificationServiceProvider)
-        .showTerminalNotification(
-          notificationId: _terminalNotificationId(session.connectionId),
-          title: title,
-          body: request.body,
-          payload: TerminalNotificationPayload(
-            hostId: session.hostId,
-            connectionId: session.connectionId,
-          ),
-        );
+    await notificationService.showTerminalNotification(
+      notificationId: notificationId,
+      title: title,
+      body: request.body,
+      payload: TerminalNotificationPayload(
+        hostId: session.hostId,
+        connectionId: session.connectionId,
+      ),
+    );
   }
 
   Future<String> _resolveSessionLabel(SshSession session) async {
@@ -8079,9 +8225,6 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     return 'Terminal';
   }
-
-  int _terminalNotificationId(int connectionId) =>
-      Object.hash('terminal-notification', connectionId) & 0x7fffffff;
 
   void _detachSessionListeners(int connectionId, {SshSession? session}) {
     (session ?? _sshService.getSession(connectionId))?.removePreviewListener(

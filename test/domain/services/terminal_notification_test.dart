@@ -93,8 +93,22 @@ void main() {
       expect(req!.body, 'Encoded title');
     });
 
-    test('a close action does not emit a notification', () {
-      expect(parser.handleOsc('99', ['i=3:a=close']), isNull);
+    test('create/update and close actions preserve a bounded identifier', () {
+      final created = parser.handleOsc('99', ['i=build-3:a=create', 'Started']);
+      expect(created?.identifier, 'build-3');
+      expect(created?.action, TerminalNotificationAction.show);
+
+      final updated = parser.handleOsc('99', [
+        'i=build-3:a=update:p=body',
+        'Finished',
+      ]);
+      expect(updated?.identifier, 'build-3');
+      expect(updated?.body, 'Finished');
+
+      expect(
+        parser.handleOsc('99', ['i=build-3:a=close']),
+        const TerminalNotificationRequest.close(identifier: 'build-3'),
+      );
     });
 
     test('interleaved ids stay independent', () {

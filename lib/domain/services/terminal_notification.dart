@@ -2,12 +2,34 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
-/// A request to surface a desktop notification emitted by the remote terminal
-/// via an OSC escape sequence (OSC 9 / OSC 777 / OSC 99).
+/// Action requested by a terminal notification protocol message.
+enum TerminalNotificationAction {
+  /// Show a new notification or replace one with the same identifier.
+  show,
+
+  /// Clear the notification with the matching identifier.
+  close,
+}
+
+/// A request to surface or clear a desktop notification emitted by the remote
+/// terminal via an OSC escape sequence (OSC 9 / OSC 777 / OSC 99).
 @immutable
 class TerminalNotificationRequest {
-  /// Creates a [TerminalNotificationRequest].
-  const TerminalNotificationRequest({required this.body, this.title});
+  /// Creates a request to show or replace a notification.
+  const TerminalNotificationRequest({
+    required this.body,
+    this.title,
+    this.identifier,
+    this.action = TerminalNotificationAction.show,
+  });
+
+  /// Creates a Kitty request to clear a previously identified notification.
+  const TerminalNotificationRequest.close({required String identifier})
+    : this(
+        body: '',
+        identifier: identifier,
+        action: TerminalNotificationAction.close,
+      );
 
   /// The notification title. When `null`, the presenter supplies a default
   /// (typically the host or session name).
@@ -16,19 +38,28 @@ class TerminalNotificationRequest {
   /// The notification body text.
   final String body;
 
+  /// Protocol identifier used to replace or close this notification.
+  final String? identifier;
+
+  /// Whether to show/update or clear the addressed notification.
+  final TerminalNotificationAction action;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is TerminalNotificationRequest &&
           title == other.title &&
-          body == other.body;
+          body == other.body &&
+          identifier == other.identifier &&
+          action == other.action;
 
   @override
-  int get hashCode => Object.hash(title, body);
+  int get hashCode => Object.hash(title, body, identifier, action);
 
   @override
   String toString() =>
-      'TerminalNotificationRequest(title: $title, body: $body)';
+      'TerminalNotificationRequest(title: $title, body: $body, '
+      'identifier: $identifier, action: $action)';
 }
 
 /// Parses terminal desktop-notification OSC sequences into
@@ -91,9 +122,16 @@ class TerminalNotificationParser {
 
   TerminalNotificationRequest? _handleOsc99(List<String> args) {
     final metadata = _parseMetadata(args.isNotEmpty ? args.first : '');
-    final id = metadata['i'] ?? '';
+    final id = _sanitizeIdentifier(metadata['i'] ?? '');
     final action = metadata['a'];
-    // Only the default (create/update) action produces a notification.
+    if (action == 'close') {
+      _pending.remove(id);
+      return id.isEmpty
+          ? null
+          : TerminalNotificationRequest.close(identifier: id);
+    }
+    // Capability, focus, and activation reports require a bidirectional
+    // protocol exchange and must not produce local notifications.
     if (action != null && action != 'create' && action != 'update') {
       _pending.remove(id);
       return null;
@@ -123,6 +161,7 @@ class TerminalNotificationParser {
     return _build(
       title: _sanitize(pending.title),
       body: _sanitize(pending.body),
+      identifier: id.isEmpty ? null : id,
     );
   }
 
@@ -131,14 +170,16 @@ class TerminalNotificationParser {
   TerminalNotificationRequest? _build({
     required String title,
     required String body,
+    String? identifier,
   }) {
     if (title.isEmpty && body.isEmpty) return null;
     if (body.isEmpty) {
-      return TerminalNotificationRequest(body: title);
+      return TerminalNotificationRequest(body: title, identifier: identifier);
     }
     return TerminalNotificationRequest(
       title: title.isEmpty ? null : title,
       body: body,
+      identifier: identifier,
     );
   }
 
@@ -178,6 +219,12 @@ class TerminalNotificationParser {
     if (removable != keepId) {
       _pending.remove(removable);
     }
+  }
+
+  String _sanitizeIdentifier(String value) {
+    final bounded = value.length > 128 ? value.substring(0, 128) : value;
+    final sanitized = bounded.replaceAll(RegExp('[^A-Za-z0-9_.-]'), '_').trim();
+    return sanitized.length > 128 ? sanitized.substring(0, 128) : sanitized;
   }
 
   /// Strips control characters and trims, so remote output can't inject control
