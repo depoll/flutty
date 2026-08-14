@@ -9,16 +9,32 @@ Usage: cache_sqlite3_native_assets.sh <target> [<target> ...]
 
 Targets:
   linux-x64
+  ios-arm64
+  macos-x64
+  macos-arm64
+  windows-x64
   android-arm64
   android-x64
   android-arm
   android-ia32
+
+Set SQLITE3_NATIVE_ASSETS_VERIFY_ONLY=1 to validate target mappings and hashes
+without downloading assets.
 EOF
 }
 
 if [[ $# -eq 0 ]]; then
   usage >&2
   exit 2
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN=python
+else
+  echo "Python 3 is required to cache sqlite3 native assets." >&2
+  exit 1
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,19 +47,22 @@ if [[ ! -f "$PACKAGE_CONFIG" ]]; then
 fi
 
 SQLITE3_ROOT="$(
-  python3 - "$PACKAGE_CONFIG" <<'PY'
+  "$PYTHON_BIN" - "$PACKAGE_CONFIG" <<'PY'
 import json
 import pathlib
 import sys
 import urllib.parse
+import urllib.request
 
-package_config = pathlib.Path(sys.argv[1])
+package_config = pathlib.Path(sys.argv[1]).resolve()
 root_uri = next(
     package["rootUri"]
     for package in json.loads(package_config.read_text())["packages"]
     if package["name"] == "sqlite3"
 )
-print(pathlib.Path(urllib.parse.urlparse(root_uri).path))
+root_url = urllib.parse.urljoin(package_config.as_uri(), root_uri)
+root_path = urllib.request.url2pathname(urllib.parse.urlparse(root_url).path)
+print(pathlib.Path(root_path).as_posix())
 PY
 )"
 
@@ -54,7 +73,7 @@ if [[ ! -f "$ASSET_HASHES" ]]; then
 fi
 
 RELEASE_TAG="$(
-  python3 - "$ASSET_HASHES" <<'PY'
+  "$PYTHON_BIN" - "$ASSET_HASHES" <<'PY'
 import pathlib
 import re
 import sys
@@ -69,7 +88,7 @@ PY
 
 lookup_hash() {
   local filename="$1"
-  python3 - "$ASSET_HASHES" "$filename" <<'PY'
+  "$PYTHON_BIN" - "$ASSET_HASHES" "$filename" <<'PY'
 import pathlib
 import re
 import sys
@@ -83,6 +102,21 @@ print(match.group(1))
 PY
 }
 
+verify_hash() {
+  local expected_hash="$1"
+  local path="$2"
+  "$PYTHON_BIN" - "$expected_hash" "$path" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+expected_hash = sys.argv[1]
+path = pathlib.Path(sys.argv[2])
+actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+raise SystemExit(0 if actual_hash == expected_hash else 1)
+PY
+}
+
 prefetch() {
   local source_filename="$1"
   local dest_filename="$2"
@@ -93,12 +127,17 @@ prefetch() {
   local attempt
 
   sha256="$(lookup_hash "$source_filename")"
+  if [[ "${SQLITE3_NATIVE_ASSETS_VERIFY_ONLY:-0}" == "1" ]]; then
+    echo "Verified ${source_filename} -> ${dest_filename}"
+    return
+  fi
+
   dest_dir="${REPO_ROOT}/.dart_tool/hooks_runner/shared/sqlite3/build/download-${sha256:0:8}"
   dest_path="${dest_dir}/${dest_filename}"
   mkdir -p "$dest_dir"
 
   if [[ -f "$dest_path" ]]; then
-    if echo "${sha256}  ${dest_path}" | shasum -a 256 -c --status; then
+    if verify_hash "$sha256" "$dest_path"; then
       echo "Reusing cached ${source_filename} as ${dest_filename}"
       return
     fi
@@ -113,7 +152,7 @@ prefetch() {
       --retry-delay 2 \
       --output "$tmp_path" \
       "https://github.com/simolus3/sqlite3.dart/releases/download/${RELEASE_TAG}/${source_filename}"; then
-      if echo "${sha256}  ${tmp_path}" | shasum -a 256 -c --status; then
+      if verify_hash "$sha256" "$tmp_path"; then
         mv "$tmp_path" "$dest_path"
         echo "Cached ${source_filename} as ${dest_filename}"
         return
@@ -132,6 +171,18 @@ for target in "$@"; do
   case "$target" in
     linux-x64)
       prefetch libsqlite3.x64.linux.so libsqlite3.so
+      ;;
+    ios-arm64)
+      prefetch libsqlite3.arm64.ios.dylib libsqlite3.dylib
+      ;;
+    macos-x64)
+      prefetch libsqlite3.x64.macos.dylib libsqlite3.dylib
+      ;;
+    macos-arm64)
+      prefetch libsqlite3.arm64.macos.dylib libsqlite3.dylib
+      ;;
+    windows-x64)
+      prefetch sqlite3.x64.windows.dll sqlite3.dll
       ;;
     android-arm64)
       prefetch libsqlite3.arm64.android.so libsqlite3.so

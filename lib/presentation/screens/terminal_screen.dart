@@ -5078,7 +5078,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _markMonkeyMuxReconnectEstablished(session, sessionName);
       _syncTerminalModesFromActiveMuxWindow();
       if (activeWindowChanged) {
-        _prepareTerminalForMuxWindowChange();
+        _prepareTerminalForMuxWindowChange(clearTerminalProgress: false);
         _refreshTerminalAfterMonkeyMuxWindowChange(session);
         _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
           session: session,
@@ -10872,9 +10872,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
       onWindowsChanged: (windows) {
-        if (_activeMuxBackend == RemoteMuxBackend.monkeyMux &&
-            windows.isNotEmpty) {
-          _monkeyMuxAttachEstablished = true;
+        if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+          if (windows.isNotEmpty) {
+            _monkeyMuxAttachEstablished = true;
+          }
+          _syncTerminalProgressFromActiveMonkeyMuxWindow(session, windows);
         }
         _syncAutomaticPortForwardProcessRoots(
           session,
@@ -11199,6 +11201,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       windowIndex,
       windowId: targetWindowId,
     );
+    if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      session.clearTerminalProgress();
+    }
     if (targetWindowId == null) {
       await backend.selectWindow(
         windowIndex,
@@ -11225,7 +11230,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _prepareTerminalForMuxWindowChange();
+      _prepareTerminalForMuxWindowChange(clearTerminalProgress: false);
       _refreshTerminalAfterMonkeyMuxWindowChange(session);
       _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
         session: session,
@@ -11405,6 +11410,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _prepareTerminalForMuxWindowChange(
       workingDirectory: resolvedWorkingDirectory,
+      clearTerminalProgress:
+          backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux,
     );
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       _refreshTerminalAfterMonkeyMuxWindowChange(session);
@@ -11461,8 +11468,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await _handleMuxSessionEnded(session, sessionName);
       return;
     }
-    _prepareTerminalForMuxWindowChange();
-    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+    final isMonkeyMux = _activeMuxBackend == RemoteMuxBackend.monkeyMux;
+    _prepareTerminalForMuxWindowChange(clearTerminalProgress: !isMonkeyMux);
+    if (isMonkeyMux) {
       _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
       _scheduleTerminalSizeRefresh();
@@ -11474,8 +11482,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _prepareTerminalForMuxWindowChange({String? workingDirectory}) {
-    _observedSession?.clearTerminalProgress();
+  void _syncTerminalProgressFromActiveMonkeyMuxWindow(
+    SshSession session,
+    Iterable<TmuxWindow> windows,
+  ) {
+    final activeWindow = windows.where((window) => window.isActive).firstOrNull;
+    session.synchronizeTerminalProgress(activeWindow?.terminalProgress);
+  }
+
+  void _prepareTerminalForMuxWindowChange({
+    String? workingDirectory,
+    bool clearTerminalProgress = true,
+  }) {
+    if (clearTerminalProgress) {
+      _observedSession?.clearTerminalProgress();
+    }
     _terminalTextInputController.resetImeCompletions();
     _clearTerminalFollowPauseForMuxWindowChange();
     _tmuxWorkingDirectory = workingDirectory;

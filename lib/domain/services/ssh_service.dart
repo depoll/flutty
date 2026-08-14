@@ -3694,18 +3694,21 @@ class SshSession {
   /// The latest progress update emitted through OSC 9;4.
   TerminalProgress? get terminalProgress => _terminalProgress;
 
-  /// Clears active OSC 9;4 progress metadata.
+  /// Synchronizes OSC 9;4 progress metadata from an authoritative source.
   ///
-  /// Returns whether progress was active. Metadata listeners are notified only
+  /// Returns whether progress changed. Metadata listeners are notified only
   /// when this call changes the session state.
-  bool clearTerminalProgress() {
-    if (_terminalProgress == null) {
+  bool synchronizeTerminalProgress(TerminalProgress? progress) {
+    if (_terminalProgress == progress) {
       return false;
     }
-    _terminalProgress = null;
+    _terminalProgress = progress;
     _notifyMetadataChanged();
     return true;
   }
+
+  /// Clears active OSC 9;4 progress metadata.
+  bool clearTerminalProgress() => synchronizeTerminalProgress(null);
 
   /// Records visible terminal dimensions used to answer size report queries.
   void updateTerminalWindowMetrics({

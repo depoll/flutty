@@ -4072,7 +4072,16 @@ void main() {
         ];
         const activeAgentWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'shell', isActive: false, id: '@0'),
-          TmuxWindow(index: 1, name: 'agent', isActive: true, id: '@1'),
+          TmuxWindow(
+            index: 1,
+            name: 'agent',
+            isActive: true,
+            id: '@1',
+            terminalProgress: TerminalProgress(
+              state: TerminalProgressState.normal,
+              percentage: 75,
+            ),
+          ),
         ];
         host = _buildHost(
           id: host.id,
@@ -4126,6 +4135,7 @@ void main() {
           ),
         ).thenAnswer((_) async {
           monkeyMuxService.controlOperations.add('select');
+          session.debugHandlePrivateOsc('9', ['4', '1', '65']);
         });
         when(
           () => monkeyMuxService.refreshTerminalTheme(
@@ -4201,7 +4211,21 @@ void main() {
         await tester.pump();
         await tester.pump();
         expect(position.pixels, 0);
-        expect(session.terminalProgress, isNull);
+        expect(
+          session.terminalProgress,
+          const TerminalProgress(
+            state: TerminalProgressState.normal,
+            percentage: 65,
+          ),
+        );
+        final progressFinder = find.byKey(
+          const ValueKey<String>('terminal-osc-progress'),
+        );
+        expect(
+          tester.widget<LinearProgressIndicator>(progressFinder).value,
+          0.65,
+        );
+        expect(tester.getSemantics(progressFinder).value, '65');
         expect(
           monkeyMuxService.resizeTerminalCalls.skip(resizeCallsBeforeSwitch),
           isEmpty,
@@ -4217,9 +4241,21 @@ void main() {
 
         windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
         await tester.pump();
-        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
         await tester.pump();
 
+        expect(
+          session.terminalProgress,
+          const TerminalProgress(
+            state: TerminalProgressState.normal,
+            percentage: 75,
+          ),
+        );
+        expect(
+          tester.widget<LinearProgressIndicator>(progressFinder).value,
+          0.75,
+        );
+        expect(tester.getSemantics(progressFinder).value, '75');
         verify(
           () => monkeyMuxService.selectWindow(
             session,
@@ -4283,6 +4319,240 @@ void main() {
           monkeyMuxService.resizeTerminalCalls.length,
           resizeCallsAfterWindowReplay,
         );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'MonkeyMux create and background close preserve snapshot progress',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        final createWindowCompleter = Completer<void>();
+        final closeWindowCompleter = Completer<void>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(
+            index: 0,
+            name: 'shell',
+            isActive: true,
+            id: '@0',
+            terminalProgress: TerminalProgress(
+              state: TerminalProgressState.normal,
+              percentage: 40,
+            ),
+          ),
+          TmuxWindow(index: 1, name: 'logs', isActive: false, id: '@1'),
+        ];
+        const createdWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: false, id: '@0'),
+          TmuxWindow(index: 1, name: 'logs', isActive: false, id: '@1'),
+          TmuxWindow(
+            index: 2,
+            name: 'new',
+            isActive: true,
+            id: '@2',
+            terminalProgress: TerminalProgress(
+              state: TerminalProgressState.normal,
+              percentage: 65,
+            ),
+          ),
+        ];
+        const remainingWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: false, id: '@0'),
+          TmuxWindow(
+            index: 1,
+            name: 'new',
+            isActive: true,
+            id: '@2',
+            terminalProgress: TerminalProgress(
+              state: TerminalProgressState.normal,
+              percentage: 75,
+            ),
+          ),
+        ];
+        var currentWindows = initialWindows;
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          tmuxWorkingDirectory: '/home/demo',
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => currentWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.createWindow(
+            session,
+            sessionName,
+            command: any(named: 'command'),
+            name: any(named: 'name'),
+            workingDirectory: any(named: 'workingDirectory'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => createWindowCompleter.future);
+        when(
+          () => monkeyMuxService.killWindow(
+            session,
+            sessionName,
+            1,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => closeWindowCompleter.future);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await pumpScreen(
+          tester,
+          tmuxService: tmuxService,
+          monkeyMuxService: monkeyMuxService,
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+
+        final progressFinder = find.byKey(
+          const ValueKey<String>('terminal-osc-progress'),
+        );
+        expect(
+          session.terminalProgress,
+          const TerminalProgress(
+            state: TerminalProgressState.normal,
+            percentage: 40,
+          ),
+        );
+        expect(
+          tester.widget<LinearProgressIndicator>(progressFinder).value,
+          0.4,
+        );
+        expect(tester.getSemantics(progressFinder).value, '40');
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.tap(find.text('New Window'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Empty window'));
+        await tester.pump();
+        await tester.pump();
+
+        verify(
+          () => monkeyMuxService.createWindow(
+            session,
+            sessionName,
+            command: any(named: 'command'),
+            name: any(named: 'name'),
+            workingDirectory: '/home/demo',
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+        currentWindows = createdWindows;
+        windowEvents.add(const TmuxWindowListEvent(createdWindows));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          session.terminalProgress,
+          const TerminalProgress(
+            state: TerminalProgressState.normal,
+            percentage: 65,
+          ),
+        );
+
+        createWindowCompleter.complete();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          session.terminalProgress,
+          const TerminalProgress(
+            state: TerminalProgressState.normal,
+            percentage: 65,
+          ),
+        );
+        expect(
+          tester.widget<LinearProgressIndicator>(progressFinder).value,
+          0.65,
+        );
+        expect(tester.getSemantics(progressFinder).value, '65');
+
+        if (find.byTooltip('Close window').evaluate().isEmpty) {
+          await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 350));
+        }
+        final closeWindowButtons = find.byTooltip('Close window');
+        expect(closeWindowButtons, findsNWidgets(3));
+        await tester.tap(closeWindowButtons.at(1));
+        await tester.pump();
+        await tester.pump();
+
+        verify(
+          () => monkeyMuxService.killWindow(
+            session,
+            sessionName,
+            1,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+        currentWindows = remainingWindows;
+        windowEvents.add(const TmuxWindowListEvent(remainingWindows));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          session.terminalProgress,
+          const TerminalProgress(
+            state: TerminalProgressState.normal,
+            percentage: 75,
+          ),
+        );
+
+        closeWindowCompleter.complete();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          session.terminalProgress,
+          const TerminalProgress(
+            state: TerminalProgressState.normal,
+            percentage: 75,
+          ),
+        );
+        expect(
+          tester.widget<LinearProgressIndicator>(progressFinder).value,
+          0.75,
+        );
+        expect(tester.getSemantics(progressFinder).value, '75');
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
