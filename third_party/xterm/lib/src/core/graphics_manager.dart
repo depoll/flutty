@@ -1761,6 +1761,23 @@ class GraphicsManager {
     int xOffset = 0,
     int yOffset = 0,
   }) {
+    // Kitty: a placement is uniquely identified by (image id, placement id),
+    // and re-sending one with the same pair replaces the first — this is how
+    // clients move or resize a displayed image without flicker (e.g. the Grok
+    // CLI re-places its inline image with the same p= at a new cursor position
+    // on every scroll repaint). Appending instead of replacing left a stale
+    // copy behind at every scroll step. Placements without a client id (p=0)
+    // always accumulate, per the spec.
+    if (clientPlacementId > 0) {
+      _placements.removeWhere((existing) {
+        if (existing.imageId != imageId ||
+            existing.clientPlacementId != clientPlacementId) {
+          return false;
+        }
+        existing.dispose();
+        return true;
+      });
+    }
     final placement = TerminalImagePlacement(
       placementId: _nextPlacementId++,
       imageId: imageId,
