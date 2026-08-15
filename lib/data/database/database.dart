@@ -18,10 +18,13 @@ class Hosts extends Table {
   /// Display label for the host.
   TextColumn get label => text().withLength(min: 1, max: 255)();
 
+  /// Host transport kind (`ssh` or `local`). Defaults to SSH.
+  TextColumn get hostKind => text().withDefault(const Constant('ssh'))();
+
   /// Hostname or IP address.
   TextColumn get hostname => text().withLength(min: 1, max: 255)();
 
-  /// SSH port (default 22).
+  /// SSH port (default 22). Local terminals store `0`.
   IntColumn get port => integer().withDefault(const Constant(22))();
 
   /// Username for authentication.
@@ -333,7 +336,7 @@ class AppDatabase extends _$AppDatabase {
   final AppleDatabaseFilePolicyApplier _appleDatabaseFilePolicyApplier;
 
   @override
-  int get schemaVersion => 10;
+  int get schemaVersion => 11;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -413,6 +416,12 @@ class AppDatabase extends _$AppDatabase {
         }
         if (!hostColumnNames.contains(hosts.portProxyName.$name)) {
           await m.addColumn(hosts, hosts.portProxyName);
+        }
+      }
+      if (from < 11) {
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.hostKind.$name)) {
+          await m.addColumn(hosts, hosts.hostKind);
         }
       }
     },

@@ -14,10 +14,29 @@ const tmuxAlertNotificationChannelId = 'tmux-alerts';
 /// Local notification channel used for terminal desktop notifications emitted
 /// by the remote shell (OSC 9 / 777 / 99).
 const terminalNotificationChannelId = 'terminal-notifications';
+
+/// Local notification channel used while setting up Android's Linux Terminal.
+const linuxTerminalSetupNotificationChannelId = 'linux-terminal-setup';
+
+/// Notification action: copy the Linux Terminal setup script again.
+const linuxTerminalSetupActionCopy = 'linux_terminal_copy_script';
+
+/// Notification action: open the Linux Terminal app.
+const linuxTerminalSetupActionOpen = 'linux_terminal_open';
+
+/// Notification action: probe SSH and finish setup.
+const linuxTerminalSetupActionTest = 'linux_terminal_test';
+
+/// Notification action: cancel setup.
+const linuxTerminalSetupActionCancel = 'linux_terminal_cancel';
+
 const _androidNotificationIcon = 'ic_notification_monkey';
 const _disableNotificationsForStoreScreenshots = bool.fromEnvironment(
   'STORE_SCREENSHOT_DISABLE_NOTIFICATIONS',
 );
+
+/// Stable notification id for the Linux Terminal setup flow.
+const linuxTerminalSetupNotificationId = 71001;
 
 /// Payload attached to a tmux alert notification.
 @immutable
@@ -199,6 +218,48 @@ String buildTerminalNotificationLocation(TerminalNotificationPayload payload) =>
       },
     ).toString();
 
+/// Payload attached to Android Linux Terminal setup notifications.
+@immutable
+class LinuxTerminalSetupNotificationPayload {
+  /// Creates a setup notification payload.
+  const LinuxTerminalSetupNotificationPayload({this.action});
+
+  static const _type = 'linux-terminal-setup';
+  static const _version = 1;
+
+  /// Optional action id when a notification action button was pressed.
+  final String? action;
+
+  /// Encodes this payload for the notification plugin.
+  String encode() => jsonEncode(<String, Object>{
+    'type': _type,
+    'version': _version,
+    'action': ?action,
+  });
+
+  /// Decodes a notification payload, returning `null` for other payload types.
+  static LinuxTerminalSetupNotificationPayload? decode(String? payload) {
+    if (payload == null || payload.isEmpty) {
+      return null;
+    }
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is! Map<String, Object?> ||
+          decoded['type'] != _type ||
+          decoded['version'] != _version) {
+        return null;
+      }
+      final action = decoded['action'];
+      if (action != null && action is! String) {
+        return null;
+      }
+      return LinuxTerminalSetupNotificationPayload(action: action as String?);
+    } on FormatException {
+      return null;
+    }
+  }
+}
+
 /// Service for showing local notifications inside the app.
 class LocalNotificationService {
   /// Creates a new [LocalNotificationService].
@@ -219,17 +280,29 @@ class LocalNotificationService {
     importance: Importance.high,
   );
 
+  static const _linuxTerminalSetupNotificationChannel =
+      AndroidNotificationChannel(
+        linuxTerminalSetupNotificationChannelId,
+        'Linux Terminal setup',
+        description: 'Setup progress for Android Linux Terminal SSH access.',
+      );
+
   final FlutterLocalNotificationsPlugin _plugin;
   final StreamController<TmuxAlertNotificationPayload> _tmuxAlertTapController =
       StreamController<TmuxAlertNotificationPayload>.broadcast();
   final StreamController<TerminalNotificationPayload>
   _terminalNotificationTapController =
       StreamController<TerminalNotificationPayload>.broadcast();
+  final StreamController<LinuxTerminalSetupNotificationPayload>
+  _linuxTerminalSetupTapController =
+      StreamController<LinuxTerminalSetupNotificationPayload>.broadcast();
   Future<bool>? _initializeFuture;
   TmuxAlertNotificationPayload? _launchTmuxAlert;
   TerminalNotificationPayload? _launchTerminalNotification;
+  LinuxTerminalSetupNotificationPayload? _launchLinuxTerminalSetup;
   bool _didConsumeLaunchTmuxAlert = false;
   bool _didConsumeLaunchTerminalNotification = false;
+  bool _didConsumeLaunchLinuxTerminalSetup = false;
 
   /// Emits whenever the user taps a tmux alert notification.
   Stream<TmuxAlertNotificationPayload> get tmuxAlertTaps =>
@@ -239,6 +312,10 @@ class LocalNotificationService {
   Stream<TerminalNotificationPayload> get terminalNotificationTaps =>
       _terminalNotificationTapController.stream;
 
+  /// Emits whenever the user taps a Linux Terminal setup notification/action.
+  Stream<LinuxTerminalSetupNotificationPayload> get linuxTerminalSetupTaps =>
+      _linuxTerminalSetupTapController.stream;
+
   /// Ensures the underlying notification plugin is initialized.
   Future<bool> initialize() => _initializeFuture ??= _initializeInternal();
 
@@ -246,6 +323,7 @@ class LocalNotificationService {
   void dispose() {
     unawaited(_tmuxAlertTapController.close());
     unawaited(_terminalNotificationTapController.close());
+    unawaited(_linuxTerminalSetupTapController.close());
   }
 
   /// Returns the tmux alert that launched the app, if one has not been consumed.
@@ -268,6 +346,91 @@ class LocalNotificationService {
     }
     _didConsumeLaunchTerminalNotification = true;
     return _launchTerminalNotification;
+  }
+
+  /// Returns the Linux Terminal setup notification that launched the app.
+  Future<LinuxTerminalSetupNotificationPayload?>
+  consumeLaunchLinuxTerminalSetup() async {
+    final didInitialize = await initialize();
+    if (!didInitialize || _didConsumeLaunchLinuxTerminalSetup) {
+      return null;
+    }
+    _didConsumeLaunchLinuxTerminalSetup = true;
+    return _launchLinuxTerminalSetup;
+  }
+
+  /// Shows or refreshes the ongoing Linux Terminal setup notification.
+  Future<void> showLinuxTerminalSetup({
+    required String title,
+    required String body,
+    bool ongoing = true,
+  }) async {
+    final didInitialize = await initialize();
+    if (!didInitialize) {
+      return;
+    }
+    final hasPermission = await _requestNotificationPermission();
+    if (!hasPermission) {
+      return;
+    }
+
+    final androidDetails = AndroidNotificationDetails(
+      linuxTerminalSetupNotificationChannelId,
+      'Linux Terminal setup',
+      channelDescription:
+          'Setup progress for Android Linux Terminal SSH access.',
+      icon: _androidNotificationIcon,
+      ongoing: ongoing,
+      autoCancel: !ongoing,
+      onlyAlertOnce: true,
+      actions: const <AndroidNotificationAction>[
+        AndroidNotificationAction(
+          linuxTerminalSetupActionCopy,
+          'Copy script',
+          showsUserInterface: true,
+        ),
+        AndroidNotificationAction(
+          linuxTerminalSetupActionOpen,
+          'Open Terminal',
+          showsUserInterface: true,
+        ),
+        AndroidNotificationAction(
+          linuxTerminalSetupActionTest,
+          'Test SSH',
+          showsUserInterface: true,
+        ),
+        AndroidNotificationAction(
+          linuxTerminalSetupActionCancel,
+          'Cancel',
+          showsUserInterface: true,
+        ),
+      ],
+    );
+
+    try {
+      await _plugin.show(
+        id: linuxTerminalSetupNotificationId,
+        title: title,
+        body: body,
+        notificationDetails: NotificationDetails(android: androidDetails),
+        payload: const LinuxTerminalSetupNotificationPayload().encode(),
+      );
+    } on MissingPluginException {
+      // Widget and unit tests don't register platform notification plugins.
+    }
+  }
+
+  /// Clears the Linux Terminal setup notification.
+  Future<void> clearLinuxTerminalSetup() async {
+    final didInitialize = await initialize();
+    if (!didInitialize) {
+      return;
+    }
+    try {
+      await _plugin.cancel(id: linuxTerminalSetupNotificationId);
+    } on MissingPluginException {
+      // Widget and unit tests don't register platform notification plugins.
+    }
   }
 
   /// Shows or refreshes a tmux alert notification.
@@ -388,13 +551,27 @@ class LocalNotificationService {
         ),
       );
       final launchDetails = await _plugin.getNotificationAppLaunchDetails();
-      final launchPayload = (launchDetails?.didNotificationLaunchApp ?? false)
-          ? launchDetails?.notificationResponse?.payload
+      final launchResponse = (launchDetails?.didNotificationLaunchApp ?? false)
+          ? launchDetails?.notificationResponse
           : null;
+      final launchPayload = launchResponse?.payload;
       _launchTmuxAlert = TmuxAlertNotificationPayload.decode(launchPayload);
       _launchTerminalNotification = TerminalNotificationPayload.decode(
         launchPayload,
       );
+      // Action buttons put the action in actionId, not the JSON payload.
+      final launchActionId = launchResponse?.actionId;
+      if (launchActionId == linuxTerminalSetupActionCopy ||
+          launchActionId == linuxTerminalSetupActionOpen ||
+          launchActionId == linuxTerminalSetupActionTest ||
+          launchActionId == linuxTerminalSetupActionCancel) {
+        _launchLinuxTerminalSetup = LinuxTerminalSetupNotificationPayload(
+          action: launchActionId,
+        );
+      } else {
+        _launchLinuxTerminalSetup =
+            LinuxTerminalSetupNotificationPayload.decode(launchPayload);
+      }
 
       await _plugin.initialize(
         settings: initializationSettings,
@@ -410,6 +587,9 @@ class LocalNotificationService {
       );
       await androidImplementation?.createNotificationChannel(
         _terminalNotificationChannel,
+      );
+      await androidImplementation?.createNotificationChannel(
+        _linuxTerminalSetupNotificationChannel,
       );
 
       return true;
@@ -453,6 +633,26 @@ class LocalNotificationService {
   }
 
   void _handleNotificationResponse(NotificationResponse response) {
+    final actionId = response.actionId;
+    if (actionId != null &&
+        (actionId == linuxTerminalSetupActionCopy ||
+            actionId == linuxTerminalSetupActionOpen ||
+            actionId == linuxTerminalSetupActionTest ||
+            actionId == linuxTerminalSetupActionCancel)) {
+      _linuxTerminalSetupTapController.add(
+        LinuxTerminalSetupNotificationPayload(action: actionId),
+      );
+      return;
+    }
+
+    final linuxSetupPayload = LinuxTerminalSetupNotificationPayload.decode(
+      response.payload,
+    );
+    if (linuxSetupPayload != null) {
+      _linuxTerminalSetupTapController.add(linuxSetupPayload);
+      return;
+    }
+
     final tmuxPayload = TmuxAlertNotificationPayload.decode(response.payload);
     if (tmuxPayload != null) {
       _tmuxAlertTapController.add(tmuxPayload);

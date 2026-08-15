@@ -2021,6 +2021,18 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _hostKindMeta = const VerificationMeta(
+    'hostKind',
+  );
+  @override
+  late final GeneratedColumn<String> hostKind = GeneratedColumn<String>(
+    'host_kind',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('ssh'),
+  );
   static const VerificationMeta _hostnameMeta = const VerificationMeta(
     'hostname',
   );
@@ -2359,6 +2371,7 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
   List<GeneratedColumn> get $columns => [
     id,
     label,
+    hostKind,
     hostname,
     port,
     username,
@@ -2410,6 +2423,12 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
       );
     } else if (isInserting) {
       context.missing(_labelMeta);
+    }
+    if (data.containsKey('host_kind')) {
+      context.handle(
+        _hostKindMeta,
+        hostKind.isAcceptableOrUnknown(data['host_kind']!, _hostKindMeta),
+      );
     }
     if (data.containsKey('hostname')) {
       context.handle(
@@ -2645,6 +2664,10 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         DriftSqlType.string,
         data['${effectivePrefix}label'],
       )!,
+      hostKind: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}host_kind'],
+      )!,
       hostname: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}hostname'],
@@ -2773,10 +2796,13 @@ class Host extends DataClass implements Insertable<Host> {
   /// Display label for the host.
   final String label;
 
+  /// Host transport kind (`ssh` or `local`). Defaults to SSH.
+  final String hostKind;
+
   /// Hostname or IP address.
   final String hostname;
 
-  /// SSH port (default 22).
+  /// SSH port (default 22). Local terminals store `0`.
   final int port;
 
   /// Username for authentication.
@@ -2870,6 +2896,7 @@ class Host extends DataClass implements Insertable<Host> {
   const Host({
     required this.id,
     required this.label,
+    required this.hostKind,
     required this.hostname,
     required this.port,
     required this.username,
@@ -2904,6 +2931,7 @@ class Host extends DataClass implements Insertable<Host> {
     final map = <String, Expression>{};
     map['id'] = Variable<int>(id);
     map['label'] = Variable<String>(label);
+    map['host_kind'] = Variable<String>(hostKind);
     map['hostname'] = Variable<String>(hostname);
     map['port'] = Variable<int>(port);
     map['username'] = Variable<String>(username);
@@ -2979,6 +3007,7 @@ class Host extends DataClass implements Insertable<Host> {
     return HostsCompanion(
       id: Value(id),
       label: Value(label),
+      hostKind: Value(hostKind),
       hostname: Value(hostname),
       port: Value(port),
       username: Value(username),
@@ -3054,6 +3083,7 @@ class Host extends DataClass implements Insertable<Host> {
     return Host(
       id: serializer.fromJson<int>(json['id']),
       label: serializer.fromJson<String>(json['label']),
+      hostKind: serializer.fromJson<String>(json['hostKind']),
       hostname: serializer.fromJson<String>(json['hostname']),
       port: serializer.fromJson<int>(json['port']),
       username: serializer.fromJson<String>(json['username']),
@@ -3106,6 +3136,7 @@ class Host extends DataClass implements Insertable<Host> {
     return <String, dynamic>{
       'id': serializer.toJson<int>(id),
       'label': serializer.toJson<String>(label),
+      'hostKind': serializer.toJson<String>(hostKind),
       'hostname': serializer.toJson<String>(hostname),
       'port': serializer.toJson<int>(port),
       'username': serializer.toJson<String>(username),
@@ -3142,6 +3173,7 @@ class Host extends DataClass implements Insertable<Host> {
   Host copyWith({
     int? id,
     String? label,
+    String? hostKind,
     String? hostname,
     int? port,
     String? username,
@@ -3173,6 +3205,7 @@ class Host extends DataClass implements Insertable<Host> {
   }) => Host(
     id: id ?? this.id,
     label: label ?? this.label,
+    hostKind: hostKind ?? this.hostKind,
     hostname: hostname ?? this.hostname,
     port: port ?? this.port,
     username: username ?? this.username,
@@ -3231,6 +3264,7 @@ class Host extends DataClass implements Insertable<Host> {
     return Host(
       id: data.id.present ? data.id.value : this.id,
       label: data.label.present ? data.label.value : this.label,
+      hostKind: data.hostKind.present ? data.hostKind.value : this.hostKind,
       hostname: data.hostname.present ? data.hostname.value : this.hostname,
       port: data.port.present ? data.port.value : this.port,
       username: data.username.present ? data.username.value : this.username,
@@ -3300,6 +3334,7 @@ class Host extends DataClass implements Insertable<Host> {
     return (StringBuffer('Host(')
           ..write('id: $id, ')
           ..write('label: $label, ')
+          ..write('hostKind: $hostKind, ')
           ..write('hostname: $hostname, ')
           ..write('port: $port, ')
           ..write('username: $username, ')
@@ -3338,6 +3373,7 @@ class Host extends DataClass implements Insertable<Host> {
   int get hashCode => Object.hashAll([
     id,
     label,
+    hostKind,
     hostname,
     port,
     username,
@@ -3373,6 +3409,7 @@ class Host extends DataClass implements Insertable<Host> {
       (other is Host &&
           other.id == this.id &&
           other.label == this.label &&
+          other.hostKind == this.hostKind &&
           other.hostname == this.hostname &&
           other.port == this.port &&
           other.username == this.username &&
@@ -3407,6 +3444,7 @@ class Host extends DataClass implements Insertable<Host> {
 class HostsCompanion extends UpdateCompanion<Host> {
   final Value<int> id;
   final Value<String> label;
+  final Value<String> hostKind;
   final Value<String> hostname;
   final Value<int> port;
   final Value<String> username;
@@ -3438,6 +3476,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
   const HostsCompanion({
     this.id = const Value.absent(),
     this.label = const Value.absent(),
+    this.hostKind = const Value.absent(),
     this.hostname = const Value.absent(),
     this.port = const Value.absent(),
     this.username = const Value.absent(),
@@ -3470,6 +3509,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
   HostsCompanion.insert({
     this.id = const Value.absent(),
     required String label,
+    this.hostKind = const Value.absent(),
     required String hostname,
     this.port = const Value.absent(),
     required String username,
@@ -3504,6 +3544,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
   static Insertable<Host> custom({
     Expression<int>? id,
     Expression<String>? label,
+    Expression<String>? hostKind,
     Expression<String>? hostname,
     Expression<int>? port,
     Expression<String>? username,
@@ -3536,6 +3577,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (label != null) 'label': label,
+      if (hostKind != null) 'host_kind': hostKind,
       if (hostname != null) 'hostname': hostname,
       if (port != null) 'port': port,
       if (username != null) 'username': username,
@@ -3578,6 +3620,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
   HostsCompanion copyWith({
     Value<int>? id,
     Value<String>? label,
+    Value<String>? hostKind,
     Value<String>? hostname,
     Value<int>? port,
     Value<String>? username,
@@ -3610,6 +3653,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     return HostsCompanion(
       id: id ?? this.id,
       label: label ?? this.label,
+      hostKind: hostKind ?? this.hostKind,
       hostname: hostname ?? this.hostname,
       port: port ?? this.port,
       username: username ?? this.username,
@@ -3651,6 +3695,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
     }
     if (label.present) {
       map['label'] = Variable<String>(label.value);
+    }
+    if (hostKind.present) {
+      map['host_kind'] = Variable<String>(hostKind.value);
     }
     if (hostname.present) {
       map['hostname'] = Variable<String>(hostname.value);
@@ -3756,6 +3803,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     return (StringBuffer('HostsCompanion(')
           ..write('id: $id, ')
           ..write('label: $label, ')
+          ..write('hostKind: $hostKind, ')
           ..write('hostname: $hostname, ')
           ..write('port: $port, ')
           ..write('username: $username, ')
@@ -6865,6 +6913,7 @@ typedef $$HostsTableCreateCompanionBuilder =
     HostsCompanion Function({
       Value<int> id,
       required String label,
+      Value<String> hostKind,
       required String hostname,
       Value<int> port,
       required String username,
@@ -6898,6 +6947,7 @@ typedef $$HostsTableUpdateCompanionBuilder =
     HostsCompanion Function({
       Value<int> id,
       Value<String> label,
+      Value<String> hostKind,
       Value<String> hostname,
       Value<int> port,
       Value<String> username,
@@ -7036,6 +7086,11 @@ class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
 
   ColumnFilters<String> get label => $composableBuilder(
     column: $table.label,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get hostKind => $composableBuilder(
+    column: $table.hostKind,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -7296,6 +7351,11 @@ class $$HostsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get hostKind => $composableBuilder(
+    column: $table.hostKind,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get hostname => $composableBuilder(
     column: $table.hostname,
     builder: (column) => ColumnOrderings(column),
@@ -7524,6 +7584,9 @@ class $$HostsTableAnnotationComposer
 
   GeneratedColumn<String> get label =>
       $composableBuilder(column: $table.label, builder: (column) => column);
+
+  GeneratedColumn<String> get hostKind =>
+      $composableBuilder(column: $table.hostKind, builder: (column) => column);
 
   GeneratedColumn<String> get hostname =>
       $composableBuilder(column: $table.hostname, builder: (column) => column);
@@ -7780,6 +7843,7 @@ class $$HostsTableTableManager
               ({
                 Value<int> id = const Value.absent(),
                 Value<String> label = const Value.absent(),
+                Value<String> hostKind = const Value.absent(),
                 Value<String> hostname = const Value.absent(),
                 Value<int> port = const Value.absent(),
                 Value<String> username = const Value.absent(),
@@ -7812,6 +7876,7 @@ class $$HostsTableTableManager
               }) => HostsCompanion(
                 id: id,
                 label: label,
+                hostKind: hostKind,
                 hostname: hostname,
                 port: port,
                 username: username,
@@ -7846,6 +7911,7 @@ class $$HostsTableTableManager
               ({
                 Value<int> id = const Value.absent(),
                 required String label,
+                Value<String> hostKind = const Value.absent(),
                 required String hostname,
                 Value<int> port = const Value.absent(),
                 required String username,
@@ -7878,6 +7944,7 @@ class $$HostsTableTableManager
               }) => HostsCompanion.insert(
                 id: id,
                 label: label,
+                hostKind: hostKind,
                 hostname: hostname,
                 port: port,
                 username: username,

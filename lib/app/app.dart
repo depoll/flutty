@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -7,6 +8,7 @@ import '../data/database/database.dart';
 import '../data/repositories/host_repository.dart';
 import '../domain/models/terminal_theme.dart';
 import '../domain/models/terminal_themes.dart';
+import '../domain/services/android_linux_terminal_setup_service.dart';
 import '../domain/services/auth_service.dart';
 import '../domain/services/background_ssh_service.dart';
 import '../domain/services/home_screen_shortcut_service.dart';
@@ -152,6 +154,10 @@ class _BackgroundLifecycleBridgeState
       syncForegroundBackgroundStatus: _syncForegroundBackgroundStatus,
       runStartupTask: _runLifecycleSync,
     );
+    // Keep Android Linux Terminal setup notification actions alive app-wide.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      ref.read(androidLinuxTerminalSetupServiceProvider);
+    }
     _bootstrapController.start();
     _runLifecycleSync(
       _recordTelemetryPromptAppLaunch,
@@ -207,6 +213,8 @@ class _BackgroundLifecycleBridgeState
     if (launchTerminalNotification != null) {
       _handleTerminalNotification(launchTerminalNotification);
     }
+    // Linux Terminal setup actions are consumed by
+    // AndroidLinuxTerminalSetupService.start() so cold-start taps still run.
   }
 
   bool _canOpenTmuxAlertNotification(AuthState authState) =>

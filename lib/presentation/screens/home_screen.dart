@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,6 +15,7 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/commands/duplicate_host_command.dart';
 import '../../domain/models/agent_launch_preset.dart';
+import '../../domain/models/host_kind.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_preview.dart';
@@ -22,6 +24,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/android_linux_terminal_setup_service.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/home_screen_shortcut_service.dart';
@@ -882,6 +885,13 @@ class HostsPanel extends ConsumerWidget {
         PanelHeader(
           title: 'hosts',
           actions: [
+            if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+              _ActionButton(
+                icon: Icons.terminal_outlined,
+                label: 'Linux',
+                onTap: () =>
+                    unawaited(_startAndroidLinuxTerminalSetup(context, ref)),
+              ),
             _ActionButton(
               icon: Icons.add,
               label: 'Add Host',
@@ -908,25 +918,50 @@ class HostsPanel extends ConsumerWidget {
       onRetry: () => ref.invalidate(allHostsProvider),
     ),
     data: (hosts) => hosts.isEmpty
-        ? _buildEmptyState(context)
+        ? _buildEmptyState(context, ref)
         : _buildHostsList(context, ref, hosts),
   );
 
-  Widget _buildEmptyState(BuildContext context) => _buildCenteredHostsState(
-    child: BrandEmptyState(
-      title: 'no hosts yet',
-      message: 'Nothing to connect to — let’s fix that.',
-      primaryLabel: 'Add Host',
-      onPrimary: () => context.push('/hosts/add'),
-      secondaryActions: [
-        BrandEmptyAction(
-          icon: Icons.content_paste_go_outlined,
-          label: 'Paste SSH URL',
-          onTap: () => unawaited(_openPastedSshUrl(context)),
+  Widget _buildEmptyState(BuildContext context, WidgetRef ref) =>
+      _buildCenteredHostsState(
+        child: BrandEmptyState(
+          title: 'no hosts yet',
+          message: 'Nothing to connect to — let’s fix that.',
+          primaryLabel: 'Add Host',
+          onPrimary: () => context.push('/hosts/add'),
+          secondaryActions: [
+            if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+              BrandEmptyAction(
+                icon: Icons.terminal_outlined,
+                label: 'Set up Linux Terminal',
+                onTap: () =>
+                    unawaited(_startAndroidLinuxTerminalSetup(context, ref)),
+              ),
+            BrandEmptyAction(
+              icon: Icons.content_paste_go_outlined,
+              label: 'Paste SSH URL',
+              onTap: () => unawaited(_openPastedSshUrl(context)),
+            ),
+          ],
         ),
-      ],
-    ),
-  );
+      );
+
+  Future<void> _startAndroidLinuxTerminalSetup(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final setup = ref.read(androidLinuxTerminalSetupServiceProvider);
+    final messenger = ScaffoldMessenger.of(context);
+    final state = await setup.beginSetup();
+    if (!context.mounted) {
+      return;
+    }
+    messenger.showSnackBar(SnackBar(content: Text(state.message)));
+    if (state.phase == AndroidLinuxTerminalSetupPhase.succeeded &&
+        state.hostId != null) {
+      ref.invalidate(allHostsProvider);
+    }
+  }
 
   Future<void> _openPastedSshUrl(BuildContext context) async {
     final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
@@ -1158,6 +1193,8 @@ class _HostRow extends ConsumerWidget {
                         Text(
                           _redactStoreScreenshotIdentities
                               ? 'store@local-demo'
+                              : isLocalTerminalHost(host)
+                              ? 'local terminal'
                               : '${host.username}@${host.hostname}',
                           style: FluttyTheme.monoStyle.copyWith(
                             fontSize: 11,

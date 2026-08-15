@@ -30,6 +30,7 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/host_kind.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_capability_hint.dart';
@@ -12373,23 +12374,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final activeSession = _connectionId == null
         ? null
         : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
+    final isLocalTerminalSession =
+        (activeSession?.isLocalTerminal ?? false) ||
+        (_host != null && isLocalTerminalHost(_host!));
     final deviceDebugController = _isAndroidPlatform
         ? _deviceDebugControllerFor(activeSession)
         : null;
     final showsDeviceDebugAction =
         _isAndroidPlatform &&
+        !isLocalTerminalSession &&
         (ref.watch(deviceDebugSupportedProvider).asData?.value ?? false);
     final isConnectedThroughJumpHost =
+        !isLocalTerminalSession &&
         connectionState == SshConnectionState.connected &&
         (_observedSession ?? activeSession)?.config.jumpHost != null;
-    final connectionIdentity = formatTerminalConnectionIdentity(
-      username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
-      hostname: _redactStoreScreenshotIdentities
-          ? 'local-demo'
-          : _host?.hostname,
-      port: _redactStoreScreenshotIdentities ? null : _host?.port,
-      connectionId: _connectionId,
-    );
+    final connectionIdentity = isLocalTerminalSession
+        ? (_redactStoreScreenshotIdentities
+              ? 'local terminal'
+              : 'local terminal${_connectionId == null ? '' : ' • session #$_connectionId'}')
+        : formatTerminalConnectionIdentity(
+            username: _redactStoreScreenshotIdentities
+                ? 'store'
+                : _host?.username,
+            hostname: _redactStoreScreenshotIdentities
+                ? 'local-demo'
+                : _host?.hostname,
+            port: _redactStoreScreenshotIdentities ? null : _host?.port,
+            connectionId: _connectionId,
+          );
     final titleSubtitleSegments = <String>[];
     if (connectionIdentity != null) {
       titleSubtitleSegments.add(connectionIdentity);
@@ -12519,16 +12531,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     : _openTmuxNavigator,
                 tooltip: 'tmux windows',
               ),
-            IconButton(
-              icon: const Icon(Icons.folder_outlined),
-              onPressed:
-                  _connectionId == null ||
-                      isOpeningSftpBrowser ||
-                      connectionState != SshConnectionState.connected
-                  ? null
-                  : () => unawaited(_openConnectionFileBrowser()),
-              tooltip: 'Browse files',
-            ),
+            if (!isLocalTerminalSession)
+              IconButton(
+                icon: const Icon(Icons.folder_outlined),
+                onPressed:
+                    _connectionId == null ||
+                        isOpeningSftpBrowser ||
+                        connectionState != SshConnectionState.connected
+                    ? null
+                    : () => unawaited(_openConnectionFileBrowser()),
+                tooltip: 'Browse files',
+              ),
             if (isMobile)
               IconButton(
                 icon: Icon(
@@ -12578,15 +12591,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   label: 'Change Theme',
                   action: 'change_theme',
                 ),
-                _terminalOverflowMenuItem(
-                  context: context,
-                  icon: Icons.alt_route_rounded,
-                  label: 'Port Forwards',
-                  action: 'port_forwards',
-                  enabled:
-                      _connectionId != null &&
-                      connectionState == SshConnectionState.connected,
-                ),
+                if (!isLocalTerminalSession)
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.alt_route_rounded,
+                    label: 'Port Forwards',
+                    action: 'port_forwards',
+                    enabled:
+                        _connectionId != null &&
+                        connectionState == SshConnectionState.connected,
+                  ),
                 if (showsDeviceDebugAction)
                   _terminalOverflowSwitchMenuItem(
                     context: context,
@@ -12599,7 +12613,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         deviceDebugController != null &&
                         connectionState == SshConnectionState.connected,
                   ),
-                if (isPortForwardBrowserSupported())
+                if (!isLocalTerminalSession && isPortForwardBrowserSupported())
                   _terminalOverflowMenuItem(
                     context: context,
                     icon: Icons.open_in_browser_outlined,
@@ -15590,6 +15604,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _runExclusiveTerminalAction(
         _TerminalExclusiveAction.sftpBrowser,
         () async {
+          final activeSession = _connectionId == null
+              ? null
+              : ref
+                    .read(activeSessionsProvider.notifier)
+                    .getSession(_connectionId!);
+          if ((activeSession?.isLocalTerminal ?? false) ||
+              (_host != null && isLocalTerminalHost(_host!))) {
+            _showTerminalLinkMessage(
+              'File browser is not available for local terminals',
+            );
+            return;
+          }
+
           final normalizedPath = trimTerminalFilePathCandidate(path);
           if (!isSupportedTerminalFilePath(normalizedPath)) {
             _showTerminalLinkMessage('Could not open $path');
@@ -16130,6 +16157,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _primeTerminalFilePathVerification(String terminalPath) {
     if (!isSupportedTerminalFilePath(terminalPath)) {
+      return;
+    }
+    // Local PTY sessions have no SFTP channel for path verification.
+    final activeSession = _connectionId == null
+        ? null
+        : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
+    if ((activeSession?.isLocalTerminal ?? false) ||
+        (_host != null && isLocalTerminalHost(_host!))) {
       return;
     }
 

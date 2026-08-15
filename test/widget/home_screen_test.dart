@@ -314,6 +314,7 @@ Host _buildHost({
   RemoteMuxBackend? remoteMuxBackend,
   String? tags,
 }) => Host(
+  hostKind: 'ssh',
   id: id,
   label: label,
   hostname: '$label.example.com',

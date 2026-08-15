@@ -46,6 +46,7 @@ void main() {
         final host = Host(
           id: 1,
           label: 'Prod',
+          hostKind: 'ssh',
           hostname: 'prod.example.com',
           port: 22,
           username: 'root',
@@ -72,6 +73,7 @@ void main() {
         final host = Host(
           id: 1,
           label: 'Prod',
+          hostKind: 'ssh',
           hostname: 'prod.example.com',
           port: 22,
           username: 'root',

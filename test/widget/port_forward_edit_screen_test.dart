@@ -74,6 +74,7 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
 }
 
 Host _host() => Host(
+  hostKind: 'ssh',
   id: 10,
   label: 'Dev box',
   hostname: 'example.com',

@@ -257,6 +257,7 @@ Host _automaticForwardHost({
   String label = 'Dev Box',
   String? portProxyName,
 }) => Host(
+  hostKind: 'ssh',
   id: id,
   label: label,
   hostname: 'dev.example.com',

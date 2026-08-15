@@ -53,6 +53,7 @@ class _StalledSshService extends SshService {
 Host _host() => Host(
   id: 42,
   label: 'stalled box',
+  hostKind: 'ssh',
   hostname: 'stalled.example.com',
   port: 22,
   username: 'tester',

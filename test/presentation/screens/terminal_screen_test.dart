@@ -636,6 +636,7 @@ Host _buildHost({
   RemoteMuxBackend? remoteMuxBackend,
   bool autoConnectRequiresConfirmation = false,
 }) => Host(
+  hostKind: 'ssh',
   id: id,
   label: 'Terminal test host',
   hostname: 'terminal.example.com',

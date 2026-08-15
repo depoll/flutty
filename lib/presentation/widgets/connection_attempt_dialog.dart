@@ -6,13 +6,58 @@ import '../../data/database/database.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/ssh_service.dart';
+import 'android_linux_terminal_connect_recovery.dart';
 
 /// Runs a host connection while showing a live progress dialog.
+///
+/// For Android Linux Terminal hosts, a failed connect offers recovery actions
+/// (open Terminal / retry) before giving up.
 Future<SshConnectionResult> connectToHostWithProgressDialog(
   BuildContext context,
   WidgetRef ref,
   Host host, {
   bool forceNew = true,
+}) async {
+  var attemptForceNew = forceNew;
+  while (true) {
+    final result = await _connectToHostWithProgressDialogOnce(
+      context,
+      ref,
+      host,
+      forceNew: attemptForceNew,
+    );
+    if (result.success ||
+        result.cancelled ||
+        !shouldOfferAndroidLinuxTerminalConnectRecovery(host) ||
+        !context.mounted) {
+      return result;
+    }
+
+    final recovery = await showAndroidLinuxTerminalConnectRecoveryDialog(
+      context: context,
+      ref: ref,
+      host: host,
+      errorMessage: result.error,
+    );
+    if (!context.mounted) {
+      return result;
+    }
+    switch (recovery) {
+      case AndroidLinuxTerminalConnectRecoveryAction.openTerminalAndRetry:
+      case AndroidLinuxTerminalConnectRecoveryAction.retry:
+        attemptForceNew = true;
+        continue;
+      case AndroidLinuxTerminalConnectRecoveryAction.close:
+        return result;
+    }
+  }
+}
+
+Future<SshConnectionResult> _connectToHostWithProgressDialogOnce(
+  BuildContext context,
+  WidgetRef ref,
+  Host host, {
+  required bool forceNew,
 }) async {
   final navigator = Navigator.of(context, rootNavigator: true);
   final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
@@ -50,7 +95,9 @@ Future<SshConnectionResult> connectToHostWithProgressDialog(
   }
 
   final closesDialog =
-      result.cancelled || (result.success && result.connectionId != null);
+      result.cancelled ||
+      (result.success && result.connectionId != null) ||
+      shouldOfferAndroidLinuxTerminalConnectRecovery(host);
   if (closesDialog && navigator.mounted) {
     navigator.pop();
   }

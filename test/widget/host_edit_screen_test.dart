@@ -37,6 +37,7 @@ Host _testHost({
   String? terminalThemeLightId,
   String? terminalThemeDarkId,
 }) => Host(
+  hostKind: 'ssh',
   id: id,
   label: label,
   hostname: 'imported.example.com',
@@ -1401,8 +1402,18 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
-        final yoloFinder = find.byKey(const Key('host-cli-yolo-mode-checkbox'));
+        final yoloFinder = find.byKey(
+          const Key('host-cli-yolo-mode-checkbox'),
+          skipOffstage: false,
+        );
         expect(yoloFinder, findsOneWidget);
+        await tester.scrollUntilVisible(
+          yoloFinder,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(yoloFinder);
+        await tester.pump();
         expect(tester.widget<CheckboxListTile>(yoloFinder).value, isFalse);
 
         await tester.tap(yoloFinder);
