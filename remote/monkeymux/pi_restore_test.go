@@ -40,6 +40,129 @@ func writePiTestSessionTimes(
 	}
 }
 
+func writePiTestRelocatedSession(
+	t *testing.T,
+	path string,
+	id string,
+	cwd string,
+	parent string,
+	created time.Time,
+	modified time.Time,
+) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	header := fmt.Sprintf(
+		"{\"type\":\"session\",\"id\":%q,\"timestamp\":%q,\"cwd\":%q,\"parentSession\":%q}\n",
+		id,
+		created.UTC().Format(time.RFC3339Nano),
+		cwd,
+		parent,
+	)
+	if err := os.WriteFile(path, []byte(header), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, modified, modified); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Pi's worktree flow relocates a running session into a bucket named for the
+// new worktree cwd and deletes the original file, leaving only the header's
+// parentSession pointing at the pane's working directory. The pane must still
+// resume that session after a helper upgrade rather than launching a fresh Pi.
+func TestDiscoverPiSessionsResumesSessionRelocatedToWorktree(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktree")
+	started := time.Now().Add(-time.Hour).UTC()
+	originCreated := started.Add(500 * time.Millisecond)
+	// The deleted origin file only survives as the parentSession path.
+	deletedOrigin := filepath.Join(
+		root,
+		piEncodedSessionDirName(project),
+		originCreated.Format("2006-01-02T15-04-05-000Z")+"_origin-session.jsonl",
+	)
+	writePiTestRelocatedSession(
+		t,
+		filepath.Join(root, piEncodedSessionDirName(worktree), "relocated.jsonl"),
+		"relocated-session",
+		worktree,
+		deletedOrigin,
+		started.Add(30*time.Minute),
+		started.Add(45*time.Minute),
+	)
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "relocated-session" {
+		t.Fatalf("relocated Pi session = %#v, want relocated-session", got)
+	}
+	options := createWindowOptionsForRestore(restoreWindowState{
+		CurrentCommand:  "pi",
+		AgentSessionID:  got.sessionID,
+		AgentSessionDir: got.sessionDir,
+	}, false)
+	if !strings.Contains(options.command, "--session relocated-session") {
+		t.Fatalf("relocated restore command = %q, want a resume", options.command)
+	}
+}
+
+func TestPiSessionOriginResolvesChainAndFileNameTimestamp(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktree")
+	created := time.Date(2026, 8, 15, 6, 56, 17, 353*int(time.Millisecond), time.UTC)
+	origin := filepath.Join(
+		root,
+		piEncodedSessionDirName(project),
+		"2026-08-15T06-56-17-353Z_origin-session.jsonl",
+	)
+	middle := filepath.Join(root, piEncodedSessionDirName(worktree), "middle.jsonl")
+	newest := filepath.Join(root, piEncodedSessionDirName(worktree), "newest.jsonl")
+	writePiTestRelocatedSession(t, middle, "middle-session", worktree, origin, created.Add(time.Minute), created.Add(2*time.Minute))
+	writePiTestRelocatedSession(t, newest, "newest-session", worktree, middle, created.Add(3*time.Minute), created.Add(4*time.Minute))
+
+	entries := readPiSessionEntries(root)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	for _, entry := range entries {
+		if entry.originDir != piEncodedSessionDirName(project) {
+			t.Fatalf("%s origin dir = %q, want project bucket", entry.sessionID, entry.originDir)
+		}
+		if !entry.originCreatedAt.Equal(created) {
+			t.Fatalf("%s origin createdAt = %s, want %s", entry.sessionID, entry.originCreatedAt, created)
+		}
+	}
+}
+
+func TestPiEncodedSessionDirNameMatchesPiLayout(t *testing.T) {
+	if got, want := piEncodedSessionDirName("/Users/demo/Code/MonkeySSH"), "--Users-demo-Code-MonkeySSH--"; got != want {
+		t.Fatalf("piEncodedSessionDirName = %q, want %q", got, want)
+	}
+	if got := piEncodedSessionDirName(""); got != "" {
+		t.Fatalf("empty cwd encoding = %q, want empty", got)
+	}
+}
+
 func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
 	for _, name := range []string{"pi", "/Users/demo/.local/bin/pi"} {
 		if got := agentToolFromCommandName(name); got != "pi" {

@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.156"
+	monkeyMuxVersion                  = "0.1.157"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3185,6 +3185,17 @@ type piSessionEntry struct {
 	path      string
 	modTime   time.Time
 	createdAt time.Time
+	// parentPath is the session file this one was rotated or relocated from
+	// (the header's parentSession), which may no longer exist on disk.
+	parentPath string
+	// originDir and originCreatedAt describe the root of the parentSession
+	// chain: the directory name and creation time of the session the pane's
+	// Pi process originally started. Pi's worktree flow relocates a session
+	// to a new cwd-encoded directory with a fresh id and timestamp and
+	// deletes the original file, so only the chain origin still matches the
+	// pane's working directory and process start time.
+	originDir       string
+	originCreatedAt time.Time
 }
 
 var processStartedAtForMetadata = func(pid int) time.Time {
@@ -3289,9 +3300,17 @@ func discoverPiSessions(
 			entries = readPiSessionEntries(key.root)
 			entriesByRoot[key.root] = entries
 		}
+		encodedCwd := piEncodedSessionDirName(key.cwd)
 		candidates := []piSessionEntry{}
 		for _, entry := range entries {
-			if entry.cwd == key.cwd && !used[entry.sessionID] {
+			if used[entry.sessionID] {
+				continue
+			}
+			// A relocated session (Pi's worktree flow) records the pane's
+			// working directory only in the origin of its parentSession
+			// chain, so match either the live cwd or that origin bucket.
+			if entry.cwd == key.cwd ||
+				(encodedCwd != "" && entry.originDir == encodedCwd) {
 				candidates = append(candidates, entry)
 			}
 		}
@@ -3363,11 +3382,17 @@ func piSessionsCreatedForProcessStart(
 	}
 	matches := []piSessionEntry{}
 	for _, entry := range entries {
-		if entry.createdAt.IsZero() {
+		// A relocated session's own timestamp records the relocation, not the
+		// launch, so correlate the process start against the chain origin.
+		createdAt := entry.originCreatedAt
+		if createdAt.IsZero() {
+			createdAt = entry.createdAt
+		}
+		if createdAt.IsZero() {
 			continue
 		}
-		if !entry.createdAt.Before(processStarted.Add(-2*time.Second)) &&
-			!entry.createdAt.After(processStarted.Add(10*time.Second)) {
+		if !createdAt.Before(processStarted.Add(-2*time.Second)) &&
+			!createdAt.After(processStarted.Add(10*time.Second)) {
 			matches = append(matches, entry)
 		}
 	}
@@ -3506,6 +3531,7 @@ func readPiSessionEntries(root string) []piSessionEntry {
 		}
 		return nil
 	})
+	annotatePiSessionOrigins(entries)
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].modTime.After(entries[j].modTime) })
 	return entries
 }
@@ -3598,10 +3624,11 @@ func readPiSessionEntry(path string) (piSessionEntry, bool) {
 			continue
 		}
 		var header struct {
-			Type      string `json:"type"`
-			ID        string `json:"id"`
-			Timestamp string `json:"timestamp"`
-			Cwd       string `json:"cwd"`
+			Type          string `json:"type"`
+			ID            string `json:"id"`
+			Timestamp     string `json:"timestamp"`
+			Cwd           string `json:"cwd"`
+			ParentSession string `json:"parentSession"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &header) != nil || header.Type != "session" {
 			continue
@@ -3616,15 +3643,107 @@ func readPiSessionEntry(path string) (piSessionEntry, bool) {
 			return piSessionEntry{}, false
 		}
 		createdAt, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(header.Timestamp))
-		return piSessionEntry{
-			sessionID: sessionID,
-			cwd:       cwd,
-			path:      filepath.Clean(path),
-			modTime:   info.ModTime(),
-			createdAt: createdAt,
-		}, true
+		parentPath := ""
+		if parent := strings.TrimSpace(header.ParentSession); parent != "" {
+			parentPath = filepath.Clean(parent)
+		}
+		entry := piSessionEntry{
+			sessionID:  sessionID,
+			cwd:        cwd,
+			path:       filepath.Clean(path),
+			modTime:    info.ModTime(),
+			createdAt:  createdAt,
+			parentPath: parentPath,
+		}
+		entry.originDir = filepath.Base(filepath.Dir(entry.path))
+		entry.originCreatedAt = createdAt
+		return entry, true
 	}
 	return piSessionEntry{}, false
+}
+
+// piEncodedSessionDirName mirrors Pi's session bucket naming: the resolved
+// cwd with its leading separator stripped and every path separator or drive
+// colon replaced by "-", wrapped in "--". A deleted origin file's bucket name
+// therefore still identifies the working directory it was created in.
+func piEncodedSessionDirName(cwd string) string {
+	resolved := normalizedPiWorkingDirectory(cwd)
+	if resolved == "" {
+		return ""
+	}
+	if resolved[0] == '/' || resolved[0] == '\\' {
+		resolved = resolved[1:]
+	}
+	replaced := strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(resolved)
+	return "--" + replaced + "--"
+}
+
+// piSessionFileTimestampPattern matches Pi's session file name prefix
+// (an RFC3339 timestamp with ":" and "." replaced by "-").
+var piSessionFileTimestampPattern = regexp.MustCompile(
+	`^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z_`,
+)
+
+func piSessionCreatedAtFromFileName(name string) time.Time {
+	match := piSessionFileTimestampPattern.FindStringSubmatch(name)
+	if match == nil {
+		return time.Time{}
+	}
+	fields := make([]int, 0, 7)
+	for _, group := range match[1:] {
+		value, err := strconv.Atoi(group)
+		if err != nil {
+			return time.Time{}
+		}
+		fields = append(fields, value)
+	}
+	return time.Date(
+		fields[0],
+		time.Month(fields[1]),
+		fields[2],
+		fields[3],
+		fields[4],
+		fields[5],
+		fields[6]*int(time.Millisecond),
+		time.UTC,
+	)
+}
+
+// annotatePiSessionOrigins resolves each entry's parentSession chain to its
+// origin. Intermediate links may still exist on disk (rotation via /new keeps
+// the old file) or may be gone (worktree relocation deletes it); a missing
+// link terminates the chain with the directory name and file-name timestamp
+// taken from the dangling path itself.
+func annotatePiSessionOrigins(entries []piSessionEntry) {
+	byPath := map[string]int{}
+	for i := range entries {
+		byPath[entries[i].path] = i
+	}
+	for i := range entries {
+		seen := map[int]struct{}{}
+		current := i
+		for {
+			if _, ok := seen[current]; ok {
+				break
+			}
+			seen[current] = struct{}{}
+			parent := entries[current].parentPath
+			if parent == "" {
+				entries[i].originDir = filepath.Base(filepath.Dir(entries[current].path))
+				entries[i].originCreatedAt = entries[current].createdAt
+				break
+			}
+			if next, ok := byPath[parent]; ok {
+				current = next
+				continue
+			}
+			entries[i].originDir = filepath.Base(filepath.Dir(parent))
+			if createdAt := piSessionCreatedAtFromFileName(filepath.Base(parent)); !createdAt.IsZero() {
+				entries[i].originCreatedAt = createdAt
+			}
+			break
+		}
+	}
 }
 
 func normalizedPiWorkingDirectory(path string) string {
