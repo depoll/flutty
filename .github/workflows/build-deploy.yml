@@ -283,7 +283,14 @@ jobs:
 
       - name: Build assets
         if: (inputs.build-android && inputs.android-reuse-aab-artifact-name == '') || (inputs.build-ios && inputs.ios-reuse-ipa-artifact-name == '')
-        run: scripts/ensure_monkeymux_assets.sh
+        run: |
+          if [ -x scripts/ensure_monkeymux_assets.sh ]; then
+            scripts/ensure_monkeymux_assets.sh
+          else
+            # Existing PR heads created before asset generation moved out of
+            # Git have the original builder but not the new ensure wrapper.
+            scripts/build_monkeymux_assets.sh
+          fi
 
       - name: Upload assets
         if: (inputs.build-android && inputs.android-reuse-aab-artifact-name == '') || (inputs.build-ios && inputs.ios-reuse-ipa-artifact-name == '')
