@@ -7,6 +7,7 @@ ASSET_DIR="$ROOT_DIR/assets/monkeymux"
 VERSION="$(sh "$REMOTE_DIR/monkeymux-version.sh" 2>/dev/null || echo "0.1.0")"
 STAMP_FILE="$ASSET_DIR/.build-inputs.sha256"
 TMP_DIR="$(mktemp -d)"
+GZIP_TOOL="$TMP_DIR/deterministic-gzip"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 force=false
@@ -72,6 +73,8 @@ build_fingerprint() {
       done
     printf '%s  scripts/build_monkeymux_assets.sh\n' \
       "$(sha256_file "$ROOT_DIR/scripts/build_monkeymux_assets.sh")"
+    printf '%s  scripts/deterministic_gzip.go\n' \
+      "$(sha256_file "$ROOT_DIR/scripts/deterministic_gzip.go")"
   } | sha256_stdin
 }
 
@@ -99,6 +102,17 @@ rm -f "$STAMP_FILE"
 rm -rf "$ASSET_DIR/bin"
 mkdir -p "$ASSET_DIR/bin"
 
+# Use the pinned Go standard library for compression so payload bytes do not
+# depend on the host's gzip implementation or version.
+(
+  unset GOOS GOARCH CGO_ENABLED
+  cd "$REMOTE_DIR"
+  env GOENV=off GOFLAGS= GOEXPERIMENT= GOFIPS140=off GOWORK=off \
+    GOTOOLCHAIN="$GO_TOOLCHAIN" GOAMD64=v1 GOARM64=v8.0 \
+    go build -buildvcs=false -trimpath -o "$GZIP_TOOL" \
+    "$ROOT_DIR/scripts/deterministic_gzip.go"
+)
+
 manifest_entries=()
 for target in "${targets[@]}"; do
   read -r goos goarch platform <<<"$target"
@@ -119,7 +133,7 @@ for target in "${targets[@]}"; do
       CGO_ENABLED=0 "${arch_env[@]}" go build -buildvcs=false -trimpath \
       -ldflags="-s -w" -o "$raw_output" .
   )
-  gzip -n -c "$raw_output" > "$output"
+  "$GZIP_TOOL" "$raw_output" "$output"
   size="$(wc -c <"$raw_output" | tr -d ' ')"
   sha="$(sha256_file "$raw_output")"
   manifest_entries+=("$(printf '    {\"platform\":\"%s\",\"asset\":\"assets/monkeymux/bin/%s/monkeymux.gz\",\"encoding\":\"gzip\",\"sha256\":\"%s\",\"size\":%s}' "$platform" "$platform" "$sha" "$size")")
