@@ -35,6 +35,9 @@ migrate_working_dir/
 
 # Local MonkeyMux build output
 /remote/monkeymux/monkeymux
+/assets/monkeymux/bin/
+/assets/monkeymux/manifest.json
+/assets/monkeymux/.build-inputs.sha256
 
 # Local agent runtime state
 /.pi/

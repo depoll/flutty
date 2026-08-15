@@ -4,6 +4,29 @@ package main
 
 import "testing"
 
+func TestPiRestoreTreatsWindowsShellsAsShells(t *testing.T) {
+	for _, command := range []string{"cmd.exe", "powershell.exe", "pwsh.exe"} {
+		state := restoreWindowState{
+			CurrentCommand: command,
+			PaneTitle:      "Pi - notes",
+			AgentTool:      "pi",
+		}
+		if got := agentToolForRestore(state); got != "" {
+			t.Fatalf("Windows shell %q classified as %q", command, got)
+		}
+		if got := createWindowOptionsForRestore(state, false).command; got != "" {
+			t.Fatalf("Windows shell %q restore command = %q", command, got)
+		}
+		state.AgentToolConfirmed = true
+		if got := agentToolForRestore(state); got != "pi" {
+			t.Fatalf("confirmed Pi behind Windows shell %q classified as %q", command, got)
+		}
+		if got := createWindowOptionsForRestore(state, false).command; got != "pi" {
+			t.Fatalf("confirmed Pi behind Windows shell %q restore command = %q", command, got)
+		}
+	}
+}
+
 func TestPiRestoreCommandIsSafeForCmd(t *testing.T) {
 	t.Setenv("ComSpec", "cmd.exe")
 	t.Setenv("MONKEYMUX_SHELL", "cmd.exe")
