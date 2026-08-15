@@ -14,7 +14,7 @@ Generate or refresh the assets before `flutter pub get`, testing, or packaging:
 ```
 
 The script fingerprints the MonkeyMux source, pinned Go toolchain, ConPTY
-inputs, and packaging script. It exits without rebuilding when all outputs are
+inputs, and packaging tools. It exits without rebuilding when all outputs are
 present and the fingerprint matches. Force a clean rebuild when diagnosing the
 packaging process:
 
@@ -24,8 +24,8 @@ packaging process:
 
 The exact packaging toolchain is declared by the `toolchain` directive in
 `remote/monkeymux/go.mod`. Builds disable VCS stamping, strip local paths, and
-use timestamp-free gzip output so the same source and toolchain produce the
-same payloads.
+use that pinned Go standard library for timestamp-free gzip output so the same
+source and toolchain produce the same payloads on every supported build host.
 
 ## CI and releases
 
