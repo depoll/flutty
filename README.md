@@ -65,12 +65,17 @@ MonkeySSH is being prepared for public release with production App Store and Pla
 ## Development
 
 ```bash
+./scripts/ensure_monkeymux_assets.sh
 flutter pub get
 dart run build_runner build
 flutter analyze
 dart format .
 flutter test
 ```
+
+MonkeyMux executables are generated build outputs rather than Git-tracked
+files. The ensure script cross-compiles all supported remote-host targets with
+the pinned Go toolchain and skips the work when its inputs have not changed.
 
 ### Android builds
 

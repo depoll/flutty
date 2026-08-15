@@ -370,6 +370,11 @@ class StoreDemoEnvironment:
         self._monkeymux_select('copilot')
 
     def _extract_monkeymux(self) -> Path:
+        subprocess.run(
+            [str(ROOT / 'scripts/ensure_monkeymux_assets.sh')],
+            cwd=ROOT,
+            check=True,
+        )
         manifest = json.loads((ROOT / 'assets/monkeymux/manifest.json').read_text())
         platform_key = _monkeymux_platform_key()
         entry = next(

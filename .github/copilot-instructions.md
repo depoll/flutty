@@ -3,6 +3,9 @@
 ## Build, Test, and Lint
 
 ```bash
+# Generate the ignored MonkeyMux application assets
+./scripts/ensure_monkeymux_assets.sh
+
 # Install dependencies
 flutter pub get
 
