@@ -3496,6 +3496,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
   bool _keyboardVisibilityRebuildScheduled = false;
+  int _terminalFocusRestoreGeneration = 0;
   final _toolbarController = KeyboardToolbarController();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
@@ -12160,6 +12161,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
+      _terminalFocusRestoreGeneration += 1;
       final shouldRestoreKeyboard = state == AppLifecycleState.paused
           ? _dismissTerminalKeyboardForAppBackground()
           : _shouldRestoreTerminalKeyboardAfterTemporaryDismissal;
@@ -12171,7 +12173,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _stopSharedClipboardSync();
       _syncTerminalWakeLock();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
-      final shouldRestoreKeyboard = _restoreKeyboardAfterAppResume;
+      // Android dismisses the IME when the app loses its window. Asking it
+      // to show again from the first resumed callback can be ignored while the
+      // old bottom inset remains, leaving a keyboard-sized blank region. Keep
+      // the keyboard closed there while restoring terminal focus for hardware
+      // input. iOS continues restoring both focus and the keyboard.
+      final shouldRestoreTerminalFocus = _restoreKeyboardAfterAppResume;
+      final shouldRestoreKeyboard =
+          shouldRestoreTerminalFocus && !_isAndroidPlatform;
       _restoreKeyboardAfterAppResume = false;
       _wasBackgrounded = false;
       _syncTerminalWakeLock();
@@ -12205,7 +12214,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           reason: 'app_resumed',
         );
       }
-      _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+      if (shouldRestoreTerminalFocus) {
+        _restoreTerminalFocus(forceShowSystemKeyboard: shouldRestoreKeyboard);
+      }
     }
   }
 
@@ -12786,8 +12797,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _dismissNativeSelectionOverlayForEditing();
+    final restoreGeneration = _terminalFocusRestoreGeneration;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
+      if (!mounted || restoreGeneration != _terminalFocusRestoreGeneration) {
         return;
       }
       _terminalTextInputController.resetImeCompletions();

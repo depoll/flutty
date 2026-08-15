@@ -817,6 +817,34 @@ var foregroundProcessGroupForWindow = func(window *muxWindow) int {
 	return window.proc.Pid()
 }
 
+func shellArgument(value string) (string, bool) {
+	if !isCmdShell(defaultShellPath()) {
+		return "'" + strings.ReplaceAll(value, "'", "''") + "'", true
+	}
+	if strings.ContainsAny(value, "\r\n\"%!") {
+		return "", false
+	}
+	if !strings.ContainsAny(value, " \t&|<>()^") {
+		return value, true
+	}
+	return "\"" + value + "\"", true
+}
+
+func piResumeCommandWithFreshFallback(resume string, launch string) string {
+	resume = strings.TrimSpace(resume)
+	launch = strings.TrimSpace(launch)
+	if resume == "" {
+		return launch
+	}
+	if launch == "" || launch == resume {
+		return resume
+	}
+	if isCmdShell(defaultShellPath()) {
+		return resume + " || " + launch
+	}
+	return resume + "; if (-not $?) { " + launch + " }"
+}
+
 func defaultShellPath() string {
 	if shell := strings.TrimSpace(os.Getenv("MONKEYMUX_SHELL")); shell != "" {
 		return shell

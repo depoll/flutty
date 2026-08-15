@@ -2425,6 +2425,115 @@ void main() {
     });
   });
 
+  testWidgets('re-placing with the same image and placement id replaces', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 4);
+      final terminal = Terminal()..resize(80, 24);
+      terminal.write('\x1b_Ga=t,f=100,i=77,q=2;$pngBase64\x1b\\');
+      terminal.graphics.imageForPlacement(77);
+      await _awaitImage(terminal, 77);
+
+      // A client moving an inline image during a scroll repaint (e.g. Grok
+      // CLI) re-places it with the same p= at the new cursor position on
+      // every frame. Each re-place must replace the previous placement, not
+      // leave a stale copy one row behind.
+      terminal
+        ..write('\x1b[3;1H')
+        ..write('\x1b_Ga=p,i=77,p=5,c=4,r=2,z=0,C=1,q=2\x1b\\')
+        ..write('\x1b[6;2H')
+        ..write('\x1b_Ga=p,i=77,p=5,c=4,r=2,z=0,C=1,q=2\x1b\\');
+
+      final placement = terminal.graphics.placements
+          .where((placement) => placement.imageId == 77)
+          .single;
+      expect(placement.clientPlacementId, 5);
+      expect(placement.row, 5);
+      expect(placement.col, 1);
+    });
+  });
+
+  testWidgets('distinct placement ids of one image are all kept', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 4);
+      final terminal = Terminal()..resize(80, 24);
+      terminal.write('\x1b_Ga=t,f=100,i=78,q=2;$pngBase64\x1b\\');
+      terminal.graphics.imageForPlacement(78);
+      await _awaitImage(terminal, 78);
+
+      terminal
+        ..write('\x1b_Ga=p,i=78,p=1,c=2,r=1,C=1,q=2\x1b\\')
+        ..write('\x1b[5;1H')
+        ..write('\x1b_Ga=p,i=78,p=2,c=2,r=1,C=1,q=2\x1b\\');
+
+      expect(
+        terminal.graphics.placements
+            .where((placement) => placement.imageId == 78)
+            .map((placement) => placement.clientPlacementId),
+        unorderedEquals([1, 2]),
+      );
+    });
+  });
+
+  testWidgets('placements without a placement id accumulate', (tester) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 4);
+      final terminal = Terminal()..resize(80, 24);
+      terminal.write('\x1b_Ga=t,f=100,i=79,q=2;$pngBase64\x1b\\');
+      terminal.graphics.imageForPlacement(79);
+      await _awaitImage(terminal, 79);
+
+      terminal
+        ..write('\x1b_Ga=p,i=79,c=2,r=1,C=1,q=2\x1b\\')
+        ..write('\x1b[5;1H')
+        ..write('\x1b_Ga=p,i=79,c=2,r=1,C=1,q=2\x1b\\');
+
+      expect(
+        terminal.graphics.placements
+            .where((placement) => placement.imageId == 79)
+            .length,
+        2,
+      );
+    });
+  });
+
+  testWidgets('a=T with the same image and placement id replaces', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 4);
+      final terminal = Terminal()..resize(80, 24);
+
+      terminal
+        ..write('\x1b[2;1H')
+        ..write('\x1b_Ga=T,f=100,i=80,p=3,c=2,r=1,C=1,q=2;$pngBase64\x1b\\');
+      await _awaitImage(terminal, 80);
+      terminal
+        ..write('\x1b[7;1H')
+        ..write('\x1b_Ga=T,f=100,i=80,p=3,c=2,r=1,C=1,q=2;$pngBase64\x1b\\');
+      var waited = 0;
+      bool moved() {
+        final placements = terminal.graphics.placements
+            .where((placement) => placement.imageId == 80)
+            .toList();
+        return placements.length == 1 && placements.single.row == 6;
+      }
+
+      while (!moved() && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      final placement = terminal.graphics.placements
+          .where((placement) => placement.imageId == 80)
+          .single;
+      expect(placement.row, 6);
+    });
+  });
+
   testWidgets('invalid graphics payload is ignored without placing', (
     tester,
   ) async {
