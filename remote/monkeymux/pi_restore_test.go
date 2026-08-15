@@ -154,6 +154,87 @@ func TestPiSessionOriginResolvesChainAndFileNameTimestamp(t *testing.T) {
 	}
 }
 
+// A relocated session that is later rotated (/new) leaves the intermediate
+// file on disk, so the pane's chain has several links that all resolve to the
+// same origin. The pane must resume the leaf it is actually on.
+func TestDiscoverPiSessionsResumesLeafOfRelocatedThenRotatedChain(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktree")
+	started := time.Now().Add(-time.Hour).UTC()
+	deletedOrigin := filepath.Join(
+		root,
+		piEncodedSessionDirName(project),
+		started.Add(500*time.Millisecond).Format("2006-01-02T15-04-05-000Z")+"_origin-session.jsonl",
+	)
+	middle := filepath.Join(root, piEncodedSessionDirName(worktree), "middle.jsonl")
+	newest := filepath.Join(root, piEncodedSessionDirName(worktree), "newest.jsonl")
+	writePiTestRelocatedSession(t, middle, "middle-session", worktree, deletedOrigin, started.Add(20*time.Minute), started.Add(25*time.Minute))
+	writePiTestRelocatedSession(t, newest, "newest-session", worktree, middle, started.Add(30*time.Minute), started.Add(45*time.Minute))
+
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "newest-session" {
+		t.Fatalf("multi-hop Pi chain = %#v, want newest-session leaf", got)
+	}
+}
+
+// Forks share a parent without superseding each other, so a branched history
+// has no single leaf and must decline rather than guess a conversation.
+func TestDiscoverPiSessionsDeclinesForkedChainBranches(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktree")
+	started := time.Now().Add(-time.Hour).UTC()
+	deletedOrigin := filepath.Join(
+		root,
+		piEncodedSessionDirName(project),
+		started.Add(500*time.Millisecond).Format("2006-01-02T15-04-05-000Z")+"_origin-session.jsonl",
+	)
+	bucket := piEncodedSessionDirName(worktree)
+	writePiTestRelocatedSession(t, filepath.Join(root, bucket, "branch-a.jsonl"), "branch-a", worktree, deletedOrigin, started.Add(20*time.Minute), started.Add(25*time.Minute))
+	writePiTestRelocatedSession(t, filepath.Join(root, bucket, "branch-b.jsonl"), "branch-b", worktree, deletedOrigin, started.Add(30*time.Minute), started.Add(35*time.Minute))
+
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
+	}}}
+
+	if got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}}); len(got) != 0 {
+		t.Fatalf("forked Pi chain = %#v, want fresh launch", got)
+	}
+}
+
 func TestPiEncodedSessionDirNameMatchesPiLayout(t *testing.T) {
 	if got, want := piEncodedSessionDirName("/Users/demo/Code/MonkeySSH"), "--Users-demo-Code-MonkeySSH--"; got != want {
 		t.Fatalf("piEncodedSessionDirName = %q, want %q", got, want)

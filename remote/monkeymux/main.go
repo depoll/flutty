@@ -3320,7 +3320,10 @@ func discoverPiSessions(
 		provisional := map[int]piSessionEntry{}
 		owners := map[string][]int{}
 		for _, index := range indices {
-			matches := piSessionsCreatedForProcessStart(candidates, processStarts[index])
+			matches := piLeafSessionMatches(
+				piSessionsCreatedForProcessStart(candidates, processStarts[index]),
+				candidates,
+			)
 			if len(matches) != 1 {
 				continue
 			}
@@ -3397,6 +3400,47 @@ func piSessionsCreatedForProcessStart(
 		}
 	}
 	return matches
+}
+
+// piLeafSessionMatches drops matches that another match descends from. Both
+// rotation (/new, /resume) and worktree relocation record the file they came
+// from as parentSession, so a match that a sibling match links back to is a
+// session the pane has already left; the surviving leaf is where it is now.
+// Forks branch from a shared parent without superseding each other, so a
+// branched history keeps every leaf and stays ambiguous.
+func piLeafSessionMatches(matches []piSessionEntry, entries []piSessionEntry) []piSessionEntry {
+	if len(matches) < 2 {
+		return matches
+	}
+	parentByPath := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		parentByPath[entry.path] = entry.parentPath
+	}
+	matchedPaths := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		matchedPaths[match.path] = struct{}{}
+	}
+	ancestors := map[string]struct{}{}
+	for _, match := range matches {
+		seen := map[string]struct{}{}
+		for parent := match.parentPath; parent != ""; parent = parentByPath[parent] {
+			if _, ok := seen[parent]; ok {
+				break
+			}
+			seen[parent] = struct{}{}
+			if _, ok := matchedPaths[parent]; ok {
+				ancestors[parent] = struct{}{}
+			}
+		}
+	}
+	leaves := make([]piSessionEntry, 0, len(matches))
+	for _, match := range matches {
+		if _, ok := ancestors[match.path]; ok {
+			continue
+		}
+		leaves = append(leaves, match)
+	}
+	return leaves
 }
 
 // piSessionWasSuperseded prevents the process's initial session from winning
