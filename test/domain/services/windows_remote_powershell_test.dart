@@ -131,6 +131,27 @@ void main() {
       expect(script, contains("'opencode/storage/session'"));
       expect(script, contains(r'$__flSeen.ContainsKey($__flPath)'));
     });
+
+    test('uses a non-empty environment override instead of fallback roots', () {
+      final script = windowsListNewestFilesScript(
+        relativeRoot: '.grok/sessions',
+        includeGlobs: const ['summary.json'],
+        limit: 40,
+        overrideRootEnvironmentVariable: 'GROK_HOME',
+        overrideRelativeRoot: 'sessions',
+      );
+
+      expect(script, contains(r'$__flRootBases=@($env:USERPROFILE);'));
+      expect(script, contains(r'$__flOverrideBase=$env:GROK_HOME;'));
+      expect(
+        script,
+        contains(
+          r'if(![string]::IsNullOrWhiteSpace([string]$__flOverrideBase)){',
+        ),
+      );
+      expect(script, contains(r"$__flRelRoots=@('sessions');"));
+      expect(script, contains(r'$__flRootBases=@($__flOverrideBase)}'));
+    });
   });
 
   group('windowsFindFilesByNameScript', () {
