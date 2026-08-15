@@ -102,6 +102,11 @@ mkdir -p "$ASSET_DIR/bin"
 manifest_entries=()
 for target in "${targets[@]}"; do
   read -r goos goarch platform <<<"$target"
+  arch_env=()
+  case "$goarch" in
+    amd64) arch_env+=(GOAMD64=v1) ;;
+    arm64) arch_env+=(GOARM64=v8.0) ;;
+  esac
   output_dir="$ASSET_DIR/bin/$platform"
   raw_output="$TMP_DIR/$platform/monkeymux"
   output="$output_dir/monkeymux.gz"
@@ -109,8 +114,9 @@ for target in "${targets[@]}"; do
   mkdir -p "$(dirname "$raw_output")"
   (
     cd "$REMOTE_DIR"
-    GOTOOLCHAIN="$GO_TOOLCHAIN" GOOS="$goos" GOARCH="$goarch" \
-      CGO_ENABLED=0 go build -buildvcs=false -trimpath \
+    env GOENV=off GOFLAGS= GOEXPERIMENT= GOFIPS140=off GOWORK=off \
+      GOTOOLCHAIN="$GO_TOOLCHAIN" GOOS="$goos" GOARCH="$goarch" \
+      CGO_ENABLED=0 "${arch_env[@]}" go build -buildvcs=false -trimpath \
       -ldflags="-s -w" -o "$raw_output" .
   )
   gzip -n -c "$raw_output" > "$output"

@@ -243,12 +243,36 @@ jobs:
     needs: validate-build-inputs
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      source-sha: ${{ steps.source-sha.outputs.value }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: (inputs.build-android && inputs.android-reuse-aab-artifact-name == '') || (inputs.build-ios && inputs.ios-reuse-ipa-artifact-name == '')
         with:
           persist-credentials: false
-          ref: ${{ inputs.source-ref || github.ref }}
+          ref: ${{ github.ref }}
+          fetch-depth: 2
+
+      - name: Resolve source SHA
+        id: source-sha
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source-ref }}
+        run: |
+          if echo "$REQUESTED_SOURCE_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            source_sha="$REQUESTED_SOURCE_REF"
+          elif [ -n "$REQUESTED_SOURCE_REF" ]; then
+            git fetch --no-tags --depth=1 origin -- "$REQUESTED_SOURCE_REF"
+            source_sha="$(git rev-parse FETCH_HEAD)"
+          else
+            source_sha="$(git rev-parse HEAD)"
+          fi
+          echo "value=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout resolved source SHA
+        if: (inputs.build-android && inputs.android-reuse-aab-artifact-name == '') || (inputs.build-ios && inputs.ios-reuse-ipa-artifact-name == '')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ steps.source-sha.outputs.value }}
           fetch-depth: 1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -296,18 +320,16 @@ jobs:
       - name: Capture source SHA
         id: source-sha
         env:
-          REQUESTED_SOURCE_REF: ${{ inputs.source-ref }}
           REUSED_SOURCE_SHA: ${{ inputs.android-reuse-source-sha }}
+          BUILT_SOURCE_SHA: ${{ needs.monkeymux-assets.outputs.source-sha }}
         run: |
           if [ -n "$REUSED_SOURCE_SHA" ]; then
             echo "value=$REUSED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
-          elif echo "$REQUESTED_SOURCE_REF" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "value=$REQUESTED_SOURCE_REF" >> "$GITHUB_OUTPUT"
-          elif [ -n "$REQUESTED_SOURCE_REF" ]; then
-            git fetch --no-tags --depth=1 origin -- "$REQUESTED_SOURCE_REF"
-            echo "value=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          elif [ -n "$BUILT_SOURCE_SHA" ]; then
+            echo "value=$BUILT_SOURCE_SHA" >> "$GITHUB_OUTPUT"
           else
-            echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "::error title=Missing source SHA::MonkeyMux asset generation did not resolve a source commit."
+            exit 1
           fi
 
       - name: Resolve source SHA
@@ -322,8 +344,8 @@ jobs:
             echo "value=$CHECKED_OUT_SOURCE_SHA" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout requested source ref for Android build
-        if: inputs.source-ref != '' && inputs.android-reuse-aab-artifact-name == ''
+      - name: Checkout resolved source SHA for Android build
+        if: inputs.android-reuse-aab-artifact-name == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -915,18 +937,16 @@ jobs:
       - name: Capture source SHA
         id: source-sha
         env:
-          REQUESTED_SOURCE_REF: ${{ inputs.source-ref }}
           REUSED_SOURCE_SHA: ${{ inputs.ios-reuse-source-sha }}
+          BUILT_SOURCE_SHA: ${{ needs.monkeymux-assets.outputs.source-sha }}
         run: |
           if [ -n "$REUSED_SOURCE_SHA" ]; then
             echo "value=$REUSED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
-          elif echo "$REQUESTED_SOURCE_REF" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "value=$REQUESTED_SOURCE_REF" >> "$GITHUB_OUTPUT"
-          elif [ -n "$REQUESTED_SOURCE_REF" ]; then
-            git fetch --no-tags --depth=1 origin -- "$REQUESTED_SOURCE_REF"
-            echo "value=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          elif [ -n "$BUILT_SOURCE_SHA" ]; then
+            echo "value=$BUILT_SOURCE_SHA" >> "$GITHUB_OUTPUT"
           else
-            echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "::error title=Missing source SHA::MonkeyMux asset generation did not resolve a source commit."
+            exit 1
           fi
 
       - name: Resolve source SHA
@@ -941,8 +961,8 @@ jobs:
             echo "value=$CHECKED_OUT_SOURCE_SHA" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout requested source ref for iOS build
-        if: inputs.source-ref != '' && inputs.ios-reuse-ipa-artifact-name == ''
+      - name: Checkout resolved source SHA for iOS build
+        if: inputs.ios-reuse-ipa-artifact-name == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
