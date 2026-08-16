@@ -1119,6 +1119,92 @@ cwd: /tmp/demo
       expect(metadata.parsedAny, isFalse);
       expect(metadata.sessionId, isNull);
     });
+
+    test('reads the parent session a relocated transcript came from', () {
+      final metadata = parsePiSessionMetadata('''
+{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/worktrees/feature","parentSession":"/Users/depoll/.pi/agent/sessions/--Users-depoll-Code-flutty--/2026-04-12T21-07-30-000Z_01JYX6.jsonl"}
+''');
+
+      expect(
+        metadata.parentSessionPath,
+        '/Users/depoll/.pi/agent/sessions/--Users-depoll-Code-flutty--/2026-04-12T21-07-30-000Z_01JYX6.jsonl',
+      );
+    });
+
+    test('leaves the parent session unset for a fresh transcript', () {
+      final metadata = parsePiSessionMetadata('''
+{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/tmp/project"}
+''');
+
+      expect(metadata.parentSessionPath, isNull);
+    });
+  });
+
+  group('piEncodedSessionDirectoryName', () {
+    test('matches the bucket Pi stores sessions for a directory in', () {
+      expect(
+        piEncodedSessionDirectoryName('/Users/depoll/Code/MonkeySSH'),
+        '--Users-depoll-Code-MonkeySSH--',
+      );
+    });
+
+    test('ignores a trailing slash so scoping still matches', () {
+      expect(
+        piEncodedSessionDirectoryName('/Users/depoll/Code/MonkeySSH/'),
+        piEncodedSessionDirectoryName('/Users/depoll/Code/MonkeySSH'),
+      );
+    });
+
+    test('returns null when there is no directory to encode', () {
+      expect(piEncodedSessionDirectoryName(null), isNull);
+      expect(piEncodedSessionDirectoryName('  '), isNull);
+    });
+  });
+
+  group('piOriginSessionBucketName', () {
+    const sessionsRoot = '/home/dev/.pi/agent/sessions';
+    const projectBucket = '--home-dev-project--';
+    const worktreeBucket = '--home-dev-worktree--';
+
+    test('uses the session own bucket when it has no parent', () {
+      const path = '$sessionsRoot/$projectBucket/a.jsonl';
+
+      expect(piOriginSessionBucketName(path, const {path: ''}), projectBucket);
+    });
+
+    test('falls back to the deleted parent bucket after relocation', () {
+      const relocated = '$sessionsRoot/$worktreeBucket/relocated.jsonl';
+      const deletedOrigin = '$sessionsRoot/$projectBucket/origin.jsonl';
+
+      expect(
+        piOriginSessionBucketName(relocated, const {relocated: deletedOrigin}),
+        projectBucket,
+      );
+    });
+
+    test('walks a rotated chain back to where it started', () {
+      const middle = '$sessionsRoot/$worktreeBucket/middle.jsonl';
+      const newest = '$sessionsRoot/$worktreeBucket/newest.jsonl';
+      const deletedOrigin = '$sessionsRoot/$projectBucket/origin.jsonl';
+
+      expect(
+        piOriginSessionBucketName(newest, const {
+          newest: middle,
+          middle: deletedOrigin,
+        }),
+        projectBucket,
+      );
+    });
+
+    test('stops on a cyclic chain instead of looping forever', () {
+      const first = '$sessionsRoot/$projectBucket/first.jsonl';
+      const second = '$sessionsRoot/$worktreeBucket/second.jsonl';
+
+      expect(
+        piOriginSessionBucketName(first, const {first: second, second: first}),
+        isNotNull,
+      );
+    });
   });
 
   group('parseHermesDbOutput', () {
@@ -2176,6 +2262,77 @@ branch refs/heads/main
         "cd '/Users/depoll/Code/flutty' && pi --session '01JYX7ABCD'",
       );
     });
+
+    test(
+      'Pi discovery keeps a session relocated out of the scoped directory',
+      () async {
+        final client = _MockSshClient();
+        const sessionsRoot = '/Users/demo/.pi/agent/sessions';
+        const projectPath =
+            '$sessionsRoot/--Users-depoll-Code-flutty--/'
+            '2026-04-12T21-07-44-781Z_01JYX7ABCD.jsonl';
+        const relocatedPath =
+            '$sessionsRoot/--Users-depoll-worktrees-feature--/'
+            '2026-04-12T22-10-00-000Z_01JYX8RELOC.jsonl';
+        const unrelatedPath =
+            '$sessionsRoot/--Users-depoll-Code-other--/'
+            '2026-04-12T23-00-00-000Z_01JYX9OTHER.jsonl';
+        // Relocation deletes the file this session was rewritten from, so the
+        // parent path is the only record of where the conversation started.
+        const deletedOriginPath =
+            '$sessionsRoot/--Users-depoll-Code-flutty--/'
+            '2026-04-12T22-09-50-000Z_01JYX8ORIGIN.jsonl';
+
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          if (command.contains('find ~/.pi/agent/sessions')) {
+            return _buildExecSession(
+              stdout: '$relocatedPath\n$unrelatedPath\n$projectPath\n',
+            );
+          }
+          if (command.contains(relocatedPath)) {
+            return _buildExecSession(
+              stdout:
+                  _remoteSnapshotLine(relocatedPath, '''
+{"type":"session","version":3,"id":"01JYX8RELOC","timestamp":"2026-04-12T22:10:00.000Z","cwd":"/Users/depoll/worktrees/feature","parentSession":"$deletedOriginPath"}
+{"type":"message","message":{"role":"user","content":"Continue the worktree work"}}
+''', mtime: 1777243999) +
+                  _remoteSnapshotLine(unrelatedPath, '''
+{"type":"session","version":3,"id":"01JYX9OTHER","timestamp":"2026-04-12T23:00:00.000Z","cwd":"/Users/depoll/Code/other"}
+{"type":"message","message":{"role":"user","content":"Unrelated project work"}}
+''', mtime: 1777244500) +
+                  _remoteSnapshotLine(projectPath, '''
+{"type":"session","version":3,"id":"01JYX7ABCD","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/flutty"}
+{"type":"message","message":{"role":"user","content":"Fix the tmux navigator crash"}}
+''', mtime: 1777243460),
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+        final result = await discovery.discoverSessions(
+          session,
+          workingDirectory: '/Users/depoll/Code/flutty',
+          toolName: 'Pi',
+        );
+
+        expect(
+          result.sessions.map((info) => info.sessionId),
+          containsAll(<String>['01JYX8RELOC', '01JYX7ABCD']),
+        );
+        expect(
+          result.sessions.map((info) => info.sessionId),
+          isNot(contains('01JYX9OTHER')),
+        );
+        // Resuming a relocated session belongs in the directory it moved to.
+        final relocated = result.sessions.firstWhere(
+          (info) => info.sessionId == '01JYX8RELOC',
+        );
+        expect(relocated.workingDirectory, '/Users/depoll/worktrees/feature');
+      },
+    );
 
     test('Hermes discovery reads the state database', () async {
       final client = _MockSshClient();

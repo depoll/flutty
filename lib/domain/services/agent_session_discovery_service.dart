@@ -61,6 +61,7 @@ ToolSessionInfo? normalizeDiscoveredSessionInfo(
     toolName: info.toolName,
     sessionId: info.sessionId,
     workingDirectory: info.workingDirectory,
+    originWorkingDirectory: info.originWorkingDirectory,
     lastActive: info.lastActive,
     summary: normalizedSummary,
   );
@@ -694,6 +695,7 @@ parseGrokSessionMetadata(String raw) {
   String? sessionId,
   String? summary,
   String? workingDirectory,
+  String? parentSessionPath,
   DateTime? updatedAt,
   bool parsedAny,
 })
@@ -702,6 +704,7 @@ parsePiSessionMetadata(String raw) {
   String? displayName;
   String? firstUserMessage;
   String? workingDirectory;
+  String? parentSessionPath;
   DateTime? updatedAt;
   var parsedAny = false;
 
@@ -714,6 +717,7 @@ parsePiSessionMetadata(String raw) {
     if (type == 'session') {
       sessionId ??= _readStringField(decoded, 'id');
       workingDirectory ??= _readStringField(decoded, 'cwd');
+      parentSessionPath ??= _readStringField(decoded, 'parentSession');
       updatedAt ??= _parseDateTimeValue(decoded['timestamp']);
       continue;
     }
@@ -740,9 +744,55 @@ parsePiSessionMetadata(String raw) {
     sessionId: sessionId,
     summary: displayName ?? firstUserMessage,
     workingDirectory: workingDirectory,
+    parentSessionPath: parentSessionPath,
     updatedAt: updatedAt,
     parsedAny: parsedAny,
   );
+}
+
+/// Encodes a working directory the way Pi names the bucket it stores that
+/// directory's sessions in: the path without its leading separator, with every
+/// separator and drive colon replaced by `-`, wrapped in `--`.
+@visibleForTesting
+String? piEncodedSessionDirectoryName(String? workingDirectory) {
+  final trimmed = _trimWorkingDirectory(workingDirectory);
+  if (trimmed == null) return null;
+  final withoutLeadingSeparator = trimmed.replaceFirst(RegExp(r'^[/\\]'), '');
+  if (withoutLeadingSeparator.isEmpty) return null;
+  final encoded = withoutLeadingSeparator.replaceAll(RegExp(r'[/\\:]'), '-');
+  return '--$encoded--';
+}
+
+String? _piSessionBucketName(String? sessionFilePath) {
+  final segments = sessionFilePath?.split('/') ?? const <String>[];
+  return segments.length < 2 ? null : segments[segments.length - 2];
+}
+
+/// Resolves the bucket that a session's `parentSession` chain started in.
+///
+/// Pi records the file it came from when a session rotates (`/new`) or is
+/// relocated to another working directory. Rotation keeps the previous file on
+/// disk, so the walk follows links that were read; relocation deletes it, so a
+/// dangling link ends the walk at its own bucket, which still names the
+/// directory the conversation started in.
+@visibleForTesting
+String? piOriginSessionBucketName(
+  String sessionFilePath,
+  Map<String, String> parentSessionPathsByFile,
+) {
+  final visited = <String>{};
+  var current = sessionFilePath;
+  while (visited.add(current)) {
+    final parent = parentSessionPathsByFile[current];
+    if (parent == null || parent.isEmpty) {
+      return _piSessionBucketName(current);
+    }
+    if (!parentSessionPathsByFile.containsKey(parent)) {
+      return _piSessionBucketName(parent);
+    }
+    current = parent;
+  }
+  return _piSessionBucketName(current);
 }
 
 /// Extracts the Pi session id from a `<timestamp>_<sessionId>.jsonl` file name.
@@ -1558,11 +1608,17 @@ List<ToolSessionInfo> scopeDiscoveredSessionsToWorkingDirectory(
   for (final toolSessions in sessionsByTool.values) {
     final matchingSessions = toolSessions
         .where(
-          (session) => matchesDiscoveredSessionWorkingDirectory(
-            workingDirectory,
-            session.workingDirectory,
-            relatedWorkingDirectories: relatedWorkingDirectories,
-          ),
+          (session) =>
+              matchesDiscoveredSessionWorkingDirectory(
+                workingDirectory,
+                session.workingDirectory,
+                relatedWorkingDirectories: relatedWorkingDirectories,
+              ) ||
+              matchesDiscoveredSessionWorkingDirectory(
+                workingDirectory,
+                session.originWorkingDirectory,
+                relatedWorkingDirectories: relatedWorkingDirectories,
+              ),
         )
         .toList(growable: false);
     if (matchingSessions.isNotEmpty) {
@@ -3663,6 +3719,8 @@ print(json.dumps(sessions))
         maxLines: previewOnly ? 40 : 80,
       );
       final sessions = <ToolSessionInfo>[];
+      final sessionFilePaths = <String>[];
+      final parentSessionPathsByFile = <String, String>{};
       var hadError = false;
 
       for (final filePath in recentSessionPaths) {
@@ -3685,6 +3743,8 @@ print(json.dumps(sessions))
             summary = metadata.summary;
             sessionWorkingDirectory = metadata.workingDirectory;
             lastActive = metadata.updatedAt;
+            parentSessionPathsByFile[filePath] =
+                metadata.parentSessionPath?.trim() ?? '';
           } on Object {
             hadError = true;
           }
@@ -3703,18 +3763,17 @@ print(json.dumps(sessions))
             summary: summary ?? _truncateId(resolvedId),
           ),
         );
+        sessionFilePaths.add(filePath);
       }
       final scopedSessions =
           workingDirectory != null && workingDirectory.isNotEmpty
-          ? sessions
-                .where(
-                  (info) => matchesDiscoveredSessionWorkingDirectory(
-                    workingDirectory,
-                    info.workingDirectory,
-                    relatedWorkingDirectories: relatedWorkingDirectories,
-                  ),
-                )
-                .toList(growable: false)
+          ? _scopePiSessionsToWorkingDirectory(
+              sessions: sessions,
+              sessionFilePaths: sessionFilePaths,
+              parentSessionPathsByFile: parentSessionPathsByFile,
+              workingDirectory: workingDirectory,
+              relatedWorkingDirectories: relatedWorkingDirectories,
+            )
           : sessions;
       return _ToolDiscoveryResult.success(
         'Pi',
@@ -3727,6 +3786,65 @@ print(json.dumps(sessions))
     } on Object {
       return const _ToolDiscoveryResult.failure('Pi');
     }
+  }
+
+  /// Keeps Pi sessions recorded in scope, plus sessions Pi has since relocated
+  /// out of it.
+  ///
+  /// Relocating a session rewrites it into a bucket named for the new working
+  /// directory, so its recorded cwd no longer matches the directory the
+  /// conversation started in. The origin of its `parentSession` chain still
+  /// names that directory, which keeps the conversation offered where the user
+  /// began it.
+  List<ToolSessionInfo> _scopePiSessionsToWorkingDirectory({
+    required List<ToolSessionInfo> sessions,
+    required List<String> sessionFilePaths,
+    required Map<String, String> parentSessionPathsByFile,
+    required String workingDirectory,
+    required List<String> relatedWorkingDirectories,
+  }) {
+    final scopeDirectories = relatedWorkingDirectories.isNotEmpty
+        ? relatedWorkingDirectories
+        : <String>[workingDirectory];
+    final scopeDirectoriesByBucket = <String, String>{};
+    for (final directory in scopeDirectories) {
+      final bucket = piEncodedSessionDirectoryName(directory);
+      if (bucket != null) {
+        scopeDirectoriesByBucket.putIfAbsent(bucket, () => directory);
+      }
+    }
+
+    final scoped = <ToolSessionInfo>[];
+    for (var index = 0; index < sessions.length; index++) {
+      final info = sessions[index];
+      if (matchesDiscoveredSessionWorkingDirectory(
+        workingDirectory,
+        info.workingDirectory,
+        relatedWorkingDirectories: relatedWorkingDirectories,
+      )) {
+        scoped.add(info);
+        continue;
+      }
+      final originBucket = piOriginSessionBucketName(
+        sessionFilePaths[index],
+        parentSessionPathsByFile,
+      );
+      final originDirectory = originBucket == null
+          ? null
+          : scopeDirectoriesByBucket[originBucket];
+      if (originDirectory == null) continue;
+      scoped.add(
+        ToolSessionInfo(
+          toolName: info.toolName,
+          sessionId: info.sessionId,
+          workingDirectory: info.workingDirectory,
+          originWorkingDirectory: originDirectory,
+          lastActive: info.lastActive,
+          summary: info.summary,
+        ),
+      );
+    }
+    return scoped.toList(growable: false);
   }
 
   // ── Hermes ─────────────────────────────────────────────────────────────
