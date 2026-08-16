@@ -27,6 +27,7 @@ const _profileSourcingPrefix =
     r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
 const _geminiSessionMetadataMaxBytes = 64 * 1024;
+const _grokSessionMetadataMaxBytes = 64 * 1024;
 const _openCodeStorageSessionMetadataMaxBytes = 64 * 1024;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
@@ -628,6 +629,58 @@ parseClaudeSessionMetadata(String raw) {
     lastPrompt: lastPrompt,
     userSummary: userSummary,
     parsedAny: parsedAny,
+  );
+}
+
+/// Parses Grok Build session metadata from a saved `summary.json`.
+///
+/// Grok groups sessions by URL-encoded cwd and stores the authoritative id and
+/// cwd again under `info`. Generated/manual titles take precedence over the
+/// legacy session summary, matching Grok's own resume picker.
+@visibleForTesting
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool isHidden,
+  bool parsedAny,
+})
+parseGrokSessionMetadata(String raw) {
+  final decoded = _tryDecodeJsonObject(raw.trim());
+  if (decoded == null) {
+    return (
+      sessionId: null,
+      summary: null,
+      workingDirectory: null,
+      updatedAt: null,
+      isHidden: false,
+      parsedAny: false,
+    );
+  }
+
+  final info = _readMapField(decoded, 'info');
+  final generatedTitle = _readStringField(decoded, 'generated_title')?.trim();
+  final sessionSummary = _readStringField(decoded, 'session_summary')?.trim();
+  final sessionKind = _readStringField(decoded, 'session_kind');
+  final hidden = decoded['hidden'];
+  final summary = generatedTitle != null && generatedTitle.isNotEmpty
+      ? generatedTitle
+      : sessionSummary != null && sessionSummary.isNotEmpty
+      ? sessionSummary
+      : null;
+
+  return (
+    sessionId: _readStringField(info, 'id'),
+    summary: summary,
+    workingDirectory: _readStringField(info, 'cwd'),
+    updatedAt:
+        _parseDateTimeValue(decoded['last_active_at']) ??
+        _parseDateTimeValue(decoded['updated_at']),
+    isHidden: hidden is bool
+        ? hidden
+        : (sessionKind?.startsWith('subagent') ?? false),
+    parsedAny: true,
   );
 }
 
@@ -1923,6 +1976,13 @@ class AgentSessionDiscoveryService {
               effectiveMaxPerTool,
               previewOnly: previewOnly,
             ),
+            _discoverGrokSessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
           ]
         : [
             _discoverSessionsForTool(
@@ -1991,6 +2051,12 @@ class AgentSessionDiscoveryService {
       maxPerTool,
     ),
     'Hermes' => _discoverHermesSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    'Grok Build' => _discoverGrokSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
@@ -3399,6 +3465,140 @@ print(json.dumps(sessions))
         .toList(growable: false);
     if (segments.length < 2) return null;
     return segments[segments.length - 2];
+  }
+
+  // ── Grok Build ─────────────────────────────────────────────────────────
+  // Sessions: ${GROK_HOME:-$HOME/.grok}/sessions/<encoded-cwd>/<id>/summary.json
+  // summary.json contains the authoritative id, cwd, display title, and
+  // activity timestamps used by `grok --resume <id>`.
+
+  Future<_ToolDiscoveryResult> _discoverGrokSessions(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    try {
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 24,
+              maximum: 40,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final metadataReadLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 12,
+            )
+          : calculateRecentSessionMetadataReadLimit(max);
+
+      String output;
+      if (session.remoteIsWindows) {
+        output = await _execWindowsPowerShell(
+          session,
+          windowsListNewestFilesScript(
+            relativeRoot: '.grok/sessions',
+            includeGlobs: const ['summary.json'],
+            limit: scanLimit,
+            overrideRootEnvironmentVariable: 'GROK_HOME',
+            overrideRelativeRoot: 'sessions',
+          ),
+        );
+      } else {
+        output = await _exec(
+          session,
+          r'GROK_SESSIONS_ROOT="${GROK_HOME:-$HOME/.grok}/sessions"; '
+          r'find "$GROK_SESSIONS_ROOT" -name summary.json -type f '
+          '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+        );
+      }
+      if (output.trim().isEmpty) {
+        return const _ToolDiscoveryResult.success('Grok Build', []);
+      }
+
+      final summaryPaths = output
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toSet()
+          .take(metadataReadLimit)
+          .toList(growable: false);
+      final snapshots = await _readRemoteFileSnapshots(
+        session,
+        summaryPaths,
+        maxBytes: _grokSessionMetadataMaxBytes,
+      );
+      final sessions = <ToolSessionInfo>[];
+      var hadError = false;
+
+      for (final path in summaryPaths) {
+        final snapshot = snapshots[path];
+        if (snapshot == null) {
+          hadError = true;
+          continue;
+        }
+        final metadata = parseGrokSessionMetadata(snapshot.content);
+        if (!metadata.parsedAny) {
+          if (snapshot.content.trim().isNotEmpty) hadError = true;
+          continue;
+        }
+        if (metadata.isHidden) continue;
+
+        final segments = path
+            .split('/')
+            .where((segment) => segment.isNotEmpty)
+            .toList(growable: false);
+        final fallbackSessionId = segments.length < 2
+            ? null
+            : segments[segments.length - 2];
+        final sessionId = metadata.sessionId?.trim().isNotEmpty ?? false
+            ? metadata.sessionId!.trim()
+            : fallbackSessionId;
+        if (sessionId == null || sessionId.isEmpty) {
+          hadError = true;
+          continue;
+        }
+
+        sessions.add(
+          ToolSessionInfo(
+            toolName: 'Grok Build',
+            sessionId: sessionId,
+            workingDirectory: metadata.workingDirectory,
+            lastActive: metadata.updatedAt ?? snapshot.modifiedAt,
+            summary: metadata.summary ?? _truncateId(sessionId),
+          ),
+        );
+      }
+
+      final scopedSessions =
+          workingDirectory != null && workingDirectory.isNotEmpty
+          ? sessions
+                .where(
+                  (info) => matchesDiscoveredSessionWorkingDirectory(
+                    workingDirectory,
+                    info.workingDirectory,
+                    relatedWorkingDirectories: relatedWorkingDirectories,
+                  ),
+                )
+                .toList(growable: false)
+          : sessions;
+      return _ToolDiscoveryResult.success(
+        'Grok Build',
+        sortAndLimitDiscoveredSessions(
+          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+          max,
+        ),
+        hadError: hadError,
+      );
+    } on Object {
+      return const _ToolDiscoveryResult.failure('Grok Build');
+    }
   }
 
   // ── Pi ─────────────────────────────────────────────────────────────────
@@ -4948,6 +5148,9 @@ String _windowsNameLikeCondition(List<String> globs) => globs
 /// least one `-like` pattern are emitted (mirroring `find ... -path <pattern>`).
 /// [additionalRelativeRoots] and [rootEnvironmentVariables] let callers include
 /// `%LOCALAPPDATA%` / `%APPDATA%` layouts without duplicating script builders.
+/// When [overrideRootEnvironmentVariable] is non-empty on the remote, its
+/// [overrideRelativeRoot] replaces all fallback roots instead of supplementing
+/// them. This mirrors `${VAR:-fallback}` semantics on POSIX.
 @visibleForTesting
 String windowsListNewestFilesScript({
   required String relativeRoot,
@@ -4957,7 +5160,15 @@ String windowsListNewestFilesScript({
   List<String> pathLikeFilters = const <String>[],
   List<String> rootEnvironmentVariables =
       _windowsUserProfileRootEnvironmentVariables,
+  String? overrideRootEnvironmentVariable,
+  String? overrideRelativeRoot,
 }) {
+  if ((overrideRootEnvironmentVariable == null) !=
+      (overrideRelativeRoot == null)) {
+    throw ArgumentError(
+      'overrideRootEnvironmentVariable and overrideRelativeRoot must be set together',
+    );
+  }
   final relativeRootsLiteral = _windowsPowerShellArrayLiteral([
     relativeRoot,
     ...additionalRelativeRoots,
@@ -4966,7 +5177,20 @@ String windowsListNewestFilesScript({
       _windowsEnvironmentVariableArrayLiteral(rootEnvironmentVariables);
   final body = StringBuffer()
     ..write('\$__flRelRoots=@($relativeRootsLiteral);')
-    ..write('\$__flRootBases=@($rootEnvironmentVariablesLiteral);')
+    ..write('\$__flRootBases=@($rootEnvironmentVariablesLiteral);');
+  if (overrideRootEnvironmentVariable != null) {
+    final overrideRootLiteral = _windowsEnvironmentVariableArrayLiteral([
+      overrideRootEnvironmentVariable,
+    ]);
+    body
+      ..write('\$__flOverrideBase=$overrideRootLiteral;')
+      ..write(r'if(![string]::IsNullOrWhiteSpace([string]$__flOverrideBase)){')
+      ..write(
+        '\$__flRelRoots=@(${powerShellSingleQuote(overrideRelativeRoot!)});',
+      )
+      ..write(r'$__flRootBases=@($__flOverrideBase)}');
+  }
+  body
     ..write(r'$__flRoots=@();')
     ..write(r'foreach($__flBase in $__flRootBases){')
     ..write(r'if([string]::IsNullOrWhiteSpace([string]$__flBase)){continue}')
