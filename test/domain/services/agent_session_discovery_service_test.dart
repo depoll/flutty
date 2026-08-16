@@ -1161,49 +1161,114 @@ cwd: /tmp/demo
     });
   });
 
-  group('piOriginSessionBucketName', () {
+  group('piSessionBucketName', () {
+    test('reads the bucket from a POSIX session path', () {
+      expect(
+        piSessionBucketName(
+          '/home/dev/.pi/agent/sessions/--home-dev--/a.jsonl',
+        ),
+        '--home-dev--',
+      );
+    });
+
+    test('reads the bucket from a native Windows session path', () {
+      expect(
+        piSessionBucketName(
+          r'C:\Users\dev\.pi\agent\sessions\--C-Users-dev-proj--\a.jsonl',
+        ),
+        '--C-Users-dev-proj--',
+      );
+    });
+
+    test('returns null without a containing directory', () {
+      expect(piSessionBucketName('a.jsonl'), isNull);
+      expect(piSessionBucketName(null), isNull);
+    });
+  });
+
+  group('piRelocationSourceBucketName', () {
     const sessionsRoot = '/home/dev/.pi/agent/sessions';
     const projectBucket = '--home-dev-project--';
     const worktreeBucket = '--home-dev-worktree--';
+    const relocated = '$sessionsRoot/$worktreeBucket/relocated.jsonl';
+    const parentInProject = '$sessionsRoot/$projectBucket/origin.jsonl';
 
-    test('uses the session own bucket when it has no parent', () {
-      const path = '$sessionsRoot/$projectBucket/a.jsonl';
-
-      expect(piOriginSessionBucketName(path, const {path: ''}), projectBucket);
-    });
-
-    test('falls back to the deleted parent bucket after relocation', () {
-      const relocated = '$sessionsRoot/$worktreeBucket/relocated.jsonl';
-      const deletedOrigin = '$sessionsRoot/$projectBucket/origin.jsonl';
-
+    test('reports the bucket a deleted parent named', () {
       expect(
-        piOriginSessionBucketName(relocated, const {relocated: deletedOrigin}),
+        piRelocationSourceBucketName(
+          sessionFilePath: relocated,
+          parentSessionPath: parentInProject,
+          parentExists: false,
+        ),
         projectBucket,
       );
     });
 
-    test('walks a rotated chain back to where it started', () {
-      const middle = '$sessionsRoot/$worktreeBucket/middle.jsonl';
-      const newest = '$sessionsRoot/$worktreeBucket/newest.jsonl';
-      const deletedOrigin = '$sessionsRoot/$projectBucket/origin.jsonl';
-
+    test('ignores a fork, whose parent is still on disk', () {
       expect(
-        piOriginSessionBucketName(newest, const {
-          newest: middle,
-          middle: deletedOrigin,
-        }),
-        projectBucket,
+        piRelocationSourceBucketName(
+          sessionFilePath: relocated,
+          parentSessionPath: parentInProject,
+          parentExists: true,
+        ),
+        isNull,
       );
     });
 
-    test('stops on a cyclic chain instead of looping forever', () {
-      const first = '$sessionsRoot/$projectBucket/first.jsonl';
-      const second = '$sessionsRoot/$worktreeBucket/second.jsonl';
-
+    test('ignores a rotation inside the same directory', () {
       expect(
-        piOriginSessionBucketName(first, const {first: second, second: first}),
-        isNotNull,
+        piRelocationSourceBucketName(
+          sessionFilePath: relocated,
+          parentSessionPath: '$sessionsRoot/$worktreeBucket/previous.jsonl',
+          parentExists: false,
+        ),
+        isNull,
       );
+    });
+
+    test('ignores a session that has no parent at all', () {
+      expect(
+        piRelocationSourceBucketName(
+          sessionFilePath: relocated,
+          parentSessionPath: null,
+          parentExists: false,
+        ),
+        isNull,
+      );
+    });
+
+    test('matches a Windows parent recorded with backslashes', () {
+      expect(
+        piRelocationSourceBucketName(
+          sessionFilePath:
+              'C:/Users/dev/.pi/agent/sessions/--C-Users-dev-wt--/a.jsonl',
+          parentSessionPath:
+              r'C:\Users\dev\.pi\agent\sessions\--C-Users-dev-proj--\b.jsonl',
+          parentExists: false,
+        ),
+        '--C-Users-dev-proj--',
+      );
+    });
+  });
+
+  group('discoveredSessionMatchesScope', () {
+    const info = ToolSessionInfo(
+      toolName: 'Pi',
+      sessionId: 'a',
+      workingDirectory: '/home/dev/worktree',
+      originWorkingDirectory: '/home/dev/project',
+    );
+
+    test('matches the directory a session was relocated out of', () {
+      expect(discoveredSessionMatchesScope(info, '/home/dev/project'), isTrue);
+    });
+
+    test('matches the directory a session currently records', () {
+      expect(discoveredSessionMatchesScope(info, '/home/dev/worktree'), isTrue);
+    });
+
+    test('rejects an unrelated directory', () {
+      expect(discoveredSessionMatchesScope(info, '/home/dev/other'), isFalse);
     });
   });
 
@@ -2331,6 +2396,55 @@ branch refs/heads/main
           (info) => info.sessionId == '01JYX8RELOC',
         );
         expect(relocated.workingDirectory, '/Users/depoll/worktrees/feature');
+      },
+    );
+
+    test(
+      'Pi discovery leaves a fork in the project it now belongs to',
+      () async {
+        final client = _MockSshClient();
+        const sessionsRoot = '/Users/demo/.pi/agent/sessions';
+        const forkPath =
+            '$sessionsRoot/--Users-depoll-Code-other--/'
+            '2026-04-12T22-10-00-000Z_01JYXFORK.jsonl';
+        // A fork records a cross-directory parent exactly like a relocation, but
+        // keeps that parent on disk, so it is a different conversation from the
+        // one the user started in the scoped project.
+        const retainedParentPath =
+            '$sessionsRoot/--Users-depoll-Code-flutty--/'
+            '2026-04-12T22-09-50-000Z_01JYXSOURCE.jsonl';
+
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          if (command.contains('find ~/.pi/agent/sessions')) {
+            return _buildExecSession(stdout: '$forkPath\n');
+          }
+          if (command.contains('__flutty_parent')) {
+            return _buildExecSession(stdout: '$retainedParentPath\n');
+          }
+          if (command.contains(forkPath)) {
+            return _buildExecSession(
+              stdout: _remoteSnapshotLine(forkPath, '''
+{"type":"session","version":3,"id":"01JYXFORK","timestamp":"2026-04-12T22:10:00.000Z","cwd":"/Users/depoll/Code/other","parentSession":"$retainedParentPath"}
+{"type":"message","message":{"role":"user","content":"Fork of the other project"}}
+''', mtime: 1777243999),
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+        final result = await discovery.discoverSessions(
+          session,
+          workingDirectory: '/Users/depoll/Code/flutty',
+          toolName: 'Pi',
+        );
+
+        expect(
+          result.sessions.map((info) => info.sessionId),
+          isNot(contains('01JYXFORK')),
+        );
       },
     );
 

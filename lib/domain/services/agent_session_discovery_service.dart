@@ -757,42 +757,61 @@ parsePiSessionMetadata(String raw) {
 String? piEncodedSessionDirectoryName(String? workingDirectory) {
   final trimmed = _trimWorkingDirectory(workingDirectory);
   if (trimmed == null) return null;
-  final withoutLeadingSeparator = trimmed.replaceFirst(RegExp(r'^[/\\]'), '');
+  // Pi encodes its resolved cwd, which never carries a trailing separator, so
+  // a scope directory that does must shed it or it gains a stray `-`.
+  final withoutTrailingSeparator = trimmed.replaceFirst(RegExp(r'[/\\]+$'), '');
+  final withoutLeadingSeparator = withoutTrailingSeparator.replaceFirst(
+    RegExp(r'^[/\\]'),
+    '',
+  );
   if (withoutLeadingSeparator.isEmpty) return null;
   final encoded = withoutLeadingSeparator.replaceAll(RegExp(r'[/\\:]'), '-');
   return '--$encoded--';
 }
 
-String? _piSessionBucketName(String? sessionFilePath) {
-  final segments = sessionFilePath?.split('/') ?? const <String>[];
+/// Reads the bucket directory name out of a Pi session file path.
+///
+/// Splits on either separator because a Windows listing reports forward
+/// slashes while Pi writes `parentSession` as a native backslash path.
+@visibleForTesting
+String? piSessionBucketName(String? sessionFilePath) {
+  final trimmed = sessionFilePath?.trim();
+  if (trimmed == null || trimmed.isEmpty) return null;
+  final segments = trimmed
+      .split(RegExp(r'[/\\]'))
+      .where((segment) => segment.isNotEmpty)
+      .toList(growable: false);
   return segments.length < 2 ? null : segments[segments.length - 2];
 }
 
-/// Resolves the bucket that a session's `parentSession` chain started in.
+/// The bucket a session was relocated out of, or null when it was not.
 ///
-/// Pi records the file it came from when a session rotates (`/new`) or is
-/// relocated to another working directory. Rotation keeps the previous file on
-/// disk, so the walk follows links that were read; relocation deletes it, so a
-/// dangling link ends the walk at its own bucket, which still names the
-/// directory the conversation started in.
+/// Pi records the previous file in `parentSession` for three different
+/// operations, and only one of them means the conversation moved:
+///
+/// * relocation into another working directory rewrites the session and
+///   **deletes** the previous file;
+/// * rotation (`/new`) keeps the previous file, in the same bucket;
+/// * `--fork` keeps the previous file and may write the new session into a
+///   different bucket.
+///
+/// Both conditions are therefore required. Without the deletion check a fork
+/// would be offered in the project it was forked from, which is a different
+/// conversation than the one the user started there. Only the immediate parent
+/// is considered: a session that moved and was then rotated or forked is a new
+/// conversation, not the one that left the original directory.
 @visibleForTesting
-String? piOriginSessionBucketName(
-  String sessionFilePath,
-  Map<String, String> parentSessionPathsByFile,
-) {
-  final visited = <String>{};
-  var current = sessionFilePath;
-  while (visited.add(current)) {
-    final parent = parentSessionPathsByFile[current];
-    if (parent == null || parent.isEmpty) {
-      return _piSessionBucketName(current);
-    }
-    if (!parentSessionPathsByFile.containsKey(parent)) {
-      return _piSessionBucketName(parent);
-    }
-    current = parent;
-  }
-  return _piSessionBucketName(current);
+String? piRelocationSourceBucketName({
+  required String sessionFilePath,
+  required String? parentSessionPath,
+  required bool parentExists,
+}) {
+  if (parentExists) return null;
+  final parentBucket = piSessionBucketName(parentSessionPath);
+  if (parentBucket == null) return null;
+  return parentBucket == piSessionBucketName(sessionFilePath)
+      ? null
+      : parentBucket;
 }
 
 /// Extracts the Pi session id from a `<timestamp>_<sessionId>.jsonl` file name.
@@ -1439,6 +1458,30 @@ List<String> buildRelatedWorkingDirectories(
   return directories.toList(growable: false);
 }
 
+/// Whether a discovered session belongs to the active project scope.
+///
+/// A session Pi relocated into another directory keeps the directory it started
+/// in on [ToolSessionInfo.originWorkingDirectory], so both are checked. Every
+/// scope filter must use this predicate: discovery scopes per provider, the
+/// aggregate scopes again, and the incremental preview scopes a third time, so
+/// a filter that only looks at the recorded directory silently drops the row.
+@visibleForTesting
+bool discoveredSessionMatchesScope(
+  ToolSessionInfo info,
+  String workingDirectory, {
+  Iterable<String> relatedWorkingDirectories = const <String>[],
+}) =>
+    matchesDiscoveredSessionWorkingDirectory(
+      workingDirectory,
+      info.workingDirectory,
+      relatedWorkingDirectories: relatedWorkingDirectories,
+    ) ||
+    matchesDiscoveredSessionWorkingDirectory(
+      workingDirectory,
+      info.originWorkingDirectory,
+      relatedWorkingDirectories: relatedWorkingDirectories,
+    );
+
 /// Whether a discovered session directory belongs to the active project scope.
 @visibleForTesting
 bool matchesDiscoveredSessionWorkingDirectory(
@@ -1608,17 +1651,11 @@ List<ToolSessionInfo> scopeDiscoveredSessionsToWorkingDirectory(
   for (final toolSessions in sessionsByTool.values) {
     final matchingSessions = toolSessions
         .where(
-          (session) =>
-              matchesDiscoveredSessionWorkingDirectory(
-                workingDirectory,
-                session.workingDirectory,
-                relatedWorkingDirectories: relatedWorkingDirectories,
-              ) ||
-              matchesDiscoveredSessionWorkingDirectory(
-                workingDirectory,
-                session.originWorkingDirectory,
-                relatedWorkingDirectories: relatedWorkingDirectories,
-              ),
+          (session) => discoveredSessionMatchesScope(
+            session,
+            workingDirectory,
+            relatedWorkingDirectories: relatedWorkingDirectories,
+          ),
         )
         .toList(growable: false);
     if (matchingSessions.isNotEmpty) {
@@ -2164,9 +2201,9 @@ class AgentSessionDiscoveryService {
       if (workingDirectory == null || workingDirectory.isEmpty) {
         return normalized;
       }
-      if (matchesDiscoveredSessionWorkingDirectory(
+      if (discoveredSessionMatchesScope(
+        normalized,
         workingDirectory,
-        normalized.workingDirectory,
         relatedWorkingDirectories: relatedWorkingDirectories,
       )) {
         return normalized;
@@ -3743,8 +3780,10 @@ print(json.dumps(sessions))
             summary = metadata.summary;
             sessionWorkingDirectory = metadata.workingDirectory;
             lastActive = metadata.updatedAt;
-            parentSessionPathsByFile[filePath] =
-                metadata.parentSessionPath?.trim() ?? '';
+            final parentSessionPath = metadata.parentSessionPath?.trim();
+            if (parentSessionPath != null && parentSessionPath.isNotEmpty) {
+              parentSessionPathsByFile[filePath] = parentSessionPath;
+            }
           } on Object {
             hadError = true;
           }
@@ -3770,9 +3809,13 @@ print(json.dumps(sessions))
           ? _scopePiSessionsToWorkingDirectory(
               sessions: sessions,
               sessionFilePaths: sessionFilePaths,
-              parentSessionPathsByFile: parentSessionPathsByFile,
+              relocationBucketsByFile: await _piRelocationBucketsByFile(
+                session,
+                parentSessionPathsByFile,
+              ),
               workingDirectory: workingDirectory,
               relatedWorkingDirectories: relatedWorkingDirectories,
+              caseInsensitiveBuckets: session.remoteIsWindows,
             )
           : sessions;
       return _ToolDiscoveryResult.success(
@@ -3799,39 +3842,42 @@ print(json.dumps(sessions))
   List<ToolSessionInfo> _scopePiSessionsToWorkingDirectory({
     required List<ToolSessionInfo> sessions,
     required List<String> sessionFilePaths,
-    required Map<String, String> parentSessionPathsByFile,
+    required Map<String, String> relocationBucketsByFile,
     required String workingDirectory,
     required List<String> relatedWorkingDirectories,
+    required bool caseInsensitiveBuckets,
   }) {
     final scopeDirectories = relatedWorkingDirectories.isNotEmpty
         ? relatedWorkingDirectories
         : <String>[workingDirectory];
+    String bucketKey(String bucket) =>
+        caseInsensitiveBuckets ? bucket.toLowerCase() : bucket;
     final scopeDirectoriesByBucket = <String, String>{};
     for (final directory in scopeDirectories) {
       final bucket = piEncodedSessionDirectoryName(directory);
       if (bucket != null) {
-        scopeDirectoriesByBucket.putIfAbsent(bucket, () => directory);
+        scopeDirectoriesByBucket.putIfAbsent(
+          bucketKey(bucket),
+          () => directory,
+        );
       }
     }
 
     final scoped = <ToolSessionInfo>[];
     for (var index = 0; index < sessions.length; index++) {
       final info = sessions[index];
-      if (matchesDiscoveredSessionWorkingDirectory(
+      if (discoveredSessionMatchesScope(
+        info,
         workingDirectory,
-        info.workingDirectory,
         relatedWorkingDirectories: relatedWorkingDirectories,
       )) {
         scoped.add(info);
         continue;
       }
-      final originBucket = piOriginSessionBucketName(
-        sessionFilePaths[index],
-        parentSessionPathsByFile,
-      );
-      final originDirectory = originBucket == null
+      final relocationBucket = relocationBucketsByFile[sessionFilePaths[index]];
+      final originDirectory = relocationBucket == null
           ? null
-          : scopeDirectoriesByBucket[originBucket];
+          : scopeDirectoriesByBucket[bucketKey(relocationBucket)];
       if (originDirectory == null) continue;
       scoped.add(
         ToolSessionInfo(
@@ -3845,6 +3891,82 @@ print(json.dumps(sessions))
       );
     }
     return scoped.toList(growable: false);
+  }
+
+  /// Maps each session file to the bucket Pi relocated it out of.
+  ///
+  /// Only entries whose parent sits in another bucket are probed, so the common
+  /// case (no relocation, or a rotation in place) costs no extra round trip.
+  Future<Map<String, String>> _piRelocationBucketsByFile(
+    SshSession session,
+    Map<String, String> parentSessionPathsByFile,
+  ) async {
+    final crossBucketParents = <String, String>{};
+    for (final entry in parentSessionPathsByFile.entries) {
+      final parentBucket = piSessionBucketName(entry.value);
+      if (parentBucket == null) continue;
+      if (parentBucket == piSessionBucketName(entry.key)) continue;
+      crossBucketParents[entry.key] = entry.value;
+    }
+    if (crossBucketParents.isEmpty) return const <String, String>{};
+
+    final existingParents = await _existingRemoteSessionPaths(
+      session,
+      crossBucketParents.values,
+    );
+    final relocationBuckets = <String, String>{};
+    for (final entry in crossBucketParents.entries) {
+      final bucket = piRelocationSourceBucketName(
+        sessionFilePath: entry.key,
+        parentSessionPath: entry.value,
+        parentExists: existingParents.contains(entry.value),
+      );
+      if (bucket != null) relocationBuckets[entry.key] = bucket;
+    }
+    return relocationBuckets;
+  }
+
+  /// Returns the subset of [paths] that still exist on the remote.
+  ///
+  /// Pi deletes a session file when it relocates that conversation into another
+  /// directory, and keeps it for a rotation or a fork, so existence is what
+  /// separates the two. Absence from the discovery listing cannot stand in for
+  /// this check: that listing is capped at the newest files, so a retained
+  /// parent can simply fall outside it.
+  Future<Set<String>> _existingRemoteSessionPaths(
+    SshSession session,
+    Iterable<String> paths,
+  ) async {
+    final candidates = paths.toSet();
+    if (candidates.isEmpty) return const <String>{};
+    try {
+      final String output;
+      if (session.remoteIsWindows) {
+        final literals = candidates.map(powerShellSingleQuote).join(',');
+        output = await _execWindowsPowerShell(
+          session,
+          '@($literals) | Where-Object { Test-Path -LiteralPath \$_ } | '
+          r'ForEach-Object { $_ }',
+        );
+      } else {
+        final quoted = candidates.map(_shellQuote).join(' ');
+        output = await _exec(
+          session,
+          'for __flutty_parent in $quoted; do '
+          r'[ -e "$__flutty_parent" ] && '
+          r'printf "%s\n" "$__flutty_parent"; done',
+        );
+      }
+      return output
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toSet();
+    } on Object {
+      // A failed probe must not promote forks into another project, so treat
+      // every candidate parent as still present.
+      return candidates;
+    }
   }
 
   // ── Hermes ─────────────────────────────────────────────────────────────
