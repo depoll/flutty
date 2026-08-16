@@ -61,8 +61,10 @@ void main() {
       const payload = TerminalNotificationPayload(
         hostId: 7,
         connectionId: 21,
+        platformNotificationId: 4321,
         notificationIdentifier: 'build',
         reportsActivation: true,
+        focusOnActivation: false,
       );
 
       expect(TerminalNotificationPayload.decode(payload.encode()), payload);
@@ -105,10 +107,11 @@ void main() {
       sound: TerminalNotificationSound.silent,
       timeout: const Duration(milliseconds: 1250),
     );
-    expect(quiet.android?.channelId, terminalNotificationLowChannelId);
+    expect(quiet.android?.channelId, terminalNotificationLowSilentChannelId);
     expect(quiet.android?.importance, Importance.low);
     expect(quiet.android?.priority, Priority.low);
     expect(quiet.android?.playSound, isFalse);
+    expect(quiet.android?.silent, isTrue);
     expect(quiet.android?.timeoutAfter, 1250);
     expect(quiet.iOS?.presentSound, isFalse);
     expect(quiet.iOS?.interruptionLevel, InterruptionLevel.passive);
@@ -123,6 +126,18 @@ void main() {
     expect(critical.android?.playSound, isTrue);
     expect(critical.iOS?.presentSound, isTrue);
     expect(critical.iOS?.interruptionLevel, InterruptionLevel.active);
+
+    final channels = LocalNotificationService.debugTerminalNotificationChannels;
+    for (final channelId in <String>{
+      terminalNotificationLowSilentChannelId,
+      terminalNotificationSilentChannelId,
+      terminalNotificationCriticalSilentChannelId,
+    }) {
+      expect(
+        channels.singleWhere((channel) => channel.id == channelId).playSound,
+        isFalse,
+      );
+    }
   });
 
   test('Kitty identifiers replace within a connection without collisions', () {
@@ -137,6 +152,10 @@ void main() {
     expect(
       buildTerminalNotificationId(21, identifier: 'build'),
       isNot(buildTerminalNotificationId(22, identifier: 'build')),
+    );
+    expect(
+      buildTerminalNotificationId(21, identifier: 'build/a'),
+      isNot(buildTerminalNotificationId(21, identifier: 'build+a')),
     );
   });
 

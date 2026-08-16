@@ -65,6 +65,27 @@ void main() {
     expect(effective.selection, TerminalThemes.dracula.selection);
   });
 
+  test('sets and queries consecutive dynamic color roles', () {
+    final overrides = TerminalOscColorOverrides();
+    expect(overrides.handle('10', const ['#112233', '#445566', '#778899']), (
+      handled: true,
+      changed: true,
+    ));
+    final effective = overrides.applyTo(TerminalThemes.dracula);
+    expect(effective.foreground, const Color(0xFF112233));
+    expect(effective.background, const Color(0xFF445566));
+    expect(effective.cursor, const Color(0xFF778899));
+    expect(
+      buildTerminalThemeOscResponse(
+        theme: effective,
+        code: '10',
+        args: const ['?', '#000000', '?'],
+      ),
+      '\x1b]10;rgb:1111/2222/3333\x1b\\'
+      '\x1b]12;rgb:7777/8888/9999\x1b\\',
+    );
+  });
+
   test('sets and selectively resets extended palette entries', () {
     final overrides = TerminalOscColorOverrides();
     expect(overrides.handle('4', const ['16', '#123456', '200', '#abcdef']), (

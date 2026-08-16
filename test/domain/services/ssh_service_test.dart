@@ -28,7 +28,9 @@ import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/interactive_auth_prompt.dart';
+import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/terminal_notification.dart';
@@ -593,6 +595,42 @@ class _CancellableConnectSshService extends SshService {
     );
     await cancellationToken.cancelled;
     return const SshConnectionResult.userCancelled();
+  }
+}
+
+class _EnabledTerminalNotificationsNotifier
+    extends TerminalNotificationsNotifier {
+  @override
+  bool build() => true;
+}
+
+class _DelayedTerminalNotificationService extends LocalNotificationService {
+  final showStarted = Completer<void>();
+  final releaseShow = Completer<void>();
+  final calls = <String>[];
+  TerminalNotificationPayload? lastPayload;
+
+  @override
+  Future<bool> showTerminalNotification({
+    required int notificationId,
+    required String title,
+    required String body,
+    required TerminalNotificationPayload payload,
+    TerminalNotificationUrgency urgency = TerminalNotificationUrgency.normal,
+    TerminalNotificationSound sound = TerminalNotificationSound.silent,
+    Duration? timeout,
+  }) async {
+    lastPayload = payload;
+    calls.add('show-start:$notificationId');
+    if (!showStarted.isCompleted) showStarted.complete();
+    await releaseShow.future;
+    calls.add('show-finish:$notificationId');
+    return true;
+  }
+
+  @override
+  Future<void> clearTerminalNotification(int notificationId) async {
+    calls.add('clear:$notificationId');
   }
 }
 
@@ -1746,6 +1784,16 @@ LISTEN ::1:4201
       ], remoteHost: remoteHost);
 
       expect(resolveTerminalWorkingDirectoryPath(vscode), '/home/demo/project');
+      expect(
+        resolveTerminalWorkingDirectoryPath(
+          parseTerminalShellWorkingDirectoryOsc('633', const [
+            'P',
+            'Cwd=/home/demo/project',
+            '',
+          ]),
+        ),
+        '/home/demo/project',
+      );
       expect(
         resolveTerminalWorkingDirectoryPath(conEmu),
         '/C:/Users/demo/project',
@@ -3646,8 +3694,21 @@ LISTEN ::1:4201
       );
     });
 
+    test('applies mixed OSC 4 setters before answering queries', () async {
+      final opened = await openShell();
+      opened.session
+        ..terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme
+        ..debugHandlePrivateOsc('4', const ['1', '#123456', '1', '?']);
+
+      expect(opened.session.terminalTheme?.red, const Color(0xFF123456));
+      expect(
+        utf8.decode(opened.shellWrites.single),
+        '\x1b]4;1;rgb:1212/3434/5656\x1b\\',
+      );
+    });
+
     test(
-      'tracks Kitty alive state and reports activation plus close',
+      'tracks Kitty alive state and keeps activation separate from close',
       () async {
         final opened = await openShell();
         const request = TerminalNotificationRequest(
@@ -3675,11 +3736,7 @@ LISTEN ::1:4201
             reportsActivation: true,
           )
           ..debugHandlePrivateOsc('99', const ['i=after:p=alive']);
-        expect(
-          utf8.decode(opened.shellWrites[2]),
-          '\x1b]99;i=build;\x1b\\'
-          '\x1b]99;i=build:p=close;\x1b\\',
-        );
+        expect(utf8.decode(opened.shellWrites[2]), '\x1b]99;i=build;\x1b\\');
         expect(
           utf8.decode(opened.shellWrites[3]),
           '\x1b]99;i=after:p=alive;\x1b\\',
@@ -4170,10 +4227,12 @@ LISTEN ::1:4201
   group('ActiveSessionsNotifier', () {
     late ProviderContainer container;
     late _FakeActiveSessionsSshService fakeSshService;
+    late _DelayedTerminalNotificationService notificationService;
     late List<MethodCall> methodCalls;
 
     setUp(() {
       fakeSshService = _FakeActiveSessionsSshService();
+      notificationService = _DelayedTerminalNotificationService();
       final hostRepository = _MockHostRepository();
       when(() => hostRepository.getById(any())).thenAnswer((_) async => null);
       methodCalls = <MethodCall>[];
@@ -4189,6 +4248,12 @@ LISTEN ::1:4201
           hostRepositoryProvider.overrideWithValue(hostRepository),
           portForwardRepositoryProvider.overrideWithValue(
             _emptyPortForwardRepository(),
+          ),
+          localNotificationServiceProvider.overrideWithValue(
+            notificationService,
+          ),
+          terminalNotificationsNotifierProvider.overrideWith(
+            _EnabledTerminalNotificationsNotifier.new,
           ),
         ],
       );
@@ -4210,6 +4275,63 @@ LISTEN ::1:4201
 
         expect(methodCalls, hasLength(1));
         expect(methodCalls.single.method, 'stopService');
+      },
+    );
+
+    test('serializes terminal notification create before close', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final result = await notifier.connect(42, forceNew: true);
+      final session = notifier.getSession(result.connectionId!)!;
+      final notificationId = buildTerminalNotificationId(
+        session.connectionId,
+        identifier: 'ordered',
+      );
+
+      session.debugHandlePrivateOsc('99', const ['i=ordered', 'Started']);
+      await notificationService.showStarted.future;
+      session.debugHandlePrivateOsc('99', const ['i=ordered:p=close']);
+      await pumpEventQueue();
+      expect(notificationService.calls, ['show-start:$notificationId']);
+
+      notificationService.releaseShow.complete();
+      for (
+        var attempt = 0;
+        attempt < 20 && notificationService.calls.length < 3;
+        attempt += 1
+      ) {
+        await pumpEventQueue();
+      }
+      expect(notificationService.calls, [
+        'show-start:$notificationId',
+        'show-finish:$notificationId',
+        'clear:$notificationId',
+      ]);
+    });
+
+    test(
+      'unidentified notification tap cancels its exact expiry timer',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+        final result = await notifier.connect(42, forceNew: true);
+        final session = notifier.getSession(result.connectionId!)!;
+        notificationService.releaseShow.complete();
+
+        session.debugHandlePrivateOsc('99', const ['w=60000', 'Unidentified']);
+        for (
+          var attempt = 0;
+          attempt < 20 && notificationService.lastPayload == null;
+          attempt += 1
+        ) {
+          await pumpEventQueue();
+        }
+        final payload = notificationService.lastPayload!;
+        expect(payload.notificationIdentifier, isNull);
+        expect(payload.platformNotificationId, isNotNull);
+        expect(notifier.debugTerminalNotificationExpiryTimerCount, 1);
+
+        notifier.handleTerminalNotificationTap(payload);
+
+        expect(notifier.debugTerminalNotificationExpiryTimerCount, 0);
       },
     );
 

@@ -2052,21 +2052,37 @@ void main() {
       );
     });
 
-    testWidgets('terminal overflow exposes previous command marks', (
+    testWidgets('previous command advances past a mark clamped at the bottom', (
       tester,
     ) async {
       final terminal = session.terminal!;
-      void markCommand() => session.debugHandlePrivateOsc('133', const ['C']);
-      terminal.write('prompt\r\n');
-      markCommand();
+      for (var row = 0; row < 70; row += 1) {
+        terminal.write('command output $row\r\n');
+        if (row == 10 || row == 35 || row == 65) {
+          session.debugHandlePrivateOsc('133', const ['C']);
+        }
+      }
 
       await pumpScreen(tester);
-      await openTerminalOverflowMenu(tester);
+      final terminalView = tester.widget<MonkeyTerminalView>(
+        find.byType(MonkeyTerminalView),
+      );
+      final scrollController = terminalView.scrollController!;
+      scrollController.jumpTo(scrollController.position.maxScrollExtent);
+      await tester.pump();
 
-      final previousCommand = terminalMenuItemButton('Previous Command');
-      expect(previousCommand, findsOneWidget);
-      await tester.tap(previousCommand);
+      await openTerminalOverflowMenu(tester);
+      await tester.tap(terminalMenuItemButton('Previous Command (3)'));
       await tester.pumpAndSettle();
+      final firstOffset = scrollController.offset;
+
+      await openTerminalOverflowMenu(tester);
+      await tester.tap(terminalMenuItemButton('Previous Command (3)'));
+      await tester.pumpAndSettle();
+      final secondOffset = scrollController.offset;
+
+      expect(firstOffset, scrollController.position.maxScrollExtent);
+      expect(secondOffset, lessThan(firstOffset));
     });
 
     testWidgets('terminal overflow menu folds out paste actions', (

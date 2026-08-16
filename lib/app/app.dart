@@ -254,8 +254,10 @@ class _BackgroundLifecycleBridgeState
       // The notification can outlive its SSH channel; navigation still
       // succeeds even when best-effort protocol reports cannot be sent.
     }
-    _pendingTerminalNavigation = payload;
-    _queuePendingTerminalNavigation();
+    if (payload.focusOnActivation) {
+      _pendingTerminalNavigation = payload;
+      _queuePendingTerminalNavigation();
+    }
   }
 
   void _queuePendingTerminalNavigation() {

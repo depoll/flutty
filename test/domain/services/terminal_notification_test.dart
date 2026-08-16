@@ -116,6 +116,7 @@ void main() {
       ]);
 
       expect(request?.reportsActivation, isTrue);
+      expect(request?.focusOnActivation, isTrue);
       expect(request?.reportsClose, isTrue);
       expect(request?.urgency, TerminalNotificationUrgency.critical);
       expect(request?.sound, TerminalNotificationSound.silent);
@@ -185,6 +186,56 @@ void main() {
         buildKittyNotificationCapabilityResponse(const ['i=q1:p=?']),
         '\x1b]99;i=q1:p=?;a=focus,report:o=always:p=title,body:'
         's=system,silent:u=0,1,2:w=1\x1b\\',
+      );
+    });
+
+    test('preserves distinct printable identifiers without aliasing', () {
+      final slash = parser.handleOsc('99', ['i=build/a', 'Slash']);
+      final plus = parser.handleOsc('99', ['i=build+a', 'Plus']);
+      final spaced = parser.handleOsc('99', ['i=build job', 'Space']);
+
+      expect(slash?.identifier, 'build/a');
+      expect(plus?.identifier, 'build+a');
+      expect(spaced?.identifier, 'build job');
+      expect(slash?.identifier, isNot(plus?.identifier));
+      expect(parser.handleOsc('99', ['i=${'x' * 129}', 'Too long']), isNull);
+      expect(parser.handleOsc('99', ['i=bad\u0007id', 'Control']), isNull);
+    });
+
+    test('rejects Base64 payloads before oversized decode allocation', () {
+      final oversized = base64.encode(List<int>.filled(4097, 0x41));
+      expect(parser.handleOsc('99', ['i=large:e=1', oversized]), isNull);
+    });
+
+    test('tracks focus independently from activation reporting', () {
+      expect(
+        parser.handleOsc('99', ['i=focus:a=focus,report:d=0', 'Working']),
+        isNull,
+      );
+      final request = parser.handleOsc('99', ['i=focus:a=-focus:d=1', '']);
+      expect(request?.reportsActivation, isTrue);
+      expect(request?.focusOnActivation, isFalse);
+    });
+
+    test('treats w=-1 and w=0 as never expire and bounds positives', () {
+      expect(
+        parser.handleOsc('99', const ['i=minus:w=-1', 'Minus'])?.timeout,
+        isNull,
+      );
+      expect(
+        parser.handleOsc('99', const ['i=zero:w=0', 'Zero'])?.timeout,
+        isNull,
+      );
+      expect(
+        parser.handleOsc('99', const ['i=one:w=1', 'One'])?.timeout,
+        const Duration(milliseconds: 1),
+      );
+      expect(
+        parser.handleOsc('99', const [
+          'i=bounded:w=999999999999',
+          'Bounded',
+        ])?.timeout,
+        const Duration(days: 7),
       );
     });
 

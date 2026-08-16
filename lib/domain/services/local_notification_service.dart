@@ -12,14 +12,27 @@ import 'terminal_notification.dart';
 /// Local notification channel used for tmux activity alerts.
 const tmuxAlertNotificationChannelId = 'tmux-alerts';
 
-/// Normal-priority notification channel for remote terminal notifications.
-const terminalNotificationChannelId = 'terminal-notifications-normal-v2';
+/// Normal-priority, system-sound notification channel.
+const terminalNotificationChannelId = 'terminal-notifications-normal-system-v3';
 
-/// Low-priority notification channel for remote terminal notifications.
-const terminalNotificationLowChannelId = 'terminal-notifications-low';
+/// Low-priority, system-sound notification channel.
+const terminalNotificationLowChannelId = 'terminal-notifications-low-system-v2';
 
-/// Critical-priority notification channel for remote terminal notifications.
-const terminalNotificationCriticalChannelId = 'terminal-notifications-critical';
+/// Critical-priority, system-sound notification channel.
+const terminalNotificationCriticalChannelId =
+    'terminal-notifications-critical-system-v2';
+
+/// Normal-priority notification channel with sound disabled at channel level.
+const terminalNotificationSilentChannelId =
+    'terminal-notifications-normal-silent-v2';
+
+/// Low-priority notification channel with sound disabled at channel level.
+const terminalNotificationLowSilentChannelId =
+    'terminal-notifications-low-silent-v2';
+
+/// Critical-priority notification channel with sound disabled at channel level.
+const terminalNotificationCriticalSilentChannelId =
+    'terminal-notifications-critical-silent-v2';
 
 const _androidNotificationIcon = 'ic_notification_monkey';
 
@@ -30,7 +43,8 @@ NotificationDetails buildTerminalNotificationDetails({
   Duration? timeout,
 }) {
   final (
-    channelId,
+    systemChannelId,
+    silentChannelId,
     channelName,
     importance,
     priority,
@@ -38,6 +52,7 @@ NotificationDetails buildTerminalNotificationDetails({
   ) = switch (urgency) {
     TerminalNotificationUrgency.low => (
       terminalNotificationLowChannelId,
+      terminalNotificationLowSilentChannelId,
       'Quiet terminal notifications',
       Importance.low,
       Priority.low,
@@ -45,6 +60,7 @@ NotificationDetails buildTerminalNotificationDetails({
     ),
     TerminalNotificationUrgency.normal => (
       terminalNotificationChannelId,
+      terminalNotificationSilentChannelId,
       'Terminal notifications',
       Importance.defaultImportance,
       Priority.defaultPriority,
@@ -52,6 +68,7 @@ NotificationDetails buildTerminalNotificationDetails({
     ),
     TerminalNotificationUrgency.critical => (
       terminalNotificationCriticalChannelId,
+      terminalNotificationCriticalSilentChannelId,
       'Critical terminal notifications',
       Importance.max,
       Priority.max,
@@ -62,13 +79,14 @@ NotificationDetails buildTerminalNotificationDetails({
   };
   final playsSound = sound == TerminalNotificationSound.system;
   final androidDetails = AndroidNotificationDetails(
-    channelId,
-    channelName,
+    playsSound ? systemChannelId : silentChannelId,
+    playsSound ? channelName : 'Silent $channelName',
     channelDescription: 'Notifications sent by the remote shell.',
     importance: importance,
     priority: priority,
     icon: _androidNotificationIcon,
     playSound: playsSound,
+    silent: !playsSound,
     timeoutAfter: timeout?.inMilliseconds,
   );
   final darwinDetails = DarwinNotificationDetails(
@@ -203,12 +221,14 @@ class TerminalNotificationPayload {
   const TerminalNotificationPayload({
     required this.hostId,
     required this.connectionId,
+    this.platformNotificationId,
     this.notificationIdentifier,
     this.reportsActivation = false,
+    this.focusOnActivation = true,
   });
 
   static const _type = 'terminal-notification';
-  static const _version = 2;
+  static const _version = 3;
 
   /// Host that owns the connection that emitted the notification.
   final int hostId;
@@ -216,11 +236,17 @@ class TerminalNotificationPayload {
   /// Existing SSH connection that emitted the notification.
   final int connectionId;
 
+  /// Exact local notification ID used for expiration and replacement.
+  final int? platformNotificationId;
+
   /// Kitty identifier to echo when activation reporting was requested.
   final String? notificationIdentifier;
 
   /// Whether tapping this notification sends an OSC 99 activation report.
   final bool reportsActivation;
+
+  /// Whether tapping should navigate to the originating terminal.
+  final bool focusOnActivation;
 
   /// Encodes this payload for the notification plugin.
   String encode() => jsonEncode(<String, Object>{
@@ -228,8 +254,10 @@ class TerminalNotificationPayload {
     'version': _version,
     'hostId': hostId,
     'connectionId': connectionId,
+    'platformNotificationId': ?platformNotificationId,
     'notificationIdentifier': ?notificationIdentifier,
     'reportsActivation': reportsActivation,
+    'focusOnActivation': focusOnActivation,
   });
 
   /// Decodes current payloads and navigation-only version 1 payloads.
@@ -241,22 +269,28 @@ class TerminalNotificationPayload {
         return null;
       }
       final version = decoded['version'];
-      if (version != 1 && version != _version) return null;
+      if (version != 1 && version != 2 && version != _version) return null;
       final hostId = decoded['hostId'];
       final connectionId = decoded['connectionId'];
+      final platformNotificationId = decoded['platformNotificationId'];
       final identifier = decoded['notificationIdentifier'];
       final reportsActivation = decoded['reportsActivation'];
+      final focusOnActivation = decoded['focusOnActivation'];
       if (hostId is! int ||
           connectionId is! int ||
+          (platformNotificationId != null && platformNotificationId is! int) ||
           (identifier != null && identifier is! String) ||
-          (reportsActivation != null && reportsActivation is! bool)) {
+          (reportsActivation != null && reportsActivation is! bool) ||
+          (focusOnActivation != null && focusOnActivation is! bool)) {
         return null;
       }
       return TerminalNotificationPayload(
         hostId: hostId,
         connectionId: connectionId,
+        platformNotificationId: platformNotificationId as int?,
         notificationIdentifier: identifier as String?,
         reportsActivation: reportsActivation as bool? ?? false,
+        focusOnActivation: focusOnActivation as bool? ?? true,
       );
     } on FormatException {
       return null;
@@ -269,15 +303,19 @@ class TerminalNotificationPayload {
       other is TerminalNotificationPayload &&
           hostId == other.hostId &&
           connectionId == other.connectionId &&
+          platformNotificationId == other.platformNotificationId &&
           notificationIdentifier == other.notificationIdentifier &&
-          reportsActivation == other.reportsActivation;
+          reportsActivation == other.reportsActivation &&
+          focusOnActivation == other.focusOnActivation;
 
   @override
   int get hashCode => Object.hash(
     hostId,
     connectionId,
+    platformNotificationId,
     notificationIdentifier,
     reportsActivation,
+    focusOnActivation,
   );
 }
 
@@ -328,7 +366,33 @@ class LocalNotificationService {
       description: 'Critical notifications sent by the remote shell.',
       importance: Importance.max,
     ),
+    AndroidNotificationChannel(
+      terminalNotificationLowSilentChannelId,
+      'Silent quiet terminal notifications',
+      description:
+          'Silent low-priority notifications sent by the remote shell.',
+      importance: Importance.low,
+      playSound: false,
+    ),
+    AndroidNotificationChannel(
+      terminalNotificationSilentChannelId,
+      'Silent terminal notifications',
+      description: 'Silent notifications sent by the remote shell.',
+      playSound: false,
+    ),
+    AndroidNotificationChannel(
+      terminalNotificationCriticalSilentChannelId,
+      'Silent critical terminal notifications',
+      description: 'Silent critical notifications sent by the remote shell.',
+      importance: Importance.max,
+      playSound: false,
+    ),
   ];
+
+  /// Android terminal channels exposed for focused channel-policy tests.
+  @visibleForTesting
+  static List<AndroidNotificationChannel>
+  get debugTerminalNotificationChannels => _terminalNotificationChannels;
 
   final FlutterLocalNotificationsPlugin _plugin;
   final StreamController<TmuxAlertNotificationPayload> _tmuxAlertTapController =

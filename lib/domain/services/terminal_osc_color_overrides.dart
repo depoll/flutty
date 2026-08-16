@@ -48,25 +48,10 @@ class TerminalOscColorOverrides {
         }
         return (handled: handled, changed: changed);
       case '10':
-        return _setDynamicColor(
-          args,
-          _foreground,
-          (value) => _foreground = value,
-        );
       case '11':
-        return _setDynamicColor(
-          args,
-          _background,
-          (value) => _background = value,
-        );
       case '12':
-        return _setDynamicColor(args, _cursor, (value) => _cursor = value);
       case '17':
-        return _setDynamicColor(
-          args,
-          _selection,
-          (value) => _selection = value,
-        );
+        return _setDynamicColors(int.parse(code), args);
       case '104':
         if (args.isEmpty || args.every((arg) => arg.trim().isEmpty)) {
           final changed = _ansi.isNotEmpty;
@@ -129,17 +114,40 @@ class TerminalOscColorOverrides {
     );
   }
 
-  TerminalOscColorMutation _setDynamicColor(
-    List<String> args,
-    Color? previous,
-    void Function(Color value) set,
-  ) {
-    if (args.isEmpty) return (handled: false, changed: false);
-    final color = parseTerminalOscColor(args.first);
-    if (color == null) return (handled: false, changed: false);
-    final changed = previous != color;
-    if (changed) set(color);
-    return (handled: true, changed: changed);
+  TerminalOscColorMutation _setDynamicColors(int firstRole, List<String> args) {
+    var handled = false;
+    var changed = false;
+    for (var index = 0; index < args.length; index += 1) {
+      final color = parseTerminalOscColor(args[index]);
+      if (color == null) continue;
+      switch (firstRole + index) {
+        case 10:
+          handled = true;
+          if (_foreground != color) {
+            _foreground = color;
+            changed = true;
+          }
+        case 11:
+          handled = true;
+          if (_background != color) {
+            _background = color;
+            changed = true;
+          }
+        case 12:
+          handled = true;
+          if (_cursor != color) {
+            _cursor = color;
+            changed = true;
+          }
+        case 17:
+          handled = true;
+          if (_selection != color) {
+            _selection = color;
+            changed = true;
+          }
+      }
+    }
+    return (handled: handled, changed: changed);
   }
 
   TerminalOscColorMutation _resetDynamicColor(

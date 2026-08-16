@@ -43,6 +43,7 @@ class TerminalNotificationRequest {
     this.identifier,
     this.localIdentifier,
     this.reportsActivation = false,
+    this.focusOnActivation = true,
     this.reportsClose = false,
     this.urgency = TerminalNotificationUrgency.normal,
     this.sound = TerminalNotificationSound.silent,
@@ -76,6 +77,9 @@ class TerminalNotificationRequest {
   /// Whether a tap should report activation to the foreground application.
   final bool reportsActivation;
 
+  /// Whether a tap should focus the originating terminal.
+  final bool focusOnActivation;
+
   /// Whether the sender requested a notification-close report.
   final bool reportsClose;
 
@@ -103,6 +107,7 @@ class TerminalNotificationRequest {
           identifier == other.identifier &&
           localIdentifier == other.localIdentifier &&
           reportsActivation == other.reportsActivation &&
+          focusOnActivation == other.focusOnActivation &&
           reportsClose == other.reportsClose &&
           urgency == other.urgency &&
           sound == other.sound &&
@@ -116,6 +121,7 @@ class TerminalNotificationRequest {
     identifier,
     localIdentifier,
     reportsActivation,
+    focusOnActivation,
     reportsClose,
     urgency,
     sound,
@@ -127,7 +133,8 @@ class TerminalNotificationRequest {
   String toString() =>
       'TerminalNotificationRequest(title: $title, body: $body, '
       'identifier: $identifier, localIdentifier: $localIdentifier, '
-      'reportsActivation: $reportsActivation, reportsClose: $reportsClose, '
+      'reportsActivation: $reportsActivation, '
+      'focusOnActivation: $focusOnActivation, reportsClose: $reportsClose, '
       'urgency: $urgency, sound: $sound, timeout: $timeout, '
       'action: $action)';
 }
@@ -138,7 +145,7 @@ String? buildKittyNotificationCapabilityResponse(List<String> args) {
     args.isNotEmpty ? args.first : '',
   );
   if (metadata['p'] != '?') return null;
-  final id = _sanitizeKittyIdentifier(metadata['i'] ?? '');
+  final id = _validatedKittyIdentifier(metadata['i'] ?? '');
   return '\x1b]99;${id.isEmpty ? '' : 'i=$id:'}p=?;'
       'a=focus,report:o=always:p=title,body:'
       's=system,silent:u=0,1,2:w=1\x1b\\';
@@ -165,10 +172,10 @@ String? buildKittyNotificationAliveResponse(
     args.isNotEmpty ? args.first : '',
   );
   if (metadata['p'] != 'alive') return null;
-  final queryId = _sanitizeKittyIdentifier(metadata['i'] ?? '');
+  final queryId = _validatedKittyIdentifier(metadata['i'] ?? '');
   final active =
       activeIdentifiers
-          .map(_sanitizeKittyIdentifier)
+          .map(_validatedKittyIdentifier)
           .where((identifier) => identifier.isNotEmpty)
           .toSet()
           .toList(growable: false)
@@ -193,11 +200,11 @@ class TerminalNotificationParser {
 
   /// Marks an identified notification as successfully presented.
   void markPresented(String? identifier) {
-    final sanitized = _sanitizeKittyIdentifier(identifier ?? '');
-    if (sanitized.isEmpty) return;
+    final validated = _validatedKittyIdentifier(identifier ?? '');
+    if (validated.isEmpty) return;
     _activeIdentifiers
-      ..remove(sanitized)
-      ..add(sanitized);
+      ..remove(validated)
+      ..add(validated);
     while (_activeIdentifiers.length > _maxActiveIdentifiers) {
       _activeIdentifiers.remove(_activeIdentifiers.first);
     }
@@ -205,8 +212,8 @@ class TerminalNotificationParser {
 
   /// Marks an identified notification as no longer active.
   void markClosed(String? identifier) {
-    final sanitized = _sanitizeKittyIdentifier(identifier ?? '');
-    if (sanitized.isNotEmpty) _activeIdentifiers.remove(sanitized);
+    final validated = _validatedKittyIdentifier(identifier ?? '');
+    if (validated.isNotEmpty) _activeIdentifiers.remove(validated);
   }
 
   /// Clears multipart and active notification state for a closed shell.
@@ -251,7 +258,9 @@ class TerminalNotificationParser {
     final metadata = _parseKittyNotificationMetadata(
       args.isNotEmpty ? args.first : '',
     );
-    final id = _sanitizeKittyIdentifier(metadata['i'] ?? '');
+    final rawIdentifier = metadata['i'] ?? '';
+    final id = _validatedKittyIdentifier(rawIdentifier);
+    if (rawIdentifier.isNotEmpty && id.isEmpty) return null;
     final payloadType = metadata['p'] ?? 'title';
     if (payloadType == '?' || payloadType == 'alive') return null;
     if (payloadType == 'close') {
@@ -263,15 +272,26 @@ class TerminalNotificationParser {
     }
     if (payloadType != 'title' && payloadType != 'body') return null;
 
-    var payload = args.length > 1 ? args.sublist(1).join(';') : '';
-    if (metadata['e'] == '1' && payload.isNotEmpty) {
-      payload = _decodeBase64(payload);
+    final isBase64 = metadata['e'] == '1';
+    var payload = _joinCapped(
+      args.skip(1),
+      isBase64 ? _maxEncodedPayloadLength : _maxFieldLength,
+    );
+    if (isBase64 && payload.isNotEmpty) {
+      payload = _decodeBase64(
+        payload,
+        maxDecodedBytes: _maxDecodedPayloadBytes,
+      );
     }
 
     final pending = _pending.putIfAbsent(id, _PendingKittyNotification.new);
     final reportsActivation = _updatedActivationReporting(
       metadata['a'],
       pending.reportsActivation,
+    );
+    final focusOnActivation = _updatedFocusOnActivation(
+      metadata['a'],
+      pending.focusOnActivation,
     );
     final urgency = _parseKittyUrgency(metadata['u']) ?? pending.urgency;
     final sound = _parseKittySound(metadata['s']) ?? pending.sound;
@@ -281,14 +301,15 @@ class TerminalNotificationParser {
         : int.tryParse(rawTimeout);
     pending
       ..reportsActivation = reportsActivation
+      ..focusOnActivation = focusOnActivation
       ..urgency = urgency
       ..sound = sound;
     if (timeoutMilliseconds != null && timeoutMilliseconds >= -1) {
-      pending.timeout = timeoutMilliseconds < 0
+      pending.timeout = timeoutMilliseconds <= 0
           ? null
           : Duration(
               milliseconds: timeoutMilliseconds.clamp(
-                0,
+                1,
                 _maxTimeoutMilliseconds,
               ),
             );
@@ -318,6 +339,7 @@ class TerminalNotificationParser {
           ? 'kitty-unidentified-${_unidentifiedSequence++}'
           : null,
       reportsActivation: pending.reportsActivation,
+      focusOnActivation: pending.focusOnActivation,
       reportsClose: pending.reportsClose,
       urgency: pending.urgency,
       sound: pending.sound,
@@ -331,6 +353,7 @@ class TerminalNotificationParser {
     String? identifier,
     String? localIdentifier,
     bool reportsActivation = false,
+    bool focusOnActivation = true,
     bool reportsClose = false,
     TerminalNotificationUrgency urgency = TerminalNotificationUrgency.normal,
     TerminalNotificationSound sound = TerminalNotificationSound.silent,
@@ -343,6 +366,7 @@ class TerminalNotificationParser {
         identifier: identifier,
         localIdentifier: localIdentifier,
         reportsActivation: reportsActivation,
+        focusOnActivation: focusOnActivation,
         reportsClose: reportsClose,
         urgency: urgency,
         sound: sound,
@@ -355,6 +379,7 @@ class TerminalNotificationParser {
       identifier: identifier,
       localIdentifier: localIdentifier,
       reportsActivation: reportsActivation,
+      focusOnActivation: focusOnActivation,
       reportsClose: reportsClose,
       urgency: urgency,
       sound: sound,
@@ -375,6 +400,19 @@ class TerminalNotificationParser {
     return reports;
   }
 
+  bool _updatedFocusOnActivation(String? actions, bool previous) {
+    var focuses = previous;
+    for (final action in (actions ?? '').split(',')) {
+      switch (action.trim()) {
+        case 'focus':
+          focuses = true;
+        case '-focus':
+          focuses = false;
+      }
+    }
+    return focuses;
+  }
+
   TerminalNotificationUrgency? _parseKittyUrgency(String? value) =>
       switch (value) {
         '0' => TerminalNotificationUrgency.low,
@@ -385,22 +423,44 @@ class TerminalNotificationParser {
 
   TerminalNotificationSound? _parseKittySound(String? encoded) {
     if (encoded == null || encoded.isEmpty) return null;
-    return switch (_decodeBase64(encoded)) {
+    return switch (_decodeBase64(encoded, maxDecodedBytes: 32)) {
       'system' => TerminalNotificationSound.system,
       'silent' => TerminalNotificationSound.silent,
       _ => null,
     };
   }
 
-  String _decodeBase64(String value) {
+  static const _maxDecodedPayloadBytes = _maxFieldLength * 4;
+  static const _maxEncodedPayloadLength =
+      ((_maxDecodedPayloadBytes + 2) ~/ 3) * 4 + 4;
+
+  String _decodeBase64(String value, {required int maxDecodedBytes}) {
+    final maxEncodedLength = ((maxDecodedBytes + 2) ~/ 3) * 4 + 4;
+    if (value.length > maxEncodedLength) return '';
     try {
-      return utf8.decode(
-        base64.decode(base64.normalize(value)),
-        allowMalformed: true,
-      );
+      final decoded = base64.decode(base64.normalize(value));
+      if (decoded.length > maxDecodedBytes) return '';
+      return utf8.decode(decoded, allowMalformed: true);
     } on FormatException {
       return '';
     }
+  }
+
+  String _joinCapped(Iterable<String> values, int maxLength) {
+    final buffer = StringBuffer();
+    for (final value in values) {
+      if (buffer.isNotEmpty) {
+        if (buffer.length >= maxLength) break;
+        buffer.write(';');
+      }
+      final remaining = maxLength - buffer.length;
+      if (remaining <= 0) break;
+      buffer.write(
+        value.length <= remaining ? value : value.substring(0, remaining),
+      );
+      if (value.length > remaining) break;
+    }
+    return buffer.toString();
   }
 
   String _appendCapped(String current, String addition) {
@@ -439,15 +499,16 @@ Map<String, String> _parseKittyNotificationMetadata(String raw) {
   return result;
 }
 
-String _sanitizeKittyIdentifier(String value) {
-  final bounded = value.length > 128 ? value.substring(0, 128) : value;
-  return bounded.replaceAll(RegExp('[^A-Za-z0-9_.-]'), '_').trim();
+String _validatedKittyIdentifier(String value) {
+  if (value.isEmpty || value.length > 128) return '';
+  return RegExp(r'[\x00-\x1F\x7F]').hasMatch(value) ? '' : value;
 }
 
 class _PendingKittyNotification {
   String title = '';
   String body = '';
   bool reportsActivation = false;
+  bool focusOnActivation = true;
   bool reportsClose = false;
   TerminalNotificationUrgency urgency = TerminalNotificationUrgency.normal;
   TerminalNotificationSound sound = TerminalNotificationSound.system;

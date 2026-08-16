@@ -33,8 +33,10 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     expect(terminal.graphics.placements, hasLength(1));
-    expect(terminal.graphics.placements.single.cols, 20);
-    // preserveAspectRatio defaults on, so width determines natural height.
+    final placement = terminal.graphics.placements.single;
+    expect(placement.cols, 8);
+    expect(placement.rows, 4);
+    // The 1:1 image fits inside the requested 20x4 cell bounding box.
     expect(terminal.buffer.cursorY, 0);
   });
 
@@ -106,6 +108,44 @@ void main() {
       isTrue,
     );
     expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
+  test('rejects oversized aggregate arguments before joining them', () {
+    final terminal = Terminal()..kittyGraphicsEnabled = true;
+    final repeatedChunk = 'x' * 8192;
+    final args = <String>[
+      'File=inline=1',
+      ...List<String>.filled(3000, repeatedChunk),
+    ];
+
+    expect(handleIterm2InlineImageOsc(terminal, args), isTrue);
+    expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
+  test('does not corrupt an active Kitty multipart transmission', () async {
+    final terminal = Terminal()
+      ..resize(80, 24)
+      ..kittyGraphicsEnabled = true;
+    final pngBytes = base64Decode(_pngBase64);
+    terminal
+      ..graphicsCommandStart(const {'a': 'T', 'f': '98', 'q': '2'})
+      ..graphicsDataChunk(pngBytes);
+
+    expect(
+      handleIterm2InlineImageOsc(terminal, ['File=inline=1:$_pngBase64']),
+      isTrue,
+    );
+    expect(terminal.graphics.hasPlacements, isFalse);
+
+    terminal.graphicsCommandEnd();
+    for (
+      var attempt = 0;
+      attempt < 20 && !terminal.graphics.hasPlacements;
+      attempt += 1
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(terminal.graphics.placements, hasLength(1));
   });
 
   test('leaves unrelated OSC 1337 commands for other handlers', () {

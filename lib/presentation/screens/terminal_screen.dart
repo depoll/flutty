@@ -3535,6 +3535,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _didPasteDemoImage = false;
   double _lastTerminalScrollOffset = 0;
   bool _isTerminalScrollToBottomQueued = false;
+  bool _isNavigatingCommandMarks = false;
+  int? _previousCommandNavigationRow;
+  int? _previousCommandNavigationConnectionId;
+  int? _previousCommandNavigationMarkCount;
   int _terminalScrollResetGeneration = 0;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   late final TerminalSessionController _sessionController;
@@ -6323,6 +6327,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         : 0.0;
     final didScrollOffsetChange = currentOffset != _lastTerminalScrollOffset;
     _lastTerminalScrollOffset = currentOffset;
+    if (didScrollOffsetChange && !_isNavigatingCommandMarks) {
+      _previousCommandNavigationRow = null;
+      _previousCommandNavigationConnectionId = null;
+      _previousCommandNavigationMarkCount = null;
+    }
     if (!_isTerminalOutputFollowPaused || didScrollOffsetChange) {
       _setShouldFollowLiveOutput(
         shouldFollowTerminalOutput(
@@ -13854,22 +13863,37 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!lineHeight.isFinite || lineHeight <= 0) return;
     final position = _terminalScrollController.position;
     final currentTopRow = (position.pixels / lineHeight).floor();
-    final beforeRow = position.pixels >= position.maxScrollExtent - 1
+    final commandMarkCount = session.terminalCommandMarkTracker.markCount;
+    final continuesNavigation =
+        _previousCommandNavigationConnectionId == session.connectionId &&
+        _previousCommandNavigationMarkCount == commandMarkCount &&
+        _previousCommandNavigationRow != null;
+    final beforeRow = continuesNavigation
+        ? _previousCommandNavigationRow!
+        : position.pixels >= position.maxScrollExtent - 1
         ? _terminal.buffer.height
         : currentTopRow;
     final targetRow = session.terminalCommandMarkTracker.previousMarkRow(
       beforeRow,
     );
     if (targetRow == null) return;
+    _previousCommandNavigationConnectionId = session.connectionId;
+    _previousCommandNavigationRow = targetRow;
+    _previousCommandNavigationMarkCount = commandMarkCount;
     final targetOffset = (targetRow * lineHeight).clamp(
       position.minScrollExtent,
       position.maxScrollExtent,
     );
-    await _terminalScrollController.animateTo(
-      targetOffset,
-      duration: const Duration(milliseconds: 150),
-      curve: Curves.easeOutCubic,
-    );
+    _isNavigatingCommandMarks = true;
+    try {
+      await _terminalScrollController.animateTo(
+        targetOffset,
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeOutCubic,
+      );
+    } finally {
+      _isNavigatingCommandMarks = false;
+    }
   }
 
   Future<void> _handleMenuAction(String action) async {

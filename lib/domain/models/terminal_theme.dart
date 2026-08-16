@@ -75,29 +75,38 @@ String? buildTerminalThemeOscResponse({
     case '4':
       return _buildAnsiPaletteOscResponse(theme, args);
     case '10':
-      return _buildSingleColorOscResponse(code, theme.foreground, args);
     case '11':
-      return _buildSingleColorOscResponse(code, theme.background, args);
     case '12':
-      return _buildSingleColorOscResponse(code, theme.cursor, args);
     case '17':
-      return _buildSingleColorOscResponse(code, theme.readableSelection, args);
     case '19':
-      return _buildSingleColorOscResponse(code, theme.foreground, args);
+      return _buildDynamicColorOscResponse(theme, int.parse(code), args);
     default:
       return null;
   }
 }
 
-String? _buildSingleColorOscResponse(
-  String code,
-  Color color,
+String? _buildDynamicColorOscResponse(
+  TerminalThemeData theme,
+  int firstRole,
   List<String> args,
 ) {
-  if (args.isEmpty || args.first.trim() != '?') {
-    return null;
+  final responses = <String>[];
+  for (var index = 0; index < args.length; index += 1) {
+    if (args[index].trim() != '?') continue;
+    final role = firstRole + index;
+    final color = switch (role) {
+      10 => theme.foreground,
+      11 => theme.background,
+      12 => theme.cursor,
+      17 => theme.readableSelection,
+      19 => theme.foreground,
+      _ => null,
+    };
+    if (color != null) {
+      responses.add(_formatOscColorResponse('$role', color));
+    }
   }
-  return _formatOscColorResponse(code, color);
+  return responses.isEmpty ? null : responses.join();
 }
 
 String? _buildAnsiPaletteOscResponse(

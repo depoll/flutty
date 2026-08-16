@@ -1158,10 +1158,7 @@ Uri? parseTerminalShellWorkingDirectoryOsc(
   } else if (code == '633' && args.firstOrNull == 'P') {
     final propertyIndex = args.indexWhere((arg) => arg.startsWith('Cwd='));
     if (propertyIndex >= 0) {
-      value = [
-        args[propertyIndex].substring('Cwd='.length),
-        ...args.skip(propertyIndex + 1),
-      ].join(';');
+      value = args[propertyIndex].substring('Cwd='.length);
     }
   } else if (code == '1337' &&
       (args.firstOrNull?.startsWith('CurrentDir=') ?? false)) {
@@ -4103,17 +4100,18 @@ class SshSession {
   void markTerminalNotificationClosed(String? identifier) =>
       _terminalNotificationParser.markClosed(identifier);
 
-  /// Records a local notification tap and emits requested Kitty reports.
+  /// Records a local notification tap and emits the requested activation report.
+  ///
+  /// A requested close report is already emitted as `untracked` when native
+  /// presentation succeeds because platform dismissal callbacks are not
+  /// portable. A tap must not later claim that same close was tracked.
   void handleTerminalNotificationActivated(
     String? identifier, {
     required bool reportsActivation,
   }) {
     _terminalNotificationParser.markClosed(identifier);
     if (!reportsActivation || !_runtime.hasShell) return;
-    _runtime.writeToShell(
-      buildKittyNotificationActivationReport(identifier) +
-          buildKittyNotificationCloseReport(identifier),
-    );
+    _runtime.writeToShell(buildKittyNotificationActivationReport(identifier));
   }
 
   /// Resizes the currently active shell channel.
@@ -4211,7 +4209,14 @@ class SshSession {
   }
 
   void _handlePrivateOsc(String code, List<String> args) {
-    if (code == '10' || code == '11' || code == '12' || code == '4') {
+    final hasThemeQuery = args.any((arg) => arg.trim() == '?');
+    if (hasThemeQuery &&
+        (code == '4' ||
+            code == '10' ||
+            code == '11' ||
+            code == '12' ||
+            code == '17' ||
+            code == '19')) {
       DiagnosticsLogService.instance.debug(
         'terminal.osc',
         'theme_query',
@@ -4223,10 +4228,23 @@ class SshSession {
         },
       );
     }
-    final themeOscResponse = terminalTheme == null
+
+    final colorMutation = _terminalColorOverrides.handle(code, args);
+    if (colorMutation.changed) {
+      _recomputeTerminalThemeAfterRemoteColorChange();
+      DiagnosticsLogService.instance.debug(
+        'terminal.osc',
+        'palette_changed',
+        fields: {'connectionId': connectionId, 'code': code},
+      );
+      _notifyMetadataChanged();
+    }
+
+    final effectiveTheme = terminalTheme;
+    final themeOscResponse = effectiveTheme == null
         ? null
         : buildTerminalThemeOscResponse(
-            theme: terminalTheme!,
+            theme: effectiveTheme,
             code: code,
             args: args,
           );
@@ -4239,7 +4257,7 @@ class SshSession {
           fields: {
             'connectionId': connectionId,
             'code': code,
-            'themeId': terminalTheme?.id,
+            'themeId': effectiveTheme?.id,
           },
         );
       } else {
@@ -4248,16 +4266,9 @@ class SshSession {
         final volunteersThemeDefaults =
             win32InputMode && code == '4' && _shouldVolunteerThemeDefaults();
         if (volunteersThemeDefaults) {
-          // Windows ConPTY consumes OSC 10/11 queries without forwarding or
-          // answering them, so an app interrogating terminal colors (visible
-          // through its OSC 4 palette queries, which do pass through) never
-          // learns the default foreground/background. Volunteer those reports
-          // alongside the palette answer while the app is parsing replies.
-          payload += buildTerminalThemeDefaultColorReports(terminalTheme!);
+          payload += buildTerminalThemeDefaultColorReports(effectiveTheme!);
         }
         if (win32InputMode) {
-          // ConPTY strips raw OSC replies from the input stream; re-encode
-          // them as win32-input-mode key events so they reach the app.
           payload = encodeTerminalResponsesForWin32InputMode(payload);
         }
         shell.write(utf8.encode(payload));
@@ -4267,29 +4278,15 @@ class SshSession {
           fields: {
             'connectionId': connectionId,
             'code': code,
-            'themeId': terminalTheme!.id,
+            'themeId': effectiveTheme!.id,
             'responseBytes': payload.length,
             'win32InputMode': win32InputMode,
             'volunteeredThemeDefaults': volunteersThemeDefaults,
           },
         );
       }
-      return;
     }
-
-    final colorMutation = _terminalColorOverrides.handle(code, args);
-    if (colorMutation.handled) {
-      if (colorMutation.changed) {
-        _recomputeTerminalThemeAfterRemoteColorChange();
-        DiagnosticsLogService.instance.debug(
-          'terminal.osc',
-          'palette_changed',
-          fields: {'connectionId': connectionId, 'code': code},
-        );
-        _notifyMetadataChanged();
-      }
-      return;
-    }
+    if (themeOscResponse != null || colorMutation.handled) return;
 
     terminalHyperlinkTracker.handlePrivateOsc(code, args);
     final commandMarkAdded = terminalCommandMarkTracker.handlePrivateOsc(
@@ -7432,6 +7429,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   _terminalNotificationExpiryTimers = {};
   final Map<({int connectionId, int notificationId}), int>
   _terminalNotificationGenerations = {};
+  final Map<int, Future<void>> _terminalNotificationQueues = {};
+  int _nextTerminalNotificationGeneration = 0;
   final Map<int, StreamSubscription<void>> _portForwardChangeSubscriptions = {};
   final Map<int, Set<RemoteTcpListenerKey>>
   _automaticForwardDesiredExclusionsByHost = {};
@@ -7467,6 +7466,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       }
       _terminalNotificationExpiryTimers.clear();
       _terminalNotificationGenerations.clear();
+      _terminalNotificationQueues.clear();
       for (final subscription in _portForwardChangeSubscriptions.values) {
         unawaited(subscription.cancel());
       }
@@ -7764,12 +7764,19 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   SshSession? getSession(int connectionId) =>
       _sshService.getSession(connectionId);
 
+  /// Number of pending terminal notification expiration timers.
+  @visibleForTesting
+  int get debugTerminalNotificationExpiryTimerCount =>
+      _terminalNotificationExpiryTimers.length;
+
   /// Cancels expiration and reports a native terminal-notification tap.
   void handleTerminalNotificationTap(TerminalNotificationPayload payload) {
-    final notificationId = buildTerminalNotificationId(
-      payload.connectionId,
-      identifier: payload.notificationIdentifier,
-    );
+    final notificationId =
+        payload.platformNotificationId ??
+        buildTerminalNotificationId(
+          payload.connectionId,
+          identifier: payload.notificationIdentifier,
+        );
     final expiryKey = (
       connectionId: payload.connectionId,
       notificationId: notificationId,
@@ -8326,9 +8333,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     _terminalNotificationSubscriptions[session.connectionId] = session
         .terminalNotifications
-        .listen(
-          (request) => unawaited(_showTerminalNotification(session, request)),
-        );
+        .listen((request) => _queueTerminalNotification(session, request));
     final existingPortForwardSubscription = _portForwardChangeSubscriptions
         .remove(session.connectionId);
     if (existingPortForwardSubscription != null) {
@@ -8337,6 +8342,38 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _portForwardChangeSubscriptions[session.connectionId] = session
         .portForwardChanges
         .listen((_) => _handleSessionPortForwardsChanged(session.hostId));
+  }
+
+  void _queueTerminalNotification(
+    SshSession session,
+    TerminalNotificationRequest request,
+  ) {
+    final connectionId = session.connectionId;
+    final previous =
+        _terminalNotificationQueues[connectionId] ?? Future<void>.value();
+    late final Future<void> operation;
+    operation = previous
+        .then((_) => _showTerminalNotification(session, request))
+        .catchError((Object error, StackTrace stackTrace) {
+          FlutterError.reportError(
+            FlutterErrorDetails(
+              exception: error,
+              stack: stackTrace,
+              library: 'ssh_service',
+              context: ErrorDescription(
+                'while presenting a serialized terminal notification',
+              ),
+            ),
+          );
+        });
+    _terminalNotificationQueues[connectionId] = operation;
+    unawaited(
+      operation.whenComplete(() {
+        if (identical(_terminalNotificationQueues[connectionId], operation)) {
+          _terminalNotificationQueues.remove(connectionId);
+        }
+      }),
+    );
   }
 
   Future<void> _showTerminalNotification(
@@ -8353,16 +8390,16 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       connectionId: session.connectionId,
       notificationId: notificationId,
     );
-    final generation = (_terminalNotificationGenerations[expiryKey] ?? 0) + 1;
+    final generation = ++_nextTerminalNotificationGeneration;
     _terminalNotificationGenerations[expiryKey] = generation;
     _terminalNotificationExpiryTimers.remove(expiryKey)?.cancel();
     if (request.action == TerminalNotificationAction.close) {
       await notificationService.clearTerminalNotification(notificationId);
-      _terminalNotificationGenerations.remove(expiryKey);
+      _removeTerminalNotificationGeneration(expiryKey, generation);
       return;
     }
     if (!ref.read(terminalNotificationsNotifierProvider)) {
-      _terminalNotificationGenerations.remove(expiryKey);
+      _removeTerminalNotificationGeneration(expiryKey, generation);
       return;
     }
     final title = request.title ?? await _resolveSessionLabel(session);
@@ -8380,8 +8417,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       payload: TerminalNotificationPayload(
         hostId: session.hostId,
         connectionId: session.connectionId,
+        platformNotificationId: notificationId,
         notificationIdentifier: request.identifier,
         reportsActivation: request.reportsActivation,
+        focusOnActivation: request.focusOnActivation,
       ),
     );
     if (_terminalNotificationGenerations[expiryKey] != generation) {
@@ -8391,13 +8430,13 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       return;
     }
     if (!didShow) {
-      _terminalNotificationGenerations.remove(expiryKey);
+      _removeTerminalNotificationGeneration(expiryKey, generation);
       return;
     }
     session.markTerminalNotificationPresented(request);
     final timeout = request.timeout;
     if (timeout == null) {
-      _terminalNotificationGenerations.remove(expiryKey);
+      _removeTerminalNotificationGeneration(expiryKey, generation);
       return;
     }
     const maxExpiryTimers = 256;
@@ -8413,6 +8452,15 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       session.markTerminalNotificationClosed(request.identifier);
       unawaited(notificationService.clearTerminalNotification(notificationId));
     });
+  }
+
+  void _removeTerminalNotificationGeneration(
+    ({int connectionId, int notificationId}) key,
+    int generation,
+  ) {
+    if (_terminalNotificationGenerations[key] == generation) {
+      _terminalNotificationGenerations.remove(key);
+    }
   }
 
   Future<String> _resolveSessionLabel(SshSession session) async {
@@ -8458,6 +8506,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _terminalNotificationGenerations.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
+    _terminalNotificationQueues.remove(connectionId);
     if (notificationSubscription != null) {
       unawaited(notificationSubscription.cancel());
     }

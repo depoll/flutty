@@ -26,6 +26,23 @@ bool handleIterm2InlineImageOsc(
     return false;
   }
 
+  const maxMetadataLength = 8 * 1024;
+  var aggregateLength = 0;
+  var metadataLength = 0;
+  var foundPayloadSeparator = false;
+  for (final arg in args) {
+    aggregateLength += arg.length + 1;
+    if (!foundPayloadSeparator) {
+      final separator = arg.indexOf(':');
+      metadataLength += separator < 0 ? arg.length + 1 : separator;
+      foundPayloadSeparator = separator >= 0;
+    }
+    if (metadataLength > maxMetadataLength ||
+        aggregateLength > _maxEncodedImageLength + maxMetadataLength) {
+      return true;
+    }
+  }
+
   final rawCommand = args.join(';');
   final separator = rawCommand.indexOf(':');
   if (separator < 0) {
@@ -71,22 +88,29 @@ bool handleIterm2InlineImageOsc(
     cellPixelExtent: cellPixelHeight,
   );
   final preservesAspectRatio = metadata['preserveAspectRatio'] != '0';
-  if (columns != null) {
-    graphicsArgs['c'] = '$columns';
+  var displayColumns = columns;
+  var displayRows = rows;
+  if (preservesAspectRatio && columns != null && rows != null) {
+    final fitted = terminal.fitGraphicsInCellBounds(
+      imageBytes,
+      maxColumns: columns,
+      maxRows: rows,
+    );
+    displayColumns = fitted?.columns ?? columns;
+    displayRows = fitted?.rows ?? rows;
   }
-  // A single constrained dimension lets the renderer derive the other from
-  // the decoded image. When distortion is explicitly allowed, honor both.
-  if (rows != null && (columns == null || !preservesAspectRatio)) {
-    graphicsArgs['r'] = '$rows';
+  if (displayColumns != null) {
+    graphicsArgs['c'] = '$displayColumns';
+  }
+  if (displayRows != null &&
+      (displayColumns == null || rows != null || !preservesAspectRatio)) {
+    graphicsArgs['r'] = '$displayRows';
   }
   if (metadata['doNotMoveCursor'] == '1') {
     graphicsArgs['C'] = '1';
   }
 
-  terminal
-    ..graphicsCommandStart(graphicsArgs)
-    ..graphicsDataChunk(imageBytes)
-    ..graphicsCommandEnd();
+  terminal.submitGraphicsCommand(graphicsArgs, imageBytes);
   return true;
 }
 
