@@ -7413,6 +7413,7 @@ final connectionAttemptProvider =
 /// Notifier for active SSH sessions state.
 class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   static const _previewStateRefreshInterval = Duration(milliseconds: 150);
+  static const _maxTerminalNotificationExpiries = 256;
 
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
@@ -7425,8 +7426,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   _connectionHealthFailureSubscriptions = {};
   final Map<int, StreamSubscription<TerminalNotificationRequest>>
   _terminalNotificationSubscriptions = {};
-  final Map<({int connectionId, int notificationId}), Timer>
-  _terminalNotificationExpiryTimers = {};
+  final Map<
+    ({int connectionId, int notificationId}),
+    _TerminalNotificationExpiry
+  >
+  _terminalNotificationExpiries = {};
   final Map<({int connectionId, int notificationId}), int>
   _terminalNotificationGenerations = {};
   final Map<int, _TerminalNotificationQueue> _terminalNotificationQueues = {};
@@ -7461,11 +7465,13 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         unawaited(subscription.cancel());
       }
       _terminalNotificationSubscriptions.clear();
-      for (final timer in _terminalNotificationExpiryTimers.values) {
-        timer.cancel();
+      for (final entry in _terminalNotificationExpiries.entries.toList()) {
+        _expireTerminalNotification(entry.key, entry.value);
       }
-      _terminalNotificationExpiryTimers.clear();
       _terminalNotificationGenerations.clear();
+      for (final queue in _terminalNotificationQueues.values) {
+        queue.pending.clear();
+      }
       _terminalNotificationQueues.clear();
       for (final subscription in _portForwardChangeSubscriptions.values) {
         unawaited(subscription.cancel());
@@ -7767,7 +7773,12 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Number of pending terminal notification expiration timers.
   @visibleForTesting
   int get debugTerminalNotificationExpiryTimerCount =>
-      _terminalNotificationExpiryTimers.length;
+      _terminalNotificationExpiries.length;
+
+  /// Maximum retained terminal notification expiration records.
+  @visibleForTesting
+  int get debugTerminalNotificationExpiryLimit =>
+      _maxTerminalNotificationExpiries;
 
   /// Maximum retained native notification operations per connection.
   @visibleForTesting
@@ -7791,7 +7802,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       connectionId: payload.connectionId,
       notificationId: notificationId,
     );
-    _terminalNotificationExpiryTimers.remove(expiryKey)?.cancel();
+    _terminalNotificationExpiries.remove(expiryKey)?.timer.cancel();
     _terminalNotificationGenerations.remove(expiryKey);
     getSession(payload.connectionId)?.handleTerminalNotificationActivated(
       payload.notificationIdentifier,
@@ -8418,7 +8429,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     );
     final generation = ++_nextTerminalNotificationGeneration;
     _terminalNotificationGenerations[expiryKey] = generation;
-    _terminalNotificationExpiryTimers.remove(expiryKey)?.cancel();
+    _terminalNotificationExpiries.remove(expiryKey)?.timer.cancel();
     if (request.action == TerminalNotificationAction.close) {
       await notificationService.clearTerminalNotification(notificationId);
       _removeTerminalNotificationGeneration(expiryKey, generation);
@@ -8465,19 +8476,37 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       _removeTerminalNotificationGeneration(expiryKey, generation);
       return;
     }
-    const maxExpiryTimers = 256;
-    if (_terminalNotificationExpiryTimers.length >= maxExpiryTimers) {
-      final oldest = _terminalNotificationExpiryTimers.keys.first;
-      _terminalNotificationExpiryTimers.remove(oldest)?.cancel();
-      _terminalNotificationGenerations.remove(oldest);
+    if (_terminalNotificationExpiries.length >=
+        _maxTerminalNotificationExpiries) {
+      final oldestKey = _terminalNotificationExpiries.keys.first;
+      final oldest = _terminalNotificationExpiries[oldestKey]!;
+      _expireTerminalNotification(oldestKey, oldest);
     }
-    _terminalNotificationExpiryTimers[expiryKey] = Timer(timeout, () {
-      if (_terminalNotificationGenerations[expiryKey] != generation) return;
-      _terminalNotificationExpiryTimers.remove(expiryKey);
-      _terminalNotificationGenerations.remove(expiryKey);
-      session.markTerminalNotificationClosed(request.identifier);
-      unawaited(notificationService.clearTerminalNotification(notificationId));
-    });
+    late final _TerminalNotificationExpiry expiry;
+    expiry = _TerminalNotificationExpiry(
+      timer: Timer(
+        timeout,
+        () => _expireTerminalNotification(expiryKey, expiry),
+      ),
+      session: session,
+      notificationService: notificationService,
+      identifier: request.identifier,
+    );
+    _terminalNotificationExpiries[expiryKey] = expiry;
+  }
+
+  void _expireTerminalNotification(
+    ({int connectionId, int notificationId}) key,
+    _TerminalNotificationExpiry expiry,
+  ) {
+    if (!identical(_terminalNotificationExpiries[key], expiry)) return;
+    _terminalNotificationExpiries.remove(key);
+    expiry.timer.cancel();
+    _terminalNotificationGenerations.remove(key);
+    expiry.session.markTerminalNotificationClosed(expiry.identifier);
+    unawaited(
+      expiry.notificationService.clearTerminalNotification(key.notificationId),
+    );
   }
 
   void _removeTerminalNotificationGeneration(
@@ -8523,16 +8552,16 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     final notificationSubscription = _terminalNotificationSubscriptions.remove(
       connectionId,
     );
-    final expiryKeys = _terminalNotificationExpiryTimers.keys
-        .where((key) => key.connectionId == connectionId)
+    final expiries = _terminalNotificationExpiries.entries
+        .where((entry) => entry.key.connectionId == connectionId)
         .toList(growable: false);
-    for (final key in expiryKeys) {
-      _terminalNotificationExpiryTimers.remove(key)?.cancel();
+    for (final entry in expiries) {
+      _expireTerminalNotification(entry.key, entry.value);
     }
     _terminalNotificationGenerations.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
-    _terminalNotificationQueues.remove(connectionId);
+    _terminalNotificationQueues.remove(connectionId)?.pending.clear();
     if (notificationSubscription != null) {
       unawaited(notificationSubscription.cancel());
     }
@@ -8873,6 +8902,20 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _backgroundStatusSyncQueue = nextSync;
     return nextSync;
   }
+}
+
+class _TerminalNotificationExpiry {
+  const _TerminalNotificationExpiry({
+    required this.timer,
+    required this.session,
+    required this.notificationService,
+    required this.identifier,
+  });
+
+  final Timer timer;
+  final SshSession session;
+  final LocalNotificationService notificationService;
+  final String? identifier;
 }
 
 class _TerminalNotificationQueue {

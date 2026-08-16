@@ -4380,6 +4380,108 @@ LISTEN ::1:4201
     });
 
     test(
+      'disconnect drops queued notification work after in-flight show',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+        final result = await notifier.connect(42, forceNew: true);
+        final connectionId = result.connectionId!;
+        final session = notifier.getSession(connectionId)!;
+        final gateId = buildTerminalNotificationId(
+          connectionId,
+          identifier: 'kitty:gate',
+        );
+        final staleId = buildTerminalNotificationId(
+          connectionId,
+          identifier: 'kitty:stale',
+        );
+
+        session.debugHandlePrivateOsc('99', const ['i=gate', 'Gate']);
+        await notificationService.showStarted.future;
+        session.debugHandlePrivateOsc('99', const ['i=stale', 'Stale']);
+        await pumpEventQueue();
+        await notifier.disconnect(connectionId);
+        notificationService.releaseShow.complete();
+        for (
+          var attempt = 0;
+          attempt < 20 && notificationService.calls.length < 3;
+          attempt += 1
+        ) {
+          await pumpEventQueue();
+        }
+
+        expect(notificationService.calls, [
+          'show-start:$gateId',
+          'show-finish:$gateId',
+          'clear:$gateId',
+        ]);
+        expect(
+          notificationService.calls,
+          isNot(contains('show-start:$staleId')),
+        );
+        expect(notifier.debugTerminalNotificationQueueLength(connectionId), 0);
+      },
+    );
+
+    test('disconnect clears native timed notifications', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final result = await notifier.connect(42, forceNew: true);
+      final connectionId = result.connectionId!;
+      final session = notifier.getSession(connectionId)!;
+      final notificationId = buildTerminalNotificationId(
+        connectionId,
+        identifier: 'kitty:timed',
+      );
+      notificationService.releaseShow.complete();
+
+      session.debugHandlePrivateOsc('99', const ['i=timed:w=60000', 'Timed']);
+      for (
+        var attempt = 0;
+        attempt < 20 && notifier.debugTerminalNotificationExpiryTimerCount < 1;
+        attempt += 1
+      ) {
+        await pumpEventQueue();
+      }
+      expect(notifier.debugTerminalNotificationExpiryTimerCount, 1);
+
+      await notifier.disconnect(connectionId);
+      await pumpEventQueue();
+
+      expect(notifier.debugTerminalNotificationExpiryTimerCount, 0);
+      expect(notificationService.calls, contains('clear:$notificationId'));
+    });
+
+    test('expiry cap clears the oldest native notification', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final result = await notifier.connect(42, forceNew: true);
+      final connectionId = result.connectionId!;
+      final session = notifier.getSession(connectionId)!;
+      final limit = notifier.debugTerminalNotificationExpiryLimit;
+      notificationService.releaseShow.complete();
+
+      for (var index = 0; index <= limit; index += 1) {
+        session.debugHandlePrivateOsc('99', [
+          'i=expiry-$index:w=60000',
+          'Timed',
+        ]);
+        final expectedShows = index + 1;
+        for (var attempt = 0; attempt < 20; attempt += 1) {
+          final completedShows = notificationService.calls
+              .where((call) => call.startsWith('show-finish:'))
+              .length;
+          if (completedShows >= expectedShows) break;
+          await pumpEventQueue();
+        }
+      }
+
+      final oldestId = buildTerminalNotificationId(
+        connectionId,
+        identifier: 'kitty:expiry-0',
+      );
+      expect(notifier.debugTerminalNotificationExpiryTimerCount, limit);
+      expect(notificationService.calls, contains('clear:$oldestId'));
+    });
+
+    test(
       'unidentified notification tap cancels its exact expiry timer',
       () async {
         final notifier = container.read(activeSessionsProvider.notifier);
