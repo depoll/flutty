@@ -51,13 +51,20 @@ class TerminalNotificationRequest {
     this.action = TerminalNotificationAction.show,
   });
 
-  /// Creates a Kitty request to clear a previously identified notification.
-  const TerminalNotificationRequest.close({required String identifier})
-    : this(
-        body: '',
-        identifier: identifier,
-        action: TerminalNotificationAction.close,
-      );
+  /// Creates a request to clear a notification by protocol or local identity.
+  const TerminalNotificationRequest.close({
+    this.identifier,
+    this.localIdentifier,
+  }) : assert(identifier != null || localIdentifier != null),
+       title = null,
+       body = '',
+       reportsActivation = false,
+       focusOnActivation = true,
+       reportsClose = false,
+       urgency = TerminalNotificationUrgency.normal,
+       sound = TerminalNotificationSound.silent,
+       timeout = null,
+       action = TerminalNotificationAction.close;
 
   /// The notification title. When `null`, the presenter supplies a default.
   final String? title;
@@ -68,10 +75,10 @@ class TerminalNotificationRequest {
   /// Kitty protocol identifier used for update, close, and activation reports.
   final String? identifier;
 
-  /// Local-only identity for an unidentified Kitty notification.
+  /// Local-only identity for a request without a protocol identifier.
   ///
-  /// Kitty requires notifications without `i=` to remain distinct rather than
-  /// replacing one another.
+  /// This keeps unidentified Kitty notifications distinct and lets other OSC
+  /// protocols address native records without entering Kitty alive state.
   final String? localIdentifier;
 
   /// Whether a tap should report activation to the foreground application.
@@ -95,8 +102,15 @@ class TerminalNotificationRequest {
   /// Whether to show/update or clear the addressed notification.
   final TerminalNotificationAction action;
 
-  /// Identity used only for the platform notification record.
-  String? get platformIdentifier => identifier ?? localIdentifier;
+  /// Namespaced identity used only for the platform notification record.
+  ///
+  /// Local records must not alias a remote Kitty identifier with the same
+  /// printable text.
+  String? get platformIdentifier {
+    if (identifier != null) return 'kitty:$identifier';
+    if (localIdentifier != null) return 'local:$localIdentifier';
+    return null;
+  }
 
   @override
   bool operator ==(Object other) =>
@@ -216,11 +230,14 @@ class TerminalNotificationParser {
     if (validated.isNotEmpty) _activeIdentifiers.remove(validated);
   }
 
-  /// Clears multipart and active notification state for a closed shell.
+  /// Clears shell-scoped multipart and active notification state.
+  ///
+  /// The unidentified sequence remains connection-scoped because native
+  /// notifications from a previous shell can outlive that shell. Reusing an
+  /// identity after opening another shell would overwrite the older record.
   void reset() {
     _pending.clear();
     _activeIdentifiers.clear();
-    _unidentifiedSequence = 0;
   }
 
   /// Handles one OSC notification sequence.

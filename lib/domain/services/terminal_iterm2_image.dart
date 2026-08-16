@@ -146,8 +146,8 @@ int? _parseIterm2CellDimension(
       cellPixelExtent != null &&
       cellPixelExtent.isFinite &&
       cellPixelExtent > 0) {
-    final pixelValue = int.parse(pixels.group(1)!);
-    if (pixelValue <= 0) return null;
+    final pixelValue = int.tryParse(pixels.group(1)!);
+    if (pixelValue == null || pixelValue <= 0) return null;
     return (pixelValue / cellPixelExtent).ceil().clamp(1, availableCells);
   }
   final cells = int.tryParse(raw);

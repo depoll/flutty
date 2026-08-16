@@ -4284,7 +4284,7 @@ LISTEN ::1:4201
       final session = notifier.getSession(result.connectionId!)!;
       final notificationId = buildTerminalNotificationId(
         session.connectionId,
-        identifier: 'ordered',
+        identifier: 'kitty:ordered',
       );
 
       session.debugHandlePrivateOsc('99', const ['i=ordered', 'Started']);
@@ -4306,6 +4306,77 @@ LISTEN ::1:4201
         'show-finish:$notificationId',
         'clear:$notificationId',
       ]);
+    });
+
+    test(
+      'coalesces superseded notification operations without reordering',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+        final result = await notifier.connect(42, forceNew: true);
+        final session = notifier.getSession(result.connectionId!)!;
+        final gateId = buildTerminalNotificationId(
+          session.connectionId,
+          identifier: 'kitty:gate',
+        );
+        final otherId = buildTerminalNotificationId(
+          session.connectionId,
+          identifier: 'kitty:other',
+        );
+        final jobId = buildTerminalNotificationId(
+          session.connectionId,
+          identifier: 'kitty:job',
+        );
+
+        session.debugHandlePrivateOsc('99', const ['i=gate', 'Gate']);
+        await notificationService.showStarted.future;
+        session
+          ..debugHandlePrivateOsc('99', const ['i=job', 'Started'])
+          ..debugHandlePrivateOsc('99', const ['i=other', 'Other'])
+          ..debugHandlePrivateOsc('99', const ['i=job', 'Updated'])
+          ..debugHandlePrivateOsc('99', const ['i=job:p=close']);
+        await pumpEventQueue();
+
+        expect(
+          notifier.debugTerminalNotificationQueueLength(session.connectionId),
+          2,
+        );
+        notificationService.releaseShow.complete();
+        for (
+          var attempt = 0;
+          attempt < 20 && notificationService.calls.length < 5;
+          attempt += 1
+        ) {
+          await pumpEventQueue();
+        }
+        expect(notificationService.calls, [
+          'show-start:$gateId',
+          'show-finish:$gateId',
+          'show-start:$otherId',
+          'show-finish:$otherId',
+          'clear:$jobId',
+        ]);
+      },
+    );
+
+    test('bounds uncoalesced terminal notification backlog', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final result = await notifier.connect(42, forceNew: true);
+      final session = notifier.getSession(result.connectionId!)!;
+      final sendOsc = session.debugHandlePrivateOsc;
+
+      sendOsc('99', const ['i=gate', 'Gate']);
+      await notificationService.showStarted.future;
+      for (var index = 0; index < 512; index += 1) {
+        sendOsc('99', ['', 'Message $index']);
+      }
+      await pumpEventQueue();
+
+      expect(
+        notifier.debugTerminalNotificationQueueLength(session.connectionId),
+        notifier.debugTerminalNotificationQueueLimit,
+      );
+      notificationService.releaseShow.complete();
+      await pumpEventQueue();
     });
 
     test(

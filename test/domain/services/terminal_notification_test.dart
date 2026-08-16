@@ -173,12 +173,18 @@ void main() {
       expect(parser.activeIdentifiers, isEmpty);
     });
 
-    test('unidentified notifications receive distinct local identities', () {
+    test('unidentified identities stay distinct across shell resets', () {
       final first = parser.handleOsc('99', ['', 'One']);
       final second = parser.handleOsc('99', ['', 'Two']);
+      parser.reset();
+      final afterReset = parser.handleOsc('99', ['', 'Three']);
+
       expect(first?.identifier, isNull);
       expect(second?.identifier, isNull);
+      expect(afterReset?.identifier, isNull);
       expect(first?.platformIdentifier, isNot(second?.platformIdentifier));
+      expect(afterReset?.platformIdentifier, isNot(first?.platformIdentifier));
+      expect(afterReset?.platformIdentifier, isNot(second?.platformIdentifier));
     });
 
     test('builds a truthful capability response', () {

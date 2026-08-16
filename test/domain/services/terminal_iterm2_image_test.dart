@@ -89,6 +89,21 @@ void main() {
     expect(terminal.graphics.placements.single.cols, 3);
   });
 
+  test('rejects out-of-range pixel dimensions without throwing', () {
+    final terminal = Terminal()
+      ..resize(80, 24)
+      ..kittyGraphicsEnabled = true;
+    final hugePixels = '${'9' * 4096}px';
+
+    expect(
+      handleIterm2InlineImageOsc(terminal, [
+        'File=inline=1',
+        'width=$hugePixels:$_pngBase64',
+      ], cellPixelWidth: 8),
+      isTrue,
+    );
+  });
+
   test('consumes downloads and rejects malformed or oversized payloads', () {
     final terminal = Terminal()..kittyGraphicsEnabled = true;
 

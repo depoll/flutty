@@ -27,14 +27,25 @@ void main() {
       parseIterm2AttentionRequest(const ['RequestAttention=once']),
       const TerminalNotificationRequest(
         body: 'The remote terminal requested your attention.',
-        identifier: 'iterm2-attention',
+        localIdentifier: 'iterm2-attention',
         sound: TerminalNotificationSound.system,
       ),
     );
     expect(
       parseIterm2AttentionRequest(const ['RequestAttention=no']),
-      const TerminalNotificationRequest.close(identifier: 'iterm2-attention'),
+      const TerminalNotificationRequest.close(
+        localIdentifier: 'iterm2-attention',
+      ),
     );
+    final attention = parseIterm2AttentionRequest(const [
+      'RequestAttention=yes',
+    ]);
+    const kitty = TerminalNotificationRequest(
+      body: 'Kitty',
+      identifier: 'iterm2-attention',
+    );
+    expect(attention?.identifier, isNull);
+    expect(attention?.platformIdentifier, isNot(kitty.platformIdentifier));
     expect(parseIterm2AttentionRequest(const ['StealFocus']), isNull);
   });
 }

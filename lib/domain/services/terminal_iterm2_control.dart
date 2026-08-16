@@ -30,18 +30,18 @@ TerminalNotificationRequest? parseIterm2AttentionRequest(List<String> args) {
     case 'once':
       return const TerminalNotificationRequest(
         body: 'The remote terminal requested your attention.',
-        identifier: 'iterm2-attention',
+        localIdentifier: 'iterm2-attention',
         sound: TerminalNotificationSound.system,
       );
     case 'fireworks':
       return const TerminalNotificationRequest(
         body: 'The remote terminal requested your attention.',
-        identifier: 'iterm2-attention',
+        localIdentifier: 'iterm2-attention',
         sound: TerminalNotificationSound.system,
       );
     case 'no':
       return const TerminalNotificationRequest.close(
-        identifier: 'iterm2-attention',
+        localIdentifier: 'iterm2-attention',
       );
     default:
       return null;

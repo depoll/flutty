@@ -7429,7 +7429,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   _terminalNotificationExpiryTimers = {};
   final Map<({int connectionId, int notificationId}), int>
   _terminalNotificationGenerations = {};
-  final Map<int, Future<void>> _terminalNotificationQueues = {};
+  final Map<int, _TerminalNotificationQueue> _terminalNotificationQueues = {};
   int _nextTerminalNotificationGeneration = 0;
   final Map<int, StreamSubscription<void>> _portForwardChangeSubscriptions = {};
   final Map<int, Set<RemoteTcpListenerKey>>
@@ -7768,6 +7768,16 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   @visibleForTesting
   int get debugTerminalNotificationExpiryTimerCount =>
       _terminalNotificationExpiryTimers.length;
+
+  /// Maximum retained native notification operations per connection.
+  @visibleForTesting
+  int get debugTerminalNotificationQueueLimit =>
+      _TerminalNotificationQueue.maxPending;
+
+  /// Number of retained native notification operations for a connection.
+  @visibleForTesting
+  int debugTerminalNotificationQueueLength(int connectionId) =>
+      _terminalNotificationQueues[connectionId]?.pending.length ?? 0;
 
   /// Cancels expiration and reports a native terminal-notification tap.
   void handleTerminalNotificationTap(TerminalNotificationPayload payload) {
@@ -8349,31 +8359,47 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     TerminalNotificationRequest request,
   ) {
     final connectionId = session.connectionId;
-    final previous =
-        _terminalNotificationQueues[connectionId] ?? Future<void>.value();
-    late final Future<void> operation;
-    operation = previous
-        .then((_) => _showTerminalNotification(session, request))
-        .catchError((Object error, StackTrace stackTrace) {
-          FlutterError.reportError(
-            FlutterErrorDetails(
-              exception: error,
-              stack: stackTrace,
-              library: 'ssh_service',
-              context: ErrorDescription(
-                'while presenting a serialized terminal notification',
-              ),
-            ),
-          );
-        });
-    _terminalNotificationQueues[connectionId] = operation;
-    unawaited(
-      operation.whenComplete(() {
-        if (identical(_terminalNotificationQueues[connectionId], operation)) {
-          _terminalNotificationQueues.remove(connectionId);
-        }
-      }),
+    final queue = _terminalNotificationQueues.putIfAbsent(
+      connectionId,
+      _TerminalNotificationQueue.new,
     );
+    final shouldStart = !queue.isProcessing;
+    queue
+      ..add(request)
+      ..isProcessing = true;
+    if (!shouldStart) return;
+    unawaited(_drainTerminalNotificationQueue(session, queue));
+  }
+
+  Future<void> _drainTerminalNotificationQueue(
+    SshSession session,
+    _TerminalNotificationQueue queue,
+  ) async {
+    final connectionId = session.connectionId;
+    while (ref.mounted &&
+        identical(_terminalNotificationQueues[connectionId], queue) &&
+        queue.pending.isNotEmpty) {
+      final request = queue.pending.removeAt(0);
+      try {
+        await _showTerminalNotification(session, request);
+      } on Object catch (error, stackTrace) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'ssh_service',
+            context: ErrorDescription(
+              'while presenting a serialized terminal notification',
+            ),
+          ),
+        );
+      }
+    }
+    queue.isProcessing = false;
+    if (identical(_terminalNotificationQueues[connectionId], queue) &&
+        queue.pending.isEmpty) {
+      _terminalNotificationQueues.remove(connectionId);
+    }
   }
 
   Future<void> _showTerminalNotification(
@@ -8846,5 +8872,23 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         .then((_) => _syncBackgroundStatus());
     _backgroundStatusSyncQueue = nextSync;
     return nextSync;
+  }
+}
+
+class _TerminalNotificationQueue {
+  static const maxPending = 64;
+
+  final List<TerminalNotificationRequest> pending = [];
+  bool isProcessing = false;
+
+  void add(TerminalNotificationRequest request) {
+    final identity = request.platformIdentifier;
+    if (identity != null) {
+      pending.removeWhere((queued) => queued.platformIdentifier == identity);
+    }
+    if (pending.length >= maxPending) {
+      pending.removeAt(0);
+    }
+    pending.add(request);
   }
 }
