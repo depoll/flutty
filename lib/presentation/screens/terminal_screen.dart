@@ -6420,10 +6420,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _trackShellCompletionOptimisticInput(output);
-    if (_filterVisibleShellCompletionsForCurrentInput()) {
-      return;
+    // Keep matching rows visible, but still refresh for the narrower prefix.
+    // Returning here leaves the capped source result stale for later input.
+    final keptVisibleSuggestions =
+        _filterVisibleShellCompletionsForCurrentInput();
+    if (!keptVisibleSuggestions) {
+      _showCachedShellCompletionsIfAvailable();
     }
-    _showCachedShellCompletionsIfAvailable();
     _primeShellCompletionHistory();
     _queueShellCompletionRefresh();
   }
