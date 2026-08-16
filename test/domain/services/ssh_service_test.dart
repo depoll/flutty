@@ -12,6 +12,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:dartssh2/src/ssh_userauth.dart';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -602,6 +603,10 @@ class _EnabledTerminalNotificationsNotifier
     extends TerminalNotificationsNotifier {
   @override
   bool build() => true;
+
+  bool get debugEnabled => state;
+
+  set debugEnabled(bool enabled) => state = enabled;
 }
 
 class _DelayedTerminalNotificationService extends LocalNotificationService {
@@ -609,6 +614,8 @@ class _DelayedTerminalNotificationService extends LocalNotificationService {
   final releaseShow = Completer<void>();
   final calls = <String>[];
   TerminalNotificationPayload? lastPayload;
+  bool throwOnShow = false;
+  bool throwOnClear = false;
 
   @override
   Future<bool> showTerminalNotification({
@@ -623,6 +630,7 @@ class _DelayedTerminalNotificationService extends LocalNotificationService {
     lastPayload = payload;
     calls.add('show-start:$notificationId');
     if (!showStarted.isCompleted) showStarted.complete();
+    if (throwOnShow) throw StateError('show failed');
     await releaseShow.future;
     calls.add('show-finish:$notificationId');
     return true;
@@ -631,6 +639,7 @@ class _DelayedTerminalNotificationService extends LocalNotificationService {
   @override
   Future<void> clearTerminalNotification(int notificationId) async {
     calls.add('clear:$notificationId');
+    if (throwOnClear) throw StateError('clear failed');
   }
 }
 
@@ -4479,6 +4488,84 @@ LISTEN ::1:4201
       );
       expect(notifier.debugTerminalNotificationExpiryTimerCount, limit);
       expect(notificationService.calls, contains('clear:$oldestId'));
+    });
+
+    test('disabled updates preserve an existing native expiry', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final result = await notifier.connect(42, forceNew: true);
+      final session = notifier.getSession(result.connectionId!)!;
+      final sendOsc = session.debugHandlePrivateOsc;
+      notificationService.releaseShow.complete();
+
+      sendOsc('99', const ['i=timed:w=60000', 'Initial']);
+      for (
+        var attempt = 0;
+        attempt < 20 && notifier.debugTerminalNotificationExpiryTimerCount < 1;
+        attempt += 1
+      ) {
+        await pumpEventQueue();
+      }
+      final callsBeforeUpdate = List<String>.of(notificationService.calls);
+      (container.read(terminalNotificationsNotifierProvider.notifier)
+                  as _EnabledTerminalNotificationsNotifier)
+              .debugEnabled =
+          false;
+
+      sendOsc('99', const ['i=timed', 'Ignored']);
+      await pumpEventQueue();
+
+      expect(notifier.debugTerminalNotificationExpiryTimerCount, 1);
+      expect(notificationService.calls, callsBeforeUpdate);
+    });
+
+    test('native show and close failures release their generations', () async {
+      final reportedErrors = <FlutterErrorDetails>[];
+      final previousErrorHandler = FlutterError.onError;
+      FlutterError.onError = reportedErrors.add;
+      addTearDown(() => FlutterError.onError = previousErrorHandler);
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final result = await notifier.connect(42, forceNew: true);
+      final session = notifier.getSession(result.connectionId!)!;
+      notificationService.releaseShow.complete();
+
+      notificationService.throwOnShow = true;
+      session.debugHandlePrivateOsc('99', const ['i=show-failure', 'Fail']);
+      for (
+        var attempt = 0;
+        attempt < 20 && reportedErrors.isEmpty;
+        attempt += 1
+      ) {
+        await pumpEventQueue();
+      }
+      expect(reportedErrors, hasLength(1));
+      expect(notifier.debugTerminalNotificationGenerationCount, 0);
+
+      notificationService.throwOnShow = false;
+      session.debugHandlePrivateOsc('99', const [
+        'i=close-failure:w=60000',
+        'Timed',
+      ]);
+      for (
+        var attempt = 0;
+        attempt < 20 && notifier.debugTerminalNotificationExpiryTimerCount < 1;
+        attempt += 1
+      ) {
+        await pumpEventQueue();
+      }
+      notificationService.throwOnClear = true;
+      session.debugHandlePrivateOsc('99', const ['i=close-failure:p=close']);
+      for (
+        var attempt = 0;
+        attempt < 20 && reportedErrors.length < 2;
+        attempt += 1
+      ) {
+        await pumpEventQueue();
+      }
+
+      expect(reportedErrors, hasLength(2));
+      expect(notifier.debugTerminalNotificationGenerationCount, 0);
+      expect(notifier.debugTerminalNotificationExpiryTimerCount, 0);
+      notificationService.throwOnClear = false;
     });
 
     test(

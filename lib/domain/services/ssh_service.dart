@@ -7775,6 +7775,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   int get debugTerminalNotificationExpiryTimerCount =>
       _terminalNotificationExpiries.length;
 
+  /// Number of native notification operations with current generations.
+  @visibleForTesting
+  int get debugTerminalNotificationGenerationCount =>
+      _terminalNotificationGenerations.length;
+
   /// Maximum retained terminal notification expiration records.
   @visibleForTesting
   int get debugTerminalNotificationExpiryLimit =>
@@ -8418,6 +8423,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     TerminalNotificationRequest request,
   ) async {
     if (!ref.mounted) return;
+    if (request.action == TerminalNotificationAction.show &&
+        !ref.read(terminalNotificationsNotifierProvider)) {
+      return;
+    }
     final notificationService = ref.read(localNotificationServiceProvider);
     final notificationId = buildTerminalNotificationId(
       session.connectionId,
@@ -8431,12 +8440,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _terminalNotificationGenerations[expiryKey] = generation;
     _terminalNotificationExpiries.remove(expiryKey)?.timer.cancel();
     if (request.action == TerminalNotificationAction.close) {
-      await notificationService.clearTerminalNotification(notificationId);
-      _removeTerminalNotificationGeneration(expiryKey, generation);
-      return;
-    }
-    if (!ref.read(terminalNotificationsNotifierProvider)) {
-      _removeTerminalNotificationGeneration(expiryKey, generation);
+      try {
+        await notificationService.clearTerminalNotification(notificationId);
+      } finally {
+        _removeTerminalNotificationGeneration(expiryKey, generation);
+      }
       return;
     }
     final title = request.title ?? await _resolveSessionLabel(session);
@@ -8444,22 +8452,28 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         _terminalNotificationGenerations[expiryKey] != generation) {
       return;
     }
-    final didShow = await notificationService.showTerminalNotification(
-      notificationId: notificationId,
-      title: title,
-      body: request.body,
-      urgency: request.urgency,
-      sound: request.sound,
-      timeout: request.timeout,
-      payload: TerminalNotificationPayload(
-        hostId: session.hostId,
-        connectionId: session.connectionId,
-        platformNotificationId: notificationId,
-        notificationIdentifier: request.identifier,
-        reportsActivation: request.reportsActivation,
-        focusOnActivation: request.focusOnActivation,
-      ),
-    );
+    final bool didShow;
+    try {
+      didShow = await notificationService.showTerminalNotification(
+        notificationId: notificationId,
+        title: title,
+        body: request.body,
+        urgency: request.urgency,
+        sound: request.sound,
+        timeout: request.timeout,
+        payload: TerminalNotificationPayload(
+          hostId: session.hostId,
+          connectionId: session.connectionId,
+          platformNotificationId: notificationId,
+          notificationIdentifier: request.identifier,
+          reportsActivation: request.reportsActivation,
+          focusOnActivation: request.focusOnActivation,
+        ),
+      );
+    } on Object {
+      _removeTerminalNotificationGeneration(expiryKey, generation);
+      rethrow;
+    }
     if (_terminalNotificationGenerations[expiryKey] != generation) {
       if (didShow) {
         await notificationService.clearTerminalNotification(notificationId);
