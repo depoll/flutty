@@ -4,6 +4,7 @@
 // ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions, avoid_setters_without_getters, prefer_int_literals, cascade_invocations, unnecessary_null_checks, invalid_use_of_internal_member
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -789,6 +790,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   String? _composingText;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
+  final ListQueue<
+    ({TerminalMouseButton button, CellOffset position, int count})
+  >
+  _pendingTouchScrollRuns = ListQueue();
   bool _touchScrollDrainScheduled = false;
   int _touchScrollDispatchGeneration = 0;
   late final Ticker _touchScrollInertiaTicker;
@@ -1474,7 +1479,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   void _onTouchScrollStart(DragStartDetails details) {
     _stopTouchScrollInertia();
     _lastTouchScrollPosition = details.localPosition;
-    _touchScrollRemainder = 0;
+    _resetTouchScrollDispatch();
   }
 
   void _onTouchScrollUpdate(DragUpdateDetails details) {
@@ -1515,48 +1520,80 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return;
     }
     _touchScrollRemainder += delta;
+    final position = _resolveViewportMousePosition(_lastTouchScrollPosition);
+    while (_touchScrollRemainder.abs() >= stepHeight) {
+      final scrollUp = _touchScrollRemainder > 0;
+      _enqueueTouchScrollRun(
+        scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
+        position,
+      );
+      _touchScrollRemainder += scrollUp ? -stepHeight : stepHeight;
+    }
     _drainTouchScrollInput();
   }
 
-  void _drainTouchScrollInput() {
-    if (_touchScrollDrainScheduled) {
-      return;
-    }
-    final stepHeight = _touchScrollStepHeight;
-    if (stepHeight <= 0) {
-      return;
-    }
-
-    while (_touchScrollRemainder.abs() >= stepHeight) {
-      final scrollUp = _touchScrollRemainder > 0;
-      final canBatchSgr =
-          widget.forceSgrTouchScroll ||
-          (widget.terminal.mouseMode.reportScroll &&
-              widget.terminal.mouseReportMode == MouseReportMode.sgr);
-      final queuedSteps = canBatchSgr
-          ? (_touchScrollRemainder.abs() / stepHeight).floor().clamp(1, 6)
-          : 1;
-      final handled = _sendTouchScrollMouseInput(
-        scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
-        _resolveViewportMousePosition(_lastTouchScrollPosition),
-        repeatCount: canBatchSgr ? queuedSteps : 1,
-      );
-      final consumedDistance = stepHeight * queuedSteps;
-      _touchScrollRemainder += scrollUp ? -consumedDistance : consumedDistance;
-
-      if (handled) {
-        if (canBatchSgr) {
-          // Lock the frame-wide report budget even when this update consumed
-          // its entire remainder; another pointer update in the same frame must
-          // wait for the scheduled reset.
-          _scheduleTouchScrollDrain();
-          return;
-        }
-        continue;
+  void _enqueueTouchScrollRun(TerminalMouseButton button, CellOffset position) {
+    if (_pendingTouchScrollRuns.isNotEmpty) {
+      final last = _pendingTouchScrollRuns.last;
+      if (last.button == button &&
+          last.position.x == position.x &&
+          last.position.y == position.y) {
+        _pendingTouchScrollRuns
+          ..removeLast()
+          ..add((button: button, position: position, count: last.count + 1));
+        return;
       }
-      if (widget.simulateScroll) {
+    }
+    _pendingTouchScrollRuns.add((button: button, position: position, count: 1));
+  }
+
+  void _consumeTouchScrollRun(int count) {
+    final run = _pendingTouchScrollRuns.removeFirst();
+    if (run.count > count) {
+      _pendingTouchScrollRuns.addFirst((
+        button: run.button,
+        position: run.position,
+        count: run.count - count,
+      ));
+    }
+  }
+
+  void _drainTouchScrollInput() {
+    if (_touchScrollDrainScheduled || _pendingTouchScrollRuns.isEmpty) {
+      return;
+    }
+    final canBatchSgr =
+        widget.forceSgrTouchScroll ||
+        (widget.terminal.mouseMode.reportScroll &&
+            widget.terminal.mouseReportMode == MouseReportMode.sgr);
+    if (canBatchSgr) {
+      var budget = 6;
+      while (budget > 0 && _pendingTouchScrollRuns.isNotEmpty) {
+        final run = _pendingTouchScrollRuns.first;
+        final count = math.min(run.count, budget);
+        _sendTouchScrollMouseInput(
+          run.button,
+          run.position,
+          repeatCount: count,
+        );
+        _consumeTouchScrollRun(count);
+        budget -= count;
+      }
+      // Lock the frame-wide budget even when the queue is empty; pointer updates
+      // received before this callback only append runs for the next frame.
+      _scheduleTouchScrollDrain();
+      return;
+    }
+
+    while (_pendingTouchScrollRuns.isNotEmpty) {
+      final run = _pendingTouchScrollRuns.first;
+      final handled = _sendTouchScrollMouseInput(run.button, run.position);
+      _consumeTouchScrollRun(1);
+      if (!handled && widget.simulateScroll) {
         widget.terminal.keyInput(
-          scrollUp ? TerminalKey.arrowUp : TerminalKey.arrowDown,
+          run.button == TerminalMouseButton.wheelUp
+              ? TerminalKey.arrowUp
+              : TerminalKey.arrowDown,
         );
       }
     }
@@ -1583,6 +1620,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   void _resetTouchScrollDispatch() {
     _touchScrollDispatchGeneration += 1;
     _touchScrollDrainScheduled = false;
+    _pendingTouchScrollRuns.clear();
     _touchScrollRemainder = 0;
   }
 

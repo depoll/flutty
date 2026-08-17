@@ -212,26 +212,32 @@ void main() {
       final terminal = Terminal(maxLines: 100)..resize(12, 6);
       final graphics = terminal.graphics;
       final line = terminal.buffer.lines[0];
-      graphics.addPlaceholder(
-        imageId: 1,
+      for (var column = 2; column <= 3; column++) {
+        graphics.addPlaceholder(
+          imageId: column,
+          imageIdBitWidth: 24,
+          anchor: line.createAnchor(column),
+          row: 0,
+          col: column - 2,
+        );
+      }
+
+      line.removeCells(2, 2);
+      expect(graphics.placeholderCount, 0);
+      expect(graphics.placeholderGridCount, 0);
+
+      final moved = graphics.addPlaceholder(
+        imageId: 4,
         imageIdBitWidth: 24,
         anchor: line.createAnchor(2),
         row: 0,
         col: 0,
       );
+      line.insertCells(2, 1);
+      expect(moved.anchor.x, 3);
+      expect(graphics.placeholderCount, 1);
 
-      line.removeCells(2, 1);
-      expect(graphics.placeholderCount, 0);
-      expect(graphics.placeholderGridCount, 0);
-
-      graphics.addPlaceholder(
-        imageId: 2,
-        imageIdBitWidth: 24,
-        anchor: line.createAnchor(11),
-        row: 0,
-        col: 0,
-      );
-      line.insertCells(0, 1);
+      line.insertCells(0, 10);
       expect(graphics.placeholderCount, 0);
       expect(graphics.placeholderGridCount, 0);
     });
