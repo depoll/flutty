@@ -390,6 +390,60 @@ void main() {
     );
   });
 
+  testWidgets('secondary touch release keeps primary drag accelerated', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    scrollController.jumpTo(scrollController.position.maxScrollExtent / 2);
+
+    final pointerListener = tester
+        .widgetList<Listener>(find.byType(Listener))
+        .firstWhere((listener) => listener.child is Scrollable);
+    final scrollable = tester.widget<Scrollable>(find.byType(Scrollable));
+
+    pointerListener.onPointerDown!(const PointerDownEvent(pointer: 1));
+    pointerListener.onPointerDown!(const PointerDownEvent(pointer: 2));
+    pointerListener.onPointerUp!(const PointerUpEvent(pointer: 2));
+    await tester.pump();
+
+    expect(
+      scrollable.physics!.applyPhysicsToUserOffset(
+        scrollController.position,
+        10,
+      ),
+      closeTo(30, 0.01),
+    );
+
+    pointerListener.onPointerUp!(const PointerUpEvent(pointer: 1));
+    await tester.pump();
+
+    expect(
+      scrollable.physics!.applyPhysicsToUserOffset(
+        scrollController.position,
+        10,
+      ),
+      closeTo(10, 0.01),
+    );
+  });
+
   testWidgets('direct terminal scrollback keeps trackpad drags at 1x', (
     tester,
   ) async {

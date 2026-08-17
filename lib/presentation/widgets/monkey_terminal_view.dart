@@ -809,7 +809,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   final _viewportKey = GlobalKey();
 
   String? _composingText;
-  PointerDeviceKind? _directScrollPointerKind;
+  final _directScrollTouchPointers = <int>{};
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
   late final Ticker _touchScrollInertiaTicker;
@@ -1287,11 +1287,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
     if (!widget.touchScrollToTerminal) {
       child = Listener(
-        onPointerDown: _rememberDirectScrollPointerKind,
-        onPointerUp: _deferClearDirectScrollPointerKind,
-        onPointerCancel: _deferClearDirectScrollPointerKind,
-        onPointerPanZoomStart: _rememberDirectScrollPointerKind,
-        onPointerPanZoomEnd: _deferClearDirectScrollPointerKind,
+        onPointerDown: _rememberDirectScrollTouchPointer,
+        onPointerUp: _deferForgetDirectScrollTouchPointer,
+        onPointerCancel: _deferForgetDirectScrollTouchPointer,
         child: child,
       );
     }
@@ -1503,18 +1501,20 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.onSecondaryTapUp?.call(details, offset);
   }
 
-  bool _shouldAccelerateDirectScroll() =>
-      _directScrollPointerKind == PointerDeviceKind.touch;
+  bool _shouldAccelerateDirectScroll() => _directScrollTouchPointers.isNotEmpty;
 
-  void _rememberDirectScrollPointerKind(PointerEvent event) {
-    _directScrollPointerKind = event.kind;
+  void _rememberDirectScrollTouchPointer(PointerEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      _directScrollTouchPointers.add(event.pointer);
+    }
   }
 
-  void _deferClearDirectScrollPointerKind(PointerEvent event) {
+  void _deferForgetDirectScrollTouchPointer(PointerEvent event) {
+    if (event.kind != PointerDeviceKind.touch) {
+      return;
+    }
     scheduleMicrotask(() {
-      if (_directScrollPointerKind == event.kind) {
-        _directScrollPointerKind = null;
-      }
+      _directScrollTouchPointers.remove(event.pointer);
     });
   }
 
