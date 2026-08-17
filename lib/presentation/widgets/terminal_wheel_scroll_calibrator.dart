@@ -167,7 +167,10 @@ class TerminalWheelScrollCalibrator {
   }
 
   /// Cancels a measurement when the input fell back to keyboard scrolling.
-  void cancelPending() => _cancelPending(notify: false);
+  void cancelPending() {
+    _isCalibrated = true;
+    _cancelPending(notify: false);
+  }
 
   void dispose() => _cancelPending(notify: false);
 

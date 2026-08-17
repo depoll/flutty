@@ -130,6 +130,18 @@ void main() {
       );
     });
 
+    test('settles a canceled mouse probe until the next gesture', () {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      expect(calibrator.begin(before: before, onSettled: (_, _) {}), isTrue);
+
+      calibrator.cancelPending();
+
+      expect(calibrator.needsMeasurement, isFalse);
+      calibrator.invalidate();
+      expect(calibrator.needsMeasurement, isTrue);
+    });
+
     testWidgets('uses a late response when the hard timeout settles', (
       tester,
     ) async {
