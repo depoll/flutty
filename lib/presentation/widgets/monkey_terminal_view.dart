@@ -766,8 +766,6 @@ class MonkeyTerminalView extends StatefulWidget {
 
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  static const _touchScrollReportedWheelLinesPerEvent = 3.0;
-
   late FocusNode _focusNode;
 
   late final ShortcutManager _shortcutManager;
@@ -1490,9 +1488,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     final lineHeight = renderTerminal.lineHeight;
     if (lineHeight <= 0) {
       return 0;
-    }
-    if (widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll) {
-      return lineHeight * _touchScrollReportedWheelLinesPerEvent;
     }
     return lineHeight;
   }

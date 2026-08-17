@@ -121,7 +121,7 @@ void main() {
     },
   );
 
-  testWidgets('forced SGR touch scroll uses reported-wheel drag threshold', (
+  testWidgets('forced SGR touch scroll emits one event per dragged row', (
     tester,
   ) async {
     final terminal = Terminal();
@@ -162,9 +162,9 @@ void main() {
     detector.onTouchScrollUpdate!(
       DragUpdateDetails(
         kind: PointerDeviceKind.touch,
-        globalPosition: Offset(150, 100 - lineHeight * 2),
-        localPosition: Offset(150, 100 - lineHeight * 2),
-        delta: Offset(0, -lineHeight * 2),
+        globalPosition: Offset(150, 100 - lineHeight * 0.75),
+        localPosition: Offset(150, 100 - lineHeight * 0.75),
+        delta: Offset(0, -lineHeight * 0.75),
       ),
     );
     await tester.pump();
@@ -174,9 +174,9 @@ void main() {
     detector.onTouchScrollUpdate!(
       DragUpdateDetails(
         kind: PointerDeviceKind.touch,
-        globalPosition: Offset(150, 100 - lineHeight * 3),
-        localPosition: Offset(150, 100 - lineHeight * 3),
-        delta: Offset(0, -lineHeight),
+        globalPosition: Offset(150, 100 - lineHeight),
+        localPosition: Offset(150, 100 - lineHeight),
+        delta: Offset(0, -lineHeight * 0.25),
       ),
     );
     await tester.pump();
@@ -186,7 +186,7 @@ void main() {
   });
 
   testWidgets(
-    'mouse-reporting apps require more drag distance per touch scroll step',
+    'mouse reporting and arrow fallback use the same touch scroll steps',
     (tester) async {
       final expectedOutput = <String>[];
       Terminal()
@@ -279,7 +279,7 @@ void main() {
 
       final wheelCount = _countOccurrences(wheelOutput.join(), '\u001b[<65;');
       expect(wheelCount, greaterThan(0));
-      expect(wheelCount, lessThan(arrowCount));
+      expect(wheelCount, arrowCount);
     },
   );
 
