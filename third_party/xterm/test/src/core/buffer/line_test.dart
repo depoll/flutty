@@ -117,6 +117,8 @@ void main() {
       terminal.buffer.clear();
       expect(line.attached, false);
       expect(anchor.attached, false);
+      expect(() => anchor.y, throwsStateError);
+      expect(() => anchor.offset, throwsStateError);
     });
   });
 }

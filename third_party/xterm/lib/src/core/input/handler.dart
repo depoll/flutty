@@ -149,6 +149,7 @@ class KeytabInputHandler implements TerminalInputHandler {
       appKeyPad: event.state.appKeypadMode,
       appScreen: event.altBuffer,
       macos: event.platform == TerminalTargetPlatform.macos,
+      ansi: event.state.ansiMode,
     );
 
     if (record == null) {

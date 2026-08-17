@@ -63,6 +63,18 @@ out of scope.
     is now private, `IndexAwareCircularBuffer.operator []=` has an explicit `void`
     return type, the unused `TerminalSnapshot` plus dead `main()`/commented
     scaffolding were removed, and `TerminalSize` is exported from `ui.dart`.
+* kterm.dart 1.5.0 -> 1.5.5 reconciliation. Applicable upstream fixes are
+  ported without replacing MonkeySSH's divergent parser, renderer, Kitty
+  keyboard, or graphics manager:
+  * Full-buffer insertion at index zero now inserts at the front instead of
+    silently dropping the item, and `swap` validates its index.
+  * Truncated keytab records throw `ParseError` instead of a null-check error;
+    observable listeners may safely mutate subscriptions during notification;
+    and detached `CellAnchor` coordinates throw explicit `StateError`s.
+  * ZMODEM callbacks no longer dereference a session that was reset while an
+    asynchronous transfer was in flight.
+  * DECANM (`CSI ? 2 h/l`) tracks ANSI/VT52 mode and selects the existing
+    keytab's VT52 arrow and tab mappings.
 
 ### Evaluated but intentionally not ported
 * Synchronized output (`DECSET 2026`) needs a timeout safeguard (a dropped end
@@ -87,6 +99,15 @@ out of scope.
   prefix (`=` set / `>` push / `<` pop / `?` query) and accumulates graphics
   payload across all chunks, deferring `graphicsCommandEnd` until the final
   (`m != 1`) chunk.
+* kterm.dart 1.5.3's plain-text `Terminal.write` bypass is not safe for this
+  fork. MonkeySSH accepts arbitrary stream slices (including slices in the
+  middle of OSC/APC/DCS sequences), and every printable rune must pass through
+  `Terminal.writeChar` to assemble Kitty Unicode placeholders. Bypassing the
+  stateful parser based only on the current slice would corrupt both cases.
+* kterm.dart 1.5.5's controller-search catch narrowing does not apply because
+  this vendored API predates and does not expose KTerm's search controller.
+  Its `GraphicsManager` export was already present here; renderer/focus
+  deduplication and documentation-only commits do not change behavior.
 * Upstream's 1.4.2 painter run-batching and 1.5.0 htop spurious-underline
   cache-key fix do not apply: MonkeySSH renders through `MonkeyTerminalPainter` /
   `MonkeyRenderTerminal`, and our foreground paragraph cache key already folds in

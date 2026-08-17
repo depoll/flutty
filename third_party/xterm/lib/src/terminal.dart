@@ -228,6 +228,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   bool _cursorKeysMode = false;
 
+  bool _ansiMode = true;
+
   bool _reverseDisplayMode = false;
 
   bool _originMode = false;
@@ -275,6 +277,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   bool get cursorKeysMode => _cursorKeysMode;
+
+  @override
+  bool get ansiMode => _ansiMode;
 
   @override
   bool get reverseDisplayMode => _reverseDisplayMode;
@@ -1103,6 +1108,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void setCursorKeysMode(bool enabled) {
     _cursorKeysMode = enabled;
+  }
+
+  @override
+  void setAnsiMode(bool enabled) {
+    _ansiMode = enabled;
   }
 
   @override

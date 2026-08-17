@@ -135,7 +135,11 @@ class ZModemMux {
   }
 
   Future<void> _handleZModem(Uint8List chunk) async {
-    for (final event in _session!.receive(chunk)) {
+    final session = _session;
+    if (session == null) {
+      return;
+    }
+    for (final event in session.receive(chunk)) {
       /// remote is sz
       if (event is ZFileOfferedEvent) {
         _handleZFileOfferedEvent(event);
@@ -145,6 +149,9 @@ class ZModemMux {
         await _handleZFileEndEvent(event);
       } else if (event is ZSessionFinishedEvent) {
         await _handleZSessionFinishedEvent(event);
+        // Reset closes the receive sink and invalidates every remaining event
+        // yielded for this chunk. Never dispatch trailing events into it.
+        return;
       }
 
       /// remote is rz
@@ -164,13 +171,17 @@ class ZModemMux {
 
   void _handleZFileOfferedEvent(ZFileOfferedEvent event) {
     final onFileOffer = this.onFileOffer;
-
-    if (onFileOffer == null) {
-      _session!.skipFile();
+    final session = _session;
+    if (session == null) {
       return;
     }
 
-    onFileOffer(_createRemoteOffer(event.fileInfo));
+    if (onFileOffer == null) {
+      session.skipFile();
+      return;
+    }
+
+    onFileOffer(_createRemoteOffer(event.fileInfo, session));
   }
 
   void _handleZFileDataEvent(ZFileDataEvent event) {
@@ -193,6 +204,10 @@ class ZModemMux {
   }
 
   Future<void> _handleFileAcceptedEvent(ZFileAcceptedEvent event) async {
+    final session = _session;
+    if (session == null) {
+      return;
+    }
     final data = _fileOffers!.current.accept(event.offset);
     var bytesSent = 0;
 
@@ -200,15 +215,21 @@ class ZModemMux {
       data.transform(
         StreamTransformer<Uint8List, Uint8List>.fromHandlers(
           handleData: (chunk, sink) {
+            if (!identical(_session, session)) {
+              return;
+            }
             bytesSent += chunk.length;
-            _session!.sendFileData(chunk);
-            sink.add(_session!.dataToSend());
+            session.sendFileData(chunk);
+            sink.add(session.dataToSend());
           },
         ),
       ),
     );
 
-    _session!.finishSending(event.offset + bytesSent);
+    if (!identical(_session, session)) {
+      return;
+    }
+    session.finishSending(event.offset + bytesSent);
   }
 
   void _handleFileSkippedEvent(ZFileSkippedEvent event) {
@@ -218,28 +239,41 @@ class ZModemMux {
 
   /// Sends next file offer if available, or closes the session if not.
   void _moveToNextOffer() {
+    final session = _session;
+    if (session == null) {
+      return;
+    }
     if (_fileOffers?.moveNext() != true) {
       _closeSession();
       return;
     }
 
-    _session!.offerFile(_fileOffers!.current.info);
+    session.offerFile(_fileOffers!.current.info);
   }
 
   /// Creates a [ZModemOffer] ƒrom the info from remote peer that can be used
   /// by local client to accept or skip the file.
-  ZModemOffer _createRemoteOffer(ZModemFileInfo fileInfo) {
+  ZModemOffer _createRemoteOffer(
+    ZModemFileInfo fileInfo,
+    ZModemCore originatingSession,
+  ) {
     return ZModemCallbackOffer(
       fileInfo,
       onAccept: (offset) {
-        _session!.acceptFile(offset);
+        if (!identical(_session, originatingSession)) {
+          return const Stream<Uint8List>.empty();
+        }
+        originatingSession.acceptFile(offset);
         _flush();
 
         _createReceiveSink();
         return _receiveSink!.stream;
       },
       onSkip: () {
-        _session!.skipFile();
+        if (!identical(_session, originatingSession)) {
+          return;
+        }
+        originatingSession.skipFile();
         _flush();
       },
     );
@@ -264,7 +298,11 @@ class ZModemMux {
 
   /// Requests remote to close the session.
   void _closeSession() {
-    _session!.finishSession();
+    final session = _session;
+    if (session == null) {
+      return;
+    }
+    session.finishSession();
   }
 
   /// Clears all ZModem state.
