@@ -1545,7 +1545,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _touchScrollRemainder += scrollUp ? -consumedDistance : consumedDistance;
 
       if (handled) {
-        if (canBatchSgr && _touchScrollRemainder.abs() >= stepHeight) {
+        if (canBatchSgr) {
+          // Lock the frame-wide report budget even when this update consumed
+          // its entire remainder; another pointer update in the same frame must
+          // wait for the scheduled reset.
           _scheduleTouchScrollDrain();
           return;
         }

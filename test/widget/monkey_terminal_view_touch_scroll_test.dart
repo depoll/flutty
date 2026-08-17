@@ -229,16 +229,27 @@ void main() {
           delta: Offset(0, -lineHeight * 30),
         ),
       );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 12),
+          localPosition: Offset(150, 100 - lineHeight * 12),
+          delta: Offset(0, -lineHeight * 12),
+        ),
+      );
 
-      // Ten original wheel thresholds are preserved, but only six reports are
-      // written in the current local frame. The remaining four share one write
-      // in the next frame instead of creating ten synchronous shell writes.
+      // Fourteen original wheel thresholds across two pointer updates are
+      // preserved, but the frame-wide budget permits only six reports before
+      // the next local frame.
       expect(output, hasLength(1));
       expect(_countOccurrences(output.single, '\u001b[<65;'), 6);
       await tester.pump();
       expect(output, hasLength(2));
-      expect(_countOccurrences(output.last, '\u001b[<65;'), 4);
-      expect(_countOccurrences(output.join(), '\u001b[<65;'), 10);
+      expect(_countOccurrences(output.last, '\u001b[<65;'), 6);
+      await tester.pump();
+      expect(output, hasLength(3));
+      expect(_countOccurrences(output.last, '\u001b[<65;'), 2);
+      expect(_countOccurrences(output.join(), '\u001b[<65;'), 14);
     },
   );
 

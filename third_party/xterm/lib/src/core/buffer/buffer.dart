@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:math' show max, min;
 
 import 'package:xterm/src/core/buffer/cell_offset.dart';
@@ -233,6 +234,9 @@ class Buffer {
     if (regionHeight <= 0) return;
     final count = lines < regionHeight ? lines : regionHeight;
     if (count <= 0) return;
+    for (var i = bottom - count + 1; i <= bottom; i++) {
+      graphics.removeGraphicsAnchoredToLine(this.lines[i]);
+    }
     final reordered = <BufferLine>[
       for (var i = 0; i < count; i++) _newEmptyLine(),
       for (var i = top; i <= bottom - count; i++) this.lines[i],
@@ -247,6 +251,9 @@ class Buffer {
     if (regionHeight <= 0) return;
     final count = lines < regionHeight ? lines : regionHeight;
     if (count <= 0) return;
+    for (var i = top; i < top + count; i++) {
+      graphics.removeGraphicsAnchoredToLine(this.lines[i]);
+    }
     final reordered = <BufferLine>[
       for (var i = top + count; i <= bottom; i++) this.lines[i],
       for (var i = 0; i < count; i++) _newEmptyLine(),
@@ -404,6 +411,9 @@ class Buffer {
     }
 
     graphics.removePlacementsInRows(0, scrollBack - 1);
+    for (var row = 0; row < scrollBack; row++) {
+      graphics.removeGraphicsAnchoredToLine(lines[row]);
+    }
     lines.trimStart(scrollBack);
   }
 
@@ -439,11 +449,14 @@ class Buffer {
 
     for (var i = 0; i < linesToMove; i++) {
       final index = absoluteMarginBottom - i;
+      graphics.removeGraphicsAnchoredToLine(lines[index]);
       lines[index] = lines.swap(index - linesToInsert, _newEmptyLine());
     }
 
     for (var i = linesToMove; i < linesToInsert; i++) {
-      lines[absoluteCursorY + i] = _newEmptyLine();
+      final index = absoluteCursorY + i;
+      graphics.removeGraphicsAnchoredToLine(lines[index]);
+      lines[index] = _newEmptyLine();
     }
   }
 
@@ -459,6 +472,9 @@ class Buffer {
 
     count = min(count, absoluteMarginBottom - absoluteCursorY + 1);
 
+    for (var i = absoluteCursorY; i < absoluteCursorY + count; i++) {
+      graphics.removeGraphicsAnchoredToLine(lines[i]);
+    }
     final reordered = <BufferLine>[
       for (var i = absoluteCursorY + count; i <= absoluteMarginBottom; i++)
         lines[i],
@@ -571,6 +587,15 @@ class Buffer {
           reflowResult.add(_newEmptyLine(newWidth));
         }
 
+        final retainedStart = max(0, reflowResult.length - lines.maxLength);
+        final retainedLines = HashSet<BufferLine>.identity()
+          ..addAll(reflowResult.skip(retainedStart));
+        for (var row = 0; row < lines.length; row++) {
+          final line = lines[row];
+          if (!retainedLines.contains(line)) {
+            graphics.removeGraphicsAnchoredToLine(line);
+          }
+        }
         lines.replaceWith(reflowResult);
       } else {
         lines.forEach((item) => item.resize(newWidth));
