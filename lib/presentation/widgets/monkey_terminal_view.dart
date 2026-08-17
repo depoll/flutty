@@ -809,7 +809,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   final _viewportKey = GlobalKey();
 
   String? _composingText;
-  final _directScrollTouchPointers = <int>{};
+  PointerDeviceKind? _directScrollInputKind;
+  int? _directScrollInputPointer;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
   late final Ticker _touchScrollInertiaTicker;
@@ -1287,9 +1288,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
     if (!widget.touchScrollToTerminal) {
       child = Listener(
-        onPointerDown: _rememberDirectScrollTouchPointer,
-        onPointerUp: _deferForgetDirectScrollTouchPointer,
-        onPointerCancel: _deferForgetDirectScrollTouchPointer,
+        onPointerMove: _rememberDirectScrollInput,
+        onPointerUp: _deferForgetDirectScrollInput,
+        onPointerCancel: _deferForgetDirectScrollInput,
+        onPointerPanZoomUpdate: _rememberDirectScrollInput,
+        onPointerPanZoomEnd: _deferForgetDirectScrollInput,
         child: child,
       );
     }
@@ -1501,20 +1504,23 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.onSecondaryTapUp?.call(details, offset);
   }
 
-  bool _shouldAccelerateDirectScroll() => _directScrollTouchPointers.isNotEmpty;
+  bool _shouldAccelerateDirectScroll() =>
+      _directScrollInputKind == PointerDeviceKind.touch;
 
-  void _rememberDirectScrollTouchPointer(PointerEvent event) {
-    if (event.kind == PointerDeviceKind.touch) {
-      _directScrollTouchPointers.add(event.pointer);
-    }
+  void _rememberDirectScrollInput(PointerEvent event) {
+    _directScrollInputKind = event.kind;
+    _directScrollInputPointer = event.pointer;
   }
 
-  void _deferForgetDirectScrollTouchPointer(PointerEvent event) {
-    if (event.kind != PointerDeviceKind.touch) {
+  void _deferForgetDirectScrollInput(PointerEvent event) {
+    if (_directScrollInputPointer != event.pointer) {
       return;
     }
     scheduleMicrotask(() {
-      _directScrollTouchPointers.remove(event.pointer);
+      if (_directScrollInputPointer == event.pointer) {
+        _directScrollInputKind = null;
+        _directScrollInputPointer = null;
+      }
     });
   }
 

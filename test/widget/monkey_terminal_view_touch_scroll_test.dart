@@ -419,8 +419,9 @@ void main() {
         .firstWhere((listener) => listener.child is Scrollable);
     final scrollable = tester.widget<Scrollable>(find.byType(Scrollable));
 
-    pointerListener.onPointerDown!(const PointerDownEvent(pointer: 1));
-    pointerListener.onPointerDown!(const PointerDownEvent(pointer: 2));
+    pointerListener.onPointerMove!(
+      const PointerMoveEvent(pointer: 1, delta: Offset(0, 10)),
+    );
     pointerListener.onPointerUp!(const PointerUpEvent(pointer: 2));
     await tester.pump();
 
@@ -434,6 +435,55 @@ void main() {
 
     pointerListener.onPointerUp!(const PointerUpEvent(pointer: 1));
     await tester.pump();
+
+    expect(
+      scrollable.physics!.applyPhysicsToUserOffset(
+        scrollController.position,
+        10,
+      ),
+      closeTo(10, 0.01),
+    );
+  });
+
+  testWidgets('held touch does not accelerate concurrent trackpad input', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    scrollController.jumpTo(scrollController.position.maxScrollExtent / 2);
+
+    final pointerListener = tester
+        .widgetList<Listener>(find.byType(Listener))
+        .firstWhere((listener) => listener.child is Scrollable);
+    final scrollable = tester.widget<Scrollable>(find.byType(Scrollable));
+
+    pointerListener.onPointerMove!(
+      const PointerMoveEvent(pointer: 1, delta: Offset(0, 10)),
+    );
+    pointerListener.onPointerPanZoomUpdate!(
+      const PointerPanZoomUpdateEvent(
+        pointer: 2,
+        pan: Offset(0, 10),
+        panDelta: Offset(0, 10),
+      ),
+    );
 
     expect(
       scrollable.physics!.applyPhysicsToUserOffset(
