@@ -538,6 +538,11 @@ double resolveTerminalHorizontalFillScale({
 /// How long to wait for keyboard inset animations to settle before resizing.
 @visibleForTesting
 const terminalKeyboardResizeDebounceDuration = Duration(milliseconds: 180);
+
+/// Maximum wait before releasing touch-scroll backpressure when a remote TUI
+/// consumes a wheel event without emitting a frame.
+@visibleForTesting
+const terminalTouchScrollRemoteFrameTimeout = Duration(milliseconds: 48);
 const _terminalFocusInReport = '\x1b[I';
 const _terminalFocusOutReport = '\x1b[O';
 const _terminalFocusTransitionDelay = Duration(milliseconds: 50);
@@ -558,6 +563,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.scrollController,
     this.autoResize = true,
     this.resizeTerminalToViewport = true,
+    this.notifyPixelSizeChanges = true,
     this.backgroundOpacity = 1,
     this.focusNode,
     this.cursorFocusNode,
@@ -625,6 +631,11 @@ class MonkeyTerminalView extends StatefulWidget {
   /// are still reported through [Terminal.onResize], while this widget clips the
   /// remote grid to its local bounds.
   final bool resizeTerminalToViewport;
+
+  /// Whether a viewport pixel-size change that leaves the cell grid unchanged
+  /// should emit [Terminal.onResize]. Shared-grid multiplexers can disable this
+  /// to avoid making a remote TUI redraw for a sub-cell keyboard/layout change.
+  final bool notifyPixelSizeChanges;
 
   /// Opacity of the terminal background. Set to 0 to make the terminal
   /// background transparent.
@@ -781,6 +792,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   String? _composingText;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
+  bool _touchScrollWaitingForRemoteFrame = false;
+  bool _touchScrollDrainScheduled = false;
+  Timer? _touchScrollRemoteFrameTimer;
   late final Ticker _touchScrollInertiaTicker;
   late final Ticker _graphicsAnimationTicker;
   Simulation? _touchScrollInertiaSimulation;
@@ -907,7 +921,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _lastTerminalViewWidth = widget.terminal.viewWidth;
       widget.terminal.addListener(_handleTerminalMetricsChanged);
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
       _scheduleGraphicsAnimationSync();
     }
     if (oldWidget.focusNode != widget.focusNode) {
@@ -933,19 +947,19 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
     if (oldWidget.simulateScroll != widget.simulateScroll) {
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
     }
     if (oldWidget.touchScrollToTerminal && !widget.touchScrollToTerminal) {
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
     }
     if (oldWidget.forceSgrTouchScroll != widget.forceSgrTouchScroll) {
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
     }
     if (oldWidget.scrollResetGeneration != widget.scrollResetGeneration) {
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
     }
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
     super.didUpdateWidget(oldWidget);
@@ -959,6 +973,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
     _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
+    _resetTouchScrollDispatch();
     _touchScrollInertiaTicker.dispose();
     _stopGraphicsAnimationTicker();
     _graphicsAnimationTicker.dispose();
@@ -1001,6 +1016,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _handleTerminalMetricsChanged() {
+    _releaseTouchScrollRemoteFrame();
     _syncGraphicsAnimationTicker();
     _scheduleGraphicsAnimationSync();
     final currentViewWidth = widget.terminal.viewWidth;
@@ -1235,6 +1251,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
           autoResize: widget.autoResize,
           resizeTerminalToViewport: widget.resizeTerminalToViewport,
+          notifyPixelSizeChanges: widget.notifyPixelSizeChanges,
           resizeBottomInset: mediaQuery.viewInsets.bottom,
           liveOutputAutoScroll: widget.liveOutputAutoScroll,
           textStyle: widget.textStyle,
@@ -1499,7 +1516,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   void _applyTouchScrollDelta(double delta) {
     _touchScrollRemainder += delta;
+    _drainTouchScrollInput();
+  }
 
+  void _drainTouchScrollInput() {
+    if (_touchScrollWaitingForRemoteFrame) {
+      return;
+    }
     final stepHeight = _touchScrollStepHeight;
     if (stepHeight <= 0) {
       return;
@@ -1511,15 +1534,57 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
         _resolveViewportMousePosition(_lastTouchScrollPosition),
       );
+      _touchScrollRemainder += scrollUp ? -stepHeight : stepHeight;
 
-      if (!handled && widget.simulateScroll) {
+      if (handled) {
+        // Full-screen TUIs such as Pi render their whole transcript for each
+        // wheel event. Keep the remaining gesture distance, but do not queue
+        // another expensive redraw until output confirms this one completed.
+        _touchScrollWaitingForRemoteFrame = true;
+        _touchScrollRemoteFrameTimer?.cancel();
+        _touchScrollRemoteFrameTimer = Timer(
+          terminalTouchScrollRemoteFrameTimeout,
+          _releaseTouchScrollRemoteFrame,
+        );
+        return;
+      }
+      if (widget.simulateScroll) {
         widget.terminal.keyInput(
           scrollUp ? TerminalKey.arrowUp : TerminalKey.arrowDown,
         );
       }
-
-      _touchScrollRemainder += scrollUp ? -stepHeight : stepHeight;
     }
+  }
+
+  void _releaseTouchScrollRemoteFrame() {
+    if (!_touchScrollWaitingForRemoteFrame) {
+      return;
+    }
+    _touchScrollRemoteFrameTimer?.cancel();
+    _touchScrollRemoteFrameTimer = null;
+    _touchScrollWaitingForRemoteFrame = false;
+    _scheduleTouchScrollDrain();
+  }
+
+  void _scheduleTouchScrollDrain() {
+    if (_touchScrollDrainScheduled || !mounted) {
+      return;
+    }
+    _touchScrollDrainScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _touchScrollDrainScheduled = false;
+      if (mounted) {
+        _drainTouchScrollInput();
+      }
+    });
+  }
+
+  void _resetTouchScrollDispatch() {
+    _touchScrollRemoteFrameTimer?.cancel();
+    _touchScrollRemoteFrameTimer = null;
+    _touchScrollWaitingForRemoteFrame = false;
+    _touchScrollDrainScheduled = false;
+    _touchScrollRemainder = 0;
   }
 
   void _startTouchScrollInertia(double velocity) {
@@ -1777,6 +1842,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.alignToTrailingEdges,
     required this.autoResize,
     required this.resizeTerminalToViewport,
+    required this.notifyPixelSizeChanges,
     required this.resizeBottomInset,
     required this.liveOutputAutoScroll,
     required this.textStyle,
@@ -1804,6 +1870,8 @@ class _TerminalView extends LeafRenderObjectWidget {
   final bool autoResize;
 
   final bool resizeTerminalToViewport;
+
+  final bool notifyPixelSizeChanges;
 
   final double resizeBottomInset;
 
@@ -1839,6 +1907,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       alignToTrailingEdges: alignToTrailingEdges,
       autoResize: autoResize,
       resizeTerminalToViewport: resizeTerminalToViewport,
+      notifyPixelSizeChanges: notifyPixelSizeChanges,
       resizeBottomInset: resizeBottomInset,
       liveOutputAutoScroll: liveOutputAutoScroll,
       textStyle: textStyle,
@@ -1867,6 +1936,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..alignToTrailingEdges = alignToTrailingEdges
       ..autoResize = autoResize
       ..resizeTerminalToViewport = resizeTerminalToViewport
+      ..notifyPixelSizeChanges = notifyPixelSizeChanges
       ..resizeBottomInset = resizeBottomInset
       ..liveOutputAutoScroll = liveOutputAutoScroll
       ..textStyle = textStyle
@@ -1922,7 +1992,10 @@ class MonkeyTerminalPainter extends TerminalPainter {
   // theme or text scale changes (the same triggers that clear the paragraph
   // cache), since those change how a given cell content renders.
   final _foregroundPictureCache = <int, Picture>{};
-  static const _maxForegroundPictureCacheEntries = 512;
+  // Keep enough unique transcript lines for repeated page/fling navigation in
+  // long text sessions while retaining a hard memory bound on mobile. The old
+  // 512-line window thrashed after only a handful of terminal-sized jumps.
+  static const _maxForegroundPictureCacheEntries = 2048;
 
   /// Number of foreground style-run paragraphs currently cached. A coalesced
   /// line of N same-style cells caches a single N-glyph run paragraph here (not
@@ -2789,6 +2862,7 @@ class MonkeyRenderTerminal extends RenderBox
     required bool alignToTrailingEdges,
     required bool autoResize,
     required bool resizeTerminalToViewport,
+    required bool notifyPixelSizeChanges,
     required double resizeBottomInset,
     required bool liveOutputAutoScroll,
     required TerminalStyle textStyle,
@@ -2808,6 +2882,7 @@ class MonkeyRenderTerminal extends RenderBox
        _alignToTrailingEdges = alignToTrailingEdges,
        _autoResize = autoResize,
        _resizeTerminalToViewport = resizeTerminalToViewport,
+       _notifyPixelSizeChanges = notifyPixelSizeChanges,
        _resizeBottomInset = resizeBottomInset,
        _liveOutputAutoScroll = liveOutputAutoScroll,
        _inlineUnderlines = inlineUnderlines,
@@ -2889,6 +2964,13 @@ class MonkeyRenderTerminal extends RenderBox
     if (!_resizeTerminalToViewport) {
       _cancelPendingTerminalResize();
     }
+    markNeedsLayout();
+  }
+
+  bool _notifyPixelSizeChanges;
+  set notifyPixelSizeChanges(bool value) {
+    if (value == _notifyPixelSizeChanges) return;
+    _notifyPixelSizeChanges = value;
     markNeedsLayout();
   }
 
@@ -3892,7 +3974,7 @@ class MonkeyRenderTerminal extends RenderBox
       // until something else happens to resize.
       if (!hasCachedViewportSize ||
           viewportSizeChanged ||
-          pixelSizeChanged ||
+          (_notifyPixelSizeChanges && pixelSizeChanged) ||
           terminalNeedsResize ||
           notifyIfUnchanged) {
         _notifyTerminalResizeIfNeeded(
@@ -3911,7 +3993,10 @@ class MonkeyRenderTerminal extends RenderBox
     _viewportSize = viewportSize;
     _viewportPixelSize = pixelSize;
 
-    if ((hasCachedViewportSize && pixelSizeChanged) || notifyIfUnchanged) {
+    if ((hasCachedViewportSize &&
+            _notifyPixelSizeChanges &&
+            pixelSizeChanged) ||
+        notifyIfUnchanged) {
       _notifyTerminalResizeIfNeeded(
         viewportSize: viewportSize,
         pixelSize: pixelSize,

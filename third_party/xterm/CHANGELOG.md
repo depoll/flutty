@@ -14,6 +14,14 @@ out of scope.
   resizing no longer grow slower with a long image-rich scrollback. Placeholder grid dimensions and write recency are
   retained without a full-history pass, and circular-buffer eviction removes
   indexed graphics before detaching their anchors.
+* Backpressure direct touch-wheel input to one event per remote terminal frame
+  (with a short safety timeout), preventing long-session TUIs from accumulating
+  a queue of full-transcript redraws. MonkeyMux shared-grid views also suppress
+  pixel-only resize notifications that leave the cell grid unchanged, while
+  explicit grid reconciliation still reports the size.
+* Expand the bounded per-line foreground picture cache from 512 to 2,048 entries
+  so repeated page and fling navigation through long text transcripts does not
+  immediately thrash shaped-line pictures.
 
 ### Synced from xterm.js
 * SGR colon sub-parameters (ITU-T T.416 / ISO 8613-6). `CSI 38:2::r:g:b m`,

@@ -186,6 +186,68 @@ void main() {
   });
 
   testWidgets(
+    'remote wheel scrolling waits for each terminal frame before draining',
+    (tester) async {
+      final terminal = Terminal();
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+              simulateScroll: false,
+              forceSgrTouchScroll: true,
+            ),
+          ),
+        ),
+      );
+
+      final state = tester.state<MonkeyTerminalViewState>(
+        find.byType(MonkeyTerminalView),
+      );
+      final detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
+      );
+      final lineHeight = state.renderTerminal.lineHeight;
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 12),
+          localPosition: Offset(150, 100 - lineHeight * 12),
+          delta: Offset(0, -lineHeight * 12),
+        ),
+      );
+      await tester.pump();
+
+      expect(_countOccurrences(output.join(), '\u001b[<65;'), 1);
+
+      // Parsed output is evidence that the remote TUI completed a frame. The
+      // retained drag distance may now release exactly one more wheel event.
+      terminal.write('frame');
+      await tester.pump();
+      expect(_countOccurrences(output.join(), '\u001b[<65;'), 2);
+
+      // A TUI that consumes input without drawing cannot stall scrolling
+      // forever; the safety timeout releases one event, still without a burst.
+      await tester.pump(terminalTouchScrollRemoteFrameTimeout);
+      await tester.pump();
+      expect(_countOccurrences(output.join(), '\u001b[<65;'), 3);
+    },
+  );
+
+  testWidgets(
     'mouse-reporting apps require more drag distance per touch scroll step',
     (tester) async {
       final expectedOutput = <String>[];
