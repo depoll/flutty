@@ -4135,7 +4135,7 @@ class MonkeyRenderTerminal extends RenderBox
         'bufferLines': lines.length,
         'hasImages':
             _terminal.graphics.imageCount > 0 ||
-            _terminal.graphics.placeholders.isNotEmpty,
+            _terminal.graphics.hasPlaceholders,
       },
     );
   }
@@ -4153,6 +4153,11 @@ class MonkeyRenderTerminal extends RenderBox
     final lastLine = lastLineOffset ~/ charHeight;
     final effectFirstLine = firstLine.clamp(0, lines.length - 1);
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
+    final visiblePhysicalPlacements = _terminal.graphics.placementsInRows(
+      lines,
+      effectFirstLine,
+      effectLastLine,
+    );
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
       _painter.paintLineBackgrounds(
@@ -4168,6 +4173,7 @@ class MonkeyRenderTerminal extends RenderBox
       offset,
       effectFirstLine,
       effectLastLine,
+      physicalPlacements: visiblePhysicalPlacements,
       belowText: true,
     );
 
@@ -4199,7 +4205,13 @@ class MonkeyRenderTerminal extends RenderBox
       );
     }
 
-    _paintGraphics(canvas, offset, effectFirstLine, effectLastLine);
+    _paintGraphics(
+      canvas,
+      offset,
+      effectFirstLine,
+      effectLastLine,
+      physicalPlacements: visiblePhysicalPlacements,
+    );
 
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
         _terminal.buffer.absoluteCursorY <= effectLastLine) {
@@ -4247,15 +4259,15 @@ class MonkeyRenderTerminal extends RenderBox
     Offset offset,
     int firstLine,
     int lastLine, {
+    required List<TerminalImagePlacement> physicalPlacements,
     bool belowText = false,
   }) {
     final graphics = _terminal.graphics;
     // A pending virtual image has neither a physical placement nor a decoded
     // image yet. Its foreground placeholder pass must run so visible cells can
     // trigger the deferred decode; the below-text pass has nothing to do.
-    final hasPlaceholderGraphics =
-        !belowText && graphics.placeholders.isNotEmpty;
-    if (!graphics.hasPlacements &&
+    final hasPlaceholderGraphics = !belowText && graphics.hasPlaceholders;
+    if (physicalPlacements.isEmpty &&
         graphics.imageCount == 0 &&
         !hasPlaceholderGraphics) {
       return;
@@ -4279,9 +4291,7 @@ class MonkeyRenderTerminal extends RenderBox
     // Draw lower z-indices first so higher ones stack on top; ties keep
     // insertion order (placement id increases monotonically).
     final placements =
-        graphics.placements
-            .where((p) => belowText ? p.z < 0 : p.z >= 0)
-            .toList()
+        physicalPlacements.where((p) => belowText ? p.z < 0 : p.z >= 0).toList()
           ..sort((a, b) {
             final byZ = a.z.compareTo(b.z);
             return byZ != 0 ? byZ : a.placementId.compareTo(b.placementId);
@@ -4433,7 +4443,7 @@ class MonkeyRenderTerminal extends RenderBox
     // confirm whether an image-heavy window's build-thread jank comes from this
     // path and whether the viewport-bounded analysis keeps it cheap. Count and
     // timing only — never any cell content.
-    final placeholderCount = _terminal.graphics.placeholders.length;
+    final placeholderCount = _terminal.graphics.placeholderCount;
     _kittyResolvedInstances = 0;
     _kittyUnresolvedInstances = 0;
     _kittyFirstUnresolvedImageId = 0;
@@ -4525,13 +4535,17 @@ class MonkeyRenderTerminal extends RenderBox
     double cellWidth,
     double cellHeight,
   ) {
-    final graphics = _terminal.graphics..pruneDetachedPlaceholders();
-    final placeholders = graphics.placeholders;
+    final graphics = _terminal.graphics;
+    final buffer = _terminal.buffer;
+    final placeholders = graphics.placeholdersInRows(
+      buffer.lines,
+      firstLine,
+      lastLine,
+    );
     if (placeholders.isEmpty) {
       return;
     }
 
-    final buffer = _terminal.buffer;
     final lineCount = buffer.lines.length;
 
     bool cellIsLivePlaceholder(int cellRow, int cellCol) {
@@ -4566,22 +4580,13 @@ class MonkeyRenderTerminal extends RenderBox
     //    old copy lingers as a ghost. Among the surviving dense groups of one
     //    image id we keep only the most recently written placement.
     //
-    // The instance grouping is scoped to the visible rows. Only visible cells
-    // are ever composited, and both axes are decided correctly from what is on
-    // screen: a clean on-screen crop is still dense, and competing copies of one
-    // image that matter for the viewport are the ones drawn within it. Bounding
-    // the heavy per-cell work (string keys and several maps) to the viewport
-    // keeps scrolling — and live-redrawing — an image-heavy window off the
-    // O(total placeholders) path that otherwise showed up as mid-scroll build
-    // jank on a window holding many image cells across its scrollback.
-    //
-    // Grid dimensions, by contrast, are gathered from every attached
-    // placeholder: an image's grid is fixed (it does not shrink as rows scroll
-    // off), so a non-virtual image whose lower rows are below the viewport would
-    // be sliced with too few rows if inferred from visible cells alone. That
-    // whole-list pass is kept allocation-free via a packed int key
-    // (imageId * 64 + bitWidth; bitWidth is only ever 8 or 24) so it stays cheap
-    // on the per-frame scroll path.
+    // The instance grouping and lookup are scoped to visible buffer lines.
+    // GraphicsManager resolves placeholders through each line's CellAnchors, so
+    // a scroll frame never walks the thousands of off-screen cells retained by a
+    // long agent transcript. Grid dimensions remain correct for cropped images:
+    // every placeholder shares a small grid tracker that records the largest
+    // row/column ever seen for that image, while virtual placements still win
+    // when the protocol supplied explicit dimensions.
     final gridColsByImage = <int, int>{};
     final gridRowsByImage = <int, int>{};
     final instanceCellCount = <String, int>{};
@@ -4600,8 +4605,7 @@ class MonkeyRenderTerminal extends RenderBox
       return '$imageKey@$offsetRow,$offsetCol';
     }
 
-    for (var index = 0; index < placeholders.length; index++) {
-      final placeholder = placeholders[index];
+    for (final placeholder in placeholders) {
       if (!placeholder.attached) {
         continue;
       }
@@ -4612,10 +4616,10 @@ class MonkeyRenderTerminal extends RenderBox
           placeholder.imageId * 64 + placeholder.imageIdBitWidth;
       gridColsByImage[imageIntKey] = (virtualPlacement?.cols ?? 0) > 0
           ? virtualPlacement!.cols
-          : math.max(gridColsByImage[imageIntKey] ?? 1, placeholder.col + 1);
+          : placeholder.gridColumns;
       gridRowsByImage[imageIntKey] = (virtualPlacement?.rows ?? 0) > 0
           ? virtualPlacement!.rows
-          : math.max(gridRowsByImage[imageIntKey] ?? 1, placeholder.row + 1);
+          : placeholder.gridRows;
 
       final cellRow = placeholder.cellRow;
       if (cellRow < firstLine || cellRow > lastLine) {
@@ -4629,7 +4633,7 @@ class MonkeyRenderTerminal extends RenderBox
       instanceImageKey[instanceKey] = key;
       instanceCellCount[instanceKey] =
           (instanceCellCount[instanceKey] ?? 0) + 1;
-      instanceRecency[instanceKey] = index;
+      instanceRecency[instanceKey] = placeholder.sequence;
       final rowBounds = instanceRowBounds[instanceKey] ??= <int>[
         placeholder.row,
         placeholder.row,

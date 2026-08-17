@@ -244,7 +244,7 @@ class Buffer {
       start,
       end,
       terminal.cursor,
-      preservedAnchors: graphics.physicalPlacementAnchorsInRow(row),
+      preservedAnchors: graphics.physicalPlacementAnchorsInLine(line),
     );
   }
 
@@ -302,6 +302,9 @@ class Buffer {
     if (isInVerticalMargin) {
       if (_cursorY == _marginBottom) {
         if (marginTop == 0 && !isAltBuffer) {
+          if (lines.isFull) {
+            graphics.removeGraphicsAnchoredToLine(lines[0]);
+          }
           lines.insert(absoluteMarginBottom + 1, _newEmptyLine());
         } else {
           scrollUp(1);
@@ -318,6 +321,9 @@ class Buffer {
       if (isAltBuffer) {
         scrollUp(1);
       } else {
+        if (lines.isFull) {
+          graphics.removeGraphicsAnchoredToLine(lines[0]);
+        }
         lines.push(_newEmptyLine());
       }
     } else {
@@ -622,7 +628,7 @@ class Buffer {
     if (lines[index].getTrimmedLength() != 0) {
       return false;
     }
-    return graphics.physicalPlacementAnchorsInRow(index).isEmpty;
+    return graphics.physicalPlacementAnchorsInLine(lines[index]).isEmpty;
   }
 
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.

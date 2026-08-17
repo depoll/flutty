@@ -3090,11 +3090,12 @@ class _PendingKittyPlaceholder {
     _diacriticCount += 1;
     final placeholder = _placeholder;
     if (placeholder != null) {
-      placeholder
-        ..imageId = imageId
-        ..imageIdBitWidth = imageIdBitWidth
-        ..row = row
-        ..col = col;
+      placeholder.updateMetadata(
+        imageId: imageId,
+        imageIdBitWidth: imageIdBitWidth,
+        row: row,
+        col: col,
+      );
     }
   }
 }

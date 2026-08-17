@@ -6,6 +6,15 @@ current xterm.js behavior. Upstream's renderer (DOM/canvas/WebGL), addon system
 and accessibility DOM have no analog in this Flutter port and are intentionally
 out of scope.
 
+### MonkeySSH performance fixes
+* Index Kitty Unicode placeholders and physical placements by their owning
+  `CellAnchor`. Terminal paint now resolves only physical placements intersecting
+  the viewport and placeholders on visible rows. Erase and height-resize checks
+  inspect only anchors on the affected line, so scrolling, output, and keyboard
+  resizing no longer grow slower with a long image-rich scrollback. Placeholder grid dimensions and write recency are
+  retained without a full-history pass, and circular-buffer eviction removes
+  indexed graphics before detaching their anchors.
+
 ### Synced from xterm.js
 * SGR colon sub-parameters (ITU-T T.416 / ISO 8613-6). `CSI 38:2::r:g:b m`,
   `CSI 38:5:n m` and friends are parsed correctly instead of being mangled, and
