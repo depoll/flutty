@@ -142,6 +142,35 @@ void main() {
       expect(calibrator.needsMeasurement, isTrue);
     });
 
+    testWidgets('quarantines output that arrives after a timeout', (
+      tester,
+    ) async {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      expect(calibrator.begin(before: before, onSettled: (_, _) {}), isTrue);
+
+      await tester.pump(const Duration(milliseconds: 301));
+      expect(calibrator.observingTerminalOutput, isTrue);
+      expect(calibrator.needsMeasurement, isFalse);
+
+      calibrator.invalidate();
+      expect(calibrator.needsMeasurement, isFalse);
+      calibrator.terminalChanged(const <String>[
+        'header',
+        'row seven',
+        'row eight',
+        'row nine',
+        'row ten',
+        'row eleven',
+        'footer',
+      ]);
+      await tester.pump(const Duration(milliseconds: 61));
+
+      expect(calibrator.rowsPerEvent, 1);
+      expect(calibrator.observingTerminalOutput, isFalse);
+      expect(calibrator.needsMeasurement, isTrue);
+    });
+
     testWidgets('uses a late response when the hard timeout settles', (
       tester,
     ) async {

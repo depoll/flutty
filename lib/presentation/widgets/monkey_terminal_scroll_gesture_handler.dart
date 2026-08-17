@@ -116,7 +116,7 @@ class _MonkeyTerminalScrollGestureHandlerState
     } else if (mouseTransportChanged) {
       _wheelCalibrator.reset();
       scrollRemainder = 0;
-    } else if (_wheelCalibrator.waitingForResponse) {
+    } else if (_wheelCalibrator.observingTerminalOutput) {
       _wheelCalibrator.terminalChanged(
         captureTerminalViewportLines(widget.terminal),
       );

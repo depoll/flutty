@@ -114,28 +114,37 @@ class TerminalWheelScrollCalibrator {
 
   int _rowsPerEvent = 1;
   bool _isCalibrated = false;
+  bool _isQuarantined = false;
   List<String>? _before;
   List<String>? _latestAfter;
   TerminalWheelCalibrationSettled? _onSettled;
   Timer? _settleTimer;
   Timer? _timeoutTimer;
+  Timer? _quarantineTimer;
 
   int get rowsPerEvent => _rowsPerEvent;
 
   bool get waitingForResponse => _before != null;
 
-  bool get needsMeasurement => !_isCalibrated && !waitingForResponse;
+  bool get observingTerminalOutput => waitingForResponse || _isQuarantined;
+
+  bool get needsMeasurement =>
+      !_isCalibrated && !waitingForResponse && !_isQuarantined;
 
   /// Keeps the current estimate but measures it again on the next wheel event.
   void invalidate() {
-    _isCalibrated = false;
     _cancelPending(notify: false);
+    if (!_isQuarantined) {
+      _isCalibrated = false;
+    }
   }
 
   /// Forgets the estimate when the terminal or its mouse transport changes.
   void reset() {
+    _endQuarantine(allowRetry: false);
     _rowsPerEvent = 1;
-    invalidate();
+    _isCalibrated = false;
+    _cancelPending(notify: false);
   }
 
   /// Starts measuring one wheel report. Returns true when the caller should
@@ -144,7 +153,10 @@ class TerminalWheelScrollCalibrator {
     required List<String> before,
     required TerminalWheelCalibrationSettled onSettled,
   }) {
-    if (_isCalibrated || waitingForResponse || !_canMeasure(before)) {
+    if (_isCalibrated ||
+        waitingForResponse ||
+        _isQuarantined ||
+        !_canMeasure(before)) {
       return false;
     }
     _before = before;
@@ -158,6 +170,14 @@ class TerminalWheelScrollCalibrator {
 
   /// Supplies the latest parsed screen after terminal output arrives.
   void terminalChanged(List<String> after) {
+    if (_isQuarantined) {
+      _quarantineTimer?.cancel();
+      _quarantineTimer = Timer(
+        responseSettleDelay,
+        () => _endQuarantine(allowRetry: true),
+      );
+      return;
+    }
     if (!waitingForResponse) {
       return;
     }
@@ -172,7 +192,10 @@ class TerminalWheelScrollCalibrator {
     _cancelPending(notify: false);
   }
 
-  void dispose() => _cancelPending(notify: false);
+  void dispose() {
+    _endQuarantine(allowRetry: false);
+    _cancelPending(notify: false);
+  }
 
   bool _canMeasure(List<String> lines) =>
       lines.where(_isMeaningfulLine).toSet().length >= 2;
@@ -190,10 +213,33 @@ class TerminalWheelScrollCalibrator {
           ) ??
           previousRows;
     }
-    _isCalibrated = true;
+    if (hadResponse) {
+      _isCalibrated = true;
+    } else {
+      _startQuarantine();
+    }
     final onSettled = _onSettled;
     _cancelPending(notify: false);
     onSettled?.call(previousRows, _rowsPerEvent);
+  }
+
+  void _startQuarantine() {
+    _isCalibrated = true;
+    _isQuarantined = true;
+    _quarantineTimer?.cancel();
+    _quarantineTimer = Timer(
+      Duration(microseconds: responseTimeout.inMicroseconds * 3),
+      () => _endQuarantine(allowRetry: true),
+    );
+  }
+
+  void _endQuarantine({required bool allowRetry}) {
+    _quarantineTimer?.cancel();
+    _quarantineTimer = null;
+    _isQuarantined = false;
+    if (allowRetry) {
+      _isCalibrated = false;
+    }
   }
 
   void _cancelPending({required bool notify}) {

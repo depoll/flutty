@@ -1044,7 +1044,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _touchWheelCalibrator.reset();
       _touchScrollRemainder = 0;
       _stopTouchScrollInertia();
-    } else if (_touchWheelCalibrator.waitingForResponse) {
+    } else if (_touchWheelCalibrator.observingTerminalOutput) {
       _touchWheelCalibrator.terminalChanged(
         captureTerminalViewportLines(widget.terminal),
       );
