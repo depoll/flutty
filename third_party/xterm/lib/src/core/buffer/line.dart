@@ -417,6 +417,9 @@ class CellAnchor {
 
   BufferLine? _owner;
 
+  /// Called immediately before this anchor detaches from its line.
+  void Function(CellAnchor anchor)? onDispose;
+
   BufferLine? get line => _owner;
 
   bool get attached => _owner?.attached ?? false;
@@ -433,6 +436,10 @@ class CellAnchor {
   }
 
   void dispose() {
+    if (_owner == null) return;
+    final callback = onDispose;
+    onDispose = null;
+    callback?.call(this);
     _owner?._anchors.remove(this);
     _owner = null;
   }

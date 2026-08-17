@@ -632,26 +632,32 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       }
       _pendingKittyPlaceholder = null;
     }
+    _PendingKittyPlaceholder? placeholderToBind;
     if (char == kittyGraphicsPlaceholderCodePoint) {
+      final line = _buffer.currentLine;
       final pending = _PendingKittyPlaceholder(
         foreground: _buffer.terminal.cursor.foreground,
         underlineColor: _buffer.terminal.cursor.underlineColor,
-        anchor: _buffer.currentLine.createAnchor(_buffer.cursorX),
+        anchor: line.createAnchor(_buffer.cursorX),
         previous: _lastKittyPlaceholder,
       );
-      _buffer.graphics.addPlaceholder(
-        imageId: pending.imageId,
-        imageIdBitWidth: pending.imageIdBitWidth,
-        anchor: pending.anchor,
-        row: pending.row,
-        col: pending.col,
-      );
-      pending.bind(_buffer.graphics.placeholders.last);
+      placeholderToBind = pending;
       _pendingKittyPlaceholder = pending;
       _lastKittyPlaceholder = pending;
     }
     _precedingCodepoint = char;
     _buffer.writeChar(char);
+    if (placeholderToBind != null) {
+      placeholderToBind.bind(
+        _buffer.graphics.addPlaceholder(
+          imageId: placeholderToBind.imageId,
+          imageIdBitWidth: placeholderToBind.imageIdBitWidth,
+          anchor: placeholderToBind.anchor,
+          row: placeholderToBind.row,
+          col: placeholderToBind.col,
+        ),
+      );
+    }
   }
 
   /* SBC */
@@ -3100,11 +3106,12 @@ class _PendingKittyPlaceholder {
     _diacriticCount += 1;
     final placeholder = _placeholder;
     if (placeholder != null) {
-      placeholder
-        ..imageId = imageId
-        ..imageIdBitWidth = imageIdBitWidth
-        ..row = row
-        ..col = col;
+      placeholder.updateMetadata(
+        imageId: imageId,
+        imageIdBitWidth: imageIdBitWidth,
+        row: row,
+        col: col,
+      );
     }
   }
 }

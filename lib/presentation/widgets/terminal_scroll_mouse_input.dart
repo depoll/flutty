@@ -6,6 +6,7 @@ bool sendTerminalScrollMouseInput({
   required TerminalMouseButton button,
   required CellOffset position,
   bool forceSgr = false,
+  int repeatCount = 1,
 }) {
   if (forceSgr ||
       (terminal.mouseMode.reportScroll &&
@@ -17,9 +18,8 @@ bool sendTerminalScrollMouseInput({
       TerminalMouseButton.wheelRight => 67,
       _ => button.id,
     };
-    terminal.onOutput?.call(
-      '\x1b[<$sgrButtonId;${position.x + 1};${position.y + 1}M',
-    );
+    final report = '\x1b[<$sgrButtonId;${position.x + 1};${position.y + 1}M';
+    terminal.onOutput?.call(report * repeatCount.clamp(1, 32));
     return true;
   }
 
