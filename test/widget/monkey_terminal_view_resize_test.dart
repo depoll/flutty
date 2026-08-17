@@ -23,6 +23,7 @@ void main() {
     FocusNode? focusNode,
     bool readOnly = true,
     bool resizeTerminalToViewport = true,
+    bool notifyPixelSizeChanges = true,
   }) => MaterialApp(
     home: MediaQuery(
       data: MediaQueryData(
@@ -40,6 +41,7 @@ void main() {
             hardwareKeyboardOnly: true,
             readOnly: readOnly,
             resizeTerminalToViewport: resizeTerminalToViewport,
+            notifyPixelSizeChanges: notifyPixelSizeChanges,
           ),
         ),
       ),
@@ -70,6 +72,61 @@ void main() {
     expect(event.pixelWidth, 320);
     expect(event.pixelHeight, 240);
   });
+
+  testWidgets(
+    'shared grid suppresses pixel-only resize until explicit refresh',
+    (tester) async {
+      final terminal = Terminal()..resize(160, 48);
+      final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+      final resizeEvents =
+          <({int width, int height, int pixelWidth, int pixelHeight})>[];
+      terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+        resizeEvents.add((
+          width: width,
+          height: height,
+          pixelWidth: pixelWidth,
+          pixelHeight: pixelHeight,
+        ));
+      };
+
+      await tester.pumpWidget(
+        buildTerminal(
+          terminal: terminal,
+          terminalKey: terminalKey,
+          size: const Size(320, 240),
+          resizeTerminalToViewport: false,
+          notifyPixelSizeChanges: false,
+        ),
+      );
+      // Keep the remote-owned 160x48 grid mismatched from this local viewport.
+      // Passive layout must still key notifications to local viewport changes,
+      // not repeatedly reassert the same mismatch.
+      resizeEvents.clear();
+      final state = terminalKey.currentState!;
+      final rows = state.viewportCellSize!.rows;
+      final lineHeight = state.renderTerminal.lineHeight;
+      final nextHeight = 241.0 ~/ lineHeight == rows ? 241.0 : 239.0;
+      expect(nextHeight ~/ lineHeight, rows);
+
+      // One physical pixel does not cross a cell boundary. Updating terminal
+      // pixel metrics here would still SIGWINCH a remote Pi process and make it
+      // rebuild the whole transcript for no visible grid change.
+      await tester.pumpWidget(
+        buildTerminal(
+          terminal: terminal,
+          terminalKey: terminalKey,
+          size: Size(320, nextHeight),
+          resizeTerminalToViewport: false,
+          notifyPixelSizeChanges: false,
+        ),
+      );
+      expect(resizeEvents, isEmpty);
+
+      terminalKey.currentState!.refreshTerminalSize();
+      expect(resizeEvents, hasLength(1));
+      expect(resizeEvents.single.pixelHeight, nextHeight.round());
+    },
+  );
 
   test('host-requested resize does not echo a resize event', () {
     final resizeEvents =

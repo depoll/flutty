@@ -284,7 +284,10 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 80));
 
-      expect(output, hasLength(6 ~/ rowsPerWheelEvent));
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        6 ~/ rowsPerWheelEvent,
+      );
       detector.onTouchScrollCancel!();
     }
   });
@@ -372,7 +375,7 @@ void main() {
 
     expect(output, hasLength(1));
     await tester.pump(const Duration(milliseconds: 301));
-    expect(output, hasLength(3));
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 3);
     detector.onTouchScrollCancel!();
   });
 
@@ -536,8 +539,83 @@ void main() {
     await tester.pump();
 
     expect(output, hasLength(1));
-    expect(output.single, startsWith('\u001b[<65;'));
+    expect(_countOccurrences(output.single, '\u001b[<65;'), 1);
   });
+
+  testWidgets(
+    'reported wheel scrolling coalesces exact events per local frame',
+    (tester) async {
+      final terminal = Terminal();
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+              simulateScroll: false,
+              forceSgrTouchScroll: true,
+            ),
+          ),
+        ),
+      );
+
+      final state = tester.state<MonkeyTerminalViewState>(
+        find.byType(MonkeyTerminalView),
+      );
+      final detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
+      );
+      final lineHeight = state.renderTerminal.lineHeight;
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 10),
+          localPosition: Offset(150, 100 - lineHeight * 10),
+          delta: Offset(0, -lineHeight * 10),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: const Offset(150, 180),
+          localPosition: const Offset(150, 180),
+          delta: Offset(0, lineHeight * 4),
+        ),
+      );
+
+      // Ten down events followed by four up events are preserved across the
+      // direction reversal, but only six reports fit in one local frame.
+      expect(output, hasLength(1));
+      expect(_countOccurrences(output.single, '\u001b[<65;'), 6);
+      await tester.pump();
+      expect(output, hasLength(3));
+      expect(_countOccurrences(output[1], '\u001b[<65;'), 4);
+      expect(_countOccurrences(output[2], '\u001b[<64;'), 2);
+      await tester.pump();
+      expect(output, hasLength(4));
+      expect(_countOccurrences(output.last, '\u001b[<64;'), 2);
+      final joined = output.join();
+      expect(_countOccurrences(joined, '\u001b[<65;'), 10);
+      expect(_countOccurrences(joined, '\u001b[<64;'), 4);
+      final down = RegExp(r'\x1b\[<65;\d+;(\d+)M').firstMatch(joined);
+      final up = RegExp(r'\x1b\[<64;\d+;(\d+)M').firstMatch(joined);
+      expect(down, isNotNull);
+      expect(up, isNotNull);
+      expect(down!.group(1), isNot(up!.group(1)));
+    },
+  );
 
   testWidgets(
     'mouse reporting and arrow fallback use the same touch scroll steps',
@@ -630,6 +708,7 @@ void main() {
         ),
       );
       await tester.pump();
+      await tester.pumpAndSettle();
 
       final wheelCount = _countOccurrences(wheelOutput.join(), '\u001b[<65;');
       expect(wheelCount, greaterThan(0));
