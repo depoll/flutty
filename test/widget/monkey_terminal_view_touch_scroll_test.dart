@@ -1,10 +1,13 @@
 // ignore_for_file: implementation_imports, public_member_api_docs
 
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_gesture_detector.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
+import 'package:monkeyssh/presentation/widgets/terminal_wheel_scroll_calibrator.dart';
 import 'package:xterm/xterm.dart';
 
 int _countOccurrences(String text, String pattern) {
@@ -19,6 +22,17 @@ int _countOccurrences(String text, String pattern) {
     count += 1;
     start = index + pattern.length;
   }
+}
+
+void _renderAdaptiveScrollRows(Terminal terminal, int firstRow) {
+  final output = StringBuffer('\x1b[H\x1b[2J');
+  for (var row = 0; row < terminal.viewHeight; row++) {
+    output.write('adaptive row ${firstRow + row}');
+    if (row + 1 < terminal.viewHeight) {
+      output.write('\r\n');
+    }
+  }
+  terminal.write(output.toString());
 }
 
 class _RecordingScrollBehavior extends ScrollBehavior {
@@ -51,6 +65,151 @@ class _RecordingScrollPhysics extends ScrollPhysics {
 }
 
 void main() {
+  group('terminal wheel row displacement', () {
+    const before = <String>[
+      'header',
+      'row one',
+      'row two',
+      'row three',
+      'row four',
+      'row five',
+      'footer',
+    ];
+
+    test('detects one-row application scrolling', () {
+      expect(
+        resolveTerminalWheelRowsPerEvent(
+          before: before,
+          after: const <String>[
+            'header',
+            'row two',
+            'row three',
+            'row four',
+            'row five',
+            'row six',
+            'footer',
+          ],
+        ),
+        1,
+      );
+    });
+
+    test('detects three-row application scrolling', () {
+      expect(
+        resolveTerminalWheelRowsPerEvent(
+          before: before,
+          after: const <String>[
+            'header',
+            'row four',
+            'row five',
+            'row six',
+            'row seven',
+            'row eight',
+            'footer',
+          ],
+        ),
+        3,
+      );
+    });
+
+    test('does not infer a distance from an unrelated redraw', () {
+      expect(
+        resolveTerminalWheelRowsPerEvent(
+          before: before,
+          after: const <String>[
+            'header',
+            'alpha',
+            'beta',
+            'gamma',
+            'delta',
+            'epsilon',
+            'footer',
+          ],
+        ),
+        isNull,
+      );
+    });
+  });
+
+  testWidgets('touch cadence adapts to application wheel row granularity', (
+    tester,
+  ) async {
+    for (final rowsPerWheelEvent in <int>[1, 3]) {
+      final terminal = Terminal()
+        ..resize(40, 10)
+        ..useAltBuffer()
+        ..setMouseMode(MouseMode.upDownScroll)
+        ..setMouseReportMode(MouseReportMode.sgr);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              autoResize: false,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      _renderAdaptiveScrollRows(terminal, 0);
+      await tester.pump();
+
+      final output = <String>[];
+      terminal.onOutput = (data) {
+        output.add(data);
+        if (output.length == 1) {
+          scheduleMicrotask(
+            () => _renderAdaptiveScrollRows(terminal, rowsPerWheelEvent),
+          );
+        }
+      };
+
+      final terminalState = tester.state<MonkeyTerminalViewState>(
+        find.byType(MonkeyTerminalView),
+      );
+      final lineHeight = terminalState.renderTerminal.lineHeight;
+      final detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
+      );
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 3),
+          localPosition: Offset(150, 100 - lineHeight * 3),
+          delta: Offset(0, -lineHeight * 3),
+        ),
+      );
+      expect(output, hasLength(1));
+
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 6),
+          localPosition: Offset(150, 100 - lineHeight * 6),
+          delta: Offset(0, -lineHeight * 3),
+        ),
+      );
+      expect(output, hasLength(1));
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+
+      expect(output, hasLength(6 ~/ rowsPerWheelEvent));
+      detector.onTouchScrollCancel!();
+    }
+  });
+
   testWidgets('touch scroll falls back to arrow keys in alt buffer', (
     tester,
   ) async {

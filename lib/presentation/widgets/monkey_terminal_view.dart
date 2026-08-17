@@ -33,6 +33,7 @@ import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
+import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -57,6 +58,7 @@ import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_key_input.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
+import 'terminal_wheel_scroll_calibrator.dart';
 
 // Match direct pixel scrolling to the conventional multi-row terminal wheel
 // pace.
@@ -783,6 +785,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Drag? _directTouchScrollDrag;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
+  final _touchWheelCalibrator = TerminalWheelScrollCalibrator();
+  late bool _touchScrollIsAltBuffer;
+  late MouseMode _touchScrollMouseMode;
+  late MouseReportMode _touchScrollMouseReportMode;
   late final Ticker _touchScrollInertiaTicker;
   late final Ticker _graphicsAnimationTicker;
   Simulation? _touchScrollInertiaSimulation;
@@ -843,6 +849,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _scrollController = widget.scrollController ?? ScrollController();
     _scrollController.addListener(_handleViewportScrolled);
     _lastTerminalViewWidth = widget.terminal.viewWidth;
+    _touchScrollIsAltBuffer = widget.terminal.isUsingAltBuffer;
+    _touchScrollMouseMode = widget.terminal.mouseMode;
+    _touchScrollMouseReportMode = widget.terminal.mouseReportMode;
     widget.terminal.addListener(_handleTerminalMetricsChanged);
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
@@ -909,6 +918,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _stopGraphicsAnimationTicker();
       _lastTerminalViewWidth = widget.terminal.viewWidth;
       widget.terminal.addListener(_handleTerminalMetricsChanged);
+      _touchScrollIsAltBuffer = widget.terminal.isUsingAltBuffer;
+      _touchScrollMouseMode = widget.terminal.mouseMode;
+      _touchScrollMouseReportMode = widget.terminal.mouseReportMode;
+      _touchWheelCalibrator.reset();
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
       _scheduleGraphicsAnimationSync();
@@ -936,10 +949,12 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _scheduleGraphicsAnimationSync();
     }
     if (oldWidget.simulateScroll != widget.simulateScroll) {
+      _touchWheelCalibrator.reset();
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
     }
     if (oldWidget.touchScrollToTerminal != widget.touchScrollToTerminal) {
+      _touchWheelCalibrator.reset();
       _cancelDirectTouchScrollDrag();
       if (oldWidget.touchScrollToTerminal) {
         _stopTouchScrollInertia();
@@ -947,10 +962,12 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       }
     }
     if (oldWidget.forceSgrTouchScroll != widget.forceSgrTouchScroll) {
+      _touchWheelCalibrator.reset();
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
     }
     if (oldWidget.scrollResetGeneration != widget.scrollResetGeneration) {
+      _touchWheelCalibrator.reset();
       _cancelDirectTouchScrollDrag();
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
@@ -967,6 +984,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
     _pendingFocusInReportTimer?.cancel();
     _cancelDirectTouchScrollDrag();
+    _touchWheelCalibrator.dispose();
     _stopTouchScrollInertia();
     _touchScrollInertiaTicker.dispose();
     _stopGraphicsAnimationTicker();
@@ -1010,6 +1028,26 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _handleTerminalMetricsChanged() {
+    final nextIsAltBuffer = widget.terminal.isUsingAltBuffer;
+    final nextMouseMode = widget.terminal.mouseMode;
+    final nextMouseReportMode = widget.terminal.mouseReportMode;
+    final transportChanged =
+        _touchScrollIsAltBuffer != nextIsAltBuffer ||
+        _touchScrollMouseMode != nextMouseMode ||
+        _touchScrollMouseReportMode != nextMouseReportMode;
+    _touchScrollIsAltBuffer = nextIsAltBuffer;
+    _touchScrollMouseMode = nextMouseMode;
+    _touchScrollMouseReportMode = nextMouseReportMode;
+    if (transportChanged) {
+      _touchWheelCalibrator.reset();
+      _touchScrollRemainder = 0;
+      _stopTouchScrollInertia();
+    } else if (_touchWheelCalibrator.waitingForResponse) {
+      _touchWheelCalibrator.terminalChanged(
+        captureTerminalViewportLines(widget.terminal),
+      );
+    }
+
     _syncGraphicsAnimationTicker();
     _scheduleGraphicsAnimationSync();
     final currentViewWidth = widget.terminal.viewWidth;
@@ -1549,11 +1587,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _onTouchScrollCancel() {
+    _touchWheelCalibrator.invalidate();
     _stopTouchScrollInertia();
     _touchScrollRemainder = 0;
   }
 
   void _onTouchScrollStart(DragStartDetails details) {
+    _touchWheelCalibrator.invalidate();
     _stopTouchScrollInertia();
     _lastTouchScrollPosition = details.localPosition;
     _touchScrollRemainder = 0;
@@ -1585,31 +1625,54 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (lineHeight <= 0) {
       return 0;
     }
-    return lineHeight;
+    return lineHeight * _touchWheelCalibrator.rowsPerEvent;
   }
 
   void _applyTouchScrollDelta(double delta) {
     _touchScrollRemainder += delta;
 
     final stepHeight = _touchScrollStepHeight;
-    if (stepHeight <= 0) {
+    if (stepHeight <= 0 || _touchWheelCalibrator.waitingForResponse) {
       return;
     }
 
     while (_touchScrollRemainder.abs() >= stepHeight) {
       final scrollUp = _touchScrollRemainder > 0;
+      final scrollDirection = scrollUp ? 1 : -1;
+      final lineHeight = renderTerminal.lineHeight;
+      final calibrationStarted =
+          _touchWheelCalibrator.needsMeasurement &&
+          _touchWheelCalibrator.begin(
+            before: captureTerminalViewportLines(widget.terminal),
+            onSettled: (previousRows, rows) {
+              if (!mounted) {
+                return;
+              }
+              _touchScrollRemainder -=
+                  scrollDirection * lineHeight * (rows - previousRows);
+              _applyTouchScrollDelta(0);
+            },
+          );
       final handled = _sendTouchScrollMouseInput(
         scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
         _resolveViewportMousePosition(_lastTouchScrollPosition),
       );
 
-      if (!handled && widget.simulateScroll) {
-        widget.terminal.keyInput(
-          scrollUp ? TerminalKey.arrowUp : TerminalKey.arrowDown,
-        );
+      if (!handled) {
+        if (calibrationStarted) {
+          _touchWheelCalibrator.cancelPending();
+        }
+        if (widget.simulateScroll) {
+          widget.terminal.keyInput(
+            scrollUp ? TerminalKey.arrowUp : TerminalKey.arrowDown,
+          );
+        }
       }
 
       _touchScrollRemainder += scrollUp ? -stepHeight : stepHeight;
+      if (calibrationStarted && handled) {
+        break;
+      }
     }
   }
 

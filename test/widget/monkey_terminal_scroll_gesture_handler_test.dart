@@ -1,12 +1,87 @@
 // ignore_for_file: implementation_imports, public_member_api_docs
 
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_scroll_gesture_handler.dart';
 import 'package:xterm/xterm.dart';
 
+void _renderTrackpadCalibrationRows(Terminal terminal, int firstRow) {
+  final output = StringBuffer('\x1b[H\x1b[2J');
+  for (var row = 0; row < terminal.viewHeight; row++) {
+    output.write('trackpad row ${firstRow + row}');
+    if (row + 1 < terminal.viewHeight) {
+      output.write('\r\n');
+    }
+  }
+  terminal.write(output.toString());
+}
+
 void main() {
+  testWidgets('trackpad cadence adapts to multi-row wheel responders', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..resize(40, 10)
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+    _renderTrackpadCalibrationRows(terminal, 0);
+    final output = <String>[];
+    terminal.onOutput = (data) {
+      output.add(data);
+      if (output.length == 1) {
+        scheduleMicrotask(() => _renderTrackpadCalibrationRows(terminal, 3));
+      }
+    };
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 200,
+          height: 200,
+          child: MonkeyTerminalScrollGestureHandler(
+            terminal: terminal,
+            simulateScroll: false,
+            getCellOffset: (_) => const CellOffset(1, 1),
+            getLineHeight: () => 10,
+            child: const ColoredBox(
+              key: ValueKey('adaptive-trackpad-target'),
+              color: Colors.black,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final center = tester.getCenter(
+      find.byKey(const ValueKey('adaptive-trackpad-target')),
+    );
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.trackpad,
+    );
+    await gesture.panZoomStart(center);
+    await gesture.panZoomUpdate(
+      center + const Offset(0, -30),
+      pan: const Offset(0, -30),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+
+    expect(output, hasLength(1));
+
+    await gesture.panZoomUpdate(
+      center + const Offset(0, -60),
+      pan: const Offset(0, -60),
+    );
+    await tester.pump();
+
+    expect(output, hasLength(2));
+    await gesture.panZoomEnd();
+  });
+
   testWidgets(
     'trackpad scrolling preserves the gesture location in alt buffer',
     (tester) async {
