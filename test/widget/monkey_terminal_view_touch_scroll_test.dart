@@ -182,7 +182,7 @@ void main() {
     await tester.pump();
 
     expect(output, hasLength(1));
-    expect(output.single, startsWith('\u001b[<65;'));
+    expect(_countOccurrences(output.single, '\u001b[<65;'), 3);
   });
 
   testWidgets(
@@ -231,18 +231,19 @@ void main() {
       );
       await tester.pump();
 
-      expect(_countOccurrences(output.join(), '\u001b[<65;'), 1);
+      expect(output, hasLength(1));
+      expect(_countOccurrences(output.single, '\u001b[<65;'), 3);
 
       // Parsed output is evidence that the remote TUI completed a frame. The
-      // retained drag distance may now release exactly one more wheel event.
+      // retained drag distance may now release exactly one more wheel batch.
       terminal.write('frame');
       await tester.pump();
-      expect(_countOccurrences(output.join(), '\u001b[<65;'), 2);
+      expect(output, hasLength(2));
 
       // A TUI that consumes input without drawing cannot stall scrolling
-      // forever; the safety timeout releases one event, still without a burst.
+      // forever; the safety timeout releases one batch, still without a burst.
       await tester.pump(terminalTouchScrollRemoteFrameTimeout);
-      expect(_countOccurrences(output.join(), '\u001b[<65;'), 3);
+      expect(output, hasLength(3));
 
       for (var index = 0; index < 10; index++) {
         await tester.pump(
@@ -251,9 +252,9 @@ void main() {
         );
       }
       expect(
-        _countOccurrences(output.join(), '\u001b[<65;'),
+        output.length,
         6,
-        reason: 'stale fling distance is capped to six queued steps',
+        reason: 'stale fling distance is capped to six queued batches',
       );
     },
   );
@@ -352,7 +353,8 @@ void main() {
 
       final wheelCount = _countOccurrences(wheelOutput.join(), '\u001b[<65;');
       expect(wheelCount, greaterThan(0));
-      expect(wheelCount, lessThan(arrowCount));
+      expect(wheelOutput.length, lessThan(arrowCount));
+      expect(wheelCount, wheelOutput.length * 3);
     },
   );
 

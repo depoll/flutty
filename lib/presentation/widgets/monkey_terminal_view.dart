@@ -777,7 +777,7 @@ class MonkeyTerminalView extends StatefulWidget {
 
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  static const _touchScrollReportedWheelLinesPerEvent = 3.0;
+  static const _touchScrollReportedWheelEventsPerBatch = 3;
 
   late FocusNode _focusNode;
 
@@ -1510,7 +1510,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return 0;
     }
     if (widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll) {
-      return lineHeight * _touchScrollReportedWheelLinesPerEvent;
+      return lineHeight * _touchScrollReportedWheelEventsPerBatch;
     }
     return lineHeight;
   }
@@ -1653,6 +1653,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     button: button,
     position: position,
     forceSgr: widget.forceSgrTouchScroll,
+    repeatCount:
+        widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll
+        ? _touchScrollReportedWheelEventsPerBatch
+        : 1,
   );
 
   CellOffset _resolveViewportMousePosition(Offset localPosition) {

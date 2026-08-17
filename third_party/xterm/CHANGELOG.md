@@ -11,13 +11,14 @@ out of scope.
   `CellAnchor`. Terminal paint now resolves only physical placements intersecting
   the viewport and placeholders on visible rows. Erase and height-resize checks
   inspect only anchors on the affected line, so scrolling, output, and keyboard
-  resizing no longer grow slower with a long image-rich scrollback. Placeholder grid dimensions and write recency are
-  retained without a full-history pass, and circular-buffer eviction removes
+  resizing no longer grow slower with a long image-rich scrollback. Placeholder
+  grid dimensions and write recency are retained without a full-history pass, and circular-buffer eviction removes
   indexed graphics before detaching their anchors.
-* Backpressure direct touch-wheel input to one event per remote terminal frame
-  (with a short safety timeout), preventing long-session TUIs from accumulating
-  a queue of full-transcript redraws. MonkeyMux shared-grid views also suppress
-  pixel-only resize notifications that leave the cell grid unchanged, while
+* Backpressure direct touch-wheel input to one three-step SGR batch per remote
+  terminal frame (with a short safety timeout). Pi processes the three reports
+  from one shell write before its scheduled render, preserving scroll distance
+  while preventing a queue of full-transcript redraws. MonkeyMux shared-grid
+  views also suppress pixel-only resize notifications that leave the cell grid unchanged, while
   explicit grid reconciliation still reports the size.
 * Expand the bounded per-line foreground picture cache from 512 to 2,048 entries
   so repeated page and fling navigation through long text transcripts does not
