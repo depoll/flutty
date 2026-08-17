@@ -27,6 +27,7 @@ install_hook "$REPO_ROOT/scripts/pre-push" pre-push
 echo 'Installing dependencies...'
 (
     cd "$REPO_ROOT"
+    scripts/ensure_monkeymux_assets.sh
     flutter pub get
 )
 

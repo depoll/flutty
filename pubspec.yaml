@@ -116,7 +116,7 @@ flutter:
   
   assets:
     - assets/icons/
-    - assets/monkeymux/
+    - assets/monkeymux/manifest.json
     - assets/monkeymux/bin/darwin-amd64/
     - assets/monkeymux/bin/darwin-arm64/
     - assets/monkeymux/bin/linux-amd64/

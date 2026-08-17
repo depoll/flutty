@@ -157,7 +157,8 @@ void main() {
           '/b/cursor-agent\n'
           '/b/pi\n'
           '/b/hermes\n'
-          '/b/openclaw\n';
+          '/b/openclaw\n'
+          '/b/grok\n';
       expect(parseInstalledAgentTools(output), AgentLaunchTool.values.toSet());
     });
 

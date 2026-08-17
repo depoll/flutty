@@ -706,7 +706,7 @@ void main() {
       expect(output.where((value) => value == '\x1b[A').length, greaterThan(1));
     });
 
-    testWidgets('arrow key repeats use Kitty event type when enabled', (
+    testWidgets('arrow holds avoid Kitty event types in raw terminals', (
       tester,
     ) async {
       final output = <String>[];
@@ -728,8 +728,8 @@ void main() {
       await gesture.up();
       await tester.pump();
 
-      expect(output, contains('\x1b[A'));
-      expect(output.where((value) => value == '\x1b[1;1:2A'), isNotEmpty);
+      expect(output.where((value) => value == '\x1b[A').length, greaterThan(1));
+      expect(output.where((value) => value.contains(':2')), isEmpty);
     });
 
     testWidgets(
@@ -756,7 +756,7 @@ void main() {
       },
     );
 
-    testWidgets('series navigation repeats use Kitty event type when enabled', (
+    testWidgets('series navigation holds avoid Kitty event types', (
       tester,
     ) async {
       final output = <String>[];
@@ -778,8 +778,11 @@ void main() {
       await gesture.up();
       await tester.pump();
 
-      expect(output, contains('\x1b[5~'));
-      expect(output.where((value) => value == '\x1b[5;1:2~'), isNotEmpty);
+      expect(
+        output.where((value) => value == '\x1b[5~').length,
+        greaterThan(1),
+      );
+      expect(output.where((value) => value.contains(':2')), isEmpty);
     });
 
     testWidgets('repeating navigation stops when gesture is cancelled', (

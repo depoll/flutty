@@ -1,6 +1,8 @@
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
+import 'package:monkeyssh/domain/services/terminal_notification.dart';
 
 void main() {
   group('TmuxAlertNotificationPayload', () {
@@ -56,9 +58,26 @@ void main() {
 
   group('TerminalNotificationPayload', () {
     test('round-trips terminal notification routing fields', () {
-      const payload = TerminalNotificationPayload(hostId: 7, connectionId: 21);
+      const payload = TerminalNotificationPayload(
+        hostId: 7,
+        connectionId: 21,
+        platformNotificationId: 4321,
+        notificationIdentifier: 'build',
+        reportsActivation: true,
+        focusOnActivation: false,
+      );
 
       expect(TerminalNotificationPayload.decode(payload.encode()), payload);
+    });
+
+    test('decodes legacy navigation-only payloads', () {
+      expect(
+        TerminalNotificationPayload.decode(
+          '{"type":"terminal-notification","version":1,'
+          '"hostId":7,"connectionId":21}',
+        ),
+        const TerminalNotificationPayload(hostId: 7, connectionId: 21),
+      );
     });
 
     test('ignores malformed and unrelated payloads', () {
@@ -80,6 +99,64 @@ void main() {
       const terminal = TerminalNotificationPayload(hostId: 7, connectionId: 21);
       expect(TmuxAlertNotificationPayload.decode(terminal.encode()), isNull);
     });
+  });
+
+  test('Kitty urgency and sound map to native notification details', () {
+    final quiet = buildTerminalNotificationDetails(
+      urgency: TerminalNotificationUrgency.low,
+      sound: TerminalNotificationSound.silent,
+      timeout: const Duration(milliseconds: 1250),
+    );
+    expect(quiet.android?.channelId, terminalNotificationLowSilentChannelId);
+    expect(quiet.android?.importance, Importance.low);
+    expect(quiet.android?.priority, Priority.low);
+    expect(quiet.android?.playSound, isFalse);
+    expect(quiet.android?.silent, isTrue);
+    expect(quiet.android?.timeoutAfter, 1250);
+    expect(quiet.iOS?.presentSound, isFalse);
+    expect(quiet.iOS?.interruptionLevel, InterruptionLevel.passive);
+
+    final critical = buildTerminalNotificationDetails(
+      urgency: TerminalNotificationUrgency.critical,
+      sound: TerminalNotificationSound.system,
+    );
+    expect(critical.android?.channelId, terminalNotificationCriticalChannelId);
+    expect(critical.android?.importance, Importance.max);
+    expect(critical.android?.priority, Priority.max);
+    expect(critical.android?.playSound, isTrue);
+    expect(critical.iOS?.presentSound, isTrue);
+    expect(critical.iOS?.interruptionLevel, InterruptionLevel.active);
+
+    final channels = LocalNotificationService.debugTerminalNotificationChannels;
+    for (final channelId in <String>{
+      terminalNotificationLowSilentChannelId,
+      terminalNotificationSilentChannelId,
+      terminalNotificationCriticalSilentChannelId,
+    }) {
+      expect(
+        channels.singleWhere((channel) => channel.id == channelId).playSound,
+        isFalse,
+      );
+    }
+  });
+
+  test('Kitty identifiers replace within a connection without collisions', () {
+    expect(
+      buildTerminalNotificationId(21, identifier: 'build'),
+      buildTerminalNotificationId(21, identifier: 'build'),
+    );
+    expect(
+      buildTerminalNotificationId(21, identifier: 'build'),
+      isNot(buildTerminalNotificationId(21, identifier: 'deploy')),
+    );
+    expect(
+      buildTerminalNotificationId(21, identifier: 'build'),
+      isNot(buildTerminalNotificationId(22, identifier: 'build')),
+    );
+    expect(
+      buildTerminalNotificationId(21, identifier: 'build/a'),
+      isNot(buildTerminalNotificationId(21, identifier: 'build+a')),
+    );
   });
 
   test('buildTerminalNotificationLocation targets the source connection', () {

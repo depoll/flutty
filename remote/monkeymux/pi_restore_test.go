@@ -1,25 +1,360 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
 
 func writePiTestSession(t *testing.T, path string, id string, cwd string, modified time.Time) {
 	t.Helper()
+	writePiTestSessionTimes(t, path, id, cwd, modified, modified)
+}
+
+func writePiTestSessionTimes(
+	t *testing.T,
+	path string,
+	id string,
+	cwd string,
+	created time.Time,
+	modified time.Time,
+) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	header := fmt.Sprintf("{\"type\":\"session\",\"id\":%q,\"cwd\":%q}\n", id, cwd)
+	header := fmt.Sprintf(
+		"{\"type\":\"session\",\"id\":%q,\"timestamp\":%q,\"cwd\":%q}\n",
+		id,
+		created.UTC().Format(time.RFC3339Nano),
+		cwd,
+	)
 	if err := os.WriteFile(path, []byte(header), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, modified, modified); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func appendPiTestSessionName(t *testing.T, path string, name string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := fmt.Fprintf(
+		file,
+		"{\"type\":\"session_info\",\"name\":%q}\n",
+		name,
+	)
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatal(errors.Join(writeErr, closeErr))
+	}
+}
+
+func writePiTestRelocatedSession(
+	t *testing.T,
+	path string,
+	id string,
+	cwd string,
+	parent string,
+	created time.Time,
+	modified time.Time,
+) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	header := fmt.Sprintf(
+		"{\"type\":\"session\",\"id\":%q,\"timestamp\":%q,\"cwd\":%q,\"parentSession\":%q}\n",
+		id,
+		created.UTC().Format(time.RFC3339Nano),
+		cwd,
+		parent,
+	)
+	if err := os.WriteFile(path, []byte(header), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, modified, modified); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Pi's worktree flow relocates a running session into a bucket named for the
+// new worktree cwd and deletes the original file, leaving only the header's
+// parentSession pointing at the pane's working directory. The pane must still
+// resume that session after a helper upgrade rather than launching a fresh Pi.
+func TestDiscoverPiSessionsResumesSessionRelocatedToWorktree(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktree")
+	started := time.Now().Add(-time.Hour).UTC()
+	originCreated := started.Add(500 * time.Millisecond)
+	// The deleted origin file only survives as the parentSession path.
+	deletedOrigin := filepath.Join(
+		root,
+		piEncodedSessionDirName(project),
+		originCreated.Format("2006-01-02T15-04-05-000Z")+"_origin-session.jsonl",
+	)
+	relocatedPath := filepath.Join(
+		root,
+		piEncodedSessionDirName(worktree),
+		"relocated.jsonl",
+	)
+	writePiTestRelocatedSession(
+		t,
+		relocatedPath,
+		"relocated-session",
+		worktree,
+		deletedOrigin,
+		started.Add(30*time.Minute),
+		started.Add(45*time.Minute),
+	)
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "relocated-session" || got.sessionPath != relocatedPath {
+		t.Fatalf("relocated Pi session = %#v, want exact path %q", got, relocatedPath)
+	}
+	options := createWindowOptionsForRestore(restoreWindowState{
+		CurrentCommand:   "pi",
+		AgentSessionID:   got.sessionID,
+		AgentSessionDir:  got.sessionDir,
+		AgentSessionPath: got.sessionPath,
+	}, false)
+	want := piResumeCommandWithFreshFallback(
+		piResumeCommand(got.sessionID, got.sessionDir, got.sessionPath),
+		piLaunchCommand(got.sessionDir),
+	)
+	if options.command != want {
+		t.Fatalf("relocated restore command = %q, want %q", options.command, want)
+	}
+}
+
+func TestDiscoverPiSessionsUsesPublishedTitleWhenSessionCreationIsDelayed(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	started := time.Now().Add(-time.Hour).UTC()
+	firstPath := filepath.Join(root, "project", "first.jsonl")
+	secondPath := filepath.Join(root, "project", "second.jsonl")
+	writePiTestSession(t, firstPath, "first-session", project, started.Add(20*time.Minute))
+	appendPiTestSessionName(t, firstPath, "first restore")
+	writePiTestSession(t, secondPath, "second-session", project, started.Add(30*time.Minute))
+	appendPiTestSessionName(t, secondPath, "second restore")
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		101: {pid: 101, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+		201: {pid: 201, ppid: 101, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{
+		{
+			PanePid: 100, CurrentCommand: "pi", AgentTool: "pi",
+			PaneTitle: "π - first restore - project", Cwd: project,
+		},
+		{
+			PanePid: 101, CurrentCommand: "pi", AgentTool: "pi",
+			PaneTitle: "Pi - second restore - project", Cwd: project,
+		},
+	}}
+
+	got := discoverPiSessions(
+		restore,
+		processes,
+		map[int]struct{}{100: {}, 101: {}},
+	)
+	if got[0].sessionID != "first-session" || got[0].sessionPath != firstPath ||
+		got[1].sessionID != "second-session" || got[1].sessionPath != secondPath {
+		t.Fatalf("title-correlated Pi sessions = %#v, want both exact paths", got)
+	}
+}
+
+func TestDiscoverPiSessionsMatchesTitleWithMoreThan32Candidates(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	started := time.Now().Add(-time.Hour).UTC()
+	targetPath := ""
+	for i := 0; i < 33; i++ {
+		path := filepath.Join(root, "project", fmt.Sprintf("session-%02d.jsonl", i))
+		writePiTestSession(t, path, fmt.Sprintf("session-%02d", i), project, started.Add(20*time.Minute))
+		appendPiTestSessionName(t, path, fmt.Sprintf("restore %02d", i))
+		if i == 32 {
+			targetPath = path
+		}
+	}
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi",
+		PaneTitle: "π - restore 32 - project", Cwd: project,
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "session-32" || got.sessionPath != targetPath {
+		t.Fatalf("33-candidate title match = %#v, want exact path %q", got, targetPath)
+	}
+}
+
+func TestPiSessionOriginResolvesChainAndFileNameTimestamp(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktree")
+	created := time.Date(2026, 8, 15, 6, 56, 17, 353*int(time.Millisecond), time.UTC)
+	origin := filepath.Join(
+		root,
+		piEncodedSessionDirName(project),
+		"2026-08-15T06-56-17-353Z_origin-session.jsonl",
+	)
+	middle := filepath.Join(root, piEncodedSessionDirName(worktree), "middle.jsonl")
+	newest := filepath.Join(root, piEncodedSessionDirName(worktree), "newest.jsonl")
+	writePiTestRelocatedSession(t, middle, "middle-session", worktree, origin, created.Add(time.Minute), created.Add(2*time.Minute))
+	writePiTestRelocatedSession(t, newest, "newest-session", worktree, middle, created.Add(3*time.Minute), created.Add(4*time.Minute))
+
+	entries := readPiSessionEntries(root)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	for _, entry := range entries {
+		if entry.originDir != piEncodedSessionDirName(project) {
+			t.Fatalf("%s origin dir = %q, want project bucket", entry.sessionID, entry.originDir)
+		}
+		if !entry.originCreatedAt.Equal(created) {
+			t.Fatalf("%s origin createdAt = %s, want %s", entry.sessionID, entry.originCreatedAt, created)
+		}
+	}
+}
+
+// A relocated session that is later rotated (/new) leaves the intermediate
+// file on disk, so the pane's chain has several links that all resolve to the
+// same origin. The pane must resume the leaf it is actually on.
+func TestDiscoverPiSessionsResumesLeafOfRelocatedThenRotatedChain(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktree")
+	started := time.Now().Add(-time.Hour).UTC()
+	deletedOrigin := filepath.Join(
+		root,
+		piEncodedSessionDirName(project),
+		started.Add(500*time.Millisecond).Format("2006-01-02T15-04-05-000Z")+"_origin-session.jsonl",
+	)
+	middle := filepath.Join(root, piEncodedSessionDirName(worktree), "middle.jsonl")
+	newest := filepath.Join(root, piEncodedSessionDirName(worktree), "newest.jsonl")
+	writePiTestRelocatedSession(t, middle, "middle-session", worktree, deletedOrigin, started.Add(20*time.Minute), started.Add(25*time.Minute))
+	writePiTestRelocatedSession(t, newest, "newest-session", worktree, middle, started.Add(30*time.Minute), started.Add(45*time.Minute))
+
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "newest-session" {
+		t.Fatalf("multi-hop Pi chain = %#v, want newest-session leaf", got)
+	}
+}
+
+// Forks share a parent without superseding each other, so a branched history
+// has no single leaf and must decline rather than guess a conversation.
+func TestDiscoverPiSessionsDeclinesForkedChainBranches(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktree")
+	started := time.Now().Add(-time.Hour).UTC()
+	deletedOrigin := filepath.Join(
+		root,
+		piEncodedSessionDirName(project),
+		started.Add(500*time.Millisecond).Format("2006-01-02T15-04-05-000Z")+"_origin-session.jsonl",
+	)
+	bucket := piEncodedSessionDirName(worktree)
+	writePiTestRelocatedSession(t, filepath.Join(root, bucket, "branch-a.jsonl"), "branch-a", worktree, deletedOrigin, started.Add(20*time.Minute), started.Add(25*time.Minute))
+	writePiTestRelocatedSession(t, filepath.Join(root, bucket, "branch-b.jsonl"), "branch-b", worktree, deletedOrigin, started.Add(30*time.Minute), started.Add(35*time.Minute))
+
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
+	}}}
+
+	if got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}}); len(got) != 0 {
+		t.Fatalf("forked Pi chain = %#v, want fresh launch", got)
+	}
+}
+
+func TestPiEncodedSessionDirNameMatchesPiLayout(t *testing.T) {
+	if got, want := piEncodedSessionDirName("/Users/demo/Code/MonkeySSH"), "--Users-demo-Code-MonkeySSH--"; got != want {
+		t.Fatalf("piEncodedSessionDirName = %q, want %q", got, want)
+	}
+	if got := piEncodedSessionDirName(""); got != "" {
+		t.Fatalf("empty cwd encoding = %q, want empty", got)
 	}
 }
 
@@ -29,13 +364,26 @@ func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
 			t.Fatalf("agentToolFromCommandName(%q) = %q, want pi", name, got)
 		}
 	}
-	if got := agentToolFromTerminalTitle("Pi"); got != "pi" {
-		t.Fatalf("agentToolFromTerminalTitle(Pi) = %q, want pi", got)
+	for _, title := range []string{"Pi", "Pi - restore work - project", "π", "π - restore work - project"} {
+		if got := agentToolFromTerminalTitle(title); got != "pi" {
+			t.Fatalf("agentToolFromTerminalTitle(%q) = %q, want pi", title, got)
+		}
 	}
 	for _, title := range []string{"Pi notes", "Pi calculator", "Pi · restore work"} {
 		if got := agentToolFromTerminalTitle(title); got != "" {
 			t.Fatalf("agentToolFromTerminalTitle(%q) = %q, want no classification", title, got)
 		}
+	}
+	shellState := restoreWindowState{
+		CurrentCommand: "zsh",
+		PaneTitle:      "Pi - notes",
+		AgentTool:      "pi",
+	}
+	if got := agentToolForRestore(shellState); got != "" {
+		t.Fatalf("shell window with Pi-like title classified as %q", got)
+	}
+	if got := createWindowOptionsForRestore(shellState, false).command; got != "" {
+		t.Fatalf("shell window with Pi-like title restore command = %q", got)
 	}
 	if got := agentSessionIDFromArgs("pi", "pi --session 'session-id'"); got != "session-id" {
 		t.Fatalf("agentSessionIDFromArgs = %q, want session-id", got)
@@ -52,9 +400,27 @@ func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
 	}
 }
 
+func TestNewWindowAgentToolDoesNotConfirmNameOnlyMatch(t *testing.T) {
+	if tool, confirmed := newWindowAgentTool(createWindowOptions{}, "Pi"); tool != "pi" || confirmed {
+		t.Fatalf("name-only classification = %q, %v; want pi, false", tool, confirmed)
+	}
+	if tool, confirmed := newWindowAgentTool(
+		createWindowOptions{agentTool: "pi"},
+		"shell",
+	); tool != "pi" || !confirmed {
+		t.Fatalf("explicit classification = %q, %v; want pi, true", tool, confirmed)
+	}
+	if tool, confirmed := newWindowAgentTool(
+		createWindowOptions{command: "pi"},
+		"shell",
+	); tool != "pi" || !confirmed {
+		t.Fatalf("command classification = %q, %v; want pi, true", tool, confirmed)
+	}
+}
+
 func TestPiResumeCommandRejectsShellMetacharacters(t *testing.T) {
 	for _, id := range []string{"session's-id", "session&id", "$(touch-pwned)", "session id"} {
-		if got := piResumeCommand(id, ""); got != "" {
+		if got := piResumeCommand(id, "", ""); got != "" {
 			t.Fatalf("piResumeCommand(%q) = %q, want refusal", id, got)
 		}
 	}
@@ -72,7 +438,8 @@ func TestEnrichRestoreWithAgentSessionIDsUsesUnambiguousPiSession(t *testing.T) 
 	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
 	project := filepath.Join(root, "project")
 	now := time.Now()
-	writePiTestSession(t, filepath.Join(root, "project", "primary.jsonl"), "primary-session", project, now)
+	primaryPath := filepath.Join(root, "project", "primary.jsonl")
+	writePiTestSession(t, primaryPath, "primary-session", project, now)
 	writePiTestSession(t, filepath.Join(root, "project", "primary", "child", "run-0", "session.jsonl"), "child-session", project, now.Add(time.Minute))
 	writePiTestSession(t, filepath.Join(root, "other", "other.jsonl"), "other-session", filepath.Join(root, "other"), now.Add(2*time.Minute))
 
@@ -86,6 +453,9 @@ func TestEnrichRestoreWithAgentSessionIDsUsesUnambiguousPiSession(t *testing.T) 
 	}
 	if got := restore.Windows[0].AgentSessionDir; got != filepath.Join(root, "project") {
 		t.Fatalf("Pi session dir = %q, want project bucket", got)
+	}
+	if got := restore.Windows[0].AgentSessionPath; got != primaryPath {
+		t.Fatalf("Pi session path = %q, want %q", got, primaryPath)
 	}
 }
 
@@ -108,6 +478,237 @@ func TestDiscoverPiSessionsDeclinesAmbiguousCwdFallback(t *testing.T) {
 		if got := discoverPiSessions(restore, nil, nil); len(got) != 0 {
 			t.Fatalf("ambiguous Pi fallback = %#v, want none", got)
 		}
+	}
+}
+
+func TestDiscoverPiSessionsUsesProcessStartWhenPiClosesSessionFile(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	processStarted := time.Now().Add(-time.Minute).UTC()
+	writePiTestSession(
+		t,
+		filepath.Join(root, "project", "old.jsonl"),
+		"old-session",
+		project,
+		processStarted.Add(-time.Hour),
+	)
+	writePiTestSession(
+		t,
+		filepath.Join(root, "project", "current.jsonl"),
+		"current-session",
+		project,
+		processStarted.Add(500*time.Millisecond),
+	)
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return processStarted
+		}
+		return time.Time{}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {
+			pid:  200,
+			ppid: 100,
+			comm: "node",
+			args: "node /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+		},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "node", AgentTool: "pi", Cwd: project,
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "current-session" || got.sessionDir != filepath.Join(root, "project") {
+		t.Fatalf("process-correlated Pi session = %#v, want current-session", got)
+	}
+}
+
+func TestPiSessionsCreatedForProcessStartDeclinesAmbiguousMatches(t *testing.T) {
+	started := time.Now().UTC()
+	entries := []piSessionEntry{
+		{sessionID: "one", createdAt: started, modTime: started},
+		{sessionID: "two", createdAt: started.Add(time.Second), modTime: started.Add(time.Second)},
+	}
+	if got := piSessionsCreatedForProcessStart(entries, started); len(got) != 2 {
+		t.Fatalf("created-at matches = %#v, want both ambiguous sessions", got)
+	}
+}
+
+func TestDiscoverPiSessionsDeclinesInitialSessionAfterRotation(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	started := time.Now().Add(-time.Hour).UTC()
+	writePiTestSessionTimes(
+		t,
+		filepath.Join(root, "project", "initial.jsonl"),
+		"initial-session",
+		project,
+		started.Add(500*time.Millisecond),
+		started.Add(10*time.Minute),
+	)
+	writePiTestSessionTimes(
+		t,
+		filepath.Join(root, "project", "rotated.jsonl"),
+		"rotated-session",
+		project,
+		started.Add(20*time.Minute),
+		started.Add(30*time.Minute),
+	)
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
+	}}}
+
+	if got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}}); len(got) != 0 {
+		t.Fatalf("rotated Pi session match = %#v, want fresh fallback", got)
+	}
+}
+
+func TestDiscoverPiSessionsDeclinesInitialSessionAfterResume(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	started := time.Now().Add(-time.Hour).UTC()
+	writePiTestSessionTimes(
+		t,
+		filepath.Join(root, "project", "initial.jsonl"),
+		"initial-session",
+		project,
+		started.Add(500*time.Millisecond),
+		started.Add(5*time.Minute),
+	)
+	writePiTestSessionTimes(
+		t,
+		filepath.Join(root, "project", "resumed.jsonl"),
+		"resumed-session",
+		project,
+		started.Add(-time.Hour),
+		started.Add(30*time.Minute),
+	)
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
+	}}}
+
+	if got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}}); len(got) != 0 {
+		t.Fatalf("resumed Pi session match = %#v, want fresh fallback rather than initial session", got)
+	}
+}
+
+func TestDiscoverPiSessionsAssignsTwoKnownNodeProcessesMutually(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	firstStart := time.Now().Add(-time.Hour).UTC()
+	secondStart := firstStart.Add(time.Minute)
+	writePiTestSessionTimes(
+		t,
+		filepath.Join(root, "project", "first.jsonl"),
+		"first-session",
+		project,
+		firstStart.Add(500*time.Millisecond),
+		firstStart.Add(10*time.Minute),
+	)
+	writePiTestSessionTimes(
+		t,
+		filepath.Join(root, "project", "second.jsonl"),
+		"second-session",
+		project,
+		secondStart.Add(500*time.Millisecond),
+		secondStart.Add(10*time.Minute),
+	)
+	processStartedAtForMetadata = func(pid int) time.Time {
+		switch pid {
+		case 200:
+			return firstStart
+		case 201:
+			return secondStart
+		default:
+			return time.Time{}
+		}
+	}
+	// Windows Toolhelp exposes node.exe but not its package-path argv. The
+	// known Pi pane classification still lets the closest runtime participate.
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		101: {pid: 101, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "node.exe", args: "node.exe"},
+		201: {pid: 201, ppid: 101, comm: "node.exe", args: "node.exe"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{
+		{PanePid: 100, CurrentCommand: "cmd.exe", AgentTool: "pi", Cwd: project},
+		{PanePid: 101, CurrentCommand: "powershell.exe", AgentTool: "pi", Cwd: project},
+	}}
+
+	got := discoverPiSessions(
+		restore,
+		processes,
+		map[int]struct{}{100: {}, 101: {}},
+	)
+	if got[0].sessionID != "first-session" || got[1].sessionID != "second-session" {
+		t.Fatalf("mutual Pi assignments = %#v, want first and second sessions", got)
+	}
+	for i := range restore.Windows {
+		if !restore.Windows[i].AgentToolConfirmed || agentToolForRestore(restore.Windows[i]) != "pi" {
+			t.Fatalf("Windows-like Pi pane %d was not process-confirmed: %#v", i, restore.Windows[i])
+		}
+	}
+}
+
+func TestDiscoverPiSessionsDeclinesOverlappingProcessStarts(t *testing.T) {
+	started := time.Now().UTC()
+	entries := []piSessionEntry{
+		{sessionID: "one", createdAt: started.Add(time.Second)},
+		{sessionID: "two", createdAt: started.Add(2 * time.Second)},
+	}
+	if got := piSessionsCreatedForProcessStart(entries, started); len(got) != 2 {
+		t.Fatalf("first overlapping process matches = %#v, want ambiguity", got)
+	}
+	if got := piSessionsCreatedForProcessStart(entries, started.Add(time.Second)); len(got) != 2 {
+		t.Fatalf("second overlapping process matches = %#v, want ambiguity", got)
 	}
 }
 
@@ -142,7 +743,7 @@ func TestDiscoverPiSessionsUsesLiveOpenFileAndSkipsNestedPiProcess(t *testing.T)
 	}}}
 
 	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
-	if got.sessionID != "current-session" || got.sessionDir != filepath.Dir(current) {
+	if got.sessionID != "current-session" || got.sessionDir != filepath.Dir(current) || got.sessionPath != current {
 		t.Fatalf("live Pi session = %#v, want current open file", got)
 	}
 }
@@ -167,15 +768,24 @@ func TestDiscoverPiSessionsHonorsProcessSessionDir(t *testing.T) {
 		t.Fatalf("custom-dir Pi session = %#v, want custom session in %q", got, want)
 	}
 	options := createWindowOptionsForRestore(restoreWindowState{
-		CurrentCommand: "pi", AgentSessionID: got.sessionID, AgentSessionDir: got.sessionDir,
+		CurrentCommand:   "pi",
+		AgentSessionID:   got.sessionID,
+		AgentSessionDir:  got.sessionDir,
+		AgentSessionPath: got.sessionPath,
 	}, false)
-	if !strings.Contains(options.command, "--session-dir") || !strings.Contains(options.command, "--session custom-session") {
-		t.Fatalf("custom-dir restore command = %q", options.command)
+	want := piResumeCommandWithFreshFallback(
+		piResumeCommand(got.sessionID, got.sessionDir, got.sessionPath),
+		piLaunchCommand(got.sessionDir),
+	)
+	if options.command != want {
+		t.Fatalf("custom-dir restore command = %q, want %q", options.command, want)
 	}
 }
 
 func TestDiscoverPiSessionsReservesExplicitProcessSession(t *testing.T) {
 	project := t.TempDir()
+	sessionPath := filepath.Join(project, "sessions", "exact.jsonl")
+	writePiTestSession(t, sessionPath, "exact-session", project, time.Now())
 	processes := map[int]processInfo{
 		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
 		200: {pid: 200, ppid: 100, comm: "pi", args: "pi --session exact-session --session-dir sessions"},
@@ -184,8 +794,13 @@ func TestDiscoverPiSessionsReservesExplicitProcessSession(t *testing.T) {
 		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
 	}}}
 	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
-	if want := filepath.Join(normalizedPiWorkingDirectory(project), "sessions"); got.sessionID != "exact-session" || got.sessionDir != want {
+	if want := filepath.Join(normalizedPiWorkingDirectory(project), "sessions"); got.sessionID != "exact-session" || got.sessionDir != want || got.sessionPath != filepath.Join(want, "exact.jsonl") {
 		t.Fatalf("explicit Pi session = %#v, want exact-session in %q", got, want)
+	}
+
+	entry, ok := piSessionFromProcessArgs("pi --session "+shellQuote(sessionPath), project)
+	if !ok || entry.sessionID != "exact-session" || entry.path != sessionPath {
+		t.Fatalf("path-based Pi process session = %#v, %v, want exact path", entry, ok)
 	}
 }
 
@@ -229,5 +844,115 @@ func TestReadPiSessionEntrySkipsLeadingNonHeaderLines(t *testing.T) {
 	entry, ok := readPiSessionEntry(path)
 	if !ok || entry.sessionID != "session-id" || entry.cwd != normalizedPiWorkingDirectory(project) {
 		t.Fatalf("Pi session entry = %#v, %v", entry, ok)
+	}
+}
+
+func TestPiLatestSessionNameUsesLateMetadataAndSkipsOversizedRecords(t *testing.T) {
+	project := t.TempDir()
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	writePiTestSession(t, path, "session-id", project, time.Now())
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 600; i++ {
+		if _, err := fmt.Fprintf(file, "{\"type\":\"message\",\"id\":%q}\n", fmt.Sprintf("%08d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := file.Write([]byte("{\"type\":\"message\",\"image\":\"")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(bytes.Repeat([]byte("A"), 2*piSessionMetadataRecordLimitBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("\"}\n{\"type\":\"session_info\",\"name\":\"renamed late\"}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, ok := readPiSessionEntry(path)
+	if !ok || entry.sessionID != "session-id" {
+		t.Fatalf("entry after oversized message = %#v, %v", entry, ok)
+	}
+	if name, found := piLatestSessionName(path); !found || name != "renamed late" {
+		t.Fatalf("latest session name = %q, %v, want renamed late", name, found)
+	}
+
+	appendPiTestSessionName(t, path, "")
+	if name, found := piLatestSessionName(path); !found || name != "" {
+		t.Fatalf("cleared session name = %q, %v, want authoritative empty", name, found)
+	}
+}
+
+func TestPiSessionIdentitySurvivesSecondUpgradeAndRejectsRotation(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	started := time.Now().UTC()
+	firstPath := filepath.Join(root, "first.jsonl")
+	secondPath := filepath.Join(root, "second.jsonl")
+	writePiTestSessionTimes(t, firstPath, "first-session", project, started.Add(-2*time.Hour), started.Add(-time.Hour))
+	writePiTestSessionTimes(t, secondPath, "second-session", project, started.Add(-90*time.Minute), started.Add(-45*time.Minute))
+
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id: "@1", index: 0, name: "Pi", cwd: project,
+			command: "pi", foregroundCommand: "pi", agentTool: "pi", agentToolConfirmed: true,
+			agentSessionID: "first-session", agentSessionDir: root, agentSessionPath: firstPath,
+			lastActivity: time.Now(),
+		},
+		{
+			id: "@2", index: 1, name: "Pi", cwd: project,
+			command: "pi", foregroundCommand: "pi", agentTool: "pi", agentToolConfirmed: true,
+			agentSessionID: "second-session", agentSessionDir: root, agentSessionPath: secondPath,
+			lastActivity: time.Now(),
+		},
+	}
+	server.activeID = "@1"
+	restore := server.restoreSnapshot()
+	if got := restore.Windows[0].AgentSessionPath; got != firstPath {
+		t.Fatalf("snapshotted first path = %q, want %q", got, firstPath)
+	}
+	if options := createWindowOptionsForRestore(restore.Windows[0], false); options.agentSessionPath != firstPath {
+		t.Fatalf("restored options path = %q, want %q", options.agentSessionPath, firstPath)
+	}
+	legacyRestore := restoreFromWindowSnapshots([]windowSnapshot{{
+		AgentTool:        "pi",
+		AgentSessionID:   "first-session",
+		AgentSessionDir:  root,
+		AgentSessionPath: firstPath,
+	}})
+	if got := legacyRestore.Windows[0].AgentSessionPath; got != firstPath {
+		t.Fatalf("legacy snapshot path = %q, want %q", got, firstPath)
+	}
+
+	restore.Windows[0].PanePid = 100
+	restore.Windows[1].PanePid = 101
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "pi.exe", args: "pi.exe"},
+		101: {pid: 101, ppid: 1, comm: "pi.exe", args: "pi.exe"},
+	}
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}, 101: {}})
+	if got[0].sessionPath != firstPath || got[1].sessionPath != secondPath {
+		t.Fatalf("second-upgrade sessions = %#v, want persisted exact paths", got)
+	}
+
+	rotatedPath := filepath.Join(root, "rotated.jsonl")
+	writePiTestSessionTimes(t, rotatedPath, "rotated-session", project, started.Add(time.Minute), started.Add(2*time.Minute))
+	got = discoverPiSessions(restore, processes, map[int]struct{}{100: {}, 101: {}})
+	if len(got) != 0 {
+		t.Fatalf("sessions after unowned rotation = %#v, want fresh launch", got)
 	}
 }

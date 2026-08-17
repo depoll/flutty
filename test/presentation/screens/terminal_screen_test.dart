@@ -443,9 +443,14 @@ class _RecordingLocalNotificationService extends LocalNotificationService {
 }
 
 class _TestShellCompletionService extends ShellCompletionService {
-  _TestShellCompletionService({required this.cachedSuggestions});
+  _TestShellCompletionService({
+    required this.cachedSuggestions,
+    this.completionSuggestions =
+        const <String, List<ShellCompletionSuggestion>>{},
+  });
 
   final List<ShellCompletionSuggestion> cachedSuggestions;
+  final Map<String, List<ShellCompletionSuggestion>> completionSuggestions;
   final cachedInvocations = <ShellCompletionInvocation>[];
   final completeInvocations = <ShellCompletionInvocation>[];
 
@@ -469,7 +474,8 @@ class _TestShellCompletionService extends ShellCompletionService {
     ShellCompletionInvocation invocation,
   ) async {
     completeInvocations.add(invocation);
-    return const <ShellCompletionSuggestion>[];
+    return completionSuggestions[invocation.token] ??
+        const <ShellCompletionSuggestion>[];
   }
 }
 
@@ -2030,6 +2036,68 @@ void main() {
       expect(utf8.decode(shellWrites.expand((chunk) => chunk).toList()), 'x');
     });
 
+    testWidgets('remote OSC palette changes repaint and reset the terminal', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+      final initialTheme = tester
+          .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+          .theme;
+
+      session.debugHandlePrivateOsc('11', const ['#102030']);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        tester
+            .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+            .theme
+            .background,
+        const Color(0xFF102030),
+      );
+
+      session.debugHandlePrivateOsc('111', const []);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        tester
+            .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+            .theme
+            .background,
+        initialTheme.background,
+      );
+    });
+
+    testWidgets('previous command advances past a mark clamped at the bottom', (
+      tester,
+    ) async {
+      final terminal = session.terminal!;
+      for (var row = 0; row < 70; row += 1) {
+        terminal.write('command output $row\r\n');
+        if (row == 10 || row == 35 || row == 65) {
+          session.debugHandlePrivateOsc('133', const ['C']);
+        }
+      }
+
+      await pumpScreen(tester);
+      final terminalView = tester.widget<MonkeyTerminalView>(
+        find.byType(MonkeyTerminalView),
+      );
+      final scrollController = terminalView.scrollController!;
+      scrollController.jumpTo(scrollController.position.maxScrollExtent);
+      await tester.pump();
+
+      await openTerminalOverflowMenu(tester);
+      await tester.tap(terminalMenuItemButton('Previous Command (3)'));
+      await tester.pumpAndSettle();
+      final firstOffset = scrollController.offset;
+
+      await openTerminalOverflowMenu(tester);
+      await tester.tap(terminalMenuItemButton('Previous Command (3)'));
+      await tester.pumpAndSettle();
+      final secondOffset = scrollController.offset;
+
+      expect(firstOffset, scrollController.position.maxScrollExtent);
+      expect(secondOffset, lessThan(firstOffset));
+    });
+
     testWidgets('terminal overflow menu folds out paste actions', (
       tester,
     ) async {
@@ -2418,19 +2486,25 @@ void main() {
 
       await pumpScreen(tester);
 
+      final jumpHostIcon = find.byIcon(Icons.alt_route);
+      final connectedIcon = find.byIcon(Icons.check_circle_outline);
       expect(find.byTooltip('Connected through jump host'), findsOneWidget);
-      expect(find.byIcon(Icons.alt_route), findsOneWidget);
+      expect(jumpHostIcon, findsOneWidget);
       expect(find.byTooltip('Connected'), findsOneWidget);
-      expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
+      expect(connectedIcon, findsOneWidget);
+
+      final connectedRect = tester.getRect(connectedIcon);
+      final jumpHostRect = tester.getRect(jumpHostIcon);
+      expect(connectedRect.overlaps(jumpHostRect), isTrue);
+
+      final jumpHostIconWidget = tester.widget<Icon>(jumpHostIcon);
+      expect(
+        jumpHostIconWidget.color,
+        Theme.of(tester.element(jumpHostIcon)).colorScheme.surface,
+      );
+
       final titleLeft = tester.getTopLeft(find.text('Terminal test host')).dx;
-      expect(
-        tester.getCenter(find.byIcon(Icons.check_circle_outline)).dx,
-        lessThan(titleLeft),
-      );
-      expect(
-        tester.getCenter(find.byIcon(Icons.alt_route)).dx,
-        lessThan(titleLeft),
-      );
+      expect(titleLeft - connectedRect.left, lessThan(40));
     });
 
     testWidgets(
@@ -6136,6 +6210,77 @@ void main() {
 
         expect(find.text('checkout'), findsOneWidget);
         expect(completionService.completeInvocations, isEmpty);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'keeps suggestions visible while refreshing the latest typed prefix',
+      (tester) async {
+        final completionService = _TestShellCompletionService(
+          cachedSuggestions: const <ShellCompletionSuggestion>[
+            ShellCompletionSuggestion(
+              label: 'checkout',
+              replacement: 'checkout',
+              replacementStart: 4,
+              replacementEnd: 6,
+              kind: ShellCompletionSuggestionKind.history,
+              commitSuffix: ' ',
+            ),
+          ],
+          completionSuggestions:
+              const <String, List<ShellCompletionSuggestion>>{
+                'che': <ShellCompletionSuggestion>[
+                  ShellCompletionSuggestion(
+                    label: 'cherry-pick',
+                    replacement: 'cherry-pick',
+                    replacementStart: 4,
+                    replacementEnd: 7,
+                    kind: ShellCompletionSuggestionKind.history,
+                    commitSuffix: ' ',
+                  ),
+                ],
+              },
+        );
+
+        session.terminal!.write('root@host ~ % git c');
+        await pumpScreen(tester, shellCompletionService: completionService);
+
+        session.terminal!.textInput('h');
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('checkout'), findsOneWidget);
+
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump();
+
+        expect(
+          completionService.completeInvocations.map(
+            (invocation) => invocation.token,
+          ),
+          ['ch'],
+        );
+        expect(find.text('checkout'), findsOneWidget);
+
+        session.terminal!.textInput('e');
+        await tester.pump();
+
+        // Keep the still-valid cached row visible while the latest prefix is
+        // debounced and resolved instead of flashing the popup away.
+        expect(find.text('checkout'), findsOneWidget);
+
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump();
+
+        expect(
+          completionService.completeInvocations.map(
+            (invocation) => invocation.token,
+          ),
+          ['ch', 'che'],
+        );
+        expect(find.text('checkout'), findsNothing);
+        expect(find.text('cherry-pick'), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );

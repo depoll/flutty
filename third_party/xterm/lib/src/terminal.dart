@@ -228,6 +228,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   bool _cursorKeysMode = false;
 
+  bool _ansiMode = true;
+
   bool _reverseDisplayMode = false;
 
   bool _originMode = false;
@@ -275,6 +277,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   bool get cursorKeysMode => _cursorKeysMode;
+
+  @override
+  bool get ansiMode => _ansiMode;
 
   @override
   bool get reverseDisplayMode => _reverseDisplayMode;
@@ -627,26 +632,32 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       }
       _pendingKittyPlaceholder = null;
     }
+    _PendingKittyPlaceholder? placeholderToBind;
     if (char == kittyGraphicsPlaceholderCodePoint) {
+      final line = _buffer.currentLine;
       final pending = _PendingKittyPlaceholder(
         foreground: _buffer.terminal.cursor.foreground,
         underlineColor: _buffer.terminal.cursor.underlineColor,
-        anchor: _buffer.currentLine.createAnchor(_buffer.cursorX),
+        anchor: line.createAnchor(_buffer.cursorX),
         previous: _lastKittyPlaceholder,
       );
-      _buffer.graphics.addPlaceholder(
-        imageId: pending.imageId,
-        imageIdBitWidth: pending.imageIdBitWidth,
-        anchor: pending.anchor,
-        row: pending.row,
-        col: pending.col,
-      );
-      pending.bind(_buffer.graphics.placeholders.last);
+      placeholderToBind = pending;
       _pendingKittyPlaceholder = pending;
       _lastKittyPlaceholder = pending;
     }
     _precedingCodepoint = char;
     _buffer.writeChar(char);
+    if (placeholderToBind != null) {
+      placeholderToBind.bind(
+        _buffer.graphics.addPlaceholder(
+          imageId: placeholderToBind.imageId,
+          imageIdBitWidth: placeholderToBind.imageIdBitWidth,
+          anchor: placeholderToBind.anchor,
+          row: placeholderToBind.row,
+          col: placeholderToBind.col,
+        ),
+      );
+    }
   }
 
   /* SBC */
@@ -1106,6 +1117,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   @override
+  void setAnsiMode(bool enabled) {
+    _ansiMode = enabled;
+  }
+
+  @override
   void setReverseDisplayMode(bool enabled) {
     _reverseDisplayMode = enabled;
   }
@@ -1415,6 +1431,47 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       if (key != 'm' && key != 'q') return false;
     }
     return true;
+  }
+
+  /// Atomically submits a complete graphics command when no multipart Kitty
+  /// transmission is active.
+  ///
+  /// Returns false instead of corrupting the pending command when another
+  /// protocol attempts to interleave a complete image.
+  bool submitGraphicsCommand(Map<String, String> args, List<int> data) {
+    if (_graphicsActive) return false;
+    graphicsCommandStart(args);
+    graphicsDataChunk(data);
+    graphicsCommandEnd();
+    return true;
+  }
+
+  /// Fits an encoded image inside a terminal-cell bounding box while
+  /// preserving its decoded pixel aspect ratio as closely as cell rounding
+  /// permits.
+  ({int columns, int rows})? fitGraphicsInCellBounds(
+    Uint8List data, {
+    required int maxColumns,
+    required int maxRows,
+  }) {
+    if (maxColumns <= 0 || maxRows <= 0) return null;
+    final dimensions = _graphicsPayloadDimensions(const {'f': '98'}, data);
+    if (dimensions == null || dimensions.width <= 0 || dimensions.height <= 0) {
+      return null;
+    }
+    final rowsPerColumn = dimensions.height /
+        dimensions.width *
+        _buffer.graphics.cellPixelAspectRatio;
+    if (!rowsPerColumn.isFinite || rowsPerColumn <= 0) return null;
+
+    var columns = maxColumns;
+    var rows = (columns * rowsPerColumn).ceil();
+    if (rows > maxRows) {
+      rows = maxRows;
+      columns = (rows / rowsPerColumn).floor().clamp(1, maxColumns);
+      rows = (columns * rowsPerColumn).ceil().clamp(1, maxRows);
+    }
+    return (columns: columns.clamp(1, maxColumns), rows: rows);
   }
 
   @override
@@ -3049,11 +3106,12 @@ class _PendingKittyPlaceholder {
     _diacriticCount += 1;
     final placeholder = _placeholder;
     if (placeholder != null) {
-      placeholder
-        ..imageId = imageId
-        ..imageIdBitWidth = imageIdBitWidth
-        ..row = row
-        ..col = col;
+      placeholder.updateMetadata(
+        imageId: imageId,
+        imageIdBitWidth: imageIdBitWidth,
+        row: row,
+        col: col,
+      );
     }
   }
 }

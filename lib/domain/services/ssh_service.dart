@@ -33,8 +33,12 @@ import 'port_forward_browser_service.dart';
 import 'settings_service.dart';
 import 'ssh_exec_queue.dart';
 import 'telemetry_service.dart';
+import 'terminal_command_mark_tracker.dart';
 import 'terminal_hyperlink_tracker.dart';
+import 'terminal_iterm2_control.dart';
+import 'terminal_iterm2_image.dart';
 import 'terminal_notification.dart';
+import 'terminal_osc_color_overrides.dart';
 import 'terminal_preview_graphics.dart';
 import 'wifi_network_service.dart';
 import 'windows_remote_powershell.dart';
@@ -1112,6 +1116,77 @@ Uri? parseTerminalWorkingDirectoryUri(List<String> args) {
   }
 
   return uri;
+}
+
+/// Parses working-directory metadata used by OSC 9;9, OSC 633, and OSC 1337.
+///
+/// These protocols commonly send a native path instead of OSC 7's file URI.
+/// Absolute POSIX and Windows paths are normalized to file URIs so downstream
+/// session discovery can use one representation on every platform.
+Uri? parseTerminalWorkingDirectoryValue(String value, {String? remoteHost}) {
+  final candidate = value.trim();
+  if (candidate.isEmpty || candidate.length > 4096) {
+    return null;
+  }
+
+  final uri = Uri.tryParse(candidate);
+  if (uri != null && uri.hasScheme && uri.scheme.toLowerCase() == 'file') {
+    return uri;
+  }
+
+  final isWindowsPath = RegExp(r'^[A-Za-z]:[\\/]').hasMatch(candidate);
+  if (!candidate.startsWith('/') && !isWindowsPath) {
+    return null;
+  }
+  final pathUri = Uri.file(candidate, windows: isWindowsPath);
+  final host = remoteHost?.trim() ?? '';
+  if (host.isEmpty) {
+    return pathUri;
+  }
+  return pathUri.replace(host: host);
+}
+
+/// Extracts working-directory metadata from supported shell OSC extensions.
+Uri? parseTerminalShellWorkingDirectoryOsc(
+  String code,
+  List<String> args, {
+  String? remoteHost,
+}) {
+  String? value;
+  if (code == '9' && args.firstOrNull?.trim() == '9' && args.length > 1) {
+    value = args.skip(1).join(';');
+  } else if (code == '633' && args.firstOrNull == 'P') {
+    final propertyIndex = args.indexWhere((arg) => arg.startsWith('Cwd='));
+    if (propertyIndex >= 0) {
+      value = args[propertyIndex].substring('Cwd='.length);
+    }
+  } else if (code == '1337' &&
+      (args.firstOrNull?.startsWith('CurrentDir=') ?? false)) {
+    value = [
+      args.first.substring('CurrentDir='.length),
+      ...args.skip(1),
+    ].join(';');
+  }
+  return value == null
+      ? null
+      : parseTerminalWorkingDirectoryValue(value, remoteHost: remoteHost);
+}
+
+/// Extracts the hostname from iTerm2's `OSC 1337;RemoteHost=user@host`.
+String? parseTerminalReportedRemoteHost(List<String> args) {
+  if (args.isEmpty || !args.first.startsWith('RemoteHost=')) {
+    return null;
+  }
+  final candidate = [
+    args.first.substring('RemoteHost='.length),
+    ...args.skip(1),
+  ].join(';').trim();
+  if (candidate.isEmpty || candidate.length > 1024) {
+    return null;
+  }
+  final uri = Uri.tryParse('ssh://$candidate');
+  final host = uri?.host.trim() ?? '';
+  return host.isEmpty ? null : host;
 }
 
 /// Resolves the decoded directory path from a terminal working-directory URI.
@@ -3587,7 +3662,9 @@ class SshSession {
 
   late final _SshSessionRuntime _runtime = _SshSessionRuntime(this);
 
+  TerminalThemeData? _configuredTerminalTheme;
   TerminalThemeData? _terminalTheme;
+  final _terminalColorOverrides = TerminalOscColorOverrides();
 
   /// The active terminal theme used to answer remote OSC color queries.
   TerminalThemeData? get terminalTheme => _terminalTheme;
@@ -3611,6 +3688,12 @@ class SshSession {
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
 
+  /// Tracks semantic command locations for previous-command navigation.
+  final terminalCommandMarkTracker = TerminalCommandMarkTracker();
+
+  /// Number of semantic command marks retained in terminal scrollback.
+  int get terminalCommandMarkCount => terminalCommandMarkTracker.markCount;
+
   final _previewListeners = <VoidCallback>{};
   final _metadataListeners = <VoidCallback>{};
   final _connectionHealthFailures =
@@ -3624,6 +3707,7 @@ class SshSession {
   String? _windowTitle;
   String? _iconName;
   Uri? _workingDirectory;
+  String? _terminalReportedRemoteHost;
   TerminalShellStatus? _shellStatus;
   int? _lastExitCode;
   TerminalProgress? _terminalProgress;
@@ -3682,10 +3766,11 @@ class SshSession {
   /// The latest terminal icon name emitted by the remote session.
   String? get iconName => _iconName;
 
-  /// The latest working-directory URI emitted through OSC 7.
+  /// The latest working-directory URI emitted through OSC 7, OSC 9;9,
+  /// OSC 633, or OSC 1337.
   Uri? get workingDirectory => _workingDirectory;
 
-  /// The latest shell integration status emitted through OSC 133.
+  /// The latest shell integration status emitted through OSC 133 or OSC 633.
   TerminalShellStatus? get shellStatus => _shellStatus;
 
   /// The latest command exit code emitted through shell integration.
@@ -3765,13 +3850,24 @@ class SshSession {
   ///
   /// Returns `true` when the theme changed enough to repaint previews.
   bool setTerminalTheme(TerminalThemeData? theme) {
-    if (_sameTerminalTheme(_terminalTheme, theme)) {
-      _terminalTheme = theme;
+    _configuredTerminalTheme = theme;
+    final effectiveTheme = theme == null
+        ? null
+        : _terminalColorOverrides.applyTo(theme);
+    if (_sameTerminalTheme(_terminalTheme, effectiveTheme)) {
+      _terminalTheme = effectiveTheme;
       return false;
     }
-    _terminalTheme = theme;
+    _terminalTheme = effectiveTheme;
     _notifyPreviewChanged();
     return true;
+  }
+
+  void _recomputeTerminalThemeAfterRemoteColorChange() {
+    final configuredTheme = _configuredTerminalTheme;
+    _terminalTheme = configuredTheme == null
+        ? null
+        : _terminalColorOverrides.applyTo(configuredTheme);
   }
 
   /// Ensure a [Terminal] exists and is wired to the shell streams.
@@ -3990,6 +4086,34 @@ class SshSession {
   /// Writes text to the currently active shell channel.
   void writeToShell(String data) => _runtime.writeToShell(data);
 
+  /// Records a successfully displayed Kitty notification.
+  void markTerminalNotificationPresented(TerminalNotificationRequest request) {
+    _terminalNotificationParser.markPresented(request.identifier);
+    if (request.reportsClose && _runtime.hasShell) {
+      _runtime.writeToShell(
+        buildKittyNotificationCloseReport(request.identifier, untracked: true),
+      );
+    }
+  }
+
+  /// Records an identified notification as closed without a protocol report.
+  void markTerminalNotificationClosed(String? identifier) =>
+      _terminalNotificationParser.markClosed(identifier);
+
+  /// Records a local notification tap and emits the requested activation report.
+  ///
+  /// A requested close report is already emitted as `untracked` when native
+  /// presentation succeeds because platform dismissal callbacks are not
+  /// portable. A tap must not later claim that same close was tracked.
+  void handleTerminalNotificationActivated(
+    String? identifier, {
+    required bool reportsActivation,
+  }) {
+    _terminalNotificationParser.markClosed(identifier);
+    if (!reportsActivation || !_runtime.hasShell) return;
+    _runtime.writeToShell(buildKittyNotificationActivationReport(identifier));
+  }
+
   /// Resizes the currently active shell channel.
   void resizeShell(int width, int height, int pixelWidth, int pixelHeight) =>
       _runtime.resizeShell(width, height, pixelWidth, pixelHeight);
@@ -4005,12 +4129,19 @@ class SshSession {
         _shellStatus != null ||
         _lastExitCode != null ||
         _terminalProgress != null ||
-        _windowTitle != null;
+        terminalCommandMarkTracker.markCount > 0 ||
+        _windowTitle != null ||
+        _terminalColorOverrides.isNotEmpty;
     final hadPreview =
         _terminalPreview != null || _terminalPreviewSnapshot != null;
     terminalHyperlinkTracker.reset(keepTerminalReference: false);
+    terminalCommandMarkTracker.reset(keepTerminalReference: false);
+    _terminalNotificationParser.reset();
+    final hadRemoteColors = _terminalColorOverrides.clear();
+    _recomputeTerminalThemeAfterRemoteColorChange();
     _iconName = null;
     _workingDirectory = null;
+    _terminalReportedRemoteHost = null;
     _shellStatus = null;
     _lastExitCode = null;
     _terminalProgress = null;
@@ -4018,7 +4149,7 @@ class SshSession {
     _terminalPreviewSnapshot = null;
     _windowTitle = null;
     _lastVolunteeredThemeDefaultsAt = null;
-    if (hadMetadata) {
+    if (hadMetadata || hadRemoteColors) {
       _notifyMetadataChanged();
     } else if (hadPreview) {
       _notifyPreviewChanged();
@@ -4078,7 +4209,14 @@ class SshSession {
   }
 
   void _handlePrivateOsc(String code, List<String> args) {
-    if (code == '10' || code == '11' || code == '12' || code == '4') {
+    final hasThemeQuery = args.any((arg) => arg.trim() == '?');
+    if (hasThemeQuery &&
+        (code == '4' ||
+            code == '10' ||
+            code == '11' ||
+            code == '12' ||
+            code == '17' ||
+            code == '19')) {
       DiagnosticsLogService.instance.debug(
         'terminal.osc',
         'theme_query',
@@ -4090,10 +4228,23 @@ class SshSession {
         },
       );
     }
-    final themeOscResponse = terminalTheme == null
+
+    final colorMutation = _terminalColorOverrides.handle(code, args);
+    if (colorMutation.changed) {
+      _recomputeTerminalThemeAfterRemoteColorChange();
+      DiagnosticsLogService.instance.debug(
+        'terminal.osc',
+        'palette_changed',
+        fields: {'connectionId': connectionId, 'code': code},
+      );
+      _notifyMetadataChanged();
+    }
+
+    final effectiveTheme = terminalTheme;
+    final themeOscResponse = effectiveTheme == null
         ? null
         : buildTerminalThemeOscResponse(
-            theme: terminalTheme!,
+            theme: effectiveTheme,
             code: code,
             args: args,
           );
@@ -4106,7 +4257,7 @@ class SshSession {
           fields: {
             'connectionId': connectionId,
             'code': code,
-            'themeId': terminalTheme?.id,
+            'themeId': effectiveTheme?.id,
           },
         );
       } else {
@@ -4115,16 +4266,9 @@ class SshSession {
         final volunteersThemeDefaults =
             win32InputMode && code == '4' && _shouldVolunteerThemeDefaults();
         if (volunteersThemeDefaults) {
-          // Windows ConPTY consumes OSC 10/11 queries without forwarding or
-          // answering them, so an app interrogating terminal colors (visible
-          // through its OSC 4 palette queries, which do pass through) never
-          // learns the default foreground/background. Volunteer those reports
-          // alongside the palette answer while the app is parsing replies.
-          payload += buildTerminalThemeDefaultColorReports(terminalTheme!);
+          payload += buildTerminalThemeDefaultColorReports(effectiveTheme!);
         }
         if (win32InputMode) {
-          // ConPTY strips raw OSC replies from the input stream; re-encode
-          // them as win32-input-mode key events so they reach the app.
           payload = encodeTerminalResponsesForWin32InputMode(payload);
         }
         shell.write(utf8.encode(payload));
@@ -4134,37 +4278,85 @@ class SshSession {
           fields: {
             'connectionId': connectionId,
             'code': code,
-            'themeId': terminalTheme!.id,
+            'themeId': effectiveTheme!.id,
             'responseBytes': payload.length,
             'win32InputMode': win32InputMode,
             'volunteeredThemeDefaults': volunteersThemeDefaults,
           },
         );
       }
-      return;
     }
+    if (themeOscResponse != null || colorMutation.handled) return;
 
     terminalHyperlinkTracker.handlePrivateOsc(code, args);
+    final commandMarkAdded = terminalCommandMarkTracker.handlePrivateOsc(
+      code,
+      args,
+    );
     if (code == '8') {
       return;
     }
 
     if (code == '7') {
-      final nextWorkingDirectory = parseTerminalWorkingDirectoryUri(args);
-      if (nextWorkingDirectory?.toString() == _workingDirectory?.toString()) {
+      _setWorkingDirectory(
+        parseTerminalWorkingDirectoryUri(args),
+        allowClear: true,
+      );
+      return;
+    }
+
+    if (code == '1337') {
+      final metrics = _runtime.terminalWindowMetrics;
+      final cellPixelWidth = metrics == null || metrics.columns <= 0
+          ? null
+          : metrics.pixelWidth / metrics.columns;
+      final cellPixelHeight = metrics == null || metrics.rows <= 0
+          ? null
+          : metrics.pixelHeight / metrics.rows;
+      final cellSizeResponse = buildIterm2ReportCellSizeResponse(
+        args,
+        cellWidth: cellPixelWidth,
+        cellHeight: cellPixelHeight,
+      );
+      if (cellSizeResponse != null) {
+        if (_runtime.hasShell) _runtime.writeToShell(cellSizeResponse);
         return;
       }
-      _workingDirectory = nextWorkingDirectory;
-      DiagnosticsLogService.instance.debug(
-        'ssh.metadata',
-        'working_directory_changed',
-        fields: {
-          'connectionId': connectionId,
-          'hasWorkingDirectory': nextWorkingDirectory != null,
-        },
+      final attentionRequest = parseIterm2AttentionRequest(args);
+      if (attentionRequest != null) {
+        if (!_terminalNotifications.isClosed) {
+          _terminalNotifications.add(attentionRequest);
+        }
+        return;
+      }
+      if (args.firstOrNull == 'SetMark') {
+        if (commandMarkAdded) _notifyMetadataChanged();
+        return;
+      }
+      final terminal = _runtime.terminal;
+      if (terminal != null &&
+          handleIterm2InlineImageOsc(
+            terminal,
+            args,
+            cellPixelWidth: cellPixelWidth,
+            cellPixelHeight: cellPixelHeight,
+          )) {
+        return;
+      }
+      final nextRemoteHost = parseTerminalReportedRemoteHost(args);
+      if (nextRemoteHost != null) {
+        _terminalReportedRemoteHost = nextRemoteHost;
+        return;
+      }
+      final nextWorkingDirectory = parseTerminalShellWorkingDirectoryOsc(
+        code,
+        args,
+        remoteHost: _terminalReportedRemoteHost,
       );
-      _notifyMetadataChanged();
-      return;
+      if (nextWorkingDirectory != null) {
+        _setWorkingDirectory(nextWorkingDirectory);
+        return;
+      }
     }
 
     if (code == ClipboardSharingService.oscCode) {
@@ -4172,28 +4364,12 @@ class SshSession {
       return;
     }
 
-    if (code == '133') {
-      final nextShellState = applyTerminalShellIntegrationOsc(
+    if (code == '133' || code == '633') {
+      _handleShellIntegrationOsc(
+        code,
         args,
-        previousStatus: _shellStatus,
-        previousExitCode: _lastExitCode,
+        commandMarkAdded: commandMarkAdded,
       );
-      if (nextShellState.status == _shellStatus &&
-          nextShellState.lastExitCode == _lastExitCode) {
-        return;
-      }
-      _shellStatus = nextShellState.status;
-      _lastExitCode = nextShellState.lastExitCode;
-      DiagnosticsLogService.instance.debug(
-        'ssh.metadata',
-        'shell_status_changed',
-        fields: {
-          'connectionId': connectionId,
-          'shellStatus': nextShellState.status,
-          'lastExitCode': nextShellState.lastExitCode,
-        },
-      );
-      _notifyMetadataChanged();
       return;
     }
 
@@ -4220,16 +4396,108 @@ class SshSession {
         }
         return;
       }
+      if (args.firstOrNull?.trim() == '9') {
+        _setWorkingDirectory(
+          parseTerminalShellWorkingDirectoryOsc(
+            code,
+            args,
+            remoteHost: _terminalReportedRemoteHost,
+          ),
+        );
+        return;
+      }
       _handleTerminalNotificationOsc(code, args);
       return;
     }
 
-    if (code == '99' || code == '777') {
+    if (code == '99') {
+      final capabilityResponse = buildKittyNotificationCapabilityResponse(args);
+      if (capabilityResponse != null) {
+        if (_runtime.hasShell) _runtime.writeToShell(capabilityResponse);
+        return;
+      }
+      final aliveResponse = buildKittyNotificationAliveResponse(
+        args,
+        _terminalNotificationParser.activeIdentifiers,
+      );
+      if (aliveResponse != null) {
+        if (_runtime.hasShell) _runtime.writeToShell(aliveResponse);
+        return;
+      }
+      _handleTerminalNotificationOsc(code, args);
+      return;
+    }
+
+    if (code == '777') {
       _handleTerminalNotificationOsc(code, args);
       return;
     }
 
     _logUnhandledPrivateOsc(code, args);
+  }
+
+  void _handleShellIntegrationOsc(
+    String code,
+    List<String> args, {
+    required bool commandMarkAdded,
+  }) {
+    final nextShellState = applyTerminalShellIntegrationOsc(
+      args,
+      previousStatus: _shellStatus,
+      previousExitCode: _lastExitCode,
+    );
+    final nextWorkingDirectory = parseTerminalShellWorkingDirectoryOsc(
+      code,
+      args,
+      remoteHost: _terminalReportedRemoteHost,
+    );
+    final shellStateChanged =
+        nextShellState.status != _shellStatus ||
+        nextShellState.lastExitCode != _lastExitCode;
+    final workingDirectoryChanged =
+        nextWorkingDirectory != null &&
+        nextWorkingDirectory.toString() != _workingDirectory?.toString();
+    if (!shellStateChanged && !workingDirectoryChanged && !commandMarkAdded) {
+      return;
+    }
+    _shellStatus = nextShellState.status;
+    _lastExitCode = nextShellState.lastExitCode;
+    if (workingDirectoryChanged) {
+      _workingDirectory = nextWorkingDirectory;
+    }
+    DiagnosticsLogService.instance.debug(
+      'ssh.metadata',
+      'shell_integration_changed',
+      fields: {
+        'connectionId': connectionId,
+        'protocol': code == '633' ? 'vscode' : 'finalterm',
+        'shellStatus': nextShellState.status,
+        'lastExitCode': nextShellState.lastExitCode,
+        'workingDirectoryChanged': workingDirectoryChanged,
+      },
+    );
+    _notifyMetadataChanged();
+  }
+
+  bool _setWorkingDirectory(
+    Uri? nextWorkingDirectory, {
+    bool allowClear = false,
+  }) {
+    if ((nextWorkingDirectory == null && !allowClear) ||
+        nextWorkingDirectory?.toString() == _workingDirectory?.toString()) {
+      return false;
+    }
+    _workingDirectory = nextWorkingDirectory;
+    DiagnosticsLogService.instance.debug(
+      'ssh.metadata',
+      'working_directory_changed',
+      fields: {
+        'connectionId': connectionId,
+        'hasWorkingDirectory': nextWorkingDirectory != null,
+      },
+    );
+    _notifyMetadataChanged();
+    return true;
   }
 
   void _handleTerminalNotificationOsc(String code, List<String> args) {
@@ -7145,6 +7413,7 @@ final connectionAttemptProvider =
 /// Notifier for active SSH sessions state.
 class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   static const _previewStateRefreshInterval = Duration(milliseconds: 150);
+  static const _maxTerminalNotificationExpiries = 256;
 
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
@@ -7157,6 +7426,15 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   _connectionHealthFailureSubscriptions = {};
   final Map<int, StreamSubscription<TerminalNotificationRequest>>
   _terminalNotificationSubscriptions = {};
+  final Map<
+    ({int connectionId, int notificationId}),
+    _TerminalNotificationExpiry
+  >
+  _terminalNotificationExpiries = {};
+  final Map<({int connectionId, int notificationId}), int>
+  _terminalNotificationGenerations = {};
+  final Map<int, _TerminalNotificationQueue> _terminalNotificationQueues = {};
+  int _nextTerminalNotificationGeneration = 0;
   final Map<int, StreamSubscription<void>> _portForwardChangeSubscriptions = {};
   final Map<int, Set<RemoteTcpListenerKey>>
   _automaticForwardDesiredExclusionsByHost = {};
@@ -7187,6 +7465,14 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         unawaited(subscription.cancel());
       }
       _terminalNotificationSubscriptions.clear();
+      for (final entry in _terminalNotificationExpiries.entries.toList()) {
+        _expireTerminalNotification(entry.key, entry.value);
+      }
+      _terminalNotificationGenerations.clear();
+      for (final queue in _terminalNotificationQueues.values) {
+        queue.pending.clear();
+      }
+      _terminalNotificationQueues.clear();
       for (final subscription in _portForwardChangeSubscriptions.values) {
         unawaited(subscription.cancel());
       }
@@ -7483,6 +7769,51 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Get a session.
   SshSession? getSession(int connectionId) =>
       _sshService.getSession(connectionId);
+
+  /// Number of pending terminal notification expiration timers.
+  @visibleForTesting
+  int get debugTerminalNotificationExpiryTimerCount =>
+      _terminalNotificationExpiries.length;
+
+  /// Number of native notification operations with current generations.
+  @visibleForTesting
+  int get debugTerminalNotificationGenerationCount =>
+      _terminalNotificationGenerations.length;
+
+  /// Maximum retained terminal notification expiration records.
+  @visibleForTesting
+  int get debugTerminalNotificationExpiryLimit =>
+      _maxTerminalNotificationExpiries;
+
+  /// Maximum retained native notification operations per connection.
+  @visibleForTesting
+  int get debugTerminalNotificationQueueLimit =>
+      _TerminalNotificationQueue.maxPending;
+
+  /// Number of retained native notification operations for a connection.
+  @visibleForTesting
+  int debugTerminalNotificationQueueLength(int connectionId) =>
+      _terminalNotificationQueues[connectionId]?.pending.length ?? 0;
+
+  /// Cancels expiration and reports a native terminal-notification tap.
+  void handleTerminalNotificationTap(TerminalNotificationPayload payload) {
+    final notificationId =
+        payload.platformNotificationId ??
+        buildTerminalNotificationId(
+          payload.connectionId,
+          identifier: payload.notificationIdentifier,
+        );
+    final expiryKey = (
+      connectionId: payload.connectionId,
+      notificationId: notificationId,
+    );
+    _terminalNotificationExpiries.remove(expiryKey)?.timer.cancel();
+    _terminalNotificationGenerations.remove(expiryKey);
+    getSession(payload.connectionId)?.handleTerminalNotificationActivated(
+      payload.notificationIdentifier,
+      reportsActivation: payload.reportsActivation,
+    );
+  }
 
   /// Active tunnels owned by any connected session for [hostId].
   List<ActiveTunnelInfo> getActiveTunnelsForHost(int hostId) =>
@@ -8028,9 +8359,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     _terminalNotificationSubscriptions[session.connectionId] = session
         .terminalNotifications
-        .listen(
-          (request) => unawaited(_showTerminalNotification(session, request)),
-        );
+        .listen((request) => _queueTerminalNotification(session, request));
     final existingPortForwardSubscription = _portForwardChangeSubscriptions
         .remove(session.connectionId);
     if (existingPortForwardSubscription != null) {
@@ -8041,25 +8370,166 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         .listen((_) => _handleSessionPortForwardsChanged(session.hostId));
   }
 
+  void _queueTerminalNotification(
+    SshSession session,
+    TerminalNotificationRequest request,
+  ) {
+    final connectionId = session.connectionId;
+    final queue = _terminalNotificationQueues.putIfAbsent(
+      connectionId,
+      _TerminalNotificationQueue.new,
+    );
+    final shouldStart = !queue.isProcessing;
+    queue
+      ..add(request)
+      ..isProcessing = true;
+    if (!shouldStart) return;
+    unawaited(_drainTerminalNotificationQueue(session, queue));
+  }
+
+  Future<void> _drainTerminalNotificationQueue(
+    SshSession session,
+    _TerminalNotificationQueue queue,
+  ) async {
+    final connectionId = session.connectionId;
+    while (ref.mounted &&
+        identical(_terminalNotificationQueues[connectionId], queue) &&
+        queue.pending.isNotEmpty) {
+      final request = queue.pending.removeAt(0);
+      try {
+        await _showTerminalNotification(session, request);
+      } on Object catch (error, stackTrace) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'ssh_service',
+            context: ErrorDescription(
+              'while presenting a serialized terminal notification',
+            ),
+          ),
+        );
+      }
+    }
+    queue.isProcessing = false;
+    if (identical(_terminalNotificationQueues[connectionId], queue) &&
+        queue.pending.isEmpty) {
+      _terminalNotificationQueues.remove(connectionId);
+    }
+  }
+
   Future<void> _showTerminalNotification(
     SshSession session,
     TerminalNotificationRequest request,
   ) async {
     if (!ref.mounted) return;
-    if (!ref.read(terminalNotificationsNotifierProvider)) return;
+    if (request.action == TerminalNotificationAction.show &&
+        !ref.read(terminalNotificationsNotifierProvider)) {
+      return;
+    }
+    final notificationService = ref.read(localNotificationServiceProvider);
+    final notificationId = buildTerminalNotificationId(
+      session.connectionId,
+      identifier: request.platformIdentifier,
+    );
+    final expiryKey = (
+      connectionId: session.connectionId,
+      notificationId: notificationId,
+    );
+    final generation = ++_nextTerminalNotificationGeneration;
+    _terminalNotificationGenerations[expiryKey] = generation;
+    _terminalNotificationExpiries.remove(expiryKey)?.timer.cancel();
+    if (request.action == TerminalNotificationAction.close) {
+      try {
+        await notificationService.clearTerminalNotification(notificationId);
+      } finally {
+        _removeTerminalNotificationGeneration(expiryKey, generation);
+      }
+      return;
+    }
     final title = request.title ?? await _resolveSessionLabel(session);
-    if (!ref.mounted) return;
-    await ref
-        .read(localNotificationServiceProvider)
-        .showTerminalNotification(
-          notificationId: _terminalNotificationId(session.connectionId),
-          title: title,
-          body: request.body,
-          payload: TerminalNotificationPayload(
-            hostId: session.hostId,
-            connectionId: session.connectionId,
-          ),
-        );
+    if (!ref.mounted ||
+        _terminalNotificationGenerations[expiryKey] != generation) {
+      return;
+    }
+    final bool didShow;
+    try {
+      didShow = await notificationService.showTerminalNotification(
+        notificationId: notificationId,
+        title: title,
+        body: request.body,
+        urgency: request.urgency,
+        sound: request.sound,
+        timeout: request.timeout,
+        payload: TerminalNotificationPayload(
+          hostId: session.hostId,
+          connectionId: session.connectionId,
+          platformNotificationId: notificationId,
+          notificationIdentifier: request.identifier,
+          reportsActivation: request.reportsActivation,
+          focusOnActivation: request.focusOnActivation,
+        ),
+      );
+    } on Object {
+      _removeTerminalNotificationGeneration(expiryKey, generation);
+      rethrow;
+    }
+    if (_terminalNotificationGenerations[expiryKey] != generation) {
+      if (didShow) {
+        await notificationService.clearTerminalNotification(notificationId);
+      }
+      return;
+    }
+    if (!didShow) {
+      _removeTerminalNotificationGeneration(expiryKey, generation);
+      return;
+    }
+    session.markTerminalNotificationPresented(request);
+    final timeout = request.timeout;
+    if (timeout == null) {
+      _removeTerminalNotificationGeneration(expiryKey, generation);
+      return;
+    }
+    if (_terminalNotificationExpiries.length >=
+        _maxTerminalNotificationExpiries) {
+      final oldestKey = _terminalNotificationExpiries.keys.first;
+      final oldest = _terminalNotificationExpiries[oldestKey]!;
+      _expireTerminalNotification(oldestKey, oldest);
+    }
+    late final _TerminalNotificationExpiry expiry;
+    expiry = _TerminalNotificationExpiry(
+      timer: Timer(
+        timeout,
+        () => _expireTerminalNotification(expiryKey, expiry),
+      ),
+      session: session,
+      notificationService: notificationService,
+      identifier: request.identifier,
+    );
+    _terminalNotificationExpiries[expiryKey] = expiry;
+  }
+
+  void _expireTerminalNotification(
+    ({int connectionId, int notificationId}) key,
+    _TerminalNotificationExpiry expiry,
+  ) {
+    if (!identical(_terminalNotificationExpiries[key], expiry)) return;
+    _terminalNotificationExpiries.remove(key);
+    expiry.timer.cancel();
+    _terminalNotificationGenerations.remove(key);
+    expiry.session.markTerminalNotificationClosed(expiry.identifier);
+    unawaited(
+      expiry.notificationService.clearTerminalNotification(key.notificationId),
+    );
+  }
+
+  void _removeTerminalNotificationGeneration(
+    ({int connectionId, int notificationId}) key,
+    int generation,
+  ) {
+    if (_terminalNotificationGenerations[key] == generation) {
+      _terminalNotificationGenerations.remove(key);
+    }
   }
 
   Future<String> _resolveSessionLabel(SshSession session) async {
@@ -8080,9 +8550,6 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     return 'Terminal';
   }
 
-  int _terminalNotificationId(int connectionId) =>
-      Object.hash('terminal-notification', connectionId) & 0x7fffffff;
-
   void _detachSessionListeners(int connectionId, {SshSession? session}) {
     (session ?? _sshService.getSession(connectionId))?.removePreviewListener(
       _schedulePreviewStateRefresh,
@@ -8099,6 +8566,16 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     final notificationSubscription = _terminalNotificationSubscriptions.remove(
       connectionId,
     );
+    final expiries = _terminalNotificationExpiries.entries
+        .where((entry) => entry.key.connectionId == connectionId)
+        .toList(growable: false);
+    for (final entry in expiries) {
+      _expireTerminalNotification(entry.key, entry.value);
+    }
+    _terminalNotificationGenerations.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
+    _terminalNotificationQueues.remove(connectionId)?.pending.clear();
     if (notificationSubscription != null) {
       unawaited(notificationSubscription.cancel());
     }
@@ -8438,5 +8915,37 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         .then((_) => _syncBackgroundStatus());
     _backgroundStatusSyncQueue = nextSync;
     return nextSync;
+  }
+}
+
+class _TerminalNotificationExpiry {
+  const _TerminalNotificationExpiry({
+    required this.timer,
+    required this.session,
+    required this.notificationService,
+    required this.identifier,
+  });
+
+  final Timer timer;
+  final SshSession session;
+  final LocalNotificationService notificationService;
+  final String? identifier;
+}
+
+class _TerminalNotificationQueue {
+  static const maxPending = 64;
+
+  final List<TerminalNotificationRequest> pending = [];
+  bool isProcessing = false;
+
+  void add(TerminalNotificationRequest request) {
+    final identity = request.platformIdentifier;
+    if (identity != null) {
+      pending.removeWhere((queued) => queued.platformIdentifier == identity);
+    }
+    if (pending.length >= maxPending) {
+      pending.removeAt(0);
+    }
+    pending.add(request);
   }
 }

@@ -75,12 +75,21 @@ window snapshot cannot be collected. An upgrade also waits for the outgoing
 helper's process to exit and only unlinks the socket inode it created, so a
 still-closing old helper cannot delete the replacement's rebound path. If that
 path does disappear, the live server republishes it instead of staying
-unreachable. Pi windows resume the JSONL file held open by their live process. If
-open-file metadata is unavailable, MonkeyMux resumes only when one window and one
-unused session match the working directory; ambiguous conversations launch fresh
-instead of risking a swap. `--session-dir`, environment, and global/project
-`settings.json` session directories are honored, while nested child-agent stores
-are excluded. The server inherits the environment from
+unreachable. Pi windows resolve an explicit `--session`, then a uniquely open
+JSONL file. Named sessions are matched against Pi's published terminal title
+(official builds use `π - <name> - <cwd>`), using the latest `session_info`
+record even when large image records appear earlier in the JSONL. This remains
+reliable when Pi creates the JSONL only after its first assistant response or
+several restored processes started at once. A validated exact identity is kept
+on the live window for later helper upgrades, including unnamed sessions on
+Windows where process arguments cannot recover it. MonkeyMux otherwise
+correlates a unique session-header creation time with the live process start
+and relaunches a matched session by its exact file path. A later unowned write in the same
+working directory marks that match ambiguous (including `/new` and `/resume`
+rotation), so it launches fresh rather than risking the wrong conversation. Plain
+working-directory fallback is used only for one window and one unused session. `--session-dir`,
+environment, and global/project `settings.json` session directories are honored,
+while nested child-agent stores are excluded. The server inherits the environment from
 the shell that launched it exactly, so profile-managed values such as `PATH`
 and tool-specific variables remain user-owned. PTY windows inherit that
 environment and add terminal defaults such as `TERM=xterm-256color` and
@@ -146,12 +155,14 @@ comparison: it is compiled into the binary, reported in the server `hello`
 frame, and checked by `attach` before it restarts anything.
 `monkeymux-version.sh` derives the packaging version from that same constant so
 `assets/monkeymux/manifest.json` always describes the binary it ships. Bump the
-constant and re-run `scripts/build_monkeymux_assets.sh`; never edit the version
-in the script or the manifest by hand. If the manifest ever claims a version the
-binary does not report, MonkeySSH offers an "update and restore" that `attach`
-then skips as a no-op, so the prompt returns on every connect without ever
-applying. `flutter test test/domain/services/monkeymux_assets_test.dart` and
-`go test ./remote/monkeymux/` both fail when they drift.
+constant and run `scripts/ensure_monkeymux_assets.sh`; never edit the version in
+the generated manifest by hand. The manifest and compressed binaries are
+ignored build outputs. CI builds them once from the checked-out source and
+fans the resulting artifact out to every Flutter package job. If the manifest
+ever claims a version the binary does not report, MonkeySSH offers an "update
+and restore" that `attach` then skips as a no-op, so the prompt returns on every
+connect without ever applying. The targeted Flutter asset test and the
+MonkeyMux Go tests both fail when generated assets drift.
 
 The target matrix covers Linux and macOS on amd64 and arm64, plus Windows on
 amd64 and arm64. On Windows the foreground path is backed by a ConPTY

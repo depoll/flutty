@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
@@ -74,29 +75,38 @@ String? buildTerminalThemeOscResponse({
     case '4':
       return _buildAnsiPaletteOscResponse(theme, args);
     case '10':
-      return _buildSingleColorOscResponse(code, theme.foreground, args);
     case '11':
-      return _buildSingleColorOscResponse(code, theme.background, args);
     case '12':
-      return _buildSingleColorOscResponse(code, theme.cursor, args);
     case '17':
-      return _buildSingleColorOscResponse(code, theme.readableSelection, args);
     case '19':
-      return _buildSingleColorOscResponse(code, theme.foreground, args);
+      return _buildDynamicColorOscResponse(theme, int.parse(code), args);
     default:
       return null;
   }
 }
 
-String? _buildSingleColorOscResponse(
-  String code,
-  Color color,
+String? _buildDynamicColorOscResponse(
+  TerminalThemeData theme,
+  int firstRole,
   List<String> args,
 ) {
-  if (args.isEmpty || args.first.trim() != '?') {
-    return null;
+  final responses = <String>[];
+  for (var index = 0; index < args.length; index += 1) {
+    if (args[index].trim() != '?') continue;
+    final role = firstRole + index;
+    final color = switch (role) {
+      10 => theme.foreground,
+      11 => theme.background,
+      12 => theme.cursor,
+      17 => theme.readableSelection,
+      19 => theme.foreground,
+      _ => null,
+    };
+    if (color != null) {
+      responses.add(_formatOscColorResponse('$role', color));
+    }
   }
-  return _formatOscColorResponse(code, color);
+  return responses.isEmpty ? null : responses.join();
 }
 
 String? _buildAnsiPaletteOscResponse(
@@ -128,6 +138,9 @@ String? _buildAnsiPaletteOscResponse(
 /// Indexes 0-15 are theme-controlled ANSI colors. Indexes 16-255 use the
 /// fixed xterm 256-color cube and grayscale ramp.
 Color? terminalThemePaletteColor(TerminalThemeData theme, int index) {
+  final override = theme.paletteOverrides[index];
+  if (override != null) return override;
+
   switch (index) {
     case 0:
       return theme.black;
@@ -244,6 +257,7 @@ bool terminalThemesMatchForColors(
     previous.brightMagenta == next.brightMagenta &&
     previous.brightCyan == next.brightCyan &&
     previous.brightWhite == next.brightWhite &&
+    mapEquals(previous.paletteOverrides, next.paletteOverrides) &&
     previous.searchHitBackground == next.searchHitBackground &&
     previous.searchHitBackgroundCurrent == next.searchHitBackgroundCurrent &&
     previous.searchHitForeground == next.searchHitForeground;
@@ -326,6 +340,7 @@ class TerminalThemeData {
     this.searchHitBackground,
     this.searchHitBackgroundCurrent,
     this.searchHitForeground,
+    this.paletteOverrides = const <int, Color>{},
   });
 
   /// Creates a theme from a JSON map.
@@ -477,6 +492,11 @@ class TerminalThemeData {
   /// ANSI color 15 (bright white).
   final Color brightWhite;
 
+  /// Runtime-only overrides for arbitrary xterm 256-color palette indexes.
+  ///
+  /// These are intentionally excluded from persisted custom-theme JSON.
+  final Map<int, Color> paletteOverrides;
+
   /// Background color for search hits.
   final Color? searchHitBackground;
 
@@ -515,6 +535,7 @@ class TerminalThemeData {
     brightMagenta: brightMagenta,
     brightCyan: brightCyan,
     brightWhite: brightWhite,
+    paletteOverrides: paletteOverrides,
     searchHitBackground: searchHitBackground ?? const Color(0xFFFFDF5D),
     searchHitBackgroundCurrent:
         searchHitBackgroundCurrent ?? const Color(0xFFFF9632),
@@ -550,6 +571,7 @@ class TerminalThemeData {
     Color? searchHitBackground,
     Color? searchHitBackgroundCurrent,
     Color? searchHitForeground,
+    Map<int, Color>? paletteOverrides,
   }) => TerminalThemeData(
     id: id ?? this.id,
     name: name ?? this.name,
@@ -575,6 +597,7 @@ class TerminalThemeData {
     brightMagenta: brightMagenta ?? this.brightMagenta,
     brightCyan: brightCyan ?? this.brightCyan,
     brightWhite: brightWhite ?? this.brightWhite,
+    paletteOverrides: paletteOverrides ?? this.paletteOverrides,
     searchHitBackground: searchHitBackground ?? this.searchHitBackground,
     searchHitBackgroundCurrent:
         searchHitBackgroundCurrent ?? this.searchHitBackgroundCurrent,

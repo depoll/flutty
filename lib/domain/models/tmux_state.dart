@@ -816,6 +816,7 @@ class ToolSessionInfo {
     required this.toolName,
     required this.sessionId,
     this.workingDirectory,
+    this.originWorkingDirectory,
     this.lastActive,
     this.summary,
   });
@@ -828,6 +829,14 @@ class ToolSessionInfo {
 
   /// The working directory this session was used in.
   final String? workingDirectory;
+
+  /// The directory this session started in, when it since moved elsewhere.
+  ///
+  /// Pi rewrites a session into a new directory when work moves to a worktree,
+  /// which leaves [workingDirectory] pointing away from where the user began
+  /// the conversation. Keeping the original directory lets project-scoped
+  /// pickers still offer the session where it started.
+  final String? originWorkingDirectory;
 
   /// When this session was last active.
   final DateTime? lastActive;
@@ -1044,6 +1053,7 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
   AgentLaunchTool.pi => const {'pi'},
   AgentLaunchTool.hermes => const {'hermes', 'hermes agent'},
   AgentLaunchTool.openclaw => const {'openclaw', 'openclaw tui'},
+  AgentLaunchTool.grokBuild => const {'grok', 'grok build'},
 };
 
 AgentLaunchTool? _agentToolFromTerminalTitle(String? value) {
@@ -1173,6 +1183,10 @@ String? agentSessionIdFromLaunchCommand(
     ],
     AgentLaunchTool.openclaw => const [
       r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.grokBuild => const [
+      r'''(?<!\S)--(?:resume|load)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+      r'''(?<!\S)-r\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
     ],
   };
 

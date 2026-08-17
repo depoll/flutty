@@ -4,6 +4,7 @@
 // ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions, avoid_setters_without_getters, prefer_int_literals, cascade_invocations, unnecessary_null_checks, invalid_use_of_internal_member
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -33,6 +34,7 @@ import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
+import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -538,6 +540,7 @@ double resolveTerminalHorizontalFillScale({
 /// How long to wait for keyboard inset animations to settle before resizing.
 @visibleForTesting
 const terminalKeyboardResizeDebounceDuration = Duration(milliseconds: 180);
+
 const _terminalFocusInReport = '\x1b[I';
 const _terminalFocusOutReport = '\x1b[O';
 const _terminalFocusTransitionDelay = Duration(milliseconds: 50);
@@ -558,6 +561,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.scrollController,
     this.autoResize = true,
     this.resizeTerminalToViewport = true,
+    this.notifyPixelSizeChanges = true,
     this.backgroundOpacity = 1,
     this.focusNode,
     this.cursorFocusNode,
@@ -625,6 +629,11 @@ class MonkeyTerminalView extends StatefulWidget {
   /// are still reported through [Terminal.onResize], while this widget clips the
   /// remote grid to its local bounds.
   final bool resizeTerminalToViewport;
+
+  /// Whether a viewport pixel-size change that leaves the cell grid unchanged
+  /// should emit [Terminal.onResize]. Shared-grid multiplexers can disable this
+  /// to avoid making a remote TUI redraw for a sub-cell keyboard/layout change.
+  final bool notifyPixelSizeChanges;
 
   /// Opacity of the terminal background. Set to 0 to make the terminal
   /// background transparent.
@@ -781,6 +790,12 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   String? _composingText;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
+  final ListQueue<
+    ({TerminalMouseButton button, CellOffset position, int count})
+  >
+  _pendingTouchScrollRuns = ListQueue();
+  bool _touchScrollDrainScheduled = false;
+  int _touchScrollDispatchGeneration = 0;
   late final Ticker _touchScrollInertiaTicker;
   late final Ticker _graphicsAnimationTicker;
   Simulation? _touchScrollInertiaSimulation;
@@ -907,7 +922,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _lastTerminalViewWidth = widget.terminal.viewWidth;
       widget.terminal.addListener(_handleTerminalMetricsChanged);
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
       _scheduleGraphicsAnimationSync();
     }
     if (oldWidget.focusNode != widget.focusNode) {
@@ -933,19 +948,19 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
     if (oldWidget.simulateScroll != widget.simulateScroll) {
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
     }
     if (oldWidget.touchScrollToTerminal && !widget.touchScrollToTerminal) {
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
     }
     if (oldWidget.forceSgrTouchScroll != widget.forceSgrTouchScroll) {
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
     }
     if (oldWidget.scrollResetGeneration != widget.scrollResetGeneration) {
       _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+      _resetTouchScrollDispatch();
     }
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
     super.didUpdateWidget(oldWidget);
@@ -959,6 +974,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
     _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
+    _resetTouchScrollDispatch();
     _touchScrollInertiaTicker.dispose();
     _stopGraphicsAnimationTicker();
     _graphicsAnimationTicker.dispose();
@@ -1235,6 +1251,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
           autoResize: widget.autoResize,
           resizeTerminalToViewport: widget.resizeTerminalToViewport,
+          notifyPixelSizeChanges: widget.notifyPixelSizeChanges,
           resizeBottomInset: mediaQuery.viewInsets.bottom,
           liveOutputAutoScroll: widget.liveOutputAutoScroll,
           textStyle: widget.textStyle,
@@ -1462,7 +1479,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   void _onTouchScrollStart(DragStartDetails details) {
     _stopTouchScrollInertia();
     _lastTouchScrollPosition = details.localPosition;
-    _touchScrollRemainder = 0;
+    _resetTouchScrollDispatch();
   }
 
   void _onTouchScrollUpdate(DragUpdateDetails details) {
@@ -1498,28 +1515,113 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _applyTouchScrollDelta(double delta) {
-    _touchScrollRemainder += delta;
-
     final stepHeight = _touchScrollStepHeight;
     if (stepHeight <= 0) {
       return;
     }
-
+    _touchScrollRemainder += delta;
+    final position = _resolveViewportMousePosition(_lastTouchScrollPosition);
     while (_touchScrollRemainder.abs() >= stepHeight) {
       final scrollUp = _touchScrollRemainder > 0;
-      final handled = _sendTouchScrollMouseInput(
+      _enqueueTouchScrollRun(
         scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
-        _resolveViewportMousePosition(_lastTouchScrollPosition),
+        position,
       );
-
-      if (!handled && widget.simulateScroll) {
-        widget.terminal.keyInput(
-          scrollUp ? TerminalKey.arrowUp : TerminalKey.arrowDown,
-        );
-      }
-
       _touchScrollRemainder += scrollUp ? -stepHeight : stepHeight;
     }
+    _drainTouchScrollInput();
+  }
+
+  void _enqueueTouchScrollRun(TerminalMouseButton button, CellOffset position) {
+    if (_pendingTouchScrollRuns.isNotEmpty) {
+      final last = _pendingTouchScrollRuns.last;
+      if (last.button == button &&
+          last.position.x == position.x &&
+          last.position.y == position.y) {
+        _pendingTouchScrollRuns
+          ..removeLast()
+          ..add((button: button, position: position, count: last.count + 1));
+        return;
+      }
+    }
+    _pendingTouchScrollRuns.add((button: button, position: position, count: 1));
+  }
+
+  void _consumeTouchScrollRun(int count) {
+    final run = _pendingTouchScrollRuns.removeFirst();
+    if (run.count > count) {
+      _pendingTouchScrollRuns.addFirst((
+        button: run.button,
+        position: run.position,
+        count: run.count - count,
+      ));
+    }
+  }
+
+  void _drainTouchScrollInput() {
+    if (_touchScrollDrainScheduled || _pendingTouchScrollRuns.isEmpty) {
+      return;
+    }
+    final canBatchSgr =
+        widget.forceSgrTouchScroll ||
+        (widget.terminal.mouseMode.reportScroll &&
+            widget.terminal.mouseReportMode == MouseReportMode.sgr);
+    if (canBatchSgr) {
+      var budget = 6;
+      while (budget > 0 && _pendingTouchScrollRuns.isNotEmpty) {
+        final run = _pendingTouchScrollRuns.first;
+        final count = math.min(run.count, budget);
+        _sendTouchScrollMouseInput(
+          run.button,
+          run.position,
+          repeatCount: count,
+        );
+        _consumeTouchScrollRun(count);
+        budget -= count;
+      }
+      // Lock the frame-wide budget even when the queue is empty; pointer updates
+      // received before this callback only append runs for the next frame.
+      _scheduleTouchScrollDrain();
+      return;
+    }
+
+    while (_pendingTouchScrollRuns.isNotEmpty) {
+      final run = _pendingTouchScrollRuns.first;
+      final handled = _sendTouchScrollMouseInput(run.button, run.position);
+      _consumeTouchScrollRun(1);
+      if (!handled && widget.simulateScroll) {
+        widget.terminal.keyInput(
+          run.button == TerminalMouseButton.wheelUp
+              ? TerminalKey.arrowUp
+              : TerminalKey.arrowDown,
+        );
+      }
+    }
+  }
+
+  void _scheduleTouchScrollDrain() {
+    if (_touchScrollDrainScheduled || !mounted) {
+      return;
+    }
+    _touchScrollDrainScheduled = true;
+    final generation = _touchScrollDispatchGeneration;
+    WidgetsBinding.instance.scheduleFrame();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (generation != _touchScrollDispatchGeneration) {
+        return;
+      }
+      _touchScrollDrainScheduled = false;
+      if (mounted) {
+        _drainTouchScrollInput();
+      }
+    });
+  }
+
+  void _resetTouchScrollDispatch() {
+    _touchScrollDispatchGeneration += 1;
+    _touchScrollDrainScheduled = false;
+    _pendingTouchScrollRuns.clear();
+    _touchScrollRemainder = 0;
   }
 
   void _startTouchScrollInertia(double velocity) {
@@ -1566,12 +1668,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   bool _sendTouchScrollMouseInput(
     TerminalMouseButton button,
-    CellOffset position,
-  ) => sendTerminalScrollMouseInput(
+    CellOffset position, {
+    int repeatCount = 1,
+  }) => sendTerminalScrollMouseInput(
     terminal: widget.terminal,
     button: button,
     position: position,
     forceSgr: widget.forceSgrTouchScroll,
+    repeatCount: repeatCount,
   );
 
   CellOffset _resolveViewportMousePosition(Offset localPosition) {
@@ -1777,6 +1881,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.alignToTrailingEdges,
     required this.autoResize,
     required this.resizeTerminalToViewport,
+    required this.notifyPixelSizeChanges,
     required this.resizeBottomInset,
     required this.liveOutputAutoScroll,
     required this.textStyle,
@@ -1804,6 +1909,8 @@ class _TerminalView extends LeafRenderObjectWidget {
   final bool autoResize;
 
   final bool resizeTerminalToViewport;
+
+  final bool notifyPixelSizeChanges;
 
   final double resizeBottomInset;
 
@@ -1839,6 +1946,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       alignToTrailingEdges: alignToTrailingEdges,
       autoResize: autoResize,
       resizeTerminalToViewport: resizeTerminalToViewport,
+      notifyPixelSizeChanges: notifyPixelSizeChanges,
       resizeBottomInset: resizeBottomInset,
       liveOutputAutoScroll: liveOutputAutoScroll,
       textStyle: textStyle,
@@ -1867,6 +1975,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..alignToTrailingEdges = alignToTrailingEdges
       ..autoResize = autoResize
       ..resizeTerminalToViewport = resizeTerminalToViewport
+      ..notifyPixelSizeChanges = notifyPixelSizeChanges
       ..resizeBottomInset = resizeBottomInset
       ..liveOutputAutoScroll = liveOutputAutoScroll
       ..textStyle = textStyle
@@ -1922,7 +2031,10 @@ class MonkeyTerminalPainter extends TerminalPainter {
   // theme or text scale changes (the same triggers that clear the paragraph
   // cache), since those change how a given cell content renders.
   final _foregroundPictureCache = <int, Picture>{};
-  static const _maxForegroundPictureCacheEntries = 512;
+  // Keep enough unique transcript lines for repeated page/fling navigation in
+  // long text sessions while retaining a hard memory bound on mobile. The old
+  // 512-line window thrashed after only a handful of terminal-sized jumps.
+  static const _maxForegroundPictureCacheEntries = 2048;
 
   /// Number of foreground style-run paragraphs currently cached. A coalesced
   /// line of N same-style cells caches a single N-glyph run paragraph here (not
@@ -2789,6 +2901,7 @@ class MonkeyRenderTerminal extends RenderBox
     required bool alignToTrailingEdges,
     required bool autoResize,
     required bool resizeTerminalToViewport,
+    required bool notifyPixelSizeChanges,
     required double resizeBottomInset,
     required bool liveOutputAutoScroll,
     required TerminalStyle textStyle,
@@ -2808,6 +2921,7 @@ class MonkeyRenderTerminal extends RenderBox
        _alignToTrailingEdges = alignToTrailingEdges,
        _autoResize = autoResize,
        _resizeTerminalToViewport = resizeTerminalToViewport,
+       _notifyPixelSizeChanges = notifyPixelSizeChanges,
        _resizeBottomInset = resizeBottomInset,
        _liveOutputAutoScroll = liveOutputAutoScroll,
        _inlineUnderlines = inlineUnderlines,
@@ -2889,6 +3003,13 @@ class MonkeyRenderTerminal extends RenderBox
     if (!_resizeTerminalToViewport) {
       _cancelPendingTerminalResize();
     }
+    markNeedsLayout();
+  }
+
+  bool _notifyPixelSizeChanges;
+  set notifyPixelSizeChanges(bool value) {
+    if (value == _notifyPixelSizeChanges) return;
+    _notifyPixelSizeChanges = value;
     markNeedsLayout();
   }
 
@@ -3885,15 +4006,13 @@ class MonkeyRenderTerminal extends RenderBox
     if (!_resizeTerminalToViewport) {
       _viewportSize = viewportSize;
       _viewportPixelSize = pixelSize;
-      // A shared grid that no longer matches this viewport draws content into
-      // the wrong number of cells and leaves the rest blank. The host owns the
-      // buffer size here, so re-report the viewport whenever the two disagree
-      // and let the owner correct it, instead of rendering a mismatched grid
-      // until something else happens to resize.
+      // The host owns the shared grid. Passive layout reports the initial or a
+      // genuinely changed local viewport, but does not repeatedly reassert a
+      // persistent host mismatch or a suppressed pixel-only change. Explicit
+      // refresh/reconciliation still uses notifyIfUnchanged.
       if (!hasCachedViewportSize ||
           viewportSizeChanged ||
-          pixelSizeChanged ||
-          terminalNeedsResize ||
+          (_notifyPixelSizeChanges && pixelSizeChanged) ||
           notifyIfUnchanged) {
         _notifyTerminalResizeIfNeeded(
           viewportSize: viewportSize,
@@ -3911,7 +4030,10 @@ class MonkeyRenderTerminal extends RenderBox
     _viewportSize = viewportSize;
     _viewportPixelSize = pixelSize;
 
-    if ((hasCachedViewportSize && pixelSizeChanged) || notifyIfUnchanged) {
+    if ((hasCachedViewportSize &&
+            _notifyPixelSizeChanges &&
+            pixelSizeChanged) ||
+        notifyIfUnchanged) {
       _notifyTerminalResizeIfNeeded(
         viewportSize: viewportSize,
         pixelSize: pixelSize,
@@ -4135,7 +4257,7 @@ class MonkeyRenderTerminal extends RenderBox
         'bufferLines': lines.length,
         'hasImages':
             _terminal.graphics.imageCount > 0 ||
-            _terminal.graphics.placeholders.isNotEmpty,
+            _terminal.graphics.hasPlaceholders,
       },
     );
   }
@@ -4153,6 +4275,11 @@ class MonkeyRenderTerminal extends RenderBox
     final lastLine = lastLineOffset ~/ charHeight;
     final effectFirstLine = firstLine.clamp(0, lines.length - 1);
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
+    final visiblePhysicalPlacements = _terminal.graphics.placementsInRows(
+      lines,
+      effectFirstLine,
+      effectLastLine,
+    );
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
       _painter.paintLineBackgrounds(
@@ -4168,6 +4295,7 @@ class MonkeyRenderTerminal extends RenderBox
       offset,
       effectFirstLine,
       effectLastLine,
+      physicalPlacements: visiblePhysicalPlacements,
       belowText: true,
     );
 
@@ -4199,7 +4327,13 @@ class MonkeyRenderTerminal extends RenderBox
       );
     }
 
-    _paintGraphics(canvas, offset, effectFirstLine, effectLastLine);
+    _paintGraphics(
+      canvas,
+      offset,
+      effectFirstLine,
+      effectLastLine,
+      physicalPlacements: visiblePhysicalPlacements,
+    );
 
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
         _terminal.buffer.absoluteCursorY <= effectLastLine) {
@@ -4247,15 +4381,15 @@ class MonkeyRenderTerminal extends RenderBox
     Offset offset,
     int firstLine,
     int lastLine, {
+    required List<TerminalImagePlacement> physicalPlacements,
     bool belowText = false,
   }) {
     final graphics = _terminal.graphics;
     // A pending virtual image has neither a physical placement nor a decoded
     // image yet. Its foreground placeholder pass must run so visible cells can
     // trigger the deferred decode; the below-text pass has nothing to do.
-    final hasPlaceholderGraphics =
-        !belowText && graphics.placeholders.isNotEmpty;
-    if (!graphics.hasPlacements &&
+    final hasPlaceholderGraphics = !belowText && graphics.hasPlaceholders;
+    if (physicalPlacements.isEmpty &&
         graphics.imageCount == 0 &&
         !hasPlaceholderGraphics) {
       return;
@@ -4279,9 +4413,7 @@ class MonkeyRenderTerminal extends RenderBox
     // Draw lower z-indices first so higher ones stack on top; ties keep
     // insertion order (placement id increases monotonically).
     final placements =
-        graphics.placements
-            .where((p) => belowText ? p.z < 0 : p.z >= 0)
-            .toList()
+        physicalPlacements.where((p) => belowText ? p.z < 0 : p.z >= 0).toList()
           ..sort((a, b) {
             final byZ = a.z.compareTo(b.z);
             return byZ != 0 ? byZ : a.placementId.compareTo(b.placementId);
@@ -4433,7 +4565,7 @@ class MonkeyRenderTerminal extends RenderBox
     // confirm whether an image-heavy window's build-thread jank comes from this
     // path and whether the viewport-bounded analysis keeps it cheap. Count and
     // timing only — never any cell content.
-    final placeholderCount = _terminal.graphics.placeholders.length;
+    final placeholderCount = _terminal.graphics.placeholderCount;
     _kittyResolvedInstances = 0;
     _kittyUnresolvedInstances = 0;
     _kittyFirstUnresolvedImageId = 0;
@@ -4525,13 +4657,17 @@ class MonkeyRenderTerminal extends RenderBox
     double cellWidth,
     double cellHeight,
   ) {
-    final graphics = _terminal.graphics..pruneDetachedPlaceholders();
-    final placeholders = graphics.placeholders;
+    final graphics = _terminal.graphics;
+    final buffer = _terminal.buffer;
+    final placeholders = graphics.placeholdersInRows(
+      buffer.lines,
+      firstLine,
+      lastLine,
+    );
     if (placeholders.isEmpty) {
       return;
     }
 
-    final buffer = _terminal.buffer;
     final lineCount = buffer.lines.length;
 
     bool cellIsLivePlaceholder(int cellRow, int cellCol) {
@@ -4566,29 +4702,20 @@ class MonkeyRenderTerminal extends RenderBox
     //    old copy lingers as a ghost. Among the surviving dense groups of one
     //    image id we keep only the most recently written placement.
     //
-    // The instance grouping is scoped to the visible rows. Only visible cells
-    // are ever composited, and both axes are decided correctly from what is on
-    // screen: a clean on-screen crop is still dense, and competing copies of one
-    // image that matter for the viewport are the ones drawn within it. Bounding
-    // the heavy per-cell work (string keys and several maps) to the viewport
-    // keeps scrolling — and live-redrawing — an image-heavy window off the
-    // O(total placeholders) path that otherwise showed up as mid-scroll build
-    // jank on a window holding many image cells across its scrollback.
-    //
-    // Grid dimensions, by contrast, are gathered from every attached
-    // placeholder: an image's grid is fixed (it does not shrink as rows scroll
-    // off), so a non-virtual image whose lower rows are below the viewport would
-    // be sliced with too few rows if inferred from visible cells alone. That
-    // whole-list pass is kept allocation-free via a packed int key
-    // (imageId * 64 + bitWidth; bitWidth is only ever 8 or 24) so it stays cheap
-    // on the per-frame scroll path.
+    // The instance grouping and lookup are scoped to visible buffer lines.
+    // GraphicsManager resolves placeholders through each line's CellAnchors, so
+    // a scroll frame never walks the thousands of off-screen cells retained by a
+    // long agent transcript. Grid dimensions remain correct for cropped images:
+    // every placeholder shares a small grid tracker that records the largest
+    // row/column ever seen for that image, while virtual placements still win
+    // when the protocol supplied explicit dimensions.
     final gridColsByImage = <int, int>{};
     final gridRowsByImage = <int, int>{};
     final instanceCellCount = <String, int>{};
     final instanceRowBounds = <String, List<int>>{};
     final instanceColBounds = <String, List<int>>{};
-    // Recency of each instance: the highest placeholder index (placeholders are
-    // appended in write order) seen for it. A redraw that re-displays an image
+    // Recency of each instance: the highest monotonic placeholder sequence seen
+    // for it, independent of visible row/anchor traversal order. A redraw that re-displays an image
     // elsewhere appends fresh placeholders, so the current placement has a
     // higher recency than a stale leftover (ghost) of the same image.
     final instanceRecency = <String, int>{};
@@ -4600,8 +4727,7 @@ class MonkeyRenderTerminal extends RenderBox
       return '$imageKey@$offsetRow,$offsetCol';
     }
 
-    for (var index = 0; index < placeholders.length; index++) {
-      final placeholder = placeholders[index];
+    for (final placeholder in placeholders) {
       if (!placeholder.attached) {
         continue;
       }
@@ -4612,10 +4738,10 @@ class MonkeyRenderTerminal extends RenderBox
           placeholder.imageId * 64 + placeholder.imageIdBitWidth;
       gridColsByImage[imageIntKey] = (virtualPlacement?.cols ?? 0) > 0
           ? virtualPlacement!.cols
-          : math.max(gridColsByImage[imageIntKey] ?? 1, placeholder.col + 1);
+          : placeholder.gridColumns;
       gridRowsByImage[imageIntKey] = (virtualPlacement?.rows ?? 0) > 0
           ? virtualPlacement!.rows
-          : math.max(gridRowsByImage[imageIntKey] ?? 1, placeholder.row + 1);
+          : placeholder.gridRows;
 
       final cellRow = placeholder.cellRow;
       if (cellRow < firstLine || cellRow > lastLine) {
@@ -4629,7 +4755,10 @@ class MonkeyRenderTerminal extends RenderBox
       instanceImageKey[instanceKey] = key;
       instanceCellCount[instanceKey] =
           (instanceCellCount[instanceKey] ?? 0) + 1;
-      instanceRecency[instanceKey] = index;
+      instanceRecency[instanceKey] = math.max(
+        instanceRecency[instanceKey] ?? -1,
+        placeholder.sequence,
+      );
       final rowBounds = instanceRowBounds[instanceKey] ??= <int>[
         placeholder.row,
         placeholder.row,
