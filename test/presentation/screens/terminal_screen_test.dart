@@ -2479,19 +2479,25 @@ void main() {
 
       await pumpScreen(tester);
 
+      final jumpHostIcon = find.byIcon(Icons.alt_route);
+      final connectedIcon = find.byIcon(Icons.check_circle_outline);
       expect(find.byTooltip('Connected through jump host'), findsOneWidget);
-      expect(find.byIcon(Icons.alt_route), findsOneWidget);
+      expect(jumpHostIcon, findsOneWidget);
       expect(find.byTooltip('Connected'), findsOneWidget);
-      expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
+      expect(connectedIcon, findsOneWidget);
+
+      final connectedRect = tester.getRect(connectedIcon);
+      final jumpHostRect = tester.getRect(jumpHostIcon);
+      expect(connectedRect.overlaps(jumpHostRect), isTrue);
+
+      final jumpHostIconWidget = tester.widget<Icon>(jumpHostIcon);
+      expect(
+        jumpHostIconWidget.color,
+        Theme.of(tester.element(jumpHostIcon)).colorScheme.surface,
+      );
+
       final titleLeft = tester.getTopLeft(find.text('Terminal test host')).dx;
-      expect(
-        tester.getCenter(find.byIcon(Icons.check_circle_outline)).dx,
-        lessThan(titleLeft),
-      );
-      expect(
-        tester.getCenter(find.byIcon(Icons.alt_route)).dx,
-        lessThan(titleLeft),
-      );
+      expect(titleLeft - connectedRect.left, lessThan(40));
     });
 
     testWidgets(
