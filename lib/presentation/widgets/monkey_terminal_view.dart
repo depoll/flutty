@@ -1232,45 +1232,38 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       ...inheritedScrollBehavior.dragDevices,
     }..remove(PointerDeviceKind.touch);
 
-    Widget child = ScrollConfiguration(
-      behavior: inheritedScrollBehavior.copyWith(
-        dragDevices: directScrollDragDevices,
-      ),
-      child: Scrollable(
-        key: _scrollableKey,
-        controller: _scrollController,
-        physics: widget.touchScrollToTerminal
-            ? const NeverScrollableScrollPhysics()
-            : null,
-        viewportBuilder: (context, offset) {
-          final mediaQuery = MediaQuery.of(context);
-          Widget buildTerminalLeaf(BuildContext context) => _TerminalView(
-            key: _viewportKey,
-            terminal: widget.terminal,
-            controller: _controller,
-            offset: offset,
-            padding: EdgeInsets.zero,
-            alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(
-              mediaQuery,
-            ),
-            autoResize: widget.autoResize,
-            resizeTerminalToViewport: widget.resizeTerminalToViewport,
-            resizeBottomInset: mediaQuery.viewInsets.bottom,
-            liveOutputAutoScroll: widget.liveOutputAutoScroll,
-            textStyle: widget.textStyle,
-            textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
-            theme: widget.theme,
-            inlineUnderlines: widget.inlineUnderlines,
-            focusNode: cursorFocusNode,
-            cursorType: widget.cursorType,
-            alwaysShowCursor: widget.alwaysShowCursor,
-            onEditableRect: _onEditableRect,
-            composingText: _composingText,
-            selectionRegistrar: SelectionContainer.maybeOf(context),
-          );
-          return Builder(builder: buildTerminalLeaf);
-        },
-      ),
+    Widget child = Scrollable(
+      key: _scrollableKey,
+      controller: _scrollController,
+      physics: widget.touchScrollToTerminal
+          ? const NeverScrollableScrollPhysics()
+          : null,
+      viewportBuilder: (context, offset) {
+        final mediaQuery = MediaQuery.of(context);
+        Widget buildTerminalLeaf(BuildContext context) => _TerminalView(
+          key: _viewportKey,
+          terminal: widget.terminal,
+          controller: _controller,
+          offset: offset,
+          padding: EdgeInsets.zero,
+          alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
+          autoResize: widget.autoResize,
+          resizeTerminalToViewport: widget.resizeTerminalToViewport,
+          resizeBottomInset: mediaQuery.viewInsets.bottom,
+          liveOutputAutoScroll: widget.liveOutputAutoScroll,
+          textStyle: widget.textStyle,
+          textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
+          theme: widget.theme,
+          inlineUnderlines: widget.inlineUnderlines,
+          focusNode: cursorFocusNode,
+          cursorType: widget.cursorType,
+          alwaysShowCursor: widget.alwaysShowCursor,
+          onEditableRect: _onEditableRect,
+          composingText: _composingText,
+          selectionRegistrar: SelectionContainer.maybeOf(context),
+        );
+        return Builder(builder: buildTerminalLeaf);
+      },
     );
 
     if (widget.useSystemSelection) {
@@ -1295,6 +1288,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         child: child,
       );
     }
+
+    child = ScrollConfiguration(
+      behavior: inheritedScrollBehavior.copyWith(
+        dragDevices: directScrollDragDevices,
+      ),
+      child: child,
+    );
 
     if (!widget.hardwareKeyboardOnly) {
       child = CustomTextEdit(

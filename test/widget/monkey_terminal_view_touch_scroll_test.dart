@@ -390,30 +390,27 @@ void main() {
     );
   });
 
-  testWidgets('direct viewport assigns touch to a dedicated recognizer', (
+  testWidgets('alt buffer assigns touch to a dedicated recognizer', (
     tester,
   ) async {
+    final terminal = Terminal()..useAltBuffer();
     await tester.pumpWidget(
       MaterialApp(
         home: SizedBox(
           width: 300,
           height: 200,
-          child: MonkeyTerminalView(Terminal(), hardwareKeyboardOnly: true),
+          child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
         ),
       ),
     );
 
-    final directScrollConfiguration = tester
-        .widgetList<ScrollConfiguration>(find.byType(ScrollConfiguration))
-        .firstWhere((configuration) => configuration.child is Scrollable);
-    expect(
-      directScrollConfiguration.behavior.dragDevices,
-      isNot(contains(PointerDeviceKind.touch)),
-    );
-    expect(
-      directScrollConfiguration.behavior.dragDevices,
-      contains(PointerDeviceKind.trackpad),
-    );
+    final scrollables = find.byType(Scrollable);
+    expect(scrollables, findsNWidgets(2));
+    for (final element in scrollables.evaluate()) {
+      final behavior = ScrollConfiguration.of(element);
+      expect(behavior.dragDevices, isNot(contains(PointerDeviceKind.touch)));
+      expect(behavior.dragDevices, contains(PointerDeviceKind.trackpad));
+    }
 
     final gestureDetector = tester.widget<MonkeyTerminalGestureDetector>(
       find.byType(MonkeyTerminalGestureDetector),
