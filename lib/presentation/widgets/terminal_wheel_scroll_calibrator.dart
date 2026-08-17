@@ -114,6 +114,7 @@ class TerminalWheelScrollCalibrator {
 
   int _rowsPerEvent = 1;
   bool _isCalibrated = false;
+  bool _retryMeasurementOnNextGesture = true;
   bool _isQuarantined = false;
   List<String>? _before;
   List<String>? _latestAfter;
@@ -131,7 +132,18 @@ class TerminalWheelScrollCalibrator {
   bool get needsMeasurement =>
       !_isCalibrated && !waitingForResponse && !_isQuarantined;
 
-  /// Keeps the current estimate but measures it again on the next wheel event.
+  /// Reuses a measured estimate, but retries a timeout fallback on this
+  /// gesture once delayed output is no longer quarantined.
+  void beginGesture() {
+    if (!waitingForResponse &&
+        !_isQuarantined &&
+        _retryMeasurementOnNextGesture) {
+      _isCalibrated = false;
+      _retryMeasurementOnNextGesture = false;
+    }
+  }
+
+  /// Keeps the current estimate but forces the next wheel event to measure it.
   void invalidate() {
     _cancelPending(notify: false);
     if (!_isQuarantined) {
@@ -144,6 +156,7 @@ class TerminalWheelScrollCalibrator {
     _endQuarantine();
     _rowsPerEvent = 1;
     _isCalibrated = false;
+    _retryMeasurementOnNextGesture = true;
     _cancelPending(notify: false);
   }
 
@@ -183,6 +196,7 @@ class TerminalWheelScrollCalibrator {
   /// Cancels a measurement when the input fell back to keyboard scrolling.
   void cancelPending() {
     _isCalibrated = true;
+    _retryMeasurementOnNextGesture = false;
     _cancelPending(notify: false);
   }
 
@@ -232,6 +246,7 @@ class TerminalWheelScrollCalibrator {
       _rowsPerEvent = rowsPerEvent;
     }
     _isCalibrated = true;
+    _retryMeasurementOnNextGesture = rowsPerEvent == null;
     final onSettled = _onSettled;
     _cancelPending(notify: false);
     onSettled?.call(previousRows, _rowsPerEvent);

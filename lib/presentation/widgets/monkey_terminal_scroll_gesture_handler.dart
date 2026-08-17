@@ -213,9 +213,7 @@ class _MonkeyTerminalScrollGestureHandlerState
       onPointerMove: (event) => _rememberPointerPosition(event.localPosition),
       onPointerDown: (event) => _rememberPointerPosition(event.localPosition),
       onPointerPanZoomStart: (event) {
-        if (!_wheelCalibrator.waitingForResponse) {
-          _wheelCalibrator.invalidate();
-        }
+        _wheelCalibrator.beginGesture();
         _rememberPointerPosition(event.localPosition);
       },
       onPointerPanZoomUpdate: (event) =>

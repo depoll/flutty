@@ -1656,7 +1656,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _stopTouchScrollInertia();
     _lastTouchScrollPosition = details.localPosition;
     if (!_touchWheelCalibrator.waitingForResponse) {
-      _touchWheelCalibrator.invalidate();
+      _touchWheelCalibrator.beginGesture();
       _resetTouchScrollDispatch(preserveRemainder: true);
     }
   }

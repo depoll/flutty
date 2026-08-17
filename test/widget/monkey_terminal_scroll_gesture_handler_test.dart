@@ -79,6 +79,18 @@ void main() {
 
     expect(output, hasLength(2));
     await secondGesture.panZoomEnd();
+
+    final thirdGesture = await tester.createGesture(
+      kind: PointerDeviceKind.trackpad,
+    );
+    await thirdGesture.panZoomStart(center);
+    await thirdGesture.panZoomUpdate(
+      center + const Offset(0, -60),
+      pan: const Offset(0, -60),
+    );
+
+    expect(output, hasLength(4));
+    await thirdGesture.panZoomEnd();
   });
 
   testWidgets(

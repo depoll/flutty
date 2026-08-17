@@ -153,7 +153,7 @@ void main() {
       expect(calibrator.observingTerminalOutput, isTrue);
       expect(calibrator.needsMeasurement, isFalse);
 
-      calibrator.invalidate();
+      calibrator.beginGesture();
       expect(calibrator.needsMeasurement, isFalse);
       calibrator.terminalChanged(const <String>[
         'header',
@@ -169,7 +169,7 @@ void main() {
       expect(calibrator.rowsPerEvent, 1);
       expect(calibrator.observingTerminalOutput, isFalse);
       expect(calibrator.needsMeasurement, isFalse);
-      calibrator.invalidate();
+      calibrator.beginGesture();
       expect(calibrator.needsMeasurement, isTrue);
     });
 
@@ -186,7 +186,7 @@ void main() {
 
       expect(calibrator.observingTerminalOutput, isFalse);
       expect(calibrator.needsMeasurement, isFalse);
-      calibrator.invalidate();
+      calibrator.beginGesture();
       expect(calibrator.needsMeasurement, isTrue);
     });
 
@@ -231,6 +231,8 @@ void main() {
 
       expect(settled, (previous: 1, current: 3));
       expect(calibrator.waitingForResponse, isFalse);
+      calibrator.beginGesture();
+      expect(calibrator.needsMeasurement, isFalse);
     });
 
     testWidgets('uses a late response when the hard timeout settles', (
@@ -263,6 +265,8 @@ void main() {
 
       expect(settled, (previous: 1, current: 3));
       expect(calibrator.waitingForResponse, isFalse);
+      calibrator.beginGesture();
+      expect(calibrator.needsMeasurement, isFalse);
     });
   });
 
@@ -349,6 +353,28 @@ void main() {
       expect(
         _countOccurrences(output.join(), '\x1b[<65;'),
         6 ~/ rowsPerWheelEvent,
+      );
+
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: Offset(150, 100 - lineHeight * 6),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 12),
+          localPosition: Offset(150, 100 - lineHeight * 12),
+          delta: Offset(0, -lineHeight * 6),
+        ),
+      );
+
+      // Once measured, a later gesture emits continuously instead of pausing
+      // after one report to probe the same application again.
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        12 ~/ rowsPerWheelEvent,
       );
       detector.onTouchScrollCancel!();
     }
