@@ -51,6 +51,9 @@ class _MonkeyTerminalScrollGestureHandlerState
   /// Tracks the last scroll offset reported by [InfiniteScrollView].
   var lastScrollOffset = 0.0;
 
+  late MouseMode mouseMode;
+  late MouseReportMode mouseReportMode;
+
   /// Accumulates partial scroll deltas so reversing direction still requires a
   /// full line-height of movement before another terminal wheel event is sent.
   var scrollRemainder = 0.0;
@@ -63,6 +66,8 @@ class _MonkeyTerminalScrollGestureHandlerState
   void initState() {
     widget.terminal.addListener(_onTerminalUpdated);
     isAltBuffer = widget.terminal.isUsingAltBuffer;
+    mouseMode = widget.terminal.mouseMode;
+    mouseReportMode = widget.terminal.mouseReportMode;
     super.initState();
   }
 
@@ -78,16 +83,33 @@ class _MonkeyTerminalScrollGestureHandlerState
       oldWidget.terminal.removeListener(_onTerminalUpdated);
       widget.terminal.addListener(_onTerminalUpdated);
       isAltBuffer = widget.terminal.isUsingAltBuffer;
+      mouseMode = widget.terminal.mouseMode;
+      mouseReportMode = widget.terminal.mouseReportMode;
       _resetScrollTracking();
+    } else if (oldWidget.simulateScroll != widget.simulateScroll ||
+        oldWidget.forceSgr != widget.forceSgr) {
+      scrollRemainder = 0;
     }
     super.didUpdateWidget(oldWidget);
   }
 
   void _onTerminalUpdated() {
-    if (isAltBuffer != widget.terminal.isUsingAltBuffer) {
-      isAltBuffer = widget.terminal.isUsingAltBuffer;
+    final nextIsAltBuffer = widget.terminal.isUsingAltBuffer;
+    final nextMouseMode = widget.terminal.mouseMode;
+    final nextMouseReportMode = widget.terminal.mouseReportMode;
+    final bufferChanged = isAltBuffer != nextIsAltBuffer;
+    final mouseTransportChanged =
+        mouseMode != nextMouseMode || mouseReportMode != nextMouseReportMode;
+
+    isAltBuffer = nextIsAltBuffer;
+    mouseMode = nextMouseMode;
+    mouseReportMode = nextMouseReportMode;
+
+    if (bufferChanged) {
       _resetScrollTracking();
       setState(() {});
+    } else if (mouseTransportChanged) {
+      scrollRemainder = 0;
     }
   }
 

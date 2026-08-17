@@ -323,6 +323,67 @@ void main() {
     },
   );
 
+  testWidgets('mouse mode changes discard partial trackpad distance', (
+    tester,
+  ) async {
+    final terminal = Terminal()..useAltBuffer();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 200,
+          height: 200,
+          child: MonkeyTerminalScrollGestureHandler(
+            terminal: terminal,
+            simulateScroll: false,
+            getCellOffset: (_) => const CellOffset(1, 1),
+            getLineHeight: () => 10,
+            child: const ColoredBox(
+              key: ValueKey('mode-change-target'),
+              color: Colors.black,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final center = tester.getCenter(
+      find.byKey(const ValueKey('mode-change-target')),
+    );
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.trackpad,
+    );
+    await gesture.panZoomStart(center);
+    await gesture.panZoomUpdate(
+      center + const Offset(0, -7),
+      pan: const Offset(0, -7),
+    );
+    await tester.pump();
+    expect(output, isEmpty);
+
+    terminal.write('\x1b[?1003h\x1b[?1006h');
+    await tester.pump();
+
+    await gesture.panZoomUpdate(
+      center + const Offset(0, -10),
+      pan: const Offset(0, -10),
+    );
+    await tester.pump();
+    expect(output, isEmpty);
+
+    await gesture.panZoomUpdate(
+      center + const Offset(0, -17),
+      pan: const Offset(0, -17),
+    );
+    await tester.pump();
+    expect(output, hasLength(1));
+    expect(output.single, startsWith('\x1b[<65;'));
+
+    await gesture.panZoomEnd();
+  });
+
   testWidgets('large single delta emits one event per full line height', (
     tester,
   ) async {

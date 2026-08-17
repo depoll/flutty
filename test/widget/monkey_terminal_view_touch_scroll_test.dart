@@ -21,6 +21,35 @@ int _countOccurrences(String text, String pattern) {
   }
 }
 
+class _RecordingScrollBehavior extends ScrollBehavior {
+  const _RecordingScrollBehavior(this.ballisticVelocities);
+
+  final List<double> ballisticVelocities;
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) =>
+      _RecordingScrollPhysics(ballisticVelocities.add);
+}
+
+class _RecordingScrollPhysics extends ScrollPhysics {
+  const _RecordingScrollPhysics(this.recordVelocity, {super.parent});
+
+  final ValueChanged<double> recordVelocity;
+
+  @override
+  _RecordingScrollPhysics applyTo(ScrollPhysics? ancestor) =>
+      _RecordingScrollPhysics(recordVelocity, parent: buildParent(ancestor));
+
+  @override
+  Simulation? createBallisticSimulation(
+    ScrollMetrics position,
+    double velocity,
+  ) {
+    recordVelocity(velocity);
+    return super.createBallisticSimulation(position, velocity);
+  }
+}
+
 void main() {
   testWidgets('touch scroll falls back to arrow keys in alt buffer', (
     tester,
@@ -318,6 +347,144 @@ void main() {
 
     expect(offsetAfterDragStart - scrollController.offset, closeTo(60, 0.01));
     await gesture.up();
+  });
+
+  testWidgets('direct touch fling uses the same accelerated gain', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    final ballisticVelocities = <double>[];
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ScrollConfiguration(
+          behavior: _RecordingScrollBehavior(ballisticVelocities),
+          child: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              scrollController: scrollController,
+              hardwareKeyboardOnly: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.fling(
+      find.byType(MonkeyTerminalView),
+      const Offset(0, 80),
+      1000,
+    );
+    await tester.pump();
+
+    expect(ballisticVelocities, isNotEmpty);
+    expect(
+      ballisticVelocities.any((velocity) => velocity.abs() > 2000),
+      isTrue,
+    );
+  });
+
+  testWidgets('direct terminal scrollback keeps trackpad drags at 1x', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final center = tester.getCenter(find.byType(MonkeyTerminalView));
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.trackpad,
+    );
+    await gesture.panZoomStart(center);
+    await gesture.panZoomUpdate(
+      center + const Offset(0, 20),
+      pan: const Offset(0, 20),
+    );
+    await tester.pump();
+
+    final offsetAfterFirstUpdate = scrollController.offset;
+    await gesture.panZoomUpdate(
+      center + const Offset(0, 40),
+      pan: const Offset(0, 40),
+    );
+    await tester.pump();
+
+    expect(offsetAfterFirstUpdate - scrollController.offset, closeTo(20, 0.01));
+    await gesture.panZoomEnd();
+  });
+
+  testWidgets('direct terminal scrollback keeps mouse wheels at 1x', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final offsetBeforeWheel = scrollController.offset;
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(find.byType(MonkeyTerminalView)),
+        scrollDelta: const Offset(0, -20),
+      ),
+    );
+    await tester.pump();
+
+    expect(offsetBeforeWheel - scrollController.offset, closeTo(20, 0.01));
+  });
+
+  testWidgets('direct scroll physics leaves ambient parenting to Scrollable', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(Terminal(), hardwareKeyboardOnly: true),
+        ),
+      ),
+    );
+
+    final scrollable = tester.widget<Scrollable>(find.byType(Scrollable));
+    expect(scrollable.physics?.parent, isNull);
   });
 
   testWidgets('scroll reset clears pending touch scroll distance', (

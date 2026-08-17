@@ -81,18 +81,32 @@ const _backgroundAlphaCandidates = <int>[
 ];
 
 class _TerminalViewportScrollPhysics extends ScrollPhysics {
-  const _TerminalViewportScrollPhysics({super.parent});
+  const _TerminalViewportScrollPhysics({
+    super.parent,
+    required this.shouldAccelerate,
+  });
+
+  final bool Function() shouldAccelerate;
+
+  double get _gain =>
+      shouldAccelerate() ? _terminalViewportTouchScrollSensitivity : 1.0;
 
   @override
   _TerminalViewportScrollPhysics applyTo(ScrollPhysics? ancestor) =>
-      _TerminalViewportScrollPhysics(parent: buildParent(ancestor));
+      _TerminalViewportScrollPhysics(
+        parent: buildParent(ancestor),
+        shouldAccelerate: shouldAccelerate,
+      );
 
   @override
   double applyPhysicsToUserOffset(ScrollMetrics position, double offset) =>
-      super.applyPhysicsToUserOffset(
-        position,
-        offset * _terminalViewportTouchScrollSensitivity,
-      );
+      super.applyPhysicsToUserOffset(position, offset * _gain);
+
+  @override
+  Simulation? createBallisticSimulation(
+    ScrollMetrics position,
+    double velocity,
+  ) => super.createBallisticSimulation(position, velocity * _gain);
 }
 
 /// A single Kitty Unicode-placeholder cell resolved for compositing.
@@ -795,6 +809,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   final _viewportKey = GlobalKey();
 
   String? _composingText;
+  PointerDeviceKind? _directScrollPointerKind;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
   late final Ticker _touchScrollInertiaTicker;
@@ -1240,7 +1255,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       physics: widget.touchScrollToTerminal
           ? const NeverScrollableScrollPhysics()
           : _TerminalViewportScrollPhysics(
-              parent: ScrollConfiguration.of(context).getScrollPhysics(context),
+              shouldAccelerate: _shouldAccelerateDirectScroll,
             ),
       viewportBuilder: (context, offset) {
         final mediaQuery = MediaQuery.of(context);
@@ -1269,6 +1284,17 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         return Builder(builder: buildTerminalLeaf);
       },
     );
+
+    if (!widget.touchScrollToTerminal) {
+      child = Listener(
+        onPointerDown: _rememberDirectScrollPointerKind,
+        onPointerUp: _deferClearDirectScrollPointerKind,
+        onPointerCancel: _deferClearDirectScrollPointerKind,
+        onPointerPanZoomStart: _rememberDirectScrollPointerKind,
+        onPointerPanZoomEnd: _deferClearDirectScrollPointerKind,
+        child: child,
+      );
+    }
 
     if (widget.useSystemSelection) {
       child = SelectionArea(
@@ -1475,6 +1501,21 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   void _onSecondaryTapUp(TapUpDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onSecondaryTapUp?.call(details, offset);
+  }
+
+  bool _shouldAccelerateDirectScroll() =>
+      _directScrollPointerKind == PointerDeviceKind.touch;
+
+  void _rememberDirectScrollPointerKind(PointerEvent event) {
+    _directScrollPointerKind = event.kind;
+  }
+
+  void _deferClearDirectScrollPointerKind(PointerEvent event) {
+    scheduleMicrotask(() {
+      if (_directScrollPointerKind == event.kind) {
+        _directScrollPointerKind = null;
+      }
+    });
   }
 
   void _onTouchScrollStart(DragStartDetails details) {
