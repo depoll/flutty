@@ -560,6 +560,15 @@ class MockEscapeHandler extends _i1.Mock implements _i2.EscapeHandler {
       );
 
   @override
+  void setAnsiMode(bool? enabled) => super.noSuchMethod(
+        Invocation.method(
+          #setAnsiMode,
+          [enabled],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
   void setReverseDisplayMode(bool? enabled) => super.noSuchMethod(
         Invocation.method(
           #setReverseDisplayMode,

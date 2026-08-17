@@ -183,8 +183,12 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
     }
 
     if (index == 0 && _length >= _array.length) {
-      // when something is inserted at index 0 and the list is full then
-      // the new value immediately gets removed => nothing changes
+      // Put the new item at the logical front and discard the old last item.
+      // The generic full-buffer path below rotates in the opposite direction
+      // and would place this item at the end.
+      _startIndex = (_startIndex - 1 + _array.length) % _array.length;
+      _absoluteStartIndex--;
+      _adoptChild(0, item);
       return;
     }
 
@@ -260,8 +264,9 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
   }
 
   /// Replaces the element at [index] with [value] and returns the replaced
-  /// item.
+  /// item. Throws if [index] is out of bounds.
   T swap(int index, T value) {
+    RangeError.checkValueInInterval(index, 0, length - 1, 'index');
     final result = _getChild(index);
     _adoptChild(index, value);
     return result!;
