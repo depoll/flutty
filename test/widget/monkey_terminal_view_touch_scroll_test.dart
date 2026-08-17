@@ -182,8 +182,76 @@ void main() {
     await tester.pump();
 
     expect(output, hasLength(1));
-    expect(output.single, startsWith('\u001b[<65;'));
+    expect(_countOccurrences(output.single, '\u001b[<65;'), 1);
   });
+
+  testWidgets(
+    'reported wheel scrolling coalesces exact events per local frame',
+    (tester) async {
+      final terminal = Terminal();
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+              simulateScroll: false,
+              forceSgrTouchScroll: true,
+            ),
+          ),
+        ),
+      );
+
+      final state = tester.state<MonkeyTerminalViewState>(
+        find.byType(MonkeyTerminalView),
+      );
+      final detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
+      );
+      final lineHeight = state.renderTerminal.lineHeight;
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 30),
+          localPosition: Offset(150, 100 - lineHeight * 30),
+          delta: Offset(0, -lineHeight * 30),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 12),
+          localPosition: Offset(150, 100 - lineHeight * 12),
+          delta: Offset(0, -lineHeight * 12),
+        ),
+      );
+
+      // Fourteen original wheel thresholds across two pointer updates are
+      // preserved, but the frame-wide budget permits only six reports before
+      // the next local frame.
+      expect(output, hasLength(1));
+      expect(_countOccurrences(output.single, '\u001b[<65;'), 6);
+      await tester.pump();
+      expect(output, hasLength(2));
+      expect(_countOccurrences(output.last, '\u001b[<65;'), 6);
+      await tester.pump();
+      expect(output, hasLength(3));
+      expect(_countOccurrences(output.last, '\u001b[<65;'), 2);
+      expect(_countOccurrences(output.join(), '\u001b[<65;'), 14);
+    },
+  );
 
   testWidgets(
     'mouse-reporting apps require more drag distance per touch scroll step',

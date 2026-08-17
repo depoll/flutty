@@ -13436,6 +13436,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               : <TerminalTextUnderline>[?_hoveredTerminalPathUnderline]
         : const <TerminalTextUnderline>[];
     final keyboardAppearance = resolveTerminalKeyboardAppearance(terminalTheme);
+    final clipsMonkeyMuxSharedGrid =
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux &&
+        ((_observedSession ?? _activeSession())
+                ?.monkeyMuxViewportClippingEnabled ??
+            false);
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
       _terminal,
@@ -13458,11 +13463,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       inlineUnderlines: inlineUnderlines,
       keyboardAppearance: keyboardAppearance,
       padding: terminalViewportPadding,
-      resizeTerminalToViewport:
-          _activeMuxBackend != RemoteMuxBackend.monkeyMux ||
-          !((_observedSession ?? _activeSession())
-                  ?.monkeyMuxViewportClippingEnabled ??
-              false),
+      resizeTerminalToViewport: !clipsMonkeyMuxSharedGrid,
+      notifyPixelSizeChanges: !clipsMonkeyMuxSharedGrid,
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,

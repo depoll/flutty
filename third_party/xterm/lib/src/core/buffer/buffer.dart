@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:math' show max, min;
 
 import 'package:xterm/src/core/buffer/cell_offset.dart';
@@ -124,6 +125,7 @@ class Buffer {
     }
 
     final line = currentLine;
+    graphics.removePlaceholderAt(line, _cursorX);
     line.setCell(_cursorX, codePoint, cellWidth, terminal.cursor);
 
     if (_cursorX < viewWidth) {
@@ -161,9 +163,6 @@ class Buffer {
       line.isWrapped = false;
       _eraseRange(line, i, 0, viewWidth);
     }
-    _removeGraphicsInRegion(
-        absoluteCursorY, absoluteCursorY, _cursorX, viewWidth - 1);
-    _removeGraphicsInRows(absoluteCursorY + 1, height - 1);
   }
 
   /// Erases the viewport from the top-left corner to the cursor, including the
@@ -176,8 +175,6 @@ class Buffer {
       line.isWrapped = false;
       _eraseRange(line, i + scrollBack, 0, viewWidth);
     }
-    _removeGraphicsInRows(scrollBack, absoluteCursorY - 1);
-    _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, _cursorX - 1);
   }
 
   /// Erases the whole viewport.
@@ -187,10 +184,6 @@ class Buffer {
       line.isWrapped = false;
       _eraseRange(line, i + scrollBack, 0, viewWidth);
     }
-    graphics.removePlaceholdersInRows(
-      scrollBack,
-      scrollBack + viewHeight - 1,
-    );
   }
 
   /// Erases the line from the cursor to the end of the line, including the
@@ -198,8 +191,6 @@ class Buffer {
   void eraseLineFromCursor() {
     currentLine.isWrapped = false;
     _eraseRange(currentLine, absoluteCursorY, _cursorX, viewWidth);
-    _removeGraphicsInRegion(
-        absoluteCursorY, absoluteCursorY, _cursorX, viewWidth - 1);
   }
 
   /// Erases the line from the start of the line to the cursor, including the
@@ -207,59 +198,32 @@ class Buffer {
   void eraseLineToCursor() {
     currentLine.isWrapped = false;
     _eraseRange(currentLine, absoluteCursorY, 0, _cursorX);
-    _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, _cursorX - 1);
   }
 
   /// Erases the line at the current cursor position.
   void eraseLine() {
     currentLine.isWrapped = false;
     _eraseRange(currentLine, absoluteCursorY, 0, viewWidth);
-    _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, viewWidth - 1);
   }
 
   /// Erases [count] cells starting at the cursor position.
   void eraseChars(int count) {
     final start = _cursorX;
     _eraseRange(currentLine, absoluteCursorY, start, start + count);
-    _removeGraphicsInRegion(
-      absoluteCursorY,
-      absoluteCursorY,
-      start,
-      min(start + count, viewWidth) - 1,
-    );
-  }
-
-  void _removeGraphicsInRows(int firstRow, int lastRow) {
-    if (lastRow < firstRow) return;
-    graphics.removePlaceholdersInRows(firstRow, lastRow);
   }
 
   void _eraseRange(
     BufferLine line,
-    int row,
+    int _,
     int start,
     int end,
   ) {
+    graphics.removePlaceholdersInLineRange(line, start, end);
     line.eraseRange(
       start,
       end,
       terminal.cursor,
-      preservedAnchors: graphics.physicalPlacementAnchorsInRow(row),
-    );
-  }
-
-  void _removeGraphicsInRegion(
-    int firstRow,
-    int lastRow,
-    int firstCol,
-    int lastCol,
-  ) {
-    if (lastRow < firstRow || lastCol < firstCol) return;
-    graphics.removePlaceholdersInRegion(
-      firstRow,
-      lastRow,
-      firstCol,
-      lastCol,
+      preservedAnchors: graphics.physicalPlacementAnchorsInLine(line),
     );
   }
 
@@ -270,6 +234,9 @@ class Buffer {
     if (regionHeight <= 0) return;
     final count = lines < regionHeight ? lines : regionHeight;
     if (count <= 0) return;
+    for (var i = bottom - count + 1; i <= bottom; i++) {
+      graphics.removeGraphicsAnchoredToLine(this.lines[i]);
+    }
     final reordered = <BufferLine>[
       for (var i = 0; i < count; i++) _newEmptyLine(),
       for (var i = top; i <= bottom - count; i++) this.lines[i],
@@ -284,6 +251,9 @@ class Buffer {
     if (regionHeight <= 0) return;
     final count = lines < regionHeight ? lines : regionHeight;
     if (count <= 0) return;
+    for (var i = top; i < top + count; i++) {
+      graphics.removeGraphicsAnchoredToLine(this.lines[i]);
+    }
     final reordered = <BufferLine>[
       for (var i = top + count; i <= bottom; i++) this.lines[i],
       for (var i = 0; i < count; i++) _newEmptyLine(),
@@ -302,6 +272,9 @@ class Buffer {
     if (isInVerticalMargin) {
       if (_cursorY == _marginBottom) {
         if (marginTop == 0 && !isAltBuffer) {
+          if (lines.isFull) {
+            graphics.removeGraphicsAnchoredToLine(lines[0]);
+          }
           lines.insert(absoluteMarginBottom + 1, _newEmptyLine());
         } else {
           scrollUp(1);
@@ -318,6 +291,9 @@ class Buffer {
       if (isAltBuffer) {
         scrollUp(1);
       } else {
+        if (lines.isFull) {
+          graphics.removeGraphicsAnchoredToLine(lines[0]);
+        }
         lines.push(_newEmptyLine());
       }
     } else {
@@ -435,6 +411,9 @@ class Buffer {
     }
 
     graphics.removePlacementsInRows(0, scrollBack - 1);
+    for (var row = 0; row < scrollBack; row++) {
+      graphics.removeGraphicsAnchoredToLine(lines[row]);
+    }
     lines.trimStart(scrollBack);
   }
 
@@ -470,11 +449,14 @@ class Buffer {
 
     for (var i = 0; i < linesToMove; i++) {
       final index = absoluteMarginBottom - i;
+      graphics.removeGraphicsAnchoredToLine(lines[index]);
       lines[index] = lines.swap(index - linesToInsert, _newEmptyLine());
     }
 
     for (var i = linesToMove; i < linesToInsert; i++) {
-      lines[absoluteCursorY + i] = _newEmptyLine();
+      final index = absoluteCursorY + i;
+      graphics.removeGraphicsAnchoredToLine(lines[index]);
+      lines[index] = _newEmptyLine();
     }
   }
 
@@ -490,6 +472,9 @@ class Buffer {
 
     count = min(count, absoluteMarginBottom - absoluteCursorY + 1);
 
+    for (var i = absoluteCursorY; i < absoluteCursorY + count; i++) {
+      graphics.removeGraphicsAnchoredToLine(lines[i]);
+    }
     final reordered = <BufferLine>[
       for (var i = absoluteCursorY + count; i <= absoluteMarginBottom; i++)
         lines[i],
@@ -557,6 +542,7 @@ class Buffer {
             // before detaching their anchors so stale placements cannot keep
             // decoded images alive after the row is gone.
             graphics.removePlacementsInRows(lastIndex, lastIndex);
+            graphics.removeGraphicsAnchoredToLine(lines[lastIndex]);
             lines.pop();
           } else if (_cursorY > 0) {
             // Once no rows remain below the cursor, the no-history host drops
@@ -565,20 +551,24 @@ class Buffer {
             // runs for the inactive alt buffer too, where clearScrollback()
             // would otherwise never run and the discarded rows could reappear.
             graphics.removePlacementsInRows(0, 0);
+            graphics.removeGraphicsAnchoredToLine(lines[0]);
             lines.trimStart(1);
             _cursorY--;
           } else {
             graphics.removePlacementsInRows(lastIndex, lastIndex);
+            graphics.removeGraphicsAnchoredToLine(lines[lastIndex]);
             lines.pop();
           }
           continue;
         }
         final canDropLast = lastIndex > absoluteCursorY;
         if (canDropLast && _isReclaimableRow(lastIndex)) {
+          graphics.removeGraphicsAnchoredToLine(lines[lastIndex]);
           lines.pop();
         } else if (_cursorY > 0) {
           _cursorY--;
         } else if (canDropLast) {
+          graphics.removeGraphicsAnchoredToLine(lines[lastIndex]);
           lines.pop();
         }
       }
@@ -597,6 +587,15 @@ class Buffer {
           reflowResult.add(_newEmptyLine(newWidth));
         }
 
+        final retainedStart = max(0, reflowResult.length - lines.maxLength);
+        final retainedLines = HashSet<BufferLine>.identity()
+          ..addAll(reflowResult.skip(retainedStart));
+        for (var row = 0; row < lines.length; row++) {
+          final line = lines[row];
+          if (!retainedLines.contains(line)) {
+            graphics.removeGraphicsAnchoredToLine(line);
+          }
+        }
         lines.replaceWith(reflowResult);
       } else {
         lines.forEach((item) => item.resize(newWidth));
@@ -622,7 +621,7 @@ class Buffer {
     if (lines[index].getTrimmedLength() != 0) {
       return false;
     }
-    return graphics.physicalPlacementAnchorsInRow(index).isEmpty;
+    return graphics.physicalPlacementAnchorsInLine(lines[index]).isEmpty;
   }
 
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
