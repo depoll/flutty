@@ -25,6 +25,7 @@ class TerminalTheme {
     required this.searchHitBackground,
     required this.searchHitBackgroundCurrent,
     required this.searchHitForeground,
+    this.paletteOverrides = const <int, Color>{},
   });
 
   final Color cursor;
@@ -50,6 +51,9 @@ class TerminalTheme {
   final Color brightMagenta;
   final Color brightCyan;
   final Color brightWhite;
+
+  /// Runtime overrides for arbitrary indexes in the 256-color palette.
+  final Map<int, Color> paletteOverrides;
 
   final Color searchHitBackground;
   final Color searchHitBackgroundCurrent;

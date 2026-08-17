@@ -1417,6 +1417,47 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     return true;
   }
 
+  /// Atomically submits a complete graphics command when no multipart Kitty
+  /// transmission is active.
+  ///
+  /// Returns false instead of corrupting the pending command when another
+  /// protocol attempts to interleave a complete image.
+  bool submitGraphicsCommand(Map<String, String> args, List<int> data) {
+    if (_graphicsActive) return false;
+    graphicsCommandStart(args);
+    graphicsDataChunk(data);
+    graphicsCommandEnd();
+    return true;
+  }
+
+  /// Fits an encoded image inside a terminal-cell bounding box while
+  /// preserving its decoded pixel aspect ratio as closely as cell rounding
+  /// permits.
+  ({int columns, int rows})? fitGraphicsInCellBounds(
+    Uint8List data, {
+    required int maxColumns,
+    required int maxRows,
+  }) {
+    if (maxColumns <= 0 || maxRows <= 0) return null;
+    final dimensions = _graphicsPayloadDimensions(const {'f': '98'}, data);
+    if (dimensions == null || dimensions.width <= 0 || dimensions.height <= 0) {
+      return null;
+    }
+    final rowsPerColumn = dimensions.height /
+        dimensions.width *
+        _buffer.graphics.cellPixelAspectRatio;
+    if (!rowsPerColumn.isFinite || rowsPerColumn <= 0) return null;
+
+    var columns = maxColumns;
+    var rows = (columns * rowsPerColumn).ceil();
+    if (rows > maxRows) {
+      rows = maxRows;
+      columns = (rows / rowsPerColumn).floor().clamp(1, maxColumns);
+      rows = (columns * rowsPerColumn).ceil().clamp(1, maxRows);
+    }
+    return (columns: columns.clamp(1, maxColumns), rows: rows);
+  }
+
   @override
   void graphicsDataChunk(List<int> data) {
     if (!_graphicsActive) return;

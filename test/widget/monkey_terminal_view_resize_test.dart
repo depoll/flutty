@@ -838,6 +838,31 @@ void main() {
     }
   });
 
+  test('runtime overrides replace extended xterm palette colors', () {
+    final theme = monkey_themes.TerminalThemes.defaultDarkTheme
+        .copyWith(
+          paletteOverrides: const <int, Color>{
+            16: Color(0xFF123456),
+            244: Color(0xFFABCDEF),
+          },
+        )
+        .toXtermTheme();
+    final painter = MonkeyTerminalPainter(
+      theme: theme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+
+    expect(
+      painter.resolveForegroundColor(CellColor.palette | 16),
+      const Color(0xFF123456),
+    );
+    expect(
+      painter.resolveBackgroundColor(CellColor.palette | 244),
+      const Color(0xFFABCDEF),
+    );
+  });
+
   test('ANSI bright colors follow the active theme palette', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
         .toXtermTheme();
