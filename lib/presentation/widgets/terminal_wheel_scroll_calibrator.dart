@@ -183,8 +183,8 @@ class TerminalWheelScrollCalibrator {
             after: _latestAfter!,
           ) ??
           previousRows;
-      _isCalibrated = true;
     }
+    _isCalibrated = true;
     final onSettled = _onSettled;
     _cancelPending(notify: false);
     onSettled?.call(previousRows, _rowsPerEvent);

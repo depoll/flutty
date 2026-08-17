@@ -210,6 +210,93 @@ void main() {
     }
   });
 
+  testWidgets(
+    'alt buffer direct owner routes an actual touch drag to wheel input',
+    (tester) async {
+      final terminal = Terminal()
+        ..useAltBuffer()
+        ..setMouseMode(MouseMode.upDownScroll)
+        ..setMouseReportMode(MouseReportMode.sgr);
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              hardwareKeyboardOnly: true,
+              simulateScroll: false,
+            ),
+          ),
+        ),
+      );
+
+      await tester.drag(find.byType(MonkeyTerminalView), const Offset(0, -120));
+      await tester.pump();
+
+      expect(output.join(), contains('\x1b[<65;'));
+    },
+  );
+
+  testWidgets('wheel calibration timeout drains queued touch distance', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..resize(40, 10)
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            autoResize: false,
+            hardwareKeyboardOnly: true,
+            touchScrollToTerminal: true,
+          ),
+        ),
+      ),
+    );
+    _renderAdaptiveScrollRows(terminal, 0);
+    await tester.pump();
+
+    final output = <String>[];
+    terminal.onOutput = output.add;
+    final terminalState = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final lineHeight = terminalState.renderTerminal.lineHeight;
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(150, 100),
+      ),
+    );
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: Offset(150, 100 - lineHeight * 3),
+        localPosition: Offset(150, 100 - lineHeight * 3),
+        delta: Offset(0, -lineHeight * 3),
+      ),
+    );
+
+    expect(output, hasLength(1));
+    await tester.pump(const Duration(milliseconds: 301));
+    expect(output, hasLength(3));
+    detector.onTouchScrollCancel!();
+  });
+
   testWidgets('touch scroll falls back to arrow keys in alt buffer', (
     tester,
   ) async {

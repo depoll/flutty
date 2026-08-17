@@ -1039,6 +1039,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _touchScrollMouseMode = nextMouseMode;
     _touchScrollMouseReportMode = nextMouseReportMode;
     if (transportChanged) {
+      _cancelDirectTouchScrollDrag();
       _touchWheelCalibrator.reset();
       _touchScrollRemainder = 0;
       _stopTouchScrollInertia();
@@ -1397,7 +1398,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           : _onDirectTouchScrollEnd,
       onTouchScrollCancel: widget.touchScrollToTerminal
           ? _onTouchScrollCancel
-          : _cancelDirectTouchScrollDrag,
+          : _onDirectTouchScrollCancel,
       touchScrollVelocityTrackerBuilder: inheritedScrollBehavior
           .velocityTrackerBuilder(context),
       touchScrollMultitouchDragStrategy: inheritedScrollBehavior
@@ -1533,6 +1534,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _onDirectTouchScrollStart(DragStartDetails details) {
+    if (widget.terminal.isUsingAltBuffer) {
+      _onTouchScrollStart(details);
+      return;
+    }
     _cancelDirectTouchScrollDrag();
     final position = _scrollableKey.currentState?.position;
     if (position == null) {
@@ -1546,6 +1551,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _onDirectTouchScrollUpdate(DragUpdateDetails details) {
+    if (widget.terminal.isUsingAltBuffer) {
+      _onTouchScrollUpdate(details);
+      return;
+    }
     final primaryDelta = details.primaryDelta;
     final drag = _directTouchScrollDrag;
     if (primaryDelta == null || drag == null) {
@@ -1565,6 +1574,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _onDirectTouchScrollEnd(DragEndDetails details) {
+    if (widget.terminal.isUsingAltBuffer) {
+      _onTouchScrollEnd(details);
+      return;
+    }
     final drag = _directTouchScrollDrag;
     if (drag == null) {
       return;
@@ -1584,6 +1597,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       ),
     );
     _directTouchScrollDrag = null;
+  }
+
+  void _onDirectTouchScrollCancel() {
+    if (widget.terminal.isUsingAltBuffer) {
+      _onTouchScrollCancel();
+      return;
+    }
+    _cancelDirectTouchScrollDrag();
   }
 
   void _onTouchScrollCancel() {
