@@ -212,11 +212,11 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
       insert(index, items[i]);
       // when the list is full then we have to move the index down
       // as newly inserted values remove values with a lower index
-      if (_length >= _array.length) {
+      if (_length >= _array.length && index > 0) {
+        // Generic full-buffer insertion evicts a lower index, so move left for
+        // the next item. At zero, insertion now drops the last item instead;
+        // keep inserting at zero to preserve every leading input item.
         index--;
-        if (index < 0) {
-          return;
-        }
       }
     }
   }

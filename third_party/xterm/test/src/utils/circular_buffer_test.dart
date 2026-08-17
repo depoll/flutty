@@ -282,6 +282,19 @@ void main() {
       expect(() => cl.swap(1, IndexedValue(2)), throwsRangeError);
     });
 
+    test('insert all at the front of a full buffer keeps every input item', () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(5)
+        ..pushAll(
+          List<int>.generate(5, (index) => index).map(IndexedValue.new),
+        );
+
+      cl.insertAll(0, [IndexedValue(10), IndexedValue(11)]);
+
+      expect(cl.length, 5);
+      expect(cl.toList(),
+          [10.indexed, 11.indexed, 0.indexed, 1.indexed, 2.indexed]);
+    });
+
     test("insert all works", () {
       final cl = IndexAwareCircularBuffer<IndexedValue<int>>(10);
       cl.pushAll(
