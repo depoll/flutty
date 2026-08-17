@@ -419,6 +419,13 @@ void main() {
     expect(gestureDetector.onTouchScrollUpdate, isNotNull);
     expect(gestureDetector.onTouchScrollEnd, isNotNull);
     expect(gestureDetector.onTouchScrollCancel, isNotNull);
+    expect(gestureDetector.touchScrollVelocityTrackerBuilder, isNotNull);
+    final terminalContext = tester.element(find.byType(MonkeyTerminalView));
+    final inheritedBehavior = ScrollConfiguration.of(terminalContext);
+    expect(
+      gestureDetector.touchScrollMultitouchDragStrategy,
+      inheritedBehavior.getMultitouchDragStrategy(terminalContext),
+    );
   });
 
   testWidgets('canceling direct touch scroll releases its drag activity', (

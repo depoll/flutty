@@ -32,6 +32,8 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     this.onTouchScrollUpdate,
     this.onTouchScrollEnd,
     this.onTouchScrollCancel,
+    this.touchScrollVelocityTrackerBuilder,
+    this.touchScrollMultitouchDragStrategy,
     this.resolveLinkTap,
     this.onLinkTapDown,
     this.onLinkTap,
@@ -67,6 +69,10 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
   final GestureDragEndCallback? onTouchScrollEnd;
 
   final GestureDragCancelCallback? onTouchScrollCancel;
+
+  final GestureVelocityTrackerBuilder? touchScrollVelocityTrackerBuilder;
+
+  final MultitouchDragStrategy? touchScrollMultitouchDragStrategy;
 
   /// Optional override for touch long-press start. When provided, the default
   /// behavior of selecting a word in the terminal is suppressed.
@@ -129,6 +135,10 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onTouchScrollUpdate: onTouchScrollUpdate,
       onTouchScrollEnd: onTouchScrollEnd,
       onTouchScrollCancel: onTouchScrollCancel,
+      touchScrollVelocityTrackerBuilder:
+          widget.touchScrollVelocityTrackerBuilder,
+      touchScrollMultitouchDragStrategy:
+          widget.touchScrollMultitouchDragStrategy,
       onLongPressStart: widget.enableTerminalSelectionGestures
           ? onLongPressStart
           : null,

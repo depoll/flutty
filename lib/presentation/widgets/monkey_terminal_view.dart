@@ -1360,6 +1360,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       onTouchScrollCancel: widget.touchScrollToTerminal
           ? _onTouchScrollCancel
           : _cancelDirectTouchScrollDrag,
+      touchScrollVelocityTrackerBuilder: inheritedScrollBehavior
+          .velocityTrackerBuilder(context),
+      touchScrollMultitouchDragStrategy: inheritedScrollBehavior
+          .getMultitouchDragStrategy(context),
       readOnly: widget.readOnly || widget.useSystemSelection,
       enableTerminalSelectionGestures: !widget.useSystemSelection,
       child: child,

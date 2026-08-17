@@ -28,6 +28,8 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
     this.onTouchScrollUpdate,
     this.onTouchScrollEnd,
     this.onTouchScrollCancel,
+    this.touchScrollVelocityTrackerBuilder,
+    this.touchScrollMultitouchDragStrategy,
     this.onDoubleTapDown,
     this.shouldBypassDoubleTap,
   });
@@ -71,6 +73,10 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
   final GestureDragEndCallback? onTouchScrollEnd;
 
   final GestureDragCancelCallback? onTouchScrollCancel;
+
+  final GestureVelocityTrackerBuilder? touchScrollVelocityTrackerBuilder;
+
+  final MultitouchDragStrategy? touchScrollMultitouchDragStrategy;
 
   @override
   State<MonkeyTerminalGestureDetector> createState() =>
@@ -219,6 +225,16 @@ class _MonkeyTerminalGestureDetectorState
                 ..onUpdate = widget.onTouchScrollUpdate
                 ..onEnd = widget.onTouchScrollEnd
                 ..onCancel = widget.onTouchScrollCancel;
+              final velocityTrackerBuilder =
+                  widget.touchScrollVelocityTrackerBuilder;
+              if (velocityTrackerBuilder != null) {
+                instance.velocityTrackerBuilder = velocityTrackerBuilder;
+              }
+              final multitouchDragStrategy =
+                  widget.touchScrollMultitouchDragStrategy;
+              if (multitouchDragStrategy != null) {
+                instance.multitouchDragStrategy = multitouchDragStrategy;
+              }
             },
           );
     }
