@@ -129,6 +129,38 @@ void main() {
         isNull,
       );
     });
+
+    testWidgets('uses a late response when the hard timeout settles', (
+      tester,
+    ) async {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      ({int previous, int current})? settled;
+      expect(
+        calibrator.begin(
+          before: before,
+          onSettled: (previous, current) {
+            settled = (previous: previous, current: current);
+          },
+        ),
+        isTrue,
+      );
+
+      await tester.pump(const Duration(milliseconds: 250));
+      calibrator.terminalChanged(const <String>[
+        'header',
+        'row four',
+        'row five',
+        'row six',
+        'row seven',
+        'row eight',
+        'footer',
+      ]);
+      await tester.pump(const Duration(milliseconds: 51));
+
+      expect(settled, (previous: 1, current: 3));
+      expect(calibrator.waitingForResponse, isFalse);
+    });
   });
 
   testWidgets('touch cadence adapts to application wheel row granularity', (

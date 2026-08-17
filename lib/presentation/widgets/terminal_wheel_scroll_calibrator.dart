@@ -149,7 +149,10 @@ class TerminalWheelScrollCalibrator {
     }
     _before = before;
     _onSettled = onSettled;
-    _timeoutTimer = Timer(responseTimeout, () => _finish(hadResponse: false));
+    _timeoutTimer = Timer(
+      responseTimeout,
+      () => _finish(hadResponse: _latestAfter != null),
+    );
     return true;
   }
 
