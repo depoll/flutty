@@ -58,6 +58,9 @@ import 'terminal_key_input.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
 
+// Match direct pixel scrolling to the conventional multi-row terminal wheel
+// pace.
+const _terminalViewportTouchScrollSensitivity = 3.0;
 const _minimumFaintTextContrast = 4.5;
 const _minimumCursorTextContrast = 4.5;
 const _minimumCellTextContrast = 4.5;
@@ -76,6 +79,21 @@ const _backgroundAlphaCandidates = <int>[
   0xB8,
   0xCC,
 ];
+
+class _TerminalViewportScrollPhysics extends ScrollPhysics {
+  const _TerminalViewportScrollPhysics({super.parent});
+
+  @override
+  _TerminalViewportScrollPhysics applyTo(ScrollPhysics? ancestor) =>
+      _TerminalViewportScrollPhysics(parent: buildParent(ancestor));
+
+  @override
+  double applyPhysicsToUserOffset(ScrollMetrics position, double offset) =>
+      super.applyPhysicsToUserOffset(
+        position,
+        offset * _terminalViewportTouchScrollSensitivity,
+      );
+}
 
 /// A single Kitty Unicode-placeholder cell resolved for compositing.
 ///
@@ -1221,7 +1239,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       controller: _scrollController,
       physics: widget.touchScrollToTerminal
           ? const NeverScrollableScrollPhysics()
-          : null,
+          : _TerminalViewportScrollPhysics(
+              parent: ScrollConfiguration.of(context).getScrollPhysics(context),
+            ),
       viewportBuilder: (context, offset) {
         final mediaQuery = MediaQuery.of(context);
         Widget buildTerminalLeaf(BuildContext context) => _TerminalView(

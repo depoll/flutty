@@ -283,6 +283,43 @@ void main() {
     },
   );
 
+  testWidgets('direct terminal scrollback accelerates touch drags', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(scrollController.offset, greaterThan(100));
+    final gesture = await tester.createGesture();
+    await gesture.down(tester.getCenter(find.byType(MonkeyTerminalView)));
+    await gesture.moveBy(const Offset(0, 20));
+    await tester.pump();
+
+    final offsetAfterDragStart = scrollController.offset;
+    await gesture.moveBy(const Offset(0, 20));
+    await tester.pump();
+
+    expect(offsetAfterDragStart - scrollController.offset, closeTo(60, 0.01));
+    await gesture.up();
+  });
+
   testWidgets('scroll reset clears pending touch scroll distance', (
     tester,
   ) async {
