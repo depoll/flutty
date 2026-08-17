@@ -1763,7 +1763,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         (widget.terminal.mouseMode.reportScroll &&
             widget.terminal.mouseReportMode == MouseReportMode.sgr);
     if (canBatchSgr) {
-      var budget = 6;
+      // A single protocol report can move several application rows. Give
+      // multi-row responders a render opportunity between reports instead of
+      // batching several coarse jumps into the same frame.
+      var budget = _touchWheelCalibrator.rowsPerEvent > 1 ? 1 : 6;
       while (budget > 0 && _pendingTouchScrollRuns.isNotEmpty) {
         final run = _pendingTouchScrollRuns.first;
         final count = math.min(run.count, budget);

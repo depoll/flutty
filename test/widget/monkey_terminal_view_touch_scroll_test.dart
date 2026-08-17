@@ -370,12 +370,23 @@ void main() {
         ),
       );
 
-      // Once measured, a later gesture emits continuously instead of pausing
-      // after one report to probe the same application again.
+      // Once measured, a later gesture emits without another response probe.
+      // Coarse responders are paced one report per frame so several multi-row
+      // jumps cannot collapse into one visual update.
+      final reportsBeforeGesture = 6 ~/ rowsPerWheelEvent;
+      final reportsInGesture = 6 ~/ rowsPerWheelEvent;
+      final immediateReports = rowsPerWheelEvent > 1 ? 1 : reportsInGesture;
       expect(
         _countOccurrences(output.join(), '\x1b[<65;'),
-        12 ~/ rowsPerWheelEvent,
+        reportsBeforeGesture + immediateReports,
       );
+      if (rowsPerWheelEvent > 1) {
+        await tester.pump();
+        expect(
+          _countOccurrences(output.join(), '\x1b[<65;'),
+          reportsBeforeGesture + reportsInGesture,
+        );
+      }
       detector.onTouchScrollCancel!();
     }
   });
