@@ -81,6 +81,7 @@ import '../widgets/terminal_selection_text.dart' as terminal_selection_text;
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
+import '../widgets/terminal_touch_scroll_policy.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
 import 'port_forward_browser_screen.dart';
@@ -2899,6 +2900,23 @@ bool terminalReportsMouseWheelForScroll({
 }) =>
     localTerminalReportsMouseWheel || (activeWindowReportsMouseWheel ?? false);
 
+/// Resolves the active agent tool used for terminal scroll policy.
+@visibleForTesting
+AgentLaunchTool? activeAgentToolForTerminalScroll({
+  required AgentLaunchTool? activeWindowTool,
+  required AgentLaunchTool? startupTool,
+  required bool hasWindowSnapshot,
+  String? currentCommand,
+}) {
+  if (activeWindowTool != null) return activeWindowTool;
+  final command = currentCommand?.trim();
+  final commandTool = command == null
+      ? null
+      : agentLaunchToolForCommandName(command);
+  if (commandTool != null) return commandTool;
+  return hasWindowSnapshot ? null : startupTool;
+}
+
 /// Whether the active terminal context is a known agent tool for scroll policy.
 @visibleForTesting
 bool isAgentToolActiveForTerminalScroll({
@@ -2906,16 +2924,14 @@ bool isAgentToolActiveForTerminalScroll({
   required AgentLaunchTool? startupTool,
   required bool hasWindowSnapshot,
   String? currentCommand,
-}) {
-  if (activeWindowTool != null) {
-    return true;
-  }
-  final command = currentCommand?.trim();
-  if (command != null && agentLaunchToolForCommandName(command) != null) {
-    return true;
-  }
-  return !hasWindowSnapshot && startupTool != null;
-}
+}) =>
+    activeAgentToolForTerminalScroll(
+      activeWindowTool: activeWindowTool,
+      startupTool: startupTool,
+      hasWindowSnapshot: hasWindowSnapshot,
+      currentCommand: currentCommand,
+    ) !=
+    null;
 
 /// Whether touch scroll should send SGR wheel reports from mux metadata even
 /// when local xterm mouse-mode state is stale.
@@ -3965,15 +3981,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     isAgentToolActive: _isAgentToolActive,
   );
 
-  bool get _isAgentToolActive {
+  AgentLaunchTool? get _activeAgentToolForTerminalScroll {
     final windows = _currentTmuxWindowsSnapshot;
-    return isAgentToolActiveForTerminalScroll(
+    return activeAgentToolForTerminalScroll(
       activeWindowTool: resolveTmuxBarActiveWindowTool(windows),
       startupTool: _remoteMuxStartupTool,
       hasWindowSnapshot: windows != null,
       currentCommand: _tmuxCurrentCommand,
     );
   }
+
+  bool get _isAgentToolActive => _activeAgentToolForTerminalScroll != null;
 
   bool get _forceSgrTouchScroll => shouldForceSgrTouchScroll(
     activeWindowReportsMouseWheel: _activeWindowReportsMouseWheel,
@@ -13482,6 +13500,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onPasteText: _pasteClipboard,
       onUserInput: _handleTerminalUserInput,
       onTapDown: (_, _) => _claimActiveMonkeyMuxClientFocus(),
+    );
+
+    terminalView = MonkeyTerminalTouchScrollPolicy(
+      coalesce: _activeAgentToolForTerminalScroll == AgentLaunchTool.pi,
+      child: terminalView,
     );
 
     if (_lastShowsTerminalPathUnderlines != showsTerminalPathUnderlines) {

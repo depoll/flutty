@@ -200,6 +200,46 @@ void main() {
     });
   });
 
+  test('preserves exact active tool identity for scroll tuning', () {
+    expect(
+      activeAgentToolForTerminalScroll(
+        activeWindowTool: AgentLaunchTool.pi,
+        startupTool: AgentLaunchTool.copilotCli,
+        hasWindowSnapshot: true,
+      ),
+      AgentLaunchTool.pi,
+    );
+    expect(
+      activeAgentToolForTerminalScroll(
+        activeWindowTool: AgentLaunchTool.copilotCli,
+        startupTool: AgentLaunchTool.pi,
+        hasWindowSnapshot: true,
+      ),
+      AgentLaunchTool.copilotCli,
+    );
+  });
+
+  test('resolves Pi from current command without tuning other agents', () {
+    expect(
+      activeAgentToolForTerminalScroll(
+        activeWindowTool: null,
+        startupTool: null,
+        hasWindowSnapshot: true,
+        currentCommand: 'pi',
+      ),
+      AgentLaunchTool.pi,
+    );
+    expect(
+      activeAgentToolForTerminalScroll(
+        activeWindowTool: null,
+        startupTool: null,
+        hasWindowSnapshot: true,
+        currentCommand: 'copilot',
+      ),
+      AgentLaunchTool.copilotCli,
+    );
+  });
+
   group('terminal mux mouse mode scroll helpers', () {
     test('uses mux window mouse reporting when local mode is stale', () {
       expect(

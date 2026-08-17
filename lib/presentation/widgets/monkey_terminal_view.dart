@@ -57,6 +57,7 @@ import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_key_input.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
+import 'terminal_touch_scroll_policy.dart';
 
 const _minimumFaintTextContrast = 4.5;
 const _minimumCursorTextContrast = 4.5;
@@ -792,6 +793,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   String? _composingText;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
+  bool _coalesceTouchScrollToRemoteFrames = false;
   bool _touchScrollWaitingForRemoteFrame = false;
   bool _touchScrollDrainScheduled = false;
   int _touchScrollDispatchGeneration = 0;
@@ -878,6 +880,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final coalesceTouchScroll =
+        MonkeyTerminalTouchScrollPolicy.maybeOf(context)?.coalesce ?? false;
+    if (coalesceTouchScroll != _coalesceTouchScrollToRemoteFrames) {
+      _stopTouchScrollInertia();
+      _resetTouchScrollDispatch();
+      _coalesceTouchScrollToRemoteFrames = coalesceTouchScroll;
+    }
     // Terminal images are user-requested media, not UI transitions. Android
     // reports disableAnimations when developer/emulator animation scales are
     // zero, which must not freeze GIFs in the terminal. iOS exposes its actual
@@ -1520,16 +1529,20 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (stepHeight <= 0) {
       return;
     }
-    const maxQueuedSteps = 6;
-    _touchScrollRemainder = (_touchScrollRemainder + delta).clamp(
-      -stepHeight * maxQueuedSteps,
-      stepHeight * maxQueuedSteps,
-    );
+    _touchScrollRemainder += delta;
+    if (_coalesceTouchScrollToRemoteFrames) {
+      const maxQueuedSteps = 6;
+      _touchScrollRemainder = _touchScrollRemainder.clamp(
+        -stepHeight * maxQueuedSteps,
+        stepHeight * maxQueuedSteps,
+      );
+    }
     _drainTouchScrollInput();
   }
 
   void _drainTouchScrollInput() {
-    if (_touchScrollWaitingForRemoteFrame || _touchScrollDrainScheduled) {
+    if (_coalesceTouchScrollToRemoteFrames &&
+        (_touchScrollWaitingForRemoteFrame || _touchScrollDrainScheduled)) {
       return;
     }
     final stepHeight = _touchScrollStepHeight;
@@ -1541,13 +1554,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       final scrollUp = _touchScrollRemainder > 0;
       final reportsWheel =
           widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll;
-      final queuedSteps = reportsWheel
+      final queuedSteps = reportsWheel && _coalesceTouchScrollToRemoteFrames
           ? (_touchScrollRemainder.abs() / stepHeight).floor().clamp(1, 6)
           : 1;
       final handled = _sendTouchScrollMouseInput(
         scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
         _resolveViewportMousePosition(_lastTouchScrollPosition),
-        repeatCount: reportsWheel
+        repeatCount: reportsWheel && _coalesceTouchScrollToRemoteFrames
             ? _touchScrollReportedWheelEventsPerBatch * queuedSteps
             : 1,
       );
@@ -1555,17 +1568,19 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _touchScrollRemainder += scrollUp ? -consumedDistance : consumedDistance;
 
       if (handled) {
-        // Full-screen TUIs such as Pi render their whole transcript for each
-        // wheel event. Keep only a bounded amount of remaining gesture distance
-        // and wait for output (or the safety timeout) before requesting another
-        // expensive redraw.
-        _touchScrollWaitingForRemoteFrame = true;
-        _touchScrollRemoteFrameTimer?.cancel();
-        _touchScrollRemoteFrameTimer = Timer(
-          terminalTouchScrollRemoteFrameTimeout,
-          _releaseTouchScrollRemoteFrame,
-        );
-        return;
+        if (_coalesceTouchScrollToRemoteFrames) {
+          // Full-screen TUIs such as Pi render their whole transcript for each
+          // wheel event. Keep only bounded remaining gesture distance and wait
+          // for output (or the timeout) before requesting another redraw.
+          _touchScrollWaitingForRemoteFrame = true;
+          _touchScrollRemoteFrameTimer?.cancel();
+          _touchScrollRemoteFrameTimer = Timer(
+            terminalTouchScrollRemoteFrameTimeout,
+            _releaseTouchScrollRemoteFrame,
+          );
+          return;
+        }
+        continue;
       }
       if (widget.simulateScroll) {
         widget.terminal.keyInput(

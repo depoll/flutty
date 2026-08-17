@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_gesture_detector.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
+import 'package:monkeyssh/presentation/widgets/terminal_touch_scroll_policy.dart';
 import 'package:xterm/xterm.dart';
 
 int _countOccurrences(String text, String pattern) {
@@ -182,7 +183,7 @@ void main() {
     await tester.pump();
 
     expect(output, hasLength(1));
-    expect(_countOccurrences(output.single, '\u001b[<65;'), 3);
+    expect(_countOccurrences(output.single, '\u001b[<65;'), 1);
   });
 
   testWidgets(
@@ -197,12 +198,15 @@ void main() {
           home: SizedBox(
             width: 300,
             height: 200,
-            child: MonkeyTerminalView(
-              terminal,
-              hardwareKeyboardOnly: true,
-              touchScrollToTerminal: true,
-              simulateScroll: false,
-              forceSgrTouchScroll: true,
+            child: MonkeyTerminalTouchScrollPolicy(
+              coalesce: true,
+              child: MonkeyTerminalView(
+                terminal,
+                hardwareKeyboardOnly: true,
+                touchScrollToTerminal: true,
+                simulateScroll: false,
+                forceSgrTouchScroll: true,
+              ),
             ),
           ),
         ),
@@ -351,9 +355,7 @@ void main() {
 
       final wheelCount = _countOccurrences(wheelOutput.join(), '\u001b[<65;');
       expect(wheelCount, greaterThan(0));
-      expect(wheelOutput.length, lessThan(arrowCount));
-      expect(wheelCount % 3, 0);
-      expect(wheelCount, lessThanOrEqualTo(wheelOutput.length * 18));
+      expect(wheelCount, lessThan(arrowCount));
     },
   );
 
