@@ -80,35 +80,6 @@ const _backgroundAlphaCandidates = <int>[
   0xCC,
 ];
 
-class _TerminalViewportScrollPhysics extends ScrollPhysics {
-  const _TerminalViewportScrollPhysics({
-    super.parent,
-    required this.shouldAccelerate,
-  });
-
-  final bool Function() shouldAccelerate;
-
-  double get _gain =>
-      shouldAccelerate() ? _terminalViewportTouchScrollSensitivity : 1.0;
-
-  @override
-  _TerminalViewportScrollPhysics applyTo(ScrollPhysics? ancestor) =>
-      _TerminalViewportScrollPhysics(
-        parent: buildParent(ancestor),
-        shouldAccelerate: shouldAccelerate,
-      );
-
-  @override
-  double applyPhysicsToUserOffset(ScrollMetrics position, double offset) =>
-      super.applyPhysicsToUserOffset(position, offset * _gain);
-
-  @override
-  Simulation? createBallisticSimulation(
-    ScrollMetrics position,
-    double velocity,
-  ) => super.createBallisticSimulation(position, velocity * _gain);
-}
-
 /// A single Kitty Unicode-placeholder cell resolved for compositing.
 ///
 /// Each cell carries both its on-screen position ([cellRow]/[cellCol]) and the
@@ -809,8 +780,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   final _viewportKey = GlobalKey();
 
   String? _composingText;
-  PointerDeviceKind? _directScrollInputKind;
-  int? _directScrollInputPointer;
+  Drag? _directTouchScrollDrag;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
   late final Ticker _touchScrollInertiaTicker;
@@ -934,6 +904,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   @override
   void didUpdateWidget(covariant MonkeyTerminalView oldWidget) {
     if (oldWidget.terminal != widget.terminal) {
+      _cancelDirectTouchScrollDrag();
       oldWidget.terminal.removeListener(_handleTerminalMetricsChanged);
       _stopGraphicsAnimationTicker();
       _lastTerminalViewWidth = widget.terminal.viewWidth;
@@ -955,6 +926,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _controller = widget.controller ?? TerminalController();
     }
     if (oldWidget.scrollController != widget.scrollController) {
+      _cancelDirectTouchScrollDrag();
       _scrollController.removeListener(_handleViewportScrolled);
       if (oldWidget.scrollController == null) {
         _scrollController.dispose();
@@ -967,15 +939,19 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
     }
-    if (oldWidget.touchScrollToTerminal && !widget.touchScrollToTerminal) {
-      _stopTouchScrollInertia();
-      _touchScrollRemainder = 0;
+    if (oldWidget.touchScrollToTerminal != widget.touchScrollToTerminal) {
+      _cancelDirectTouchScrollDrag();
+      if (oldWidget.touchScrollToTerminal) {
+        _stopTouchScrollInertia();
+        _touchScrollRemainder = 0;
+      }
     }
     if (oldWidget.forceSgrTouchScroll != widget.forceSgrTouchScroll) {
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
     }
     if (oldWidget.scrollResetGeneration != widget.scrollResetGeneration) {
+      _cancelDirectTouchScrollDrag();
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
     }
@@ -990,6 +966,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     WidgetsBinding.instance.removeObserver(this);
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
     _pendingFocusInReportTimer?.cancel();
+    _cancelDirectTouchScrollDrag();
     _stopTouchScrollInertia();
     _touchScrollInertiaTicker.dispose();
     _stopGraphicsAnimationTicker();
@@ -1250,52 +1227,51 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     final shouldFillHorizontalRemainder =
         terminalViewportPadding.left == 0 && terminalViewportPadding.right == 0;
 
-    Widget child = Scrollable(
-      key: _scrollableKey,
-      controller: _scrollController,
-      physics: widget.touchScrollToTerminal
-          ? const NeverScrollableScrollPhysics()
-          : _TerminalViewportScrollPhysics(
-              shouldAccelerate: _shouldAccelerateDirectScroll,
-            ),
-      viewportBuilder: (context, offset) {
-        final mediaQuery = MediaQuery.of(context);
-        Widget buildTerminalLeaf(BuildContext context) => _TerminalView(
-          key: _viewportKey,
-          terminal: widget.terminal,
-          controller: _controller,
-          offset: offset,
-          padding: EdgeInsets.zero,
-          alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
-          autoResize: widget.autoResize,
-          resizeTerminalToViewport: widget.resizeTerminalToViewport,
-          resizeBottomInset: mediaQuery.viewInsets.bottom,
-          liveOutputAutoScroll: widget.liveOutputAutoScroll,
-          textStyle: widget.textStyle,
-          textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
-          theme: widget.theme,
-          inlineUnderlines: widget.inlineUnderlines,
-          focusNode: cursorFocusNode,
-          cursorType: widget.cursorType,
-          alwaysShowCursor: widget.alwaysShowCursor,
-          onEditableRect: _onEditableRect,
-          composingText: _composingText,
-          selectionRegistrar: SelectionContainer.maybeOf(context),
-        );
-        return Builder(builder: buildTerminalLeaf);
-      },
-    );
+    final inheritedScrollBehavior = ScrollConfiguration.of(context);
+    final directScrollDragDevices = <PointerDeviceKind>{
+      ...inheritedScrollBehavior.dragDevices,
+    }..remove(PointerDeviceKind.touch);
 
-    if (!widget.touchScrollToTerminal) {
-      child = Listener(
-        onPointerMove: _rememberDirectScrollInput,
-        onPointerUp: _deferForgetDirectScrollInput,
-        onPointerCancel: _deferForgetDirectScrollInput,
-        onPointerPanZoomUpdate: _rememberDirectScrollInput,
-        onPointerPanZoomEnd: _deferForgetDirectScrollInput,
-        child: child,
-      );
-    }
+    Widget child = ScrollConfiguration(
+      behavior: inheritedScrollBehavior.copyWith(
+        dragDevices: directScrollDragDevices,
+      ),
+      child: Scrollable(
+        key: _scrollableKey,
+        controller: _scrollController,
+        physics: widget.touchScrollToTerminal
+            ? const NeverScrollableScrollPhysics()
+            : null,
+        viewportBuilder: (context, offset) {
+          final mediaQuery = MediaQuery.of(context);
+          Widget buildTerminalLeaf(BuildContext context) => _TerminalView(
+            key: _viewportKey,
+            terminal: widget.terminal,
+            controller: _controller,
+            offset: offset,
+            padding: EdgeInsets.zero,
+            alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(
+              mediaQuery,
+            ),
+            autoResize: widget.autoResize,
+            resizeTerminalToViewport: widget.resizeTerminalToViewport,
+            resizeBottomInset: mediaQuery.viewInsets.bottom,
+            liveOutputAutoScroll: widget.liveOutputAutoScroll,
+            textStyle: widget.textStyle,
+            textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
+            theme: widget.theme,
+            inlineUnderlines: widget.inlineUnderlines,
+            focusNode: cursorFocusNode,
+            cursorType: widget.cursorType,
+            alwaysShowCursor: widget.alwaysShowCursor,
+            onEditableRect: _onEditableRect,
+            composingText: _composingText,
+            selectionRegistrar: SelectionContainer.maybeOf(context),
+          );
+          return Builder(builder: buildTerminalLeaf);
+        },
+      ),
+    );
 
     if (widget.useSystemSelection) {
       child = SelectionArea(
@@ -1374,11 +1350,16 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       onLinkTap: widget.onLinkTap,
       onTouchScrollStart: widget.touchScrollToTerminal
           ? _onTouchScrollStart
-          : null,
+          : _onDirectTouchScrollStart,
       onTouchScrollUpdate: widget.touchScrollToTerminal
           ? _onTouchScrollUpdate
-          : null,
-      onTouchScrollEnd: widget.touchScrollToTerminal ? _onTouchScrollEnd : null,
+          : _onDirectTouchScrollUpdate,
+      onTouchScrollEnd: widget.touchScrollToTerminal
+          ? _onTouchScrollEnd
+          : _onDirectTouchScrollEnd,
+      onTouchScrollCancel: widget.touchScrollToTerminal
+          ? _onTouchScrollCancel
+          : _cancelDirectTouchScrollDrag,
       readOnly: widget.readOnly || widget.useSystemSelection,
       enableTerminalSelectionGestures: !widget.useSystemSelection,
       child: child,
@@ -1504,24 +1485,68 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.onSecondaryTapUp?.call(details, offset);
   }
 
-  bool _shouldAccelerateDirectScroll() =>
-      _directScrollInputKind == PointerDeviceKind.touch;
-
-  void _rememberDirectScrollInput(PointerEvent event) {
-    _directScrollInputKind = event.kind;
-    _directScrollInputPointer = event.pointer;
+  void _cancelDirectTouchScrollDrag() {
+    _directTouchScrollDrag?.cancel();
+    _directTouchScrollDrag = null;
   }
 
-  void _deferForgetDirectScrollInput(PointerEvent event) {
-    if (_directScrollInputPointer != event.pointer) {
+  void _onDirectTouchScrollStart(DragStartDetails details) {
+    _cancelDirectTouchScrollDrag();
+    final position = _scrollableKey.currentState?.position;
+    if (position == null) {
+      _directTouchScrollDrag = null;
       return;
     }
-    scheduleMicrotask(() {
-      if (_directScrollInputPointer == event.pointer) {
-        _directScrollInputKind = null;
-        _directScrollInputPointer = null;
-      }
-    });
+    _directTouchScrollDrag = position.drag(
+      details,
+      () => _directTouchScrollDrag = null,
+    );
+  }
+
+  void _onDirectTouchScrollUpdate(DragUpdateDetails details) {
+    final primaryDelta = details.primaryDelta;
+    final drag = _directTouchScrollDrag;
+    if (primaryDelta == null || drag == null) {
+      return;
+    }
+    final scaledDelta = primaryDelta * _terminalViewportTouchScrollSensitivity;
+    drag.update(
+      DragUpdateDetails(
+        sourceTimeStamp: details.sourceTimeStamp,
+        delta: Offset(0, scaledDelta),
+        primaryDelta: scaledDelta,
+        globalPosition: details.globalPosition,
+        localPosition: details.localPosition,
+        kind: details.kind,
+      ),
+    );
+  }
+
+  void _onDirectTouchScrollEnd(DragEndDetails details) {
+    final drag = _directTouchScrollDrag;
+    if (drag == null) {
+      return;
+    }
+    final pixelsPerSecond = details.velocity.pixelsPerSecond;
+    final scaledVelocity =
+        (details.primaryVelocity ?? pixelsPerSecond.dy) *
+        _terminalViewportTouchScrollSensitivity;
+    drag.end(
+      DragEndDetails(
+        globalPosition: details.globalPosition,
+        localPosition: details.localPosition,
+        velocity: Velocity(
+          pixelsPerSecond: Offset(pixelsPerSecond.dx, scaledVelocity),
+        ),
+        primaryVelocity: scaledVelocity,
+      ),
+    );
+    _directTouchScrollDrag = null;
+  }
+
+  void _onTouchScrollCancel() {
+    _stopTouchScrollInertia();
+    _touchScrollRemainder = 0;
   }
 
   void _onTouchScrollStart(DragStartDetails details) {

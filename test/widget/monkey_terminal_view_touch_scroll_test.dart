@@ -390,62 +390,41 @@ void main() {
     );
   });
 
-  testWidgets('secondary touch release keeps primary drag accelerated', (
+  testWidgets('direct viewport assigns touch to a dedicated recognizer', (
     tester,
   ) async {
-    final terminal = Terminal(maxLines: 200)
-      ..write(List.filled(100, 'line\r\n').join());
-    final scrollController = ScrollController();
-    addTearDown(scrollController.dispose);
-
     await tester.pumpWidget(
       MaterialApp(
         home: SizedBox(
           width: 300,
           height: 200,
-          child: MonkeyTerminalView(
-            terminal,
-            scrollController: scrollController,
-            hardwareKeyboardOnly: true,
-          ),
+          child: MonkeyTerminalView(Terminal(), hardwareKeyboardOnly: true),
         ),
       ),
     );
-    await tester.pump();
-    scrollController.jumpTo(scrollController.position.maxScrollExtent / 2);
 
-    final pointerListener = tester
-        .widgetList<Listener>(find.byType(Listener))
-        .firstWhere((listener) => listener.child is Scrollable);
-    final scrollable = tester.widget<Scrollable>(find.byType(Scrollable));
-
-    pointerListener.onPointerMove!(
-      const PointerMoveEvent(pointer: 1, delta: Offset(0, 10)),
-    );
-    pointerListener.onPointerUp!(const PointerUpEvent(pointer: 2));
-    await tester.pump();
-
+    final directScrollConfiguration = tester
+        .widgetList<ScrollConfiguration>(find.byType(ScrollConfiguration))
+        .firstWhere((configuration) => configuration.child is Scrollable);
     expect(
-      scrollable.physics!.applyPhysicsToUserOffset(
-        scrollController.position,
-        10,
-      ),
-      closeTo(30, 0.01),
+      directScrollConfiguration.behavior.dragDevices,
+      isNot(contains(PointerDeviceKind.touch)),
     );
-
-    pointerListener.onPointerUp!(const PointerUpEvent(pointer: 1));
-    await tester.pump();
-
     expect(
-      scrollable.physics!.applyPhysicsToUserOffset(
-        scrollController.position,
-        10,
-      ),
-      closeTo(10, 0.01),
+      directScrollConfiguration.behavior.dragDevices,
+      contains(PointerDeviceKind.trackpad),
     );
+
+    final gestureDetector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    expect(gestureDetector.onTouchScrollStart, isNotNull);
+    expect(gestureDetector.onTouchScrollUpdate, isNotNull);
+    expect(gestureDetector.onTouchScrollEnd, isNotNull);
+    expect(gestureDetector.onTouchScrollCancel, isNotNull);
   });
 
-  testWidgets('held touch does not accelerate concurrent trackpad input', (
+  testWidgets('canceling direct touch scroll releases its drag activity', (
     tester,
   ) async {
     final terminal = Terminal(maxLines: 200)
@@ -467,31 +446,42 @@ void main() {
       ),
     );
     await tester.pump();
-    scrollController.jumpTo(scrollController.position.maxScrollExtent / 2);
 
-    final pointerListener = tester
-        .widgetList<Listener>(find.byType(Listener))
-        .firstWhere((listener) => listener.child is Scrollable);
-    final scrollable = tester.widget<Scrollable>(find.byType(Scrollable));
-
-    pointerListener.onPointerMove!(
-      const PointerMoveEvent(pointer: 1, delta: Offset(0, 10)),
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
     );
-    pointerListener.onPointerPanZoomUpdate!(
-      const PointerPanZoomUpdateEvent(
-        pointer: 2,
-        pan: Offset(0, 10),
-        panDelta: Offset(0, 10),
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        globalPosition: const Offset(150, 100),
+        localPosition: const Offset(150, 100),
+        kind: PointerDeviceKind.touch,
       ),
     );
-
-    expect(
-      scrollable.physics!.applyPhysicsToUserOffset(
-        scrollController.position,
-        10,
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        globalPosition: const Offset(150, 120),
+        localPosition: const Offset(150, 120),
+        delta: const Offset(0, 20),
+        primaryDelta: 20,
+        kind: PointerDeviceKind.touch,
       ),
-      closeTo(10, 0.01),
     );
+    await tester.pump();
+    final offsetAfterUpdate = scrollController.offset;
+
+    detector.onTouchScrollCancel!();
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        globalPosition: const Offset(150, 140),
+        localPosition: const Offset(150, 140),
+        delta: const Offset(0, 20),
+        primaryDelta: 20,
+        kind: PointerDeviceKind.touch,
+      ),
+    );
+    await tester.pump();
+
+    expect(scrollController.offset, offsetAfterUpdate);
   });
 
   testWidgets('direct terminal scrollback keeps trackpad drags at 1x', (
@@ -574,7 +564,7 @@ void main() {
     expect(offsetBeforeWheel - scrollController.offset, closeTo(20, 0.01));
   });
 
-  testWidgets('direct scroll physics leaves ambient parenting to Scrollable', (
+  testWidgets('direct scrollback leaves ambient physics to Scrollable', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -588,7 +578,7 @@ void main() {
     );
 
     final scrollable = tester.widget<Scrollable>(find.byType(Scrollable));
-    expect(scrollable.physics?.parent, isNull);
+    expect(scrollable.physics, isNull);
   });
 
   testWidgets('scroll reset clears pending touch scroll distance', (
