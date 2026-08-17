@@ -93,6 +93,57 @@ void main() {
     await thirdGesture.panZoomEnd();
   });
 
+  testWidgets('mouse wheel retries a timed-out calibration', (tester) async {
+    final terminal = Terminal()
+      ..resize(40, 10)
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+    _renderTrackpadCalibrationRows(terminal, 0);
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 200,
+          height: 200,
+          child: MonkeyTerminalScrollGestureHandler(
+            terminal: terminal,
+            simulateScroll: false,
+            getCellOffset: (_) => const CellOffset(1, 1),
+            getLineHeight: () => 10,
+            child: const ColoredBox(
+              key: ValueKey('wheel-retry-target'),
+              color: Colors.black,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final center = tester.getCenter(
+      find.byKey(const ValueKey('wheel-retry-target')),
+    );
+    await tester.sendEventToBinding(
+      PointerScrollEvent(position: center, scrollDelta: const Offset(0, -30)),
+    );
+    await tester.pump();
+    expect(output, hasLength(1));
+
+    await tester.pump(const Duration(milliseconds: 301));
+    expect(output, hasLength(3));
+    await tester.pump(const Duration(milliseconds: 901));
+    output.clear();
+
+    await tester.sendEventToBinding(
+      PointerScrollEvent(position: center, scrollDelta: const Offset(0, -30)),
+    );
+    await tester.pump();
+
+    expect(output, hasLength(1));
+  });
+
   testWidgets(
     'trackpad scrolling preserves the gesture location in alt buffer',
     (tester) async {

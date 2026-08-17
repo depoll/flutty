@@ -1,5 +1,6 @@
 // ignore_for_file: implementation_imports, public_member_api_docs, always_put_required_named_parameters_first, type_annotate_public_apis, use_setters_to_change_properties
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 import 'package:xterm/core.dart';
 import 'package:xterm/src/ui/infinite_scroll_view.dart';
@@ -208,7 +209,12 @@ class _MonkeyTerminalScrollGestureHandlerState
     }
 
     return Listener(
-      onPointerSignal: (event) => _rememberPointerPosition(event.localPosition),
+      onPointerSignal: (event) {
+        if (event is PointerScrollEvent) {
+          _wheelCalibrator.beginGesture();
+        }
+        _rememberPointerPosition(event.localPosition);
+      },
       onPointerHover: (event) => _rememberPointerPosition(event.localPosition),
       onPointerMove: (event) => _rememberPointerPosition(event.localPosition),
       onPointerDown: (event) => _rememberPointerPosition(event.localPosition),
