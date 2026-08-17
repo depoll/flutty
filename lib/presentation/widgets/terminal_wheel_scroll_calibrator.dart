@@ -151,10 +151,14 @@ class TerminalWheelScrollCalibrator {
     }
   }
 
-  /// Forgets the estimate when the terminal or its mouse transport changes.
-  void reset() {
+  /// Revalidates the current estimate after the input transport changes. A
+  /// measured gain is retained as the safe fallback unless the terminal
+  /// instance itself was replaced.
+  void reset({bool forgetEstimate = false}) {
     _endQuarantine();
-    _rowsPerEvent = 1;
+    if (forgetEstimate) {
+      _rowsPerEvent = 1;
+    }
     _isCalibrated = false;
     _retryMeasurementOnNextGesture = true;
     _cancelPending(notify: false);

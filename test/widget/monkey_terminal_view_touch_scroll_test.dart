@@ -267,6 +267,13 @@ void main() {
       expect(calibrator.waitingForResponse, isFalse);
       calibrator.beginGesture();
       expect(calibrator.needsMeasurement, isFalse);
+
+      calibrator.reset();
+      expect(calibrator.rowsPerEvent, 3);
+      expect(calibrator.needsMeasurement, isTrue);
+
+      calibrator.reset(forgetEstimate: true);
+      expect(calibrator.rowsPerEvent, 1);
     });
   });
 
@@ -387,6 +394,39 @@ void main() {
           reportsBeforeGesture + reportsInGesture,
         );
       }
+
+      final reportsAfterLearnedGesture = 12 ~/ rowsPerWheelEvent;
+      terminal.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
+      await tester.pump();
+      terminal.write('\x1b[?1000h\x1b[?1006h');
+      await tester.pump();
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: Offset(150, 100 - lineHeight * 12),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 15),
+          localPosition: Offset(150, 100 - lineHeight * 15),
+          delta: Offset(0, -lineHeight * 3),
+        ),
+      );
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        reportsAfterLearnedGesture + 1,
+      );
+
+      // If the transport re-probe receives no measurable redraw, keep the
+      // previous safe gain instead of falling back to a fast one-row estimate.
+      await tester.pump(const Duration(milliseconds: 301));
+      await tester.pumpAndSettle();
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        reportsAfterLearnedGesture + 3 ~/ rowsPerWheelEvent,
+      );
       detector.onTouchScrollCancel!();
     }
   });

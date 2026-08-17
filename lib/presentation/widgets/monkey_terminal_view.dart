@@ -936,7 +936,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _touchScrollIsAltBuffer = widget.terminal.isUsingAltBuffer;
       _touchScrollMouseMode = widget.terminal.mouseMode;
       _touchScrollMouseReportMode = widget.terminal.mouseReportMode;
-      _touchWheelCalibrator.reset();
+      _touchWheelCalibrator.reset(forgetEstimate: true);
       _stopTouchScrollInertia();
       _resetTouchScrollDispatch();
       _scheduleGraphicsAnimationSync();

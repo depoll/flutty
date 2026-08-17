@@ -89,7 +89,7 @@ class _MonkeyTerminalScrollGestureHandlerState
       isAltBuffer = widget.terminal.isUsingAltBuffer;
       mouseMode = widget.terminal.mouseMode;
       mouseReportMode = widget.terminal.mouseReportMode;
-      _resetScrollTracking();
+      _resetScrollTracking(forgetEstimate: true);
     } else if (oldWidget.simulateScroll != widget.simulateScroll ||
         oldWidget.forceSgr != widget.forceSgr) {
       _wheelCalibrator.reset();
@@ -147,10 +147,10 @@ class _MonkeyTerminalScrollGestureHandlerState
     return handled;
   }
 
-  void _resetScrollTracking() {
+  void _resetScrollTracking({bool forgetEstimate = false}) {
     lastScrollOffset = 0;
     scrollRemainder = 0;
-    _wheelCalibrator.reset();
+    _wheelCalibrator.reset(forgetEstimate: forgetEstimate);
   }
 
   void _onScroll(double offset) {
