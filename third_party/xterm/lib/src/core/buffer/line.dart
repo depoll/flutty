@@ -201,8 +201,7 @@ class BufferLine with IndexedItem {
     }
 
     // Update anchors, remove anchors that are inside the removed range.
-    for (var i = 0; i < _anchors.length; i++) {
-      final anchor = _anchors[i];
+    for (final anchor in _anchors.toList()) {
       if (anchor.x >= start) {
         if (anchor.x < start + count) {
           anchor.dispose();
@@ -240,9 +239,8 @@ class BufferLine with IndexedItem {
     }
 
     // Update anchors, move anchors that are after the inserted range.
-    for (var i = 0; i < _anchors.length; i++) {
-      final anchor = _anchors[i];
-      if (anchor.x >= start + count) {
+    for (final anchor in _anchors.toList()) {
+      if (anchor.x >= start) {
         anchor.reposition(anchor.x + count);
 
         // Remove anchors that are now outside the buffer.
