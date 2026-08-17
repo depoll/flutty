@@ -215,47 +215,45 @@ void main() {
         find.byType(MonkeyTerminalGestureDetector),
       );
       final lineHeight = state.renderTerminal.lineHeight;
+      final update = DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: Offset(150, 100 - lineHeight * 30),
+        localPosition: Offset(150, 100 - lineHeight * 30),
+        delta: Offset(0, -lineHeight * 30),
+      );
       detector.onTouchScrollStart!(
         DragStartDetails(
           kind: PointerDeviceKind.touch,
           localPosition: const Offset(150, 100),
         ),
       );
-      detector.onTouchScrollUpdate!(
-        DragUpdateDetails(
-          kind: PointerDeviceKind.touch,
-          globalPosition: Offset(150, 100 - lineHeight * 30),
-          localPosition: Offset(150, 100 - lineHeight * 30),
-          delta: Offset(0, -lineHeight * 30),
-        ),
-      );
+      detector.onTouchScrollUpdate!(update);
       await tester.pump();
 
       expect(output, hasLength(1));
-      expect(_countOccurrences(output.single, '\u001b[<65;'), 3);
+      expect(
+        _countOccurrences(output.single, '\u001b[<65;'),
+        18,
+        reason: 'six queued thresholds collapse into one three-step batch',
+      );
 
-      // Parsed output is evidence that the remote TUI completed a frame. The
-      // retained drag distance may now release exactly one more wheel batch.
+      // More movement while Pi renders is retained but cannot queue another
+      // shell write until terminal output confirms that frame completed.
+      detector.onTouchScrollUpdate!(update);
+      await tester.pump();
+      expect(output, hasLength(1));
       terminal.write('frame');
       await tester.pump();
       expect(output, hasLength(2));
+      expect(_countOccurrences(output.last, '\u001b[<65;'), 18);
 
-      // A TUI that consumes input without drawing cannot stall scrolling
-      // forever; the safety timeout releases one batch, still without a burst.
+      // A TUI that consumes input without drawing cannot stall scrolling.
+      detector.onTouchScrollUpdate!(update);
+      await tester.pump();
+      expect(output, hasLength(2));
       await tester.pump(terminalTouchScrollRemoteFrameTimeout);
       expect(output, hasLength(3));
-
-      for (var index = 0; index < 10; index++) {
-        await tester.pump(
-          terminalTouchScrollRemoteFrameTimeout +
-              const Duration(milliseconds: 1),
-        );
-      }
-      expect(
-        output.length,
-        6,
-        reason: 'stale fling distance is capped to six queued batches',
-      );
+      expect(_countOccurrences(output.last, '\u001b[<65;'), 18);
     },
   );
 
@@ -354,7 +352,8 @@ void main() {
       final wheelCount = _countOccurrences(wheelOutput.join(), '\u001b[<65;');
       expect(wheelCount, greaterThan(0));
       expect(wheelOutput.length, lessThan(arrowCount));
-      expect(wheelCount, wheelOutput.length * 3);
+      expect(wheelCount % 3, 0);
+      expect(wheelCount, lessThanOrEqualTo(wheelOutput.length * 18));
     },
   );
 

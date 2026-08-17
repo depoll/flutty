@@ -14,10 +14,11 @@ out of scope.
   resizing no longer grow slower with a long image-rich scrollback. Placeholder
   grid dimensions and write recency are retained without a full-history pass, and circular-buffer eviction removes
   indexed graphics before detaching their anchors.
-* Backpressure direct touch-wheel input to one three-step SGR batch per remote
-  terminal frame (with a short safety timeout). Pi processes the three reports
-  from one shell write before its scheduled render, preserving scroll distance
-  while preventing a queue of full-transcript redraws. MonkeyMux shared-grid
+* Backpressure direct touch-wheel input to one bounded SGR batch per remote
+  terminal frame (with a short safety timeout). Each shell write carries 3–18
+  wheel steps from the queued touch distance; Pi processes them before its
+  scheduled render, preserving fling distance while preventing a queue of
+  full-transcript redraws. MonkeyMux shared-grid
   views also suppress pixel-only resize notifications that leave the cell grid unchanged, while
   explicit grid reconciliation still reports the size.
 * Expand the bounded per-line foreground picture cache from 512 to 2,048 entries

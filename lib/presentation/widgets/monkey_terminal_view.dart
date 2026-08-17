@@ -1539,11 +1539,20 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
     while (_touchScrollRemainder.abs() >= stepHeight) {
       final scrollUp = _touchScrollRemainder > 0;
+      final reportsWheel =
+          widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll;
+      final queuedSteps = reportsWheel
+          ? (_touchScrollRemainder.abs() / stepHeight).floor().clamp(1, 6)
+          : 1;
       final handled = _sendTouchScrollMouseInput(
         scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
         _resolveViewportMousePosition(_lastTouchScrollPosition),
+        repeatCount: reportsWheel
+            ? _touchScrollReportedWheelEventsPerBatch * queuedSteps
+            : 1,
       );
-      _touchScrollRemainder += scrollUp ? -stepHeight : stepHeight;
+      final consumedDistance = stepHeight * queuedSteps;
+      _touchScrollRemainder += scrollUp ? -consumedDistance : consumedDistance;
 
       if (handled) {
         // Full-screen TUIs such as Pi render their whole transcript for each
@@ -1647,16 +1656,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   bool _sendTouchScrollMouseInput(
     TerminalMouseButton button,
-    CellOffset position,
-  ) => sendTerminalScrollMouseInput(
+    CellOffset position, {
+    int repeatCount = 1,
+  }) => sendTerminalScrollMouseInput(
     terminal: widget.terminal,
     button: button,
     position: position,
     forceSgr: widget.forceSgrTouchScroll,
-    repeatCount:
-        widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll
-        ? _touchScrollReportedWheelEventsPerBatch
-        : 1,
+    repeatCount: repeatCount,
   );
 
   CellOffset _resolveViewportMousePosition(Offset localPosition) {
