@@ -269,8 +269,30 @@ void main() {
       cl.insert(0, IndexedValue(100));
 
       expect(cl.length, 10);
-      expect(cl[0], 0.indexed); //the inserted 100 fell over immediately
-      expect(cl[1], 1.indexed);
+      expect(cl[0], 100.indexed);
+      expect(cl[1], 0.indexed);
+      expect(cl[9], 8.indexed);
+    });
+
+    test('swap rejects an out-of-range index', () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(2)
+        ..push(IndexedValue(1));
+
+      expect(() => cl.swap(-1, IndexedValue(2)), throwsRangeError);
+      expect(() => cl.swap(1, IndexedValue(2)), throwsRangeError);
+    });
+
+    test('insert all at the front of a full buffer keeps every input item', () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(5)
+        ..pushAll(
+          List<int>.generate(5, (index) => index).map(IndexedValue.new),
+        );
+
+      cl.insertAll(0, [IndexedValue(10), IndexedValue(11)]);
+
+      expect(cl.length, 5);
+      expect(cl.toList(),
+          [10.indexed, 11.indexed, 0.indexed, 1.indexed, 2.indexed]);
     });
 
     test("insert all works", () {
@@ -405,8 +427,6 @@ void main() {
       expect(item3.index, 2);
 
       cl.remove(0, 2);
-
-      print(cl.debugDump());
 
       expect(item11.attached, false);
       expect(item2.attached, false);

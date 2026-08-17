@@ -129,6 +129,8 @@ abstract class EscapeHandler {
 
   void setCursorKeysMode(bool enabled);
 
+  void setAnsiMode(bool enabled);
+
   void setReverseDisplayMode(bool enabled);
 
   void setOriginMode(bool enabled);

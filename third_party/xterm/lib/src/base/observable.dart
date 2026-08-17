@@ -10,7 +10,8 @@ mixin Observable {
   }
 
   void notifyListeners() {
-    for (var listener in _listeners) {
+    // Snapshot the set so callbacks can safely add or remove listeners.
+    for (var listener in List.of(_listeners)) {
       listener();
     }
   }

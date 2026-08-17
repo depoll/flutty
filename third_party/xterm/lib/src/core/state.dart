@@ -20,6 +20,9 @@ abstract class TerminalState {
 
   bool get cursorKeysMode;
 
+  /// Whether DECANM is enabled. When false, keytab input uses VT52 mappings.
+  bool get ansiMode;
+
   bool get reverseDisplayMode;
 
   bool get originMode;

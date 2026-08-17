@@ -436,9 +436,14 @@ class _RecordingLocalNotificationService extends LocalNotificationService {
 }
 
 class _TestShellCompletionService extends ShellCompletionService {
-  _TestShellCompletionService({required this.cachedSuggestions});
+  _TestShellCompletionService({
+    required this.cachedSuggestions,
+    this.completionSuggestions =
+        const <String, List<ShellCompletionSuggestion>>{},
+  });
 
   final List<ShellCompletionSuggestion> cachedSuggestions;
+  final Map<String, List<ShellCompletionSuggestion>> completionSuggestions;
   final cachedInvocations = <ShellCompletionInvocation>[];
   final completeInvocations = <ShellCompletionInvocation>[];
 
@@ -462,7 +467,8 @@ class _TestShellCompletionService extends ShellCompletionService {
     ShellCompletionInvocation invocation,
   ) async {
     completeInvocations.add(invocation);
-    return const <ShellCompletionSuggestion>[];
+    return completionSuggestions[invocation.token] ??
+        const <ShellCompletionSuggestion>[];
   }
 }
 
@@ -6191,6 +6197,77 @@ void main() {
 
         expect(find.text('checkout'), findsOneWidget);
         expect(completionService.completeInvocations, isEmpty);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'keeps suggestions visible while refreshing the latest typed prefix',
+      (tester) async {
+        final completionService = _TestShellCompletionService(
+          cachedSuggestions: const <ShellCompletionSuggestion>[
+            ShellCompletionSuggestion(
+              label: 'checkout',
+              replacement: 'checkout',
+              replacementStart: 4,
+              replacementEnd: 6,
+              kind: ShellCompletionSuggestionKind.history,
+              commitSuffix: ' ',
+            ),
+          ],
+          completionSuggestions:
+              const <String, List<ShellCompletionSuggestion>>{
+                'che': <ShellCompletionSuggestion>[
+                  ShellCompletionSuggestion(
+                    label: 'cherry-pick',
+                    replacement: 'cherry-pick',
+                    replacementStart: 4,
+                    replacementEnd: 7,
+                    kind: ShellCompletionSuggestionKind.history,
+                    commitSuffix: ' ',
+                  ),
+                ],
+              },
+        );
+
+        session.terminal!.write('root@host ~ % git c');
+        await pumpScreen(tester, shellCompletionService: completionService);
+
+        session.terminal!.textInput('h');
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('checkout'), findsOneWidget);
+
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump();
+
+        expect(
+          completionService.completeInvocations.map(
+            (invocation) => invocation.token,
+          ),
+          ['ch'],
+        );
+        expect(find.text('checkout'), findsOneWidget);
+
+        session.terminal!.textInput('e');
+        await tester.pump();
+
+        // Keep the still-valid cached row visible while the latest prefix is
+        // debounced and resolved instead of flashing the popup away.
+        expect(find.text('checkout'), findsOneWidget);
+
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump();
+
+        expect(
+          completionService.completeInvocations.map(
+            (invocation) => invocation.token,
+          ),
+          ['ch', 'che'],
+        );
+        expect(find.text('checkout'), findsNothing);
+        expect(find.text('cherry-pick'), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
