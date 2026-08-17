@@ -1647,7 +1647,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _onTouchScrollCancel() {
-    _touchWheelCalibrator.invalidate();
     _stopTouchScrollInertia();
     _resetTouchScrollDispatch();
   }

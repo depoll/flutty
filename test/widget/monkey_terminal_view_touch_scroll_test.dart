@@ -380,6 +380,82 @@ void main() {
     }
   });
 
+  testWidgets('cancel keeps an emitted calibration probe in flight', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..resize(40, 10)
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            autoResize: false,
+            hardwareKeyboardOnly: true,
+            touchScrollToTerminal: true,
+          ),
+        ),
+      ),
+    );
+    _renderAdaptiveScrollRows(terminal, 0);
+    await tester.pump();
+
+    final output = <String>[];
+    terminal.onOutput = output.add;
+    final state = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final lineHeight = state.renderTerminal.lineHeight;
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+
+    void startAndDrag(double rows) {
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * rows),
+          localPosition: Offset(150, 100 - lineHeight * rows),
+          delta: Offset(0, -lineHeight * rows),
+        ),
+      );
+    }
+
+    startAndDrag(1);
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 1);
+    detector.onTouchScrollCancel!();
+
+    startAndDrag(1);
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 1);
+
+    _renderAdaptiveScrollRows(terminal, 3);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: Offset(150, 100 - lineHeight * 5),
+        localPosition: Offset(150, 100 - lineHeight * 5),
+        delta: Offset(0, -lineHeight * 4),
+      ),
+    );
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 2);
+    detector.onTouchScrollCancel!();
+  });
+
   testWidgets('calibrated sub-step distance accumulates across gestures', (
     tester,
   ) async {
