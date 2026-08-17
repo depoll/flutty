@@ -1201,6 +1201,8 @@ class EscapeParser {
     switch (mode) {
       case 1:
         return handler.setCursorKeysMode(enabled);
+      case 2:
+        return handler.setAnsiMode(enabled);
       case 3:
         return handler.setColumnMode(enabled);
       case 5:

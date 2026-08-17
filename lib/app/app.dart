@@ -246,8 +246,18 @@ class _BackgroundLifecycleBridgeState
   }
 
   void _handleTerminalNotification(TerminalNotificationPayload payload) {
-    _pendingTerminalNavigation = payload;
-    _queuePendingTerminalNavigation();
+    try {
+      ref
+          .read(activeSessionsProvider.notifier)
+          .handleTerminalNotificationTap(payload);
+    } on Object {
+      // The notification can outlive its SSH channel; navigation still
+      // succeeds even when best-effort protocol reports cannot be sent.
+    }
+    if (payload.focusOnActivation) {
+      _pendingTerminalNavigation = payload;
+      _queuePendingTerminalNavigation();
+    }
   }
 
   void _queuePendingTerminalNavigation() {

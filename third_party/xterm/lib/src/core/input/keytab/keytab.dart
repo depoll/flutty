@@ -33,6 +33,7 @@ class Keytab {
     bool keyPad = false,
     bool appScreen = false,
     bool macos = false,
+    bool ansi = true,
     // bool meta,
   }) {
     for (var record in records) {
@@ -87,8 +88,7 @@ class Keytab {
         continue;
       }
 
-      // TODO: support VT52
-      if (record.ansi == false) {
+      if (record.ansi != null && record.ansi != ansi) {
         continue;
       }
 

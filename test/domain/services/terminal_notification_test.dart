@@ -93,8 +93,156 @@ void main() {
       expect(req!.body, 'Encoded title');
     });
 
-    test('a close action does not emit a notification', () {
-      expect(parser.handleOsc('99', ['i=3:a=close']), isNull);
+    test('same identifiers update and p=close clears a notification', () {
+      final created = parser.handleOsc('99', ['i=build-3', 'Started']);
+      expect(created?.identifier, 'build-3');
+      expect(created?.action, TerminalNotificationAction.show);
+
+      final updated = parser.handleOsc('99', ['i=build-3:p=body', 'Finished']);
+      expect(updated?.identifier, 'build-3');
+      expect(updated?.body, 'Finished');
+
+      expect(
+        parser.handleOsc('99', ['i=build-3:p=close']),
+        const TerminalNotificationRequest.close(identifier: 'build-3'),
+      );
+    });
+
+    test('notification metadata maps urgency, sound, and reports', () {
+      final silent = base64.encode(utf8.encode('silent'));
+      final request = parser.handleOsc('99', [
+        'i=build:a=focus,report:c=1:u=2:s=$silent:w=1500',
+        'Ready',
+      ]);
+
+      expect(request?.reportsActivation, isTrue);
+      expect(request?.focusOnActivation, isTrue);
+      expect(request?.reportsClose, isTrue);
+      expect(request?.urgency, TerminalNotificationUrgency.critical);
+      expect(request?.sound, TerminalNotificationSound.silent);
+      expect(request?.timeout, const Duration(milliseconds: 1500));
+      expect(
+        buildKittyNotificationActivationReport(request?.identifier),
+        '\x1b]99;i=build;\x1b\\',
+      );
+      expect(
+        buildKittyNotificationCloseReport(request?.identifier),
+        '\x1b]99;i=build:p=close;\x1b\\',
+      );
+      expect(
+        buildKittyNotificationCloseReport(request?.identifier, untracked: true),
+        '\x1b]99;i=build:p=close;untracked\x1b\\',
+      );
+    });
+
+    test('later -report metadata disables activation feedback', () {
+      final system = base64.encode(utf8.encode('system'));
+      expect(
+        parser.handleOsc('99', [
+          'i=build:a=report:d=0:u=0:s=$system',
+          'Working',
+        ]),
+        isNull,
+      );
+      final request = parser.handleOsc('99', ['i=build:a=-report:d=1', '']);
+      expect(request?.reportsActivation, isFalse);
+      expect(request?.urgency, TerminalNotificationUrgency.low);
+      expect(request?.sound, TerminalNotificationSound.system);
+    });
+
+    test('alive queries list only presented identified notifications', () {
+      parser
+        ..markPresented('z-job')
+        ..markPresented('a-job')
+        ..markPresented(null);
+      expect(
+        buildKittyNotificationAliveResponse(const [
+          'i=query:p=alive',
+        ], parser.activeIdentifiers),
+        '\x1b]99;i=query:p=alive;a-job,z-job\x1b\\',
+      );
+
+      parser.handleOsc('99', const ['i=a-job:p=close']);
+      expect(
+        buildKittyNotificationAliveResponse(const [
+          'p=alive',
+        ], parser.activeIdentifiers),
+        '\x1b]99;p=alive;z-job\x1b\\',
+      );
+      parser.reset();
+      expect(parser.activeIdentifiers, isEmpty);
+    });
+
+    test('unidentified identities stay distinct across shell resets', () {
+      final first = parser.handleOsc('99', ['', 'One']);
+      final second = parser.handleOsc('99', ['', 'Two']);
+      parser.reset();
+      final afterReset = parser.handleOsc('99', ['', 'Three']);
+
+      expect(first?.identifier, isNull);
+      expect(second?.identifier, isNull);
+      expect(afterReset?.identifier, isNull);
+      expect(first?.platformIdentifier, isNot(second?.platformIdentifier));
+      expect(afterReset?.platformIdentifier, isNot(first?.platformIdentifier));
+      expect(afterReset?.platformIdentifier, isNot(second?.platformIdentifier));
+    });
+
+    test('builds a truthful capability response', () {
+      expect(
+        buildKittyNotificationCapabilityResponse(const ['i=q1:p=?']),
+        '\x1b]99;i=q1:p=?;a=focus,report:o=always:p=title,body:'
+        's=system,silent:u=0,1,2:w=1\x1b\\',
+      );
+    });
+
+    test('preserves distinct printable identifiers without aliasing', () {
+      final slash = parser.handleOsc('99', ['i=build/a', 'Slash']);
+      final plus = parser.handleOsc('99', ['i=build+a', 'Plus']);
+      final spaced = parser.handleOsc('99', ['i=build job', 'Space']);
+
+      expect(slash?.identifier, 'build/a');
+      expect(plus?.identifier, 'build+a');
+      expect(spaced?.identifier, 'build job');
+      expect(slash?.identifier, isNot(plus?.identifier));
+      expect(parser.handleOsc('99', ['i=${'x' * 129}', 'Too long']), isNull);
+      expect(parser.handleOsc('99', ['i=bad\u0007id', 'Control']), isNull);
+    });
+
+    test('rejects Base64 payloads before oversized decode allocation', () {
+      final oversized = base64.encode(List<int>.filled(4097, 0x41));
+      expect(parser.handleOsc('99', ['i=large:e=1', oversized]), isNull);
+    });
+
+    test('tracks focus independently from activation reporting', () {
+      expect(
+        parser.handleOsc('99', ['i=focus:a=focus,report:d=0', 'Working']),
+        isNull,
+      );
+      final request = parser.handleOsc('99', ['i=focus:a=-focus:d=1', '']);
+      expect(request?.reportsActivation, isTrue);
+      expect(request?.focusOnActivation, isFalse);
+    });
+
+    test('treats w=-1 and w=0 as never expire and bounds positives', () {
+      expect(
+        parser.handleOsc('99', const ['i=minus:w=-1', 'Minus'])?.timeout,
+        isNull,
+      );
+      expect(
+        parser.handleOsc('99', const ['i=zero:w=0', 'Zero'])?.timeout,
+        isNull,
+      );
+      expect(
+        parser.handleOsc('99', const ['i=one:w=1', 'One'])?.timeout,
+        const Duration(milliseconds: 1),
+      );
+      expect(
+        parser.handleOsc('99', const [
+          'i=bounded:w=999999999999',
+          'Bounded',
+        ])?.timeout,
+        const Duration(days: 7),
+      );
     });
 
     test('interleaved ids stay independent', () {

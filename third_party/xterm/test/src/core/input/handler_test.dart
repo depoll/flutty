@@ -10,6 +10,26 @@ void main() {
       terminal.keyInput(TerminalKey.numpadEnter);
       expect(output, ['\r']);
     });
+
+    test('uses VT52 key mappings while DECANM is reset', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.keyInput(TerminalKey.arrowUp);
+      expect(output.last, '\x1b[A');
+
+      terminal.write('\x1b[?2l');
+      expect(terminal.ansiMode, isFalse);
+      terminal.keyInput(TerminalKey.arrowUp);
+      expect(output.last, '\x1bA');
+      terminal.keyInput(TerminalKey.tab, shift: true);
+      expect(output.last, '\t');
+
+      terminal.write('\x1b[?2h');
+      expect(terminal.ansiMode, isTrue);
+      terminal.keyInput(TerminalKey.arrowUp);
+      expect(output.last, '\x1b[A');
+    });
   });
 
   group('KeytabInputHandler', () {

@@ -400,13 +400,19 @@ class CellAnchor {
   }
 
   int get y {
-    assert(attached);
-    return _owner!.index;
+    final owner = _owner;
+    if (owner == null || !owner.attached) {
+      throw StateError('Cannot access y on detached CellAnchor');
+    }
+    return owner.index;
   }
 
   CellOffset get offset {
-    assert(attached);
-    return CellOffset(_offset, _owner!.index);
+    final owner = _owner;
+    if (owner == null || !owner.attached) {
+      throw StateError('Cannot access offset on detached CellAnchor');
+    }
+    return CellOffset(_offset, owner.index);
   }
 
   BufferLine? _owner;
