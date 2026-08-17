@@ -168,7 +168,69 @@ void main() {
 
       expect(calibrator.rowsPerEvent, 1);
       expect(calibrator.observingTerminalOutput, isFalse);
+      expect(calibrator.needsMeasurement, isFalse);
+      calibrator.invalidate();
       expect(calibrator.needsMeasurement, isTrue);
+    });
+
+    testWidgets('no-output quarantine expiry keeps fallback settled', (
+      tester,
+    ) async {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      expect(calibrator.begin(before: before, onSettled: (_, _) {}), isTrue);
+
+      await tester.pump(const Duration(milliseconds: 301));
+      expect(calibrator.observingTerminalOutput, isTrue);
+      await tester.pump(const Duration(milliseconds: 901));
+
+      expect(calibrator.observingTerminalOutput, isFalse);
+      expect(calibrator.needsMeasurement, isFalse);
+      calibrator.invalidate();
+      expect(calibrator.needsMeasurement, isTrue);
+    });
+
+    testWidgets('keeps observing after an unrelated redraw', (tester) async {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      ({int previous, int current})? settled;
+      expect(
+        calibrator.begin(
+          before: before,
+          onSettled: (previous, current) {
+            settled = (previous: previous, current: current);
+          },
+        ),
+        isTrue,
+      );
+
+      calibrator.terminalChanged(const <String>[
+        'header',
+        'alpha',
+        'beta',
+        'gamma',
+        'delta',
+        'epsilon',
+        'footer',
+      ]);
+      await tester.pump(const Duration(milliseconds: 61));
+
+      expect(settled, isNull);
+      expect(calibrator.waitingForResponse, isTrue);
+
+      calibrator.terminalChanged(const <String>[
+        'header',
+        'row four',
+        'row five',
+        'row six',
+        'row seven',
+        'row eight',
+        'footer',
+      ]);
+      await tester.pump(const Duration(milliseconds: 61));
+
+      expect(settled, (previous: 1, current: 3));
+      expect(calibrator.waitingForResponse, isFalse);
     });
 
     testWidgets('uses a late response when the hard timeout settles', (
@@ -290,6 +352,78 @@ void main() {
       );
       detector.onTouchScrollCancel!();
     }
+  });
+
+  testWidgets('calibrated sub-step distance accumulates across gestures', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..resize(40, 10)
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            autoResize: false,
+            hardwareKeyboardOnly: true,
+            touchScrollToTerminal: true,
+          ),
+        ),
+      ),
+    );
+    _renderAdaptiveScrollRows(terminal, 0);
+    await tester.pump();
+
+    final output = <String>[];
+    terminal.onOutput = (data) {
+      output.add(data);
+      if (_countOccurrences(output.join(), '\x1b[<65;') == 1) {
+        scheduleMicrotask(() => _renderAdaptiveScrollRows(terminal, 3));
+      }
+    };
+    final state = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final lineHeight = state.renderTerminal.lineHeight;
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+
+    void dragOneRow() {
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight),
+          localPosition: Offset(150, 100 - lineHeight),
+          delta: Offset(0, -lineHeight),
+        ),
+      );
+      detector.onTouchScrollEnd!(DragEndDetails(primaryVelocity: 0));
+    }
+
+    dragOneRow();
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 1);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+
+    for (var gesture = 0; gesture < 5; gesture++) {
+      dragOneRow();
+    }
+
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 2);
+    detector.onTouchScrollCancel!();
   });
 
   testWidgets(

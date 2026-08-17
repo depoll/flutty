@@ -141,7 +141,7 @@ class TerminalWheelScrollCalibrator {
 
   /// Forgets the estimate when the terminal or its mouse transport changes.
   void reset() {
-    _endQuarantine(allowRetry: false);
+    _endQuarantine();
     _rowsPerEvent = 1;
     _isCalibrated = false;
     _cancelPending(notify: false);
@@ -161,10 +161,7 @@ class TerminalWheelScrollCalibrator {
     }
     _before = before;
     _onSettled = onSettled;
-    _timeoutTimer = Timer(
-      responseTimeout,
-      () => _finish(hadResponse: _latestAfter != null),
-    );
+    _timeoutTimer = Timer(responseTimeout, _finishAtDeadline);
     return true;
   }
 
@@ -172,10 +169,7 @@ class TerminalWheelScrollCalibrator {
   void terminalChanged(List<String> after) {
     if (_isQuarantined) {
       _quarantineTimer?.cancel();
-      _quarantineTimer = Timer(
-        responseSettleDelay,
-        () => _endQuarantine(allowRetry: true),
-      );
+      _quarantineTimer = Timer(responseSettleDelay, _endQuarantine);
       return;
     }
     if (!waitingForResponse) {
@@ -183,7 +177,7 @@ class TerminalWheelScrollCalibrator {
     }
     _latestAfter = after;
     _settleTimer?.cancel();
-    _settleTimer = Timer(responseSettleDelay, () => _finish(hadResponse: true));
+    _settleTimer = Timer(responseSettleDelay, _finishObservedResponse);
   }
 
   /// Cancels a measurement when the input fell back to keyboard scrolling.
@@ -193,31 +187,51 @@ class TerminalWheelScrollCalibrator {
   }
 
   void dispose() {
-    _endQuarantine(allowRetry: false);
+    _endQuarantine();
     _cancelPending(notify: false);
   }
 
   bool _canMeasure(List<String> lines) =>
       lines.where(_isMeaningfulLine).toSet().length >= 2;
 
-  void _finish({required bool hadResponse}) {
+  void _finishObservedResponse() {
+    _settleTimer = null;
+    if (!waitingForResponse || _latestAfter == null) {
+      return;
+    }
+    final measuredRows = resolveTerminalWheelRowsPerEvent(
+      before: _before!,
+      after: _latestAfter!,
+    );
+    if (measuredRows == null) {
+      return;
+    }
+    _settle(rowsPerEvent: measuredRows);
+  }
+
+  void _finishAtDeadline() {
     if (!waitingForResponse) {
       return;
     }
-    final previousRows = _rowsPerEvent;
-    if (hadResponse) {
-      _rowsPerEvent =
-          resolveTerminalWheelRowsPerEvent(
+    final latestAfter = _latestAfter;
+    final measuredRows = latestAfter == null
+        ? null
+        : resolveTerminalWheelRowsPerEvent(
             before: _before!,
-            after: _latestAfter!,
-          ) ??
-          previousRows;
-    }
-    if (hadResponse) {
-      _isCalibrated = true;
-    } else {
+            after: latestAfter,
+          );
+    if (measuredRows == null) {
       _startQuarantine();
     }
+    _settle(rowsPerEvent: measuredRows);
+  }
+
+  void _settle({required int? rowsPerEvent}) {
+    final previousRows = _rowsPerEvent;
+    if (rowsPerEvent != null) {
+      _rowsPerEvent = rowsPerEvent;
+    }
+    _isCalibrated = true;
     final onSettled = _onSettled;
     _cancelPending(notify: false);
     onSettled?.call(previousRows, _rowsPerEvent);
@@ -229,17 +243,14 @@ class TerminalWheelScrollCalibrator {
     _quarantineTimer?.cancel();
     _quarantineTimer = Timer(
       Duration(microseconds: responseTimeout.inMicroseconds * 3),
-      () => _endQuarantine(allowRetry: true),
+      _endQuarantine,
     );
   }
 
-  void _endQuarantine({required bool allowRetry}) {
+  void _endQuarantine() {
     _quarantineTimer?.cancel();
     _quarantineTimer = null;
     _isQuarantined = false;
-    if (allowRetry) {
-      _isCalibrated = false;
-    }
   }
 
   void _cancelPending({required bool notify}) {

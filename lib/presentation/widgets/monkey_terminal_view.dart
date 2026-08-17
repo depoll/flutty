@@ -1657,7 +1657,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _lastTouchScrollPosition = details.localPosition;
     if (!_touchWheelCalibrator.waitingForResponse) {
       _touchWheelCalibrator.invalidate();
-      _resetTouchScrollDispatch();
+      _resetTouchScrollDispatch(preserveRemainder: true);
     }
   }
 
@@ -1814,11 +1814,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     });
   }
 
-  void _resetTouchScrollDispatch() {
+  void _resetTouchScrollDispatch({bool preserveRemainder = false}) {
     _touchScrollDispatchGeneration += 1;
     _touchScrollDrainScheduled = false;
     _pendingTouchScrollRuns.clear();
-    _touchScrollRemainder = 0;
+    if (!preserveRemainder) {
+      _touchScrollRemainder = 0;
+    }
   }
 
   void _startTouchScrollInertia(double velocity) {
