@@ -124,6 +124,7 @@ class Buffer {
     }
 
     final line = currentLine;
+    graphics.removePlaceholderAt(line, _cursorX);
     line.setCell(_cursorX, codePoint, cellWidth, terminal.cursor);
 
     if (_cursorX < viewWidth) {
@@ -161,9 +162,6 @@ class Buffer {
       line.isWrapped = false;
       _eraseRange(line, i, 0, viewWidth);
     }
-    _removeGraphicsInRegion(
-        absoluteCursorY, absoluteCursorY, _cursorX, viewWidth - 1);
-    _removeGraphicsInRows(absoluteCursorY + 1, height - 1);
   }
 
   /// Erases the viewport from the top-left corner to the cursor, including the
@@ -176,8 +174,6 @@ class Buffer {
       line.isWrapped = false;
       _eraseRange(line, i + scrollBack, 0, viewWidth);
     }
-    _removeGraphicsInRows(scrollBack, absoluteCursorY - 1);
-    _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, _cursorX - 1);
   }
 
   /// Erases the whole viewport.
@@ -187,10 +183,6 @@ class Buffer {
       line.isWrapped = false;
       _eraseRange(line, i + scrollBack, 0, viewWidth);
     }
-    graphics.removePlaceholdersInRows(
-      scrollBack,
-      scrollBack + viewHeight - 1,
-    );
   }
 
   /// Erases the line from the cursor to the end of the line, including the
@@ -198,8 +190,6 @@ class Buffer {
   void eraseLineFromCursor() {
     currentLine.isWrapped = false;
     _eraseRange(currentLine, absoluteCursorY, _cursorX, viewWidth);
-    _removeGraphicsInRegion(
-        absoluteCursorY, absoluteCursorY, _cursorX, viewWidth - 1);
   }
 
   /// Erases the line from the start of the line to the cursor, including the
@@ -207,59 +197,32 @@ class Buffer {
   void eraseLineToCursor() {
     currentLine.isWrapped = false;
     _eraseRange(currentLine, absoluteCursorY, 0, _cursorX);
-    _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, _cursorX - 1);
   }
 
   /// Erases the line at the current cursor position.
   void eraseLine() {
     currentLine.isWrapped = false;
     _eraseRange(currentLine, absoluteCursorY, 0, viewWidth);
-    _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, viewWidth - 1);
   }
 
   /// Erases [count] cells starting at the cursor position.
   void eraseChars(int count) {
     final start = _cursorX;
     _eraseRange(currentLine, absoluteCursorY, start, start + count);
-    _removeGraphicsInRegion(
-      absoluteCursorY,
-      absoluteCursorY,
-      start,
-      min(start + count, viewWidth) - 1,
-    );
-  }
-
-  void _removeGraphicsInRows(int firstRow, int lastRow) {
-    if (lastRow < firstRow) return;
-    graphics.removePlaceholdersInRows(firstRow, lastRow);
   }
 
   void _eraseRange(
     BufferLine line,
-    int row,
+    int _,
     int start,
     int end,
   ) {
+    graphics.removePlaceholdersInLineRange(line, start, end);
     line.eraseRange(
       start,
       end,
       terminal.cursor,
       preservedAnchors: graphics.physicalPlacementAnchorsInLine(line),
-    );
-  }
-
-  void _removeGraphicsInRegion(
-    int firstRow,
-    int lastRow,
-    int firstCol,
-    int lastCol,
-  ) {
-    if (lastRow < firstRow || lastCol < firstCol) return;
-    graphics.removePlaceholdersInRegion(
-      firstRow,
-      lastRow,
-      firstCol,
-      lastCol,
     );
   }
 
@@ -563,6 +526,7 @@ class Buffer {
             // before detaching their anchors so stale placements cannot keep
             // decoded images alive after the row is gone.
             graphics.removePlacementsInRows(lastIndex, lastIndex);
+            graphics.removeGraphicsAnchoredToLine(lines[lastIndex]);
             lines.pop();
           } else if (_cursorY > 0) {
             // Once no rows remain below the cursor, the no-history host drops
@@ -571,20 +535,24 @@ class Buffer {
             // runs for the inactive alt buffer too, where clearScrollback()
             // would otherwise never run and the discarded rows could reappear.
             graphics.removePlacementsInRows(0, 0);
+            graphics.removeGraphicsAnchoredToLine(lines[0]);
             lines.trimStart(1);
             _cursorY--;
           } else {
             graphics.removePlacementsInRows(lastIndex, lastIndex);
+            graphics.removeGraphicsAnchoredToLine(lines[lastIndex]);
             lines.pop();
           }
           continue;
         }
         final canDropLast = lastIndex > absoluteCursorY;
         if (canDropLast && _isReclaimableRow(lastIndex)) {
+          graphics.removeGraphicsAnchoredToLine(lines[lastIndex]);
           lines.pop();
         } else if (_cursorY > 0) {
           _cursorY--;
         } else if (canDropLast) {
+          graphics.removeGraphicsAnchoredToLine(lines[lastIndex]);
           lines.pop();
         }
       }

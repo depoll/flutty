@@ -98,14 +98,9 @@ void main() {
           notifyPixelSizeChanges: false,
         ),
       );
-      final initialViewport = resizeEvents.last;
-      terminal.resize(
-        initialViewport.width,
-        initialViewport.height,
-        initialViewport.pixelWidth,
-        initialViewport.pixelHeight,
-      );
-      await tester.pump();
+      // Keep the remote-owned 160x48 grid mismatched from this local viewport.
+      // Passive layout must still key notifications to local viewport changes,
+      // not repeatedly reassert the same mismatch.
       resizeEvents.clear();
       final state = terminalKey.currentState!;
       final rows = state.viewportCellSize!.rows;

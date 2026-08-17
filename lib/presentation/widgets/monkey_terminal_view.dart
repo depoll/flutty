@@ -794,6 +794,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   double _touchScrollRemainder = 0;
   bool _touchScrollWaitingForRemoteFrame = false;
   bool _touchScrollDrainScheduled = false;
+  int _touchScrollDispatchGeneration = 0;
   Timer? _touchScrollRemoteFrameTimer;
   late final Ticker _touchScrollInertiaTicker;
   late final Ticker _graphicsAnimationTicker;
@@ -1515,12 +1516,20 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _applyTouchScrollDelta(double delta) {
-    _touchScrollRemainder += delta;
+    final stepHeight = _touchScrollStepHeight;
+    if (stepHeight <= 0) {
+      return;
+    }
+    const maxQueuedSteps = 6;
+    _touchScrollRemainder = (_touchScrollRemainder + delta).clamp(
+      -stepHeight * maxQueuedSteps,
+      stepHeight * maxQueuedSteps,
+    );
     _drainTouchScrollInput();
   }
 
   void _drainTouchScrollInput() {
-    if (_touchScrollWaitingForRemoteFrame) {
+    if (_touchScrollWaitingForRemoteFrame || _touchScrollDrainScheduled) {
       return;
     }
     final stepHeight = _touchScrollStepHeight;
@@ -1538,8 +1547,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
       if (handled) {
         // Full-screen TUIs such as Pi render their whole transcript for each
-        // wheel event. Keep the remaining gesture distance, but do not queue
-        // another expensive redraw until output confirms this one completed.
+        // wheel event. Keep only a bounded amount of remaining gesture distance
+        // and wait for output (or the safety timeout) before requesting another
+        // expensive redraw.
         _touchScrollWaitingForRemoteFrame = true;
         _touchScrollRemoteFrameTimer?.cancel();
         _touchScrollRemoteFrameTimer = Timer(
@@ -1562,7 +1572,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
     _touchScrollRemoteFrameTimer?.cancel();
     _touchScrollRemoteFrameTimer = null;
-    _touchScrollWaitingForRemoteFrame = false;
     _scheduleTouchScrollDrain();
   }
 
@@ -1571,8 +1580,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return;
     }
     _touchScrollDrainScheduled = true;
+    final generation = _touchScrollDispatchGeneration;
+    WidgetsBinding.instance.scheduleFrame();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (generation != _touchScrollDispatchGeneration) {
+        return;
+      }
       _touchScrollDrainScheduled = false;
+      _touchScrollWaitingForRemoteFrame = false;
       if (mounted) {
         _drainTouchScrollInput();
       }
@@ -1580,6 +1595,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _resetTouchScrollDispatch() {
+    _touchScrollDispatchGeneration += 1;
     _touchScrollRemoteFrameTimer?.cancel();
     _touchScrollRemoteFrameTimer = null;
     _touchScrollWaitingForRemoteFrame = false;
@@ -3967,15 +3983,13 @@ class MonkeyRenderTerminal extends RenderBox
     if (!_resizeTerminalToViewport) {
       _viewportSize = viewportSize;
       _viewportPixelSize = pixelSize;
-      // A shared grid that no longer matches this viewport draws content into
-      // the wrong number of cells and leaves the rest blank. The host owns the
-      // buffer size here, so re-report the viewport whenever the two disagree
-      // and let the owner correct it, instead of rendering a mismatched grid
-      // until something else happens to resize.
+      // The host owns the shared grid. Passive layout reports the initial or a
+      // genuinely changed local viewport, but does not repeatedly reassert a
+      // persistent host mismatch or a suppressed pixel-only change. Explicit
+      // refresh/reconciliation still uses notifyIfUnchanged.
       if (!hasCachedViewportSize ||
           viewportSizeChanged ||
           (_notifyPixelSizeChanges && pixelSizeChanged) ||
-          terminalNeedsResize ||
           notifyIfUnchanged) {
         _notifyTerminalResizeIfNeeded(
           viewportSize: viewportSize,
@@ -4677,8 +4691,8 @@ class MonkeyRenderTerminal extends RenderBox
     final instanceCellCount = <String, int>{};
     final instanceRowBounds = <String, List<int>>{};
     final instanceColBounds = <String, List<int>>{};
-    // Recency of each instance: the highest placeholder index (placeholders are
-    // appended in write order) seen for it. A redraw that re-displays an image
+    // Recency of each instance: the highest monotonic placeholder sequence seen
+    // for it, independent of visible row/anchor traversal order. A redraw that re-displays an image
     // elsewhere appends fresh placeholders, so the current placement has a
     // higher recency than a stale leftover (ghost) of the same image.
     final instanceRecency = <String, int>{};
@@ -4718,7 +4732,10 @@ class MonkeyRenderTerminal extends RenderBox
       instanceImageKey[instanceKey] = key;
       instanceCellCount[instanceKey] =
           (instanceCellCount[instanceKey] ?? 0) + 1;
-      instanceRecency[instanceKey] = placeholder.sequence;
+      instanceRecency[instanceKey] = math.max(
+        instanceRecency[instanceKey] ?? -1,
+        placeholder.sequence,
+      );
       final rowBounds = instanceRowBounds[instanceKey] ??= <int>[
         placeholder.row,
         placeholder.row,

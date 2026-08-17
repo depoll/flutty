@@ -224,9 +224,9 @@ void main() {
       detector.onTouchScrollUpdate!(
         DragUpdateDetails(
           kind: PointerDeviceKind.touch,
-          globalPosition: Offset(150, 100 - lineHeight * 12),
-          localPosition: Offset(150, 100 - lineHeight * 12),
-          delta: Offset(0, -lineHeight * 12),
+          globalPosition: Offset(150, 100 - lineHeight * 30),
+          localPosition: Offset(150, 100 - lineHeight * 30),
+          delta: Offset(0, -lineHeight * 30),
         ),
       );
       await tester.pump();
@@ -242,8 +242,19 @@ void main() {
       // A TUI that consumes input without drawing cannot stall scrolling
       // forever; the safety timeout releases one event, still without a burst.
       await tester.pump(terminalTouchScrollRemoteFrameTimeout);
-      await tester.pump();
       expect(_countOccurrences(output.join(), '\u001b[<65;'), 3);
+
+      for (var index = 0; index < 10; index++) {
+        await tester.pump(
+          terminalTouchScrollRemoteFrameTimeout +
+              const Duration(milliseconds: 1),
+        );
+      }
+      expect(
+        _countOccurrences(output.join(), '\u001b[<65;'),
+        6,
+        reason: 'stale fling distance is capped to six queued steps',
+      );
     },
   );
 

@@ -479,13 +479,14 @@ class TerminalImagePlaceholder {
     required this.sequence,
     required _TerminalImagePlaceholderGrid grid,
     required _TerminalImagePlaceholderGrid Function(
+      _TerminalImagePlaceholderGrid current,
       int imageId,
       int bitWidth,
       int row,
       int col,
-    ) gridFor,
+    ) rebindGrid,
   })  : _grid = grid,
-        _gridFor = gridFor;
+        _rebindGrid = rebindGrid;
 
   /// The referenced Kitty graphics image id.
   int imageId;
@@ -507,11 +508,12 @@ class TerminalImagePlaceholder {
 
   _TerminalImagePlaceholderGrid _grid;
   final _TerminalImagePlaceholderGrid Function(
+    _TerminalImagePlaceholderGrid current,
     int imageId,
     int bitWidth,
     int row,
     int col,
-  ) _gridFor;
+  ) _rebindGrid;
 
   /// Largest placeholder column observed for this image, plus one.
   int get gridColumns => _grid.columns;
@@ -530,7 +532,13 @@ class TerminalImagePlaceholder {
     this.imageIdBitWidth = imageIdBitWidth;
     this.row = row;
     this.col = col;
-    _grid = _gridFor(imageId, imageIdBitWidth, row, col);
+    _grid = _rebindGrid(
+      _grid,
+      imageId,
+      imageIdBitWidth,
+      row,
+      col,
+    );
   }
 
   /// Column of the placeholder cell.
@@ -547,6 +555,11 @@ class TerminalImagePlaceholder {
 }
 
 class _TerminalImagePlaceholderGrid {
+  _TerminalImagePlaceholderGrid(this.imageId, this.bitWidth);
+
+  final int imageId;
+  final int bitWidth;
+  int references = 0;
   int columns = 1;
   int rows = 1;
 
@@ -619,7 +632,6 @@ class GraphicsManager {
   final int maxMemoryBytes;
 
   final Map<int, TerminalImage> _images = {};
-  final List<TerminalImagePlacement> _placements = [];
   final Map<CellAnchor, TerminalImagePlacement> _placementsByAnchor = {};
   final Map<CellAnchor, TerminalImagePlaceholder> _placeholdersByAnchor = {};
   final Map<({int imageId, int bitWidth}), _TerminalImagePlaceholderGrid>
@@ -666,8 +678,9 @@ class GraphicsManager {
   int _nextPlacementId = 1;
   int _nextPlaceholderSequence = 1;
   int _generation = 0;
-  int _maximumPlacementRows = 1;
-  bool _maximumPlacementRowsDirty = false;
+  int _minimumPlacementRelativeRow = 0;
+  int _maximumPlacementRelativeRow = 0;
+  bool _placementRelativeRowsDirty = false;
   int _currentMemoryBytes = 0;
   int _accessClock = 0;
   double _cellPixelWidth = 0;
@@ -675,7 +688,8 @@ class GraphicsManager {
   int _viewportColumns = 80;
 
   /// Active placements, oldest first.
-  List<TerminalImagePlacement> get placements => _placements;
+  List<TerminalImagePlacement> get placements =>
+      _placementsByAnchor.values.toList(growable: false);
 
   /// Active Unicode-placeholder cells, oldest first.
   List<TerminalImagePlaceholder> get placeholders =>
@@ -683,6 +697,9 @@ class GraphicsManager {
 
   /// Number of active Unicode-placeholder cells.
   int get placeholderCount => _placeholdersByAnchor.length;
+
+  /// Number of shared placeholder grid trackers retained for diagnostics/tests.
+  int get placeholderGridCount => _placeholderGrids.length;
 
   /// The `{imageId: sourceSignature}` of every image the client is guaranteed to
   /// still hold after a window switch — retained decoded images and pending
@@ -796,7 +813,7 @@ class GraphicsManager {
       return;
     }
     if (_cellPixelWidth != width || _cellPixelHeight != height) {
-      _maximumPlacementRowsDirty = true;
+      _placementRelativeRowsDirty = true;
     }
     _cellPixelWidth = width;
     _cellPixelHeight = height;
@@ -806,7 +823,7 @@ class GraphicsManager {
   void setViewportColumns(int columns) {
     if (columns > 0) {
       if (_viewportColumns != columns) {
-        _maximumPlacementRowsDirty = true;
+        _placementRelativeRowsDirty = true;
       }
       _viewportColumns = columns;
     }
@@ -852,10 +869,27 @@ class GraphicsManager {
             anchor,
       };
 
+  /// Removes Unicode placeholders attached to [line] within `[start, end)`.
+  /// Physical placement anchors are independent layers and are left intact.
+  void removePlaceholdersInLineRange(BufferLine line, int start, int end) {
+    if (end <= start) return;
+    for (final anchor in line.anchors.toList()) {
+      if (anchor.x < start || anchor.x >= end) continue;
+      final placeholder = _placeholdersByAnchor[anchor];
+      if (placeholder != null) {
+        _disposePlaceholder(placeholder);
+      }
+    }
+  }
+
+  /// Removes an existing Unicode placeholder at one cell before it is rewritten.
+  void removePlaceholderAt(BufferLine line, int column) =>
+      removePlaceholdersInLineRange(line, column, column + 1);
+
   /// Attached physical placements intersecting the requested buffer rows.
   ///
-  /// Placements can begin above the viewport and extend into it, so the lookup
-  /// walks back by the largest retained placement span before resolving anchors.
+  /// Placements can shift above or below their anchor with `Y=`, so candidate
+  /// anchor rows use the retained minimum/maximum shifted cell extents.
   List<TerminalImagePlacement> placementsInRows(
     IndexAwareCircularBuffer<BufferLine> lines,
     int firstRow,
@@ -869,9 +903,23 @@ class GraphicsManager {
     if (last < first) {
       return const <TerminalImagePlacement>[];
     }
-    final firstAnchorRow = math.max(0, first - _maxPlacementRows + 1);
+    final relativeRows = _placementRelativeRowExtent;
+    final firstAnchorRow = math.max(0, first - relativeRows.last);
+    final lastAnchorRow = math.min(
+      lines.length - 1,
+      last - relativeRows.first,
+    );
+    final candidateRowCount = math.max(0, lastAnchorRow - firstAnchorRow + 1);
+    if (candidateRowCount > _placementsByAnchor.length) {
+      return <TerminalImagePlacement>[
+        for (final placement in _placementsByAnchor.values)
+          if (placement.attached &&
+              _placementIntersectsRows(placement, first, last))
+            placement,
+      ];
+    }
     final result = <TerminalImagePlacement>[];
-    for (var row = firstAnchorRow; row <= last; row++) {
+    for (var row = firstAnchorRow; row <= lastAnchorRow; row++) {
       for (final anchor in lines[row].anchors) {
         final placement = _placementsByAnchor[anchor];
         if (placement != null &&
@@ -884,20 +932,28 @@ class GraphicsManager {
     return result;
   }
 
-  int get _maxPlacementRows {
-    if (_maximumPlacementRowsDirty) {
-      _maximumPlacementRows = 1;
+  ({int first, int last}) get _placementRelativeRowExtent {
+    if (_placementRelativeRowsDirty) {
+      _minimumPlacementRelativeRow = 0;
+      _maximumPlacementRelativeRow = 0;
       for (final placement in _placementsByAnchor.values) {
-        if (placement.attached) {
-          _maximumPlacementRows = math.max(
-            _maximumPlacementRows,
-            _placementCellSpan(placement).rows,
-          );
-        }
+        if (!placement.attached) continue;
+        final range = _placementRelativeCellRange(placement);
+        _minimumPlacementRelativeRow = math.min(
+          _minimumPlacementRelativeRow,
+          range.firstRow,
+        );
+        _maximumPlacementRelativeRow = math.max(
+          _maximumPlacementRelativeRow,
+          range.lastRow,
+        );
       }
-      _maximumPlacementRowsDirty = false;
+      _placementRelativeRowsDirty = false;
     }
-    return _maximumPlacementRows;
+    return (
+      first: _minimumPlacementRelativeRow,
+      last: _maximumPlacementRelativeRow,
+    );
   }
 
   /// Attached Unicode placeholders whose cells are within the requested rows.
@@ -937,7 +993,6 @@ class GraphicsManager {
     for (final anchor in line.anchors.toList()) {
       final placement = _placementsByAnchor[anchor];
       if (placement != null) {
-        _placements.remove(placement);
         _disposePlacement(placement);
         removedPlacement = true;
       }
@@ -948,11 +1003,13 @@ class GraphicsManager {
       }
       _pendingPlacementAnchors.remove(anchor);
     }
-    if (removedPlacement) {
-      _generation++;
-    }
+    // Do not bump the global generation: an unrelated in-flight decode must
+    // survive local scrollback eviction. The evicted anchor itself is detached
+    // and therefore cannot materialize later. Decoded image memory remains
+    // bounded by the manager's count/byte eviction policy; explicit prune/clear
+    // operations reclaim unreferenced images away from this hot path.
     if (removedPlacement || removedPlaceholder) {
-      _dropUnreferencedImages();
+      _placementRelativeRowsDirty = true;
     }
   }
 
@@ -1351,7 +1408,7 @@ class GraphicsManager {
     if (hasImageWithSignature(id, sourceSignature)) {
       return;
     }
-    _maximumPlacementRowsDirty = true;
+    _placementRelativeRowsDirty = true;
     // New bytes for an id whose previous image is already decoded supersede it;
     // drop the stale bitmap (keeping any placements/placeholders that reference
     // the id) so the deferred decode of the new bytes is what gets painted.
@@ -1560,7 +1617,7 @@ class GraphicsManager {
       _disposeDecodedTerminalImage(image);
       return 0;
     }
-    _maximumPlacementRowsDirty = true;
+    _placementRelativeRowsDirty = true;
     final pending = _pendingImages.remove(id);
     if (pending != null) {
       _pendingBytes -= pending.payload.length;
@@ -1949,14 +2006,11 @@ class GraphicsManager {
     // copy behind at every scroll step. Placements without a client id (p=0)
     // always accumulate, per the spec.
     if (clientPlacementId > 0) {
-      _placements.removeWhere((existing) {
-        if (existing.imageId != imageId ||
-            existing.clientPlacementId != clientPlacementId) {
-          return false;
-        }
-        _disposePlacement(existing);
-        return true;
-      });
+      _removePlacementsWhere(
+        (existing) =>
+            existing.imageId == imageId &&
+            existing.clientPlacementId == clientPlacementId,
+      );
     }
     final placement = TerminalImagePlacement(
       placementId: _nextPlacementId++,
@@ -1975,12 +2029,8 @@ class GraphicsManager {
       xOffset: xOffset,
       yOffset: yOffset,
     );
-    _placements.add(placement);
     _placementsByAnchor[anchor] = placement;
-    _maximumPlacementRows = math.max(
-      _maximumPlacementRows,
-      _placementCellSpan(placement).rows,
-    );
+    _placementRelativeRowsDirty = true;
     return placement;
   }
 
@@ -2008,7 +2058,8 @@ class GraphicsManager {
     required int row,
     required int col,
   }) {
-    final grid = _placeholderGridFor(imageId, imageIdBitWidth, row, col);
+    final grid = _placeholderGridFor(imageId, imageIdBitWidth, row, col)
+      ..references += 1;
     final placeholder = TerminalImagePlaceholder._(
       imageId: imageId,
       imageIdBitWidth: imageIdBitWidth,
@@ -2017,7 +2068,7 @@ class GraphicsManager {
       col: col,
       sequence: _nextPlaceholderSequence++,
       grid: grid,
-      gridFor: _placeholderGridFor,
+      rebindGrid: _rebindPlaceholderGrid,
     );
     _placeholdersByAnchor[anchor] = placeholder;
     return placeholder;
@@ -2026,15 +2077,8 @@ class GraphicsManager {
   /// Drops placements whose anchor cell has been evicted from the buffer.
   ///
   /// Returns true if any placement was removed.
-  bool pruneDetachedPlacements() {
-    final before = _placements.length;
-    _placements.removeWhere((placement) {
-      if (placement.attached) return false;
-      _disposePlacement(placement);
-      return true;
-    });
-    return _placements.length != before;
-  }
+  bool pruneDetachedPlacements() =>
+      _removePlacementsWhere((placement) => !placement.attached).isNotEmpty;
 
   /// Drops placeholder cells whose anchors have been evicted.
   bool pruneDetachedPlaceholders() {
@@ -2048,45 +2092,6 @@ class GraphicsManager {
     return detached.isNotEmpty;
   }
 
-  /// Removes Unicode-placeholder cells in rows `[firstRow, lastRow]`.
-  ///
-  /// Standard terminal erases affect Kitty cell images, but physical placements
-  /// remain until a graphics delete command or buffer reset.
-  void removePlaceholdersInRows(int firstRow, int lastRow) {
-    final removals = <TerminalImagePlaceholder>[
-      for (final placeholder in _placeholdersByAnchor.values)
-        if (!placeholder.attached ||
-            (placeholder.cellRow >= firstRow && placeholder.cellRow <= lastRow))
-          placeholder,
-    ];
-    for (final placeholder in removals) {
-      _disposePlaceholder(placeholder);
-    }
-    _dropUnreferencedImages();
-  }
-
-  /// Removes Unicode-placeholder cells intersecting an inclusive cell region.
-  void removePlaceholdersInRegion(
-    int firstRow,
-    int lastRow,
-    int firstCol,
-    int lastCol,
-  ) {
-    final removals = <TerminalImagePlaceholder>[
-      for (final placeholder in _placeholdersByAnchor.values)
-        if (!placeholder.attached ||
-            (placeholder.cellRow >= firstRow &&
-                placeholder.cellRow <= lastRow &&
-                placeholder.cellCol >= firstCol &&
-                placeholder.cellCol <= lastCol))
-          placeholder,
-    ];
-    for (final placeholder in removals) {
-      _disposePlaceholder(placeholder);
-    }
-    _dropUnreferencedImages();
-  }
-
   /// Removes placements anchored within rows `[firstRow, lastRow]` (inclusive),
   /// or whose anchor has detached. Used when scrollback rows are evicted.
   ///
@@ -2097,16 +2102,12 @@ class GraphicsManager {
   /// that already drew the image keeps its own reference alive, and the image is
   /// reclaimed by the GC finalizer once nothing can paint it.
   void removePlacementsInRows(int firstRow, int lastRow) {
-    final before = _placements.length;
-    _placements.removeWhere((placement) {
-      final remove = !placement.attached ||
-          _placementIntersectsRows(placement, firstRow, lastRow);
-      if (remove) {
-        _disposePlacement(placement);
-      }
-      return remove;
-    });
-    if (_placements.length != before) {
+    final removed = _removePlacementsWhere(
+      (placement) =>
+          !placement.attached ||
+          _placementIntersectsRows(placement, firstRow, lastRow),
+    );
+    if (removed.isNotEmpty) {
       _generation++;
     }
     pruneDetachedPlaceholders();
@@ -2122,17 +2123,13 @@ class GraphicsManager {
     int firstCol,
     int lastCol,
   ) {
-    final before = _placements.length;
-    _placements.removeWhere((placement) {
-      final remove = !placement.attached ||
+    final removed = _removePlacementsWhere(
+      (placement) =>
+          !placement.attached ||
           (_placementIntersectsRows(placement, firstRow, lastRow) &&
-              _placementIntersectsCols(placement, firstCol, lastCol));
-      if (remove) {
-        _disposePlacement(placement);
-      }
-      return remove;
-    });
-    if (_placements.length != before) {
+              _placementIntersectsCols(placement, firstCol, lastCol)),
+    );
+    if (removed.isNotEmpty) {
       _generation++;
     }
     pruneDetachedPlaceholders();
@@ -2199,15 +2196,9 @@ class GraphicsManager {
       }
     }
 
-    final freedImageIds = <int>{};
-    final before = _placements.length;
-    _placements.removeWhere((placement) {
-      if (!matches(placement)) return false;
-      freedImageIds.add(placement.imageId);
-      _disposePlacement(placement);
-      return true;
-    });
-    var changed = _placements.length != before;
+    final removed = _removePlacementsWhere(matches);
+    final freedImageIds = {for (final placement in removed) placement.imageId};
+    var changed = removed.isNotEmpty;
 
     if (freeImages) {
       // The client explicitly asked to free the image data, so allow even
@@ -2240,13 +2231,12 @@ class GraphicsManager {
   void clear() {
     _generation++;
     _pendingPlacementAnchors.clear();
-    for (final placement in _placements) {
+    for (final placement in _placementsByAnchor.values.toList()) {
       _disposePlacement(placement);
     }
     for (final placeholder in _placeholdersByAnchor.values.toList()) {
       _disposePlaceholder(placeholder);
     }
-    _placements.clear();
     _placementsByAnchor.clear();
     _placeholdersByAnchor.clear();
     _placeholderGrids.clear();
@@ -2297,9 +2287,9 @@ class GraphicsManager {
     int firstRow,
     int lastRow,
   ) {
-    final rows = _placementCellSpan(placement).rows;
-    final placementFirst = placement.row;
-    final placementLast = placementFirst + rows - 1;
+    final range = _placementRelativeCellRange(placement);
+    final placementFirst = placement.row + range.firstRow;
+    final placementLast = placement.row + range.lastRow;
     return placementFirst <= lastRow && placementLast >= firstRow;
   }
 
@@ -2308,10 +2298,29 @@ class GraphicsManager {
     int firstCol,
     int lastCol,
   ) {
-    final cols = _placementCellSpan(placement).cols;
-    final placementFirst = placement.col;
-    final placementLast = placementFirst + cols - 1;
+    final range = _placementRelativeCellRange(placement);
+    final placementFirst = placement.col + range.firstCol;
+    final placementLast = placement.col + range.lastCol;
     return placementFirst <= lastCol && placementLast >= firstCol;
+  }
+
+  ({int firstCol, int lastCol, int firstRow, int lastRow})
+      _placementRelativeCellRange(TerminalImagePlacement placement) {
+    final span = _placementCellSpan(placement);
+    final cellWidth = _cellPixelWidth > 0 ? _cellPixelWidth : 10.0;
+    final cellHeight = _cellPixelHeight > 0 ? _cellPixelHeight : 20.0;
+    final firstCol = (placement.xOffset / cellWidth).floor();
+    final firstRow = (placement.yOffset / cellHeight).floor();
+    final lastCol =
+        ((placement.xOffset + span.cols * cellWidth) / cellWidth).ceil() - 1;
+    final lastRow =
+        ((placement.yOffset + span.rows * cellHeight) / cellHeight).ceil() - 1;
+    return (
+      firstCol: firstCol,
+      lastCol: math.max(firstCol, lastCol),
+      firstRow: firstRow,
+      lastRow: math.max(firstRow, lastRow),
+    );
   }
 
   ({int cols, int rows}) _placementCellSpan(
@@ -2468,11 +2477,7 @@ class GraphicsManager {
       _failedImageNumberReservations.remove(number);
       _activeImageNumberReservations.remove(number);
     }
-    _placements.removeWhere((placement) {
-      if (placement.imageId != imageId) return false;
-      _disposePlacement(placement);
-      return true;
-    });
+    _removePlacementsWhere((placement) => placement.imageId == imageId);
     final imagePlaceholders = <TerminalImagePlaceholder>[
       for (final placeholder in _placeholdersByAnchor.values)
         if (placeholder.imageId == imageId) placeholder,
@@ -2491,17 +2496,54 @@ class GraphicsManager {
   ) =>
       _placeholderGrids.putIfAbsent(
         (imageId: imageId, bitWidth: bitWidth),
-        _TerminalImagePlaceholderGrid.new,
+        () => _TerminalImagePlaceholderGrid(imageId, bitWidth),
       )..include(row, col);
+
+  _TerminalImagePlaceholderGrid _rebindPlaceholderGrid(
+    _TerminalImagePlaceholderGrid current,
+    int imageId,
+    int bitWidth,
+    int row,
+    int col,
+  ) {
+    final next = _placeholderGridFor(imageId, bitWidth, row, col);
+    if (identical(current, next)) return current;
+    _releasePlaceholderGrid(current);
+    next.references += 1;
+    return next;
+  }
+
+  void _releasePlaceholderGrid(_TerminalImagePlaceholderGrid grid) {
+    grid.references -= 1;
+    if (grid.references > 0) return;
+    final key = (imageId: grid.imageId, bitWidth: grid.bitWidth);
+    if (identical(_placeholderGrids[key], grid)) {
+      _placeholderGrids.remove(key);
+    }
+  }
+
+  List<TerminalImagePlacement> _removePlacementsWhere(
+    bool Function(TerminalImagePlacement placement) predicate,
+  ) {
+    final removed = <TerminalImagePlacement>[
+      for (final placement in _placementsByAnchor.values)
+        if (predicate(placement)) placement,
+    ];
+    for (final placement in removed) {
+      _disposePlacement(placement);
+    }
+    return removed;
+  }
 
   void _disposePlacement(TerminalImagePlacement placement) {
     _placementsByAnchor.remove(placement.anchor);
-    _maximumPlacementRowsDirty = true;
+    _placementRelativeRowsDirty = true;
     placement.dispose();
   }
 
   void _disposePlaceholder(TerminalImagePlaceholder placeholder) {
     _placeholdersByAnchor.remove(placeholder.anchor);
+    _releasePlaceholderGrid(placeholder._grid);
     placeholder.dispose();
   }
 }
