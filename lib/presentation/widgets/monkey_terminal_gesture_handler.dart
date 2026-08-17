@@ -28,6 +28,7 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     this.onTertiaryTapUp,
     this.onLongPressStart,
     this.onLongPressMoveUpdate,
+    this.onTouchScrollDown,
     this.onTouchScrollStart,
     this.onTouchScrollUpdate,
     this.onTouchScrollEnd,
@@ -61,6 +62,8 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
   final GestureTapDownCallback? onTertiaryTapDown;
 
   final GestureTapUpCallback? onTertiaryTapUp;
+
+  final GestureDragDownCallback? onTouchScrollDown;
 
   final GestureDragStartCallback? onTouchScrollStart;
 
@@ -131,6 +134,7 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onSecondaryTapUp: onSecondaryTapUp,
       onTertiaryTapDown: onTertiaryTapDown,
       onTertiaryTapUp: onTertiaryTapUp,
+      onTouchScrollDown: onTouchScrollDown,
       onTouchScrollStart: onTouchScrollStart,
       onTouchScrollUpdate: onTouchScrollUpdate,
       onTouchScrollEnd: onTouchScrollEnd,
@@ -236,6 +240,11 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
 
   void onSecondaryTapDown(TapDownDetails details) {
     _tapDown(widget.onSecondaryTapDown, details, TerminalMouseButton.right);
+  }
+
+  void onTouchScrollDown(DragDownDetails details) {
+    _clearPendingLinkTap();
+    widget.onTouchScrollDown?.call(details);
   }
 
   void onTouchScrollStart(DragStartDetails details) {

@@ -1,7 +1,5 @@
 // ignore_for_file: implementation_imports, public_member_api_docs
 
-import 'dart:async';
-
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -30,12 +28,7 @@ void main() {
       ..setMouseReportMode(MouseReportMode.sgr);
     _renderTrackpadCalibrationRows(terminal, 0);
     final output = <String>[];
-    terminal.onOutput = (data) {
-      output.add(data);
-      if (output.length == 1) {
-        scheduleMicrotask(() => _renderTrackpadCalibrationRows(terminal, 3));
-      }
-    };
+    terminal.onOutput = output.add;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -67,19 +60,25 @@ void main() {
       center + const Offset(0, -30),
       pan: const Offset(0, -30),
     );
+    expect(output, hasLength(1));
+    await gesture.panZoomEnd();
+
+    final secondGesture = await tester.createGesture(
+      kind: PointerDeviceKind.trackpad,
+    );
+    await secondGesture.panZoomStart(center);
+    await secondGesture.panZoomUpdate(
+      center + const Offset(0, -30),
+      pan: const Offset(0, -30),
+    );
+    expect(output, hasLength(1));
+
+    _renderTrackpadCalibrationRows(terminal, 3);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 80));
 
-    expect(output, hasLength(1));
-
-    await gesture.panZoomUpdate(
-      center + const Offset(0, -60),
-      pan: const Offset(0, -60),
-    );
-    await tester.pump();
-
     expect(output, hasLength(2));
-    await gesture.panZoomEnd();
+    await secondGesture.panZoomEnd();
   });
 
   testWidgets(

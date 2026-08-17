@@ -224,6 +224,12 @@ void main() {
       );
       expect(output, hasLength(1));
 
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: Offset(150, 100 - lineHeight * 3),
+        ),
+      );
       detector.onTouchScrollUpdate!(
         DragUpdateDetails(
           kind: PointerDeviceKind.touch,
@@ -668,6 +674,46 @@ void main() {
     );
   });
 
+  testWidgets('touch down holds an active direct scrollback fling', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 300)
+      ..write(List.filled(200, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.fling(
+      find.byType(MonkeyTerminalView),
+      const Offset(0, 120),
+      3000,
+    );
+    await tester.pump(const Duration(milliseconds: 16));
+
+    final gesture = await tester.createGesture();
+    await gesture.down(tester.getCenter(find.byType(MonkeyTerminalView)));
+    await tester.pump();
+    final heldOffset = scrollController.offset;
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(scrollController.offset, closeTo(heldOffset, 0.01));
+    await gesture.up();
+  });
+
   testWidgets('alt buffer assigns touch to a dedicated recognizer', (
     tester,
   ) async {
@@ -693,6 +739,7 @@ void main() {
     final gestureDetector = tester.widget<MonkeyTerminalGestureDetector>(
       find.byType(MonkeyTerminalGestureDetector),
     );
+    expect(gestureDetector.onTouchScrollDown, isNotNull);
     expect(gestureDetector.onTouchScrollStart, isNotNull);
     expect(gestureDetector.onTouchScrollUpdate, isNotNull);
     expect(gestureDetector.onTouchScrollEnd, isNotNull);

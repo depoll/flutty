@@ -782,6 +782,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   final _viewportKey = GlobalKey();
 
   String? _composingText;
+  ScrollHoldController? _directTouchScrollHold;
   Drag? _directTouchScrollDrag;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
@@ -1387,6 +1388,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       resolveLinkTap: widget.resolveLinkTap == null ? null : _resolveLinkTap,
       onLinkTapDown: widget.onLinkTapDown == null ? null : _onLinkTapDown,
       onLinkTap: widget.onLinkTap,
+      onTouchScrollDown: _onTouchScrollDown,
       onTouchScrollStart: widget.touchScrollToTerminal
           ? _onTouchScrollStart
           : _onDirectTouchScrollStart,
@@ -1529,8 +1531,28 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _cancelDirectTouchScrollDrag() {
+    _directTouchScrollHold?.cancel();
+    _directTouchScrollHold = null;
     _directTouchScrollDrag?.cancel();
     _directTouchScrollDrag = null;
+  }
+
+  void _disposeDirectTouchScrollHold() {
+    _directTouchScrollHold = null;
+  }
+
+  void _onTouchScrollDown(DragDownDetails details) {
+    if (widget.touchScrollToTerminal || widget.terminal.isUsingAltBuffer) {
+      _stopTouchScrollInertia();
+      return;
+    }
+    _directTouchScrollHold?.cancel();
+    final position = _scrollableKey.currentState?.position;
+    if (position == null) {
+      _directTouchScrollHold = null;
+      return;
+    }
+    _directTouchScrollHold = position.hold(_disposeDirectTouchScrollHold);
   }
 
   void _onDirectTouchScrollStart(DragStartDetails details) {
@@ -1538,16 +1560,19 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _onTouchScrollStart(details);
       return;
     }
-    _cancelDirectTouchScrollDrag();
+    _directTouchScrollDrag?.cancel();
+    _directTouchScrollDrag = null;
     final position = _scrollableKey.currentState?.position;
     if (position == null) {
-      _directTouchScrollDrag = null;
+      _directTouchScrollHold?.cancel();
+      _directTouchScrollHold = null;
       return;
     }
     _directTouchScrollDrag = position.drag(
       details,
       () => _directTouchScrollDrag = null,
     );
+    _disposeDirectTouchScrollHold();
   }
 
   void _onDirectTouchScrollUpdate(DragUpdateDetails details) {
@@ -1614,10 +1639,12 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _onTouchScrollStart(DragStartDetails details) {
-    _touchWheelCalibrator.invalidate();
     _stopTouchScrollInertia();
     _lastTouchScrollPosition = details.localPosition;
-    _touchScrollRemainder = 0;
+    if (!_touchWheelCalibrator.waitingForResponse) {
+      _touchWheelCalibrator.invalidate();
+      _touchScrollRemainder = 0;
+    }
   }
 
   void _onTouchScrollUpdate(DragUpdateDetails details) {

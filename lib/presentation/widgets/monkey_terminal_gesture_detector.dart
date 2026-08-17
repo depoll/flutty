@@ -24,6 +24,7 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
     this.onLongPressUp,
     this.onDragStart,
     this.onDragUpdate,
+    this.onTouchScrollDown,
     this.onTouchScrollStart,
     this.onTouchScrollUpdate,
     this.onTouchScrollEnd,
@@ -65,6 +66,8 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
   final GestureDragStartCallback? onDragStart;
 
   final GestureDragUpdateCallback? onDragUpdate;
+
+  final GestureDragDownCallback? onTouchScrollDown;
 
   final GestureDragStartCallback? onTouchScrollStart;
 
@@ -208,7 +211,8 @@ class _MonkeyTerminalGestureDetectorState
           );
     }
 
-    if (widget.onTouchScrollStart != null ||
+    if (widget.onTouchScrollDown != null ||
+        widget.onTouchScrollStart != null ||
         widget.onTouchScrollUpdate != null ||
         widget.onTouchScrollEnd != null ||
         widget.onTouchScrollCancel != null) {
@@ -221,6 +225,7 @@ class _MonkeyTerminalGestureDetectorState
             (VerticalDragGestureRecognizer instance) {
               instance
                 ..dragStartBehavior = DragStartBehavior.down
+                ..onDown = widget.onTouchScrollDown
                 ..onStart = widget.onTouchScrollStart
                 ..onUpdate = widget.onTouchScrollUpdate
                 ..onEnd = widget.onTouchScrollEnd
