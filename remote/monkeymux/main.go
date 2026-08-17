@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.158"
+	monkeyMuxVersion                  = "0.1.159"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -233,6 +233,7 @@ var capabilities = []string{
 	"window-close",
 	"active-context",
 	"inject-input",
+	"inject-input-bracketed-paste",
 	"run-command",
 	"client-scoped-run-command",
 	"focus-hint",
@@ -453,18 +454,19 @@ var (
 )
 
 type controlMessage struct {
-	Role        string   `json:"role,omitempty"`
-	ID          string   `json:"id,omitempty"`
-	Type        string   `json:"type,omitempty"`
-	Session     string   `json:"session,omitempty"`
-	ClientID    string   `json:"clientId,omitempty"`
-	WindowID    string   `json:"windowId,omitempty"`
-	WindowIndex *int     `json:"windowIndex,omitempty"`
-	Name        string   `json:"name,omitempty"`
-	Cwd         string   `json:"cwd,omitempty"`
-	Command     string   `json:"command,omitempty"`
-	Args        []string `json:"args,omitempty"`
-	Data        string   `json:"data,omitempty"`
+	Role           string   `json:"role,omitempty"`
+	ID             string   `json:"id,omitempty"`
+	Type           string   `json:"type,omitempty"`
+	Session        string   `json:"session,omitempty"`
+	ClientID       string   `json:"clientId,omitempty"`
+	WindowID       string   `json:"windowId,omitempty"`
+	WindowIndex    *int     `json:"windowIndex,omitempty"`
+	Name           string   `json:"name,omitempty"`
+	Cwd            string   `json:"cwd,omitempty"`
+	Command        string   `json:"command,omitempty"`
+	Args           []string `json:"args,omitempty"`
+	Data           string   `json:"data,omitempty"`
+	BracketedPaste bool     `json:"bracketedPaste,omitempty"`
 	// CapabilityHint carries the attaching client's static terminal capability
 	// replies (see capabilityHintResponseMap) so the daemon can answer device
 	// attribute/XTVERSION probes for windows the client is not showing.
@@ -8178,7 +8180,11 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		if id == "" {
 			id = s.activeWindowID()
 		}
-		if err := s.writeWindow(id, []byte(request.Data)); err != nil {
+		if err := s.writeWindowInput(
+			id,
+			[]byte(request.Data),
+			request.BracketedPaste,
+		); err != nil {
 			client.sendError(request, err)
 			return
 		}
