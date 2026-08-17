@@ -33,6 +33,7 @@ import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
+import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -57,7 +58,6 @@ import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_key_input.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
-import 'terminal_touch_scroll_policy.dart';
 
 const _minimumFaintTextContrast = 4.5;
 const _minimumCursorTextContrast = 4.5;
@@ -540,10 +540,6 @@ double resolveTerminalHorizontalFillScale({
 @visibleForTesting
 const terminalKeyboardResizeDebounceDuration = Duration(milliseconds: 180);
 
-/// Maximum wait before releasing touch-scroll backpressure when a remote TUI
-/// consumes a wheel event without emitting a frame.
-@visibleForTesting
-const terminalTouchScrollRemoteFrameTimeout = Duration(milliseconds: 48);
 const _terminalFocusInReport = '\x1b[I';
 const _terminalFocusOutReport = '\x1b[O';
 const _terminalFocusTransitionDelay = Duration(milliseconds: 50);
@@ -778,7 +774,7 @@ class MonkeyTerminalView extends StatefulWidget {
 
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  static const _touchScrollReportedWheelEventsPerBatch = 3;
+  static const _touchScrollReportedWheelLinesPerEvent = 3.0;
 
   late FocusNode _focusNode;
 
@@ -793,11 +789,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   String? _composingText;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
-  bool _coalesceTouchScrollToRemoteFrames = false;
-  bool _touchScrollWaitingForRemoteFrame = false;
   bool _touchScrollDrainScheduled = false;
   int _touchScrollDispatchGeneration = 0;
-  Timer? _touchScrollRemoteFrameTimer;
   late final Ticker _touchScrollInertiaTicker;
   late final Ticker _graphicsAnimationTicker;
   Simulation? _touchScrollInertiaSimulation;
@@ -880,13 +873,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final coalesceTouchScroll =
-        MonkeyTerminalTouchScrollPolicy.maybeOf(context)?.coalesce ?? false;
-    if (coalesceTouchScroll != _coalesceTouchScrollToRemoteFrames) {
-      _stopTouchScrollInertia();
-      _resetTouchScrollDispatch();
-      _coalesceTouchScrollToRemoteFrames = coalesceTouchScroll;
-    }
     // Terminal images are user-requested media, not UI transitions. Android
     // reports disableAnimations when developer/emulator animation scales are
     // zero, which must not freeze GIFs in the terminal. iOS exposes its actual
@@ -1026,7 +1012,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _handleTerminalMetricsChanged() {
-    _releaseTouchScrollRemoteFrame();
     _syncGraphicsAnimationTicker();
     _scheduleGraphicsAnimationSync();
     final currentViewWidth = widget.terminal.viewWidth;
@@ -1519,7 +1504,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return 0;
     }
     if (widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll) {
-      return lineHeight * _touchScrollReportedWheelEventsPerBatch;
+      return lineHeight * _touchScrollReportedWheelLinesPerEvent;
     }
     return lineHeight;
   }
@@ -1530,19 +1515,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return;
     }
     _touchScrollRemainder += delta;
-    if (_coalesceTouchScrollToRemoteFrames) {
-      const maxQueuedSteps = 6;
-      _touchScrollRemainder = _touchScrollRemainder.clamp(
-        -stepHeight * maxQueuedSteps,
-        stepHeight * maxQueuedSteps,
-      );
-    }
     _drainTouchScrollInput();
   }
 
   void _drainTouchScrollInput() {
-    if (_coalesceTouchScrollToRemoteFrames &&
-        (_touchScrollWaitingForRemoteFrame || _touchScrollDrainScheduled)) {
+    if (_touchScrollDrainScheduled) {
       return;
     }
     final stepHeight = _touchScrollStepHeight;
@@ -1552,32 +1529,24 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
     while (_touchScrollRemainder.abs() >= stepHeight) {
       final scrollUp = _touchScrollRemainder > 0;
-      final reportsWheel =
-          widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll;
-      final queuedSteps = reportsWheel && _coalesceTouchScrollToRemoteFrames
+      final canBatchSgr =
+          widget.forceSgrTouchScroll ||
+          (widget.terminal.mouseMode.reportScroll &&
+              widget.terminal.mouseReportMode == MouseReportMode.sgr);
+      final queuedSteps = canBatchSgr
           ? (_touchScrollRemainder.abs() / stepHeight).floor().clamp(1, 6)
           : 1;
       final handled = _sendTouchScrollMouseInput(
         scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
         _resolveViewportMousePosition(_lastTouchScrollPosition),
-        repeatCount: reportsWheel && _coalesceTouchScrollToRemoteFrames
-            ? _touchScrollReportedWheelEventsPerBatch * queuedSteps
-            : 1,
+        repeatCount: canBatchSgr ? queuedSteps : 1,
       );
       final consumedDistance = stepHeight * queuedSteps;
       _touchScrollRemainder += scrollUp ? -consumedDistance : consumedDistance;
 
       if (handled) {
-        if (_coalesceTouchScrollToRemoteFrames) {
-          // Full-screen TUIs such as Pi render their whole transcript for each
-          // wheel event. Keep only bounded remaining gesture distance and wait
-          // for output (or the timeout) before requesting another redraw.
-          _touchScrollWaitingForRemoteFrame = true;
-          _touchScrollRemoteFrameTimer?.cancel();
-          _touchScrollRemoteFrameTimer = Timer(
-            terminalTouchScrollRemoteFrameTimeout,
-            _releaseTouchScrollRemoteFrame,
-          );
+        if (canBatchSgr && _touchScrollRemainder.abs() >= stepHeight) {
+          _scheduleTouchScrollDrain();
           return;
         }
         continue;
@@ -1588,15 +1557,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         );
       }
     }
-  }
-
-  void _releaseTouchScrollRemoteFrame() {
-    if (!_touchScrollWaitingForRemoteFrame) {
-      return;
-    }
-    _touchScrollRemoteFrameTimer?.cancel();
-    _touchScrollRemoteFrameTimer = null;
-    _scheduleTouchScrollDrain();
   }
 
   void _scheduleTouchScrollDrain() {
@@ -1611,7 +1571,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         return;
       }
       _touchScrollDrainScheduled = false;
-      _touchScrollWaitingForRemoteFrame = false;
       if (mounted) {
         _drainTouchScrollInput();
       }
@@ -1620,9 +1579,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   void _resetTouchScrollDispatch() {
     _touchScrollDispatchGeneration += 1;
-    _touchScrollRemoteFrameTimer?.cancel();
-    _touchScrollRemoteFrameTimer = null;
-    _touchScrollWaitingForRemoteFrame = false;
     _touchScrollDrainScheduled = false;
     _touchScrollRemainder = 0;
   }

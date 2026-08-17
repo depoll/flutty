@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_gesture_detector.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:monkeyssh/presentation/widgets/terminal_touch_scroll_policy.dart';
 import 'package:xterm/xterm.dart';
 
 int _countOccurrences(String text, String pattern) {
@@ -187,7 +186,7 @@ void main() {
   });
 
   testWidgets(
-    'remote wheel scrolling waits for each terminal frame before draining',
+    'reported wheel scrolling coalesces exact events per local frame',
     (tester) async {
       final terminal = Terminal();
       final output = <String>[];
@@ -198,15 +197,12 @@ void main() {
           home: SizedBox(
             width: 300,
             height: 200,
-            child: MonkeyTerminalTouchScrollPolicy(
-              coalesce: true,
-              child: MonkeyTerminalView(
-                terminal,
-                hardwareKeyboardOnly: true,
-                touchScrollToTerminal: true,
-                simulateScroll: false,
-                forceSgrTouchScroll: true,
-              ),
+            child: MonkeyTerminalView(
+              terminal,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+              simulateScroll: false,
+              forceSgrTouchScroll: true,
             ),
           ),
         ),
@@ -219,45 +215,30 @@ void main() {
         find.byType(MonkeyTerminalGestureDetector),
       );
       final lineHeight = state.renderTerminal.lineHeight;
-      final update = DragUpdateDetails(
-        kind: PointerDeviceKind.touch,
-        globalPosition: Offset(150, 100 - lineHeight * 30),
-        localPosition: Offset(150, 100 - lineHeight * 30),
-        delta: Offset(0, -lineHeight * 30),
-      );
       detector.onTouchScrollStart!(
         DragStartDetails(
           kind: PointerDeviceKind.touch,
           localPosition: const Offset(150, 100),
         ),
       );
-      detector.onTouchScrollUpdate!(update);
-      await tester.pump();
-
-      expect(output, hasLength(1));
-      expect(
-        _countOccurrences(output.single, '\u001b[<65;'),
-        18,
-        reason: 'six queued thresholds collapse into one three-step batch',
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 30),
+          localPosition: Offset(150, 100 - lineHeight * 30),
+          delta: Offset(0, -lineHeight * 30),
+        ),
       );
 
-      // More movement while Pi renders is retained but cannot queue another
-      // shell write until terminal output confirms that frame completed.
-      detector.onTouchScrollUpdate!(update);
-      await tester.pump();
+      // Ten original wheel thresholds are preserved, but only six reports are
+      // written in the current local frame. The remaining four share one write
+      // in the next frame instead of creating ten synchronous shell writes.
       expect(output, hasLength(1));
-      terminal.write('frame');
+      expect(_countOccurrences(output.single, '\u001b[<65;'), 6);
       await tester.pump();
       expect(output, hasLength(2));
-      expect(_countOccurrences(output.last, '\u001b[<65;'), 18);
-
-      // A TUI that consumes input without drawing cannot stall scrolling.
-      detector.onTouchScrollUpdate!(update);
-      await tester.pump();
-      expect(output, hasLength(2));
-      await tester.pump(terminalTouchScrollRemoteFrameTimeout);
-      expect(output, hasLength(3));
-      expect(_countOccurrences(output.last, '\u001b[<65;'), 18);
+      expect(_countOccurrences(output.last, '\u001b[<65;'), 4);
+      expect(_countOccurrences(output.join(), '\u001b[<65;'), 10);
     },
   );
 
