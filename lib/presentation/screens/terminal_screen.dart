@@ -12450,11 +12450,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 label: connectionLabel,
                 state: connectionState,
                 isConnecting: _isConnecting,
+                connectedThroughJumpHost: isConnectedThroughJumpHost,
               ),
-              if (isConnectedThroughJumpHost) ...[
-                const SizedBox(width: 4),
-                const _TerminalJumpHostIndicator(),
-              ],
               const SizedBox(width: 8),
               Expanded(
                 child: Column(
@@ -17994,11 +17991,13 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
     required this.label,
     required this.state,
     required this.isConnecting,
+    required this.connectedThroughJumpHost,
   });
 
   final String label;
   final SshConnectionState state;
   final bool isConnecting;
+  final bool connectedThroughJumpHost;
 
   IconData get _icon {
     if (isConnecting &&
@@ -18047,12 +18046,29 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final statusColor = _color(colorScheme);
 
+    final statusIcon = Icon(_icon, size: 20, color: statusColor);
+
     return Semantics(
       label: 'Terminal connection status: $label',
       child: Tooltip(
         message: label,
         excludeFromSemantics: true,
-        child: Icon(_icon, size: 20, color: statusColor),
+        child: connectedThroughJumpHost
+            ? SizedBox.square(
+                dimension: 24,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    statusIcon,
+                    const Positioned(
+                      right: 0,
+                      bottom: 0,
+                      child: _TerminalJumpHostIndicator(),
+                    ),
+                  ],
+                ),
+              )
+            : statusIcon,
       ),
     );
   }
@@ -18070,7 +18086,17 @@ class _TerminalJumpHostIndicator extends StatelessWidget {
       child: Tooltip(
         message: 'Connected through jump host',
         excludeFromSemantics: true,
-        child: Icon(Icons.alt_route, size: 18, color: colorScheme.secondary),
+        child: Container(
+          width: 14,
+          height: 14,
+          decoration: BoxDecoration(
+            color: colorScheme.onSurface,
+            shape: BoxShape.circle,
+            border: Border.all(color: colorScheme.surface),
+          ),
+          alignment: Alignment.center,
+          child: Icon(Icons.alt_route, size: 9, color: colorScheme.surface),
+        ),
       ),
     );
   }
