@@ -293,7 +293,7 @@ invoke the repo skill:
 /prepare-release v1.2.3 --skip-media --skip-copy --ship
 ```
 
-Skill source: `.github/skills/prepare-release/SKILL.md`.
+Skill source: `.agents/skills/prepare-release/SKILL.md`.
 
 The future refresh prompt lives in `docs/store-assets-prompt.md`.
 

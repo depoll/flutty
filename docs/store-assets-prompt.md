@@ -1,6 +1,6 @@
 # Store assets refresh prompt
 
-Prefer the agent skill `/prepare-release` (`.github/skills/prepare-release/SKILL.md`) for a full release walkthrough. Use this prompt when MonkeySSH needs only refreshed App Store or Google Play assets:
+Prefer the agent skill `/prepare-release` (`.agents/skills/prepare-release/SKILL.md`) for a full release walkthrough. Use this prompt when MonkeySSH needs only refreshed App Store or Google Play assets:
 
 ```text
 Refresh the MonkeySSH store assets for the next release.

@@ -152,7 +152,7 @@ Agents can run the full prepare/ship flow via:
 /prepare-release --media-only --sync
 ```
 
-See `.github/skills/prepare-release/SKILL.md`.
+See `.agents/skills/prepare-release/SKILL.md`.
 
 ### Commit Messages
 
