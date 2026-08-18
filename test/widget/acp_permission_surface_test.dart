@@ -107,12 +107,15 @@ void main() {
     );
     final prompt = acpToolPromptFromSession(
       pending,
+      toolTitle: 'Write settings',
       onSelect: (id) async => selected.add(id),
       onCancel: () async {},
     );
     expect(prompt.stableKey, 'session:sess:req-1');
     await _pump(tester, [prompt]);
 
+    expect(find.text('Allow Write settings?'), findsOneWidget);
+    expect(find.text('Write settings'), findsOneWidget);
     expect(find.text('Allow once'), findsOneWidget);
     await tester.tap(find.text('Allow once'));
     await tester.pump();

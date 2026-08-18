@@ -206,7 +206,7 @@ void main() {
       startSession: false,
     );
 
-    expect(find.text('ACP provider unavailable'), findsOneWidget);
+    expect(find.text('Agent provider unavailable'), findsOneWidget);
     final startButton = tester.widget<FilledButton>(
       find.widgetWithText(FilledButton, 'Start session'),
     );

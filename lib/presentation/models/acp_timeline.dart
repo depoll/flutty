@@ -55,14 +55,20 @@ final class AcpUserPromptEntry extends AcpTimelineEntry {
   /// Creates a user prompt entry from ordered [parts].
   ///
   /// [parts] is defensively wrapped in an unmodifiable list.
-  AcpUserPromptEntry({required super.id, required List<AcpPromptPart> parts})
-    : parts = List.unmodifiable(parts);
+  AcpUserPromptEntry({
+    required super.id,
+    required List<AcpPromptPart> parts,
+    this.queued = false,
+  }) : parts = List.unmodifiable(parts);
+
+  /// Whether this prompt is waiting behind an active turn.
+  final bool queued;
 
   /// The ordered content parts of the prompt.
   final List<AcpPromptPart> parts;
 
   @override
-  List<Object?> get props => [id, parts];
+  List<Object?> get props => [id, parts, queued];
 }
 
 /// A chunk of assistant Markdown text.

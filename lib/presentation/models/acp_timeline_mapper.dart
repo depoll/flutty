@@ -110,7 +110,11 @@ AcpTimelineEntry? _mapMessage(
       if (parts.isEmpty) {
         return null;
       }
-      return AcpUserPromptEntry(id: 'msg-${entry.order}', parts: parts);
+      return AcpUserPromptEntry(
+        id: 'msg-${entry.order}',
+        parts: parts,
+        queued: entry.queued,
+      );
     case d.AcpMessageRole.agent:
       return AcpAssistantMessageEntry(
         id: 'msg-${entry.order}',

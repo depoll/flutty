@@ -75,7 +75,7 @@ class AcpUserPromptView extends StatelessWidget {
 
     return Semantics(
       container: true,
-      label: 'Your message',
+      label: entry.queued ? 'Your message, queued' : 'Your message',
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: scheme.surfaceContainerHighest,
@@ -88,6 +88,40 @@ class AcpUserPromptView extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (entry.queued) ...[
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: FluttyTheme.spacingSm,
+                      vertical: FluttyTheme.spacingXs,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.schedule,
+                          size: 13,
+                          color: scheme.onPrimaryContainer,
+                        ),
+                        const SizedBox(width: FluttyTheme.spacingXs),
+                        Text(
+                          'queued',
+                          style: FluttyTheme.monoStyle.copyWith(
+                            color: scheme.onPrimaryContainer,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: FluttyTheme.spacingSm),
+              ],
               for (var i = 0; i < parts.length; i++) ...[
                 if (i > 0) const SizedBox(height: FluttyTheme.spacingSm),
                 _buildPart(context, parts[i]),

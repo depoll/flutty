@@ -27,6 +27,7 @@ import '../../app/theme.dart';
 import '../../domain/models/acp_attachment.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
+import '../../domain/models/acp_timeline.dart' as domain;
 import '../../domain/services/acp_attachment_service.dart';
 import '../../domain/services/acp_concurrency_policy.dart';
 import '../../domain/services/acp_session_manager.dart';
@@ -49,6 +50,7 @@ import '../widgets/acp_permission_surface.dart';
 import '../widgets/acp_session_presentation.dart';
 import '../widgets/acp_session_switcher.dart';
 import '../widgets/brand_error_state.dart';
+import '../widgets/cursor_block.dart';
 import '../widgets/terminal_overlay_focus.dart';
 import 'sftp_screen.dart';
 
@@ -58,7 +60,7 @@ typedef AcpChatAttachmentActionsBuilder =
     AcpComposerAttachmentActions Function(int hostId, int? connectionId);
 
 /// Wide-layout breakpoint for the session rail.
-const double kAgentChatWideBreakpoint = 600;
+const double kAgentChatWideBreakpoint = 840;
 
 /// Full-screen agent chat for one ACP session.
 class AgentChatScreen extends ConsumerStatefulWidget {
@@ -408,6 +410,12 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
 
   List<AcpPermissionPrompt> _prompts(AcpSessionState session) {
     final manager = ref.read(acpSessionManagerProvider);
+    final toolTitles = <String, String>{
+      for (final entry
+          in session.timeline.entries.whereType<domain.AcpToolCallEntry>())
+        if (entry.title?.trim().isNotEmpty ?? false)
+          entry.toolCallId: entry.title!.trim(),
+    };
     return [
       for (final pending in session.pendingPermissions)
         acpToolPromptFromSession(
@@ -415,6 +423,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
           onSelect: (optionId) =>
               manager.respondToPermission(_key, pending.requestKey, optionId),
           onCancel: () => manager.cancelPermission(_key, pending.requestKey),
+          toolTitle: toolTitles[pending.toolCallId],
         ),
       for (final write in session.pendingWrites)
         AcpWritePermissionPrompt(
@@ -423,6 +432,8 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
           contentBytes: write.contentByteLength,
           onApprove: () => manager.approveWrite(_key, write.requestKey),
           onReject: () => manager.rejectWrite(_key, write.requestKey),
+          revealContent: () =>
+              manager.pendingWriteContent(_key, write.requestKey) ?? '',
         ),
     ];
   }
@@ -657,7 +668,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                         '${acpStatusDisplay(session.status).label}',
                         style: FluttyTheme.monoStyle.copyWith(
                           color: colorScheme.onSurfaceVariant,
-                          fontSize: 11,
+                          fontSize: 12,
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -675,13 +686,6 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             icon: const Icon(Icons.window_outlined),
             onPressed: _openMonkeyMuxWindows,
           ),
-          IconButton(
-            tooltip: 'Session settings',
-            icon: const Icon(Icons.tune),
-            onPressed: session.status == AcpConnectionStatus.ready
-                ? () => _openConfig(session)
-                : null,
-          ),
           _buildOverflowMenu(session),
         ],
       ),
@@ -689,40 +693,57 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         top: false,
         child: Column(
           children: [
+            if (session.status != AcpConnectionStatus.ready)
+              _buildSessionStatusBanner(session),
             Expanded(
               child: Stack(
                 children: [
-                  AcpMessageThread(
-                    entries: entries,
-                    controller: _scroll,
-                    imageResolver: _resolveChatImage,
-                    onTapImage: _openImageViewer,
-                    onOpenResource: _openResource,
-                    onCopyResource: (resource) =>
-                        _copyToClipboard(resource.uri, 'Resource'),
-                    onCopyCode: (code) => _copyToClipboard(code, 'Code'),
-                    onOpenLocation: (location) =>
-                        _openRemotePath(location.path),
-                  ),
+                  if (entries.isEmpty)
+                    _AcpEmptyConversation(
+                      providerLabel: session.providerLabel,
+                      cwd: acpCwdSummary(session.cwd),
+                    )
+                  else
+                    AcpMessageThread(
+                      entries: entries,
+                      controller: _scroll,
+                      imageResolver: _resolveChatImage,
+                      onTapImage: _openImageViewer,
+                      onOpenResource: _openResource,
+                      onCopyResource: (resource) =>
+                          _copyToClipboard(resource.uri, 'Resource'),
+                      onCopyCode: (code) => _copyToClipboard(code, 'Code'),
+                      onOpenLocation: (location) =>
+                          _openRemotePath(location.path),
+                    ),
                   if (_showJumpToLatest)
                     Positioned(
                       right: FluttyTheme.spacingMd,
                       bottom: FluttyTheme.spacingMd,
-                      child: FloatingActionButton.small(
-                        heroTag: 'acp-jump-latest',
-                        onPressed: _jumpToLatest,
-                        child: const Icon(Icons.arrow_downward),
+                      child: SizedBox.square(
+                        dimension: 44,
+                        child: FloatingActionButton.small(
+                          heroTag: 'acp-jump-latest',
+                          tooltip: 'Jump to latest',
+                          onPressed: _jumpToLatest,
+                          child: const Icon(Icons.arrow_downward),
+                        ),
                       ),
                     ),
                 ],
               ),
             ),
             if (prompts.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: FluttyTheme.spacingMd,
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.34,
                 ),
-                child: AcpPermissionSurface(prompts: prompts),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: FluttyTheme.spacingMd,
+                  ),
+                  child: AcpPermissionSurface(prompts: prompts),
+                ),
               ),
             AcpComposer(
               controller: _composer,
@@ -731,6 +752,57 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildSessionStatusBanner(AcpSessionState session) {
+    final status = session.status;
+    final transitioning =
+        status == AcpConnectionStatus.idle ||
+        status == AcpConnectionStatus.connecting ||
+        status == AcpConnectionStatus.initializing ||
+        status == AcpConnectionStatus.reconnecting;
+    final (message, icon) = switch (status) {
+      AcpConnectionStatus.idle => ('agent is getting ready', Icons.schedule),
+      AcpConnectionStatus.connecting => ('connecting to agent', Icons.link),
+      AcpConnectionStatus.initializing => (
+        'initializing native chat',
+        Icons.settings_outlined,
+      ),
+      AcpConnectionStatus.reconnecting => ('reattaching session', Icons.sync),
+      AcpConnectionStatus.authenticationRequired => (
+        'agent sign-in required',
+        Icons.lock_outline,
+      ),
+      AcpConnectionStatus.detached => (
+        'session is detached',
+        Icons.pause_circle_outline,
+      ),
+      AcpConnectionStatus.bridgeExpired => (
+        'remote session expired',
+        Icons.history_toggle_off,
+      ),
+      AcpConnectionStatus.providerExited => (
+        'agent process exited',
+        Icons.exit_to_app,
+      ),
+      AcpConnectionStatus.failed => (
+        'agent connection failed',
+        Icons.error_outline,
+      ),
+      AcpConnectionStatus.closed => ('session is closed', Icons.link_off),
+      AcpConnectionStatus.ready => ('ready', Icons.check_circle_outline),
+    };
+    return _SessionStatusBanner(
+      message: message,
+      icon: icon,
+      transitioning: transitioning,
+      actionLabel: status == AcpConnectionStatus.authenticationRequired
+          ? 'Open terminal'
+          : (transitioning ? null : 'Reconnect'),
+      onAction: status == AcpConnectionStatus.authenticationRequired
+          ? _openTerminalForAuth
+          : (transitioning ? null : _ensureConnected),
     );
   }
 
@@ -804,6 +876,14 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       icon: const Icon(Icons.more_vert),
       onSelected: (action) => _handleAction(action, session),
       itemBuilder: (context) => [
+        if (session.status == AcpConnectionStatus.ready)
+          const PopupMenuItem(
+            value: _ChatAction.settings,
+            child: ListTile(
+              leading: Icon(Icons.tune),
+              title: Text('Session settings'),
+            ),
+          ),
         if (!session.isLive ||
             session.status == AcpConnectionStatus.reconnecting)
           const PopupMenuItem(
@@ -863,6 +943,10 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             child: const Text('Cancel'),
           ),
           FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
             onPressed: () => Navigator.pop(dialogContext, true),
             child: const Text('Delete session'),
           ),
@@ -878,6 +962,8 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   ) async {
     final manager = ref.read(acpSessionManagerProvider);
     switch (action) {
+      case _ChatAction.settings:
+        await _openConfig(session);
       case _ChatAction.reconnect:
         await _ensureConnected();
       case _ChatAction.detach:
@@ -993,4 +1079,123 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   }
 }
 
-enum _ChatAction { reconnect, detach, stop, fork, delete }
+class _SessionStatusBanner extends StatelessWidget {
+  const _SessionStatusBanner({
+    required this.message,
+    required this.icon,
+    required this.transitioning,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  final String message;
+  final IconData icon;
+  final bool transitioning;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      label: message,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHigh,
+          border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: FluttyTheme.spacingMd,
+            vertical: FluttyTheme.spacingSm,
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: scheme.onSurfaceVariant),
+              const SizedBox(width: FluttyTheme.spacingSm),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        message,
+                        style: FluttyTheme.monoStyle.copyWith(
+                          color: scheme.onSurface,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (transitioning) ...[
+                      const SizedBox(width: FluttyTheme.spacingSm),
+                      CursorBlock(color: scheme.primary, size: 10),
+                    ],
+                  ],
+                ),
+              ),
+              if (actionLabel != null)
+                TextButton(onPressed: onAction, child: Text(actionLabel!)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AcpEmptyConversation extends StatelessWidget {
+  const _AcpEmptyConversation({required this.providerLabel, required this.cwd});
+
+  final String providerLabel;
+  final String cwd;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(FluttyTheme.spacingLg),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.terminal, color: scheme.primary, size: 22),
+                const SizedBox(width: FluttyTheme.spacingSm),
+                CursorBlock(color: scheme.primary, size: 14),
+              ],
+            ),
+            const SizedBox(height: FluttyTheme.spacingMd),
+            Text(
+              'ready when you are',
+              style: FluttyTheme.displayMono(
+                fontSize: 17,
+                color: scheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: FluttyTheme.spacingXs),
+            Text(
+              '$providerLabel · $cwd',
+              style: FluttyTheme.monoStyle.copyWith(
+                color: scheme.onSurfaceVariant,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: FluttyTheme.spacingSm),
+            Text(
+              'Type / to see agent commands.',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _ChatAction { settings, reconnect, detach, stop, fork, delete }

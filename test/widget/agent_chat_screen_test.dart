@@ -78,7 +78,10 @@ void main() {
     expect(find.textContaining('Hello from the agent'), findsOneWidget);
     expect(find.byType(AcpComposer), findsOneWidget);
     expect(find.byTooltip('MonkeyMux windows'), findsOneWidget);
-    expect(find.byTooltip('Session settings'), findsOneWidget);
+    expect(find.byTooltip('Session settings'), findsNothing);
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    expect(find.text('Session settings'), findsOneWidget);
   });
 
   testWidgets('opens an inline image in a sized interactive viewer', (
@@ -130,7 +133,20 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('sessions'), findsOneWidget);
-    expect(find.byType(AcpMessageThread), findsOneWidget);
+    expect(find.text('ready when you are'), findsOneWidget);
+  });
+
+  testWidgets('shows inline recovery when a live session fails', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager(
+      sessions: [fakeAcpSession(status: AcpConnectionStatus.failed)],
+    );
+    await tester.pumpWidget(_wrap(manager));
+    await tester.pumpAndSettle();
+
+    expect(find.text('agent connection failed'), findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Reconnect'), findsOneWidget);
   });
 
   testWidgets('adopts the replacement bridge key after resuming an expired '
@@ -206,6 +222,34 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(manager.permissionResponses, [('req-1', 'allow-1')]);
+  });
+
+  testWidgets('pending write offers explicit in-chat content review', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager(
+      sessions: [
+        fakeAcpSession(
+          pendingWrites: [
+            AcpPendingWrite(
+              requestKey: 'write-1',
+              sessionId: 'session-1',
+              path: '/repo/lib/main.dart',
+              contentByteLength: 18,
+              requestedAt: DateTime(2026),
+            ),
+          ],
+        ),
+      ],
+    )..pendingWriteContents['write-1'] = 'updated contents';
+    await tester.pumpWidget(_wrap(manager));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Write to main.dart'), findsOneWidget);
+    expect(find.text('updated contents'), findsNothing);
+    await tester.tap(find.text('Review changes'));
+    await tester.pump();
+    expect(find.text('updated contents'), findsOneWidget);
   });
 
   testWidgets('cancelling delete keeps the remote session', (tester) async {

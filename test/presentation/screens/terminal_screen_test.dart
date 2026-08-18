@@ -4550,9 +4550,9 @@ void main() {
         await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 350));
-        await tester.tap(find.text('New Window'));
+        await tester.tap(find.text('New window'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Empty window'));
+        await tester.tap(find.text('Empty terminal'));
         await tester.pump();
         await tester.pump();
 
@@ -4602,6 +4602,9 @@ void main() {
         final closeWindowButtons = find.byTooltip('Close window');
         expect(closeWindowButtons, findsNWidgets(3));
         await tester.tap(closeWindowButtons.at(1));
+        await tester.pumpAndSettle();
+        expect(find.text('Close window?'), findsOneWidget);
+        await tester.tap(find.widgetWithText(FilledButton, 'Close window'));
         await tester.pump();
         await tester.pump();
 
@@ -5761,6 +5764,9 @@ void main() {
         );
         expect(closeWindowButton, findsOneWidget);
         await tester.tap(closeWindowButton);
+        await tester.pumpAndSettle();
+        expect(find.text('Close window?'), findsOneWidget);
+        await tester.tap(find.widgetWithText(FilledButton, 'Close window'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
@@ -7572,9 +7578,9 @@ void main() {
         await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 350));
-        await tester.tap(find.text('New Window'));
+        await tester.tap(find.text('New window'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Empty window'));
+        await tester.tap(find.text('Empty terminal'));
         await tester.pump();
 
         verify(
@@ -7616,9 +7622,9 @@ void main() {
         await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 350));
-        await tester.tap(find.text('New Window'));
+        await tester.tap(find.text('New window'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Empty window'));
+        await tester.tap(find.text('Empty terminal'));
         await tester.pump();
 
         verify(
@@ -8047,7 +8053,7 @@ void main() {
         await tester.tap(find.byKey(const ValueKey('tmux-sidebar-new-window')));
         await tester.pumpAndSettle();
 
-        final emptyWindowFinder = find.text('Empty window');
+        final emptyWindowFinder = find.text('Empty terminal');
         expect(emptyWindowFinder, findsOneWidget);
         expect(
           tester.getTopLeft(emptyWindowFinder).dx,

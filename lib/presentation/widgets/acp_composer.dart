@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -162,10 +164,19 @@ class _AcpComposerState extends State<AcpComposer> {
   }
 
   KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
-    if (!_controller.isSlashActive) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+    final sendShortcut =
+        (HardwareKeyboard.instance.isControlPressed ||
+            HardwareKeyboard.instance.isMetaPressed) &&
+        (event.logicalKey == LogicalKeyboardKey.enter ||
+            event.logicalKey == LogicalKeyboardKey.numpadEnter);
+    if (sendShortcut && _controller.canSend) {
+      unawaited(_controller.send());
+      return KeyEventResult.handled;
+    }
+    if (!_controller.isSlashActive) {
       return KeyEventResult.ignored;
     }
     final commands = _controller.slashCommands;
@@ -250,10 +261,6 @@ class _AcpComposerState extends State<AcpComposer> {
   Future<void> _handlePrimaryAction() async {
     if (_controller.canSend) {
       await _controller.send();
-      return;
-    }
-    if (_controller.canCancel) {
-      await _controller.cancel();
     }
   }
 
@@ -410,12 +417,11 @@ class _AcpComposerState extends State<AcpComposer> {
                             icon: const Icon(Icons.tune),
                             onPressed: widget.onOpenConfig,
                           ),
-                        if (_controller.canSend && _controller.canCancel)
+                        if (_controller.canCancel)
                           _StopTurnButton(onPressed: _stopActiveTurn),
                         _PrimaryActionButton(
                           activity: _controller.activity,
                           canSend: _controller.canSend,
-                          canCancel: _controller.canCancel,
                           onPressed: _handlePrimaryAction,
                         ),
                       ],
@@ -450,42 +456,26 @@ class _PrimaryActionButton extends StatelessWidget {
   const _PrimaryActionButton({
     required this.activity,
     required this.canSend,
-    required this.canCancel,
     required this.onPressed,
   });
 
   final AcpComposerActivity activity;
   final bool canSend;
-  final bool canCancel;
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final busy = activity != AcpComposerActivity.idle;
-    final queueing = busy && canSend;
-    final stopping = busy && !canSend;
-    final label = queueing ? 'Queue message' : (stopping ? 'Stop' : 'Send');
-    final enabled = canSend || canCancel;
-    final Widget child;
-    if (activity == AcpComposerActivity.cancelling && !canSend) {
-      child = const SizedBox(
-        width: 20,
-        height: 20,
-        child: CircularProgressIndicator(strokeWidth: 2),
-      );
-    } else if (stopping) {
-      child = const Icon(Icons.stop, size: 22);
-    } else {
-      child = Icon(
-        queueing ? Icons.playlist_add : Icons.arrow_upward,
-        size: 22,
-      );
-    }
-    final destructive = stopping;
+    final queueing = busy;
+    final label = queueing ? 'Queue message' : 'Send';
+    final child = Icon(
+      queueing ? Icons.playlist_add : Icons.arrow_upward,
+      size: 22,
+    );
     return Semantics(
       button: true,
-      enabled: enabled,
+      enabled: canSend,
       label: label,
       child: SizedBox(
         width: 44,
@@ -493,14 +483,10 @@ class _PrimaryActionButton extends StatelessWidget {
         child: IconButton.filled(
           tooltip: label,
           style: IconButton.styleFrom(
-            backgroundColor: destructive
-                ? scheme.errorContainer
-                : scheme.primary,
-            foregroundColor: destructive
-                ? scheme.onErrorContainer
-                : scheme.onPrimary,
+            backgroundColor: scheme.primary,
+            foregroundColor: scheme.onPrimary,
           ),
-          onPressed: enabled ? onPressed : null,
+          onPressed: canSend ? onPressed : null,
           icon: child,
         ),
       ),

@@ -161,6 +161,7 @@ class _AcpToolCallViewState extends State<AcpToolCallView> {
     return Semantics(
       container: true,
       label: '${call.title}, ${status.label}',
+      value: _hasDetails ? (_expanded ? 'expanded' : 'collapsed') : null,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,

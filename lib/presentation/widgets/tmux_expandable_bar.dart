@@ -1552,6 +1552,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             onTap: isActive
                 ? null
                 : () {
+                    unawaited(HapticFeedback.selectionClick());
                     setState(() {
                       _pendingSelectedWindowIndex = window.index;
                     });
@@ -1665,7 +1666,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     builder: (buttonContext) => Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       child: Tooltip(
-        message: 'New Window',
+        message: 'New window',
         child: Semantics(
           button: true,
           label: 'New tmux window',
@@ -1733,7 +1734,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               color: theme.colorScheme.primary,
               size: 18,
             ),
-            title: const Text('New Window'),
+            title: const Text('New window'),
             onTap: () {
               final wasExpanded = _expanded;
               setState(() => _expanded = false);
@@ -1903,8 +1904,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           customBorder: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
-          onTap: () =>
-              unawaited(widget.onAction(TmuxOpenAcpSessionAction(key))),
+          onTap: () {
+            unawaited(HapticFeedback.selectionClick());
+            unawaited(widget.onAction(TmuxOpenAcpSessionAction(key)));
+          },
           child: Ink(
             width: 44,
             height: 44,
@@ -1952,8 +1955,54 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         style: theme.textTheme.bodySmall?.copyWith(color: statusColor),
       ),
       trailing: const Icon(Icons.chat_bubble_outline, size: 16),
-      onTap: () => unawaited(widget.onAction(TmuxOpenAcpSessionAction(key))),
+      onTap: () {
+        unawaited(HapticFeedback.selectionClick());
+        unawaited(widget.onAction(TmuxOpenAcpSessionAction(key)));
+      },
     );
+  }
+
+  Future<void> _confirmCloseWindow(TmuxWindow window) async {
+    final title = _redactStoreScreenshotIdentities
+        ? _storeScreenshotWindowTitle(window)
+        : window.displayTitle;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Close window?'),
+        content: Text('Close “$title”? Any running process will stop.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Close window'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) {
+      return;
+    }
+    await widget.onAction(TmuxCloseWindowAction(window.index));
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _windows = _windows?.where((w) => w.index != window.index).toList();
+      if (_pendingSelectedWindowIndex == window.index) {
+        _pendingSelectedWindowIndex = null;
+        _pendingSelectionTimer?.cancel();
+        _pendingSelectionTimer = null;
+      }
+    });
   }
 
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
@@ -1972,8 +2021,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         : null;
 
     return ListTile(
-      dense: true,
       visualDensity: _denseTileVisualDensity,
+      minTileHeight: 52,
       minVerticalPadding: 2,
       contentPadding: const EdgeInsets.only(left: 12, right: 4),
       horizontalTitleGap: 10,
@@ -2059,25 +2108,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             padding: const EdgeInsets.only(right: 6),
             child: TmuxWindowStatusBadge(window: window),
           ),
-          IconButton(
-            icon: const Icon(Icons.close, size: 16),
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
-            padding: EdgeInsets.zero,
-            tooltip: 'Close window',
-            onPressed: () {
-              widget.onAction(TmuxCloseWindowAction(window.index));
-              setState(() {
-                _windows = _windows
-                    ?.where((w) => w.index != window.index)
-                    .toList();
-                if (_pendingSelectedWindowIndex == window.index) {
-                  _pendingSelectedWindowIndex = null;
-                  _pendingSelectionTimer?.cancel();
-                  _pendingSelectionTimer = null;
-                }
-              });
-            },
+          SizedBox.square(
+            dimension: 44,
+            child: IconButton(
+              icon: const Icon(Icons.close, size: 18),
+              padding: EdgeInsets.zero,
+              tooltip: 'Close window',
+              onPressed: () => unawaited(_confirmCloseWindow(window)),
+            ),
           ),
         ],
       ),
@@ -2090,6 +2128,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               }
             }
           : () {
+              unawaited(HapticFeedback.selectionClick());
               setState(() {
                 _pendingSelectedWindowIndex = window.index;
                 _expanded = false;

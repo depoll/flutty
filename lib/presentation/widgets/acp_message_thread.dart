@@ -167,22 +167,27 @@ class _AssistantMessage extends StatelessWidget {
       onTapImage: onTapImage,
       onCopyCode: onCopyCode,
     );
-    if (!streaming) {
-      return markdown;
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        markdown,
-        Padding(
-          padding: const EdgeInsets.only(top: FluttyTheme.spacingXs),
-          child: CursorBlock(
-            color: Theme.of(context).colorScheme.primary,
-            size: 12,
-          ),
-        ),
-      ],
+    final content = streaming
+        ? Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              markdown,
+              Padding(
+                padding: const EdgeInsets.only(top: FluttyTheme.spacingXs),
+                child: CursorBlock(
+                  color: Theme.of(context).colorScheme.primary,
+                  size: 12,
+                ),
+              ),
+            ],
+          )
+        : markdown;
+    return Semantics(
+      container: true,
+      liveRegion: !streaming,
+      label: streaming ? 'Agent response streaming' : 'Agent response complete',
+      child: content,
     );
   }
 }

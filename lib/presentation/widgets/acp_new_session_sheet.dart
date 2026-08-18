@@ -951,7 +951,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
         prefixIcon: Icon(Icons.smart_toy_outlined),
       ),
       child: Text(
-        provider?.label ?? 'ACP provider unavailable',
+        provider?.label ?? 'Agent provider unavailable',
         overflow: TextOverflow.ellipsis,
       ),
     );

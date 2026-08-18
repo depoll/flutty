@@ -1131,11 +1131,21 @@ void main() {
           .where((entry) => entry.role == AcpMessageRole.user)
           .toList();
       expect(userMessages, hasLength(2));
+      expect(userMessages.first.queued, isFalse);
+      expect(userMessages.last.queued, isTrue);
 
       server.completeNextPrompt();
       await first;
       await _pump();
       expect(server.heldPromptCount, 1);
+      final dispatchedMessages = manager.state
+          .byKeyValue(key.value)!
+          .timeline
+          .entries
+          .whereType<AcpMessageEntry>()
+          .where((entry) => entry.role == AcpMessageRole.user)
+          .toList();
+      expect(dispatchedMessages.last.queued, isFalse);
 
       server.completeNextPrompt();
       await second;

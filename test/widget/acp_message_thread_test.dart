@@ -83,6 +83,29 @@ void main() {
     expect(promptText.style?.fontFamily, FluttyTheme.monoStyle.fontFamily);
   });
 
+  testWidgets('shows queued prompt status visibly and semantically', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        AcpMessageThread(
+          entries: [
+            AcpUserPromptEntry(
+              id: 'queued',
+              queued: true,
+              parts: const [AcpTextPart('follow up')],
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('queued'), findsOneWidget);
+    final semantics = tester.getSemantics(find.byType(AcpUserPromptView));
+    expect(semantics.label, contains('Your message, queued'));
+  });
+
   testWidgets('dispatches each entry type', (tester) async {
     await tester.pumpWidget(
       wrap(

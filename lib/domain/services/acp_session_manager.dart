@@ -414,6 +414,10 @@ class AcpSessionManager {
   Future<void> cancelPermission(AcpSessionKey key, String requestKey) =>
       _requireController(key).cancelPermission(requestKey);
 
+  /// Returns a pending write body for explicit in-memory review only.
+  String? pendingWriteContent(AcpSessionKey key, String requestKey) =>
+      _requireController(key).pendingWriteContent(requestKey);
+
   /// Approves a pending file write after explicit user confirmation.
   Future<void> approveWrite(AcpSessionKey key, String requestKey) =>
       _requireController(key).approveWrite(requestKey);
@@ -1509,6 +1513,9 @@ class _SessionController {
     _manager._telemetry.permissionOutcome(outcome: 'cancelled');
   }
 
+  String? pendingWriteContent(String requestKey) =>
+      attachment.capabilityService?.pendingWriteContent(requestKey);
+
   Future<void> approveWrite(String requestKey) async {
     final service = attachment.capabilityService;
     if (service == null) return;
@@ -1549,7 +1556,11 @@ class _SessionController {
       return Future<AcpPromptResult>.error(const AcpPromptQueueFullException());
     }
 
-    final localMessageId = _timelineBuilder.appendLocalUserPrompt(snapshot);
+    final queuedBehindTurn = _promptActive || _promptQueue.isNotEmpty;
+    final localMessageId = _timelineBuilder.appendLocalUserPrompt(
+      snapshot,
+      queued: queuedBehindTurn,
+    );
     final queued = _QueuedAcpPrompt(
       content: snapshot,
       localMessageId: localMessageId,
@@ -1577,11 +1588,14 @@ class _SessionController {
       while (_promptQueue.isNotEmpty && !_disposed) {
         final queued = _promptQueue.removeFirst();
         _queuedPromptBytes -= queued.encodedBytes;
+        final dispatchedTimeline = _timelineBuilder
+            .markLocalUserPromptDispatched(queued.localMessageId);
         _update(
           (s) => s.copyWith(
             promptStatus: AcpPromptStatus.streaming,
             clearLastStopReason: true,
             lastActivityAt: _clock(),
+            timeline: dispatchedTimeline,
           ),
         );
         try {

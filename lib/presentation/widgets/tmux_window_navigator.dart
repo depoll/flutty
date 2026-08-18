@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
@@ -222,7 +223,7 @@ Future<_AgentWindowMode?> _showAgentWindowModePicker({
           ListTile(
             minTileHeight: 52,
             leading: const Icon(Icons.terminal_outlined),
-            title: const Text('Terminal window'),
+            title: const Text('Terminal'),
             subtitle: const Text('Run the full CLI in MonkeyMux'),
             trailing: isProUser ? null : const PremiumBadge(),
             enabled: isProUser,
@@ -236,8 +237,8 @@ Future<_AgentWindowMode?> _showAgentWindowModePicker({
               Icons.chat_bubble_outline,
               color: theme.colorScheme.primary,
             ),
-            title: const Text('Native interface'),
-            subtitle: const Text('Use ACP chat, tools, and permissions'),
+            title: const Text('Native chat'),
+            subtitle: const Text('Chat, tools, and permissions'),
             onTap: () => Navigator.pop(context, _AgentWindowMode.nativeAcp),
           ),
         ],
@@ -286,7 +287,7 @@ Future<TmuxNewWindowAction?> showTmuxNewWindowContextMenu({
     items: [
       const PopupMenuItem<TmuxNewWindowAction>(
         enabled: false,
-        child: Text('New Window'),
+        child: Text('New window'),
       ),
       if (tools.isEmpty)
         PopupMenuItem<TmuxNewWindowAction>(
@@ -324,7 +325,7 @@ Future<TmuxNewWindowAction?> showTmuxNewWindowContextMenu({
             color: Theme.of(context).colorScheme.onSurfaceVariant,
             size: 18,
           ),
-          label: 'Empty window',
+          label: 'Empty terminal',
         ),
       ),
     ],
@@ -774,11 +775,39 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       !(_windows?.isNotEmpty ?? false) && _windowRetryAttempts >= 1;
 
   void _switchToWindow(int windowIndex) {
+    unawaited(HapticFeedback.selectionClick());
     Navigator.pop(context, TmuxSwitchWindowAction(windowIndex));
   }
 
-  void _closeWindow(int windowIndex) {
-    Navigator.pop(context, TmuxCloseWindowAction(windowIndex));
+  Future<void> _confirmCloseWindow(TmuxWindow window) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Close window?'),
+        content: Text(
+          'Close “${window.displayTitle}”? Any running process will stop.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Close window'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) {
+      return;
+    }
+    Navigator.pop(context, TmuxCloseWindowAction(window.index));
   }
 
   void _createNewWindow({String? command, String? name}) {
@@ -953,10 +982,21 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
                     )
                   else if (_error != null)
                     Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Text(
-                        'Could not load $_muxLabel windows. Check that $_muxLabel is still running, then try again.',
-                        style: TextStyle(color: theme.colorScheme.error),
+                      padding: const EdgeInsets.all(FluttyTheme.spacingMd),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Could not load $_muxLabel windows.',
+                            style: TextStyle(color: theme.colorScheme.error),
+                          ),
+                          const SizedBox(height: FluttyTheme.spacingSm),
+                          OutlinedButton.icon(
+                            onPressed: () => unawaited(_loadWindows()),
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text('Retry'),
+                          ),
+                        ],
                       ),
                     )
                   else if (_windows != null && _windows!.isNotEmpty)
@@ -970,7 +1010,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
                   // New Window button
                   ListTile(
                     visualDensity: _tmuxNavigatorDenseVisualDensity,
-                    minTileHeight: 42,
+                    minTileHeight: 44,
                     contentPadding: _tmuxNavigatorTilePadding,
                     horizontalTitleGap: 12,
                     minLeadingWidth: 20,
@@ -979,7 +1019,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
                       color: theme.colorScheme.primary,
                       size: 18,
                     ),
-                    title: const Text('New Window'),
+                    title: const Text('New window'),
                     dense: true,
                     onTap: () => unawaited(_showNewWindowPicker()),
                   ),
@@ -1042,7 +1082,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
               child: Text(
-                'native agent sessions',
+                'agent windows',
                 style: FluttyTheme.monoStyle.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                   fontSize: 12,
@@ -1155,6 +1195,10 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
             child: const Text('Cancel'),
           ),
           FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
             onPressed: () => Navigator.pop(dialogContext, true),
             child: const Text('Stop session'),
           ),
@@ -1200,8 +1244,8 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         : theme.colorScheme.onSurfaceVariant;
 
     return ListTile(
-      dense: true,
       visualDensity: _tmuxNavigatorDenseVisualDensity,
+      minTileHeight: 52,
       minVerticalPadding: 2,
       contentPadding: const EdgeInsets.only(left: 16, right: 4),
       horizontalTitleGap: 10,
@@ -1270,13 +1314,15 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
             padding: const EdgeInsets.only(right: 6),
             child: TmuxWindowStatusBadge(window: window),
           ),
-          IconButton(
-            icon: const Icon(Icons.close, size: 16),
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-            padding: EdgeInsets.zero,
-            tooltip: 'Close window',
-            onPressed: () => _closeWindow(window.index),
+          SizedBox.square(
+            key: ValueKey('close-window-${window.index}'),
+            dimension: 44,
+            child: IconButton(
+              icon: const Icon(Icons.close, size: 18),
+              padding: EdgeInsets.zero,
+              tooltip: 'Close window',
+              onPressed: () => unawaited(_confirmCloseWindow(window)),
+            ),
           ),
         ],
       ),
@@ -1306,7 +1352,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           children: [
             Expanded(
               child: Text(
-                'Recent AI Sessions',
+                'Recent terminal sessions',
                 overflow: TextOverflow.ellipsis,
               ),
             ),
@@ -1536,7 +1582,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
               children: [
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                  child: Text('New Window', style: theme.textTheme.titleMedium),
+                  child: Text('New window', style: theme.textTheme.titleMedium),
                 ),
                 FutureBuilder<Set<AgentLaunchTool>>(
                   future: installedToolsFuture,
@@ -1603,7 +1649,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
                         for (final tool in tools)
                           ListTile(
                             visualDensity: _tmuxNavigatorDenseVisualDensity,
-                            minTileHeight: 42,
+                            minTileHeight: 44,
                             contentPadding: _tmuxNavigatorTilePadding,
                             horizontalTitleGap: 12,
                             minLeadingWidth: 20,
@@ -1614,7 +1660,9 @@ class TmuxToolPickerSheet extends StatelessWidget {
                             title: Text(tool.label),
                             trailing: nativeAcpTools.contains(tool)
                                 ? Text(
-                                    isProUser ? '2 modes' : 'native available',
+                                    isProUser
+                                        ? 'terminal · native'
+                                        : 'native chat',
                                     style: theme.textTheme.labelSmall?.copyWith(
                                       color: theme.colorScheme.onSurfaceVariant,
                                     ),
@@ -1640,8 +1688,8 @@ class TmuxToolPickerSheet extends StatelessWidget {
                       color: theme.colorScheme.primary,
                       size: 18,
                     ),
-                    title: const Text('Other native agent'),
-                    subtitle: const Text('Choose an ACP provider'),
+                    title: const Text('Custom native chat'),
+                    subtitle: const Text('Choose an agent provider'),
                     onTap: onNativeAcpProvider,
                   ),
                 ],
@@ -1657,7 +1705,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
                     color: theme.colorScheme.onSurfaceVariant,
                     size: 18,
                   ),
-                  title: const Text('Empty window'),
+                  title: const Text('Empty terminal'),
                   onTap: onEmptyWindow,
                 ),
                 const SizedBox(height: 8),

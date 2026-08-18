@@ -52,6 +52,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
   final List<String> cancelledPermissions = <String>[];
   final List<String> approvedWrites = <String>[];
   final List<String> rejectedWrites = <String>[];
+  final Map<String, String> pendingWriteContents = <String, String>{};
 
   /// Results returned by successive [forkSession] calls, consumed FIFO. When
   /// exhausted, a safe failure is returned.
@@ -146,6 +147,10 @@ class FakeAcpSessionManager extends AcpSessionManager {
   Future<void> cancelPermission(AcpSessionKey key, String requestKey) async {
     cancelledPermissions.add(requestKey);
   }
+
+  @override
+  String? pendingWriteContent(AcpSessionKey key, String requestKey) =>
+      pendingWriteContents[requestKey];
 
   @override
   Future<void> approveWrite(AcpSessionKey key, String requestKey) async {

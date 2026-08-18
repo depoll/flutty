@@ -134,7 +134,7 @@ void main() {
     expect(manager.promptCount, 1);
   });
 
-  testWidgets('primary action becomes Stop while streaming and cancels', (
+  testWidgets('streaming keeps a fixed Stop control and disabled Queue slot', (
     tester,
   ) async {
     final manager = _RecordingManager();
@@ -145,11 +145,26 @@ void main() {
     addTearDown(controller.dispose);
     await _pump(tester, controller);
 
-    expect(find.bySemanticsLabel('Stop'), findsOneWidget);
-    expect(find.byIcon(Icons.stop), findsOneWidget);
-    await tester.tap(find.byIcon(Icons.stop));
+    expect(find.byTooltip('Stop active turn'), findsOneWidget);
+    expect(find.byTooltip('Queue message'), findsOneWidget);
+    await tester.tap(find.byTooltip('Stop active turn'));
     await tester.pump();
     expect(manager.cancelCount, 1);
+  });
+
+  testWidgets('Cmd/Ctrl+Enter sends from a hardware keyboard', (tester) async {
+    final manager = _RecordingManager();
+    final controller = _makeController(manager)..setText('ship it');
+    addTearDown(controller.dispose);
+    await _pump(tester, controller);
+    await tester.tap(find.byType(TextField));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+
+    expect(manager.promptCount, 1);
   });
 
   testWidgets('send button meets the 44px minimum touch target', (

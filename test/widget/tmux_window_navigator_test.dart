@@ -202,6 +202,19 @@ void main() {
       expect(find.textContaining('Ctrl-B: c new'), findsOneWidget);
       expect(find.textContaining('& then y close'), findsOneWidget);
       expect(find.textContaining('d detach'), findsOneWidget);
+
+      final closeButton = find.byTooltip('Close window').first;
+      final closeSize = tester.getSize(
+        find.byKey(const ValueKey('close-window-0')),
+      );
+      expect(closeSize.width, greaterThanOrEqualTo(44));
+      expect(closeSize.height, greaterThanOrEqualTo(44));
+      await tester.tap(closeButton);
+      await tester.pumpAndSettle();
+      expect(find.text('Close window?'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(find.text('windows'), findsOneWidget);
     });
 
     testWidgets('recent session tile shows time ago', (tester) async {
@@ -297,12 +310,12 @@ void main() {
 
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('New Window'));
+      await tester.tap(find.text('New window'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Empty window'), findsOneWidget);
+      expect(find.text('Empty terminal'), findsOneWidget);
       expect(
-        tester.getBottomLeft(find.text('Empty window')).dy,
+        tester.getBottomLeft(find.text('Empty terminal')).dy,
         lessThan(844 - 240),
       );
       final keyboardPadding = tester
@@ -395,7 +408,12 @@ void main() {
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Recent AI Sessions'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Recent terminal sessions'),
+        160,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(find.text('Recent terminal sessions'), findsOneWidget);
       expect(find.text('Claude Code'), findsOneWidget);
       expect(find.byIcon(Icons.expand_more), findsOneWidget);
       expect(find.byIcon(Icons.expand_less), findsNothing);
@@ -409,9 +427,13 @@ void main() {
       );
       verifyNever(() => tmuxService.detectInstalledAgentTools(session));
 
-      await tester.ensureVisible(find.text('Recent AI Sessions'));
+      await tester.scrollUntilVisible(
+        find.text('Recent terminal sessions'),
+        160,
+        scrollable: find.byType(Scrollable).last,
+      );
       await tester.pump();
-      await tester.tap(find.text('Recent AI Sessions'));
+      await tester.tap(find.text('Recent terminal sessions'));
       await tester.pumpAndSettle();
 
       expect(find.byIcon(Icons.expand_less), findsOneWidget);
@@ -500,9 +522,13 @@ void main() {
 
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Recent AI Sessions'));
+      await tester.scrollUntilVisible(
+        find.text('Recent terminal sessions'),
+        160,
+        scrollable: find.byType(Scrollable).last,
+      );
       await tester.pump();
-      await tester.tap(find.text('Recent AI Sessions'));
+      await tester.tap(find.text('Recent terminal sessions'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Codex'));
       await tester.pump();
@@ -652,12 +678,7 @@ void main() {
       await tester.pump(const Duration(seconds: 2));
       await tester.pump();
 
-      expect(
-        find.text(
-          'Could not load tmux windows. Check that tmux is still running, then try again.',
-        ),
-        findsOneWidget,
-      );
+      expect(find.text('Could not load tmux windows.'), findsOneWidget);
     });
 
     testWidgets('ACP-capable tool offers a native mode to free users', (
@@ -692,15 +713,15 @@ void main() {
 
       await tester.tap(find.text('Open picker'));
       await tester.pumpAndSettle();
-      expect(find.text('native available'), findsOneWidget);
+      expect(find.text('native chat'), findsOneWidget);
 
       await tester.tap(find.text('Copilot CLI'));
       await tester.pumpAndSettle();
-      expect(find.text('Terminal window'), findsOneWidget);
-      expect(find.text('Native interface'), findsOneWidget);
+      expect(find.text('Terminal'), findsOneWidget);
+      expect(find.text('Native chat'), findsOneWidget);
       expect(find.byType(PremiumBadge), findsOneWidget);
 
-      await tester.tap(find.text('Native interface'));
+      await tester.tap(find.text('Native chat'));
       await tester.pumpAndSettle();
 
       expect(result, isA<TmuxNewAcpSessionAction>());
@@ -744,11 +765,11 @@ void main() {
       await tester.tap(find.text('OpenCode'));
       await tester.pumpAndSettle();
       final terminalTile = tester.widget<ListTile>(
-        find.widgetWithText(ListTile, 'Terminal window'),
+        find.widgetWithText(ListTile, 'Terminal'),
       );
       expect(terminalTile.enabled, isTrue);
 
-      await tester.tap(find.text('Terminal window'));
+      await tester.tap(find.text('Terminal'));
       await tester.pumpAndSettle();
 
       expect(result, isA<TmuxNewWindowAction>());
@@ -786,7 +807,7 @@ void main() {
       await tester.tap(find.text('Claude Code'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Native interface'), findsNothing);
+      expect(find.text('Native chat'), findsNothing);
       expect(result, isA<TmuxNewWindowAction>());
     });
 
@@ -835,14 +856,14 @@ void main() {
 
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
-      expect(find.text('native agent sessions'), findsNothing);
+      expect(find.text('agent windows'), findsNothing);
 
-      await tester.tap(find.text('New Window'));
+      await tester.tap(find.text('New window'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Copilot CLI'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Native interface'), findsNothing);
+      expect(find.text('Native chat'), findsNothing);
       expect(selected, isA<TmuxNewWindowAction>());
     });
 
@@ -875,9 +896,9 @@ void main() {
 
       await tester.tap(find.text('Open picker'));
       await tester.pumpAndSettle();
-      expect(find.text('Other native agent'), findsOneWidget);
+      expect(find.text('Custom native chat'), findsOneWidget);
 
-      await tester.tap(find.text('Other native agent'));
+      await tester.tap(find.text('Custom native chat'));
       await tester.pumpAndSettle();
 
       expect(result, isA<TmuxNewAcpSessionAction>());
@@ -938,7 +959,12 @@ void main() {
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
 
-      expect(find.text('native agent sessions'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('agent windows'),
+        160,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(find.text('agent windows'), findsOneWidget);
       expect(find.text('Fix authentication'), findsOneWidget);
       expect(find.text('Copilot CLI · …/monkeyssh'), findsOneWidget);
       expect(find.text('ready'), findsOneWidget);

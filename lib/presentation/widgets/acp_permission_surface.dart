@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app/theme.dart';
 import '../../domain/models/acp_client_capabilities.dart' as client;
@@ -26,6 +27,7 @@ final class AcpToolPermissionPrompt extends AcpPermissionPrompt {
     required this.options,
     required this.onSelect,
     required this.onCancel,
+    this.contextLine,
   });
 
   @override
@@ -33,6 +35,9 @@ final class AcpToolPermissionPrompt extends AcpPermissionPrompt {
 
   @override
   final String title;
+
+  /// A short safe tool/path context line.
+  final String? contextLine;
 
   /// The exact options offered by the agent.
   final List<AcpPermissionOption> options;
@@ -87,9 +92,11 @@ AcpToolPermissionPrompt acpToolPromptFromSession(
   session.AcpPendingPermission pending, {
   required Future<void> Function(String optionId) onSelect,
   required Future<void> Function() onCancel,
+  String? toolTitle,
 }) => AcpToolPermissionPrompt(
   stableKey: 'session:${pending.sessionId}:${pending.requestKey}',
-  title: 'Allow this action?',
+  title: toolTitle == null ? 'Allow this tool action?' : 'Allow $toolTitle?',
+  contextLine: toolTitle ?? 'Tool ${pending.toolCallId}',
   options: pending.options,
   onSelect: onSelect,
   onCancel: onCancel,
@@ -115,7 +122,12 @@ List<AcpPermissionPrompt> acpPromptsFromClientRequests(
         prompts.add(
           AcpToolPermissionPrompt(
             stableKey: 'client:$id',
-            title: 'Allow this action?',
+            title: request.permission.toolCall.title == null
+                ? 'Allow this tool action?'
+                : 'Allow ${request.permission.toolCall.title}?',
+            contextLine:
+                request.permission.toolCall.title ??
+                'Tool ${request.permission.toolCall.toolCallId}',
             options: request.permission.options,
             onSelect: (optionId) => selectPermission(id, optionId),
             onCancel: () => cancelPermission(id),
@@ -173,6 +185,7 @@ class _AcpPermissionSurfaceState extends State<AcpPermissionSurface> {
     setState(() => _resolving.add(key));
     try {
       await action();
+      await HapticFeedback.selectionClick();
     } finally {
       if (mounted) {
         setState(() => _resolving.remove(key));
@@ -265,6 +278,18 @@ class _PermissionCard extends StatelessWidget {
             ),
           ],
         ),
+        if (prompt.contextLine != null) ...[
+          const SizedBox(height: FluttyTheme.spacingXs),
+          Text(
+            prompt.contextLine!,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: FluttyTheme.monoStyle.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontSize: 12,
+            ),
+          ),
+        ],
         const SizedBox(height: FluttyTheme.spacingSm),
         Wrap(
           spacing: FluttyTheme.spacingSm,
@@ -280,7 +305,7 @@ class _PermissionCard extends StatelessWidget {
               ),
             TextButton(
               onPressed: busy ? null : () => onResolve(prompt.onCancel),
-              child: const Text('Dismiss'),
+              child: const Text('Cancel request'),
             ),
           ],
         ),
@@ -333,16 +358,17 @@ class _PermissionCard extends StatelessWidget {
         if (prompt.revealContent != null)
           _WriteContentReview(reveal: prompt.revealContent!),
         const SizedBox(height: FluttyTheme.spacingSm),
-        Row(
+        Wrap(
+          spacing: FluttyTheme.spacingSm,
+          runSpacing: FluttyTheme.spacingXs,
           children: [
             FilledButton(
               onPressed: busy ? null : () => onResolve(prompt.onApprove),
               child: const Text('Approve write'),
             ),
-            const SizedBox(width: FluttyTheme.spacingSm),
             OutlinedButton(
               onPressed: busy ? null : () => onResolve(prompt.onReject),
-              child: const Text('Reject'),
+              child: const Text('Reject write'),
             ),
           ],
         ),

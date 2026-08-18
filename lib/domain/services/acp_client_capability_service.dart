@@ -464,6 +464,12 @@ final class AcpClientCapabilityService {
   Future<void> closeSession(String sessionId) =>
       registry.cancelForSession(sessionId);
 
+  /// Returns a pending write body for explicit in-memory review only.
+  String? pendingWriteContent(String requestId) {
+    final pending = registry._requests[requestId];
+    return pending is AcpPendingFileWrite ? pending.content : null;
+  }
+
   /// Approves a pending write after explicit user confirmation.
   Future<void> approveWrite(String requestId) async {
     final pending = registry._requests[requestId];

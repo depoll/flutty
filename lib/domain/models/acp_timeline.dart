@@ -75,6 +75,7 @@ final class AcpMessageEntry extends AcpTimelineEntry {
     required this.role,
     required this.order,
     this.messageId,
+    this.queued = false,
     List<AcpContentBlock> content = const <AcpContentBlock>[],
   }) : content = List<AcpContentBlock>.unmodifiable(content);
 
@@ -87,6 +88,9 @@ final class AcpMessageEntry extends AcpTimelineEntry {
   /// Identifier grouping streamed chunks into a single message, when present.
   final String? messageId;
 
+  /// Whether this local user prompt is waiting behind an active turn.
+  final bool queued;
+
   /// Ordered content blocks accumulated for this message.
   final List<AcpContentBlock> content;
 
@@ -95,6 +99,7 @@ final class AcpMessageEntry extends AcpTimelineEntry {
     role: role,
     order: order,
     messageId: messageId,
+    queued: queued,
     content: [...content, block],
   );
 
@@ -105,6 +110,7 @@ final class AcpMessageEntry extends AcpTimelineEntry {
           role == other.role &&
           order == other.order &&
           messageId == other.messageId &&
+          queued == other.queued &&
           const ListEquality<AcpContentBlock>().equals(content, other.content);
 
   @override
@@ -112,6 +118,7 @@ final class AcpMessageEntry extends AcpTimelineEntry {
     role,
     order,
     messageId,
+    queued,
     const ListEquality<AcpContentBlock>().hash(content),
   );
 }
@@ -362,13 +369,17 @@ class AcpTimelineBuilder {
   ///
   /// Returns the local message identifier used by [removeLocalUserPrompt] if
   /// submission fails.
-  String appendLocalUserPrompt(List<AcpContentBlock> content) {
+  String appendLocalUserPrompt(
+    List<AcpContentBlock> content, {
+    bool queued = false,
+  }) {
     final messageId = 'monkeyssh-user-${_nextLocalUserMessageId++}';
     final entry = _boundedMessageEntry(
       AcpMessageEntry(
         role: AcpMessageRole.user,
         order: _nextOrder++,
         messageId: messageId,
+        queued: queued,
         content: content,
       ),
     );
@@ -378,6 +389,29 @@ class AcpTimelineBuilder {
     _pendingLocalUserMessageIds.addLast(messageId);
     _enforceLimits();
     return messageId;
+  }
+
+  /// Marks a queued local prompt as dispatched to the agent.
+  AcpTimeline markLocalUserPromptDispatched(String messageId) {
+    final index = _entries.indexWhere(
+      (entry) =>
+          entry is AcpMessageEntry &&
+          entry.messageId == messageId &&
+          entry.role == AcpMessageRole.user,
+    );
+    if (index >= 0) {
+      final entry = _entries[index] as AcpMessageEntry;
+      _replaceEntry(
+        index,
+        AcpMessageEntry(
+          role: entry.role,
+          order: entry.order,
+          messageId: entry.messageId,
+          content: entry.content,
+        ),
+      );
+    }
+    return snapshot();
   }
 
   /// Removes the optimistic prompt identified by [messageId] after submission
