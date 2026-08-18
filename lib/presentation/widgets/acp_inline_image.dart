@@ -40,6 +40,31 @@ const int kAcpMaxDecodableSourcePixels = 100 * 1000 * 1000; // 100 MP
 /// must be supplied for non-inline sources.
 typedef AcpImageResolver = Future<Uint8List?> Function(AcpImageContent image);
 
+/// Inherited image actions shared by deeply nested ACP content renderers.
+class AcpImageActions extends InheritedWidget {
+  /// Creates an image action scope.
+  const AcpImageActions({
+    required super.child,
+    super.key,
+    this.resolver,
+    this.onTap,
+  });
+
+  /// Resolver for non-inline image sources.
+  final AcpImageResolver? resolver;
+
+  /// Full-screen/open action for tapped images.
+  final ValueChanged<AcpImageContent>? onTap;
+
+  /// Returns the nearest image action scope, if any.
+  static AcpImageActions? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<AcpImageActions>();
+
+  @override
+  bool updateShouldNotify(AcpImageActions oldWidget) =>
+      resolver != oldWidget.resolver || onTap != oldWidget.onTap;
+}
+
 /// Renders an inline image from in-memory bytes, a `data:` URI, or a
 /// caller-resolved `file:`/`http(s):` URI, inside a bounded, rounded frame.
 ///

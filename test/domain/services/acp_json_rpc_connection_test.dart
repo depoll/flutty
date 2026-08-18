@@ -207,6 +207,30 @@ void main() {
     expect(connection.isClosed, isTrue);
   });
 
+  test('rejects oversized outbound frames before writing', () async {
+    final transport = _MemoryTransport();
+    final connection = AcpJsonRpcConnection(
+      transport: transport,
+      maxFrameSize: 128,
+    );
+
+    await expectLater(
+      connection.notify('large', params: {'image': 'x' * 256}),
+      throwsA(isA<AcpProtocolException>()),
+    );
+
+    expect(transport.writes, isEmpty);
+    expect(connection.isClosed, isFalse);
+    await connection.close();
+  });
+
+  test('default frame budget covers base64-expanded display images', () {
+    expect(
+      acpJsonRpcDefaultMaxFrameBytes,
+      greaterThan(10 * 1024 * 1024 * 4 ~/ 3),
+    );
+  });
+
   test('redacts malformed frame content from protocol errors', () async {
     final transport = _MemoryTransport();
     final connection = AcpJsonRpcConnection(transport: transport);

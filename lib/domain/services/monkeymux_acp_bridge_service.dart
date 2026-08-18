@@ -114,6 +114,8 @@ final class MonkeyMuxAcpBridgeService {
       final message = await _runHelper(session, installation, [
         'acp',
         'start',
+        '--provider-id',
+        providerId,
         '--provider',
         providerLabel,
         '--command',
@@ -1177,6 +1179,9 @@ MonkeyMuxAcpBridgeMetadata _parseBridgeMetadata(Object? value) {
   final map = value.map((key, item) => MapEntry(key.toString(), item));
   final id = _readBridgeId(map['id']);
   final provider = map['provider'];
+  final providerId = _readOptionalMetadataString(map['providerId'], 128);
+  final sessionId = _readOptionalMetadataString(map['sessionId'], 4096);
+  final cwd = _readOptionalMetadataString(map['cwd'], 4096);
   final commandHash = map['commandHash'];
   final stateValue = map['state'];
   final clientCount = _readNonNegativeInt(map['clientCount']);
@@ -1204,6 +1209,9 @@ MonkeyMuxAcpBridgeMetadata _parseBridgeMetadata(Object? value) {
   }
   return MonkeyMuxAcpBridgeMetadata(
     id: id,
+    providerId: providerId,
+    sessionId: sessionId,
+    cwd: cwd,
     provider: provider,
     commandHash: commandHash,
     state: _parseProviderState(stateValue),
@@ -1260,6 +1268,21 @@ String _readBridgeId(Object? value) {
     throw const MonkeyMuxAcpBridgeException(
       MonkeyMuxAcpBridgeErrorKind.invalidBridgeId,
       'The helper returned an invalid ACP bridge identifier.',
+    );
+  }
+  return value;
+}
+
+String? _readOptionalMetadataString(Object? value, int maxLength) {
+  if (value == null || value == '') {
+    return null;
+  }
+  if (value is! String ||
+      value.length > maxLength ||
+      value.contains('\u0000')) {
+    throw const MonkeyMuxAcpBridgeException(
+      MonkeyMuxAcpBridgeErrorKind.invalidMetadata,
+      'The helper returned invalid bridge metadata.',
     );
   }
   return value;

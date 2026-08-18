@@ -120,6 +120,9 @@ Map<String, Object?> _metadata({
   int nextSequence = 0,
 }) => {
   'id': id,
+  'providerId': 'builtin:copilot-cli',
+  'sessionId': 'session-1',
+  'cwd': '/home/demo/project with spaces',
   'provider': 'Copilot CLI',
   'commandHash': _commandHash,
   'state': state,
@@ -265,8 +268,12 @@ void main() {
 
     expect(started.bridgeId, _bridgeId);
     expect(bridges.single.id, _bridgeId);
+    expect(bridges.single.providerId, 'builtin:copilot-cli');
+    expect(bridges.single.sessionId, 'session-1');
+    expect(bridges.single.cwd, '/home/demo/project with spaces');
     expect(status.state, MonkeyMuxAcpProviderState.running);
     expect(commands, hasLength(4));
+    expect(commands.first, contains("'--provider-id' 'copilot'"));
     expect(commands.first, contains("'Copilot'\"'\"'s CLI'"));
     expect(commands.first, contains("'/home/demo/project with spaces'"));
   });

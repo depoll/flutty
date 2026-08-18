@@ -202,7 +202,7 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
     'gemini' || 'gemini-cli' => AgentLaunchTool.geminiCli,
     'agy' || 'antigravity' || 'antigravity-cli' => AgentLaunchTool.antigravity,
     'cursor-agent' => AgentLaunchTool.cursorAgent,
-    'pi' => AgentLaunchTool.pi,
+    'pi' || 'pi-acp' => AgentLaunchTool.pi,
     'hermes' || 'hermes-agent' => AgentLaunchTool.hermes,
     'openclaw' => AgentLaunchTool.openclaw,
     'grok' => AgentLaunchTool.grokBuild,

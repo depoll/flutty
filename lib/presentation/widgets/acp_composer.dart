@@ -248,12 +248,16 @@ class _AcpComposerState extends State<AcpComposer> {
   }
 
   Future<void> _handlePrimaryAction() async {
-    if (_controller.isBusy) {
-      await _controller.cancel();
+    if (_controller.canSend) {
+      await _controller.send();
       return;
     }
-    await _controller.send();
+    if (_controller.canCancel) {
+      await _controller.cancel();
+    }
   }
+
+  Future<void> _stopActiveTurn() => _controller.cancel();
 
   Future<void> _confirmRemoteUpload() async {
     final confirmed = await showDialog<bool>(
@@ -303,105 +307,119 @@ class _AcpComposerState extends State<AcpComposer> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 if (_controller.isSlashActive)
-                  Padding(
+                  KeyedSubtree(
+                    key: const ValueKey('acp-slash-picker'),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(
+                        FluttyTheme.spacingSm,
+                        FluttyTheme.spacingSm,
+                        FluttyTheme.spacingSm,
+                        0,
+                      ),
+                      child: AcpSlashCommandPicker(
+                        commands: _controller.slashCommands,
+                        highlightedIndex: _highlightedSlash,
+                        onHighlightChanged: (index) =>
+                            setState(() => _highlightedSlash = index),
+                        onSelected: _selectSlash,
+                      ),
+                    ),
+                  ),
+                if (_controller.error != null)
+                  KeyedSubtree(
+                    key: const ValueKey('acp-error-banner'),
+                    child: _ErrorBanner(
+                      error: _controller.error!,
+                      onDismiss: _controller.clearError,
+                      onUpload:
+                          _controller.error!.isUploadRecoverable &&
+                              _controller.attachments.isNotEmpty
+                          ? _confirmRemoteUpload
+                          : null,
+                    ),
+                  ),
+                if (_controller.attachments.isNotEmpty)
+                  KeyedSubtree(
+                    key: const ValueKey('acp-attachments'),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: FluttyTheme.spacingSm,
+                      ),
+                      child: AcpAttachmentStrip(
+                        attachments: _controller.attachments,
+                        enabled: _controller.isEditable,
+                        onRemove: _controller.removeAttachment,
+                        onRetry: _controller.retryAttachment,
+                      ),
+                    ),
+                  ),
+                KeyedSubtree(
+                  key: const ValueKey('acp-input-row'),
+                  child: Padding(
                     padding: const EdgeInsets.fromLTRB(
                       FluttyTheme.spacingSm,
                       FluttyTheme.spacingSm,
                       FluttyTheme.spacingSm,
-                      0,
+                      FluttyTheme.spacingSm,
                     ),
-                    child: AcpSlashCommandPicker(
-                      commands: _controller.slashCommands,
-                      highlightedIndex: _highlightedSlash,
-                      onHighlightChanged: (index) =>
-                          setState(() => _highlightedSlash = index),
-                      onSelected: _selectSlash,
-                    ),
-                  ),
-                if (_controller.error != null)
-                  _ErrorBanner(
-                    error: _controller.error!,
-                    onDismiss: _controller.clearError,
-                    onUpload:
-                        _controller.error!.isUploadRecoverable &&
-                            _controller.attachments.isNotEmpty
-                        ? _confirmRemoteUpload
-                        : null,
-                  ),
-                if (_controller.attachments.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: FluttyTheme.spacingSm,
-                    ),
-                    child: AcpAttachmentStrip(
-                      attachments: _controller.attachments,
-                      enabled: _controller.isEditable,
-                      onRemove: _controller.removeAttachment,
-                      onRetry: _controller.retryAttachment,
-                    ),
-                  ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    FluttyTheme.spacingSm,
-                    FluttyTheme.spacingSm,
-                    FluttyTheme.spacingSm,
-                    FluttyTheme.spacingSm,
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      _AddButton(
-                        enabled:
-                            _controller.isEditable &&
-                            widget.attachmentActions.hasAny &&
-                            _controller.canAddAttachment,
-                        onPressed: _openAddMenu,
-                      ),
-                      Expanded(
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxHeight: 160),
-                          child: TextField(
-                            controller: _text,
-                            focusNode: _focusNode,
-                            readOnly: !_controller.isEditable,
-                            minLines: 1,
-                            maxLines: null,
-                            keyboardType: TextInputType.multiline,
-                            textInputAction: TextInputAction.newline,
-                            textCapitalization: TextCapitalization.sentences,
-                            style: FluttyTheme.monoStyle.copyWith(
-                              color: scheme.onSurface,
-                              fontSize: 14,
-                            ),
-                            decoration: InputDecoration(
-                              isDense: true,
-                              border: InputBorder.none,
-                              hintText: widget.hintText,
-                              hintStyle: FluttyTheme.monoStyle.copyWith(
-                                color: scheme.onSurfaceVariant,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        _AddButton(
+                          enabled:
+                              _controller.isEditable &&
+                              widget.attachmentActions.hasAny &&
+                              _controller.canAddAttachment,
+                          onPressed: _openAddMenu,
+                        ),
+                        Expanded(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 160),
+                            child: TextField(
+                              controller: _text,
+                              focusNode: _focusNode,
+                              readOnly: !_controller.isEditable,
+                              minLines: 1,
+                              maxLines: null,
+                              keyboardType: TextInputType.multiline,
+                              textInputAction: TextInputAction.newline,
+                              textCapitalization: TextCapitalization.sentences,
+                              style: FluttyTheme.monoStyle.copyWith(
+                                color: scheme.onSurface,
                                 fontSize: 14,
+                              ),
+                              decoration: InputDecoration(
+                                isDense: true,
+                                border: InputBorder.none,
+                                hintText: widget.hintText,
+                                hintStyle: FluttyTheme.monoStyle.copyWith(
+                                  color: scheme.onSurfaceVariant,
+                                  fontSize: 14,
+                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                      if (widget.onOpenConfig != null)
-                        IconButton(
-                          tooltip: 'Session settings',
-                          constraints: const BoxConstraints(
-                            minWidth: 44,
-                            minHeight: 44,
+                        if (widget.onOpenConfig != null)
+                          IconButton(
+                            tooltip: 'Session settings',
+                            constraints: const BoxConstraints(
+                              minWidth: 44,
+                              minHeight: 44,
+                            ),
+                            icon: const Icon(Icons.tune),
+                            onPressed: widget.onOpenConfig,
                           ),
-                          icon: const Icon(Icons.tune),
-                          onPressed: widget.onOpenConfig,
+                        if (_controller.canSend && _controller.canCancel)
+                          _StopTurnButton(onPressed: _stopActiveTurn),
+                        _PrimaryActionButton(
+                          activity: _controller.activity,
+                          canSend: _controller.canSend,
+                          canCancel: _controller.canCancel,
+                          onPressed: _handlePrimaryAction,
                         ),
-                      _PrimaryActionButton(
-                        activity: _controller.activity,
-                        canSend: _controller.canSend,
-                        canCancel: _controller.canCancel,
-                        onPressed: _handlePrimaryAction,
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ],
@@ -445,20 +463,26 @@ class _PrimaryActionButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final busy = activity != AcpComposerActivity.idle;
-    final label = busy ? 'Stop' : 'Send';
-    final enabled = busy ? canCancel : canSend;
+    final queueing = busy && canSend;
+    final stopping = busy && !canSend;
+    final label = queueing ? 'Queue message' : (stopping ? 'Stop' : 'Send');
+    final enabled = canSend || canCancel;
     final Widget child;
-    if (activity == AcpComposerActivity.cancelling) {
+    if (activity == AcpComposerActivity.cancelling && !canSend) {
       child = const SizedBox(
         width: 20,
         height: 20,
         child: CircularProgressIndicator(strokeWidth: 2),
       );
-    } else if (busy) {
+    } else if (stopping) {
       child = const Icon(Icons.stop, size: 22);
     } else {
-      child = const Icon(Icons.arrow_upward, size: 22);
+      child = Icon(
+        queueing ? Icons.playlist_add : Icons.arrow_upward,
+        size: 22,
+      );
     }
+    final destructive = stopping;
     return Semantics(
       button: true,
       enabled: enabled,
@@ -467,12 +491,42 @@ class _PrimaryActionButton extends StatelessWidget {
         width: 44,
         height: 44,
         child: IconButton.filled(
+          tooltip: label,
           style: IconButton.styleFrom(
-            backgroundColor: busy ? scheme.errorContainer : scheme.primary,
-            foregroundColor: busy ? scheme.onErrorContainer : scheme.onPrimary,
+            backgroundColor: destructive
+                ? scheme.errorContainer
+                : scheme.primary,
+            foregroundColor: destructive
+                ? scheme.onErrorContainer
+                : scheme.onPrimary,
           ),
           onPressed: enabled ? onPressed : null,
           icon: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _StopTurnButton extends StatelessWidget {
+  const _StopTurnButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      button: true,
+      label: 'Stop active turn',
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: IconButton(
+          tooltip: 'Stop active turn',
+          style: IconButton.styleFrom(foregroundColor: scheme.error),
+          onPressed: onPressed,
+          icon: const Icon(Icons.stop, size: 22),
         ),
       ),
     );

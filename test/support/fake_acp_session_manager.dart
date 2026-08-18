@@ -107,6 +107,10 @@ class FakeAcpSessionManager extends AcpSessionManager {
   Future<List<AcpRecentSessionRef>> loadRecentSessions() async => recents;
 
   @override
+  Future<List<AcpRecentSessionRef>> loadNavigableSessions(int hostId) async =>
+      recents.where((recent) => recent.hostId == hostId).toList();
+
+  @override
   Future<AcpSessionKey?> loadLastSelected() async => lastSelected;
 
   @override

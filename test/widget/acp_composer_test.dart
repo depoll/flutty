@@ -186,8 +186,11 @@ void main() {
     final fieldFinder = find.byType(TextField);
     await tester.tap(fieldFinder);
     await tester.showKeyboard(fieldFinder);
+    final editableBefore = tester.element(find.byType(EditableText));
     await tester.enterText(fieldFinder, '/');
     await tester.pump();
+    expect(tester.element(find.byType(EditableText)), same(editableBefore));
+    expect(tester.testTextInput.isVisible, isTrue);
     expect(
       tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
       isTrue,
@@ -346,11 +349,13 @@ void main() {
     expect(controllerA.text, 'from A');
   });
 
-  testWidgets('disables editing controls while a turn streams', (tester) async {
+  testWidgets('keeps editing and queue controls available while streaming', (
+    tester,
+  ) async {
     final controller = _makeController(
       _RecordingManager(),
       session: _session(promptStatus: AcpPromptStatus.streaming),
-    );
+    )..setText('steer next');
     addTearDown(controller.dispose);
     await _pump(
       tester,
@@ -359,11 +364,13 @@ void main() {
     );
 
     final field = tester.widget<TextField>(find.byType(TextField));
-    expect(field.readOnly, isTrue);
+    expect(field.readOnly, isFalse);
     final addButton = tester.widget<IconButton>(
       find.widgetWithIcon(IconButton, Icons.add),
     );
-    expect(addButton.onPressed, isNull);
+    expect(addButton.onPressed, isNotNull);
+    expect(find.byTooltip('Queue message'), findsOneWidget);
+    expect(find.byTooltip('Stop active turn'), findsOneWidget);
   });
 
   testWidgets('adds no extra keyboard inset padding under a Scaffold', (

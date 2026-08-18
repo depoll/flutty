@@ -5,15 +5,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
+import 'package:monkeyssh/domain/models/acp_timeline.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/services/acp_concurrency_policy.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/agent_chat_screen.dart';
 import 'package:monkeyssh/presentation/widgets/acp_composer.dart';
+import 'package:monkeyssh/presentation/widgets/acp_inline_image.dart';
 import 'package:monkeyssh/presentation/widgets/acp_message_thread.dart';
 import 'package:monkeyssh/presentation/widgets/acp_permission_surface.dart';
 
@@ -74,7 +77,44 @@ void main() {
     expect(find.byType(AcpMessageThread), findsOneWidget);
     expect(find.textContaining('Hello from the agent'), findsOneWidget);
     expect(find.byType(AcpComposer), findsOneWidget);
+    expect(find.byTooltip('MonkeyMux windows'), findsOneWidget);
     expect(find.byTooltip('Session settings'), findsOneWidget);
+  });
+
+  testWidgets('opens an inline image in a sized interactive viewer', (
+    tester,
+  ) async {
+    const png =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+        'AAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    final session = fakeAcpSession(
+      timeline: AcpTimeline(
+        entries: [
+          AcpMessageEntry(
+            role: AcpMessageRole.user,
+            order: 0,
+            content: const [AcpImageContent(data: png, mimeType: 'image/png')],
+          ),
+        ],
+      ),
+    );
+    await tester.pumpWidget(_wrap(FakeAcpSessionManager(sessions: [session])));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(Image), findsOneWidget);
+    final inlineImage = tester.widget<AcpInlineImage>(
+      find.byType(AcpInlineImage),
+    );
+    inlineImage.onTap!(inlineImage.image);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    final viewerSize = tester.getSize(
+      find.byKey(const ValueKey('acp-image-viewer')),
+    );
+    expect(viewerSize.width, greaterThan(0));
+    expect(viewerSize.height, greaterThan(0));
+    expect(find.byType(Image), findsNWidgets(2));
   });
 
   testWidgets('renders a persistent session rail on wide layouts', (

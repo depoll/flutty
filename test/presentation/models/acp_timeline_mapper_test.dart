@@ -73,6 +73,9 @@ void main() {
           locations: const [AcpToolLocation(path: 'lib/a.dart', line: 3)],
           content: const [
             AcpToolDiff(path: 'lib/a.dart', oldText: 'a', newText: 'b'),
+            AcpToolContentBlock(
+              content: AcpImageContent(data: 'aGk=', mimeType: 'image/png'),
+            ),
           ],
         ),
       ],
@@ -110,6 +113,8 @@ void main() {
     expect(tool.toolCall.locations.single.line, 3);
     expect(tool.toolCall.diffs.single.unifiedDiff, contains('-a'));
     expect(tool.toolCall.diffs.single.unifiedDiff, contains('+b'));
+    expect(tool.toolCall.images, hasLength(1));
+    expect(tool.toolCall.images.single.bytes, isNotNull);
 
     expect(
       entries.whereType<p.AcpPlanEntry>().single.plan.items.single.status,

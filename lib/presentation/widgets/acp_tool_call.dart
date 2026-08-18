@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
 import 'acp_diff.dart';
+import 'acp_inline_image.dart';
 
 /// Presentation helpers for [AcpToolStatus].
 extension AcpToolStatusPresentation on AcpToolStatus {
@@ -69,7 +70,8 @@ class _AcpToolCallViewState extends State<AcpToolCallView> {
     return (call.rawInput?.isNotEmpty ?? false) ||
         (call.rawOutput?.isNotEmpty ?? false) ||
         call.locations.isNotEmpty ||
-        call.diffs.isNotEmpty;
+        call.diffs.isNotEmpty ||
+        call.images.isNotEmpty;
   }
 
   ({IconData icon, Color color, bool spinning}) _statusVisual(
@@ -240,6 +242,16 @@ class _ToolCallDetails extends StatelessWidget {
     }
     for (final diff in toolCall.diffs) {
       children.add(AcpDiffView(diff: diff));
+    }
+    final imageActions = AcpImageActions.maybeOf(context);
+    for (final image in toolCall.images) {
+      children.add(
+        AcpInlineImage(
+          image: image,
+          resolver: imageActions?.resolver,
+          onTap: imageActions?.onTap,
+        ),
+      );
     }
     final output = toolCall.rawOutput;
     if (output != null && output.isNotEmpty) {

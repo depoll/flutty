@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -70,6 +71,8 @@ class _FakeAcpServer implements AcpTransport {
   final List<String> newSessionCwds = <String>[];
   final List<String> cancelledSessions = <String>[];
   final Map<Object, Object?> permissionResponses = <Object, Object?>{};
+  final Queue<Object> _heldPromptIds = Queue<Object>();
+  bool holdPrompts = false;
   int _sessionCounter = 0;
   int _serverRequestId = 0;
   bool closed = false;
@@ -155,7 +158,11 @@ class _FakeAcpServer implements AcpTransport {
         }
         _reply(id, <String, Object?>{});
       case 'session/prompt':
-        _reply(id, {'stopReason': 'end_turn'});
+        if (holdPrompts) {
+          _heldPromptIds.addLast(id);
+        } else {
+          _reply(id, {'stopReason': 'end_turn'});
+        }
       case 'session/set_config_option':
         _reply(id, {
           'configOptions': [
@@ -174,6 +181,13 @@ class _FakeAcpServer implements AcpTransport {
         _reply(id, <String, Object?>{});
     }
   }
+
+  void completeNextPrompt() {
+    final id = _heldPromptIds.removeFirst();
+    _reply(id, {'stopReason': 'end_turn'});
+  }
+
+  int get heldPromptCount => _heldPromptIds.length;
 
   void pushUpdate(String sessionId, Map<String, Object?> update) {
     _push({
@@ -319,6 +333,8 @@ class _FakeConnector implements AcpBridgeConnector {
   final List<String> stoppedBridges = <String>[];
   final Set<String> availableBridges = <String>{};
   final Map<String, _FakeAcpServer> servers = <String, _FakeAcpServer>{};
+  List<MonkeyMuxAcpBridgeMetadata> remoteMetadata =
+      const <MonkeyMuxAcpBridgeMetadata>[];
   final Map<String, StreamController<MonkeyMuxAcpTransportState>>
   transportStateControllers =
       <String, StreamController<MonkeyMuxAcpTransportState>>{};
@@ -349,6 +365,9 @@ class _FakeConnector implements AcpBridgeConnector {
     MonkeyMuxInstallConfirmation? confirmInstall,
   }) async {
     lastListConfirmInstall = confirmInstall;
+    if (remoteMetadata.isNotEmpty) {
+      return remoteMetadata;
+    }
     return [
       for (final bridgeId in availableBridges)
         MonkeyMuxAcpBridgeMetadata(
@@ -1046,6 +1065,37 @@ void main() {
     );
   });
 
+  test('remote bridge metadata restores a navigable native session', () async {
+    final now = DateTime(2026);
+    connector.remoteMetadata = [
+      MonkeyMuxAcpBridgeMetadata(
+        id: '0123456789abcdef0123456789abcdef',
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        sessionId: 'remote-session',
+        cwd: '/repo',
+        provider: 'Copilot CLI',
+        commandHash: 'hash',
+        state: MonkeyMuxAcpProviderState.running,
+        clientCount: 0,
+        pendingRequestCount: 0,
+        inFlightTurnCount: 0,
+        lastActivity: now,
+        startedAt: now,
+        nextSequence: 1,
+      ),
+    ];
+
+    final sessions = await manager.loadNavigableSessions(1);
+
+    expect(sessions, hasLength(1));
+    expect(sessions.single.acpSessionId, 'remote-session');
+    expect(sessions.single.cwd, '/repo');
+    expect(
+      (await manager.loadRecentSessions()).map((recent) => recent.key.value),
+      contains(sessions.single.key.value),
+    );
+  });
+
   group('prompt lifecycle', () {
     test('prompt returns a stop reason and clears streaming', () async {
       final key = await startCopilot();
@@ -1060,6 +1110,39 @@ void main() {
           .whereType<AcpMessageEntry>()
           .singleWhere((entry) => entry.role == AcpMessageRole.user);
       expect((userMessage.content.single as AcpTextContent).text, 'Hi there');
+    });
+
+    test('queues follow-up prompts and dispatches them sequentially', () async {
+      final key = await startCopilot();
+      final server = connector.servers[key.bridgeId]!..holdPrompts = true;
+
+      final first = manager.prompt(key, const [AcpTextContent('first')]);
+      await _pump();
+      expect(server.heldPromptCount, 1);
+
+      final second = manager.prompt(key, const [AcpTextContent('second')]);
+      await _pump();
+      expect(server.heldPromptCount, 1);
+      final userMessages = manager.state
+          .byKeyValue(key.value)!
+          .timeline
+          .entries
+          .whereType<AcpMessageEntry>()
+          .where((entry) => entry.role == AcpMessageRole.user)
+          .toList();
+      expect(userMessages, hasLength(2));
+
+      server.completeNextPrompt();
+      await first;
+      await _pump();
+      expect(server.heldPromptCount, 1);
+
+      server.completeNextPrompt();
+      await second;
+      expect(
+        manager.state.byKeyValue(key.value)!.promptStatus,
+        AcpPromptStatus.idle,
+      );
     });
 
     test('cancel notifies the agent', () async {

@@ -121,20 +121,24 @@ class AcpMessageThread extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => ListView.builder(
-    controller: controller,
-    padding: padding,
-    shrinkWrap: shrinkWrap,
-    physics: physics,
-    itemCount: entries.length,
-    itemBuilder: (context, index) {
-      final entry = entries[index];
-      return Padding(
-        key: ValueKey(entry.id),
-        padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingMd),
-        child: _buildEntry(context, entry),
-      );
-    },
+  Widget build(BuildContext context) => AcpImageActions(
+    resolver: imageResolver,
+    onTap: onTapImage,
+    child: ListView.builder(
+      controller: controller,
+      padding: padding,
+      shrinkWrap: shrinkWrap,
+      physics: physics,
+      itemCount: entries.length,
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        return Padding(
+          key: ValueKey(entry.id),
+          padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingMd),
+          child: _buildEntry(context, entry),
+        );
+      },
+    ),
   );
 }
 

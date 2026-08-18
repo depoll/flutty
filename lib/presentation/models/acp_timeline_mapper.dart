@@ -261,6 +261,7 @@ String _markdownFromContent(List<d.AcpContentBlock> content) {
 
 AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
   final diffs = <AcpDiff>[];
+  final images = <AcpImageContent>[];
   final outputBlocks = <String>[];
   for (final content in entry.content) {
     switch (content) {
@@ -281,6 +282,11 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
         final inner = content.content;
         if (inner is d.AcpTextContent && inner.text.isNotEmpty) {
           outputBlocks.add(inner.text);
+        } else if (inner is d.AcpImageContent) {
+          final image = _mapImage(inner);
+          if (image != null) {
+            images.add(image);
+          }
         }
       case d.AcpToolTerminal():
       case d.AcpUnknownToolContent():
@@ -310,6 +316,7 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
           AcpToolLocation(path: location.path, line: location.line),
       ],
       diffs: diffs,
+      images: images,
     ),
   );
 }

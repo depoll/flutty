@@ -182,8 +182,8 @@ void main() {
     expect(controller.canSend, isFalse);
   });
 
-  test('successful send snapshots content atomically and clears only after '
-      'acceptance', () async {
+  test('successful send snapshots atomically, clears on queue, and permits '
+      'the next draft', () async {
     final manager = _RecordingManager();
     final controller = _controller(manager, session: _session(image: true))
       ..setText('do the thing');
@@ -198,23 +198,25 @@ void main() {
 
     final gate = Completer<void>();
     manager.promptGate = gate;
-    final future = controller.send();
-
-    // While preparing/submitting, the composer retains its content.
-    expect(controller.text, 'do the thing');
-    expect(controller.attachments, isNotEmpty);
-    expect(controller.isBusy, isTrue);
-
-    gate.complete();
-    expect(await future, isTrue);
+    expect(await controller.send(), isTrue);
 
     expect(controller.text, isEmpty);
     expect(controller.attachments, isEmpty);
+    expect(controller.isEditable, isTrue);
+    controller
+      ..updateSession(
+        _session(image: true, promptStatus: AcpPromptStatus.streaming),
+      )
+      ..setText('follow up');
+    expect(controller.text, 'follow up');
+    expect(controller.canSend, isTrue);
 
     final content = manager.prompts.single;
     expect(content.first, isA<AcpTextContent>());
     expect((content.first as AcpTextContent).text, 'do the thing');
     expect(content[1], isA<AcpImageContent>());
+    gate.complete();
+    await Future<void>.delayed(Duration.zero);
   });
 
   test('preserves mixed attachment ordering in the prepared content', () async {
@@ -247,13 +249,14 @@ void main() {
   });
 
   test(
-    'retains input and surfaces a send error when submission fails',
+    'restores queued input and surfaces a send error when submission fails',
     () async {
       final manager = _RecordingManager()..throwOnPrompt = StateError('boom');
       final controller = _controller(manager)..setText('keep me');
       addTearDown(controller.dispose);
 
-      expect(await controller.send(), isFalse);
+      expect(await controller.send(), isTrue);
+      await Future<void>.delayed(Duration.zero);
       expect(controller.text, 'keep me');
       expect(controller.error?.kind, AcpComposerErrorKind.send);
       expect(controller.activity, AcpComposerActivity.idle);
@@ -432,20 +435,18 @@ void main() {
     },
   );
 
-  test('locks draft mutations while submitting and clears only the '
-      'snapshot', () async {
+  test('accepts a new draft while the submitted snapshot is active', () async {
     final manager = _RecordingManager();
     final gate = Completer<void>();
     manager.promptGate = gate;
     final controller = _controller(manager)..setText('snapshot');
     addTearDown(controller.dispose);
 
-    final future = controller.send();
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.isEditable, isFalse);
-
-    // Direct controller mutations are rejected while submitting.
-    controller.setText('post-snapshot edit');
+    expect(await controller.send(), isTrue);
+    expect(controller.isEditable, isTrue);
+    controller
+      ..updateSession(_session(promptStatus: AcpPromptStatus.streaming))
+      ..setText('post-snapshot edit');
     expect(
       controller.addAttachment(
         AcpAttachmentCandidate.memory(
@@ -453,30 +454,28 @@ void main() {
           bytes: Uint8List.fromList(<int>[1]),
         ),
       ),
-      isFalse,
+      isTrue,
     );
-    expect(controller.text, 'snapshot');
-    expect(controller.attachments, isEmpty);
+    expect(controller.text, 'post-snapshot edit');
+    expect(controller.attachments, hasLength(1));
 
     gate.complete();
-    expect(await future, isTrue);
-    // Only the submitted snapshot is cleared; nothing else was retained.
-    expect(controller.text, isEmpty);
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.text, 'post-snapshot edit');
   });
 
-  test('locks draft mutations while a turn is streaming', () {
+  test('accepts draft mutations while a turn is streaming', () {
     final manager = _RecordingManager();
     final controller = _controller(
       manager,
       session: _session(promptStatus: AcpPromptStatus.streaming),
     );
     addTearDown(controller.dispose);
-    expect(controller.isEditable, isFalse);
+    expect(controller.isEditable, isTrue);
 
     controller.setText('typed while streaming');
-    expect(controller.text, isEmpty);
-    controller.updateSession(_session());
-    expect(controller.isEditable, isTrue);
+    expect(controller.text, 'typed while streaming');
+    expect(controller.canSend, isTrue);
   });
 
   test('does not mutate or notify after dispose mid-send', () async {

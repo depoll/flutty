@@ -445,8 +445,10 @@ class AcpToolCall extends Equatable {
     this.rawOutput,
     List<AcpToolLocation> locations = const [],
     List<AcpDiff> diffs = const [],
+    List<AcpImageContent> images = const [],
   }) : locations = List.unmodifiable(locations),
-       diffs = List.unmodifiable(diffs);
+       diffs = List.unmodifiable(diffs),
+       images = List.unmodifiable(images);
 
   /// The tool-call identifier used to merge updates.
   final String id;
@@ -472,6 +474,9 @@ class AcpToolCall extends Equatable {
   /// Diffs produced by the tool call.
   final List<AcpDiff> diffs;
 
+  /// Images produced by the tool call.
+  final List<AcpImageContent> images;
+
   @override
   List<Object?> get props => [
     id,
@@ -482,6 +487,7 @@ class AcpToolCall extends Equatable {
     rawOutput,
     locations,
     diffs,
+    images,
   ];
 }
 

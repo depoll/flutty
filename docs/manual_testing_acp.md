@@ -64,9 +64,12 @@ Test on the smallest supported phone size:
 4. Scroll through thought, plan, tool, image, resource, and usage cards.
 5. Choose each permission option in separate turns; the exact choices are
    **Allow once**, **Always allow**, **Reject once**, and **Always reject**.
-6. Open the session switcher, return to the composer, then run `/wait` and tap
-   Cancel. No critical control should require a two-handed reach or be hidden
-   behind the keyboard/safe area.
+6. While a response streams, type and queue a follow-up; verify the submitted
+   text moves into chat immediately and the keyboard remains open.
+7. Type `/` and continue entering a command while autocomplete stays visible
+   without dismissing the keyboard. Then run `/wait` and tap Cancel. No
+   critical control should require a two-handed reach or be hidden behind the
+   keyboard/safe area.
 
 Check VoiceOver/TalkBack labels, Dynamic Type/font scaling, landscape, and
 light/dark mode while completing the same flow.
@@ -117,11 +120,11 @@ ACP capabilities, and failures. Capabilities are negotiated at runtime, so an
 empty cell is a test result—not an assumption. Authentication and model access
 are the only steps that may require provider credentials.
 
-| Remote OS | Copilot CLI (`copilot --acp --no-color --no-auto-update --log-level error`) | OpenCode (`opencode acp --log-level ERROR`) | Expected differences to record |
-| --- | --- | --- | --- |
-| macOS | Initialize, login handoff, new/list/load/resume, text/image/resource, permission, cancel, reconnect | Initialize, `opencode auth login`, new/list/load/resume, text/image/resource, permission, cancel, reconnect | Homebrew/npm PATH in SSH exec shells; provider-specific slash commands, modes/models, session titles, and permission wording |
-| Linux | Same flow; test package and npm installs | Same flow; test installer and npm installs | Distribution shell/PATH, sandbox/tool availability, notification behavior when the phone backgrounds |
-| Windows | Test native OpenSSH + PowerShell; repeat in WSL when used | Test native OpenSSH + PowerShell; repeat in WSL when used | Native path/quoting and executable suffixes versus POSIX paths in WSL; some versions may advertise different load/resume, image, or embedded-resource capabilities |
+| Remote OS | Copilot CLI (`copilot --acp --no-color --no-auto-update --log-level error`) | OpenCode (`opencode acp --log-level ERROR`) | Pi (`pi-acp`) | Expected differences to record |
+| --- | --- | --- | --- | --- |
+| macOS | Initialize, login handoff, new/list/load/resume, text/image/resource, permission, cancel, reconnect | Initialize, `opencode auth login`, new/list/load/resume, text/image/resource, permission, cancel, reconnect | Detect installed `pi-acp`; test text/image/tool output, slash completion, queueing, cancel, and reconnect | Homebrew/npm PATH in SSH exec shells; provider-specific slash commands, modes/models, session titles, and permission wording |
+| Linux | Same flow; test package and npm installs | Same flow; test installer and npm installs | Same flow; verify standalone adapter installation and PATH | Distribution shell/PATH, sandbox/tool availability, notification behavior when the phone backgrounds |
+| Windows | Test native OpenSSH + PowerShell; repeat in WSL when used | Test native OpenSSH + PowerShell; repeat in WSL when used | Test native executable resolution and WSL separately | Native path/quoting and executable suffixes versus POSIX paths in WSL; some versions may advertise different load/resume, image, or embedded-resource capabilities |
 
 For every cell:
 

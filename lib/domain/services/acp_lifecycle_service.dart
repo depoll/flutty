@@ -19,7 +19,7 @@ const acpGenericAgentLabel = 'Coding agent';
 
 /// Resolves a safe, allowlisted display label for [session].
 ///
-/// Built-in providers (Copilot CLI, OpenCode) use their fixed, known-safe
+/// Built-in providers (Copilot CLI, OpenCode, Pi) use their fixed, known-safe
 /// label. Every custom provider's user-chosen label is never used here: it
 /// is arbitrary, user-controlled text that must never appear in an OS
 /// notification (visible on a lock screen, in notification history, and to

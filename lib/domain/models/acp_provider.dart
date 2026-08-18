@@ -35,6 +35,9 @@ abstract final class AcpBuiltinProviderIds {
 
   /// OpenCode CLI.
   static const openCode = '${acpCustomProviderReservedIdPrefix}opencode';
+
+  /// Pi's standalone ACP adapter.
+  static const pi = '${acpCustomProviderReservedIdPrefix}pi-acp';
 }
 
 /// Validates and normalizes a custom ACP provider ID.
@@ -384,10 +387,21 @@ final acpOpenCodeProvider = AcpBuiltinProvider(
   ),
 );
 
+/// Built-in Pi ACP provider.
+final acpPiProvider = AcpBuiltinProvider(
+  id: AcpBuiltinProviderIds.pi,
+  label: 'Pi',
+  launchCommand: AcpLaunchCommand(executable: 'pi-acp'),
+  executableProbe: AcpExecutableProbe(
+    candidateExecutableNames: const ['pi-acp'],
+  ),
+);
+
 /// All built-in ACP providers bundled with the app, in display order.
 final acpBuiltinProviders = List<AcpBuiltinProvider>.unmodifiable([
   acpCopilotCliProvider,
   acpOpenCodeProvider,
+  acpPiProvider,
 ]);
 
 /// Approval record for a custom ACP provider's exact launch command.

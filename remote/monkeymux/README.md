@@ -67,7 +67,7 @@ All structured state and commands belong on the control backchannel.
 
 ### Persistent ACP bridges
 
-`monkeymux acp start --provider LABEL --command COMMAND --cwd DIR` starts an
+`monkeymux acp start --provider-id ID --provider LABEL --command COMMAND --cwd DIR` starts an
 already-approved ACP provider in `DIR` without a PTY. The provider's stdin and
 stdout are strictly NDJSON; stderr is discarded separately and is never
 relayed, logged, or persisted. The bridge daemon is detached from its launching
@@ -79,7 +79,7 @@ existing runtime directory. The bridge namespace is intentionally separate from
 terminal session sockets. The supported operations are:
 
 ```text
-monkeymux acp start --provider LABEL --command COMMAND --cwd DIR
+monkeymux acp start --provider-id ID --provider LABEL --command COMMAND --cwd DIR
 monkeymux acp attach BRIDGE_ID       # `connect` is an alias
 monkeymux acp list
 monkeymux acp status BRIDGE_ID
@@ -103,12 +103,13 @@ requests, remain pending while no client is attached. MonkeyMux never creates a
 permission response.
 
 The replay buffer is memory-only. Bridge metadata exposed by `list` and
-`status` contains safe IDs, state, counts, timing, and a command hash; it never
-contains the command, working directory, stderr, or ACP payload. Explicit
-`stop` terminates the provider process tree. A bridge with no attached client,
-pending provider request, or in-flight turn stops after 24 hours of true idle;
-`gc` also removes stale socket artifacts. ACP children use ordinary pipes on
-every platform—never a POSIX PTY or Windows ConPTY.
+`status` contains bounded provider/session IDs, working directory, state,
+counts, timing, and a command hash so clients can rediscover native windows; it
+never contains the command, stderr, prompts, responses, or other ACP payload.
+Explicit `stop` terminates the provider process tree. Bridges persist until
+explicitly stopped, like MonkeyMux terminal windows. `gc` performs deliberate
+idle cleanup and removes stale socket artifacts. ACP children use ordinary
+pipes on every platform—never a POSIX PTY or Windows ConPTY.
 
 ### Terminal session details
 

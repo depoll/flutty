@@ -501,7 +501,9 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
 
   void _loadAcpRecents() {
     _acpRecents = widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux
-        ? ref.read(acpSessionManagerProvider).loadRecentSessions()
+        ? ref
+              .read(acpSessionManagerProvider)
+              .loadNavigableSessions(widget.session.hostId)
         : null;
   }
 

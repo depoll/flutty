@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -230,6 +231,24 @@ func TestAcpDetachedClientCannotReclaimWriter(t *testing.T) {
 	}
 }
 
+func TestAcpBridgeCapturesSessionIdentityForDurableListing(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	bridge.providerID = "builtin:pi-acp"
+	bridge.cwd = "/repo"
+	bridge.observeClientMessage(json.RawMessage(
+		`{"jsonrpc":"2.0","id":7,"method":"session/new","params":{"cwd":"/repo"}}`,
+	))
+	bridge.publish("output", json.RawMessage(
+		`{"jsonrpc":"2.0","id":7,"result":{"sessionId":"session-7"}}`,
+	), "", nil)
+
+	info := bridge.snapshot()
+	if info.ProviderID != "builtin:pi-acp" || info.SessionID != "session-7" ||
+		info.Cwd != "/repo" {
+		t.Fatalf("durable metadata = %#v", info)
+	}
+}
+
 func TestAcpProviderExitWaitsForFinalOutputDrain(t *testing.T) {
 	cmd := newAcpProviderCommand("exit 0")
 	if err := cmd.Start(); err != nil {
@@ -422,8 +441,9 @@ func newOrderingTestBridge() *acpBridge {
 		startedAt:       now,
 		lastActivity:    now,
 		clients:         map[string]*acpBridgeClient{},
-		pendingRequests: map[string]struct{}{},
-		inFlightTurns:   map[string]struct{}{},
+		pendingRequests:      map[string]struct{}{},
+		inFlightTurns:        map[string]struct{}{},
+		sessionSetupRequests: map[string]struct{}{},
 	}
 }
 
@@ -517,68 +537,51 @@ func TestAcpProviderExitCancelsDelayedForceStop(t *testing.T) {
 }
 
 func TestAcpConcurrentStopAndProviderWrite(t *testing.T) {
-	input := &blockingAcpInput{
-		writeStarted: make(chan struct{}),
-		releaseWrite: make(chan struct{}),
-		closed:       make(chan struct{}),
-	}
+	providerInput, peer := net.Pipe()
+	defer peer.Close()
 	bridge := &acpBridge{
-		stdin:        input,
+		stdin:        providerInput,
 		clients:      map[string]*acpBridgeClient{},
 		providerDone: make(chan struct{}),
 		done:         make(chan struct{}),
 	}
+	payload := json.RawMessage(`{"jsonrpc":"2.0","method":"session/prompt"}`)
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
-		_ = bridge.writeProvider(json.RawMessage(
-			`{"jsonrpc":"2.0","method":"session/prompt"}`,
-		))
+		_ = bridge.writeProvider(payload)
 	}()
-	<-input.writeStarted
+
+	// net.Pipe writes block until the peer reads, deterministically overlapping
+	// the provider write with stop's attempt to close stdin.
+	select {
+	case <-writerDone:
+		t.Fatal("provider write unexpectedly completed before peer read")
+	case <-time.After(20 * time.Millisecond):
+	}
 	stopDone := make(chan struct{})
 	go func() {
 		bridge.stop()
 		close(stopDone)
 	}()
-	close(input.releaseWrite)
+	got := make([]byte, len(payload)+1)
+	if _, err := io.ReadFull(peer, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, append(append([]byte(nil), payload...), '\n')) {
+		t.Fatalf("provider input = %q", got)
+	}
 
 	select {
 	case <-writerDone:
 	case <-time.After(time.Second):
-		t.Fatal("provider write did not finish after stop")
+		t.Fatal("provider write did not finish after peer read")
 	}
 	select {
 	case <-stopDone:
 	case <-time.After(time.Second):
 		t.Fatal("provider stop did not finish after write")
 	}
-	select {
-	case <-input.closed:
-	case <-time.After(time.Second):
-		t.Fatal("provider stdin was not closed")
-	}
-}
-
-type blockingAcpInput struct {
-	writeStarted chan struct{}
-	releaseWrite chan struct{}
-	closed       chan struct{}
-	started      bool
-}
-
-func (w *blockingAcpInput) Write(data []byte) (int, error) {
-	if !w.started {
-		w.started = true
-		close(w.writeStarted)
-	}
-	<-w.releaseWrite
-	return len(data), nil
-}
-
-func (w *blockingAcpInput) Close() error {
-	close(w.closed)
-	return nil
 }
 
 func TestAcpBridgeStartConnectListStatusAndStop(t *testing.T) {

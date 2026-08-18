@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 const monkeyMuxAcpBridgeProtocolVersion = 1;
 
 /// Maximum encoded size of one bridge or ACP NDJSON frame.
-const monkeyMuxAcpBridgeMaxFrameBytes = 1024 * 1024;
+const monkeyMuxAcpBridgeMaxFrameBytes = 20 * 1024 * 1024;
 
 /// State of the ACP provider process retained by MonkeyMux.
 enum MonkeyMuxAcpProviderState {
@@ -42,10 +42,22 @@ final class MonkeyMuxAcpBridgeMetadata {
     required this.lastActivity,
     required this.startedAt,
     required this.nextSequence,
+    this.providerId,
+    this.sessionId,
+    this.cwd,
   });
 
   /// Opaque bridge identifier.
   final String id;
+
+  /// Stable ACP provider identifier, when supplied by a current helper.
+  final String? providerId;
+
+  /// Remote ACP session identifier captured from setup traffic.
+  final String? sessionId;
+
+  /// Remote working directory retained for reconnecting the session.
+  final String? cwd;
 
   /// Provider display label retained by the helper.
   final String provider;

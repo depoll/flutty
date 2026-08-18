@@ -147,10 +147,10 @@ class AcpComposerAttachment {
 /// session's composer.
 ///
 /// Sending is atomic: it snapshots the current text and attachments, prepares
-/// the ACP content blocks through [AcpAttachmentPreparationService], and calls
-/// [AcpSessionManager.prompt]. The composer is cleared only after the agent
-/// accepts the prompt; on any failure the text and attachments are retained so
-/// the user can retry without re-authoring their message.
+/// the ACP content blocks through [AcpAttachmentPreparationService], and queues
+/// them with [AcpSessionManager.prompt]. Once queued, the submitted draft clears
+/// immediately so the user can type steering or follow-up text while the active
+/// turn continues. Failed submissions are restored without dropping newer text.
 class AcpComposerController extends ChangeNotifier {
   /// Creates a composer controller for [sessionKey].
   AcpComposerController({
@@ -257,8 +257,9 @@ class AcpComposerController extends ChangeNotifier {
   /// Whether the session is connected and ready to accept a prompt.
   bool get isSessionReady => _session?.status == AcpConnectionStatus.ready;
 
-  /// Whether the primary action can send right now.
-  bool get canSend => !isBusy && hasContent && isSessionReady;
+  /// Whether the primary action can send or queue the current draft right now.
+  bool get canSend =>
+      _sendState == _SendState.idle && hasContent && isSessionReady;
 
   /// Whether the in-flight action can be cancelled.
   bool get canCancel =>
@@ -268,11 +269,9 @@ class AcpComposerController extends ChangeNotifier {
 
   /// Whether the draft currently accepts edits.
   ///
-  /// Editing is locked while a prompt is being prepared, submitted, or
-  /// streamed so a post-snapshot edit can never be silently dropped when an
-  /// accepted prompt clears the composer. The widget mirrors this by making the
-  /// field read-only and disabling the attachment controls while busy.
-  bool get isEditable => !_disposed && !isBusy;
+  /// Active agent turns never lock the next draft. Only local attachment
+  /// preparation briefly locks mutation of the snapshot being prepared.
+  bool get isEditable => !_disposed && _sendState == _SendState.idle;
 
   bool _isStale(int generation) => _disposed || generation != _operation;
 
@@ -453,9 +452,9 @@ class AcpComposerController extends ChangeNotifier {
 
   /// Atomically snapshots and submits the current composer contents.
   ///
-  /// Returns `true` when the agent accepted the prompt (after which the
-  /// composer is cleared), or `false` when preparation or submission failed
-  /// and the text and attachments were retained.
+  /// Returns `true` as soon as the prompt is accepted into the bounded local
+  /// session queue, or `false` when preparation/submission failed before it
+  /// could be queued.
   Future<bool> send() async {
     if (!canSend) {
       return false;
@@ -508,8 +507,9 @@ class AcpComposerController extends ChangeNotifier {
     _markAttachments(AcpComposerAttachmentStatus.ready, clearProgress: true);
     notifyListeners();
 
+    final Future<AcpPromptResult> promptFuture;
     try {
-      await _manager.prompt(sessionKey, content);
+      promptFuture = _manager.prompt(sessionKey, content);
     } on Object {
       if (_isStale(generation)) {
         return false;
@@ -527,7 +527,6 @@ class AcpComposerController extends ChangeNotifier {
     if (_isStale(generation)) {
       return true;
     }
-    // Accepted: clear the composer only now.
     _sendState = _SendState.idle;
     _text = '';
     _caret = 0;
@@ -535,7 +534,45 @@ class AcpComposerController extends ChangeNotifier {
     _error = null;
     _recomputeSlash();
     notifyListeners();
+    unawaited(
+      _observePromptResult(promptFuture, snapshotText, snapshotAttachments),
+    );
     return true;
+  }
+
+  Future<void> _observePromptResult(
+    Future<AcpPromptResult> promptFuture,
+    String snapshotText,
+    List<AcpComposerAttachment> snapshotAttachments,
+  ) async {
+    try {
+      await promptFuture;
+    } on Object {
+      if (_disposed) {
+        return;
+      }
+      if (snapshotText.isNotEmpty) {
+        _text = _text.trim().isEmpty ? snapshotText : '$snapshotText\n\n$_text';
+        _caret = _text.length;
+      }
+      final currentIds = _attachments
+          .map((attachment) => attachment.id)
+          .toSet();
+      _attachments.insertAll(
+        0,
+        snapshotAttachments.where(
+          (attachment) => !currentIds.contains(attachment.id),
+        ),
+      );
+      _setError(
+        const AcpComposerError(
+          AcpComposerErrorKind.send,
+          'Your message could not be sent. Try again.',
+        ),
+      );
+      _recomputeSlash();
+      notifyListeners();
+    }
   }
 
   /// Cancels the in-flight preparation or streaming turn.

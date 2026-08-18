@@ -26,9 +26,9 @@ import (
 
 const (
 	acpBridgeProtocolVersion  = 1
-	acpMaxFrameBytes          = 1024 * 1024
+	acpMaxFrameBytes          = 20 * 1024 * 1024
 	acpReplayMaxEvents        = 1024
-	acpReplayMaxBytes         = 4 * 1024 * 1024
+	acpReplayMaxBytes         = 40 * 1024 * 1024
 	acpPendingReplayMaxEvents = 256
 	acpPendingReplayMaxBytes  = acpReplayMaxBytes
 	acpIdleTimeout            = 24 * time.Hour
@@ -65,10 +65,13 @@ type acpWireMessage struct {
 	ExitCode      *int            `json:"exitCode,omitempty"`
 }
 
-// acpBridgeInfo contains only safe bridge metadata. It intentionally excludes
-// the launch command, working directory, stderr, and all ACP payloads.
+// acpBridgeInfo contains only bounded bridge/session metadata. It excludes the
+// launch command, stderr, prompts, responses, and all other ACP payloads.
 type acpBridgeInfo struct {
 	ID             string `json:"id"`
+	ProviderID     string `json:"providerId,omitempty"`
+	SessionID      string `json:"sessionId,omitempty"`
+	Cwd            string `json:"cwd,omitempty"`
 	Provider       string `json:"provider,omitempty"`
 	CommandHash    string `json:"commandHash,omitempty"`
 	State          string `json:"state"`
@@ -84,9 +87,10 @@ type acpBridgeInfo struct {
 // pipe. Keeping it out of command-line arguments avoids exposing the approved
 // provider command or working directory in process listings.
 type acpLaunchConfig struct {
-	Provider string `json:"provider"`
-	Command  string `json:"command"`
-	Cwd      string `json:"cwd"`
+	ProviderID string `json:"providerId,omitempty"`
+	Provider   string `json:"provider"`
+	Command    string `json:"command"`
+	Cwd        string `json:"cwd"`
 }
 
 type acpReplayEvent struct {
@@ -114,9 +118,11 @@ func (c *acpBridgeClient) cancel() {
 
 type acpBridge struct {
 	id          string
+	providerID  string
 	provider    string
 	commandHash string
 	cwd         string
+	sessionID   string
 
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
@@ -135,6 +141,7 @@ type acpBridge struct {
 	writerClientID       string
 	pendingRequests      map[string]struct{}
 	inFlightTurns        map[string]struct{}
+	sessionSetupRequests map[string]struct{}
 	exitCode             *int
 	providerDone         chan struct{}
 	providerDoneOnce     sync.Once
@@ -177,6 +184,7 @@ func acpUsageAndExit() {
 
 func acpStartCommand(args []string) {
 	fs := flag.NewFlagSet("acp start", flag.ExitOnError)
+	providerID := fs.String("provider-id", "", "stable ACP provider id")
 	provider := fs.String("provider", "", "approved provider label")
 	command := fs.String("command", "", "approved ACP provider command")
 	cwd := fs.String("cwd", "", "provider working directory")
@@ -185,6 +193,9 @@ func acpStartCommand(args []string) {
 		acpUsageAndExit()
 	}
 	if err := validateAcpLaunch(*provider, *command, *cwd); err != nil {
+		fatal(err)
+	}
+	if err := validateAcpProviderID(*providerID); err != nil {
 		fatal(err)
 	}
 	id, err := newAcpBridgeID()
@@ -196,7 +207,8 @@ func acpStartCommand(args []string) {
 		fatal(errors.New("unable to start ACP bridge"))
 	}
 	launch := acpLaunchConfig{
-		Provider: *provider,
+		ProviderID: *providerID,
+		Provider:   *provider,
 		Command:  *command,
 		Cwd:      *cwd,
 	}
@@ -357,13 +369,24 @@ func acpServeCommand(args []string) {
 	if err := validateAcpLaunch(launch.Provider, launch.Command, launch.Cwd); err != nil {
 		fatal(err)
 	}
+	if err := validateAcpProviderID(launch.ProviderID); err != nil {
+		fatal(err)
+	}
 	bridge, err := newAcpBridge(*id, launch.Provider, launch.Command, launch.Cwd)
 	if err != nil {
 		fatal(errors.New("unable to start ACP provider"))
 	}
+	bridge.providerID = launch.ProviderID
 	if err := serveAcpBridge(bridge); err != nil {
 		fatal(errors.New("ACP bridge stopped unexpectedly"))
 	}
+}
+
+func validateAcpProviderID(providerID string) error {
+	if len(providerID) > 128 || strings.ContainsRune(providerID, 0) {
+		return errors.New("provider id is invalid")
+	}
+	return nil
 }
 
 func validateAcpLaunch(provider string, command string, cwd string) error {
@@ -449,7 +472,8 @@ func newAcpBridge(id string, provider string, command string, cwd string) (*acpB
 		lastActivity:       now,
 		clients:            map[string]*acpBridgeClient{},
 		pendingRequests:    map[string]struct{}{},
-		inFlightTurns:      map[string]struct{}{},
+		inFlightTurns:        map[string]struct{}{},
+		sessionSetupRequests: map[string]struct{}{},
 		providerDone:       make(chan struct{}),
 		providerOutput:     stdout,
 		providerOutputDone: make(chan struct{}),
@@ -494,7 +518,8 @@ func serveAcpBridge(bridge *acpBridge) error {
 		}
 		_ = listener.Close()
 	}()
-	go bridge.watchIdle()
+	// Native ACP sessions persist like MonkeyMux windows. Idle cleanup runs only
+	// through an explicit `monkeymux acp gc`, never from a hidden timer.
 
 	for {
 		conn, err := listener.Accept()
@@ -593,15 +618,62 @@ func (b *acpBridge) observeClientMessage(raw json.RawMessage) {
 	if !hasID {
 		return
 	}
+	method, sessionID := acpJSONRPCRequestSession(raw)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if hasMethod {
 		b.inFlightTurns[id] = struct{}{}
+		if isAcpSessionSetupMethod(method) {
+			b.sessionSetupRequests[id] = struct{}{}
+			if validAcpSessionID(sessionID) {
+				b.sessionID = sessionID
+			}
+		}
 	} else {
 		delete(b.pendingRequests, id)
 		b.releasePendingReplayLocked(id)
 	}
 	b.lastActivity = time.Now()
+}
+
+func acpJSONRPCRequestSession(raw json.RawMessage) (string, string) {
+	var envelope struct {
+		Method string `json:"method"`
+		Params struct {
+			SessionID string `json:"sessionId"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return "", ""
+	}
+	return envelope.Method, envelope.Params.SessionID
+}
+
+func isAcpSessionSetupMethod(method string) bool {
+	switch method {
+	case "session/new", "session/load", "session/resume", "session/fork":
+		return true
+	default:
+		return false
+	}
+}
+
+func validAcpSessionID(sessionID string) bool {
+	return sessionID != "" && len(sessionID) <= 4096 &&
+		!strings.ContainsRune(sessionID, 0)
+}
+
+func acpJSONRPCResponseSessionID(raw json.RawMessage) string {
+	var envelope struct {
+		Result struct {
+			SessionID string `json:"sessionId"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil ||
+		!validAcpSessionID(envelope.Result.SessionID) {
+		return ""
+	}
+	return envelope.Result.SessionID
 }
 
 func acpJSONRPCIdentity(raw json.RawMessage) (string, bool, bool) {
@@ -646,6 +718,12 @@ func (b *acpBridge) publish(
 	}
 	if providerResponseID != "" {
 		delete(b.inFlightTurns, providerResponseID)
+		if _, ok := b.sessionSetupRequests[providerResponseID]; ok {
+			if sessionID := acpJSONRPCResponseSessionID(data); sessionID != "" {
+				b.sessionID = sessionID
+			}
+			delete(b.sessionSetupRequests, providerResponseID)
+		}
 	}
 	b.nextSequence++
 	message := acpWireMessage{
@@ -1071,6 +1149,9 @@ func (b *acpBridge) snapshot() acpBridgeInfo {
 func (b *acpBridge) snapshotLocked() acpBridgeInfo {
 	return acpBridgeInfo{
 		ID:             b.id,
+		ProviderID:     b.providerID,
+		SessionID:      b.sessionID,
+		Cwd:            b.cwd,
 		Provider:       b.provider,
 		CommandHash:    b.commandHash,
 		State:          b.state,

@@ -496,32 +496,37 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       builder: (context) => Dialog(
         insetPadding: const EdgeInsets.all(FluttyTheme.spacingMd),
         backgroundColor: Colors.black,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: InteractiveViewer(
-                maxScale: 5,
-                child: Center(
-                  child: AcpInlineImage(
-                    image: image,
-                    resolver: _resolveChatImage,
-                    maxWidth: size.width,
-                    maxHeight: size.height,
+        child: SizedBox(
+          key: const ValueKey('acp-image-viewer'),
+          width: size.width,
+          height: size.height,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: InteractiveViewer(
+                  maxScale: 5,
+                  child: Center(
+                    child: AcpInlineImage(
+                      image: image,
+                      resolver: _resolveChatImage,
+                      maxWidth: size.width,
+                      maxHeight: size.height,
+                    ),
                   ),
                 ),
               ),
-            ),
-            Positioned(
-              top: 0,
-              right: 0,
-              child: SafeArea(
-                child: IconButton(
-                  icon: const Icon(Icons.close, color: Colors.white),
-                  onPressed: () => Navigator.of(context).pop(),
+              Positioned(
+                top: 0,
+                right: 0,
+                child: SafeArea(
+                  child: IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -666,6 +671,11 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         ),
         actions: [
           IconButton(
+            tooltip: 'MonkeyMux windows',
+            icon: const Icon(Icons.window_outlined),
+            onPressed: _openMonkeyMuxWindows,
+          ),
+          IconButton(
             tooltip: 'Session settings',
             icon: const Icon(Icons.tune),
             onPressed: session.status == AcpConnectionStatus.ready
@@ -755,6 +765,14 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         ),
       ),
     );
+  }
+
+  void _openMonkeyMuxWindows() {
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    unawaited(context.push<void>('/terminal/${widget.hostId}'));
   }
 
   void _leaveChat() {

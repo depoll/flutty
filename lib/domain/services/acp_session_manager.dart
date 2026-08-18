@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:collection/collection.dart';
@@ -474,6 +475,55 @@ class AcpSessionManager {
   /// Loads persisted recent sessions.
   Future<List<AcpRecentSessionRef>> loadRecentSessions() =>
       _recentSessions.list();
+
+  /// Loads host-scoped native sessions from both local recents and the remote
+  /// MonkeyMux bridge registry. Current helper metadata is persisted locally so
+  /// the same session remains navigable through transient SSH disconnects.
+  Future<List<AcpRecentSessionRef>> loadNavigableSessions(int hostId) async {
+    final local = (await _recentSessions.list())
+        .where((recent) => recent.hostId == hostId)
+        .toList(growable: true);
+    try {
+      final providers = await _providerService.listAllProviders();
+      final providerByLabel = <String, String>{
+        for (final provider in providers) provider.label: provider.id,
+      };
+      final remote = await _connector.listBridges(hostId);
+      for (final bridge in remote) {
+        final sessionId = bridge.sessionId;
+        final providerId =
+            bridge.providerId ?? providerByLabel[bridge.provider];
+        if (sessionId == null ||
+            sessionId.isEmpty ||
+            providerId == null ||
+            providerId.isEmpty) {
+          continue;
+        }
+        final recent = AcpRecentSessionRef(
+          hostId: hostId,
+          providerId: providerId,
+          bridgeId: bridge.id,
+          acpSessionId: sessionId,
+          cwd: bridge.cwd,
+          createdAt: bridge.startedAt,
+          lastActivityAt: bridge.lastActivity,
+        );
+        final index = local.indexWhere(
+          (candidate) => candidate.key.value == recent.key.value,
+        );
+        if (index >= 0) {
+          local[index] = recent;
+        } else {
+          local.add(recent);
+        }
+        await _recentSessions.record(recent);
+      }
+    } on Object {
+      // Local recents remain available while SSH/helper discovery is offline.
+    }
+    local.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
+    return List<AcpRecentSessionRef>.unmodifiable(local);
+  }
 
   /// Loads the persisted last-selected session key.
   Future<AcpSessionKey?> loadLastSelected() =>
@@ -1039,6 +1089,34 @@ class _BridgeAttachment {
   }
 }
 
+/// Maximum number of submitted prompts retained while another turn runs.
+const acpPromptQueueMaxCount = 16;
+
+/// Maximum encoded bytes retained across queued prompts for one session.
+const acpPromptQueueMaxBytes = acpJsonRpcDefaultMaxFrameBytes;
+
+/// Raised when a session's bounded local steering queue is full.
+class AcpPromptQueueFullException implements Exception {
+  /// Creates a queue-full failure.
+  const AcpPromptQueueFullException();
+
+  @override
+  String toString() => 'The agent prompt queue is full.';
+}
+
+class _QueuedAcpPrompt {
+  _QueuedAcpPrompt({
+    required this.content,
+    required this.localMessageId,
+    required this.encodedBytes,
+  });
+
+  final List<AcpContentBlock> content;
+  final String localMessageId;
+  final int encodedBytes;
+  final Completer<AcpPromptResult> completer = Completer<AcpPromptResult>();
+}
+
 /// Maximum retained entries for session-scoped lists (plan steps, available
 /// commands, config options) that a misbehaving agent could otherwise grow
 /// without bound. Oldest entries are dropped, keeping the most recent state.
@@ -1073,6 +1151,9 @@ class _SessionController {
   final DiagnosticsLogger _diagnostics;
 
   final AcpTimelineBuilder _timelineBuilder = AcpTimelineBuilder();
+  final Queue<_QueuedAcpPrompt> _promptQueue = Queue<_QueuedAcpPrompt>();
+  var _queuedPromptBytes = 0;
+  var _promptActive = false;
 
   StreamSubscription<AcpSessionNotification>? _updatesSub;
   StreamSubscription<List<cap.AcpPendingClientRequest>>? _capabilityRequestsSub;
@@ -1452,43 +1533,90 @@ class _SessionController {
     _manager._telemetry.permissionOutcome(outcome: 'write_rejected');
   }
 
-  Future<AcpPromptResult> prompt(List<AcpContentBlock> content) async {
+  Future<AcpPromptResult> prompt(List<AcpContentBlock> content) {
+    if (_disposed) {
+      return Future<AcpPromptResult>.error(
+        const AcpConnectionClosedException(),
+      );
+    }
     final snapshot = List<AcpContentBlock>.unmodifiable(content);
+    final encodedBytes = utf8
+        .encode(jsonEncode(snapshot.map((block) => block.toJson()).toList()))
+        .length;
+    final pendingCount = _promptQueue.length + (_promptActive ? 1 : 0);
+    if (pendingCount >= acpPromptQueueMaxCount ||
+        _queuedPromptBytes + encodedBytes > acpPromptQueueMaxBytes) {
+      return Future<AcpPromptResult>.error(const AcpPromptQueueFullException());
+    }
+
     final localMessageId = _timelineBuilder.appendLocalUserPrompt(snapshot);
-    final optimisticTimeline = _timelineBuilder.snapshot();
+    final queued = _QueuedAcpPrompt(
+      content: snapshot,
+      localMessageId: localMessageId,
+      encodedBytes: encodedBytes,
+    );
+    _promptQueue.addLast(queued);
+    _queuedPromptBytes += encodedBytes;
     _update(
       (s) => s.copyWith(
-        promptStatus: AcpPromptStatus.streaming,
         clearLastStopReason: true,
         lastActivityAt: _clock(),
-        timeline: optimisticTimeline,
+        timeline: _timelineBuilder.snapshot(),
       ),
     );
+    unawaited(_drainPromptQueue());
+    return queued.completer.future;
+  }
+
+  Future<void> _drainPromptQueue() async {
+    if (_promptActive || _disposed) {
+      return;
+    }
+    _promptActive = true;
     try {
-      final result = await attachment.client.prompt(
-        sessionId: _key.acpSessionId,
-        content: snapshot,
-      );
-      _update(
-        (s) => s.copyWith(
-          promptStatus: AcpPromptStatus.idle,
-          lastStopReason: result.stopReason,
-          lastActivityAt: _clock(),
-        ),
-      );
-      return result;
-    } on Object catch (error) {
-      final rolledBackTimeline = _timelineBuilder.removeLocalUserPrompt(
-        localMessageId,
-      );
-      _update(
-        (s) => s.copyWith(
-          promptStatus: AcpPromptStatus.idle,
-          error: _mapClientError(error),
-          timeline: rolledBackTimeline,
-        ),
-      );
-      rethrow;
+      while (_promptQueue.isNotEmpty && !_disposed) {
+        final queued = _promptQueue.removeFirst();
+        _queuedPromptBytes -= queued.encodedBytes;
+        _update(
+          (s) => s.copyWith(
+            promptStatus: AcpPromptStatus.streaming,
+            clearLastStopReason: true,
+            lastActivityAt: _clock(),
+          ),
+        );
+        try {
+          final result = await attachment.client.prompt(
+            sessionId: _key.acpSessionId,
+            content: queued.content,
+          );
+          _update(
+            (s) => s.copyWith(
+              promptStatus: AcpPromptStatus.idle,
+              lastStopReason: result.stopReason,
+              lastActivityAt: _clock(),
+            ),
+          );
+          if (!queued.completer.isCompleted) {
+            queued.completer.complete(result);
+          }
+        } on Object catch (error, stackTrace) {
+          final rolledBackTimeline = _timelineBuilder.removeLocalUserPrompt(
+            queued.localMessageId,
+          );
+          _update(
+            (s) => s.copyWith(
+              promptStatus: AcpPromptStatus.idle,
+              error: _mapClientError(error),
+              timeline: rolledBackTimeline,
+            ),
+          );
+          if (!queued.completer.isCompleted) {
+            queued.completer.completeError(error, stackTrace);
+          }
+        }
+      }
+    } finally {
+      _promptActive = false;
     }
   }
 
@@ -1874,6 +2002,13 @@ class _SessionController {
   Future<void> disposeLocal() async {
     if (_disposed) return;
     _disposed = true;
+    while (_promptQueue.isNotEmpty) {
+      final queued = _promptQueue.removeFirst();
+      if (!queued.completer.isCompleted) {
+        queued.completer.completeError(const AcpConnectionClosedException());
+      }
+    }
+    _queuedPromptBytes = 0;
     await _cancelSubscriptions();
     // Release the local lease exactly once (a no-op if already detached).
     // Permanent: this session is being explicitly stopped, deleted, or torn

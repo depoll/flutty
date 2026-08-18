@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:collection/collection.dart';
@@ -351,6 +352,7 @@ class AcpTimelineBuilder {
   bool _overflowed = false;
   int _droppedEntryCount = 0;
   int _nextLocalUserMessageId = 0;
+  final Queue<String> _pendingLocalUserMessageIds = Queue<String>();
   String? _pendingLocalUserMessageId;
   bool _suppressingUserEcho = false;
   String? _suppressedUserEchoMessageId;
@@ -373,9 +375,7 @@ class AcpTimelineBuilder {
     _totalBytes += approximateTimelineEntryBytes(entry);
     _entries.add(entry);
     _openMessageIndex = null;
-    _pendingLocalUserMessageId = messageId;
-    _suppressingUserEcho = false;
-    _suppressedUserEchoMessageId = null;
+    _pendingLocalUserMessageIds.addLast(messageId);
     _enforceLimits();
     return messageId;
   }
@@ -393,6 +393,7 @@ class AcpTimelineBuilder {
       _totalBytes -= approximateTimelineEntryBytes(_entries.removeAt(index));
       _rebuildIndexes();
     }
+    _pendingLocalUserMessageIds.removeWhere((id) => id == messageId);
     if (_pendingLocalUserMessageId == messageId) {
       _clearPendingUserEcho();
     }
@@ -436,17 +437,10 @@ class AcpTimelineBuilder {
     if (role == null) return;
     final messageId = update.messageId;
     final block = update.content;
-    if (role == AcpMessageRole.user && _pendingLocalUserMessageId != null) {
-      if (!_suppressingUserEcho) {
-        _suppressingUserEcho = true;
-        _suppressedUserEchoMessageId = messageId;
-        return;
-      }
-      if (_suppressedUserEchoMessageId == messageId) {
-        return;
-      }
-      _clearPendingUserEcho();
-    } else if (role != AcpMessageRole.user) {
+    if (role == AcpMessageRole.user && _shouldSuppressUserEcho(messageId)) {
+      return;
+    }
+    if (role != AcpMessageRole.user) {
       _clearPendingUserEcho();
     }
 
@@ -624,6 +618,25 @@ class AcpTimelineBuilder {
         )) {
       _clearPendingUserEcho();
     }
+  }
+
+  bool _shouldSuppressUserEcho(String? remoteMessageId) {
+    _pendingLocalUserMessageId ??= _pendingLocalUserMessageIds.isEmpty
+        ? null
+        : _pendingLocalUserMessageIds.removeFirst();
+    if (_pendingLocalUserMessageId == null) {
+      return false;
+    }
+    if (!_suppressingUserEcho) {
+      _suppressingUserEcho = true;
+      _suppressedUserEchoMessageId = remoteMessageId;
+      return true;
+    }
+    if (_suppressedUserEchoMessageId == remoteMessageId) {
+      return true;
+    }
+    _clearPendingUserEcho();
+    return _shouldSuppressUserEcho(remoteMessageId);
   }
 
   void _clearPendingUserEcho() {

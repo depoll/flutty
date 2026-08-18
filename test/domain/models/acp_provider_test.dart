@@ -312,15 +312,17 @@ void main() {
   });
 
   group('built-in providers', () {
-    test('acpBuiltinProviders contains Copilot CLI and OpenCode', () {
-      expect(acpBuiltinProviders, hasLength(2));
+    test('acpBuiltinProviders contains Copilot CLI, OpenCode, and Pi', () {
+      expect(acpBuiltinProviders, hasLength(3));
       expect(acpBuiltinProviders, contains(acpCopilotCliProvider));
       expect(acpBuiltinProviders, contains(acpOpenCodeProvider));
+      expect(acpBuiltinProviders, contains(acpPiProvider));
     });
 
     test('built-in provider IDs are stable and reserved', () {
       expect(acpCopilotCliProvider.id, 'builtin:copilot-cli');
       expect(acpOpenCodeProvider.id, 'builtin:opencode');
+      expect(acpPiProvider.id, 'builtin:pi-acp');
       for (final provider in acpBuiltinProviders) {
         expect(
           provider.id.startsWith(acpCustomProviderReservedIdPrefix),
@@ -347,11 +349,17 @@ void main() {
         acpOpenCodeProvider.executableProbe.candidateExecutableNames,
         contains('opencode'),
       );
+      expect(
+        acpPiProvider.executableProbe.candidateExecutableNames,
+        contains('pi-acp'),
+      );
+      expect(acpPiProvider.launchCommand.argv, ['pi-acp']);
     });
 
     test('built-in providers expose terminal-auth command metadata', () {
       expect(acpCopilotCliProvider.terminalAuthCommand, isNotNull);
       expect(acpOpenCodeProvider.terminalAuthCommand, isNotNull);
+      expect(acpPiProvider.terminalAuthCommand, isNull);
     });
 
     test('Copilot CLI terminal auth explicitly runs "copilot login"', () {

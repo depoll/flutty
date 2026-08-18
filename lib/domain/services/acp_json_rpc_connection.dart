@@ -181,13 +181,17 @@ final class _PendingResponse {
   final Timer timer;
 }
 
+/// Default bounded ACP JSON-RPC frame size, large enough for a 10 MiB image
+/// after base64 expansion and JSON envelope overhead.
+const acpJsonRpcDefaultMaxFrameBytes = 20 * 1024 * 1024;
+
 /// Reusable NDJSON JSON-RPC 2.0 connection for ACP.
 final class AcpJsonRpcConnection {
   /// Starts a connection over [transport].
   AcpJsonRpcConnection({
     required AcpTransport transport,
     this.defaultRequestTimeout = const Duration(seconds: 30),
-    this.maxFrameSize = 1024 * 1024,
+    this.maxFrameSize = acpJsonRpcDefaultMaxFrameBytes,
     AcpRequestIdFactory? requestIdFactory,
   }) : _transport = transport,
        _requestIdFactory = requestIdFactory ?? _newUuid {
@@ -458,6 +462,13 @@ final class AcpJsonRpcConnection {
   Future<void> _writeMessage(AcpJsonMap message) {
     _ensureOpen();
     final bytes = utf8.encode('${jsonEncode(message)}\n');
+    if (bytes.length > maxFrameSize) {
+      return Future<void>.error(
+        AcpProtocolException(
+          'ACP frame exceeds maximum size of $maxFrameSize bytes',
+        ),
+      );
+    }
     final operation = _writeTail.then((_) => _transport.write(bytes));
     _writeTail = operation.then<void>(
       (_) {},
