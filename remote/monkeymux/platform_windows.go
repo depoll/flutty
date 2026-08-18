@@ -862,14 +862,15 @@ func defaultShellPath() string {
 }
 
 func shellCommand(shell string) *exec.Cmd {
-	return exec.Command(shell)
+	// The shell path is explicit user-owned MONKEYMUX_SHELL/ComSpec configuration.
+	return exec.Command(shell) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 }
 
 func shellCommandForScript(shell string, command string) *exec.Cmd {
 	if isCmdShell(shell) {
-		return exec.Command(shell, "/c", command)
+		return exec.Command(shell, "/c", command) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	}
-	return exec.Command(shell, "-NoLogo", "-Command", command)
+	return exec.Command(shell, "-NoLogo", "-Command", command) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 }
 
 func isCmdShell(shell string) bool {

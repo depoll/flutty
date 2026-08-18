@@ -82,12 +82,21 @@ record even when large image records appear earlier in the JSONL. This remains
 reliable when Pi creates the JSONL only after its first assistant response or
 several restored processes started at once. A validated exact identity is kept
 on the live window for later helper upgrades, including unnamed sessions on
-Windows where process arguments cannot recover it. MonkeyMux otherwise
-correlates a unique session-header creation time with the live process start
-and relaunches a matched session by its exact file path. A later unowned write in the same
-working directory marks that match ambiguous (including `/new` and `/resume`
-rotation), so it launches fresh rather than risking the wrong conversation. Plain
-working-directory fallback is used only for one window and one unused session. `--session-dir`,
+Windows where process arguments cannot recover it. For unnamed same-directory
+windows inherited from an older helper, MonkeyMux pairs a unique JSONL write
+time with that window's most recent terminal output; overlapping timestamps
+stay ambiguous. MonkeyMux otherwise correlates a unique session-header creation
+time with the live process start and relaunches a matched session by its exact
+file path. A later unowned write in the same working directory marks that match
+ambiguous (including `/new` and `/resume` rotation), so it launches fresh rather
+than risking the wrong conversation. Plain working-directory fallback is used
+only for one live window and one unused session updated during that foreground
+process. Across Copilot, Codex, OpenCode, Claude Code, Gemini, Antigravity, and
+Cursor Agent, argv, open-file, or live-lock identity wins; cwd/history fallback
+only accepts state updated during that foreground process. A carried resume ID
+is revalidated because a failed resume may have fallen back to a fresh agent.
+Stale or ambiguous evidence leaves the restored window fresh instead of
+injecting an older conversation. `--session-dir`,
 environment, and global/project `settings.json` session directories are honored,
 while nested child-agent stores are excluded. The server inherits the environment from
 the shell that launched it exactly, so profile-managed values such as `PATH`

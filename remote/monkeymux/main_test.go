@@ -10081,6 +10081,93 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 	}
 }
 
+func TestAgentProcessesByPaneSelectsUniqueShallowestProcess(t *testing.T) {
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude --resume outer"},
+		300: {pid: 300, ppid: 200, comm: "claude", args: "claude --resume nested"},
+	}
+	got := agentProcessesByPane(processes, map[int]struct{}{100: {}}, "claude")
+	if got[100].pid != 200 {
+		t.Fatalf("selected process = %#v, want shallow pid 200", got)
+	}
+	processes[201] = processInfo{pid: 201, ppid: 100, comm: "claude", args: "claude --resume tie"}
+	if got := agentProcessesByPane(processes, map[int]struct{}{100: {}}, "claude"); len(got) != 0 {
+		t.Fatalf("same-depth process tie = %#v, want fail closed", got)
+	}
+}
+
+func TestDiscoverCodexSessionIDsReservesArgvOwnedSiblingSession(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
+	})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "123e4567-e89b-12d3-a456-426614174055"
+	rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08")
+	if err := os.MkdirAll(rolloutDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(rolloutDir, "rollout-2026-08-18T00-00-00-"+sessionID+".jsonl")
+	if err := os.WriteFile(path, []byte(`{"cwd":"/work/project","id":"`+sessionID+`"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(int) string { return "/work/project" }
+	processStartedAtForMetadata = func(int) time.Time { return time.Now().Add(-time.Minute) }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		101: {pid: 101, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "codex", args: "codex resume " + sessionID},
+		201: {pid: 201, ppid: 101, comm: "codex", args: "codex"},
+	}
+
+	got := discoverCodexSessionIDs(processes, map[int]struct{}{100: {}, 101: {}})
+	if got[100] != sessionID || got[101] != "" {
+		t.Fatalf("Codex sibling assignments = %#v, want only argv-owned pane", got)
+	}
+}
+
+func TestDiscoverClaudeSessionIDsReservesArgvOwnedSiblingSession(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
+	})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "de4e84a3-cf16-4cc2-8ba7-34587e984d4a"
+	projectDir := filepath.Join(home, ".claude", "projects", "-work-project")
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, sessionID+".jsonl"), []byte(`{"cwd":"/work/project","sessionId":"`+sessionID+`"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(int) string { return "/work/project" }
+	processStartedAtForMetadata = func(int) time.Time { return time.Now().Add(-time.Minute) }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		101: {pid: 101, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude --resume " + sessionID},
+		201: {pid: 201, ppid: 101, comm: "claude", args: "claude"},
+	}
+
+	got := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}, 101: {}})
+	if got[100] != sessionID || got[101] != "" {
+		t.Fatalf("Claude sibling assignments = %#v, want only argv-owned pane", got)
+	}
+}
+
 func TestDiscoverCodexSessionIDsUsesOpenRolloutFile(t *testing.T) {
 	originalOpenFiles := processOpenFilePathsForMetadata
 	originalWorkingDirectory := processWorkingDirectoryForMetadata
@@ -10099,7 +10186,9 @@ func TestDiscoverCodexSessionIDsUsesOpenRolloutFile(t *testing.T) {
 		}
 	}
 	processWorkingDirectoryForMetadata = func(pid int) string {
-		t.Fatalf("processWorkingDirectoryForMetadata(%d) was called; open file match should win", pid)
+		if pid == 200 {
+			return "/work/project"
+		}
 		return ""
 	}
 	processes := map[int]processInfo{
@@ -10123,10 +10212,12 @@ func TestDiscoverCodexSessionIDsFallsBackToRecentRolloutForCwd(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	originalOpenFiles := processOpenFilePathsForMetadata
 	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
 	t.Cleanup(func() {
 		_ = os.Setenv("HOME", originalHome)
 		processOpenFilePathsForMetadata = originalOpenFiles
 		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
 	})
 
 	home := t.TempDir()
@@ -10156,12 +10247,23 @@ func TestDiscoverCodexSessionIDsFallsBackToRecentRolloutForCwd(t *testing.T) {
 		}
 		return ""
 	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return time.Now().Add(-time.Minute)
+		}
+		return time.Time{}
+	}
 	processes := map[int]processInfo{
 		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
 		200: {pid: 200, ppid: 100, comm: "codex", args: "codex"},
 	}
+	processWorkingDirectoryForMetadata = func(int) string { return "" }
 
-	sessions := discoverCodexSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverCodexSessionIDs(
+		processes,
+		map[int]struct{}{100: {}},
+		map[int]string{100: "/work/project"},
+	)
 
 	if got := sessions[100]; got != sessionID {
 		t.Fatalf("codex session id = %q, want %q", got, sessionID)
@@ -10224,6 +10326,22 @@ func TestDiscoverCodexSessionIDsSkipsAmbiguousCwdFallback(t *testing.T) {
 	}
 }
 
+func TestUnixDatabaseTimeSupportsCommonPrecisions(t *testing.T) {
+	want := time.Unix(1_787_030_000, 0)
+	for name, value := range map[string]string{
+		"seconds":      "1787030000",
+		"milliseconds": "1787030000000",
+		"microseconds": "1787030000000000",
+		"nanoseconds":  "1787030000000000000",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := unixDatabaseTime(value); !got.Equal(want) {
+				t.Fatalf("unixDatabaseTime(%s) = %s, want %s", value, got, want)
+			}
+		})
+	}
+}
+
 func TestDiscoverOpenCodeSessionIDsUsesProcessArgs(t *testing.T) {
 	originalReader := openCodeSessionEntriesReader
 	originalWorkingDirectory := processWorkingDirectoryForMetadata
@@ -10252,14 +10370,17 @@ func TestDiscoverOpenCodeSessionIDsUsesProcessArgs(t *testing.T) {
 func TestDiscoverOpenCodeSessionIDsUsesWorkingDirectory(t *testing.T) {
 	originalReader := openCodeSessionEntriesReader
 	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
 	t.Cleanup(func() {
 		openCodeSessionEntriesReader = originalReader
 		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
 	})
+	now := time.Now()
 	openCodeSessionEntriesReader = func() []openCodeSessionEntry {
 		return []openCodeSessionEntry{
-			{sessionID: "ses_new", directory: "/work/project"},
-			{sessionID: "ses_other", directory: "/tmp/other"},
+			{sessionID: "ses_new", directory: "/work/project", updatedAt: now},
+			{sessionID: "ses_other", directory: "/tmp/other", updatedAt: now},
 		}
 	}
 	processWorkingDirectoryForMetadata = func(pid int) string {
@@ -10268,12 +10389,23 @@ func TestDiscoverOpenCodeSessionIDsUsesWorkingDirectory(t *testing.T) {
 		}
 		return ""
 	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return now.Add(-time.Minute)
+		}
+		return time.Time{}
+	}
 	processes := map[int]processInfo{
 		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
 		200: {pid: 200, ppid: 100, comm: "opencode", args: "opencode"},
 	}
 
-	sessions := discoverOpenCodeSessionIDs(processes, map[int]struct{}{100: {}})
+	processWorkingDirectoryForMetadata = func(int) string { return "" }
+	sessions := discoverOpenCodeSessionIDs(
+		processes,
+		map[int]struct{}{100: {}},
+		map[int]string{100: "/work/project"},
+	)
 
 	if got := sessions[100]; got != "ses_new" {
 		t.Fatalf("opencode session id = %q, want ses_new", got)
@@ -10333,7 +10465,9 @@ func TestDiscoverClaudeSessionIDsUsesOpenProjectFile(t *testing.T) {
 		}
 	}
 	processWorkingDirectoryForMetadata = func(pid int) string {
-		t.Fatalf("processWorkingDirectoryForMetadata(%d) called; open file match should win", pid)
+		if pid == 200 {
+			return "/work/project"
+		}
 		return ""
 	}
 	processes := map[int]processInfo{
@@ -10351,9 +10485,11 @@ func TestDiscoverClaudeSessionIDsUsesOpenProjectFile(t *testing.T) {
 func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T) {
 	originalOpenFiles := processOpenFilePathsForMetadata
 	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
 	t.Cleanup(func() {
 		processOpenFilePathsForMetadata = originalOpenFiles
 		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
 	})
 
 	home := t.TempDir()
@@ -10377,6 +10513,12 @@ func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T
 		}
 		return ""
 	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return time.Now().Add(-time.Minute)
+		}
+		return time.Time{}
+	}
 	processes := map[int]processInfo{
 		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
 		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
@@ -10386,6 +10528,61 @@ func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T
 
 	if got := sessions[100]; got != sessionID {
 		t.Fatalf("claude session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverClaudeSessionIDsDoesNotResumeSessionFromBeforeFreshProcess(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "a69d705a-1822-49de-83ba-c86bd51932bb"
+	projectDir := filepath.Join(home, ".claude", "projects", "-work-project")
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(projectDir, sessionID+".jsonl")
+	if err := os.WriteFile(
+		sessionPath,
+		[]byte(`{"type":"user","cwd":"/work/project","sessionId":"`+sessionID+`"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processStarted := time.Now().UTC().Truncate(time.Second)
+	oldActivity := processStarted.Add(-time.Hour)
+	if err := os.Chtimes(sessionPath, oldActivity, oldActivity); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return processStarted
+		}
+		return time.Time{}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
+	}
+
+	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if len(sessions) != 0 {
+		t.Fatalf("fresh Claude process inherited stale sessions %#v, want none", sessions)
 	}
 }
 
@@ -10417,7 +10614,9 @@ func TestDiscoverGeminiSessionIDsUsesOpenChatFile(t *testing.T) {
 		return []string{chatPath}
 	}
 	processWorkingDirectoryForMetadata = func(pid int) string {
-		t.Fatalf("processWorkingDirectoryForMetadata(%d) called; open file match should win", pid)
+		if pid == 200 {
+			return "/work/project"
+		}
 		return ""
 	}
 	processes := map[int]processInfo{
@@ -10435,9 +10634,11 @@ func TestDiscoverGeminiSessionIDsUsesOpenChatFile(t *testing.T) {
 func TestDiscoverGeminiSessionIDsFallsBackToRecentChatForCwd(t *testing.T) {
 	originalOpenFiles := processOpenFilePathsForMetadata
 	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
 	t.Cleanup(func() {
 		processOpenFilePathsForMetadata = originalOpenFiles
 		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
 	})
 
 	home := t.TempDir()
@@ -10460,6 +10661,12 @@ func TestDiscoverGeminiSessionIDsFallsBackToRecentChatForCwd(t *testing.T) {
 			return "/work/project"
 		}
 		return ""
+	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return time.Now().Add(-time.Minute)
+		}
+		return time.Time{}
 	}
 	processes := map[int]processInfo{
 		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
@@ -10510,6 +10717,68 @@ func TestDiscoverGeminiSessionIDsSkipsSubagentChats(t *testing.T) {
 
 	if len(sessions) != 0 {
 		t.Fatalf("gemini sessions = %#v, want none for subagent chats", sessions)
+	}
+}
+
+func TestAgentStoreFallbacksRejectSessionsFromBeforeProcess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "project")
+	processStarted := time.Now().UTC().Truncate(time.Second)
+	stale := processStarted.Add(-time.Hour)
+
+	if got := openCodeSessionIDForWorkingDirectory(
+		[]openCodeSessionEntry{{sessionID: "stale-opencode", directory: project, updatedAt: stale}},
+		project,
+		processStarted,
+	); got != "" {
+		t.Fatalf("fresh OpenCode process inherited stale session %q", got)
+	}
+	if got := antigravitySessionIDForWorkspace(
+		[]antigravityHistoryEntry{{conversationID: "stale-antigravity", workspace: project, updatedAt: stale}},
+		project,
+		processStarted,
+	); got != "" {
+		t.Fatalf("fresh Antigravity process inherited stale session %q", got)
+	}
+	if got := cursorSessionIDForWorkspace(
+		[]cursorChatEntry{{chatID: "stale-cursor", cwd: project, updatedAt: stale.UnixMilli()}},
+		project,
+		processStarted,
+	); got != "" {
+		t.Fatalf("fresh Cursor process inherited stale session %q", got)
+	}
+
+	codexID := "123e4567-e89b-12d3-a456-426614174099"
+	codexDir := filepath.Join(home, ".codex", "sessions", "2026", "08")
+	if err := os.MkdirAll(codexDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	codexPath := filepath.Join(codexDir, "rollout-2026-08-18T00-00-00-"+codexID+".jsonl")
+	if err := os.WriteFile(codexPath, []byte(`{"cwd":`+fmt.Sprintf("%q", project)+`,"id":"`+codexID+`"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(codexPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if got := codexRecentSessionIDForWorkingDirectory(project, processStarted); got != "" {
+		t.Fatalf("fresh Codex process inherited stale session %q", got)
+	}
+
+	geminiDir := filepath.Join(home, ".gemini", "tmp", "project", "chats")
+	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	geminiPath := filepath.Join(geminiDir, "session-stale.json")
+	geminiData := fmt.Sprintf(`{"sessionId":"stale-gemini","kind":"main","directories":[%q]}`, project)
+	if err := os.WriteFile(geminiPath, []byte(geminiData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(geminiPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if got := geminiRecentSessionIDForWorkingDirectory(project, processStarted); got != "" {
+		t.Fatalf("fresh Gemini process inherited stale session %q", got)
 	}
 }
 
@@ -10746,6 +11015,29 @@ func TestCreateWindowOptionsForRestoreDropsIncompleteTrailingAPC(t *testing.T) {
 	}
 }
 
+func TestEnrichRestoreClearsUnvalidatedCarriedAgentSessions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	restore := &serverRestore{Windows: []restoreWindowState{
+		{Name: "Copilot CLI", AgentTool: "copilot", AgentSessionID: "stale-copilot"},
+		{Name: "Codex", AgentTool: "codex", AgentSessionID: "stale-codex"},
+		{Name: "OpenCode", AgentTool: "opencode", AgentSessionID: "stale-opencode"},
+		{Name: "Claude Code", AgentTool: "claude", AgentSessionID: "stale-claude"},
+		{Name: "Gemini", AgentTool: "gemini", AgentSessionID: "stale-gemini"},
+		{Name: "Antigravity", AgentTool: "antigravity", AgentSessionID: "stale-antigravity"},
+		{Name: "Cursor Agent", AgentTool: "cursor-agent", AgentSessionID: "stale-cursor"},
+		{Name: "Pi", AgentTool: "pi", AgentSessionID: "stale-pi"},
+	}}
+
+	enrichRestoreWithAgentSessionIDs(restore)
+
+	for i, window := range restore.Windows {
+		if window.AgentSessionID != "" {
+			t.Fatalf("window %d (%s) kept unvalidated session %q", i, window.AgentTool, window.AgentSessionID)
+		}
+	}
+}
+
 func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
 	state := restoreWindowState{
 		Name:           "Copilot CLI",
@@ -10770,6 +11062,25 @@ func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
 }
 
 func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	originalProcessTable := processTableForMetadata
+	t.Cleanup(func() {
+		processStartedAtForMetadata = originalProcessStart
+		processTableForMetadata = originalProcessTable
+	})
+	now := time.Now().UTC().Truncate(time.Second)
+	processTableForMetadata = func() map[int]processInfo {
+		return map[int]processInfo{
+			200: {pid: 200, ppid: 1, comm: "cmd.exe", args: "cmd.exe"},
+			201: {pid: 201, ppid: 200, comm: "agy", args: "agy"},
+		}
+	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 201 {
+			return now.Add(-time.Minute)
+		}
+		return time.Time{}
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	project := filepath.Join(home, "project")
@@ -10778,9 +11089,9 @@ func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	history := strings.Join([]string{
-		`{"conversationId":"old-session","workspace":"` + project + `","display":"Old"}`,
-		`{"conversationId":"new-session","workspace":"` + project + `","display":"New"}`,
-		`{"conversationId":"other-session","workspace":"/tmp/other","display":"Other"}`,
+		fmt.Sprintf(`{"conversationId":"old-session","workspace":%q,"timestamp":%d}`, project, now.Add(-30*time.Second).UnixMilli()),
+		fmt.Sprintf(`{"conversationId":"new-session","workspace":%q,"timestamp":%d}`, project, now.UnixMilli()),
+		fmt.Sprintf(`{"conversationId":"other-session","workspace":"/tmp/other","timestamp":%d}`, now.UnixMilli()),
 	}, "\n")
 	if err := os.WriteFile(
 		filepath.Join(historyDir, "history.jsonl"),
@@ -10795,6 +11106,7 @@ func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
 				Name:           "Antigravity",
 				Cwd:            project,
 				CurrentCommand: "agy",
+				PanePid:        200,
 				AgentTool:      "antigravity",
 			},
 		},
@@ -10808,6 +11120,56 @@ func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
 	options := createWindowOptionsForRestore(restore.Windows[0], true)
 	if got := options.command; got != "agy --dangerously-skip-permissions --conversation 'new-session' || agy --dangerously-skip-permissions" {
 		t.Fatalf("command = %q, want Antigravity resume command with fresh fallback", got)
+	}
+}
+
+func TestEnrichRestoreAntigravityRejectsOtherWorkspaceFileMtime(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	originalProcessTable := processTableForMetadata
+	t.Cleanup(func() {
+		processStartedAtForMetadata = originalProcessStart
+		processTableForMetadata = originalProcessTable
+	})
+	processTableForMetadata = func() map[int]processInfo {
+		return map[int]processInfo{
+			200: {pid: 200, ppid: 1, comm: "cmd.exe", args: "cmd.exe"},
+			201: {pid: 201, ppid: 200, comm: "agy", args: "agy"},
+		}
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "project")
+	now := time.Now().UTC().Truncate(time.Second)
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 201 {
+			return now.Add(-time.Minute)
+		}
+		return time.Time{}
+	}
+	historyDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(historyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	history := fmt.Sprintf(
+		"{\"conversationId\":\"stale-project\",\"workspace\":%q,\"timestamp\":%d}\n"+
+			"{\"conversationId\":\"current-other\",\"workspace\":\"/tmp/other\",\"timestamp\":%d}\n",
+		project, now.Add(-time.Hour).UnixMilli(), now.UnixMilli(),
+	)
+	path := filepath.Join(historyDir, "history.jsonl")
+	if err := os.WriteFile(path, []byte(history), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		Name: "Antigravity", Cwd: project, CurrentCommand: "agy", PanePid: 200, AgentTool: "antigravity",
+	}}}
+
+	enrichRestoreWithAgentSessionIDs(restore)
+
+	if got := restore.Windows[0].AgentSessionID; got != "" {
+		t.Fatalf("fresh Antigravity pane inherited stale session %q", got)
 	}
 }
 
@@ -10843,6 +11205,25 @@ func TestCursorAgentToolMapping(t *testing.T) {
 }
 
 func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	originalProcessTable := processTableForMetadata
+	t.Cleanup(func() {
+		processStartedAtForMetadata = originalProcessStart
+		processTableForMetadata = originalProcessTable
+	})
+	now := time.Now()
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 201 {
+			return now.Add(-time.Minute)
+		}
+		return time.Time{}
+	}
+	processTableForMetadata = func() map[int]processInfo {
+		return map[int]processInfo{
+			200: {pid: 200, ppid: 1, comm: "cmd.exe", args: "cmd.exe"},
+			201: {pid: 201, ppid: 200, comm: "cursor-agent", args: "cursor-agent"},
+		}
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	project := filepath.Join(home, "project")
@@ -10866,9 +11247,9 @@ func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
 		}
 	}
 
-	writeChat("old-chat", project, 1000)
-	writeChat("new-chat", project, 2000)
-	writeChat("other-chat", "/tmp/other", 3000)
+	writeChat("old-chat", project, now.Add(-30*time.Second).UnixMilli())
+	writeChat("new-chat", project, now.UnixMilli())
+	writeChat("other-chat", "/tmp/other", now.Add(time.Second).UnixMilli())
 
 	restore := &serverRestore{
 		Windows: []restoreWindowState{
@@ -10876,6 +11257,7 @@ func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
 				Name:           "Cursor Agent",
 				Cwd:            project,
 				CurrentCommand: "cursor-agent",
+				PanePid:        200,
 				AgentTool:      "cursor-agent",
 			},
 		},
