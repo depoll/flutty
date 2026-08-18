@@ -3,4 +3,4 @@ What's new in 0.4.1
 - Launch or resume Grok Build from the same project-scoped agent picker used for your other coding tools.
 - Expanded terminal integration lets compatible tools report progress, notifications, colours, and command boundaries without cluttering the prompt.
 - Touch scrolling is smoother and more predictable in full-screen apps, image-heavy output, and long-running sessions.
-- Android keyboard controls, bracketed attachment pastes, and shell completion updates are now more reliable.
+- Bracketed attachment pastes and shell completion updates are now more reliable.
