@@ -709,6 +709,22 @@ func TestDiscoverPiSessionsDeclinesOverlappingProcessStarts(t *testing.T) {
 	}
 }
 
+func TestPiProcessesByPaneRejectsMinimumDepthTie(t *testing.T) {
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi --session first"},
+		201: {pid: 201, ppid: 100, comm: "pi", args: "pi --session second"},
+	}
+	if got := piProcessesByPane(processes, map[int]struct{}{100: {}}, map[int]struct{}{100: {}}); len(got) != 0 {
+		t.Fatalf("same-depth Pi process tie = %#v, want fail closed", got)
+	}
+	delete(processes, 201)
+	processes[300] = processInfo{pid: 300, ppid: 200, comm: "pi", args: "pi --session nested"}
+	if got := piProcessesByPane(processes, map[int]struct{}{100: {}}, map[int]struct{}{100: {}}); got[100].pid != 200 {
+		t.Fatalf("Pi process selection = %#v, want shallow pid 200", got)
+	}
+}
+
 func TestDiscoverPiSessionsUsesLiveOpenFileAndSkipsNestedPiProcess(t *testing.T) {
 	originalOpenFiles := processOpenFilePathsForMetadata
 	t.Cleanup(func() { processOpenFilePathsForMetadata = originalOpenFiles })

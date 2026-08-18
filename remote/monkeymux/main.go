@@ -3845,6 +3845,7 @@ func piProcessesByPane(
 ) map[int]processInfo {
 	selected := map[int]processInfo{}
 	depths := map[int]int{}
+	minimumDepthCount := map[int]int{}
 	for _, process := range processes {
 		panePid := ancestorPanePID(processes, process.pid, panePids)
 		if panePid <= 0 {
@@ -3860,11 +3861,21 @@ func piProcessesByPane(
 		if depth < 0 {
 			continue
 		}
-		if prior, ok := depths[panePid]; ok && prior <= depth {
+		prior, exists := depths[panePid]
+		if !exists || depth < prior {
+			selected[panePid] = process
+			depths[panePid] = depth
+			minimumDepthCount[panePid] = 1
 			continue
 		}
-		selected[panePid] = process
-		depths[panePid] = depth
+		if depth == prior {
+			minimumDepthCount[panePid]++
+		}
+	}
+	for panePid, count := range minimumDepthCount {
+		if count != 1 {
+			delete(selected, panePid)
+		}
 	}
 	return selected
 }
