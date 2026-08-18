@@ -242,6 +242,31 @@ bool isPreviewableImageFileName(String filename) {
 bool isSvgFileName(String filename) =>
     path.extension(filename).toLowerCase() == '.svg';
 
+/// Returns the best-effort MIME type for a remote file name.
+///
+/// Only types already recognized by the SFTP preview helpers are inferred.
+@visibleForTesting
+String? inferRemoteFileMimeType(String filename) {
+  final extension = path.extension(filename).toLowerCase();
+  switch (extension) {
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.bmp':
+      return 'image/bmp';
+    case '.svg':
+      return 'image/svg+xml';
+    default:
+      return remoteVideoMimeTypeForFileName(filename);
+  }
+}
+
 /// Whether the file name should be previewable as a video.
 @visibleForTesting
 bool isPreviewableVideoFileName(String filename) {
@@ -516,6 +541,215 @@ Widget buildRemoteVideoPreviewErrorForTesting({
   initialError: errorMessage,
 );
 
+/// Immutable metadata for a remote file selected from SFTP.
+///
+/// Picker results preserve the order in which the user selected them.
+@immutable
+class RemoteFileSelection {
+  /// Creates a [RemoteFileSelection].
+  const RemoteFileSelection({
+    required this.remotePath,
+    required this.displayName,
+    this.sizeBytes,
+    this.mimeType,
+  });
+
+  /// Absolute remote path reported by SFTP.
+  final String remotePath;
+
+  /// File name shown to the user.
+  final String displayName;
+
+  /// File size in bytes when the remote listing reports it.
+  final int? sizeBytes;
+
+  /// Best-effort MIME type inferred from the file name.
+  final String? mimeType;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RemoteFileSelection &&
+          other.remotePath == remotePath &&
+          other.displayName == displayName &&
+          other.sizeBytes == sizeBytes &&
+          other.mimeType == mimeType;
+
+  @override
+  int get hashCode => Object.hash(remotePath, displayName, sizeBytes, mimeType);
+}
+
+/// Returns null when a remote file can be selected, or a short user-facing
+/// reason when it should remain visible but unavailable.
+typedef RemoteFileSelectionAvailability =
+    String? Function(RemoteFileSelection file);
+
+/// Configures SFTP remote-file selection mode.
+///
+/// When [allowMultiple] is false, the picker behaves as single selection. When
+/// [allowMultiple] is true, [maxSelectionCount] can cap the number of selected
+/// files. Use [selectionAvailability] to keep files visible while explaining
+/// why a file is unavailable.
+@immutable
+class RemoteFilePickerConstraints {
+  /// Creates [RemoteFilePickerConstraints].
+  const RemoteFilePickerConstraints({
+    this.allowMultiple = false,
+    this.maxSelectionCount,
+    this.selectionAvailability,
+  }) : assert(
+         maxSelectionCount == null || maxSelectionCount > 0,
+         'maxSelectionCount must be greater than zero when provided.',
+       ),
+       assert(
+         allowMultiple || maxSelectionCount == null || maxSelectionCount == 1,
+         'Single selection only supports a maximum count of 1.',
+       );
+
+  /// Whether the picker can keep more than one file selected at a time.
+  final bool allowMultiple;
+
+  /// Maximum selected file count when [allowMultiple] is true.
+  final int? maxSelectionCount;
+
+  /// Optional availability check for each listed remote file.
+  ///
+  /// Return null to allow selection, or a short explanation to keep the file
+  /// visible but disabled.
+  final RemoteFileSelectionAvailability? selectionAvailability;
+}
+
+/// Toggles a remote file selection while preserving selection order.
+@visibleForTesting
+List<RemoteFileSelection> toggleRemoteFileSelection({
+  required List<RemoteFileSelection> currentSelection,
+  required RemoteFileSelection file,
+  required bool allowMultiple,
+}) {
+  final nextSelection = List<RemoteFileSelection>.from(currentSelection);
+  final existingIndex = nextSelection.indexWhere(
+    (entry) => entry.remotePath == file.remotePath,
+  );
+  if (existingIndex >= 0) {
+    nextSelection.removeAt(existingIndex);
+    return nextSelection;
+  }
+  if (!allowMultiple) {
+    return [file];
+  }
+  nextSelection.add(file);
+  return nextSelection;
+}
+
+/// Describes why a remote file is unavailable for selection.
+@visibleForTesting
+String? resolveRemoteFileSelectionDisabledReason({
+  required RemoteFilePickerConstraints constraints,
+  required List<RemoteFileSelection> currentSelection,
+  required RemoteFileSelection candidate,
+}) {
+  final customReason = constraints.selectionAvailability?.call(candidate);
+  if (customReason != null) {
+    return customReason;
+  }
+
+  if (!constraints.allowMultiple) {
+    return null;
+  }
+
+  final maxSelectionCount = constraints.maxSelectionCount;
+  final isSelected = currentSelection.any(
+    (entry) => entry.remotePath == candidate.remotePath,
+  );
+  if (!isSelected &&
+      maxSelectionCount != null &&
+      currentSelection.length >= maxSelectionCount) {
+    return maxSelectionCount == 1
+        ? 'You can select up to 1 file.'
+        : 'You can select up to $maxSelectionCount files.';
+  }
+
+  return null;
+}
+
+/// Builds the spoken label for a remote-file selection row.
+@visibleForTesting
+String remoteFileSelectionSemanticsLabel({
+  required bool isDirectory,
+  required String fileName,
+  required bool isSelected,
+  String? disabledReason,
+}) {
+  if (isDirectory) {
+    return 'Open folder $fileName';
+  }
+  if (disabledReason != null) {
+    return 'Unavailable remote file $fileName';
+  }
+  if (isSelected) {
+    return 'Deselect remote file $fileName';
+  }
+  return 'Select remote file $fileName';
+}
+
+/// Builds the spoken hint for a remote-file selection row.
+@visibleForTesting
+String remoteFileSelectionSemanticsHint({
+  required bool isDirectory,
+  required bool isSelected,
+  String? disabledReason,
+}) {
+  if (isDirectory) {
+    return 'Opens this folder.';
+  }
+  if (disabledReason != null) {
+    return disabledReason;
+  }
+  if (isSelected) {
+    return 'Removes this file from the current selection.';
+  }
+  return 'Adds this file to the current selection.';
+}
+
+/// Builds the touch tooltip for a remote-file selection row.
+@visibleForTesting
+String? remoteFileSelectionTooltip({
+  required bool isDirectory,
+  required String fileName,
+  required bool isSelected,
+  String? disabledReason,
+}) {
+  if (isDirectory) {
+    return null;
+  }
+  if (disabledReason != null) {
+    return '$fileName is unavailable: $disabledReason';
+  }
+  return isSelected ? 'Deselect $fileName' : 'Select $fileName';
+}
+
+/// Pushes the SFTP browser in remote-file selection mode.
+///
+/// Returns null when the picker is cancelled. Otherwise the returned list
+/// preserves the order in which the user selected files.
+Future<List<RemoteFileSelection>?> showRemoteFilePicker({
+  required BuildContext context,
+  required int hostId,
+  int? connectionId,
+  String? startDirectory,
+  RemoteFilePickerConstraints constraints = const RemoteFilePickerConstraints(),
+}) => Navigator.of(context).push<List<RemoteFileSelection>>(
+  MaterialPageRoute(
+    builder: (context) => SftpScreen(
+      hostId: hostId,
+      connectionId: connectionId,
+      initialPath: startDirectory,
+      selectionConstraints: constraints,
+      showCloseButton: true,
+    ),
+  ),
+);
+
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
   /// Creates a new [SftpScreen].
@@ -526,6 +760,7 @@ class SftpScreen extends ConsumerStatefulWidget {
     this.initialWorkingDirectory,
     this.connectionStartDirectory,
     this.tmuxPaneDirectory,
+    this.selectionConstraints,
     this.showCloseButton = false,
     super.key,
   });
@@ -547,6 +782,11 @@ class SftpScreen extends ConsumerStatefulWidget {
 
   /// Optional working directory reported by the active tmux pane.
   final String? tmuxPaneDirectory;
+
+  /// Optional selection constraints for remote-file picker mode.
+  ///
+  /// When null, file taps keep their normal preview, video, and editor actions.
+  final RemoteFilePickerConstraints? selectionConstraints;
 
   /// Whether to show an explicit close affordance in the app bar.
   final bool showCloseButton;
@@ -574,6 +814,12 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   String? _fallbackDirectoryPath;
   String? _connectionStartDirectoryPath;
   String? _tmuxPaneDirectoryPath;
+  List<RemoteFileSelection> _selectedFiles = const [];
+
+  bool get _isSelectionMode => widget.selectionConstraints != null;
+
+  RemoteFilePickerConstraints? get _selectionConstraints =>
+      widget.selectionConstraints;
 
   @override
   void initState() {
@@ -1208,6 +1454,19 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<void> _openFileFromRequestedPath(SftpName file) async {
+    if (_isSelectionMode) {
+      _toggleRemoteFileSelection(file, announceDisabled: false);
+      if (!mounted) {
+        return;
+      }
+      _highlightFile(_currentPath, file.filename);
+      final disabledReason = _selectionDisabledReasonForFile(file);
+      if (disabledReason != null) {
+        _showSelectionUnavailableSnackBar(disabledReason);
+      }
+      return;
+    }
+
     switch (resolveSftpFileTapIntent(
       isDirectory: file.attr.isDirectory,
       filename: file.filename,
@@ -1331,6 +1590,153 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     return trimmedPath;
   }
 
+  RemoteFileSelection _remoteFileSelectionFor(SftpName file) =>
+      RemoteFileSelection(
+        remotePath: _joinRemotePath(_currentPath, file.filename),
+        displayName: file.filename,
+        sizeBytes: file.attr.size,
+        mimeType: inferRemoteFileMimeType(file.filename),
+      );
+
+  bool _isRemoteFileSelected(SftpName file) {
+    final remotePath = _joinRemotePath(_currentPath, file.filename);
+    return _selectedFiles.any((entry) => entry.remotePath == remotePath);
+  }
+
+  String? _selectionDisabledReasonForFile(SftpName file) {
+    final constraints = _selectionConstraints;
+    if (constraints == null || file.attr.isDirectory) {
+      return null;
+    }
+    return resolveRemoteFileSelectionDisabledReason(
+      constraints: constraints,
+      currentSelection: _selectedFiles,
+      candidate: _remoteFileSelectionFor(file),
+    );
+  }
+
+  String _selectionSemanticsLabelForFile(SftpName file) =>
+      remoteFileSelectionSemanticsLabel(
+        isDirectory: file.attr.isDirectory,
+        fileName: file.filename,
+        isSelected: _isRemoteFileSelected(file),
+        disabledReason: _selectionDisabledReasonForFile(file),
+      );
+
+  String _selectionSemanticsHintForFile(SftpName file) =>
+      remoteFileSelectionSemanticsHint(
+        isDirectory: file.attr.isDirectory,
+        isSelected: _isRemoteFileSelected(file),
+        disabledReason: _selectionDisabledReasonForFile(file),
+      );
+
+  IconData? _selectionTrailingIconForFile(SftpName file) {
+    if (file.attr.isDirectory) {
+      return null;
+    }
+    final disabledReason = _selectionDisabledReasonForFile(file);
+    if (disabledReason != null) {
+      return Icons.block_outlined;
+    }
+    return _isRemoteFileSelected(file)
+        ? Icons.check_circle
+        : Icons.radio_button_unchecked;
+  }
+
+  String? _selectionTrailingTooltipForFile(SftpName file) =>
+      remoteFileSelectionTooltip(
+        isDirectory: file.attr.isDirectory,
+        fileName: file.filename,
+        isSelected: _isRemoteFileSelected(file),
+        disabledReason: _selectionDisabledReasonForFile(file),
+      );
+
+  String _selectionSummaryText() {
+    final constraints = _selectionConstraints;
+    if (constraints == null) {
+      return '';
+    }
+    final selectedCount = _selectedFiles.length;
+    final maxSelectionCount = constraints.allowMultiple
+        ? constraints.maxSelectionCount
+        : 1;
+    if (selectedCount == 0) {
+      if (!constraints.allowMultiple) {
+        return 'Choose 1 file to continue.';
+      }
+      if (maxSelectionCount == null) {
+        return 'Choose one or more files to continue.';
+      }
+      return maxSelectionCount == 1
+          ? 'Choose up to 1 file to continue.'
+          : 'Choose up to $maxSelectionCount files to continue.';
+    }
+
+    final noun = selectedCount == 1 ? 'file' : 'files';
+    if (maxSelectionCount == null) {
+      return '$selectedCount $noun selected';
+    }
+    final totalNoun = maxSelectionCount == 1 ? 'file' : 'files';
+    return '$selectedCount of $maxSelectionCount $totalNoun selected';
+  }
+
+  void _showSelectionUnavailableSnackBar(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _toggleRemoteFileSelection(
+    SftpName file, {
+    bool announceDisabled = true,
+  }) {
+    final constraints = _selectionConstraints;
+    if (constraints == null || file.attr.isDirectory) {
+      return;
+    }
+
+    final disabledReason = _selectionDisabledReasonForFile(file);
+    if (disabledReason != null) {
+      if (announceDisabled) {
+        _showSelectionUnavailableSnackBar(disabledReason);
+      }
+      return;
+    }
+
+    final nextSelection = toggleRemoteFileSelection(
+      currentSelection: _selectedFiles,
+      file: _remoteFileSelectionFor(file),
+      allowMultiple: constraints.allowMultiple,
+    );
+    setState(() {
+      _selectedFiles = List<RemoteFileSelection>.unmodifiable(nextSelection);
+    });
+  }
+
+  void _confirmRemoteFileSelection() {
+    final navigator = Navigator.of(context);
+    if (!navigator.canPop() || _selectedFiles.isEmpty) {
+      return;
+    }
+    navigator.pop(List<RemoteFileSelection>.unmodifiable(_selectedFiles));
+  }
+
+  Widget? _buildSelectionActionBar() {
+    final constraints = _selectionConstraints;
+    if (constraints == null) {
+      return null;
+    }
+    return _RemoteFileSelectionBar(
+      selectedCount: _selectedFiles.length,
+      summaryText: _selectionSummaryText(),
+      onCancel: _closeBrowser,
+      onConfirm: _selectedFiles.isEmpty ? null : _confirmRemoteFileSelection,
+    );
+  }
+
   @override
   Widget build(BuildContext context) => PopScope(
     canPop: _pathHistory.length <= 1,
@@ -1348,7 +1754,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                 tooltip: 'Close file browser',
               )
             : null,
-        title: Text(_hostLabel == null ? 'Files' : 'Files - $_hostLabel'),
+        title: Text(
+          _hostLabel == null
+              ? (_isSelectionMode ? 'Select files' : 'Files')
+              : '${_isSelectionMode ? 'Select files' : 'Files'} - $_hostLabel',
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -1358,14 +1768,15 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             },
             tooltip: 'Refresh',
           ),
-          IconButton(
-            icon: const Icon(Icons.create_new_folder),
-            onPressed: () {
-              _clearHighlightedFile();
-              unawaited(_showCreateDirectoryDialog());
-            },
-            tooltip: 'New folder',
-          ),
+          if (!_isSelectionMode)
+            IconButton(
+              icon: const Icon(Icons.create_new_folder),
+              onPressed: () {
+                _clearHighlightedFile();
+                unawaited(_showCreateDirectoryDialog());
+              },
+              tooltip: 'New folder',
+            ),
         ],
       ),
       body: Column(
@@ -1375,14 +1786,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           Expanded(child: _buildFileList()),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          _clearHighlightedFile();
-          unawaited(_showUploadDialog());
-        },
-        tooltip: 'Upload files',
-        child: const Icon(Icons.upload_file),
-      ),
+      bottomNavigationBar: _buildSelectionActionBar(),
+      floatingActionButton: _isSelectionMode
+          ? null
+          : FloatingActionButton(
+              onPressed: () {
+                _clearHighlightedFile();
+                unawaited(_showUploadDialog());
+              },
+              tooltip: 'Upload files',
+              child: const Icon(Icons.upload_file),
+            ),
     ),
   );
 
@@ -1601,20 +2015,25 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     if (_files.isEmpty) {
-      return BrandEmptyState(
-        title: 'empty directory',
-        message: 'Nothing here yet.',
-        primaryLabel: 'Upload',
-        primaryIcon: Icons.upload_file_outlined,
-        onPrimary: () => unawaited(_showUploadDialog()),
-        secondaryActions: [
-          BrandEmptyAction(
-            icon: Icons.create_new_folder_outlined,
-            label: 'New folder',
-            onTap: () => unawaited(_showCreateDirectoryDialog()),
-          ),
-        ],
-      );
+      return _isSelectionMode
+          ? const BrandEmptyState(
+              title: 'empty directory',
+              message: 'No files in this folder yet.',
+            )
+          : BrandEmptyState(
+              title: 'empty directory',
+              message: 'Nothing here yet.',
+              primaryLabel: 'Upload',
+              primaryIcon: Icons.upload_file_outlined,
+              onPrimary: () => unawaited(_showUploadDialog()),
+              secondaryActions: [
+                BrandEmptyAction(
+                  icon: Icons.create_new_folder_outlined,
+                  label: 'New folder',
+                  onTap: () => unawaited(_showCreateDirectoryDialog()),
+                ),
+              ],
+            );
     }
 
     return RefreshIndicator(
@@ -1631,14 +2050,32 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           if (file.filename == '.' || file.filename == '..') {
             return const SizedBox.shrink();
           }
+          final selectionDisabledReason = _selectionDisabledReasonForFile(file);
+          final isSelected = _isSelectionMode && _isRemoteFileSelected(file);
           return _FileListTile(
             file: file,
             isHighlighted:
-                _highlightedDirectoryPath == _currentPath &&
-                _highlightedFileName == file.filename,
+                (_highlightedDirectoryPath == _currentPath &&
+                    _highlightedFileName == file.filename) ||
+                isSelected,
             onTap: () => _handleFileTap(file),
-            onLongPress: () => _showFileOptions(file),
-            onShowOptions: () => _showFileOptions(file),
+            onLongPress: _isSelectionMode ? null : () => _showFileOptions(file),
+            onShowOptions: _isSelectionMode
+                ? null
+                : () => _showFileOptions(file),
+            disabledReason: selectionDisabledReason,
+            trailingIcon: _isSelectionMode
+                ? _selectionTrailingIconForFile(file)
+                : null,
+            trailingTooltip: _isSelectionMode
+                ? _selectionTrailingTooltipForFile(file)
+                : null,
+            semanticsLabel: _isSelectionMode
+                ? _selectionSemanticsLabelForFile(file)
+                : null,
+            semanticsHint: _isSelectionMode
+                ? _selectionSemanticsHintForFile(file)
+                : null,
           );
         },
       ),
@@ -1647,6 +2084,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   void _handleFileTap(SftpName file) {
     _clearHighlightedFile();
+    if (_isSelectionMode && !file.attr.isDirectory) {
+      _toggleRemoteFileSelection(file);
+      return;
+    }
+
     switch (resolveSftpFileTapIntent(
       isDirectory: file.attr.isDirectory,
       filename: file.filename,
@@ -2727,31 +3169,118 @@ class _FileListTile extends StatelessWidget {
   const _FileListTile({
     required this.file,
     required this.onTap,
-    required this.onLongPress,
-    required this.onShowOptions,
+    this.onLongPress,
+    this.onShowOptions,
     this.isHighlighted = false,
+    this.disabledReason,
+    this.trailingIcon,
+    this.trailingTooltip,
+    this.semanticsLabel,
+    this.semanticsHint,
   });
 
   final SftpName file;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
-  final VoidCallback onShowOptions;
+  final VoidCallback? onLongPress;
+  final VoidCallback? onShowOptions;
   final bool isHighlighted;
+  final String? disabledReason;
+  final IconData? trailingIcon;
+  final String? trailingTooltip;
+  final String? semanticsLabel;
+  final String? semanticsHint;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDirectory = file.attr.isDirectory;
+    final isDisabled = disabledReason != null;
     final iconColor = isHighlighted
         ? theme.colorScheme.onPrimaryContainer
+        : isDisabled
+        ? theme.colorScheme.onSurfaceVariant
         : isDirectory
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurfaceVariant;
     final trailingIconColor = isHighlighted
         ? theme.colorScheme.onPrimaryContainer
+        : isDisabled
+        ? theme.colorScheme.onSurfaceVariant
         : theme.colorScheme.onSurfaceVariant;
+    final sizeText = formatRemoteFileSize(file.attr.size ?? 0);
+    final knownSizeText = file.attr.size == null ? null : sizeText;
 
-    return ListTile(
+    Widget? subtitle;
+    if (!isDirectory) {
+      if (isDisabled) {
+        final subtitleChildren = <Widget>[];
+        if (knownSizeText != null) {
+          subtitleChildren.add(
+            Text(
+              knownSizeText,
+              style: FluttyTheme.monoStyle.copyWith(
+                fontSize: 12,
+                color: isHighlighted
+                    ? theme.colorScheme.onPrimaryContainer
+                    : theme.colorScheme.onSurfaceVariant,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          );
+        }
+        subtitleChildren.add(
+          Text(
+            disabledReason!,
+            style: FluttyTheme.monoStyle.copyWith(
+              fontSize: 12,
+              color: isHighlighted
+                  ? theme.colorScheme.onPrimaryContainer
+                  : theme.colorScheme.error,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        );
+        subtitle = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: subtitleChildren,
+        );
+      } else {
+        subtitle = Text(
+          sizeText,
+          style: FluttyTheme.monoStyle.copyWith(
+            fontSize: 12,
+            color: isHighlighted
+                ? theme.colorScheme.onPrimaryContainer
+                : theme.colorScheme.onSurfaceVariant,
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        );
+      }
+    }
+
+    Widget? trailingIconWidget;
+    if (trailingIcon != null) {
+      trailingIconWidget = Icon(
+        trailingIcon,
+        size: 20,
+        color: trailingIconColor,
+      );
+      if (trailingTooltip != null) {
+        trailingIconWidget = Tooltip(
+          message: trailingTooltip,
+          child: trailingIconWidget,
+        );
+      }
+    }
+    final trailingWidgets = trailingIconWidget == null
+        ? const <Widget>[]
+        : <Widget>[trailingIconWidget];
+
+    final tile = ListTile(
       visualDensity: VisualDensity.compact,
       contentPadding: const EdgeInsets.symmetric(horizontal: 12),
       minVerticalPadding: 2,
@@ -2774,37 +3303,177 @@ class _FileListTile extends StatelessWidget {
               )
             : FluttyTheme.monoStyle.copyWith(
                 fontSize: 14,
-                color: theme.colorScheme.onSurface,
+                color: isDisabled
+                    ? theme.colorScheme.onSurface.withAlpha(170)
+                    : theme.colorScheme.onSurface,
               ),
       ),
-      subtitle: isDirectory
-          ? null
-          : Text(
-              formatRemoteFileSize(file.attr.size ?? 0),
-              style: FluttyTheme.monoStyle.copyWith(
-                fontSize: 12,
-                color: isHighlighted
-                    ? theme.colorScheme.onPrimaryContainer
-                    : theme.colorScheme.onSurfaceVariant,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
+      subtitle: subtitle,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           if (isDirectory)
             Icon(Icons.chevron_right, size: 20, color: trailingIconColor),
-          IconButton(
-            onPressed: onShowOptions,
-            icon: const Icon(Icons.more_vert),
-            color: trailingIconColor,
-            tooltip: 'More actions for ${file.filename}',
-          ),
+          ...trailingWidgets,
+          if (onShowOptions != null)
+            IconButton(
+              onPressed: onShowOptions,
+              icon: const Icon(Icons.more_vert),
+              color: trailingIconColor,
+              tooltip: 'More actions for ${file.filename}',
+            ),
         ],
       ),
       onTap: onTap,
       onLongPress: onLongPress,
+    );
+
+    if (semanticsLabel == null && semanticsHint == null) {
+      return tile;
+    }
+
+    return Semantics(
+      button: true,
+      selected: isHighlighted,
+      label: semanticsLabel,
+      hint: semanticsHint,
+      child: ExcludeSemantics(child: tile),
+    );
+  }
+}
+
+class _RemoteFileSelectionBar extends StatelessWidget {
+  const _RemoteFileSelectionBar({
+    required this.selectedCount,
+    required this.summaryText,
+    required this.onCancel,
+    required this.onConfirm,
+  });
+
+  final int selectedCount;
+  final String summaryText;
+  final VoidCallback onCancel;
+  final VoidCallback? onConfirm;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final mediaQuery = MediaQuery.of(context);
+    final isWide = mediaQuery.size.width >= 720;
+    final confirmLabel = selectedCount == 0
+        ? 'Select'
+        : selectedCount == 1
+        ? 'Select 1 file'
+        : 'Select $selectedCount files';
+
+    final buttons = isWide
+        ? Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              OutlinedButton.icon(
+                onPressed: onCancel,
+                icon: const Icon(Icons.close),
+                label: const Text('Cancel'),
+              ),
+              const SizedBox(width: 12),
+              FilledButton.icon(
+                onPressed: onConfirm,
+                icon: const Icon(Icons.check),
+                label: Text(confirmLabel),
+              ),
+            ],
+          )
+        : Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onCancel,
+                  icon: const Icon(Icons.close),
+                  label: const Text('Cancel'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: onConfirm,
+                  icon: const Icon(Icons.check),
+                  label: Text(confirmLabel),
+                ),
+              ),
+            ],
+          );
+
+    final content = isWide
+        ? Row(
+            children: [
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'remote file selection',
+                      style: FluttyTheme.displayMono(
+                        fontSize: 16,
+                        color: theme.colorScheme.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      summaryText,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 16),
+              buttons,
+            ],
+          )
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'remote file selection',
+                style: FluttyTheme.displayMono(
+                  fontSize: 16,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                summaryText,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 12),
+              buttons,
+            ],
+          );
+
+    return Material(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: AnimatedPadding(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        padding: EdgeInsets.only(bottom: mediaQuery.viewInsets.bottom),
+        child: SafeArea(
+          top: false,
+          child: Align(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 960),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                child: content,
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

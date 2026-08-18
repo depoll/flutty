@@ -1,0 +1,172 @@
+import 'package:flutter/foundation.dart';
+
+import 'acp_session_keys.dart';
+
+/// A persistable, content-free reference to a recently used ACP session.
+///
+/// Only non-content metadata is stored: the host, provider, bridge, and remote
+/// ACP session identifiers plus an optional title and working directory and
+/// activity timestamps. Prompts, messages, attachments, tool data, and
+/// reasoning are never included.
+@immutable
+final class AcpRecentSessionRef {
+  /// Creates a recent-session reference.
+  const AcpRecentSessionRef({
+    required this.hostId,
+    required this.providerId,
+    required this.bridgeId,
+    required this.acpSessionId,
+    required this.createdAt,
+    required this.lastActivityAt,
+    this.title,
+    this.cwd,
+  });
+
+  /// Attempts to parse a stored reference, returning `null` when the shape or
+  /// any required field is invalid.
+  ///
+  /// Parsing is fully defensive: a single malformed entry must never throw or
+  /// prevent sibling entries from loading.
+  static AcpRecentSessionRef? tryFromJson(Object? json) {
+    if (json is! Map) return null;
+    final hostId = _readInt(json['hostId']);
+    final providerId = _readNonEmptyString(json['providerId']);
+    final bridgeId = _readNonEmptyString(json['bridgeId']);
+    final acpSessionId = _readNonEmptyString(json['acpSessionId']);
+    if (hostId == null ||
+        providerId == null ||
+        bridgeId == null ||
+        acpSessionId == null) {
+      return null;
+    }
+    final createdAt = _readTimestamp(json['createdAt']);
+    final lastActivityAt = _readTimestamp(json['lastActivityAt']) ?? createdAt;
+    if (createdAt == null || lastActivityAt == null) return null;
+    return AcpRecentSessionRef(
+      hostId: hostId,
+      providerId: providerId,
+      bridgeId: bridgeId,
+      acpSessionId: acpSessionId,
+      createdAt: createdAt,
+      lastActivityAt: lastActivityAt,
+      title: _readOptionalString(json['title']),
+      cwd: _readOptionalString(json['cwd']),
+    );
+  }
+
+  /// Saved host identifier.
+  final int hostId;
+
+  /// Provider identifier.
+  final String providerId;
+
+  /// Opaque remote bridge identifier.
+  final String bridgeId;
+
+  /// Remote ACP session identifier.
+  final String acpSessionId;
+
+  /// Optional non-content session title.
+  final String? title;
+
+  /// Optional working directory.
+  final String? cwd;
+
+  /// When the session was first created.
+  final DateTime createdAt;
+
+  /// When the session was last active.
+  final DateTime lastActivityAt;
+
+  /// Stable composite key for this reference.
+  AcpSessionKey get key => AcpSessionKey.of(
+    hostId: hostId,
+    providerId: providerId,
+    bridgeId: bridgeId,
+    acpSessionId: acpSessionId,
+  );
+
+  /// Encodes this reference for storage.
+  Map<String, Object?> toJson() => <String, Object?>{
+    'hostId': hostId,
+    'providerId': providerId,
+    'bridgeId': bridgeId,
+    'acpSessionId': acpSessionId,
+    if (title != null) 'title': title,
+    if (cwd != null) 'cwd': cwd,
+    'createdAt': createdAt.toUtc().toIso8601String(),
+    'lastActivityAt': lastActivityAt.toUtc().toIso8601String(),
+  };
+
+  /// Returns a copy with selected fields replaced.
+  AcpRecentSessionRef copyWith({
+    String? title,
+    bool clearTitle = false,
+    String? cwd,
+    bool clearCwd = false,
+    DateTime? lastActivityAt,
+  }) => AcpRecentSessionRef(
+    hostId: hostId,
+    providerId: providerId,
+    bridgeId: bridgeId,
+    acpSessionId: acpSessionId,
+    title: clearTitle ? null : (title ?? this.title),
+    cwd: clearCwd ? null : (cwd ?? this.cwd),
+    createdAt: createdAt,
+    lastActivityAt: lastActivityAt ?? this.lastActivityAt,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AcpRecentSessionRef &&
+          hostId == other.hostId &&
+          providerId == other.providerId &&
+          bridgeId == other.bridgeId &&
+          acpSessionId == other.acpSessionId &&
+          title == other.title &&
+          cwd == other.cwd &&
+          createdAt == other.createdAt &&
+          lastActivityAt == other.lastActivityAt;
+
+  @override
+  int get hashCode => Object.hash(
+    hostId,
+    providerId,
+    bridgeId,
+    acpSessionId,
+    title,
+    cwd,
+    createdAt,
+    lastActivityAt,
+  );
+
+  @override
+  String toString() =>
+      'AcpRecentSessionRef(hostId: $hostId, providerId: $providerId)';
+
+  static int? _readInt(Object? value) =>
+      value is int ? value : (value is String ? int.tryParse(value) : null);
+
+  static String? _readNonEmptyString(Object? value) {
+    if (value is! String) return null;
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  static String? _readOptionalString(Object? value) {
+    if (value is! String) return null;
+    return value;
+  }
+
+  static DateTime? _readTimestamp(Object? value) {
+    if (value is String) {
+      return DateTime.tryParse(value)?.toUtc();
+    }
+    if (value is int) {
+      // Interpret bare integers as epoch milliseconds.
+      return DateTime.fromMillisecondsSinceEpoch(value, isUtc: true);
+    }
+    return null;
+  }
+}

@@ -166,4 +166,91 @@ void main() {
 
     expect(location, '/terminal/7?connectionId=21');
   });
+
+  group('AcpNotificationPayload', () {
+    test('round-trips completion and permission notification fields', () {
+      const completion = AcpNotificationPayload(
+        kind: AcpNotificationKind.completion,
+        hostId: 3,
+        providerId: 'builtin:copilot-cli',
+        bridgeId: 'bridge-1',
+        acpSessionId: 'session-1',
+      );
+      const permission = AcpNotificationPayload(
+        kind: AcpNotificationKind.permission,
+        hostId: 3,
+        providerId: 'builtin:opencode',
+        bridgeId: 'bridge-2',
+        acpSessionId: 'session-2',
+      );
+
+      expect(AcpNotificationPayload.decode(completion.encode()), completion);
+      expect(AcpNotificationPayload.decode(permission.encode()), permission);
+    });
+
+    test('ignores malformed and unrelated payloads', () {
+      expect(AcpNotificationPayload.decode(null), isNull);
+      expect(AcpNotificationPayload.decode('not json'), isNull);
+      expect(AcpNotificationPayload.decode('{"type":"tmux-alert"}'), isNull);
+      expect(
+        AcpNotificationPayload.decode(
+          '{"type":"acp-notification","version":1,"kind":"completion"}',
+        ),
+        isNull,
+      );
+      expect(
+        AcpNotificationPayload.decode(
+          '{"type":"acp-notification","version":1,"kind":"unknown-kind",'
+          '"hostId":3,"providerId":"builtin:copilot-cli",'
+          '"bridgeId":"bridge-1","acpSessionId":"session-1"}',
+        ),
+        isNull,
+      );
+    });
+
+    test('does not decode as a tmux alert or terminal notification', () {
+      const payload = AcpNotificationPayload(
+        kind: AcpNotificationKind.completion,
+        hostId: 3,
+        providerId: 'builtin:copilot-cli',
+        bridgeId: 'bridge-1',
+        acpSessionId: 'session-1',
+      );
+      expect(TmuxAlertNotificationPayload.decode(payload.encode()), isNull);
+      expect(TerminalNotificationPayload.decode(payload.encode()), isNull);
+    });
+
+    test('encode never includes prompt/tool/path/content fields', () {
+      const payload = AcpNotificationPayload(
+        kind: AcpNotificationKind.permission,
+        hostId: 3,
+        providerId: 'builtin:copilot-cli',
+        bridgeId: 'bridge-1',
+        acpSessionId: 'session-1',
+      );
+      final encoded = payload.encode();
+      for (final forbidden in ['prompt', 'tool', 'path', 'content', 'title']) {
+        expect(encoded.toLowerCase(), isNot(contains(forbidden)));
+      }
+    });
+  });
+
+  test('buildAcpNotificationLocation deep-links to the specific chat', () {
+    final location = buildAcpNotificationLocation(
+      const AcpNotificationPayload(
+        kind: AcpNotificationKind.completion,
+        hostId: 3,
+        providerId: 'builtin:copilot-cli',
+        bridgeId: 'bridge-1',
+        acpSessionId: 'session-1',
+      ),
+    );
+
+    final uri = Uri.parse(location);
+    expect(uri.path, acpAgentChatRoutePath);
+    expect(uri.queryParameters[acpAgentChatHostQueryKey], '3');
+    expect(uri.queryParameters[acpAgentChatSessionQueryKey], 'session-1');
+    // Must not target the nonexistent /home route.
+    expect(location.startsWith('/home'), isFalse);
+  });
 }

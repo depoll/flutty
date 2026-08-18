@@ -99,6 +99,9 @@ To test tmux navigation against a real SSH target:
 ./scripts/setup_tmux_test_env.sh teardown
 ```
 
+For deterministic ACP validation over a real SSH exec channel and persistent
+MonkeyMux bridge, see [ACP manual testing](docs/manual_testing_acp.md).
+
 ## Deployment
 
 Release automation, app variants, store setup, and signing details live in [docs/deployment.md](docs/deployment.md).

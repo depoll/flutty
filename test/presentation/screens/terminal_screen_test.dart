@@ -86,7 +86,13 @@ class _MockShellChannel extends Mock implements SSHSession {}
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
-class _MockSftpClient extends Mock implements SftpClient {}
+Future<void> _completeSftpClose(Invocation _) async {}
+
+class _MockSftpClient extends Mock implements SftpClient {
+  _MockSftpClient() {
+    when(close).thenAnswer(_completeSftpClose);
+  }
+}
 
 class _FakeAndroidDeviceDebugPlatform implements AndroidDeviceDebugPlatform {
   @override

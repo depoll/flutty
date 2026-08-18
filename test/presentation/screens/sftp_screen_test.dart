@@ -31,7 +31,13 @@ final _onePixelPngBytes = Uint8List.fromList(
 
 class _MockSshClient extends Mock implements SSHClient {}
 
-class _MockSftpClient extends Mock implements SftpClient {}
+Future<void> _completeSftpClose(Invocation _) async {}
+
+class _MockSftpClient extends Mock implements SftpClient {
+  _MockSftpClient() {
+    when(close).thenAnswer(_completeSftpClose);
+  }
+}
 
 class _MockSftpFile extends Mock implements SftpFile {}
 
@@ -54,6 +60,99 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   @override
   Future<void> syncBackgroundStatus() async {}
 }
+
+Widget _buildSftpTestApp({
+  required SshSession session,
+  required MonetizationService monetizationService,
+  required Widget child,
+}) => ProviderScope(
+  overrides: [
+    activeSessionsProvider.overrideWith(
+      () => _TestActiveSessionsNotifier(session),
+    ),
+    monetizationServiceProvider.overrideWithValue(monetizationService),
+    monetizationStateProvider.overrideWith(
+      (ref) => Stream.value(_proMonetizationState),
+    ),
+  ],
+  child: MaterialApp(home: child),
+);
+
+SftpFileAttrs _fileAttrs({int? size}) =>
+    SftpFileAttrs(size: size, mode: const SftpFileMode.value(1 << 15));
+
+SftpName _fileEntry(String name, {int? size}) => SftpName(
+  filename: name,
+  longname: name,
+  attr: _fileAttrs(size: size),
+);
+
+class _SftpSelectionHost extends StatefulWidget {
+  const _SftpSelectionHost({
+    required this.hostId,
+    required this.connectionId,
+    required this.constraints,
+  });
+
+  final int hostId;
+  final int connectionId;
+  final RemoteFilePickerConstraints constraints;
+
+  @override
+  State<_SftpSelectionHost> createState() => _SftpSelectionHostState();
+}
+
+class _SftpSelectionHostState extends State<_SftpSelectionHost> {
+  Object? _result = _pendingResult;
+  bool _pickerOpen = true;
+
+  @override
+  Widget build(BuildContext context) => Navigator(
+    pages: [
+      MaterialPage<void>(
+        key: const ValueKey<String>('selection-base'),
+        child: Scaffold(
+          body: Center(
+            child: Text(switch (_result) {
+              _PendingSelectionResult() => 'pending',
+              null => 'cancelled',
+              final List<RemoteFileSelection> files =>
+                files.map((file) => file.remotePath).join('|'),
+              final Object other => other.toString(),
+            }),
+          ),
+        ),
+      ),
+      if (_pickerOpen)
+        MaterialPage<void>(
+          key: const ValueKey<String>('selection-picker'),
+          child: SftpScreen(
+            hostId: widget.hostId,
+            connectionId: widget.connectionId,
+            selectionConstraints: widget.constraints,
+            showCloseButton: true,
+          ),
+        ),
+    ],
+    // ignore: deprecated_member_use
+    onPopPage: (route, result) {
+      if (!route.didPop(result)) {
+        return false;
+      }
+      setState(() {
+        _pickerOpen = false;
+        _result = result;
+      });
+      return true;
+    },
+  );
+}
+
+class _PendingSelectionResult {
+  const _PendingSelectionResult();
+}
+
+const _pendingResult = _PendingSelectionResult();
 
 void main() {
   group('SFTP path helpers', () {
@@ -210,6 +309,143 @@ void main() {
       expect(remoteVideoMimeTypeForFileName('notes.txt'), isNull);
     });
 
+    test('infers MIME types from previewable remote file names', () {
+      expect(inferRemoteFileMimeType('diagram.svg'), 'image/svg+xml');
+      expect(inferRemoteFileMimeType('photo.JPG'), 'image/jpeg');
+      expect(inferRemoteFileMimeType('clip.webm'), 'video/webm');
+      expect(inferRemoteFileMimeType('notes.txt'), isNull);
+    });
+
+    test('toggles remote file selection while preserving selection order', () {
+      const alpha = RemoteFileSelection(
+        remotePath: '/home/demo/alpha.txt',
+        displayName: 'alpha.txt',
+      );
+      const beta = RemoteFileSelection(
+        remotePath: '/home/demo/beta.txt',
+        displayName: 'beta.txt',
+      );
+
+      expect(
+        toggleRemoteFileSelection(
+          currentSelection: const [alpha],
+          file: beta,
+          allowMultiple: true,
+        ),
+        const [alpha, beta],
+      );
+      expect(
+        toggleRemoteFileSelection(
+          currentSelection: const [alpha, beta],
+          file: alpha,
+          allowMultiple: true,
+        ),
+        const [beta],
+      );
+      expect(
+        toggleRemoteFileSelection(
+          currentSelection: const [alpha],
+          file: beta,
+          allowMultiple: false,
+        ),
+        const [beta],
+      );
+      expect(
+        toggleRemoteFileSelection(
+          currentSelection: const [beta],
+          file: beta,
+          allowMultiple: false,
+        ),
+        isEmpty,
+      );
+    });
+
+    test(
+      'describes disabled remote file selections from filters and limits',
+      () {
+        const alpha = RemoteFileSelection(
+          remotePath: '/home/demo/alpha.txt',
+          displayName: 'alpha.txt',
+        );
+        const beta = RemoteFileSelection(
+          remotePath: '/home/demo/beta.txt',
+          displayName: 'beta.txt',
+        );
+        const blocked = RemoteFileSelection(
+          remotePath: '/home/demo/blocked.png',
+          displayName: 'blocked.png',
+        );
+        final constraints = RemoteFilePickerConstraints(
+          allowMultiple: true,
+          maxSelectionCount: 1,
+          selectionAvailability: (file) => file.displayName.endsWith('.png')
+              ? 'Only text attachments are supported.'
+              : null,
+        );
+
+        expect(
+          resolveRemoteFileSelectionDisabledReason(
+            constraints: constraints,
+            currentSelection: const [alpha],
+            candidate: beta,
+          ),
+          'You can select up to 1 file.',
+        );
+        expect(
+          resolveRemoteFileSelectionDisabledReason(
+            constraints: constraints,
+            currentSelection: const [alpha],
+            candidate: blocked,
+          ),
+          'Only text attachments are supported.',
+        );
+      },
+    );
+
+    test('builds selection semantics labels, hints, and touch tooltips', () {
+      expect(
+        remoteFileSelectionSemanticsLabel(
+          isDirectory: true,
+          fileName: 'docs',
+          isSelected: false,
+        ),
+        'Open folder docs',
+      );
+      expect(
+        remoteFileSelectionSemanticsHint(isDirectory: true, isSelected: false),
+        'Opens this folder.',
+      );
+      expect(
+        remoteFileSelectionSemanticsLabel(
+          isDirectory: false,
+          fileName: 'notes.txt',
+          isSelected: false,
+        ),
+        'Select remote file notes.txt',
+      );
+      expect(
+        remoteFileSelectionSemanticsHint(isDirectory: false, isSelected: true),
+        'Removes this file from the current selection.',
+      );
+      expect(
+        remoteFileSelectionTooltip(
+          isDirectory: false,
+          fileName: 'notes.txt',
+          isSelected: true,
+        ),
+        'Deselect notes.txt',
+      );
+      expect(
+        remoteFileSelectionTooltip(
+          isDirectory: false,
+          fileName: 'blocked.png',
+          isSelected: false,
+          disabledReason: 'Only text attachments are supported.',
+        ),
+        'blocked.png is unavailable: Only text attachments are supported.',
+      );
+    });
+
     test('rejects known oversized video previews', () {
       expect(
         isRemoteVideoPreviewSizeAllowed(maxRemoteVideoPreviewBytes),
@@ -322,9 +558,8 @@ void main() {
     test(
       'opens an upload stream from the picked file path when needed',
       () async {
-        final tempDirectory = await Directory.systemTemp.createTemp(
-          'sftp-upload-test',
-        );
+        final tempDirectory = Directory('build/sftp-upload-test')
+          ..createSync(recursive: true);
         addTearDown(() => tempDirectory.delete(recursive: true));
 
         final fileOnDisk = File('${tempDirectory.path}/notes.txt');
@@ -626,6 +861,142 @@ void main() {
         verify(() => sftp.open('/home/demo/picture.png')).called(1);
       },
     );
+
+    testWidgets('cancelling remote file picker returns null', (tester) async {
+      final sshClient = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final monetizationService = _MockMonetizationService();
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'demo.example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      addTearDown(session.close);
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(sshClient.sftp).thenAnswer((_) async => sftp);
+      when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+      when(
+        () => sftp.listdir('/home/demo'),
+      ).thenAnswer((_) async => [_fileEntry('notes.txt', size: 7)]);
+
+      await tester.pumpWidget(
+        _buildSftpTestApp(
+          session: session,
+          monetizationService: monetizationService,
+          child: const _SftpSelectionHost(
+            hostId: 1,
+            connectionId: 7,
+            constraints: RemoteFilePickerConstraints(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('cancelled'), findsOneWidget);
+    });
+
+    testWidgets('normal mode still previews tapped image files', (
+      tester,
+    ) async {
+      final sshClient = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final remoteFile = _MockSftpFile();
+      final monetizationService = _MockMonetizationService();
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'demo.example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      addTearDown(session.close);
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(sshClient.sftp).thenAnswer((_) async => sftp);
+      when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+      when(() => sftp.listdir('/home/demo')).thenAnswer(
+        (_) async => [
+          _fileEntry('picture.png', size: _onePixelPngBytes.length),
+        ],
+      );
+      when(
+        () => sftp.open('/home/demo/picture.png'),
+      ).thenAnswer((_) async => remoteFile);
+      when(
+        () => remoteFile.readBytes(length: any(named: 'length')),
+      ).thenAnswer((_) async => _onePixelPngBytes);
+      when(remoteFile.close).thenAnswer((_) async {});
+
+      await tester.pumpWidget(
+        _buildSftpTestApp(
+          session: session,
+          monetizationService: monetizationService,
+          child: const SftpScreen(hostId: 1, connectionId: 7),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('picture.png'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('/home/demo/picture.png'), findsOneWidget);
+      verify(() => sftp.open('/home/demo/picture.png')).called(1);
+    });
+
+    testWidgets('normal mode shows 0 B for files with unknown size', (
+      tester,
+    ) async {
+      final sshClient = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final monetizationService = _MockMonetizationService();
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'demo.example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      addTearDown(session.close);
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(sshClient.sftp).thenAnswer((_) async => sftp);
+      when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+      when(
+        () => sftp.listdir('/home/demo'),
+      ).thenAnswer((_) async => [_fileEntry('notes.txt')]);
+
+      await tester.pumpWidget(
+        _buildSftpTestApp(
+          session: session,
+          monetizationService: monetizationService,
+          child: const SftpScreen(hostId: 1, connectionId: 7),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('notes.txt'), findsOneWidget);
+      expect(find.text('0 B'), findsOneWidget);
+    });
 
     testWidgets('handles stale SSH errors while opening the browser', (
       tester,

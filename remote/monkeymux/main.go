@@ -249,6 +249,8 @@ var capabilities = []string{
 	"client-viewport-clipping",
 	"image-replay-ack",
 	"upgrade-restore-v1",
+	"acp-bridge-v1",
+	"acp-bridge-replay-v1",
 }
 
 var (
@@ -968,6 +970,8 @@ func main() {
 		serveCommand(os.Args[2:])
 	case "gc":
 		gcCommand()
+	case "acp":
+		acpCommand(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(monkeyMuxVersion)
 	case "help", "--help", "-h":
@@ -986,6 +990,7 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "  monkeymux new-session [-d] [-s NAME] [COMMAND...]")
 	fmt.Fprintln(writer, "  monkeymux list-sessions")
 	fmt.Fprintln(writer, "  monkeymux kill-session -t NAME")
+	fmt.Fprintln(writer, "  monkeymux acp start|attach|list|status|stop|gc")
 	fmt.Fprintln(writer, "  monkeymux version")
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, "Inside a session (prefix Ctrl-B):")
@@ -1623,6 +1628,7 @@ func gcCommand() {
 		}
 		_ = os.Remove(path)
 	}
+	gcAcpArtifacts(runDir)
 }
 
 // removeAbandonedRestoreFile deletes an upgrade snapshot left behind by a

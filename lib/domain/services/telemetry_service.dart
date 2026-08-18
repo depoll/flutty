@@ -88,6 +88,7 @@ class TelemetryService {
   static const int _maxFirebaseNameLength = 40;
   static const int _maxFirebaseStringLength = 80;
   static const _allowedFeatureNames = <String>{
+    'agents',
     'auth',
     'home',
     'host_editor',
@@ -175,6 +176,44 @@ class TelemetryService {
     'paste',
     'search_web',
     'share',
+  };
+  static const _allowedAcpProviderCategories = <String>{
+    'copilot_cli',
+    'opencode',
+    'custom',
+    'unknown',
+  };
+  static const _allowedAcpSessionEndReasons = <String>{
+    'stopped',
+    'provider_exited',
+    'transport_failed',
+    'closed',
+    'app_disposed',
+  };
+  static const _allowedAcpAttachmentCategories = <String>{
+    'image',
+    'audio',
+    'resource',
+    'unknown',
+  };
+  static const _allowedAcpPermissionOutcomes = <String>{
+    'selected',
+    'cancelled',
+    'write_approved',
+    'write_rejected',
+  };
+  static const _allowedAcpFailureCategories = <String>{
+    'bridge_unavailable',
+    'bridge_expired',
+    'provider_exited',
+    'authentication_required',
+    'unsupported_capability',
+    'command_not_approved',
+    'transport',
+    'protocol',
+    'timeout',
+    'concurrency_blocked',
+    'unknown',
   };
 
   final TelemetryServiceStatus _status;
@@ -551,6 +590,65 @@ class TelemetryService {
   Future<void> logTerminalSelectionAction({required String action}) =>
       _logEvent('terminal_selection_action', <String, Object?>{
         'action': _allowlistedValue(action, _allowedSelectionActions),
+      });
+
+  /// Records that a live ACP agent session was opened.
+  ///
+  /// [providerCategory] and no other identifying detail: never a provider
+  /// command, hostname, cwd, or session title.
+  Future<void> logAcpSessionOpened({
+    required String providerCategory,
+    required bool isReconnect,
+  }) => _logEvent('acp_session_opened', <String, Object?>{
+    'provider_category': _allowlistedValue(
+      providerCategory,
+      _allowedAcpProviderCategories,
+    ),
+    'is_reconnect': isReconnect,
+  });
+
+  /// Records that a live ACP agent session ended for a safe, coarse reason.
+  Future<void> logAcpSessionEnded({required String reason}) =>
+      _logEvent('acp_session_ended', <String, Object?>{
+        'reason': _allowlistedValue(reason, _allowedAcpSessionEndReasons),
+      });
+
+  /// Records the outcome of an ACP bridge/session reconnect attempt.
+  Future<void> logAcpReconnectOutcome({
+    required bool succeeded,
+    String? failureCategory,
+  }) => _logEvent('acp_reconnect_outcome', <String, Object?>{
+    'succeeded': succeeded,
+    if (failureCategory != null)
+      'failure_category': _allowlistedValue(
+        failureCategory,
+        _allowedAcpFailureCategories,
+      ),
+  });
+
+  /// Records a coarse attachment category/count sent in one ACP prompt turn.
+  ///
+  /// Never the attachment content, file name, or path.
+  Future<void> logAcpAttachmentSent({
+    required String category,
+    required int count,
+  }) => _logEvent('acp_attachment_sent', <String, Object?>{
+    'category': _allowlistedValue(category, _allowedAcpAttachmentCategories),
+    'count_bucket': countBucket(count),
+  });
+
+  /// Records the outcome of an ACP permission or pending-write decision.
+  ///
+  /// Never the tool call, path, or prompt the decision was about.
+  Future<void> logAcpPermissionOutcome({required String outcome}) =>
+      _logEvent('acp_permission_outcome', <String, Object?>{
+        'outcome': _allowlistedValue(outcome, _allowedAcpPermissionOutcomes),
+      });
+
+  /// Records a safe, coarse ACP failure category.
+  Future<void> logAcpFailure({required String category}) =>
+      _logEvent('acp_failure', <String, Object?>{
+        'category': _allowlistedValue(category, _allowedAcpFailureCategories),
       });
 
   /// Records the extra-keys toolbar being shown or hidden.

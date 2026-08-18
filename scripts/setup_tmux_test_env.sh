@@ -24,21 +24,15 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/local_ssh_test_env.sh
+source "$SCRIPT_DIR/lib/local_ssh_test_env.sh"
+
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/monkeyssh/tmux-test"
 KEY_PATH="$STATE_DIR/id_ed25519"
 TMUX_SESSION="monkeyssh-test"
 AUTH_KEYS="$HOME/.ssh/authorized_keys"
 MARKER="# monkeyssh-tmux-test"
-
-restore_auth_keys_permissions() {
-    local mode
-    mode="$(stat -f '%Lp' "$AUTH_KEYS" 2>/dev/null || true)"
-    if [ -n "$mode" ]; then
-        chmod "$mode" "$AUTH_KEYS"
-    else
-        chmod 600 "$AUTH_KEYS"
-    fi
-}
 
 teardown() {
     echo "🧹 Tearing down tmux test environment..."
@@ -49,16 +43,7 @@ teardown() {
         echo "   Killed tmux session '$TMUX_SESSION'"
     fi
 
-    # Remove test key from authorized_keys
-    if [ -f "$AUTH_KEYS" ] && grep -q "$MARKER" "$AUTH_KEYS"; then
-        grep -v "$MARKER" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp"
-        mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
-        restore_auth_keys_permissions
-        echo "   Removed test key from authorized_keys"
-    fi
-
-    # Remove key files
-    rm -f "$KEY_PATH" "${KEY_PATH}.pub"
+    local_ssh_test_teardown "$STATE_DIR" "$MARKER" "$AUTH_KEYS"
     echo "   Removed key files"
 
     echo "✅ Teardown complete."
@@ -82,48 +67,8 @@ if ! command -v tmux &>/dev/null; then
     exit 1
 fi
 
-if ! ssh -o BatchMode=yes -o ConnectTimeout=2 localhost "echo ok" &>/dev/null; then
-    echo "❌ Remote Login (SSH) is not enabled or not accessible."
-    echo "   Enable via: System Settings → General → Sharing → Remote Login"
-    exit 1
-fi
-
-# ── Step 2: Generate SSH key ─────────────────────────────────────────
-
-rm -f "$KEY_PATH" "${KEY_PATH}.pub"
-ssh-keygen -t ed25519 -f "$KEY_PATH" -N "" -C "monkeyssh-tmux-test" -q
-chmod 600 "$KEY_PATH"
-chmod 644 "${KEY_PATH}.pub"
-echo "   Generated test key: $KEY_PATH"
-
-# ── Step 3: Authorize the key ────────────────────────────────────────
-
-mkdir -p "$HOME/.ssh"
-chmod 700 "$HOME/.ssh"
-
-# Remove any previous test key
-if [ -f "$AUTH_KEYS" ] && grep -q "$MARKER" "$AUTH_KEYS"; then
-    grep -v "$MARKER" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp"
-    mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
-    restore_auth_keys_permissions
-fi
-
-# Add new key with marker comment
-echo "$(cat "${KEY_PATH}.pub") $MARKER" >> "$AUTH_KEYS"
-chmod 600 "$AUTH_KEYS"
-echo "   Added test key to authorized_keys"
-
-# ── Step 4: Verify SSH connectivity ──────────────────────────────────
-
-if ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no -o BatchMode=yes \
-    localhost "echo ok" &>/dev/null; then
-    echo "   SSH connectivity verified ✓"
-else
-    echo "❌ Cannot SSH to localhost with the test key."
-    echo "   Check that Remote Login is enabled and allows your user."
-    teardown
-    exit 1
-fi
+local_ssh_test_prepare "$STATE_DIR" "monkeyssh-tmux-test" "$MARKER" "$AUTH_KEYS"
+echo "   Generated and verified test key: $KEY_PATH"
 
 # ── Step 5: Create tmux session ──────────────────────────────────────
 

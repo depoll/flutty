@@ -1,0 +1,1266 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+const (
+	acpBridgeProtocolVersion  = 1
+	acpMaxFrameBytes          = 1024 * 1024
+	acpReplayMaxEvents        = 1024
+	acpReplayMaxBytes         = 4 * 1024 * 1024
+	acpPendingReplayMaxEvents = 256
+	acpPendingReplayMaxBytes  = acpReplayMaxBytes
+	acpIdleTimeout            = 24 * time.Hour
+	acpProviderDrainTimeout   = 2 * time.Second
+	// The queue holds a complete bounded replay plus control frames. Attach also
+	// sizes it dynamically so priming can never block while the bridge lock is
+	// held if those bounds change independently.
+	acpClientLiveQueueCapacity = acpReplayMaxEvents + 4
+	acpAttachQueueSafetyMargin = 4
+)
+
+var acpBridgeIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
+
+// acpWireMessage is the versioned NDJSON protocol spoken over an SSH exec
+// channel. Data is intentionally opaque: MonkeyMux relays it but never logs or
+// writes ACP content to disk.
+type acpWireMessage struct {
+	Version       int             `json:"version,omitempty"`
+	Type          string          `json:"type"`
+	BridgeID      string          `json:"bridgeId,omitempty"`
+	ClientID      string          `json:"clientId,omitempty"`
+	Sequence      uint64          `json:"sequence,omitempty"`
+	Ack           uint64          `json:"ack,omitempty"`
+	LastAck       uint64          `json:"lastAck,omitempty"`
+	RetainedFrom  uint64          `json:"retainedFrom,omitempty"`
+	Data          json.RawMessage `json:"data,omitempty"`
+	State         string          `json:"state,omitempty"`
+	CanSend       bool            `json:"canSend,omitempty"`
+	Error         string          `json:"error,omitempty"`
+	Command       string          `json:"command,omitempty"`
+	Bridge        *acpBridgeInfo  `json:"bridge,omitempty"`
+	Bridges       []acpBridgeInfo `json:"bridges,omitempty"`
+	ProviderState string          `json:"providerState,omitempty"`
+	ExitCode      *int            `json:"exitCode,omitempty"`
+}
+
+// acpBridgeInfo contains only safe bridge metadata. It intentionally excludes
+// the launch command, working directory, stderr, and all ACP payloads.
+type acpBridgeInfo struct {
+	ID             string `json:"id"`
+	Provider       string `json:"provider,omitempty"`
+	CommandHash    string `json:"commandHash,omitempty"`
+	State          string `json:"state"`
+	ClientCount    int    `json:"clientCount"`
+	PendingRequest int    `json:"pendingRequestCount"`
+	InFlightTurn   int    `json:"inFlightTurnCount"`
+	LastActivity   int64  `json:"lastActivityUnix"`
+	StartedAt      int64  `json:"startedAtUnix"`
+	NextSequence   uint64 `json:"nextSequence"`
+}
+
+// acpLaunchConfig is sent once through the detached daemon's private stdin
+// pipe. Keeping it out of command-line arguments avoids exposing the approved
+// provider command or working directory in process listings.
+type acpLaunchConfig struct {
+	Provider string `json:"provider"`
+	Command  string `json:"command"`
+	Cwd      string `json:"cwd"`
+}
+
+type acpReplayEvent struct {
+	message   acpWireMessage
+	bytes     int
+	pendingID string
+}
+
+type acpBridgeClient struct {
+	id         string
+	conn       net.Conn
+	send       chan acpWireMessage
+	done       chan struct{}
+	doneOnce   sync.Once
+	writerDone chan struct{}
+	ack        uint64
+}
+
+func (c *acpBridgeClient) cancel() {
+	c.doneOnce.Do(func() {
+		close(c.done)
+		_ = c.conn.Close()
+	})
+}
+
+type acpBridge struct {
+	id          string
+	provider    string
+	commandHash string
+	cwd         string
+
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+
+	mu                   sync.Mutex
+	stdinMu              sync.Mutex
+	state                string
+	startedAt            time.Time
+	lastActivity         time.Time
+	nextSequence         uint64
+	replay               []acpReplayEvent
+	replayBytes          int
+	pendingReplayEvents  int
+	pendingReplayBytes   int
+	clients              map[string]*acpBridgeClient
+	writerClientID       string
+	pendingRequests      map[string]struct{}
+	inFlightTurns        map[string]struct{}
+	exitCode             *int
+	providerDone         chan struct{}
+	providerDoneOnce     sync.Once
+	providerOutput       io.ReadCloser
+	providerOutputDone   chan struct{}
+	beforeClientVisible  func()
+	beforePublishVisible func(acpWireMessage)
+	stopOnce             sync.Once
+	done                 chan struct{}
+}
+
+func acpCommand(args []string) {
+	if len(args) == 0 {
+		acpUsageAndExit()
+	}
+	switch args[0] {
+	case "start":
+		acpStartCommand(args[1:])
+	case "attach", "connect":
+		acpAttachCommand(args[1:])
+	case "list":
+		acpListCommand()
+	case "status":
+		acpStatusCommand(args[1:])
+	case "stop":
+		acpStopCommand(args[1:])
+	case "gc":
+		acpGCCommand()
+	case "serve":
+		acpServeCommand(args[1:])
+	default:
+		acpUsageAndExit()
+	}
+}
+
+func acpUsageAndExit() {
+	fmt.Fprintln(os.Stderr, "usage: monkeymux acp start --provider LABEL --command COMMAND --cwd DIR | attach <bridge-id> | connect <bridge-id> | list | status <bridge-id> | stop <bridge-id> | gc")
+	os.Exit(2)
+}
+
+func acpStartCommand(args []string) {
+	fs := flag.NewFlagSet("acp start", flag.ExitOnError)
+	provider := fs.String("provider", "", "approved provider label")
+	command := fs.String("command", "", "approved ACP provider command")
+	cwd := fs.String("cwd", "", "provider working directory")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		acpUsageAndExit()
+	}
+	if err := validateAcpLaunch(*provider, *command, *cwd); err != nil {
+		fatal(err)
+	}
+	id, err := newAcpBridgeID()
+	if err != nil {
+		fatal(errors.New("unable to allocate ACP bridge"))
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		fatal(errors.New("unable to start ACP bridge"))
+	}
+	launch := acpLaunchConfig{
+		Provider: *provider,
+		Command:  *command,
+		Cwd:      *cwd,
+	}
+	buildCommand := func() (*exec.Cmd, io.WriteCloser, error) {
+		cmd := exec.Command(exe, "acp", "serve", "--id", id)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, nil, err
+		}
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		cmd.Env = inheritedEnvironment(os.Environ())
+		return cmd, stdin, nil
+	}
+	var started *exec.Cmd
+	for _, attr := range detachedDaemonSysProcAttrs() {
+		candidate, stdin, err := buildCommand()
+		if err != nil {
+			continue
+		}
+		candidate.SysProcAttr = attr
+		if err := candidate.Start(); err == nil {
+			if err := json.NewEncoder(stdin).Encode(launch); err == nil {
+				_ = stdin.Close()
+				started = candidate
+				break
+			}
+			_ = stdin.Close()
+			_ = candidate.Process.Kill()
+			_ = candidate.Process.Release()
+		} else {
+			_ = stdin.Close()
+		}
+	}
+	if started == nil {
+		fatal(errors.New("unable to start ACP bridge"))
+	}
+	_ = started.Process.Release()
+	deadline := time.Now().Add(socketTimeout)
+	for time.Now().Before(deadline) {
+		if _, err := dialAcpBridge(id); err == nil {
+			printAcpJSON(acpWireMessage{
+				Version:  acpBridgeProtocolVersion,
+				Type:     "started",
+				BridgeID: id,
+			})
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	fatal(errors.New("ACP bridge did not start"))
+}
+
+func acpAttachCommand(args []string) {
+	if len(args) != 1 || !validAcpBridgeID(args[0]) {
+		acpUsageAndExit()
+	}
+	conn, err := dialAcpBridge(args[0])
+	if err != nil {
+		fatal(errors.New("ACP bridge is not running"))
+	}
+	defer conn.Close()
+	errs := make(chan error, 2)
+	go func() {
+		_, err := io.Copy(conn, os.Stdin)
+		errs <- err
+	}()
+	go func() {
+		_, err := io.Copy(os.Stdout, conn)
+		errs <- err
+	}()
+	if err := <-errs; err != nil && !errors.Is(err, io.EOF) {
+		fatal(errors.New("ACP bridge connection failed"))
+	}
+}
+
+func acpListCommand() {
+	ids, err := listAcpBridgeIDs()
+	if err != nil {
+		fatal(errors.New("unable to list ACP bridges"))
+	}
+	bridges := make([]acpBridgeInfo, 0, len(ids))
+	for _, id := range ids {
+		info, err := acpBridgeStatus(id)
+		if err == nil {
+			bridges = append(bridges, info)
+		}
+	}
+	printAcpJSON(acpWireMessage{
+		Version: acpBridgeProtocolVersion,
+		Type:    "list",
+		Bridges: bridges,
+	})
+}
+
+func acpStatusCommand(args []string) {
+	if len(args) != 1 || !validAcpBridgeID(args[0]) {
+		acpUsageAndExit()
+	}
+	info, err := acpBridgeStatus(args[0])
+	if err != nil {
+		fatal(errors.New("ACP bridge is not running"))
+	}
+	printAcpJSON(acpWireMessage{
+		Version:  acpBridgeProtocolVersion,
+		Type:     "status",
+		BridgeID: args[0],
+		Bridge:   &info,
+	})
+}
+
+func acpStopCommand(args []string) {
+	if len(args) != 1 || !validAcpBridgeID(args[0]) {
+		acpUsageAndExit()
+	}
+	conn, err := dialAcpBridge(args[0])
+	if err != nil {
+		fatal(errors.New("ACP bridge is not running"))
+	}
+	defer conn.Close()
+	if err := writeAcpWireFrame(conn, acpWireMessage{
+		Version: acpBridgeProtocolVersion,
+		Type:    "command",
+		Command: "stop",
+	}); err != nil {
+		fatal(errors.New("unable to stop ACP bridge"))
+	}
+	printAcpJSON(acpWireMessage{
+		Version:  acpBridgeProtocolVersion,
+		Type:     "stopping",
+		BridgeID: args[0],
+	})
+}
+
+func acpGCCommand() {
+	runDir, err := runtimeDirectory()
+	if err != nil {
+		fatal(errors.New("unable to clean ACP bridges"))
+	}
+	gcAcpArtifacts(runDir)
+}
+
+func acpServeCommand(args []string) {
+	fs := flag.NewFlagSet("acp serve", flag.ExitOnError)
+	id := fs.String("id", "", "bridge ID")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 || !validAcpBridgeID(*id) {
+		acpUsageAndExit()
+	}
+	line, err := readBoundedAcpLine(bufio.NewReader(os.Stdin))
+	if err != nil {
+		fatal(errors.New("unable to read ACP bridge configuration"))
+	}
+	var launch acpLaunchConfig
+	if err := json.Unmarshal(line, &launch); err != nil {
+		fatal(errors.New("unable to read ACP bridge configuration"))
+	}
+	if err := validateAcpLaunch(launch.Provider, launch.Command, launch.Cwd); err != nil {
+		fatal(err)
+	}
+	bridge, err := newAcpBridge(*id, launch.Provider, launch.Command, launch.Cwd)
+	if err != nil {
+		fatal(errors.New("unable to start ACP provider"))
+	}
+	if err := serveAcpBridge(bridge); err != nil {
+		fatal(errors.New("ACP bridge stopped unexpectedly"))
+	}
+}
+
+func validateAcpLaunch(provider string, command string, cwd string) error {
+	if strings.TrimSpace(provider) == "" || len(provider) > 128 {
+		return errors.New("provider label is required")
+	}
+	if strings.TrimSpace(command) == "" || len(command) > 8192 || strings.ContainsRune(command, 0) {
+		return errors.New("approved provider command is required")
+	}
+	if strings.TrimSpace(cwd) == "" || len(cwd) > 4096 || strings.ContainsRune(cwd, 0) {
+		return errors.New("working directory is required")
+	}
+	expanded, err := expandHomePath(cwd)
+	if err != nil || !directoryExists(expanded) {
+		return errors.New("working directory is unavailable")
+	}
+	return nil
+}
+
+func newAcpBridgeID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value[:]), nil
+}
+
+func validAcpBridgeID(id string) bool {
+	return acpBridgeIDPattern.MatchString(id)
+}
+
+func newAcpBridge(id string, provider string, command string, cwd string) (*acpBridge, error) {
+	expandedCwd, err := expandHomePath(cwd)
+	if err != nil {
+		return nil, err
+	}
+	cmd := newAcpProviderCommand(command)
+	cmd.Dir = expandedCwd
+	cmd.Env = inheritedEnvironment(os.Environ())
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, err
+	}
+	stderrSink, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		return nil, err
+	}
+	cmd.Stdout = stdoutWriter
+	// Provider stderr can contain prompts, paths, or tool data and must never
+	// enter diagnostics or the ACP protocol stream.
+	cmd.Stderr = stderrSink
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderrSink.Close()
+		return nil, err
+	}
+	// Cmd.Wait closes descriptors created by StdoutPipe, which can discard
+	// unread tail frames. Keep ownership of the read end and close only the
+	// parent's writer copy so the reader drains to a real child-process EOF.
+	_ = stdoutWriter.Close()
+	_ = stderrSink.Close()
+	now := time.Now()
+	hash := sha256.Sum256([]byte(command))
+	bridge := &acpBridge{
+		id:                 id,
+		provider:           provider,
+		commandHash:        hex.EncodeToString(hash[:]),
+		cwd:                expandedCwd,
+		cmd:                cmd,
+		stdin:              stdin,
+		state:              "running",
+		startedAt:          now,
+		lastActivity:       now,
+		clients:            map[string]*acpBridgeClient{},
+		pendingRequests:    map[string]struct{}{},
+		inFlightTurns:      map[string]struct{}{},
+		providerDone:       make(chan struct{}),
+		providerOutput:     stdout,
+		providerOutputDone: make(chan struct{}),
+		done:               make(chan struct{}),
+	}
+	go func() {
+		defer stdout.Close()
+		defer close(bridge.providerOutputDone)
+		bridge.readProviderOutput(stdout)
+	}()
+	go bridge.waitForProvider()
+	return bridge, nil
+}
+
+func serveAcpBridge(bridge *acpBridge) error {
+	socket, err := acpSocketPath(bridge.id)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		return err
+	}
+	_ = os.Remove(socket)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		return err
+	}
+	_ = os.Chmod(socket, 0o600)
+	defer func() {
+		_ = listener.Close()
+		_ = os.Remove(socket)
+		bridge.stop()
+	}()
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	go func() {
+		select {
+		case <-signals:
+			bridge.stop()
+		case <-bridge.done:
+		}
+		_ = listener.Close()
+	}()
+	go bridge.watchIdle()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			select {
+			case <-bridge.done:
+				return nil
+			default:
+				return err
+			}
+		}
+		go bridge.handleConnection(conn)
+	}
+}
+
+func (b *acpBridge) readProviderOutput(stdout io.Reader) {
+	reader := bufio.NewReader(stdout)
+	for {
+		raw, err := readBoundedAcpLine(reader)
+		if len(raw) > 0 {
+			if json.Valid(raw) {
+				if !b.publish("output", raw, "", nil) {
+					b.failProviderProtocol()
+					return
+				}
+			} else {
+				b.publish("state", nil, "protocol_error", nil)
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func readBoundedAcpLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > acpMaxFrameBytes {
+			if errors.Is(err, bufio.ErrBufferFull) {
+				for errors.Is(err, bufio.ErrBufferFull) {
+					_, err = reader.ReadSlice('\n')
+				}
+			}
+			return nil, errors.New("ACP frame exceeds limit")
+		}
+		line = append(line, fragment...)
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			line = bytes.TrimSpace(line)
+			return line, err
+		}
+	}
+}
+
+func (b *acpBridge) waitForProvider() {
+	err := b.cmd.Wait()
+	b.providerDoneOnce.Do(func() { close(b.providerDone) })
+	b.waitForProviderOutput()
+	exitCode := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		exitCode = exitErr.ExitCode()
+	}
+	b.mu.Lock()
+	if b.state != "stopped" {
+		b.state = "exited"
+		b.exitCode = &exitCode
+		b.lastActivity = time.Now()
+	}
+	b.pendingRequests = map[string]struct{}{}
+	b.inFlightTurns = map[string]struct{}{}
+	b.releaseAllPendingReplayLocked()
+	b.mu.Unlock()
+	b.publish("state", nil, "exited", &exitCode)
+}
+
+func (b *acpBridge) waitForProviderOutput() {
+	if b.providerOutputDone == nil {
+		return
+	}
+	timer := time.NewTimer(acpProviderDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-b.providerOutputDone:
+		return
+	case <-timer.C:
+	}
+	if b.providerOutput != nil {
+		_ = b.providerOutput.Close()
+	}
+	<-b.providerOutputDone
+}
+
+func (b *acpBridge) observeClientMessage(raw json.RawMessage) {
+	id, hasID, hasMethod := acpJSONRPCIdentity(raw)
+	if !hasID {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if hasMethod {
+		b.inFlightTurns[id] = struct{}{}
+	} else {
+		delete(b.pendingRequests, id)
+		b.releasePendingReplayLocked(id)
+	}
+	b.lastActivity = time.Now()
+}
+
+func acpJSONRPCIdentity(raw json.RawMessage) (string, bool, bool) {
+	var envelope struct {
+		ID     json.RawMessage `json:"id"`
+		Method json.RawMessage `json:"method"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || len(envelope.ID) == 0 ||
+		string(envelope.ID) == "null" {
+		return "", false, false
+	}
+	return string(envelope.ID), true, len(envelope.Method) > 0
+}
+
+func (b *acpBridge) publish(
+	eventType string,
+	data json.RawMessage,
+	state string,
+	exitCode *int,
+) bool {
+	pendingID := ""
+	providerResponseID := ""
+	if eventType == "output" {
+		if id, hasID, hasMethod := acpJSONRPCIdentity(data); hasID {
+			if hasMethod {
+				pendingID = id
+			} else {
+				providerResponseID = id
+			}
+		}
+	}
+	messageBytes := len(data) + 128
+	b.mu.Lock()
+	if pendingID != "" &&
+		(b.pendingReplayEvents >= acpPendingReplayMaxEvents ||
+			b.pendingReplayBytes+messageBytes > acpPendingReplayMaxBytes) {
+		b.mu.Unlock()
+		return false
+	}
+	if pendingID != "" {
+		b.pendingRequests[pendingID] = struct{}{}
+	}
+	if providerResponseID != "" {
+		delete(b.inFlightTurns, providerResponseID)
+	}
+	b.nextSequence++
+	message := acpWireMessage{
+		Version:  acpBridgeProtocolVersion,
+		Type:     eventType,
+		BridgeID: b.id,
+		Sequence: b.nextSequence,
+		Data:     append(json.RawMessage(nil), data...),
+		State:    state,
+		ExitCode: exitCode,
+	}
+	b.appendReplayLocked(message, pendingID)
+	b.lastActivity = time.Now()
+	if b.beforePublishVisible != nil {
+		b.beforePublishVisible(message)
+	}
+	detached := make([]*acpBridgeClient, 0)
+	for clientID, client := range b.clients {
+		if tryEnqueueAcpClient(client, message) {
+			continue
+		}
+		delete(b.clients, clientID)
+		if b.writerClientID == clientID {
+			b.writerClientID = ""
+		}
+		detached = append(detached, client)
+	}
+	b.mu.Unlock()
+	for _, client := range detached {
+		client.cancel()
+	}
+	return true
+}
+
+func tryEnqueueAcpClient(client *acpBridgeClient, message acpWireMessage) bool {
+	select {
+	case <-client.done:
+		return false
+	default:
+	}
+	select {
+	case <-client.done:
+		return false
+	case client.send <- message:
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *acpBridge) failProviderProtocol() {
+	b.mu.Lock()
+	if b.state == "running" {
+		b.state = "protocol_error"
+		b.lastActivity = time.Now()
+	}
+	b.mu.Unlock()
+	b.publish("state", nil, "protocol_error", nil)
+	b.closeProviderInput()
+	stopAcpProvider(b.cmd, b.providerDone)
+}
+
+func (b *acpBridge) appendReplayLocked(message acpWireMessage, pendingID string) {
+	size := len(message.Data) + 128
+	b.replay = append(b.replay, acpReplayEvent{
+		message:   message,
+		bytes:     size,
+		pendingID: pendingID,
+	})
+	b.replayBytes += size
+	if pendingID != "" {
+		b.pendingReplayEvents++
+		b.pendingReplayBytes += size
+	}
+	b.trimReplayLocked()
+}
+
+func (b *acpBridge) trimReplayLocked() {
+	for len(b.replay) > acpReplayMaxEvents ||
+		(b.replayBytes > acpReplayMaxBytes && len(b.replay) > 1) {
+		index := -1
+		for i, event := range b.replay {
+			if event.pendingID == "" {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			// Active provider requests (notably permissions) have to survive
+			// detachment verbatim. They are still memory-only and are released
+			// as soon as the app sends the matching response.
+			return
+		}
+		b.replayBytes -= b.replay[index].bytes
+		b.replay = append(b.replay[:index], b.replay[index+1:]...)
+	}
+}
+
+func (b *acpBridge) releasePendingReplayLocked(id string) {
+	for index := range b.replay {
+		if b.replay[index].pendingID == id {
+			b.pendingReplayEvents--
+			b.pendingReplayBytes -= b.replay[index].bytes
+			b.replay[index].pendingID = ""
+		}
+	}
+	b.trimReplayLocked()
+}
+
+func (b *acpBridge) releaseAllPendingReplayLocked() {
+	for index := range b.replay {
+		if b.replay[index].pendingID == "" {
+			continue
+		}
+		b.replay[index].pendingID = ""
+	}
+	b.pendingReplayEvents = 0
+	b.pendingReplayBytes = 0
+	b.trimReplayLocked()
+}
+
+func (b *acpBridge) handleConnection(conn net.Conn) {
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	first, err := readAcpWireFrame(reader)
+	if err != nil {
+		return
+	}
+	if first.Type == "command" {
+		b.handleCommand(conn, first)
+		return
+	}
+	if first.Type != "hello" || first.Version != acpBridgeProtocolVersion ||
+		(first.BridgeID != "" && first.BridgeID != b.id) {
+		_ = writeAcpWireFrame(conn, acpWireMessage{
+			Version: acpBridgeProtocolVersion,
+			Type:    "error",
+			Error:   "unsupported ACP bridge protocol",
+		})
+		return
+	}
+	b.handleAttach(conn, reader, first)
+}
+
+func (b *acpBridge) handleCommand(conn net.Conn, message acpWireMessage) {
+	switch message.Command {
+	case "status":
+		info := b.snapshot()
+		_ = writeAcpWireFrame(conn, acpWireMessage{
+			Version: acpBridgeProtocolVersion,
+			Type:    "status",
+			Bridge:  &info,
+		})
+	case "gc":
+		if b.shouldIdleShutdown(time.Now()) {
+			b.stop()
+		}
+	case "stop":
+		_ = writeAcpWireFrame(conn, acpWireMessage{
+			Version:  acpBridgeProtocolVersion,
+			Type:     "stopping",
+			BridgeID: b.id,
+		})
+		b.stop()
+	default:
+		_ = writeAcpWireFrame(conn, acpWireMessage{
+			Version: acpBridgeProtocolVersion,
+			Type:    "error",
+			Error:   "unknown ACP bridge command",
+		})
+	}
+}
+
+func (b *acpBridge) handleAttach(
+	conn net.Conn,
+	reader *bufio.Reader,
+	hello acpWireMessage,
+) {
+	clientID, err := newAcpBridgeID()
+	if err != nil {
+		return
+	}
+	b.mu.Lock()
+	if b.writerClientID == "" {
+		b.writerClientID = clientID
+	}
+	canSend := b.writerClientID == clientID
+	b.lastActivity = time.Now()
+	replay := append([]acpReplayEvent(nil), b.replay...)
+	retainedFrom := b.nextSequence + 1
+	if len(replay) > 0 {
+		retainedFrom = replay[0].message.Sequence
+	}
+	snapshot := b.snapshotLocked()
+	snapshot.ClientCount++
+	primed := []acpWireMessage{{
+		Version:  acpBridgeProtocolVersion,
+		Type:     "hello",
+		BridgeID: b.id,
+		ClientID: clientID,
+		CanSend:  canSend,
+		Bridge:   &snapshot,
+	}}
+	if hello.LastAck+1 < retainedFrom || replayHasGap(replay, hello.LastAck) {
+		primed = append(primed, acpWireMessage{
+			Version:      acpBridgeProtocolVersion,
+			Type:         "overflow",
+			BridgeID:     b.id,
+			RetainedFrom: retainedFrom,
+		})
+	}
+	for _, event := range replay {
+		if event.message.Sequence > hello.LastAck {
+			primed = append(primed, event.message)
+		}
+	}
+	client := &acpBridgeClient{
+		id:         clientID,
+		conn:       conn,
+		send:       make(chan acpWireMessage, acpClientQueueCapacityFor(len(primed))),
+		done:       make(chan struct{}),
+		writerDone: make(chan struct{}),
+	}
+	client.ack = hello.LastAck
+	for _, message := range primed {
+		client.send <- message
+	}
+	if b.beforeClientVisible != nil {
+		b.beforeClientVisible()
+	}
+	b.clients[clientID] = client
+	b.mu.Unlock()
+	go b.writeClient(client)
+
+	for {
+		message, err := readAcpWireFrame(reader)
+		if err != nil {
+			b.detachClient(clientID)
+			return
+		}
+
+		if message.Version != acpBridgeProtocolVersion {
+			b.enqueue(client, acpWireMessage{
+				Version: acpBridgeProtocolVersion,
+				Type:    "error",
+				Error:   "unsupported ACP bridge protocol",
+			})
+			continue
+		}
+		switch message.Type {
+		case "ack":
+			b.recordAck(clientID, message.Ack)
+		case "input":
+			if !b.clientCanSend(clientID) {
+				b.enqueue(client, acpWireMessage{
+					Version: acpBridgeProtocolVersion,
+					Type:    "error",
+					Error:   "ACP bridge is attached by another writer",
+				})
+				continue
+			}
+			if len(message.Data) == 0 || len(message.Data) > acpMaxFrameBytes ||
+				!json.Valid(message.Data) {
+				b.enqueue(client, acpWireMessage{
+					Version: acpBridgeProtocolVersion,
+					Type:    "error",
+					Error:   "invalid ACP input frame",
+				})
+				continue
+			}
+			if err := b.writeProvider(message.Data); err != nil {
+				b.enqueue(client, acpWireMessage{
+					Version: acpBridgeProtocolVersion,
+					Type:    "error",
+					Error:   "ACP provider is unavailable",
+				})
+				continue
+			}
+			b.observeClientMessage(message.Data)
+		case "status":
+			info := b.snapshot()
+			b.enqueue(client, acpWireMessage{
+				Version: acpBridgeProtocolVersion,
+				Type:    "status",
+				Bridge:  &info,
+			})
+		default:
+			b.enqueue(client, acpWireMessage{
+				Version: acpBridgeProtocolVersion,
+				Type:    "error",
+				Error:   "unknown ACP bridge message",
+			})
+		}
+	}
+}
+
+func acpClientQueueCapacityFor(primedCount int) int {
+	capacity := acpClientLiveQueueCapacity
+	if required := primedCount + acpAttachQueueSafetyMargin; required > capacity {
+		capacity = required
+	}
+	return capacity
+}
+
+func replayHasGap(replay []acpReplayEvent, after uint64) bool {
+	expected := after + 1
+	for _, event := range replay {
+		if event.message.Sequence <= after {
+			continue
+		}
+		if event.message.Sequence != expected {
+			return true
+		}
+		expected++
+	}
+	return false
+}
+
+func (b *acpBridge) writeClient(client *acpBridgeClient) {
+	defer close(client.writerDone)
+	for {
+		// Prefer cancellation when both it and a queued message are ready. This
+		// avoids retaining a writer goroutine for a disconnected idle client.
+		select {
+		case <-client.done:
+			return
+		default:
+		}
+		var message acpWireMessage
+		select {
+		case <-client.done:
+			return
+		case message = <-client.send:
+		}
+		if err := writeAcpWireFrame(client.conn, message); err != nil {
+			b.detachClient(client.id)
+			return
+		}
+	}
+}
+
+func (b *acpBridge) enqueue(client *acpBridgeClient, message acpWireMessage) {
+	b.mu.Lock()
+	current, attached := b.clients[client.id]
+	b.mu.Unlock()
+	if !attached || current != client {
+		return
+	}
+	select {
+	case <-client.done:
+		return
+	default:
+	}
+	select {
+	case <-client.done:
+		return
+	case client.send <- message:
+	default:
+		// A slow SSH client must not block the provider or unbound the replay
+		// buffer. It can reconnect and resume from its last ACK.
+		b.detachClient(client.id)
+	}
+}
+
+func (b *acpBridge) detachClient(clientID string) {
+	b.mu.Lock()
+	client, ok := b.clients[clientID]
+	if ok {
+		delete(b.clients, clientID)
+		if b.writerClientID == clientID {
+			b.writerClientID = ""
+		}
+		b.lastActivity = time.Now()
+	}
+	b.mu.Unlock()
+	if ok {
+		client.cancel()
+	}
+}
+
+func (b *acpBridge) clientCanSend(clientID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, attached := b.clients[clientID]; !attached {
+		return false
+	}
+	if b.writerClientID == "" {
+		b.writerClientID = clientID
+	}
+	return b.writerClientID == clientID
+}
+
+func (b *acpBridge) recordAck(clientID string, sequence uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if client, ok := b.clients[clientID]; ok && sequence <= b.nextSequence {
+		if sequence > client.ack {
+			client.ack = sequence
+		}
+		b.lastActivity = time.Now()
+	}
+}
+
+func (b *acpBridge) writeProvider(data json.RawMessage) error {
+	b.stdinMu.Lock()
+	defer b.stdinMu.Unlock()
+	if b.stdin == nil {
+		return errors.New("closed")
+	}
+	if _, err := b.stdin.Write(data); err != nil {
+		return err
+	}
+	_, err := b.stdin.Write([]byte{'\n'})
+	return err
+}
+
+func (b *acpBridge) snapshot() acpBridgeInfo {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.snapshotLocked()
+}
+
+func (b *acpBridge) snapshotLocked() acpBridgeInfo {
+	return acpBridgeInfo{
+		ID:             b.id,
+		Provider:       b.provider,
+		CommandHash:    b.commandHash,
+		State:          b.state,
+		ClientCount:    len(b.clients),
+		PendingRequest: len(b.pendingRequests),
+		InFlightTurn:   len(b.inFlightTurns),
+		LastActivity:   b.lastActivity.Unix(),
+		StartedAt:      b.startedAt.Unix(),
+		NextSequence:   b.nextSequence,
+	}
+}
+
+func (b *acpBridge) shouldIdleShutdown(now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.clients) == 0 && len(b.pendingRequests) == 0 &&
+		len(b.inFlightTurns) == 0 && now.Sub(b.lastActivity) >= acpIdleTimeout
+}
+
+func (b *acpBridge) watchIdle() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if b.shouldIdleShutdown(time.Now()) {
+				b.stop()
+				return
+			}
+		case <-b.done:
+			return
+		}
+	}
+}
+
+func (b *acpBridge) stop() {
+	b.stopOnce.Do(func() {
+		b.mu.Lock()
+		b.state = "stopped"
+		b.lastActivity = time.Now()
+		clients := make([]*acpBridgeClient, 0, len(b.clients))
+		for _, client := range b.clients {
+			clients = append(clients, client)
+		}
+		b.clients = map[string]*acpBridgeClient{}
+		b.mu.Unlock()
+		b.closeProviderInput()
+		stopAcpProvider(b.cmd, b.providerDone)
+		close(b.done)
+		for _, client := range clients {
+			client.cancel()
+		}
+	})
+}
+
+func (b *acpBridge) closeProviderInput() {
+	b.stdinMu.Lock()
+	defer b.stdinMu.Unlock()
+	if b.stdin == nil {
+		return
+	}
+	_ = b.stdin.Close()
+	b.stdin = nil
+}
+
+func acpSocketPath(id string) (string, error) {
+	if !validAcpBridgeID(id) {
+		return "", errors.New("invalid bridge ID")
+	}
+	dir, err := runtimeDirectory()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "monkeymux-acp-"+id+".sock"), nil
+}
+
+func dialAcpBridge(id string) (net.Conn, error) {
+	path, err := acpSocketPath(id)
+	if err != nil {
+		return nil, err
+	}
+	return net.DialTimeout("unix", path, 500*time.Millisecond)
+}
+
+func listAcpBridgeIDs() ([]string, error) {
+	dir, err := runtimeDirectory()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "monkeymux-acp-") ||
+			!strings.HasSuffix(name, ".sock") {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(name, "monkeymux-acp-"), ".sock")
+		if validAcpBridgeID(id) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func acpBridgeStatus(id string) (acpBridgeInfo, error) {
+	conn, err := dialAcpBridge(id)
+	if err != nil {
+		return acpBridgeInfo{}, err
+	}
+	defer conn.Close()
+	if err := writeAcpWireFrame(conn, acpWireMessage{
+		Version: acpBridgeProtocolVersion,
+		Type:    "command",
+		Command: "status",
+	}); err != nil {
+		return acpBridgeInfo{}, err
+	}
+	message, err := readAcpWireFrame(bufio.NewReader(conn))
+	if err != nil || message.Bridge == nil {
+		return acpBridgeInfo{}, errors.New("invalid status response")
+	}
+	return *message.Bridge, nil
+}
+
+func gcAcpArtifacts(runDir string) {
+	entries, err := os.ReadDir(runDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "monkeymux-acp-") ||
+			!strings.HasSuffix(name, ".sock") {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(name, "monkeymux-acp-"), ".sock")
+		path := filepath.Join(runDir, name)
+		if !validAcpBridgeID(id) {
+			_ = os.Remove(path)
+			continue
+		}
+		conn, err := dialAcpBridge(id)
+		if err != nil {
+			_ = os.Remove(path)
+			continue
+		}
+		_ = writeAcpWireFrame(conn, acpWireMessage{
+			Version: acpBridgeProtocolVersion,
+			Type:    "command",
+			Command: "gc",
+		})
+		_ = conn.Close()
+	}
+}
+
+func readAcpWireFrame(reader *bufio.Reader) (acpWireMessage, error) {
+	line, err := readBoundedAcpLine(reader)
+	if err != nil {
+		return acpWireMessage{}, err
+	}
+	if len(line) == 0 {
+		return acpWireMessage{}, errors.New("empty ACP bridge frame")
+	}
+	var message acpWireMessage
+	if err := json.Unmarshal(line, &message); err != nil {
+		return acpWireMessage{}, err
+	}
+	return message, nil
+}
+
+func writeAcpWireFrame(writer io.Writer, message acpWireMessage) error {
+	data, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	if len(data) > acpMaxFrameBytes {
+		return errors.New("ACP bridge frame exceeds limit")
+	}
+	_, err = writer.Write(append(data, '\n'))
+	return err
+}
+
+func printAcpJSON(message acpWireMessage) {
+	_ = writeAcpWireFrame(os.Stdout, message)
+}
