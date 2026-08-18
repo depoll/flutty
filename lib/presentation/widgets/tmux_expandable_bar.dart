@@ -2021,8 +2021,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         : null;
 
     return ListTile(
+      dense: true,
       visualDensity: _denseTileVisualDensity,
-      minTileHeight: 52,
       minVerticalPadding: 2,
       contentPadding: const EdgeInsets.only(left: 12, right: 4),
       horizontalTitleGap: 10,
@@ -2108,14 +2108,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             padding: const EdgeInsets.only(right: 6),
             child: TmuxWindowStatusBadge(window: window),
           ),
-          SizedBox.square(
-            dimension: 44,
-            child: IconButton(
-              icon: const Icon(Icons.close, size: 18),
-              padding: EdgeInsets.zero,
-              tooltip: 'Close window',
-              onPressed: () => unawaited(_confirmCloseWindow(window)),
-            ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16),
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            padding: EdgeInsets.zero,
+            tooltip: 'Close window',
+            onPressed: () => unawaited(_confirmCloseWindow(window)),
           ),
         ],
       ),

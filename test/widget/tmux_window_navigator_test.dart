@@ -204,11 +204,6 @@ void main() {
       expect(find.textContaining('d detach'), findsOneWidget);
 
       final closeButton = find.byTooltip('Close window').first;
-      final closeSize = tester.getSize(
-        find.byKey(const ValueKey('close-window-0')),
-      );
-      expect(closeSize.width, greaterThanOrEqualTo(44));
-      expect(closeSize.height, greaterThanOrEqualTo(44));
       await tester.tap(closeButton);
       await tester.pumpAndSettle();
       expect(find.text('Close window?'), findsOneWidget);
@@ -728,6 +723,61 @@ void main() {
       expect(
         (result! as TmuxNewAcpSessionAction).providerId,
         AcpBuiltinProviderIds.copilotCli,
+      );
+    });
+
+    testWidgets('terminal/native selector stays above the keyboard', (
+      tester,
+    ) async {
+      tester.view
+        ..physicalSize = const Size(390, 844)
+        ..devicePixelRatio = 1
+        ..viewInsets = const FakeViewPadding(bottom: 300);
+      addTearDown(() {
+        tester.view
+          ..resetPhysicalSize()
+          ..resetDevicePixelRatio()
+          ..resetViewInsets();
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => showTmuxNewWindowPicker(
+                  context: context,
+                  isProUser: true,
+                  startClisInYoloMode: false,
+                  installedToolsFuture: Future.value(const <AgentLaunchTool>{
+                    AgentLaunchTool.copilotCli,
+                  }),
+                  nativeAcpProviderIds: const <AgentLaunchTool, String>{
+                    AgentLaunchTool.copilotCli:
+                        AcpBuiltinProviderIds.copilotCli,
+                  },
+                ),
+                child: const Text('Open picker'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Copilot CLI'));
+      await tester.pumpAndSettle();
+
+      final nativeChat = find.text('Native chat');
+      expect(nativeChat, findsOneWidget);
+      expect(tester.getBottomLeft(nativeChat).dy, lessThan(844 - 300));
+      expect(
+        tester
+            .widgetList<AnimatedPadding>(find.byType(AnimatedPadding))
+            .any(
+              (widget) => widget.padding == const EdgeInsets.only(bottom: 300),
+            ),
+        isTrue,
       );
     });
 

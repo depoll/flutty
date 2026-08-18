@@ -114,8 +114,6 @@ final class MonkeyMuxAcpBridgeService {
       final message = await _runHelper(session, installation, [
         'acp',
         'start',
-        '--provider-id',
-        providerId,
         '--provider',
         providerLabel,
         '--command',
@@ -144,6 +142,8 @@ final class MonkeyMuxAcpBridgeService {
           'connectionId': session.connectionId,
           'providerHash': _providerHash(providerId),
           'errorType': error.runtimeType,
+          if (error is MonkeyMuxAcpBridgeException)
+            'bridgeErrorKind': error.kind.name,
           'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
         },
       );

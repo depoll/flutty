@@ -273,7 +273,6 @@ void main() {
     expect(bridges.single.cwd, '/home/demo/project with spaces');
     expect(status.state, MonkeyMuxAcpProviderState.running);
     expect(commands, hasLength(4));
-    expect(commands.first, contains("'--provider-id' 'copilot'"));
     expect(commands.first, contains("'Copilot'\"'\"'s CLI'"));
     expect(commands.first, contains("'/home/demo/project with spaces'"));
   });

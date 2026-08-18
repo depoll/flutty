@@ -193,55 +193,71 @@ Future<_AgentWindowMode?> _showAgentWindowModePicker({
   context: context,
   useSafeArea: true,
   showDragHandle: true,
+  isScrollControlled: true,
   requestFocus: terminalOverlayRouteRequestFocus(context),
   builder: (context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Row(
+    final mediaQuery = MediaQuery.of(context);
+    final keyboardInset = mediaQuery.viewInsets.bottom;
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 150),
+      curve: Curves.easeOutCubic,
+      padding: EdgeInsets.only(bottom: keyboardInset),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: math.max(0, mediaQuery.size.height - keyboardInset - 24),
+        ),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                TmuxToolPickerSheet._iconForTool(tool, theme),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    tool.label,
-                    style: FluttyTheme.displayMono(
-                      fontSize: 18,
-                      color: theme.colorScheme.onSurface,
-                    ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Row(
+                    children: [
+                      TmuxToolPickerSheet._iconForTool(tool, theme),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          tool.label,
+                          style: FluttyTheme.displayMono(
+                            fontSize: 18,
+                            color: theme.colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
+                ),
+                ListTile(
+                  minTileHeight: 52,
+                  leading: const Icon(Icons.terminal_outlined),
+                  title: const Text('Terminal'),
+                  subtitle: const Text('Run the full CLI in MonkeyMux'),
+                  trailing: isProUser ? null : const PremiumBadge(),
+                  enabled: isProUser,
+                  onTap: isProUser
+                      ? () => Navigator.pop(context, _AgentWindowMode.terminal)
+                      : null,
+                ),
+                ListTile(
+                  minTileHeight: 52,
+                  leading: Icon(
+                    Icons.chat_bubble_outline,
+                    color: theme.colorScheme.primary,
+                  ),
+                  title: const Text('Native chat'),
+                  subtitle: const Text('Chat, tools, and permissions'),
+                  onTap: () =>
+                      Navigator.pop(context, _AgentWindowMode.nativeAcp),
                 ),
               ],
             ),
           ),
-          ListTile(
-            minTileHeight: 52,
-            leading: const Icon(Icons.terminal_outlined),
-            title: const Text('Terminal'),
-            subtitle: const Text('Run the full CLI in MonkeyMux'),
-            trailing: isProUser ? null : const PremiumBadge(),
-            enabled: isProUser,
-            onTap: isProUser
-                ? () => Navigator.pop(context, _AgentWindowMode.terminal)
-                : null,
-          ),
-          ListTile(
-            minTileHeight: 52,
-            leading: Icon(
-              Icons.chat_bubble_outline,
-              color: theme.colorScheme.primary,
-            ),
-            title: const Text('Native chat'),
-            subtitle: const Text('Chat, tools, and permissions'),
-            onTap: () => Navigator.pop(context, _AgentWindowMode.nativeAcp),
-          ),
-        ],
+        ),
       ),
     );
   },
@@ -1010,7 +1026,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
                   // New Window button
                   ListTile(
                     visualDensity: _tmuxNavigatorDenseVisualDensity,
-                    minTileHeight: 44,
+                    minTileHeight: 42,
                     contentPadding: _tmuxNavigatorTilePadding,
                     horizontalTitleGap: 12,
                     minLeadingWidth: 20,
@@ -1244,8 +1260,8 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         : theme.colorScheme.onSurfaceVariant;
 
     return ListTile(
+      dense: true,
       visualDensity: _tmuxNavigatorDenseVisualDensity,
-      minTileHeight: 52,
       minVerticalPadding: 2,
       contentPadding: const EdgeInsets.only(left: 16, right: 4),
       horizontalTitleGap: 10,
@@ -1314,15 +1330,13 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
             padding: const EdgeInsets.only(right: 6),
             child: TmuxWindowStatusBadge(window: window),
           ),
-          SizedBox.square(
-            key: ValueKey('close-window-${window.index}'),
-            dimension: 44,
-            child: IconButton(
-              icon: const Icon(Icons.close, size: 18),
-              padding: EdgeInsets.zero,
-              tooltip: 'Close window',
-              onPressed: () => unawaited(_confirmCloseWindow(window)),
-            ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16),
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+            padding: EdgeInsets.zero,
+            tooltip: 'Close window',
+            onPressed: () => unawaited(_confirmCloseWindow(window)),
           ),
         ],
       ),
@@ -1649,7 +1663,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
                         for (final tool in tools)
                           ListTile(
                             visualDensity: _tmuxNavigatorDenseVisualDensity,
-                            minTileHeight: 44,
+                            minTileHeight: 42,
                             contentPadding: _tmuxNavigatorTilePadding,
                             horizontalTitleGap: 12,
                             minLeadingWidth: 20,
