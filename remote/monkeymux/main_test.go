@@ -10257,8 +10257,13 @@ func TestDiscoverCodexSessionIDsFallsBackToRecentRolloutForCwd(t *testing.T) {
 		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
 		200: {pid: 200, ppid: 100, comm: "codex", args: "codex"},
 	}
+	processWorkingDirectoryForMetadata = func(int) string { return "" }
 
-	sessions := discoverCodexSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverCodexSessionIDs(
+		processes,
+		map[int]struct{}{100: {}},
+		map[int]string{100: "/work/project"},
+	)
 
 	if got := sessions[100]; got != sessionID {
 		t.Fatalf("codex session id = %q, want %q", got, sessionID)
@@ -10395,7 +10400,12 @@ func TestDiscoverOpenCodeSessionIDsUsesWorkingDirectory(t *testing.T) {
 		200: {pid: 200, ppid: 100, comm: "opencode", args: "opencode"},
 	}
 
-	sessions := discoverOpenCodeSessionIDs(processes, map[int]struct{}{100: {}})
+	processWorkingDirectoryForMetadata = func(int) string { return "" }
+	sessions := discoverOpenCodeSessionIDs(
+		processes,
+		map[int]struct{}{100: {}},
+		map[int]string{100: "/work/project"},
+	)
 
 	if got := sessions[100]; got != "ses_new" {
 		t.Fatalf("opencode session id = %q, want ses_new", got)

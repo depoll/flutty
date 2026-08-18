@@ -2872,6 +2872,7 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		return
 	}
 	panePids := map[int]struct{}{}
+	paneWorkingDirectories := map[int]string{}
 	hasAntigravityWindows := false
 	hasCursorWindows := false
 	hasPiWindows := false
@@ -2891,6 +2892,7 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		}
 		if tool != "" && window.PanePid > 0 {
 			panePids[window.PanePid] = struct{}{}
+			paneWorkingDirectories[window.PanePid] = window.Cwd
 		}
 	}
 	processes := map[int]processInfo{}
@@ -2914,10 +2916,10 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	if len(processes) > 0 {
 		processDiscoveredSessions = map[string]map[int]string{
 			"copilot":  discoverCopilotSessionIDs(processes, panePids),
-			"codex":    discoverCodexSessionIDs(processes, panePids),
-			"opencode": discoverOpenCodeSessionIDs(processes, panePids),
-			"claude":   discoverClaudeSessionIDs(processes, panePids),
-			"gemini":   discoverGeminiSessionIDs(processes, panePids),
+			"codex":    discoverCodexSessionIDs(processes, panePids, paneWorkingDirectories),
+			"opencode": discoverOpenCodeSessionIDs(processes, panePids, paneWorkingDirectories),
+			"claude":   discoverClaudeSessionIDs(processes, panePids, paneWorkingDirectories),
+			"gemini":   discoverGeminiSessionIDs(processes, panePids, paneWorkingDirectories),
 		}
 	}
 	for i := range restore.Windows {
@@ -4627,9 +4629,26 @@ func agentProcessesByPane(
 	return selected
 }
 
+func agentWorkingDirectoryForMetadata(
+	processPID int,
+	panePID int,
+	fallbackWorkingDirectories []map[int]string,
+) string {
+	if workingDirectory := normalizedMetadataPath(
+		processWorkingDirectoryForMetadata(processPID),
+	); workingDirectory != "" {
+		return workingDirectory
+	}
+	if len(fallbackWorkingDirectories) == 0 {
+		return ""
+	}
+	return normalizedMetadataPath(fallbackWorkingDirectories[0][panePID])
+}
+
 func discoverCodexSessionIDs(
 	processes map[int]processInfo,
 	panePids map[int]struct{},
+	fallbackWorkingDirectories ...map[int]string,
 ) map[int]string {
 	type unresolvedCodexProcess struct {
 		panePid          int
@@ -4642,8 +4661,10 @@ func discoverCodexSessionIDs(
 	workingDirectoryCounts := map[string]int{}
 	countedWorkingDirectoryPanes := map[int]bool{}
 	for panePid, process := range agentProcessesByPane(processes, panePids, "codex") {
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
+		workingDirectory := agentWorkingDirectoryForMetadata(
+			process.pid,
+			panePid,
+			fallbackWorkingDirectories,
 		)
 		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
 			workingDirectoryCounts[workingDirectory]++
@@ -4815,6 +4836,7 @@ var openCodeSessionEntriesReader = defaultOpenCodeSessionEntries
 func discoverOpenCodeSessionIDs(
 	processes map[int]processInfo,
 	panePids map[int]struct{},
+	fallbackWorkingDirectories ...map[int]string,
 ) map[int]string {
 	type unresolvedOpenCodeProcess struct {
 		panePid          int
@@ -4827,8 +4849,10 @@ func discoverOpenCodeSessionIDs(
 	workingDirectoryCounts := map[string]int{}
 	countedWorkingDirectoryPanes := map[int]bool{}
 	for panePid, process := range agentProcessesByPane(processes, panePids, "opencode") {
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
+		workingDirectory := agentWorkingDirectoryForMetadata(
+			process.pid,
+			panePid,
+			fallbackWorkingDirectories,
 		)
 		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
 			workingDirectoryCounts[workingDirectory]++
@@ -4976,6 +5000,7 @@ var claudeSessionIDPattern = regexp.MustCompile(
 func discoverClaudeSessionIDs(
 	processes map[int]processInfo,
 	panePids map[int]struct{},
+	fallbackWorkingDirectories ...map[int]string,
 ) map[int]string {
 	type unresolvedClaudeProcess struct {
 		panePid          int
@@ -4988,8 +5013,10 @@ func discoverClaudeSessionIDs(
 	workingDirectoryCounts := map[string]int{}
 	countedWorkingDirectoryPanes := map[int]bool{}
 	for panePid, process := range agentProcessesByPane(processes, panePids, "claude") {
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
+		workingDirectory := agentWorkingDirectoryForMetadata(
+			process.pid,
+			panePid,
+			fallbackWorkingDirectories,
 		)
 		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
 			workingDirectoryCounts[workingDirectory]++
@@ -5113,6 +5140,7 @@ type geminiSessionMetadata struct {
 func discoverGeminiSessionIDs(
 	processes map[int]processInfo,
 	panePids map[int]struct{},
+	fallbackWorkingDirectories ...map[int]string,
 ) map[int]string {
 	type unresolvedGeminiProcess struct {
 		panePid          int
@@ -5125,8 +5153,10 @@ func discoverGeminiSessionIDs(
 	workingDirectoryCounts := map[string]int{}
 	countedWorkingDirectoryPanes := map[int]bool{}
 	for panePid, process := range agentProcessesByPane(processes, panePids, "gemini") {
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
+		workingDirectory := agentWorkingDirectoryForMetadata(
+			process.pid,
+			panePid,
+			fallbackWorkingDirectories,
 		)
 		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
 			workingDirectoryCounts[workingDirectory]++
