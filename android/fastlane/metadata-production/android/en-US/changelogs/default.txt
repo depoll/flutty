@@ -1,6 +1,6 @@
-What's new in 0.4.0
+What's new in 0.4.1
 
-- New "Detect open ports" switch turns on automatic port forwarding from the terminal's Port Forwards sheet.
-- The tmux/MonkeyMux bar only appears for the connection you are actually attached to.
-- Agents get the right light/dark colour scheme in background windows, with no stray escape text at the prompt.
-- MonkeyMux sessions recover from recycled process IDs instead of locking you out.
+- Launch or resume Grok Build from the project-scoped agent picker.
+- Compatible tools can report terminal progress, notifications, colours, and command boundaries more cleanly.
+- Touch scrolling is smoother in full-screen apps, image-heavy output, and long sessions.
+- Android keyboard controls, attachment pastes, and shell completion updates are more reliable.

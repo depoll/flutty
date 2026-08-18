@@ -1,8 +1,8 @@
-What's new in this 0.4.0 beta
+What's new in this 0.4.1 beta
 
-- Turn on automatic port forwarding straight from the terminal: the Port Forwards sheet now has a "Detect open ports" switch that applies to the live session right away.
-- The tmux/MonkeyMux bar now belongs to the connection you are actually attached to, so it no longer appears for a host that has nothing running.
-- Agents that ask whether the terminal is light or dark get an answer while their window runs in the background, so they pick the right colour scheme instead of leaving stray escape text at the prompt.
-- MonkeyMux sessions recover from a recycled process ID instead of locking you out, and an unusual session name can no longer be mistaken for a different session.
+- Launch or resume Grok Build from the same project-scoped agent picker used for your other coding tools.
+- Expanded terminal integration lets compatible tools report progress, notifications, colours, and command boundaries without cluttering the prompt.
+- Touch scrolling is smoother and more predictable in full-screen apps, image-heavy output, and long-running sessions.
+- Android keyboard controls, bracketed attachment pastes, and shell completion updates are now more reliable.
 
 Thanks for testing the beta — please report anything that feels off.

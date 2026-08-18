@@ -103,7 +103,8 @@ def main() -> None:
         if not path.exists():
             raise FileNotFoundError(f'Missing demo video: {path}')
     infos = _probe_videos(paths)
-    for target, path in zip(targets, paths, strict=True):
+    for index, target in enumerate(targets):
+        path = paths[index]
         _validate_video(
             path=path,
             expected_size=target.size,
