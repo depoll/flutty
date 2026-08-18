@@ -2894,7 +2894,7 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	}
 	processes := map[int]processInfo{}
 	if len(panePids) > 0 {
-		processes = readProcessTable()
+		processes = processTableForMetadata()
 	}
 	piSessions := map[int]piRestoreSession{}
 	if hasPiWindows {
@@ -2957,7 +2957,7 @@ func applyPiRestoreSessions(restore *serverRestore, sessions map[int]piRestoreSe
 		restore.Windows[i].AgentSessionID = ""
 		restore.Windows[i].AgentSessionDir = ""
 		restore.Windows[i].AgentSessionPath = ""
-		if session, ok := sessions[i]; ok {
+		if session, ok := sessions[i]; ok && agentToolForRestore(restore.Windows[i]) == "pi" {
 			restore.Windows[i].AgentSessionID = session.sessionID
 			restore.Windows[i].AgentSessionDir = session.sessionDir
 			restore.Windows[i].AgentSessionPath = session.sessionPath
@@ -3013,10 +3013,6 @@ func readAntigravityHistoryEntries() []antigravityHistoryEntry {
 		return nil
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return nil
-	}
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -3025,6 +3021,7 @@ func readAntigravityHistoryEntries() []antigravityHistoryEntry {
 		var raw struct {
 			ConversationID string `json:"conversationId"`
 			Workspace      string `json:"workspace"`
+			Timestamp      int64  `json:"timestamp"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			continue
@@ -3036,7 +3033,7 @@ func readAntigravityHistoryEntries() []antigravityHistoryEntry {
 		entries = append(entries, antigravityHistoryEntry{
 			conversationID: sessionID,
 			workspace:      normalizedAntigravityWorkspacePath(raw.Workspace),
-			updatedAt:      info.ModTime(),
+			updatedAt:      unixDatabaseTime(strconv.FormatInt(raw.Timestamp, 10)),
 		})
 	}
 	return entries
@@ -3255,6 +3252,8 @@ var processStartedAtForMetadata = func(pid int) time.Time {
 	return inspectProcess(pid).started
 }
 
+var processTableForMetadata = readProcessTable
+
 type piRestoreSession struct {
 	sessionID   string
 	sessionDir  string
@@ -3278,7 +3277,7 @@ func discoverPiSessions(
 	}
 	used := map[string]bool{}
 	for _, window := range restore.Windows {
-		if agentToolCandidateForRestore(window) == "pi" {
+		if agentToolForRestore(window) == "pi" {
 			continue
 		}
 		if id := strings.TrimSpace(window.AgentSessionID); id != "" {
@@ -3305,6 +3304,9 @@ func discoverPiSessions(
 			continue
 		}
 		process, hasProcess := piProcesses[window.PanePid]
+		if agentToolForRestore(window) != "pi" && !hasProcess {
+			continue
+		}
 		if hasProcess {
 			restore.Windows[i].AgentToolConfirmed = true
 			livePiWindows[i] = true
@@ -3403,6 +3405,10 @@ func discoverPiSessions(
 			indices,
 			candidates,
 		) {
+			if !livePiWindows[index] ||
+				!sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) {
+				continue
+			}
 			sessions[index] = piRestoreSession{
 				sessionID:   candidate.sessionID,
 				sessionDir:  filepath.Dir(candidate.path),
@@ -3427,12 +3433,26 @@ func discoverPiSessions(
 		// latest terminal output still brackets the JSONL append for that turn,
 		// which gives upgrades a one-to-one signal even after /new or /resume
 		// made process-start correlation stale. Fail closed if timestamps overlap.
-		for index, candidate := range uniquePiSessionsByWindowActivity(
+		activityMatches := uniquePiSessionsByWindowActivity(
 			restore,
 			remainingIndices,
 			remainingCandidates,
 			livePiWindows,
-		) {
+		)
+		activityOwnedSessionIDs := map[string]bool{}
+		for _, candidate := range activityMatches {
+			activityOwnedSessionIDs[candidate.sessionID] = true
+		}
+		for index, candidate := range activityMatches {
+			if !sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) ||
+				piSessionWasSuperseded(
+					remainingCandidates,
+					candidate,
+					processStarts[index],
+					activityOwnedSessionIDs,
+				) {
+				continue
+			}
 			sessions[index] = piRestoreSession{
 				sessionID:   candidate.sessionID,
 				sessionDir:  filepath.Dir(candidate.path),
@@ -3455,29 +3475,20 @@ func discoverPiSessions(
 
 		// Compute every pane's process-time match before reserving any session.
 		// A greedy pass can let an earlier pane steal a later pane's only match.
-		provisional := map[int]piSessionEntry{}
-		owners := map[string][]int{}
+		processMatchesByWindow := map[int][]piSessionEntry{}
 		for _, index := range remainingIndices {
-			matches := piLeafSessionMatches(
+			processMatchesByWindow[index] = piLeafSessionMatches(
 				piSessionsCreatedForProcessStart(
 					remainingCandidates,
 					processStarts[index],
 				),
 				remainingCandidates,
 			)
-			if len(matches) != 1 {
-				continue
-			}
-			provisional[index] = matches[0]
-			owners[matches[0].sessionID] = append(owners[matches[0].sessionID], index)
 		}
+		provisional := uniquePiSessionAssignments(processMatchesByWindow)
 		ownedSessionIDs := map[string]bool{}
-		for index, candidate := range provisional {
-			if len(owners[candidate.sessionID]) == 1 {
-				ownedSessionIDs[candidate.sessionID] = true
-			} else {
-				delete(provisional, index)
-			}
+		for _, candidate := range provisional {
+			ownedSessionIDs[candidate.sessionID] = true
 		}
 		accepted := map[int]piSessionEntry{}
 		for index, candidate := range provisional {
@@ -3562,10 +3573,18 @@ func discoverPiSessions(
 		// Preserve the old cwd fallback only for a genuinely one-to-one
 		// bucket. Never hand a leftover session to a pane after a multi-pane
 		// process match was rejected as ambiguous.
-		if len(remainingIndices) == 1 && len(remainingCandidates) == 1 {
-			index := remainingIndices[0]
-			if _, ok := sessions[index]; !ok {
-				candidate := remainingCandidates[0]
+		if len(indices) == 1 && len(candidates) == 1 {
+			index := indices[0]
+			candidate := candidates[0]
+			if _, ok := sessions[index]; !ok &&
+				livePiWindows[index] &&
+				sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) &&
+				!piSessionWasSuperseded(
+					candidates,
+					candidate,
+					processStarts[index],
+					map[string]bool{candidate.sessionID: true},
+				) {
 				sessions[index] = piRestoreSession{
 					sessionID:   candidate.sessionID,
 					sessionDir:  filepath.Dir(candidate.path),
@@ -3584,8 +3603,7 @@ func uniquePiSessionsByWindowActivity(
 	candidates []piSessionEntry,
 	livePiWindows map[int]bool,
 ) map[int]piSessionEntry {
-	provisional := map[int]piSessionEntry{}
-	owners := map[string][]int{}
+	matchesByWindow := map[int][]piSessionEntry{}
 	for _, index := range indices {
 		if !livePiWindows[index] {
 			continue
@@ -3608,19 +3626,28 @@ func uniquePiSessionsByWindowActivity(
 				matches = append(matches, candidate)
 			}
 		}
-		matches = piLeafSessionMatches(matches, candidates)
-		if len(matches) != 1 {
+		matchesByWindow[index] = piLeafSessionMatches(matches, candidates)
+	}
+	return uniquePiSessionAssignments(matchesByWindow)
+}
+
+func uniquePiSessionAssignments(
+	matchesByWindow map[int][]piSessionEntry,
+) map[int]piSessionEntry {
+	claimants := map[string]int{}
+	for _, matches := range matchesByWindow {
+		for _, candidate := range matches {
+			claimants[candidate.sessionID]++
+		}
+	}
+	assignments := map[int]piSessionEntry{}
+	for index, matches := range matchesByWindow {
+		if len(matches) != 1 || claimants[matches[0].sessionID] != 1 {
 			continue
 		}
-		provisional[index] = matches[0]
-		owners[matches[0].sessionID] = append(owners[matches[0].sessionID], index)
+		assignments[index] = matches[0]
 	}
-	for index, candidate := range provisional {
-		if len(owners[candidate.sessionID]) != 1 {
-			delete(provisional, index)
-		}
-	}
-	return provisional
+	return assignments
 }
 
 func uniquePiSessionsByPaneTitle(
@@ -3628,8 +3655,7 @@ func uniquePiSessionsByPaneTitle(
 	indices []int,
 	candidates []piSessionEntry,
 ) map[int]piSessionEntry {
-	provisional := map[int]piSessionEntry{}
-	owners := map[string][]int{}
+	matchesByWindow := map[int][]piSessionEntry{}
 	for _, index := range indices {
 		matches := []piSessionEntry{}
 		for _, candidate := range candidates {
@@ -3637,19 +3663,9 @@ func uniquePiSessionsByPaneTitle(
 				matches = append(matches, candidate)
 			}
 		}
-		matches = piLeafSessionMatches(matches, candidates)
-		if len(matches) != 1 {
-			continue
-		}
-		provisional[index] = matches[0]
-		owners[matches[0].sessionID] = append(owners[matches[0].sessionID], index)
+		matchesByWindow[index] = piLeafSessionMatches(matches, candidates)
 	}
-	for index, candidate := range provisional {
-		if len(owners[candidate.sessionID]) != 1 {
-			delete(provisional, index)
-		}
-	}
-	return provisional
+	return uniquePiSessionAssignments(matchesByWindow)
 }
 
 func piSessionsWithLatestNamesForTitles(
@@ -4320,6 +4336,9 @@ func discoverCopilotSessionIDs(
 			// one so a restored window resumes the live session rather than an
 			// abandoned one.
 			modTime := copilotLockModTime(lock)
+			if !sessionUpdatedDuringProcess(modTime, processStartedAtForMetadata(pid)) {
+				continue
+			}
 			if previous, exists := chosenModTime[panePid]; exists && !modTime.After(previous) {
 				continue
 			}
@@ -4514,6 +4533,46 @@ func assignCopilotSessionsByWorkingDirectory(restore *serverRestore) {
 	}
 }
 
+func agentProcessesByPane(
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+	tool string,
+) map[int]processInfo {
+	selected := map[int]processInfo{}
+	minimumDepth := map[int]int{}
+	minimumDepthCount := map[int]int{}
+	for _, process := range processes {
+		panePid := ancestorPanePID(processes, process.pid, panePids)
+		if panePid <= 0 {
+			continue
+		}
+		command := commandNameFromProcessFields(process.comm, process.args)
+		if agentToolFromCommandName(command) != tool {
+			continue
+		}
+		depth := processDepthFromAncestor(processes, process.pid, panePid)
+		if depth < 0 {
+			continue
+		}
+		priorDepth, exists := minimumDepth[panePid]
+		if !exists || depth < priorDepth {
+			minimumDepth[panePid] = depth
+			minimumDepthCount[panePid] = 1
+			selected[panePid] = process
+			continue
+		}
+		if depth == priorDepth {
+			minimumDepthCount[panePid]++
+		}
+	}
+	for panePid, count := range minimumDepthCount {
+		if count != 1 {
+			delete(selected, panePid)
+		}
+	}
+	return selected
+}
+
 func discoverCodexSessionIDs(
 	processes map[int]processInfo,
 	panePids map[int]struct{},
@@ -4527,14 +4586,14 @@ func discoverCodexSessionIDs(
 	unresolved := []unresolvedCodexProcess{}
 	unresolvedPanes := map[int]struct{}{}
 	workingDirectoryCounts := map[string]int{}
-	for _, process := range processes {
-		panePid := ancestorPanePID(processes, process.pid, panePids)
-		if panePid <= 0 || sessions[panePid] != "" {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != "codex" {
-			continue
+	countedWorkingDirectoryPanes := map[int]bool{}
+	for panePid, process := range agentProcessesByPane(processes, panePids, "codex") {
+		workingDirectory := normalizedMetadataPath(
+			processWorkingDirectoryForMetadata(process.pid),
+		)
+		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
+			workingDirectoryCounts[workingDirectory]++
+			countedWorkingDirectoryPanes[panePid] = true
 		}
 		if sessionID := agentSessionIDFromArgs("codex", process.args); sessionID != "" {
 			sessions[panePid] = sessionID
@@ -4544,9 +4603,6 @@ func discoverCodexSessionIDs(
 			sessions[panePid] = sessionID
 			continue
 		}
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
-		)
 		processStarted := processStartedAtForMetadata(process.pid)
 		if workingDirectory == "" || processStarted.IsZero() {
 			continue
@@ -4560,7 +4616,6 @@ func discoverCodexSessionIDs(
 			workingDirectory: workingDirectory,
 			processStarted:   processStarted,
 		})
-		workingDirectoryCounts[workingDirectory]++
 	}
 	for _, candidate := range unresolved {
 		if sessions[candidate.panePid] != "" ||
@@ -4716,22 +4771,19 @@ func discoverOpenCodeSessionIDs(
 	unresolved := []unresolvedOpenCodeProcess{}
 	unresolvedPanes := map[int]struct{}{}
 	workingDirectoryCounts := map[string]int{}
-	for _, process := range processes {
-		panePid := ancestorPanePID(processes, process.pid, panePids)
-		if panePid <= 0 || sessions[panePid] != "" {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != "opencode" {
-			continue
+	countedWorkingDirectoryPanes := map[int]bool{}
+	for panePid, process := range agentProcessesByPane(processes, panePids, "opencode") {
+		workingDirectory := normalizedMetadataPath(
+			processWorkingDirectoryForMetadata(process.pid),
+		)
+		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
+			workingDirectoryCounts[workingDirectory]++
+			countedWorkingDirectoryPanes[panePid] = true
 		}
 		if sessionID := agentSessionIDFromArgs("opencode", process.args); sessionID != "" {
 			sessions[panePid] = sessionID
 			continue
 		}
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
-		)
 		if workingDirectory == "" {
 			continue
 		}
@@ -4748,7 +4800,6 @@ func discoverOpenCodeSessionIDs(
 			workingDirectory: workingDirectory,
 			processStarted:   processStarted,
 		})
-		workingDirectoryCounts[workingDirectory]++
 	}
 	if len(unresolved) == 0 {
 		return sessions
@@ -4881,14 +4932,14 @@ func discoverClaudeSessionIDs(
 	unresolved := []unresolvedClaudeProcess{}
 	unresolvedPanes := map[int]struct{}{}
 	workingDirectoryCounts := map[string]int{}
-	for _, process := range processes {
-		panePid := ancestorPanePID(processes, process.pid, panePids)
-		if panePid <= 0 || sessions[panePid] != "" {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != "claude" {
-			continue
+	countedWorkingDirectoryPanes := map[int]bool{}
+	for panePid, process := range agentProcessesByPane(processes, panePids, "claude") {
+		workingDirectory := normalizedMetadataPath(
+			processWorkingDirectoryForMetadata(process.pid),
+		)
+		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
+			workingDirectoryCounts[workingDirectory]++
+			countedWorkingDirectoryPanes[panePid] = true
 		}
 		if sessionID := agentSessionIDFromArgs("claude", process.args); sessionID != "" {
 			sessions[panePid] = sessionID
@@ -4898,9 +4949,6 @@ func discoverClaudeSessionIDs(
 			sessions[panePid] = sessionID
 			continue
 		}
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
-		)
 		processStarted := processStartedAtForMetadata(process.pid)
 		if workingDirectory == "" || processStarted.IsZero() {
 			continue
@@ -4914,7 +4962,6 @@ func discoverClaudeSessionIDs(
 			workingDirectory: workingDirectory,
 			processStarted:   processStarted,
 		})
-		workingDirectoryCounts[workingDirectory]++
 	}
 	for _, candidate := range unresolved {
 		if sessions[candidate.panePid] != "" ||
@@ -5022,14 +5069,14 @@ func discoverGeminiSessionIDs(
 	unresolved := []unresolvedGeminiProcess{}
 	unresolvedPanes := map[int]struct{}{}
 	workingDirectoryCounts := map[string]int{}
-	for _, process := range processes {
-		panePid := ancestorPanePID(processes, process.pid, panePids)
-		if panePid <= 0 || sessions[panePid] != "" {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != "gemini" {
-			continue
+	countedWorkingDirectoryPanes := map[int]bool{}
+	for panePid, process := range agentProcessesByPane(processes, panePids, "gemini") {
+		workingDirectory := normalizedMetadataPath(
+			processWorkingDirectoryForMetadata(process.pid),
+		)
+		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
+			workingDirectoryCounts[workingDirectory]++
+			countedWorkingDirectoryPanes[panePid] = true
 		}
 		if sessionID := agentSessionIDFromArgs("gemini", process.args); sessionID != "" {
 			sessions[panePid] = sessionID
@@ -5039,9 +5086,6 @@ func discoverGeminiSessionIDs(
 			sessions[panePid] = sessionID
 			continue
 		}
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
-		)
 		if workingDirectory == "" {
 			continue
 		}
@@ -5058,7 +5102,6 @@ func discoverGeminiSessionIDs(
 			workingDirectory: workingDirectory,
 			processStarted:   processStarted,
 		})
-		workingDirectoryCounts[workingDirectory]++
 	}
 	for _, candidate := range unresolved {
 		if sessions[candidate.panePid] != "" ||
@@ -14705,7 +14748,10 @@ func piResumeCommand(sessionID string, sessionDir string, sessionPath string) st
 }
 
 func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) string {
-	quotedSessionID := shellQuote(sessionID)
+	quotedSessionID, ok := shellArgument(sessionID)
+	if !ok {
+		return ""
+	}
 	switch tool {
 	case "claude":
 		if startInYoloMode {
@@ -14788,15 +14834,7 @@ func canonicalAgentCommandName(command string) string {
 // the shell before it can reach the fallback, so closing a window never
 // relaunches the agent.
 func agentResumeCommandWithFreshFallback(resume string, launch string) string {
-	resume = strings.TrimSpace(resume)
-	launch = strings.TrimSpace(launch)
-	if resume == "" {
-		return launch
-	}
-	if launch == "" || launch == resume {
-		return resume
-	}
-	return resume + " || " + launch
+	return piResumeCommandWithFreshFallback(resume, launch)
 }
 
 func agentToolFromTerminalTitle(title string) string {

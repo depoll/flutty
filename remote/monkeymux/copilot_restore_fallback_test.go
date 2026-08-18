@@ -79,11 +79,19 @@ func itoaPositive(n int) string {
 // later. Discovery keeps the freshest (most recently locked) session for a
 // pane.
 func TestDiscoverCopilotSessionIDsPrefersFreshSessionOnStaleLock(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
 	home := t.TempDir()
 	setTestHomeDir(t, home)
 	stateDir := filepath.Join(home, ".copilot", "session-state")
 
 	now := time.Now()
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 201 {
+			return now.Add(-time.Minute)
+		}
+		return time.Time{}
+	}
 	// The live session was locked seconds ago; the stale dir (whose lock PID
 	// 201 was reused) was locked long ago but sorts AFTER the live one.
 	writeCopilotSession(t, stateDir, "aaa-live", "/work", 201, now)
