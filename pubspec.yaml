@@ -1,10 +1,11 @@
+---
 name: monkeyssh
 description: >
   A mobile SSH workspace for agentic coding with terminal emulation, SFTP,
   MonkeyMux/tmux remote windows, key management, snippets, and port forwarding.
 publish_to: 'none'
 
-version: 0.4.0+1
+version: 0.4.1+1
 
 environment:
   sdk: ^3.10.7
@@ -12,36 +13,37 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  
+
   # State management
   flutter_riverpod: ^3.3.2
-  
+
   # Navigation
   go_router: ^17.3.0
-  
+
   # Database
   drift: ^2.34.2
   path_provider: ^2.1.6
   path: ^1.9.1
-  
+
   # SSH
   dartssh2: 2.22.3
-  
+
   # Terminal
   # Vendored fork of xterm.dart 4.0.0 (upstream unmaintained since 2024-02).
-  # Maintained in third_party/xterm with emulation-core fixes ported from xterm.js.
+  # Maintained in third_party/xterm with emulation-core fixes ported from
+  # xterm.js.
   xterm:
     path: third_party/xterm
-  
+
   # Syntax highlighting
   highlight: ^0.7.0
-  
+
   # Secure storage
   flutter_secure_storage: ^10.3.1
-  
+
   # Biometrics
   local_auth: ^3.0.2
-  
+
   # File handling
   file_picker: ^12.0.0-beta.7
   image_picker: ^1.2.3
@@ -51,7 +53,7 @@ dependencies:
   cryptography: ^2.9.0
   crypto: ^3.0.7
   pointycastle: ^4.0.0
-  
+
   # UI
   cupertino_icons: ^1.0.9
   flutter_svg: ^2.3.0
@@ -66,7 +68,7 @@ dependencies:
   webview_flutter: ^4.14.1
   webview_flutter_android: ^4.13.0
   webview_flutter_wkwebview: ^3.26.0
-  
+
   # Utilities
   uuid: ^4.6.0
   intl: ^0.20.3
@@ -97,7 +99,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
-  
+
   # Code generation
   build_runner: ^2.15.1
   drift_dev: ^2.34.0
@@ -106,13 +108,13 @@ dev_dependencies:
   # DartPlaceholder.when(), which sqlparser removed in 0.44.6, so keep sqlparser
   # at 0.44.5. Remove this pin once a newer Flutter SDK unblocks drift_dev.
   sqlparser: 0.44.5
-  
+
   # Testing
   mocktail: ^1.0.5
   wakelock_plus_platform_interface: ^1.6.0
   integration_test:
     sdk: flutter
-  
+
   # App icons
   flutter_launcher_icons: ^0.14.4
 
@@ -120,7 +122,7 @@ flutter:
   config:
     enable-swift-package-manager: false
   uses-material-design: true
-  
+
   assets:
     - assets/icons/
     - assets/monkeymux/manifest.json
@@ -132,5 +134,5 @@ flutter:
     - assets/monkeymux/bin/windows-arm64/
     - remote/monkeymux/conpty/LICENSE.microsoft-terminal
     - assets/version_codenames.json
-  #   - assets/icons/
-  #   - assets/fonts/
+    # - assets/icons/
+    # - assets/fonts/

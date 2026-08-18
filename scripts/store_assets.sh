@@ -152,21 +152,29 @@ normalize_platform() {
   esac
 }
 
+validation_python() {
+  if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
+    echo "$ROOT_DIR/.venv/bin/python"
+  else
+    command -v python3
+  fi
+}
+
 assert_screenshots_present() {
-  local platform
+  local platform python
   platform="$(normalize_platform "${1:-both}")"
-  require_command python3
-  python3 scripts/validate_store_screenshots.py "$platform" >/dev/null
+  python="$(validation_python)"
+  "$python" scripts/validate_store_screenshots.py "$platform" >/dev/null
 }
 
 assert_videos_present() {
-  local platform
+  local platform python
   platform="$(normalize_platform "${1:-both}")"
-  require_command python3
+  python="$(validation_python)"
   if [ "$platform" = both ]; then
-    python3 scripts/validate_store_demo_videos.py all >/dev/null
+    "$python" scripts/validate_store_demo_videos.py all >/dev/null
   else
-    python3 scripts/validate_store_demo_videos.py "$platform" >/dev/null
+    "$python" scripts/validate_store_demo_videos.py "$platform" >/dev/null
   fi
 }
 

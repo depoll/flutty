@@ -20,7 +20,7 @@ MonkeySSH is built for the way people work with remote development environments 
 MonkeySSH is designed around the tools and workflows people use for remote AI-assisted development.
 
 - **Recent agent session discovery** for supported CLIs, scoped to the active project so you can jump back into the right conversation faster
-- **Saved launch presets** for tools like Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, Antigravity, Cursor Agent, Pi, Hermes, and OpenClaw
+- **Saved launch presets** for tools like Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, Antigravity, Cursor Agent, Pi, Hermes, OpenClaw, and Grok Build
 - **Per-host startup flows** with working-directory changes, MonkeyMux/tmux session names, extra arguments, and optional one-tap automation
 - **Remote window navigation** for discovering sessions and windows, tracking the active pane path, launching agents into persistent workspaces, and switching windows from a bottom sheet or wide-screen sidebar
 - **IME keyboard support** so autocorrect, suggestions, swipe typing, keyboard dictation, and password-friendly prompt input behave more like a normal mobile text field, even in a terminal
