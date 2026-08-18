@@ -139,7 +139,7 @@ const HOOK_MANIFEST_TARGETS = [
     // the cloud/app agent. Schema differs: lowercase `postToolUse`, flat entries,
     // `bash`/`timeoutSec`, and a `matcher` regex against the `edit`/`create` tools.
     provider: '.github',
-    skillRel: '.github/skills/impeccable',
+    skillRel: '.agents/skills/impeccable',
     destRel: '.github/hooks/impeccable.json',
     manifest: () => ({
       version: 1,
@@ -148,7 +148,7 @@ const HOOK_MANIFEST_TARGETS = [
           {
             type: 'command',
             matcher: 'edit|create|apply_patch',
-            bash: 'node "$(git rev-parse --show-toplevel)/.github/skills/impeccable/scripts/hook.mjs"',
+            bash: 'node "$(git rev-parse --show-toplevel)/.agents/skills/impeccable/scripts/hook.mjs"',
             timeoutSec: TIMEOUT_SECONDS,
           },
         ],
