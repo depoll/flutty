@@ -61,9 +61,6 @@ import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
 import 'terminal_wheel_scroll_calibrator.dart';
 
-// Match direct pixel scrolling to the conventional multi-row terminal wheel
-// pace.
-const _terminalViewportTouchScrollSensitivity = 3.0;
 const _minimumFaintTextContrast = 4.5;
 const _minimumCursorTextContrast = 4.5;
 const _minimumCellTextContrast = 4.5;
@@ -1600,17 +1597,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (primaryDelta == null || drag == null) {
       return;
     }
-    final scaledDelta = primaryDelta * _terminalViewportTouchScrollSensitivity;
-    drag.update(
-      DragUpdateDetails(
-        sourceTimeStamp: details.sourceTimeStamp,
-        delta: Offset(0, scaledDelta),
-        primaryDelta: scaledDelta,
-        globalPosition: details.globalPosition,
-        localPosition: details.localPosition,
-        kind: details.kind,
-      ),
-    );
+    drag.update(details);
   }
 
   void _onDirectTouchScrollEnd(DragEndDetails details) {
@@ -1622,20 +1609,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (drag == null) {
       return;
     }
-    final pixelsPerSecond = details.velocity.pixelsPerSecond;
-    final scaledVelocity =
-        (details.primaryVelocity ?? pixelsPerSecond.dy) *
-        _terminalViewportTouchScrollSensitivity;
-    drag.end(
-      DragEndDetails(
-        globalPosition: details.globalPosition,
-        localPosition: details.localPosition,
-        velocity: Velocity(
-          pixelsPerSecond: Offset(pixelsPerSecond.dx, scaledVelocity),
-        ),
-        primaryVelocity: scaledVelocity,
-      ),
-    );
+    drag.end(details);
     _directTouchScrollDrag = null;
   }
 
