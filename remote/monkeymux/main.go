@@ -66,7 +66,7 @@ const (
 	piSessionMetadataRecordLimitBytes = 1024 * 1024
 	piSessionHeaderScanLimitBytes     = 1024 * 1024
 	piSessionActivityMatchTolerance   = 15 * time.Second
-	claudeSessionStartTolerance       = 2 * time.Second
+	agentSessionStartTolerance        = 2 * time.Second
 	oscBufferLimitBytes               = 4096
 	processMetadataTimeout            = 500 * time.Millisecond
 	processMetadataInterval           = 500 * time.Millisecond
@@ -2874,9 +2874,6 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 				panePids[window.PanePid] = struct{}{}
 			}
 		}
-		if strings.TrimSpace(window.AgentSessionID) != "" {
-			continue
-		}
 		switch tool {
 		case "antigravity":
 			hasAntigravityWindows = true
@@ -2904,21 +2901,6 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		piSessions = discoverPiSessions(restore, processes, panePids)
 		applyPiRestoreSessions(restore, piSessions)
 	}
-	if len(panePids) == 0 {
-		for i, sessionID := range antigravitySessions {
-			restore.Windows[i].AgentSessionID = sessionID
-		}
-		for i, sessionID := range cursorSessions {
-			restore.Windows[i].AgentSessionID = sessionID
-		}
-		for i, session := range piSessions {
-			restore.Windows[i].AgentSessionID = session.sessionID
-			restore.Windows[i].AgentSessionDir = session.sessionDir
-			restore.Windows[i].AgentSessionPath = session.sessionPath
-		}
-		assignCopilotSessionsByWorkingDirectory(restore)
-		return
-	}
 	processDiscoveredSessions := map[string]map[int]string{}
 	if len(processes) > 0 {
 		processDiscoveredSessions = map[string]map[int]string{
@@ -2930,9 +2912,6 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		}
 	}
 	for i := range restore.Windows {
-		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" {
-			continue
-		}
 		tool := agentToolForRestore(restore.Windows[i])
 		panePid := restore.Windows[i].PanePid
 		if tool == "" {
@@ -2944,28 +2923,28 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 			// discovery and lose the exact path.
 			continue
 		}
+		discoveredSessionID := ""
 		if panePid > 0 {
-			if sessionID := processDiscoveredSessions[tool][panePid]; sessionID != "" {
-				restore.Windows[i].AgentSessionID = sessionID
-				continue
-			}
+			discoveredSessionID = processDiscoveredSessions[tool][panePid]
 		}
-		if panePid > 0 && len(processes) > 0 {
-			if sessionID := sessionIDFromDescendantProcessArgs(processes, panePid, tool); sessionID != "" {
-				restore.Windows[i].AgentSessionID = sessionID
-				continue
-			}
+		if discoveredSessionID == "" && panePid > 0 && len(processes) > 0 {
+			discoveredSessionID = sessionIDFromDescendantProcessArgs(
+				processes,
+				panePid,
+				tool,
+			)
 		}
-		if tool == "antigravity" {
-			if sessionID := antigravitySessions[i]; sessionID != "" {
-				restore.Windows[i].AgentSessionID = sessionID
-			}
+		if discoveredSessionID == "" && tool == "antigravity" {
+			discoveredSessionID = antigravitySessions[i]
 		}
-		if tool == "cursor-agent" {
-			if sessionID := cursorSessions[i]; sessionID != "" {
-				restore.Windows[i].AgentSessionID = sessionID
-			}
+		if discoveredSessionID == "" && tool == "cursor-agent" {
+			discoveredSessionID = cursorSessions[i]
 		}
+		// A carried ID describes what MonkeyMux tried to resume, not proof that
+		// the resume succeeded. If the command fell back to a fresh agent, its
+		// live argv/open file/store has no matching identity, so clear the stale
+		// ID instead of forcing that old conversation again on the next upgrade.
+		restore.Windows[i].AgentSessionID = discoveredSessionID
 	}
 	assignCopilotSessionsByWorkingDirectory(restore)
 }
@@ -2989,6 +2968,7 @@ func applyPiRestoreSessions(restore *serverRestore, sessions map[int]piRestoreSe
 type antigravityHistoryEntry struct {
 	conversationID string
 	workspace      string
+	updatedAt      time.Time
 }
 
 func discoverAntigravitySessionIDs(restore *serverRestore) map[int]string {
@@ -2996,37 +2976,31 @@ func discoverAntigravitySessionIDs(restore *serverRestore) map[int]string {
 	if len(entries) == 0 {
 		return nil
 	}
-	latestSessionID := latestAntigravitySessionID(entries)
-	needsFallback := antigravityRestoreWindowCount(restore) == 1
+	workspaceCounts := map[string]int{}
+	for _, window := range restore.Windows {
+		if agentToolForRestore(window) == "antigravity" {
+			workspaceCounts[normalizedAntigravityWorkspacePath(window.Cwd)]++
+		}
+	}
 	sessions := map[int]string{}
 	for i, window := range restore.Windows {
-		if strings.TrimSpace(window.AgentSessionID) != "" ||
-			agentToolForRestore(window) != "antigravity" {
+		if agentToolForRestore(window) != "antigravity" {
 			continue
 		}
-		if sessionID := antigravitySessionIDForWorkspace(entries, window.Cwd); sessionID != "" {
+		workspace := normalizedAntigravityWorkspacePath(window.Cwd)
+		if workspace == "" || workspaceCounts[workspace] != 1 {
+			continue
+		}
+		processStarted := processStartedAtForMetadata(window.PanePid)
+		if sessionID := antigravitySessionIDForWorkspace(
+			entries,
+			workspace,
+			processStarted,
+		); sessionID != "" {
 			sessions[i] = sessionID
-			continue
-		}
-		if needsFallback && latestSessionID != "" {
-			sessions[i] = latestSessionID
 		}
 	}
 	return sessions
-}
-
-func antigravityRestoreWindowCount(restore *serverRestore) int {
-	if restore == nil {
-		return 0
-	}
-	count := 0
-	for _, window := range restore.Windows {
-		if strings.TrimSpace(window.AgentSessionID) == "" &&
-			agentToolForRestore(window) == "antigravity" {
-			count++
-		}
-	}
-	return count
 }
 
 func readAntigravityHistoryEntries() []antigravityHistoryEntry {
@@ -3039,6 +3013,10 @@ func readAntigravityHistoryEntries() []antigravityHistoryEntry {
 		return nil
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil
+	}
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -3058,30 +3036,24 @@ func readAntigravityHistoryEntries() []antigravityHistoryEntry {
 		entries = append(entries, antigravityHistoryEntry{
 			conversationID: sessionID,
 			workspace:      normalizedAntigravityWorkspacePath(raw.Workspace),
+			updatedAt:      info.ModTime(),
 		})
 	}
 	return entries
 }
 
-func latestAntigravitySessionID(entries []antigravityHistoryEntry) string {
-	for i := len(entries) - 1; i >= 0; i-- {
-		if sessionID := strings.TrimSpace(entries[i].conversationID); sessionID != "" {
-			return sessionID
-		}
-	}
-	return ""
-}
-
 func antigravitySessionIDForWorkspace(
 	entries []antigravityHistoryEntry,
 	workspace string,
+	processStarted time.Time,
 ) string {
 	normalizedWorkspace := normalizedAntigravityWorkspacePath(workspace)
 	if normalizedWorkspace == "" {
 		return ""
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].workspace == normalizedWorkspace {
+		if entries[i].workspace == normalizedWorkspace &&
+			sessionUpdatedDuringProcess(entries[i].updatedAt, processStarted) {
 			return entries[i].conversationID
 		}
 	}
@@ -3106,9 +3078,9 @@ func normalizedAntigravityWorkspacePath(value string) string {
 
 // ── Cursor Agent ─────────────────────────────────────────────────────────────
 // Cursor persists chats under ~/.cursor/chats/<workspaceHash>/<chatId>/meta.json.
-// A fresh `cursor-agent` launch carries no resumable id in its process args, so
-// after a MonkeyMux helper update recreates its windows the id is recovered from
-// the chat store keyed by the pane's working directory (matching meta.json cwd).
+// A fresh `cursor-agent` launch carries no resumable id in its process args.
+// Restore only a unique chat for the pane's workspace that was updated during
+// the current Cursor process; older chats leave a fresh window fresh.
 
 type cursorChatEntry struct {
 	chatID    string
@@ -3121,37 +3093,31 @@ func discoverCursorSessionIDs(restore *serverRestore) map[int]string {
 	if len(entries) == 0 {
 		return nil
 	}
-	latestSessionID := latestCursorSessionID(entries)
-	needsFallback := cursorRestoreWindowCount(restore) == 1
+	workspaceCounts := map[string]int{}
+	for _, window := range restore.Windows {
+		if agentToolForRestore(window) == "cursor-agent" {
+			workspaceCounts[normalizedCursorWorkspacePath(window.Cwd)]++
+		}
+	}
 	sessions := map[int]string{}
 	for i, window := range restore.Windows {
-		if strings.TrimSpace(window.AgentSessionID) != "" ||
-			agentToolForRestore(window) != "cursor-agent" {
+		if agentToolForRestore(window) != "cursor-agent" {
 			continue
 		}
-		if sessionID := cursorSessionIDForWorkspace(entries, window.Cwd); sessionID != "" {
+		workspace := normalizedCursorWorkspacePath(window.Cwd)
+		if workspace == "" || workspaceCounts[workspace] != 1 {
+			continue
+		}
+		processStarted := processStartedAtForMetadata(window.PanePid)
+		if sessionID := cursorSessionIDForWorkspace(
+			entries,
+			workspace,
+			processStarted,
+		); sessionID != "" {
 			sessions[i] = sessionID
-			continue
-		}
-		if needsFallback && latestSessionID != "" {
-			sessions[i] = latestSessionID
 		}
 	}
 	return sessions
-}
-
-func cursorRestoreWindowCount(restore *serverRestore) int {
-	if restore == nil {
-		return 0
-	}
-	count := 0
-	for _, window := range restore.Windows {
-		if strings.TrimSpace(window.AgentSessionID) == "" &&
-			agentToolForRestore(window) == "cursor-agent" {
-			count++
-		}
-	}
-	return count
 }
 
 // readCursorChatEntries reads recent Cursor chat metadata, ordered oldest to
@@ -3228,22 +3194,19 @@ func readCursorChatMeta(path string, chatID string) (cursorChatEntry, bool) {
 	}, true
 }
 
-func latestCursorSessionID(entries []cursorChatEntry) string {
-	for i := len(entries) - 1; i >= 0; i-- {
-		if sessionID := strings.TrimSpace(entries[i].chatID); sessionID != "" {
-			return sessionID
-		}
-	}
-	return ""
-}
-
-func cursorSessionIDForWorkspace(entries []cursorChatEntry, workspace string) string {
+func cursorSessionIDForWorkspace(
+	entries []cursorChatEntry,
+	workspace string,
+	processStarted time.Time,
+) string {
 	normalizedWorkspace := normalizedCursorWorkspacePath(workspace)
 	if normalizedWorkspace == "" {
 		return ""
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].cwd == normalizedWorkspace {
+		updatedAt := time.UnixMilli(entries[i].updatedAt)
+		if entries[i].cwd == normalizedWorkspace &&
+			sessionUpdatedDuringProcess(updatedAt, processStarted) {
 			return entries[i].chatID
 		}
 	}
@@ -4376,13 +4339,16 @@ func copilotLockModTime(lock string) time.Time {
 	return time.Time{}
 }
 
+type copilotSessionEntry struct {
+	id        string
+	updatedAt time.Time
+}
+
 // copilotSessionsByWorkingDirectory groups on-disk copilot sessions by the
 // working directory recorded in each session's events log, most recently
-// active first. It is the on-disk fallback used when the live process table no
-// longer maps a restored copilot window to its session (the helper upgrade
-// already reaped the process, ps timed out, or the inuse lock had been
-// cleared) so the window can still resume the right conversation.
-func copilotSessionsByWorkingDirectory() map[string][]string {
+// active first. It supplements authoritative inuse-lock discovery only with
+// sessions updated during the window's current process lifetime.
+func copilotSessionsByWorkingDirectory() map[string][]copilotSessionEntry {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
@@ -4392,11 +4358,7 @@ func copilotSessionsByWorkingDirectory() map[string][]string {
 	if err != nil {
 		return nil
 	}
-	type sessionEntry struct {
-		id      string
-		modTime time.Time
-	}
-	byDirectory := map[string][]sessionEntry{}
+	byDirectory := map[string][]copilotSessionEntry{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -4412,21 +4374,15 @@ func copilotSessionsByWorkingDirectory() map[string][]string {
 		}
 		byDirectory[workingDirectory] = append(
 			byDirectory[workingDirectory],
-			sessionEntry{id: entry.Name(), modTime: modTime},
+			copilotSessionEntry{id: entry.Name(), updatedAt: modTime},
 		)
 	}
-	result := map[string][]string{}
-	for workingDirectory, list := range byDirectory {
+	for _, list := range byDirectory {
 		sort.SliceStable(list, func(i, j int) bool {
-			return list[i].modTime.After(list[j].modTime)
+			return list[i].updatedAt.After(list[j].updatedAt)
 		})
-		ids := make([]string, 0, len(list))
-		for _, session := range list {
-			ids = append(ids, session.id)
-		}
-		result[workingDirectory] = ids
 	}
-	return result
+	return byDirectory
 }
 
 // copilotSessionWorkingDirectory returns the normalized working directory a
@@ -4483,12 +4439,10 @@ func normalizedCopilotWorkingDirectory(path string) string {
 }
 
 // assignCopilotSessionsByWorkingDirectory is the on-disk fallback for restored
-// copilot windows the live process table no longer maps to a session. Each such
-// window resumes the most recent copilot session recorded for its working
-// directory instead of relaunching blank, so a helper upgrade keeps the
-// conversation open in every copilot window. Sessions already claimed by
-// another window (via the process table or an earlier fallback) are never
-// reused, so windows sharing a directory get distinct sessions.
+// Copilot windows whose inuse lock could not identify a session. It considers
+// only sessions updated during that window process and uses terminal activity
+// to disambiguate multiple candidates. Stale or overlapping evidence stays
+// fresh; sessions claimed by another window are never reused.
 func assignCopilotSessionsByWorkingDirectory(restore *serverRestore) {
 	if restore == nil {
 		return
@@ -4521,13 +4475,41 @@ func assignCopilotSessionsByWorkingDirectory(restore *serverRestore) {
 		if workingDirectory == "" {
 			continue
 		}
-		for _, id := range sessionsByDirectory[workingDirectory] {
-			if used[id] {
+		processStarted := processStartedAtForMetadata(restore.Windows[i].PanePid)
+		candidates := []copilotSessionEntry{}
+		for _, session := range sessionsByDirectory[workingDirectory] {
+			if used[session.id] ||
+				!sessionUpdatedDuringProcess(session.updatedAt, processStarted) {
 				continue
 			}
-			restore.Windows[i].AgentSessionID = id
-			used[id] = true
-			break
+			candidates = append(candidates, session)
+		}
+		if len(candidates) == 0 {
+			continue
+		}
+		selected := ""
+		if len(candidates) == 1 {
+			selected = candidates[0].id
+		} else if restore.Windows[i].LastActivityEpochSeconds > 0 {
+			activity := time.Unix(restore.Windows[i].LastActivityEpochSeconds, 0)
+			for _, candidate := range candidates {
+				delta := candidate.updatedAt.Sub(activity)
+				if delta < 0 {
+					delta = -delta
+				}
+				if delta > piSessionActivityMatchTolerance {
+					continue
+				}
+				if selected != "" {
+					selected = ""
+					break
+				}
+				selected = candidate.id
+			}
+		}
+		if selected != "" {
+			restore.Windows[i].AgentSessionID = selected
+			used[selected] = true
 		}
 	}
 }
@@ -4539,6 +4521,7 @@ func discoverCodexSessionIDs(
 	type unresolvedCodexProcess struct {
 		panePid          int
 		workingDirectory string
+		processStarted   time.Time
 	}
 	sessions := map[int]string{}
 	unresolved := []unresolvedCodexProcess{}
@@ -4564,7 +4547,8 @@ func discoverCodexSessionIDs(
 		workingDirectory := normalizedMetadataPath(
 			processWorkingDirectoryForMetadata(process.pid),
 		)
-		if workingDirectory == "" {
+		processStarted := processStartedAtForMetadata(process.pid)
+		if workingDirectory == "" || processStarted.IsZero() {
 			continue
 		}
 		if _, ok := unresolvedPanes[panePid]; ok {
@@ -4574,6 +4558,7 @@ func discoverCodexSessionIDs(
 		unresolved = append(unresolved, unresolvedCodexProcess{
 			panePid:          panePid,
 			workingDirectory: workingDirectory,
+			processStarted:   processStarted,
 		})
 		workingDirectoryCounts[workingDirectory]++
 	}
@@ -4582,7 +4567,10 @@ func discoverCodexSessionIDs(
 			workingDirectoryCounts[candidate.workingDirectory] != 1 {
 			continue
 		}
-		if sessionID := codexRecentSessionIDForWorkingDirectory(candidate.workingDirectory); sessionID != "" {
+		if sessionID := codexRecentSessionIDForWorkingDirectory(
+			candidate.workingDirectory,
+			candidate.processStarted,
+		); sessionID != "" {
 			sessions[candidate.panePid] = sessionID
 		}
 	}
@@ -4598,9 +4586,12 @@ func codexSessionIDFromOpenFiles(pid int) string {
 	return ""
 }
 
-func codexRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+func codexRecentSessionIDForWorkingDirectory(
+	workingDirectory string,
+	processStarted time.Time,
+) string {
 	workingDirectory = normalizedMetadataPath(workingDirectory)
-	if workingDirectory == "" {
+	if workingDirectory == "" || processStarted.IsZero() {
 		return ""
 	}
 	home, err := os.UserHomeDir()
@@ -4609,6 +4600,10 @@ func codexRecentSessionIDForWorkingDirectory(workingDirectory string) string {
 	}
 	sessionsDir := filepath.Join(home, ".codex", "sessions")
 	for _, path := range recentCodexRolloutFiles(sessionsDir, 30) {
+		info, err := os.Stat(path)
+		if err != nil || !sessionUpdatedDuringProcess(info.ModTime(), processStarted) {
+			continue
+		}
 		if normalizedMetadataPath(codexRolloutWorkingDirectory(path)) != workingDirectory {
 			continue
 		}
@@ -4695,12 +4690,13 @@ func codexSessionIDFromRolloutName(name string) string {
 // ── OpenCode ───────────────────────────────────────────────────────────────
 // OpenCode persists sessions in a SQLite store keyed by working directory, so
 // a session launched fresh (`opencode`, no `--session`) carries no resumable
-// ID in its process arguments. Recover the most recent session for the pane's
-// working directory so it keeps resuming after a MonkeyMux helper update.
+// ID in its process arguments. Recover only a same-directory row updated during
+// the current OpenCode process so an older project session is never injected.
 
 type openCodeSessionEntry struct {
 	sessionID string
 	directory string
+	updatedAt time.Time
 }
 
 // openCodeSessionEntriesReader is overridable in tests so the SQLite-backed
@@ -4714,6 +4710,7 @@ func discoverOpenCodeSessionIDs(
 	type unresolvedOpenCodeProcess struct {
 		panePid          int
 		workingDirectory string
+		processStarted   time.Time
 	}
 	sessions := map[int]string{}
 	unresolved := []unresolvedOpenCodeProcess{}
@@ -4742,9 +4739,14 @@ func discoverOpenCodeSessionIDs(
 			continue
 		}
 		unresolvedPanes[panePid] = struct{}{}
+		processStarted := processStartedAtForMetadata(process.pid)
+		if processStarted.IsZero() {
+			continue
+		}
 		unresolved = append(unresolved, unresolvedOpenCodeProcess{
 			panePid:          panePid,
 			workingDirectory: workingDirectory,
+			processStarted:   processStarted,
 		})
 		workingDirectoryCounts[workingDirectory]++
 	}
@@ -4763,6 +4765,7 @@ func discoverOpenCodeSessionIDs(
 		if sessionID := openCodeSessionIDForWorkingDirectory(
 			entries,
 			candidate.workingDirectory,
+			candidate.processStarted,
 		); sessionID != "" {
 			sessions[candidate.panePid] = sessionID
 		}
@@ -4777,14 +4780,16 @@ func readOpenCodeSessionEntries() []openCodeSessionEntry {
 func openCodeSessionIDForWorkingDirectory(
 	entries []openCodeSessionEntry,
 	workingDirectory string,
+	processStarted time.Time,
 ) string {
 	workingDirectory = normalizedMetadataPath(workingDirectory)
-	if workingDirectory == "" {
+	if workingDirectory == "" || processStarted.IsZero() {
 		return ""
 	}
 	// entries are ordered most-recently-updated first.
 	for _, entry := range entries {
-		if entry.directory == workingDirectory {
+		if entry.directory == workingDirectory &&
+			sessionUpdatedDuringProcess(entry.updatedAt, processStarted) {
 			return entry.sessionID
 		}
 	}
@@ -4809,7 +4814,7 @@ func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
 		return nil
 	}
 	const separator = "\x1f"
-	query := "SELECT id, directory FROM session " +
+	query := "SELECT id, directory, time_updated FROM session " +
 		"WHERE parent_id IS NULL AND time_archived IS NULL " +
 		"ORDER BY time_updated DESC LIMIT 200;"
 	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
@@ -4830,7 +4835,7 @@ func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		parts := strings.SplitN(line, separator, 2)
+		parts := strings.SplitN(line, separator, 3)
 		sessionID := strings.TrimSpace(parts[0])
 		if sessionID == "" {
 			continue
@@ -4839,9 +4844,14 @@ func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
 		if len(parts) > 1 {
 			directory = normalizedMetadataPath(parts[1])
 		}
+		updatedAt := time.Time{}
+		if len(parts) > 2 {
+			updatedAt = unixDatabaseTime(parts[2])
+		}
 		entries = append(entries, openCodeSessionEntry{
 			sessionID: sessionID,
 			directory: directory,
+			updatedAt: updatedAt,
 		})
 	}
 	return entries
@@ -4945,7 +4955,7 @@ func claudeRecentSessionIDForWorkingDirectory(
 	projectsDir := filepath.Join(home, ".claude", "projects")
 	for _, path := range recentAgentSessionFiles(projectsDir, 60, isClaudeProjectSessionPath) {
 		info, err := os.Stat(path)
-		if err != nil || info.ModTime().Before(processStarted.Add(-claudeSessionStartTolerance)) {
+		if err != nil || !sessionUpdatedDuringProcess(info.ModTime(), processStarted) {
 			continue
 		}
 		if normalizedMetadataPath(jsonStringFieldFromFile(path, "cwd")) != workingDirectory {
@@ -4983,9 +4993,8 @@ func isClaudeProjectSessionPath(path string) bool {
 // ── Gemini CLI ───────────────────────────────────────────────────────────────
 // Gemini stores chats at `~/.gemini/tmp/<project>/chats/session-*.json`, with
 // the resumable `sessionId` and the project `directories` recorded inside the
-// file. Recover the session from the chat file the process holds open, or the
-// most recent non-subagent chat whose directories include the pane's working
-// directory.
+// file. Recover the session from the chat file the process holds open, or a
+// non-subagent chat for the pane's directory updated during this process.
 
 var (
 	geminiSessionIDFieldPattern   = regexp.MustCompile(`"sessionId"\s*:\s*"((?:\\.|[^"\\])*)"`)
@@ -5007,6 +5016,7 @@ func discoverGeminiSessionIDs(
 	type unresolvedGeminiProcess struct {
 		panePid          int
 		workingDirectory string
+		processStarted   time.Time
 	}
 	sessions := map[int]string{}
 	unresolved := []unresolvedGeminiProcess{}
@@ -5039,9 +5049,14 @@ func discoverGeminiSessionIDs(
 			continue
 		}
 		unresolvedPanes[panePid] = struct{}{}
+		processStarted := processStartedAtForMetadata(process.pid)
+		if processStarted.IsZero() {
+			continue
+		}
 		unresolved = append(unresolved, unresolvedGeminiProcess{
 			panePid:          panePid,
 			workingDirectory: workingDirectory,
+			processStarted:   processStarted,
 		})
 		workingDirectoryCounts[workingDirectory]++
 	}
@@ -5052,6 +5067,7 @@ func discoverGeminiSessionIDs(
 		}
 		if sessionID := geminiRecentSessionIDForWorkingDirectory(
 			candidate.workingDirectory,
+			candidate.processStarted,
 		); sessionID != "" {
 			sessions[candidate.panePid] = sessionID
 		}
@@ -5072,9 +5088,12 @@ func geminiSessionIDFromOpenFiles(pid int) string {
 	return ""
 }
 
-func geminiRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+func geminiRecentSessionIDForWorkingDirectory(
+	workingDirectory string,
+	processStarted time.Time,
+) string {
 	workingDirectory = normalizedMetadataPath(workingDirectory)
-	if workingDirectory == "" {
+	if workingDirectory == "" || processStarted.IsZero() {
 		return ""
 	}
 	home, err := os.UserHomeDir()
@@ -5083,6 +5102,10 @@ func geminiRecentSessionIDForWorkingDirectory(workingDirectory string) string {
 	}
 	tmpDir := filepath.Join(home, ".gemini", "tmp")
 	for _, path := range recentAgentSessionFiles(tmpDir, 60, isGeminiChatSessionPath) {
+		info, err := os.Stat(path)
+		if err != nil || !sessionUpdatedDuringProcess(info.ModTime(), processStarted) {
+			continue
+		}
 		metadata := readGeminiSessionMetadata(path)
 		if metadata.sessionID == "" || metadata.isSubagent {
 			continue
@@ -5154,6 +5177,32 @@ func geminiDirectoriesFromText(text string) []string {
 }
 
 // ── Shared agent session-file helpers ────────────────────────────────────────
+
+// sessionUpdatedDuringProcess is the common safety boundary for cwd/history
+// fallback. A store record from before the foreground process started cannot
+// describe a fresh agent launched by that process.
+func sessionUpdatedDuringProcess(updatedAt time.Time, processStarted time.Time) bool {
+	return !updatedAt.IsZero() &&
+		!processStarted.IsZero() &&
+		!updatedAt.Before(processStarted.Add(-agentSessionStartTolerance))
+}
+
+func unixDatabaseTime(value string) time.Time {
+	raw, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || raw <= 0 {
+		return time.Time{}
+	}
+	switch {
+	case raw >= 100_000_000_000_000_000:
+		return time.Unix(0, raw)
+	case raw >= 100_000_000_000_000:
+		return time.UnixMicro(raw)
+	case raw >= 100_000_000_000:
+		return time.UnixMilli(raw)
+	default:
+		return time.Unix(raw, 0)
+	}
+}
 
 // recentAgentSessionFiles returns up to limit matching files under root,
 // ordered most-recently-modified first.

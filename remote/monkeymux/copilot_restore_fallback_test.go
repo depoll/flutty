@@ -105,6 +105,8 @@ func TestDiscoverCopilotSessionIDsPrefersFreshSessionOnStaleLock(t *testing.T) {
 // window still resumes the most recent copilot session recorded for its cwd
 // instead of relaunching blank.
 func TestEnrichRestoreCopilotFallsBackToCwd(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
 	home := t.TempDir()
 	setTestHomeDir(t, home)
 	stateDir := filepath.Join(home, ".copilot", "session-state")
@@ -114,13 +116,19 @@ func TestEnrichRestoreCopilotFallsBackToCwd(t *testing.T) {
 	}
 
 	now := time.Now()
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return now.Add(-time.Minute)
+		}
+		return time.Time{}
+	}
 	writeCopilotSession(t, stateDir, "old-session", project, 0, now.Add(-48*time.Hour))
 	writeCopilotSession(t, stateDir, "recent-session", project, 0, now)
 	writeCopilotSession(t, stateDir, "other-dir", filepath.Join(home, "elsewhere"), 0, now)
 
 	restore := &serverRestore{
 		Windows: []restoreWindowState{
-			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project},
+			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, PanePid: 200},
 		},
 	}
 	enrichRestoreWithAgentSessionIDs(restore)
@@ -138,6 +146,8 @@ func TestEnrichRestoreCopilotFallsBackToCwd(t *testing.T) {
 // windows sharing a directory receive distinct sessions (most recent first) and
 // that a session already claimed elsewhere is never reused.
 func TestAssignCopilotSessionsByWorkingDirectoryDedups(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
 	home := t.TempDir()
 	setTestHomeDir(t, home)
 	stateDir := filepath.Join(home, ".copilot", "session-state")
@@ -147,6 +157,16 @@ func TestAssignCopilotSessionsByWorkingDirectoryDedups(t *testing.T) {
 	}
 
 	now := time.Now()
+	processStartedAtForMetadata = func(pid int) time.Time {
+		switch pid {
+		case 201:
+			return now.Add(-10 * time.Minute)
+		case 202:
+			return now.Add(-3 * time.Hour)
+		default:
+			return time.Time{}
+		}
+	}
 	writeCopilotSession(t, stateDir, "sess-newest", project, 0, now)
 	writeCopilotSession(t, stateDir, "sess-middle", project, 0, now.Add(-time.Hour))
 	writeCopilotSession(t, stateDir, "sess-oldest", project, 0, now.Add(-2*time.Hour))
@@ -156,8 +176,8 @@ func TestAssignCopilotSessionsByWorkingDirectoryDedups(t *testing.T) {
 			// Already resolved by the process table — must be left untouched and
 			// not reused for the other windows.
 			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, AgentSessionID: "sess-middle"},
-			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project},
-			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project},
+			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, PanePid: 201},
+			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, PanePid: 202},
 		},
 	}
 	assignCopilotSessionsByWorkingDirectory(restore)
@@ -175,7 +195,42 @@ func TestAssignCopilotSessionsByWorkingDirectoryDedups(t *testing.T) {
 
 // TestAssignCopilotSessionsByWorkingDirectoryNormalizesPaths confirms a window
 // cwd and a session cwd match through ~ expansion and symlink resolution.
+
+func TestCopilotCwdFallbackDoesNotResumeSessionFromBeforeFreshProcess(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
+	home := t.TempDir()
+	setTestHomeDir(t, home)
+	project := filepath.Join(home, "project")
+	stateDir := filepath.Join(home, ".copilot", "session-state")
+	processStarted := time.Now().UTC().Truncate(time.Second)
+	writeCopilotSession(t, stateDir, "stale-session", project, 0, processStarted.Add(-time.Hour))
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return processStarted
+		}
+		return time.Time{}
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, PanePid: 200,
+	}}}
+
+	assignCopilotSessionsByWorkingDirectory(restore)
+
+	if got := restore.Windows[0].AgentSessionID; got != "" {
+		t.Fatalf("fresh Copilot process inherited stale session %q", got)
+	}
+}
+
 func TestAssignCopilotSessionsByWorkingDirectoryNormalizesPaths(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return time.Now().Add(-time.Minute)
+		}
+		return time.Time{}
+	}
 	home := t.TempDir()
 	setTestHomeDir(t, home)
 	stateDir := filepath.Join(home, ".copilot", "session-state")
@@ -193,7 +248,7 @@ func TestAssignCopilotSessionsByWorkingDirectoryNormalizesPaths(t *testing.T) {
 
 	restore := &serverRestore{
 		Windows: []restoreWindowState{
-			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: linkDir},
+			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: linkDir, PanePid: 200},
 		},
 	}
 	assignCopilotSessionsByWorkingDirectory(restore)
