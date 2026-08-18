@@ -18,6 +18,7 @@ import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/remote_multiplexer_service.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/tmux_service.dart';
@@ -37,6 +38,75 @@ const _tmuxNavigatorMaxHeightFactor = 0.48;
 const _tmuxNavigatorMaxHeightCap = 440.0;
 const _tmuxToolPickerMaxHeightFactor = 0.36;
 const _tmuxToolPickerMaxHeightCap = 320.0;
+
+/// Confirms closing a tmux/MonkeyMux terminal window when enabled.
+///
+/// A confirmed "Don't ask me again" choice disables future prompts; cancelling
+/// never changes the preference. The setting remains available in Settings.
+Future<bool> confirmMuxWindowClose({
+  required BuildContext context,
+  required WidgetRef ref,
+  required String title,
+}) async {
+  if (!ref.read(confirmMuxWindowCloseNotifierProvider)) {
+    return true;
+  }
+  var dontAskAgain = false;
+  final result = await showDialog<({bool confirmed, bool dontAskAgain})>(
+    context: context,
+    requestFocus: terminalOverlayRouteRequestFocus(context),
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: const Text('Close window?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Close “$title”? Any running process will stop.'),
+            const SizedBox(height: FluttyTheme.spacingSm),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text('Don’t ask me again'),
+              value: dontAskAgain,
+              onChanged: (value) =>
+                  setDialogState(() => dontAskAgain = value ?? false),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, (
+              confirmed: false,
+              dontAskAgain: false,
+            )),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, (
+              confirmed: true,
+              dontAskAgain: dontAskAgain,
+            )),
+            child: const Text('Close window'),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (result?.confirmed != true) {
+    return false;
+  }
+  if (result!.dontAskAgain) {
+    await ref
+        .read(confirmMuxWindowCloseNotifierProvider.notifier)
+        .setEnabled(enabled: false);
+  }
+  return context.mounted;
+}
 
 List<AgentLaunchTool> _orderedAgentLaunchTools(
   Iterable<AgentLaunchTool> tools, {
@@ -796,31 +866,12 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   }
 
   Future<void> _confirmCloseWindow(TmuxWindow window) async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await confirmMuxWindowClose(
       context: context,
-      requestFocus: terminalOverlayRouteRequestFocus(context),
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Close window?'),
-        content: Text(
-          'Close “${window.displayTitle}”? Any running process will stop.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(dialogContext).colorScheme.error,
-              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
-            ),
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Close window'),
-          ),
-        ],
-      ),
+      ref: ref,
+      title: window.displayTitle,
     );
-    if (!mounted || confirmed != true) {
+    if (!mounted || !confirmed) {
       return;
     }
     Navigator.pop(context, TmuxCloseWindowAction(window.index));

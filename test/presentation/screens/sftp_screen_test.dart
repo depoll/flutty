@@ -148,6 +148,55 @@ class _SftpSelectionHostState extends State<_SftpSelectionHost> {
   );
 }
 
+class _PublicSftpSelectionHost extends StatefulWidget {
+  const _PublicSftpSelectionHost({
+    required this.hostId,
+    required this.connectionId,
+    required this.startDirectory,
+  });
+
+  final int hostId;
+  final int connectionId;
+  final String startDirectory;
+
+  @override
+  State<_PublicSftpSelectionHost> createState() =>
+      _PublicSftpSelectionHostState();
+}
+
+class _PublicSftpSelectionHostState extends State<_PublicSftpSelectionHost> {
+  List<RemoteFileSelection>? _result;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: Column(
+      children: [
+        const TextField(key: ValueKey('picker-source-field'), autofocus: true),
+        FilledButton(
+          onPressed: () async {
+            final result = await showRemoteFilePicker(
+              context: context,
+              hostId: widget.hostId,
+              connectionId: widget.connectionId,
+              startDirectory: widget.startDirectory,
+              constraints: const RemoteFilePickerConstraints(
+                allowMultiple: true,
+              ),
+            );
+            if (mounted) {
+              setState(() => _result = result);
+            }
+          },
+          child: const Text('Open remote picker'),
+        ),
+        Text(
+          _result?.map((file) => file.remotePath).join('|') ?? 'no selection',
+        ),
+      ],
+    ),
+  );
+}
+
 class _PendingSelectionResult {
   const _PendingSelectionResult();
 }
@@ -904,6 +953,67 @@ void main() {
 
       expect(find.text('cancelled'), findsOneWidget);
     });
+
+    testWidgets(
+      'public remote picker dismisses input, lists workspace files, and returns selection',
+      (tester) async {
+        final sshClient = _MockSshClient();
+        final sftp = _MockSftpClient();
+        final monetizationService = _MockMonetizationService();
+        final session = SshSession(
+          connectionId: 7,
+          hostId: 1,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'demo.example.com',
+            port: 22,
+            username: 'demo',
+          ),
+        );
+        addTearDown(session.close);
+
+        when(
+          () => monetizationService.currentState,
+        ).thenReturn(_proMonetizationState);
+        when(sshClient.sftp).thenAnswer((_) async => sftp);
+        when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+        when(() => sftp.stat('/repo')).thenAnswer(
+          (_) async => SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+        );
+        when(
+          () => sftp.listdir('/repo'),
+        ).thenAnswer((_) async => [_fileEntry('notes.txt', size: 7)]);
+
+        await tester.pumpWidget(
+          _buildSftpTestApp(
+            session: session,
+            monetizationService: monetizationService,
+            child: const _PublicSftpSelectionHost(
+              hostId: 1,
+              connectionId: 7,
+              startDirectory: '/repo',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        await tester.tap(find.text('Open remote picker'));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(tester.testTextInput.isVisible, isFalse);
+        expect(find.textContaining('Select files'), findsOneWidget);
+        verify(() => sftp.listdir('/repo')).called(1);
+        expect(find.text('notes.txt'), findsOneWidget);
+        await tester.tap(find.text('notes.txt'));
+        await tester.pump();
+        await tester.tap(find.widgetWithText(FilledButton, 'Select 1 file'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('/repo/notes.txt'), findsOneWidget);
+      },
+    );
 
     testWidgets('normal mode still previews tapped image files', (
       tester,

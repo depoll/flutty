@@ -16,6 +16,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../models/acp_session_keys.dart';
 import '../models/port_proxy_name.dart';
 import '../models/remote_multiplexer.dart';
 import '../models/terminal_preview.dart';
@@ -3636,6 +3637,12 @@ class SshSession {
   /// Session-specific terminal font size override.
   double? terminalFontSize;
 
+  /// Native ACP session currently focused instead of the terminal viewport.
+  AcpSessionKey? activeNativeAcpSessionKey;
+
+  /// In-memory display title for the focused native ACP session.
+  String? activeNativeAcpDisplayTitle;
+
   /// The terminal multiplexer backend currently attached in this session.
   RemoteMuxBackend? remoteMuxBackend;
 
@@ -6431,6 +6438,17 @@ void writeAppReviewDemoTerminalOutput(
   }
 }
 
+String? _activeNativeAcpConnectionTitle(SshSession session) {
+  if (session.activeNativeAcpSessionKey == null) {
+    return null;
+  }
+  final title = session.activeNativeAcpDisplayTitle?.trim();
+  return [
+    if (title != null && title.isNotEmpty) title else 'Native agent',
+    'native',
+  ].join(' · ');
+}
+
 class _SshConnectionHealthFailure {
   const _SshConnectionHealthFailure({
     required this.connectionId,
@@ -8181,21 +8199,26 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (session == null || hostId == null || connectionState == null) {
       return null;
     }
+    final nativeFocusTitle = _activeNativeAcpConnectionTitle(session);
     return ActiveConnection(
       connectionId: connectionId,
       hostId: hostId,
       state: connectionState,
       createdAt: session.createdAt,
       config: session.config,
-      preview: session.terminalPreview,
-      previewSnapshot: session.terminalPreviewSnapshot,
+      preview: nativeFocusTitle == null ? session.terminalPreview : null,
+      previewSnapshot: nativeFocusTitle == null
+          ? session.terminalPreviewSnapshot
+          : null,
       terminalTheme: session.terminalTheme,
-      sessionTitle: _connectionSessionTitles[connectionId],
-      windowTitle: session.windowTitle,
-      iconName: session.iconName,
-      workingDirectory: session.workingDirectory,
-      shellStatus: session.shellStatus,
-      lastExitCode: session.lastExitCode,
+      sessionTitle: nativeFocusTitle ?? _connectionSessionTitles[connectionId],
+      windowTitle: nativeFocusTitle == null ? session.windowTitle : null,
+      iconName: nativeFocusTitle == null ? session.iconName : null,
+      workingDirectory: nativeFocusTitle == null
+          ? session.workingDirectory
+          : null,
+      shellStatus: nativeFocusTitle == null ? session.shellStatus : null,
+      lastExitCode: nativeFocusTitle == null ? session.lastExitCode : null,
       remoteMuxBackend: session.remoteMuxBackend,
       remoteMuxSessionName: session.remoteMuxSessionName,
       terminalThemeLightId: session.terminalThemeLightId,
@@ -8277,6 +8300,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       if (session == null || hostId == null) {
         continue;
       }
+      final nativeFocusTitle = _activeNativeAcpConnectionTitle(session);
       connections.add(
         ActiveConnection(
           connectionId: connectionId,
@@ -8284,15 +8308,20 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           state: entry.value,
           createdAt: session.createdAt,
           config: session.config,
-          preview: session.terminalPreview,
-          previewSnapshot: session.terminalPreviewSnapshot,
+          preview: nativeFocusTitle == null ? session.terminalPreview : null,
+          previewSnapshot: nativeFocusTitle == null
+              ? session.terminalPreviewSnapshot
+              : null,
           terminalTheme: session.terminalTheme,
-          sessionTitle: _connectionSessionTitles[connectionId],
-          windowTitle: session.windowTitle,
-          iconName: session.iconName,
-          workingDirectory: session.workingDirectory,
-          shellStatus: session.shellStatus,
-          lastExitCode: session.lastExitCode,
+          sessionTitle:
+              nativeFocusTitle ?? _connectionSessionTitles[connectionId],
+          windowTitle: nativeFocusTitle == null ? session.windowTitle : null,
+          iconName: nativeFocusTitle == null ? session.iconName : null,
+          workingDirectory: nativeFocusTitle == null
+              ? session.workingDirectory
+              : null,
+          shellStatus: nativeFocusTitle == null ? session.shellStatus : null,
+          lastExitCode: nativeFocusTitle == null ? session.lastExitCode : null,
           remoteMuxBackend: session.remoteMuxBackend,
           remoteMuxSessionName: session.remoteMuxSessionName,
           terminalThemeLightId: session.terminalThemeLightId,
@@ -8874,6 +8903,24 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       return;
     }
     session.terminalFontSize = fontSize;
+    state = {...state};
+  }
+
+  /// Updates the native ACP session focused inside an active connection.
+  void updateSessionNativeAcpFocus(
+    int connectionId, {
+    required AcpSessionKey? key,
+    String? displayTitle,
+  }) {
+    final session = getSession(connectionId);
+    if (session == null ||
+        (session.activeNativeAcpSessionKey == key &&
+            session.activeNativeAcpDisplayTitle == displayTitle)) {
+      return;
+    }
+    session
+      ..activeNativeAcpSessionKey = key
+      ..activeNativeAcpDisplayTitle = displayTitle;
     state = {...state};
   }
 

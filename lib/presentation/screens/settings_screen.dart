@@ -694,6 +694,9 @@ class _TerminalSection extends ConsumerWidget {
       portForwardBrowserLinksNotifierProvider,
     );
     final shellCompletions = ref.watch(shellCompletionsNotifierProvider);
+    final confirmMuxWindowClose = ref.watch(
+      confirmMuxWindowCloseNotifierProvider,
+    );
     final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
     final sharedClipboardLocalRead = ref.watch(
       sharedClipboardLocalReadNotifierProvider,
@@ -839,6 +842,21 @@ class _TerminalSection extends ConsumerWidget {
             unawaited(
               ref
                   .read(shellCompletionsNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.warning_amber_rounded),
+          title: const Text('Confirm before closing mux windows'),
+          subtitle: const Text(
+            'Ask before closing a tmux or MonkeyMux terminal window',
+          ),
+          value: confirmMuxWindowClose,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(confirmMuxWindowCloseNotifierProvider.notifier)
                   .setEnabled(enabled: value),
             );
           },

@@ -2030,29 +2030,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final title = _redactStoreScreenshotIdentities
         ? _storeScreenshotWindowTitle(window)
         : window.displayTitle;
-    final confirmed = await showDialog<bool>(
+    final confirmed = await confirmMuxWindowClose(
       context: context,
-      requestFocus: terminalOverlayRouteRequestFocus(context),
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Close window?'),
-        content: Text('Close “$title”? Any running process will stop.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(dialogContext).colorScheme.error,
-              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
-            ),
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Close window'),
-          ),
-        ],
-      ),
+      ref: widget.ref,
+      title: title,
     );
-    if (!mounted || confirmed != true) {
+    if (!mounted || !confirmed) {
       return;
     }
     await widget.onAction(TmuxCloseWindowAction(window.index));

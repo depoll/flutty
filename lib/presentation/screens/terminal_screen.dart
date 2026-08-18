@@ -843,6 +843,14 @@ TmuxBarPlacement resolveTmuxBarPlacement(double availableWidth) {
       : TmuxBarPlacement.bottomOverlay;
 }
 
+/// Whether Back should leave the connection screen.
+///
+/// Native ACP focus replaces the terminal viewport but does not create a new
+/// navigation level. Only expanded mux chrome consumes the first Back action.
+@visibleForTesting
+bool resolveTerminalScreenCanPop({required bool isTmuxBarExpanded}) =>
+    !isTmuxBarExpanded;
+
 /// Resolves the wide-layout sidebar width while the user drags it.
 @visibleForTesting
 double resolveTmuxSidebarWidth({
@@ -7466,6 +7474,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _activeNativeAcpSessionKey = session.activeNativeAcpSessionKey;
+
     try {
       // Reuse the session's persistent terminal if it exists (preserves
       // scrollback and screen buffer across screen navigations).
@@ -11293,6 +11303,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     setState(() => _activeNativeAcpSessionKey = key);
+    _persistNativeAcpFocus(key);
     _collapseTmuxBarIfExpanded();
   }
 
@@ -11301,6 +11312,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     setState(() => _activeNativeAcpSessionKey = null);
+    final connectionId = _connectionId;
+    if (connectionId != null) {
+      ref
+          .read(activeSessionsProvider.notifier)
+          .updateSessionNativeAcpFocus(connectionId, key: null);
+    }
     if (!_isMobilePlatform) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -11308,6 +11325,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
       });
     }
+  }
+
+  void _persistNativeAcpFocus(AcpSessionKey key) {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return;
+    }
+    final session = ref
+        .read(acpSessionManagerProvider)
+        .state
+        .byKeyValue(key.value);
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionNativeAcpFocus(
+          connectionId,
+          key: key,
+          displayTitle: session == null
+              ? null
+              : acpSessionDisplayTitle(session),
+        );
   }
 
   void _commitNativeAgentFontSize(double fontSize) {
@@ -12688,7 +12725,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     return PopScope(
-      canPop: !_isTmuxBarExpanded && !showsNativeAgent,
+      canPop: resolveTerminalScreenCanPop(
+        isTmuxBarExpanded: _isTmuxBarExpanded,
+      ),
       onPopInvokedWithResult: (didPop, _) {
         _logAndroidPredictiveBackDiagnostics(
           context,
@@ -12699,11 +12738,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _clearAppThemeOverride();
           return;
         }
-        if (_isTmuxBarExpanded) {
-          _collapseTmuxBarIfExpanded();
-        } else {
-          _showTerminalViewport();
-        }
+        _collapseTmuxBarIfExpanded();
       },
       child: Scaffold(
         resizeToAvoidBottomInset: !isMobile || systemKeyboardVisible,

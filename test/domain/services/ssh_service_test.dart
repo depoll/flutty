@@ -23,6 +23,7 @@ import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
@@ -5362,6 +5363,45 @@ LISTEN ::1:4201
         );
       },
     );
+
+    test('persists native focus in active connection metadata', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final result = await notifier.connect(42, forceNew: true);
+      expect(result.success, isTrue);
+      final connectionId = result.connectionId!;
+      final key = AcpSessionKey.of(
+        hostId: 42,
+        providerId: 'pi',
+        bridgeId: 'bridge-1',
+        acpSessionId: 'session-1',
+      );
+
+      notifier.updateSessionNativeAcpFocus(
+        connectionId,
+        key: key,
+        displayTitle: 'Pi',
+      );
+
+      final focused = notifier.getActiveConnection(connectionId)!;
+      expect(
+        fakeSshService.getSession(connectionId)!.activeNativeAcpSessionKey,
+        key,
+      );
+      expect(focused.sessionTitle, 'Pi · native');
+      expect(focused.preview, isNull);
+      expect(focused.windowTitle, isNull);
+      expect(focused.workingDirectory, isNull);
+
+      notifier.updateSessionNativeAcpFocus(connectionId, key: null);
+      expect(
+        fakeSshService.getSession(connectionId)!.activeNativeAcpSessionKey,
+        isNull,
+      );
+      expect(
+        notifier.getActiveConnection(connectionId)!.sessionTitle,
+        isNot('Pi · native'),
+      );
+    });
 
     test('syncBackgroundStatus serializes queued updates', () async {
       final notifier = container.read(activeSessionsProvider.notifier);

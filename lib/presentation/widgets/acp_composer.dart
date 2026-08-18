@@ -58,6 +58,7 @@ class AcpComposer extends StatefulWidget {
     this.attachmentActions = const AcpComposerAttachmentActions(),
     this.onOpenConfig,
     this.hintText = 'Message the agent',
+    this.useBottomSafeArea = true,
   });
 
   /// The controller holding composer state and behaviour.
@@ -71,6 +72,9 @@ class AcpComposer extends StatefulWidget {
 
   /// Placeholder text for the empty field.
   final String hintText;
+
+  /// Whether the composer should reserve the device bottom safe area.
+  final bool useBottomSafeArea;
 
   @override
   State<AcpComposer> createState() => _AcpComposerState();
@@ -305,6 +309,7 @@ class _AcpComposerState extends State<AcpComposer> {
         _clampHighlight();
         return SafeArea(
           top: false,
+          bottom: widget.useBottomSafeArea,
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: scheme.surface,

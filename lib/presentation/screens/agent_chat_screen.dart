@@ -25,6 +25,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/theme.dart';
 import '../../domain/models/acp_attachment.dart';
+import '../../domain/models/acp_protocol.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/acp_timeline.dart' as domain;
@@ -386,7 +387,8 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     return AcpComposerAttachmentActions(
       pickPhotos: _pickPhotos,
       pickFiles: _pickFiles,
-      pickRemoteFiles: (context) => _pickRemoteFiles(context, connectionId),
+      pickRemoteFiles: (context) =>
+          _pickRemoteFiles(context, connectionId, session.cwd),
     );
   }
 
@@ -416,11 +418,13 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   Future<List<AcpAttachmentCandidate>> _pickRemoteFiles(
     BuildContext context,
     int? connectionId,
+    String startDirectory,
   ) async {
     final selection = await showRemoteFilePicker(
       context: context,
       hostId: widget.hostId,
       connectionId: connectionId,
+      startDirectory: startDirectory,
       constraints: const RemoteFilePickerConstraints(allowMultiple: true),
     );
     if (selection == null) {
@@ -431,6 +435,145 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         acpAttachmentCandidateFromRemoteFileSelection(file),
     ];
   }
+
+  PreferredSizeWidget? _buildQuickConfigBar(AcpSessionState session) {
+    final selectors = _quickConfigSelectors(session);
+    if (selectors.isEmpty) {
+      return null;
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return PreferredSize(
+      preferredSize: const Size.fromHeight(44),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+        ),
+        child: SizedBox(
+          height: 44,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(
+              horizontal: FluttyTheme.spacingSm,
+              vertical: 5,
+            ),
+            itemCount: selectors.length,
+            separatorBuilder: (_, _) =>
+                const SizedBox(width: FluttyTheme.spacingXs),
+            itemBuilder: (context, index) =>
+                _AcpQuickSelector(selector: selectors[index]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<_AcpQuickSelectorData> _quickConfigSelectors(AcpSessionState session) {
+    final manager = ref.read(acpSessionManagerProvider);
+    final generic = session.configOptions.whereType<AcpSelectConfigOption>();
+    AcpSelectConfigOption? firstMatching(
+      bool Function(AcpSelectConfigOption option) matches,
+    ) => generic.where(matches).firstOrNull;
+
+    final modelOption = firstMatching(
+      (option) => (option.category ?? '').toLowerCase() == 'model',
+    );
+    final modeOption = firstMatching(
+      (option) => (option.category ?? '').toLowerCase() == 'mode',
+    );
+    final effortOption = firstMatching((option) {
+      final category = (option.category ?? '').toLowerCase();
+      final identity = '${option.id} ${option.name}'.toLowerCase();
+      return category == 'thought' ||
+          identity.contains('effort') ||
+          identity.contains('reasoning') ||
+          identity.contains('thinking');
+    });
+    final selectors = <_AcpQuickSelectorData>[];
+
+    void addGeneric(String label, AcpSelectConfigOption? option) {
+      if (option == null) {
+        return;
+      }
+      final choices = _quickConfigChoices(option);
+      if (choices.isEmpty) {
+        return;
+      }
+      selectors.add(
+        _AcpQuickSelectorData(
+          label: label,
+          currentValue: option.currentValue,
+          choices: choices,
+          onSelected: (value) =>
+              manager.setConfigOption(_key, configId: option.id, value: value),
+        ),
+      );
+    }
+
+    addGeneric('Model', modelOption);
+    if (modelOption == null) {
+      final state = session.modelState;
+      if (state != null && state.availableModels.isNotEmpty) {
+        selectors.add(
+          _AcpQuickSelectorData(
+            label: 'Model',
+            currentValue: state.currentModelId,
+            choices: [
+              for (final model in state.availableModels)
+                _AcpQuickChoice(
+                  value: model.id,
+                  label: model.name.isEmpty ? model.id : model.name,
+                  description: model.description,
+                ),
+            ],
+            onSelected: (value) => manager.setModel(_key, value),
+          ),
+        );
+      }
+    }
+
+    addGeneric('Effort', effortOption);
+    addGeneric('Mode', modeOption);
+    if (modeOption == null) {
+      final state = session.modeState;
+      if (state != null && state.availableModes.isNotEmpty) {
+        selectors.add(
+          _AcpQuickSelectorData(
+            label: 'Mode',
+            currentValue: state.currentModeId,
+            choices: [
+              for (final mode in state.availableModes)
+                _AcpQuickChoice(
+                  value: mode.id,
+                  label: mode.name.isEmpty ? mode.id : mode.name,
+                  description: mode.description,
+                ),
+            ],
+            onSelected: (value) => manager.setMode(_key, value),
+          ),
+        );
+      }
+    }
+    return selectors;
+  }
+
+  List<_AcpQuickChoice> _quickConfigChoices(AcpSelectConfigOption option) => [
+    for (final value in option.options)
+      _AcpQuickChoice(
+        value: value.value,
+        label: value.name.isEmpty ? value.value : value.name,
+        description: value.description,
+      ),
+    for (final group in option.groups)
+      for (final value in group.options)
+        _AcpQuickChoice(
+          value: value.value,
+          label: group.name.isEmpty
+              ? (value.name.isEmpty ? value.value : value.name)
+              : '${group.name} · ${value.name.isEmpty ? value.value : value.name}',
+          description: value.description,
+        ),
+  ];
 
   Future<void> _openConfig(AcpSessionState session) => showAcpConfigOptions(
     context,
@@ -744,6 +887,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             ),
           ),
         ),
+        bottom: _buildQuickConfigBar(session),
         actions: [
           if (!widget.embedded)
             IconButton(
@@ -756,6 +900,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       ),
       body: SafeArea(
         top: false,
+        bottom: !widget.embedded,
         child: Column(
           children: [
             if (session.status != AcpConnectionStatus.ready)
@@ -773,8 +918,11 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                 transitioning:
                     session.promptStatus != AcpPromptStatus.idle &&
                     !activity.needsInput,
-                progressFraction: activity.progressFraction,
-                indeterminateProgress: activity.indeterminate,
+                progressFraction: widget.embedded
+                    ? null
+                    : activity.progressFraction,
+                indeterminateProgress:
+                    !widget.embedded && activity.indeterminate,
               ),
             Expanded(
               child: Stack(
@@ -829,6 +977,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             AcpComposer(
               controller: _composer,
               attachmentActions: _attachmentActions(session),
+              useBottomSafeArea: !widget.embedded,
             ),
           ],
         ),
@@ -1173,6 +1322,131 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     final separator = trimmed.lastIndexOf(RegExp(r'[/\\]'));
     final segment = separator >= 0 ? trimmed.substring(separator + 1) : trimmed;
     return segment.isEmpty ? path : segment;
+  }
+}
+
+@immutable
+class _AcpQuickChoice {
+  const _AcpQuickChoice({
+    required this.value,
+    required this.label,
+    this.description,
+  });
+
+  final String value;
+  final String label;
+  final String? description;
+}
+
+@immutable
+class _AcpQuickSelectorData {
+  const _AcpQuickSelectorData({
+    required this.label,
+    required this.currentValue,
+    required this.choices,
+    required this.onSelected,
+  });
+
+  final String label;
+  final String currentValue;
+  final List<_AcpQuickChoice> choices;
+  final Future<void> Function(String value) onSelected;
+}
+
+class _AcpQuickSelector extends StatelessWidget {
+  const _AcpQuickSelector({required this.selector});
+
+  final _AcpQuickSelectorData selector;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final current = selector.choices
+        .where((choice) => choice.value == selector.currentValue)
+        .firstOrNull;
+    return PopupMenuButton<String>(
+      tooltip: 'Change ${selector.label.toLowerCase()}',
+      onSelected: (value) async {
+        try {
+          await selector.onSelected(value);
+        } on Object {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Could not change ${selector.label.toLowerCase()}.',
+                ),
+              ),
+            );
+          }
+        }
+      },
+      itemBuilder: (context) => [
+        for (final choice in selector.choices)
+          PopupMenuItem<String>(
+            value: choice.value,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 24,
+                  child: choice.value == selector.currentValue
+                      ? const Icon(Icons.check, size: 18)
+                      : null,
+                ),
+                const SizedBox(width: FluttyTheme.spacingXs),
+                Flexible(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(choice.label),
+                      if ((choice.description ?? '').trim().isNotEmpty)
+                        Text(
+                          choice.description!,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '${selector.label}: ${current?.label ?? selector.currentValue}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AcpChatTypography.monoStyleOf(context).copyWith(
+                  color: scheme.onSurface,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 3),
+              Icon(
+                Icons.arrow_drop_down,
+                size: 18,
+                color: scheme.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

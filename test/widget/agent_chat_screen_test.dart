@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
+import 'package:monkeyssh/domain/models/acp_protocol.dart';
 import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
@@ -39,6 +41,7 @@ Widget _wrap(
   double? preferredFontSize,
   String? preferredFontFamily,
   ValueChanged<double>? onFontSizeCommitted,
+  AcpChatAttachmentActionsBuilder? attachmentActionsBuilder,
 }) {
   final ssh = _MockSshService();
   final key = routeKey ?? fakeAcpKey();
@@ -62,8 +65,9 @@ Widget _wrap(
           providerId: key.providerId,
           bridgeId: key.bridgeId,
           acpSessionId: key.acpSessionId,
-          attachmentActionsBuilder: (_, _) =>
-              const AcpComposerAttachmentActions(),
+          attachmentActionsBuilder:
+              attachmentActionsBuilder ??
+              (_, _) => const AcpComposerAttachmentActions(),
           embedded: embedded,
           preferredFontSize: preferredFontSize,
           preferredFontFamily: preferredFontFamily,
@@ -92,6 +96,70 @@ void main() {
     await tester.tap(find.byIcon(Icons.more_vert));
     await tester.pumpAndSettle();
     expect(find.text('Session settings'), findsOneWidget);
+  });
+
+  testWidgets('top bar changes model, effort, and mode directly', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager(
+      sessions: [
+        fakeAcpSession(
+          configOptions: const [
+            AcpSelectConfigOption(
+              id: 'model',
+              name: 'Model',
+              currentValue: 'sonnet',
+              category: 'model',
+              options: [
+                AcpConfigValue(value: 'sonnet', name: 'Sonnet'),
+                AcpConfigValue(value: 'opus', name: 'Opus'),
+              ],
+            ),
+            AcpSelectConfigOption(
+              id: 'effort',
+              name: 'Reasoning effort',
+              currentValue: 'medium',
+              category: 'thought',
+              options: [
+                AcpConfigValue(value: 'medium', name: 'Medium'),
+                AcpConfigValue(value: 'high', name: 'High'),
+              ],
+            ),
+          ],
+          modeState: const AcpSessionModeState(
+            currentModeId: 'code',
+            availableModes: [
+              AcpSessionMode(id: 'code', name: 'Code'),
+              AcpSessionMode(id: 'ask', name: 'Ask'),
+            ],
+          ),
+        ),
+      ],
+    );
+    await tester.pumpWidget(_wrap(manager, embedded: true));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Model: Sonnet'), findsOneWidget);
+    expect(find.text('Effort: Medium'), findsOneWidget);
+    expect(find.text('Mode: Code'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Change model'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Opus').last);
+    await tester.pumpAndSettle();
+    expect(manager.configOptionSets, contains(('model', 'opus')));
+
+    await tester.tap(find.byTooltip('Change effort'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('High').last);
+    await tester.pumpAndSettle();
+    expect(manager.configOptionSets, contains(('effort', 'high')));
+
+    await tester.tap(find.byTooltip('Change mode'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ask').last);
+    await tester.pumpAndSettle();
+    expect(manager.modeSets, contains('ask'));
   });
 
   testWidgets('opens an inline image in a sized interactive viewer', (
@@ -453,12 +521,49 @@ void main() {
 
     expect(find.text('agent is working'), findsOneWidget);
     expect(find.textContaining('· working'), findsOneWidget);
-    final progress = tester
+    final statusStripProgress = tester
         .widgetList<LinearProgressIndicator>(
           find.byType(LinearProgressIndicator),
         )
-        .singleWhere((indicator) => indicator.minHeight == 2);
-    expect(progress.value, 0.5);
+        .where((indicator) => indicator.minHeight == 2);
+    expect(
+      statusStripProgress,
+      isEmpty,
+      reason: 'embedded status progress belongs to terminal chrome only',
+    );
+  });
+
+  testWidgets('remote selection adds a visible composer attachment', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _wrap(
+        FakeAcpSessionManager(sessions: [fakeAcpSession()]),
+        embedded: true,
+        attachmentActionsBuilder: (_, _) => AcpComposerAttachmentActions(
+          pickRemoteFiles: (_) async => [
+            const AcpAttachmentCandidate.remoteFile(
+              name: 'report.txt',
+              remotePath: '/repo/report.txt',
+              sizeBytes: 42,
+              mimeType: 'text/plain',
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Add attachment'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remote file (SFTP)'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('report.txt'), findsOneWidget);
+    expect(
+      tester.widget<AcpComposer>(find.byType(AcpComposer)).useBottomSafeArea,
+      isFalse,
+    );
   });
 
   testWidgets('waiting for input takes priority over native working state', (

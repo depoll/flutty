@@ -391,6 +391,28 @@ void main() {
       expect(find.text('Block'), findsOneWidget);
     });
 
+    testWidgets('exposes mux close confirmation toggle', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Confirm before closing mux windows'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      final tile = tester.widget<SwitchListTile>(
+        find.widgetWithText(
+          SwitchListTile,
+          'Confirm before closing mux windows',
+        ),
+      );
+      expect(tile.value, isTrue);
+    });
+
     testWidgets('displays bell sound toggle', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);

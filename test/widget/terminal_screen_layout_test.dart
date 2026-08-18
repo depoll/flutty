@@ -40,6 +40,11 @@ void main() {
       expect(tmuxHandleMinTouchExtent, greaterThanOrEqualTo(44));
     });
 
+    test('native focus leaves the connection on Back', () {
+      expect(resolveTerminalScreenCanPop(isTmuxBarExpanded: false), isTrue);
+      expect(resolveTerminalScreenCanPop(isTmuxBarExpanded: true), isFalse);
+    });
+
     test('moves tmux controls to a sidebar only when width allows it', () {
       const breakpoint = tmuxSidebarExpandedWidth + tmuxSidebarMinTerminalWidth;
 

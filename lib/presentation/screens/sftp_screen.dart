@@ -738,17 +738,34 @@ Future<List<RemoteFileSelection>?> showRemoteFilePicker({
   int? connectionId,
   String? startDirectory,
   RemoteFilePickerConstraints constraints = const RemoteFilePickerConstraints(),
-}) => Navigator.of(context).push<List<RemoteFileSelection>>(
-  MaterialPageRoute(
-    builder: (context) => SftpScreen(
-      hostId: hostId,
-      connectionId: connectionId,
-      initialPath: startDirectory,
-      selectionConstraints: constraints,
-      showCloseButton: true,
+}) async {
+  FocusManager.instance.primaryFocus?.unfocus();
+  await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+  if (!context.mounted) {
+    return null;
+  }
+  return Navigator.of(
+    context,
+    rootNavigator: true,
+  ).push<List<RemoteFileSelection>>(
+    MaterialPageRoute(
+      requestFocus: false,
+      builder: (context) {
+        final mediaQuery = MediaQuery.of(context);
+        return MediaQuery(
+          data: mediaQuery.copyWith(viewInsets: EdgeInsets.zero),
+          child: SftpScreen(
+            hostId: hostId,
+            connectionId: connectionId,
+            initialPath: startDirectory,
+            selectionConstraints: constraints,
+            showCloseButton: true,
+          ),
+        );
+      },
     ),
-  ),
-);
+  );
+}
 
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
@@ -3464,6 +3481,7 @@ class _RemoteFileSelectionBar extends StatelessWidget {
         child: SafeArea(
           top: false,
           child: Align(
+            heightFactor: 1,
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 960),
               child: Padding(

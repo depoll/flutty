@@ -16,6 +16,7 @@ import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/remote_multiplexer_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/widgets/premium_badge.dart';
@@ -23,6 +24,49 @@ import 'package:monkeyssh/presentation/widgets/tmux_window_navigator.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_status_badge.dart';
 
 import '../support/fake_acp_session_manager.dart';
+
+class _TestConfirmMuxWindowCloseNotifier extends ConfirmMuxWindowCloseNotifier {
+  @override
+  bool build() => true;
+
+  @override
+  Future<void> setEnabled({required bool enabled}) async {
+    state = enabled;
+  }
+}
+
+class _ConfirmCloseHost extends ConsumerStatefulWidget {
+  const _ConfirmCloseHost();
+
+  @override
+  ConsumerState<_ConfirmCloseHost> createState() => _ConfirmCloseHostState();
+}
+
+class _ConfirmCloseHostState extends ConsumerState<_ConfirmCloseHost> {
+  var _confirmedCount = 0;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: Column(
+      children: [
+        FilledButton(
+          onPressed: () async {
+            if (await confirmMuxWindowClose(
+                  context: context,
+                  ref: ref,
+                  title: 'shell',
+                ) &&
+                mounted) {
+              setState(() => _confirmedCount++);
+            }
+          },
+          child: const Text('Request close'),
+        ),
+        Text('confirmed $_confirmedCount'),
+      ],
+    ),
+  );
+}
 
 void main() {
   group('TmuxWindowStatusBadge', () {
@@ -98,6 +142,40 @@ void main() {
       expect(icon.color, scheme.onErrorContainer);
       expect(text.style?.color, scheme.onErrorContainer);
     });
+  });
+
+  testWidgets('Don’t ask me again disables future mux close prompts', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          confirmMuxWindowCloseNotifierProvider.overrideWith(
+            _TestConfirmMuxWindowCloseNotifier.new,
+          ),
+        ],
+        child: const MaterialApp(home: _ConfirmCloseHost()),
+      ),
+    );
+
+    await tester.tap(find.text('Request close'));
+    await tester.pumpAndSettle();
+    expect(find.text('Close window?'), findsOneWidget);
+    expect(find.text('Don’t ask me again'), findsOneWidget);
+    await tester.tap(find.text('Don’t ask me again'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Close window'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('confirmed 1'), findsOneWidget);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(_ConfirmCloseHost)),
+    );
+    expect(container.read(confirmMuxWindowCloseNotifierProvider), isFalse);
+
+    await tester.tap(find.text('Request close'));
+    await tester.pumpAndSettle();
+    expect(find.text('Close window?'), findsNothing);
+    expect(find.text('confirmed 2'), findsOneWidget);
   });
 
   group('tmux navigator UI', () {

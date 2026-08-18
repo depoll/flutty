@@ -61,6 +61,9 @@ abstract final class SettingKeys {
   /// Enable shell completion popups while typing in the terminal.
   static const shellCompletions = 'shell_completions';
 
+  /// Ask before closing a tmux or MonkeyMux terminal window.
+  static const confirmMuxWindowClose = 'confirm_mux_window_close';
+
   /// Enable haptic feedback.
   static const hapticFeedback = 'haptic_feedback';
 
@@ -430,6 +433,33 @@ class AutoLockTimeoutNotifier extends _AsyncSettingsNotifier<int> {
 /// Provider for auto-lock timeout with write capability.
 final autoLockTimeoutNotifierProvider =
     NotifierProvider<AutoLockTimeoutNotifier, int>(AutoLockTimeoutNotifier.new);
+
+/// Notifier for mux window close confirmations.
+class ConfirmMuxWindowCloseNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
+
+  @override
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.confirmMuxWindowClose,
+    defaultValue: true,
+  );
+
+  /// Sets whether closing a mux terminal window requires confirmation.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settingsService.setBool(
+      SettingKeys.confirmMuxWindowClose,
+      value: enabled,
+    );
+    state = enabled;
+  }
+}
+
+/// Provider for mux window close confirmations.
+final confirmMuxWindowCloseNotifierProvider =
+    NotifierProvider<ConfirmMuxWindowCloseNotifier, bool>(
+      ConfirmMuxWindowCloseNotifier.new,
+    );
 
 /// Provider for haptic feedback setting.
 final hapticFeedbackProvider = FutureProvider<bool>((ref) async {
