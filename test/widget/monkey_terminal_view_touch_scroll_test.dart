@@ -1007,7 +1007,7 @@ void main() {
     },
   );
 
-  testWidgets('direct terminal scrollback accelerates touch drags', (
+  testWidgets('direct terminal scrollback follows touch drags at 1x', (
     tester,
   ) async {
     final terminal = Terminal(maxLines: 200)
@@ -1040,13 +1040,11 @@ void main() {
     await gesture.moveBy(const Offset(0, 20));
     await tester.pump();
 
-    expect(offsetAfterDragStart - scrollController.offset, closeTo(60, 0.01));
+    expect(offsetAfterDragStart - scrollController.offset, closeTo(20, 0.01));
     await gesture.up();
   });
 
-  testWidgets('direct touch fling uses the same accelerated gain', (
-    tester,
-  ) async {
+  testWidgets('direct touch fling preserves platform velocity', (tester) async {
     final terminal = Terminal(maxLines: 200)
       ..write(List.filled(100, 'line\r\n').join());
     final scrollController = ScrollController();
@@ -1080,7 +1078,9 @@ void main() {
 
     expect(ballisticVelocities, isNotEmpty);
     expect(
-      ballisticVelocities.any((velocity) => velocity.abs() > 2000),
+      ballisticVelocities.any(
+        (velocity) => velocity.abs() >= 800 && velocity.abs() <= 1200,
+      ),
       isTrue,
     );
   });
