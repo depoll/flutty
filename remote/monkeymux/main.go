@@ -59,12 +59,13 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.159"
+	monkeyMuxVersion                  = "0.1.160"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
 	piSessionMetadataRecordLimitBytes = 1024 * 1024
 	piSessionHeaderScanLimitBytes     = 1024 * 1024
+	piSessionActivityMatchTolerance   = 15 * time.Second
 	oscBufferLimitBytes               = 4096
 	processMetadataTimeout            = 500 * time.Millisecond
 	processMetadataInterval           = 500 * time.Millisecond
@@ -559,6 +560,7 @@ type restoreWindowState struct {
 	AgentSessionID           string                    `json:"agentSessionId,omitempty"`
 	AgentSessionDir          string                    `json:"agentSessionDir,omitempty"`
 	AgentSessionPath         string                    `json:"agentSessionPath,omitempty"`
+	LastActivityEpochSeconds int64                     `json:"lastActivityEpochSeconds,omitempty"`
 	HistoryBase64            string                    `json:"historyBase64,omitempty"`
 	HistoryStartsAtGround    bool                      `json:"historyStartsAtGround,omitempty"`
 	CursorVisible            bool                      `json:"cursorVisible,omitempty"`
@@ -2487,8 +2489,61 @@ func collectServerRestore(session string, status runningServerStatus) *serverRes
 		restore = restoreFromWindowSnapshots(windows)
 		enrichRestoreWithCapturedShellHistory(session, restore)
 	}
+	if restore != nil && restoreNeedsWindowActivity(restore) {
+		if windows, err := queryServerWindows(session); err == nil {
+			enrichRestoreWithWindowActivity(restore, windows)
+		}
+	}
 	enrichRestoreWithAgentSessionIDs(restore)
 	return restore
+}
+
+func restoreNeedsWindowActivity(restore *serverRestore) bool {
+	if restore == nil {
+		return false
+	}
+	for _, window := range restore.Windows {
+		if agentToolCandidateForRestore(window) == "pi" &&
+			strings.TrimSpace(window.AgentSessionPath) == "" &&
+			window.LastActivityEpochSeconds <= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func enrichRestoreWithWindowActivity(
+	restore *serverRestore,
+	windows []windowSnapshot,
+) {
+	if restore == nil || len(windows) == 0 {
+		return
+	}
+	byID := make(map[string]int64, len(windows))
+	byIndex := make(map[int]int64, len(windows))
+	for _, window := range windows {
+		if window.LastActivityEpochSeconds <= 0 {
+			continue
+		}
+		if id := strings.TrimSpace(window.ID); id != "" {
+			byID[id] = window.LastActivityEpochSeconds
+		}
+		byIndex[window.Index] = window.LastActivityEpochSeconds
+	}
+	for i := range restore.Windows {
+		if restore.Windows[i].LastActivityEpochSeconds > 0 {
+			continue
+		}
+		if id := strings.TrimSpace(restore.Windows[i].ID); id != "" {
+			if activity := byID[id]; activity > 0 {
+				restore.Windows[i].LastActivityEpochSeconds = activity
+			}
+			continue
+		}
+		if activity := byIndex[restore.Windows[i].Index]; activity > 0 {
+			restore.Windows[i].LastActivityEpochSeconds = activity
+		}
+	}
 }
 
 func requestServerRestore(session string) (*serverRestore, error) {
@@ -2590,21 +2645,22 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 	}
 	for _, window := range windows {
 		restore.Windows = append(restore.Windows, restoreWindowState{
-			ID:                 window.ID,
-			Index:              window.Index,
-			Name:               window.Name,
-			Cwd:                window.CurrentPath,
-			CurrentCommand:     window.CurrentCommand,
-			PanePid:            window.PanePid,
-			PaneTitle:          window.PaneTitle,
-			AgentTool:          window.AgentTool,
-			AgentToolConfirmed: window.AgentToolConfirmed,
-			AgentSessionID:     window.AgentSessionID,
-			AgentSessionDir:    window.AgentSessionDir,
-			AgentSessionPath:   window.AgentSessionPath,
-			PrivateModes:       privateModesFromWindowSnapshot(window),
-			TerminalProgress:   copyTerminalProgressSnapshot(window.TerminalProgress),
-			Active:             window.Active,
+			ID:                       window.ID,
+			Index:                    window.Index,
+			Name:                     window.Name,
+			Cwd:                      window.CurrentPath,
+			CurrentCommand:           window.CurrentCommand,
+			PanePid:                  window.PanePid,
+			PaneTitle:                window.PaneTitle,
+			AgentTool:                window.AgentTool,
+			AgentToolConfirmed:       window.AgentToolConfirmed,
+			AgentSessionID:           window.AgentSessionID,
+			AgentSessionDir:          window.AgentSessionDir,
+			AgentSessionPath:         window.AgentSessionPath,
+			LastActivityEpochSeconds: window.LastActivityEpochSeconds,
+			PrivateModes:             privateModesFromWindowSnapshot(window),
+			TerminalProgress:         copyTerminalProgressSnapshot(window.TerminalProgress),
+			Active:                   window.Active,
 		})
 	}
 	return restore
@@ -3403,6 +3459,36 @@ func discoverPiSessions(
 			}
 		}
 
+		// Unnamed Pi windows all publish the same `Pi - <cwd>` title. Their
+		// latest terminal output still brackets the JSONL append for that turn,
+		// which gives upgrades a one-to-one signal even after /new or /resume
+		// made process-start correlation stale. Fail closed if timestamps overlap.
+		for index, candidate := range uniquePiSessionsByWindowActivity(
+			restore,
+			remainingIndices,
+			remainingCandidates,
+			livePiWindows,
+		) {
+			sessions[index] = piRestoreSession{
+				sessionID:   candidate.sessionID,
+				sessionDir:  filepath.Dir(candidate.path),
+				sessionPath: candidate.path,
+			}
+			used[candidate.sessionID] = true
+		}
+		remainingIndices = remainingIndices[:0]
+		for _, index := range indices {
+			if _, ok := sessions[index]; !ok {
+				remainingIndices = append(remainingIndices, index)
+			}
+		}
+		remainingCandidates = remainingCandidates[:0]
+		for _, candidate := range candidates {
+			if !used[candidate.sessionID] {
+				remainingCandidates = append(remainingCandidates, candidate)
+			}
+		}
+
 		// Compute every pane's process-time match before reserving any session.
 		// A greedy pass can let an earlier pane steal a later pane's only match.
 		provisional := map[int]piSessionEntry{}
@@ -3526,6 +3612,51 @@ func discoverPiSessions(
 		}
 	}
 	return sessions
+}
+
+func uniquePiSessionsByWindowActivity(
+	restore *serverRestore,
+	indices []int,
+	candidates []piSessionEntry,
+	livePiWindows map[int]bool,
+) map[int]piSessionEntry {
+	provisional := map[int]piSessionEntry{}
+	owners := map[string][]int{}
+	for _, index := range indices {
+		if !livePiWindows[index] {
+			continue
+		}
+		epoch := restore.Windows[index].LastActivityEpochSeconds
+		if epoch <= 0 {
+			continue
+		}
+		activity := time.Unix(epoch, 0)
+		matches := []piSessionEntry{}
+		for _, candidate := range candidates {
+			if candidate.modTime.IsZero() {
+				continue
+			}
+			delta := candidate.modTime.Sub(activity)
+			if delta < 0 {
+				delta = -delta
+			}
+			if delta <= piSessionActivityMatchTolerance {
+				matches = append(matches, candidate)
+			}
+		}
+		matches = piLeafSessionMatches(matches, candidates)
+		if len(matches) != 1 {
+			continue
+		}
+		provisional[index] = matches[0]
+		owners[matches[0].sessionID] = append(owners[matches[0].sessionID], index)
+	}
+	for index, candidate := range provisional {
+		if len(owners[candidate.sessionID]) != 1 {
+			delete(provisional, index)
+		}
+	}
+	return provisional
 }
 
 func uniquePiSessionsByPaneTitle(
@@ -8420,6 +8551,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			AgentSessionID:           window.agentSessionID,
 			AgentSessionDir:          window.agentSessionDir,
 			AgentSessionPath:         window.agentSessionPath,
+			LastActivityEpochSeconds: window.lastActivity.Unix(),
 			CursorVisible:            window.cursorVisible,
 			CursorVisibilityKnown:    window.cursorVisibilityKnown,
 			PrivateModes:             copyPrivateModes(window.privateModes),

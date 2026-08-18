@@ -956,3 +956,123 @@ func TestPiSessionIdentitySurvivesSecondUpgradeAndRejectsRotation(t *testing.T) 
 		t.Fatalf("sessions after unowned rotation = %#v, want fresh launch", got)
 	}
 }
+
+func TestDiscoverPiSessionsUsesWindowActivityForUnnamedSameCwdSessions(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	started := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
+	activities := []time.Time{
+		started.Add(25 * time.Minute),
+		started.Add(50 * time.Minute),
+		started.Add(75 * time.Minute),
+	}
+	paths := make([]string, len(activities))
+	for i, activity := range activities {
+		paths[i] = filepath.Join(root, "project", fmt.Sprintf("session-%d.jsonl", i))
+		// These sessions were selected with /resume after Pi started, so process
+		// creation time cannot identify them. Their final writes still coincide
+		// with output activity in the owning MonkeyMux window.
+		writePiTestSessionTimes(
+			t,
+			paths[i],
+			fmt.Sprintf("session-%d", i),
+			project,
+			started.Add(-time.Duration(i+1)*time.Hour),
+			activity,
+		)
+	}
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{}
+	restore := &serverRestore{Windows: make([]restoreWindowState, len(activities))}
+	panePids := map[int]struct{}{}
+	for i, activity := range activities {
+		panePID := 100 + i
+		processPID := 200 + i
+		processes[panePID] = processInfo{pid: panePID, ppid: 1, comm: "zsh", args: "zsh"}
+		processes[processPID] = processInfo{pid: processPID, ppid: panePID, comm: "pi", args: "pi"}
+		panePids[panePID] = struct{}{}
+		restore.Windows[i] = restoreWindowState{
+			PanePid:                  panePID,
+			CurrentCommand:           "pi",
+			AgentTool:                "pi",
+			Cwd:                      project,
+			LastActivityEpochSeconds: activity.Unix(),
+		}
+	}
+
+	got := discoverPiSessions(restore, processes, panePids)
+	if len(got) != len(activities) {
+		t.Fatalf("activity-correlated Pi sessions = %#v, want all %d sessions", got, len(activities))
+	}
+	for i, path := range paths {
+		if got[i].sessionPath != path {
+			t.Fatalf("window %d session = %#v, want exact path %q", i, got[i], path)
+		}
+		options := createWindowOptionsForRestore(restoreWindowState{
+			CurrentCommand:   "pi",
+			AgentSessionID:   got[i].sessionID,
+			AgentSessionDir:  got[i].sessionDir,
+			AgentSessionPath: got[i].sessionPath,
+		}, false)
+		want := piResumeCommandWithFreshFallback(
+			piResumeCommand(got[i].sessionID, got[i].sessionDir, path),
+			piLaunchCommand(got[i].sessionDir),
+		)
+		if options.command != want {
+			t.Fatalf("window %d restore command = %q, want exact-path command %q", i, options.command, want)
+		}
+	}
+}
+
+func TestPiWindowActivityCorrelationRejectsAmbiguity(t *testing.T) {
+	activity := time.Now().UTC().Truncate(time.Second)
+	restore := &serverRestore{Windows: []restoreWindowState{
+		{LastActivityEpochSeconds: activity.Unix()},
+		{LastActivityEpochSeconds: activity.Add(time.Second).Unix()},
+	}}
+	candidates := []piSessionEntry{
+		{sessionID: "one", path: "one.jsonl", modTime: activity},
+		{sessionID: "two", path: "two.jsonl", modTime: activity.Add(2 * time.Second)},
+	}
+	got := uniquePiSessionsByWindowActivity(
+		restore,
+		[]int{0, 1},
+		candidates,
+		map[int]bool{0: true, 1: true},
+	)
+	if len(got) != 0 {
+		t.Fatalf("overlapping activity matches = %#v, want no assignments", got)
+	}
+}
+
+func TestEnrichRestoreWithWindowActivityUsesStableWindowIdentity(t *testing.T) {
+	restore := &serverRestore{Windows: []restoreWindowState{
+		{ID: "@2", Index: 0, AgentTool: "pi"},
+		{Index: 0, AgentTool: "pi"},
+	}}
+	if !restoreNeedsWindowActivity(restore) {
+		t.Fatal("legacy Pi restore did not request window activity")
+	}
+	enrichRestoreWithWindowActivity(restore, []windowSnapshot{
+		{ID: "@1", Index: 0, LastActivityEpochSeconds: 10},
+		{ID: "@2", Index: 1, LastActivityEpochSeconds: 20},
+	})
+	if got := restore.Windows[0].LastActivityEpochSeconds; got != 20 {
+		t.Fatalf("ID-matched activity = %d, want 20", got)
+	}
+	if got := restore.Windows[1].LastActivityEpochSeconds; got != 10 {
+		t.Fatalf("legacy index-matched activity = %d, want 10", got)
+	}
+	if restoreNeedsWindowActivity(restore) {
+		t.Fatal("enriched Pi restore still requests window activity")
+	}
+}
