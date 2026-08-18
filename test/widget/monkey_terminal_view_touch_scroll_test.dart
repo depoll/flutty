@@ -1,10 +1,13 @@
 // ignore_for_file: implementation_imports, public_member_api_docs
 
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_gesture_detector.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
+import 'package:monkeyssh/presentation/widgets/terminal_wheel_scroll_calibrator.dart';
 import 'package:xterm/xterm.dart';
 
 int _countOccurrences(String text, String pattern) {
@@ -21,7 +24,647 @@ int _countOccurrences(String text, String pattern) {
   }
 }
 
+void _renderAdaptiveScrollRows(Terminal terminal, int firstRow) {
+  final output = StringBuffer('\x1b[H\x1b[2J');
+  for (var row = 0; row < terminal.viewHeight; row++) {
+    output.write('adaptive row ${firstRow + row}');
+    if (row + 1 < terminal.viewHeight) {
+      output.write('\r\n');
+    }
+  }
+  terminal.write(output.toString());
+}
+
+class _RecordingScrollBehavior extends ScrollBehavior {
+  const _RecordingScrollBehavior(this.ballisticVelocities);
+
+  final List<double> ballisticVelocities;
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) =>
+      _RecordingScrollPhysics(ballisticVelocities.add);
+}
+
+class _RecordingScrollPhysics extends ScrollPhysics {
+  const _RecordingScrollPhysics(this.recordVelocity, {super.parent});
+
+  final ValueChanged<double> recordVelocity;
+
+  @override
+  _RecordingScrollPhysics applyTo(ScrollPhysics? ancestor) =>
+      _RecordingScrollPhysics(recordVelocity, parent: buildParent(ancestor));
+
+  @override
+  Simulation? createBallisticSimulation(
+    ScrollMetrics position,
+    double velocity,
+  ) {
+    recordVelocity(velocity);
+    return super.createBallisticSimulation(position, velocity);
+  }
+}
+
 void main() {
+  group('terminal wheel row displacement', () {
+    const before = <String>[
+      'header',
+      'row one',
+      'row two',
+      'row three',
+      'row four',
+      'row five',
+      'footer',
+    ];
+
+    test('detects one-row application scrolling', () {
+      expect(
+        resolveTerminalWheelRowsPerEvent(
+          before: before,
+          after: const <String>[
+            'header',
+            'row two',
+            'row three',
+            'row four',
+            'row five',
+            'row six',
+            'footer',
+          ],
+        ),
+        1,
+      );
+    });
+
+    test('detects three-row application scrolling', () {
+      expect(
+        resolveTerminalWheelRowsPerEvent(
+          before: before,
+          after: const <String>[
+            'header',
+            'row four',
+            'row five',
+            'row six',
+            'row seven',
+            'row eight',
+            'footer',
+          ],
+        ),
+        3,
+      );
+    });
+
+    test('does not infer a distance from an unrelated redraw', () {
+      expect(
+        resolveTerminalWheelRowsPerEvent(
+          before: before,
+          after: const <String>[
+            'header',
+            'alpha',
+            'beta',
+            'gamma',
+            'delta',
+            'epsilon',
+            'footer',
+          ],
+        ),
+        isNull,
+      );
+    });
+
+    test('settles a canceled mouse probe until the next gesture', () {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      expect(calibrator.begin(before: before, onSettled: (_, _) {}), isTrue);
+
+      calibrator.cancelPending();
+
+      expect(calibrator.needsMeasurement, isFalse);
+      calibrator.invalidate();
+      expect(calibrator.needsMeasurement, isTrue);
+    });
+
+    testWidgets('quarantines output that arrives after a timeout', (
+      tester,
+    ) async {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      expect(calibrator.begin(before: before, onSettled: (_, _) {}), isTrue);
+
+      await tester.pump(const Duration(milliseconds: 301));
+      expect(calibrator.observingTerminalOutput, isTrue);
+      expect(calibrator.needsMeasurement, isFalse);
+
+      calibrator.beginGesture();
+      expect(calibrator.needsMeasurement, isFalse);
+      calibrator.terminalChanged(const <String>[
+        'header',
+        'row seven',
+        'row eight',
+        'row nine',
+        'row ten',
+        'row eleven',
+        'footer',
+      ]);
+      await tester.pump(const Duration(milliseconds: 61));
+
+      expect(calibrator.rowsPerEvent, 1);
+      expect(calibrator.observingTerminalOutput, isFalse);
+      expect(calibrator.needsMeasurement, isFalse);
+      calibrator.beginGesture();
+      expect(calibrator.needsMeasurement, isTrue);
+    });
+
+    testWidgets('no-output quarantine expiry keeps fallback settled', (
+      tester,
+    ) async {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      expect(calibrator.begin(before: before, onSettled: (_, _) {}), isTrue);
+
+      await tester.pump(const Duration(milliseconds: 301));
+      expect(calibrator.observingTerminalOutput, isTrue);
+      await tester.pump(const Duration(milliseconds: 901));
+
+      expect(calibrator.observingTerminalOutput, isFalse);
+      expect(calibrator.needsMeasurement, isFalse);
+      calibrator.beginGesture();
+      expect(calibrator.needsMeasurement, isTrue);
+    });
+
+    testWidgets('keeps observing after an unrelated redraw', (tester) async {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      ({int previous, int current})? settled;
+      expect(
+        calibrator.begin(
+          before: before,
+          onSettled: (previous, current) {
+            settled = (previous: previous, current: current);
+          },
+        ),
+        isTrue,
+      );
+
+      calibrator.terminalChanged(const <String>[
+        'header',
+        'alpha',
+        'beta',
+        'gamma',
+        'delta',
+        'epsilon',
+        'footer',
+      ]);
+      await tester.pump(const Duration(milliseconds: 61));
+
+      expect(settled, isNull);
+      expect(calibrator.waitingForResponse, isTrue);
+
+      calibrator.terminalChanged(const <String>[
+        'header',
+        'row four',
+        'row five',
+        'row six',
+        'row seven',
+        'row eight',
+        'footer',
+      ]);
+      await tester.pump(const Duration(milliseconds: 61));
+
+      expect(settled, (previous: 1, current: 3));
+      expect(calibrator.waitingForResponse, isFalse);
+      calibrator.beginGesture();
+      expect(calibrator.needsMeasurement, isFalse);
+    });
+
+    testWidgets('uses a late response when the hard timeout settles', (
+      tester,
+    ) async {
+      final calibrator = TerminalWheelScrollCalibrator();
+      addTearDown(calibrator.dispose);
+      ({int previous, int current})? settled;
+      expect(
+        calibrator.begin(
+          before: before,
+          onSettled: (previous, current) {
+            settled = (previous: previous, current: current);
+          },
+        ),
+        isTrue,
+      );
+
+      await tester.pump(const Duration(milliseconds: 250));
+      calibrator.terminalChanged(const <String>[
+        'header',
+        'row four',
+        'row five',
+        'row six',
+        'row seven',
+        'row eight',
+        'footer',
+      ]);
+      await tester.pump(const Duration(milliseconds: 51));
+
+      expect(settled, (previous: 1, current: 3));
+      expect(calibrator.waitingForResponse, isFalse);
+      calibrator.beginGesture();
+      expect(calibrator.needsMeasurement, isFalse);
+
+      calibrator.reset();
+      expect(calibrator.rowsPerEvent, 3);
+      expect(calibrator.needsMeasurement, isTrue);
+
+      calibrator.reset(forgetEstimate: true);
+      expect(calibrator.rowsPerEvent, 1);
+    });
+  });
+
+  testWidgets('touch cadence adapts to application wheel row granularity', (
+    tester,
+  ) async {
+    for (final rowsPerWheelEvent in <int>[1, 3]) {
+      final terminal = Terminal()
+        ..resize(40, 10)
+        ..useAltBuffer()
+        ..setMouseMode(MouseMode.upDownScroll)
+        ..setMouseReportMode(MouseReportMode.sgr);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              autoResize: false,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      _renderAdaptiveScrollRows(terminal, 0);
+      await tester.pump();
+
+      final output = <String>[];
+      terminal.onOutput = (data) {
+        output.add(data);
+        if (output.length == 1) {
+          scheduleMicrotask(
+            () => _renderAdaptiveScrollRows(terminal, rowsPerWheelEvent),
+          );
+        }
+      };
+
+      final terminalState = tester.state<MonkeyTerminalViewState>(
+        find.byType(MonkeyTerminalView),
+      );
+      final lineHeight = terminalState.renderTerminal.lineHeight;
+      final detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
+      );
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 3),
+          localPosition: Offset(150, 100 - lineHeight * 3),
+          delta: Offset(0, -lineHeight * 3),
+        ),
+      );
+      expect(output, hasLength(1));
+
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: Offset(150, 100 - lineHeight * 3),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 6),
+          localPosition: Offset(150, 100 - lineHeight * 6),
+          delta: Offset(0, -lineHeight * 3),
+        ),
+      );
+      expect(output, hasLength(1));
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      await tester.pumpAndSettle();
+
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        6 ~/ rowsPerWheelEvent,
+      );
+
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: Offset(150, 100 - lineHeight * 6),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 12),
+          localPosition: Offset(150, 100 - lineHeight * 12),
+          delta: Offset(0, -lineHeight * 6),
+        ),
+      );
+
+      // Once measured, a later gesture emits without another response probe.
+      // Every responder starts with one report; only persistent queued movement
+      // increases the frame budget.
+      final reportsBeforeGesture = 6 ~/ rowsPerWheelEvent;
+      final reportsInGesture = 6 ~/ rowsPerWheelEvent;
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        reportsBeforeGesture + 1,
+      );
+      await tester.pumpAndSettle();
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        reportsBeforeGesture + reportsInGesture,
+      );
+
+      final reportsAfterLearnedGesture = 12 ~/ rowsPerWheelEvent;
+      terminal.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
+      await tester.pump();
+      terminal.write('\x1b[?1000h\x1b[?1006h');
+      await tester.pump();
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: Offset(150, 100 - lineHeight * 12),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * 15),
+          localPosition: Offset(150, 100 - lineHeight * 15),
+          delta: Offset(0, -lineHeight * 3),
+        ),
+      );
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        reportsAfterLearnedGesture + 1,
+      );
+
+      // If the transport re-probe receives no measurable redraw, keep the
+      // previous safe gain instead of falling back to a fast one-row estimate.
+      await tester.pump(const Duration(milliseconds: 301));
+      await tester.pumpAndSettle();
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        reportsAfterLearnedGesture + 3 ~/ rowsPerWheelEvent,
+      );
+      detector.onTouchScrollCancel!();
+    }
+  });
+
+  testWidgets('cancel keeps an emitted calibration probe in flight', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..resize(40, 10)
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            autoResize: false,
+            hardwareKeyboardOnly: true,
+            touchScrollToTerminal: true,
+          ),
+        ),
+      ),
+    );
+    _renderAdaptiveScrollRows(terminal, 0);
+    await tester.pump();
+
+    final output = <String>[];
+    terminal.onOutput = output.add;
+    final state = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final lineHeight = state.renderTerminal.lineHeight;
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+
+    void startAndDrag(double rows) {
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight * rows),
+          localPosition: Offset(150, 100 - lineHeight * rows),
+          delta: Offset(0, -lineHeight * rows),
+        ),
+      );
+    }
+
+    startAndDrag(1);
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 1);
+    detector.onTouchScrollCancel!();
+
+    startAndDrag(1);
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 1);
+
+    _renderAdaptiveScrollRows(terminal, 3);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: Offset(150, 100 - lineHeight * 5),
+        localPosition: Offset(150, 100 - lineHeight * 5),
+        delta: Offset(0, -lineHeight * 4),
+      ),
+    );
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 2);
+    detector.onTouchScrollCancel!();
+  });
+
+  testWidgets('calibrated sub-step distance accumulates across gestures', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..resize(40, 10)
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            autoResize: false,
+            hardwareKeyboardOnly: true,
+            touchScrollToTerminal: true,
+          ),
+        ),
+      ),
+    );
+    _renderAdaptiveScrollRows(terminal, 0);
+    await tester.pump();
+
+    final output = <String>[];
+    terminal.onOutput = (data) {
+      output.add(data);
+      if (_countOccurrences(output.join(), '\x1b[<65;') == 1) {
+        scheduleMicrotask(() => _renderAdaptiveScrollRows(terminal, 3));
+      }
+    };
+    final state = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final lineHeight = state.renderTerminal.lineHeight;
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+
+    void dragOneRow() {
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: Offset(150, 100 - lineHeight),
+          localPosition: Offset(150, 100 - lineHeight),
+          delta: Offset(0, -lineHeight),
+        ),
+      );
+      detector.onTouchScrollEnd!(DragEndDetails(primaryVelocity: 0));
+    }
+
+    dragOneRow();
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 1);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+
+    for (var gesture = 0; gesture < 5; gesture++) {
+      dragOneRow();
+    }
+
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 2);
+    detector.onTouchScrollCancel!();
+  });
+
+  testWidgets(
+    'alt buffer direct owner routes an actual touch drag to wheel input',
+    (tester) async {
+      final terminal = Terminal()
+        ..useAltBuffer()
+        ..setMouseMode(MouseMode.upDownScroll)
+        ..setMouseReportMode(MouseReportMode.sgr);
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              hardwareKeyboardOnly: true,
+              simulateScroll: false,
+            ),
+          ),
+        ),
+      );
+
+      await tester.drag(find.byType(MonkeyTerminalView), const Offset(0, -120));
+      await tester.pump();
+
+      expect(output.join(), contains('\x1b[<65;'));
+    },
+  );
+
+  testWidgets('wheel calibration timeout drains queued touch distance', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..resize(40, 10)
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            autoResize: false,
+            hardwareKeyboardOnly: true,
+            touchScrollToTerminal: true,
+          ),
+        ),
+      ),
+    );
+    _renderAdaptiveScrollRows(terminal, 0);
+    await tester.pump();
+
+    final output = <String>[];
+    terminal.onOutput = output.add;
+    final terminalState = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final lineHeight = terminalState.renderTerminal.lineHeight;
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(150, 100),
+      ),
+    );
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: Offset(150, 100 - lineHeight * 3),
+        localPosition: Offset(150, 100 - lineHeight * 3),
+        delta: Offset(0, -lineHeight * 3),
+      ),
+    );
+
+    expect(output, hasLength(1));
+    await tester.pump(const Duration(milliseconds: 301));
+    await tester.pumpAndSettle();
+    expect(_countOccurrences(output.join(), '\x1b[<65;'), 3);
+    detector.onTouchScrollCancel!();
+  });
+
   testWidgets('touch scroll falls back to arrow keys in alt buffer', (
     tester,
   ) async {
@@ -121,7 +764,7 @@ void main() {
     },
   );
 
-  testWidgets('forced SGR touch scroll uses reported-wheel drag threshold', (
+  testWidgets('forced SGR touch scroll emits one event per dragged row', (
     tester,
   ) async {
     final terminal = Terminal();
@@ -162,9 +805,9 @@ void main() {
     detector.onTouchScrollUpdate!(
       DragUpdateDetails(
         kind: PointerDeviceKind.touch,
-        globalPosition: Offset(150, 100 - lineHeight * 2),
-        localPosition: Offset(150, 100 - lineHeight * 2),
-        delta: Offset(0, -lineHeight * 2),
+        globalPosition: Offset(150, 100 - lineHeight * 0.75),
+        localPosition: Offset(150, 100 - lineHeight * 0.75),
+        delta: Offset(0, -lineHeight * 0.75),
       ),
     );
     await tester.pump();
@@ -174,9 +817,9 @@ void main() {
     detector.onTouchScrollUpdate!(
       DragUpdateDetails(
         kind: PointerDeviceKind.touch,
-        globalPosition: Offset(150, 100 - lineHeight * 3),
-        localPosition: Offset(150, 100 - lineHeight * 3),
-        delta: Offset(0, -lineHeight),
+        globalPosition: Offset(150, 100 - lineHeight),
+        localPosition: Offset(150, 100 - lineHeight),
+        delta: Offset(0, -lineHeight * 0.25),
       ),
     );
     await tester.pump();
@@ -186,7 +829,7 @@ void main() {
   });
 
   testWidgets(
-    'reported wheel scrolling coalesces exact events per local frame',
+    'reported wheel scrolling increases batching only for persistent backlog',
     (tester) async {
       final terminal = Terminal();
       final output = <String>[];
@@ -224,9 +867,9 @@ void main() {
       detector.onTouchScrollUpdate!(
         DragUpdateDetails(
           kind: PointerDeviceKind.touch,
-          globalPosition: Offset(150, 100 - lineHeight * 30),
-          localPosition: Offset(150, 100 - lineHeight * 30),
-          delta: Offset(0, -lineHeight * 30),
+          globalPosition: Offset(150, 100 - lineHeight * 10),
+          localPosition: Offset(150, 100 - lineHeight * 10),
+          delta: Offset(0, -lineHeight * 10),
         ),
       );
       detector.onTouchScrollUpdate!(
@@ -234,21 +877,26 @@ void main() {
           kind: PointerDeviceKind.touch,
           globalPosition: const Offset(150, 180),
           localPosition: const Offset(150, 180),
-          delta: Offset(0, lineHeight * 12),
+          delta: Offset(0, lineHeight * 4),
         ),
       );
 
-      // Ten down events followed by four up events are preserved across the
-      // direction reversal, but only six reports fit in one local frame.
+      // Start linewise, then increase the budget only while the backlog
+      // survives across frames. Direction order remains exact.
       expect(output, hasLength(1));
-      expect(_countOccurrences(output.single, '\u001b[<65;'), 6);
+      expect(_countOccurrences(output.single, '\u001b[<65;'), 1);
+      await tester.pump();
+      expect(output, hasLength(2));
+      expect(_countOccurrences(output[1], '\u001b[<65;'), 2);
       await tester.pump();
       expect(output, hasLength(3));
-      expect(_countOccurrences(output[1], '\u001b[<65;'), 4);
-      expect(_countOccurrences(output[2], '\u001b[<64;'), 2);
+      expect(_countOccurrences(output[2], '\u001b[<65;'), 3);
       await tester.pump();
       expect(output, hasLength(4));
-      expect(_countOccurrences(output.last, '\u001b[<64;'), 2);
+      expect(_countOccurrences(output[3], '\u001b[<65;'), 4);
+      await tester.pump();
+      expect(output, hasLength(5));
+      expect(_countOccurrences(output[4], '\u001b[<64;'), 4);
       final joined = output.join();
       expect(_countOccurrences(joined, '\u001b[<65;'), 10);
       expect(_countOccurrences(joined, '\u001b[<64;'), 4);
@@ -261,7 +909,7 @@ void main() {
   );
 
   testWidgets(
-    'mouse-reporting apps require more drag distance per touch scroll step',
+    'mouse reporting and arrow fallback use the same touch scroll steps',
     (tester) async {
       final expectedOutput = <String>[];
       Terminal()
@@ -351,12 +999,327 @@ void main() {
         ),
       );
       await tester.pump();
+      await tester.pumpAndSettle();
 
       final wheelCount = _countOccurrences(wheelOutput.join(), '\u001b[<65;');
       expect(wheelCount, greaterThan(0));
-      expect(wheelCount, lessThan(arrowCount));
+      expect(wheelCount, arrowCount);
     },
   );
+
+  testWidgets('direct terminal scrollback accelerates touch drags', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(scrollController.offset, greaterThan(100));
+    final gesture = await tester.createGesture();
+    await gesture.down(tester.getCenter(find.byType(MonkeyTerminalView)));
+    await gesture.moveBy(const Offset(0, 20));
+    await tester.pump();
+
+    final offsetAfterDragStart = scrollController.offset;
+    await gesture.moveBy(const Offset(0, 20));
+    await tester.pump();
+
+    expect(offsetAfterDragStart - scrollController.offset, closeTo(60, 0.01));
+    await gesture.up();
+  });
+
+  testWidgets('direct touch fling uses the same accelerated gain', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    final ballisticVelocities = <double>[];
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ScrollConfiguration(
+          behavior: _RecordingScrollBehavior(ballisticVelocities),
+          child: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              scrollController: scrollController,
+              hardwareKeyboardOnly: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.fling(
+      find.byType(MonkeyTerminalView),
+      const Offset(0, 80),
+      1000,
+    );
+    await tester.pump();
+
+    expect(ballisticVelocities, isNotEmpty);
+    expect(
+      ballisticVelocities.any((velocity) => velocity.abs() > 2000),
+      isTrue,
+    );
+  });
+
+  testWidgets('touch down holds an active direct scrollback fling', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 300)
+      ..write(List.filled(200, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.fling(
+      find.byType(MonkeyTerminalView),
+      const Offset(0, 120),
+      3000,
+    );
+    await tester.pump(const Duration(milliseconds: 16));
+
+    final gesture = await tester.createGesture();
+    await gesture.down(tester.getCenter(find.byType(MonkeyTerminalView)));
+    await tester.pump();
+    final heldOffset = scrollController.offset;
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(scrollController.offset, closeTo(heldOffset, 0.01));
+    await gesture.up();
+  });
+
+  testWidgets('alt buffer assigns touch to a dedicated recognizer', (
+    tester,
+  ) async {
+    final terminal = Terminal()..useAltBuffer();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
+        ),
+      ),
+    );
+
+    final scrollables = find.byType(Scrollable);
+    expect(scrollables, findsNWidgets(2));
+    for (final element in scrollables.evaluate()) {
+      final behavior = ScrollConfiguration.of(element);
+      expect(behavior.dragDevices, isNot(contains(PointerDeviceKind.touch)));
+      expect(behavior.dragDevices, contains(PointerDeviceKind.trackpad));
+    }
+
+    final gestureDetector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    expect(gestureDetector.onTouchScrollDown, isNotNull);
+    expect(gestureDetector.onTouchScrollStart, isNotNull);
+    expect(gestureDetector.onTouchScrollUpdate, isNotNull);
+    expect(gestureDetector.onTouchScrollEnd, isNotNull);
+    expect(gestureDetector.onTouchScrollCancel, isNotNull);
+    expect(gestureDetector.touchScrollVelocityTrackerBuilder, isNotNull);
+    final terminalContext = tester.element(find.byType(MonkeyTerminalView));
+    final inheritedBehavior = ScrollConfiguration.of(terminalContext);
+    expect(
+      gestureDetector.touchScrollMultitouchDragStrategy,
+      inheritedBehavior.getMultitouchDragStrategy(terminalContext),
+    );
+  });
+
+  testWidgets('canceling direct touch scroll releases its drag activity', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        globalPosition: const Offset(150, 100),
+        localPosition: const Offset(150, 100),
+        kind: PointerDeviceKind.touch,
+      ),
+    );
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        globalPosition: const Offset(150, 120),
+        localPosition: const Offset(150, 120),
+        delta: const Offset(0, 20),
+        primaryDelta: 20,
+        kind: PointerDeviceKind.touch,
+      ),
+    );
+    await tester.pump();
+    final offsetAfterUpdate = scrollController.offset;
+
+    detector.onTouchScrollCancel!();
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        globalPosition: const Offset(150, 140),
+        localPosition: const Offset(150, 140),
+        delta: const Offset(0, 20),
+        primaryDelta: 20,
+        kind: PointerDeviceKind.touch,
+      ),
+    );
+    await tester.pump();
+
+    expect(scrollController.offset, offsetAfterUpdate);
+  });
+
+  testWidgets('direct terminal scrollback keeps trackpad drags at 1x', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final center = tester.getCenter(find.byType(MonkeyTerminalView));
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.trackpad,
+    );
+    await gesture.panZoomStart(center);
+    await gesture.panZoomUpdate(
+      center + const Offset(0, 20),
+      pan: const Offset(0, 20),
+    );
+    await tester.pump();
+
+    final offsetAfterFirstUpdate = scrollController.offset;
+    await gesture.panZoomUpdate(
+      center + const Offset(0, 40),
+      pan: const Offset(0, 40),
+    );
+    await tester.pump();
+
+    expect(offsetAfterFirstUpdate - scrollController.offset, closeTo(20, 0.01));
+    await gesture.panZoomEnd();
+  });
+
+  testWidgets('direct terminal scrollback keeps mouse wheels at 1x', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 200)
+      ..write(List.filled(100, 'line\r\n').join());
+    final scrollController = ScrollController();
+    addTearDown(scrollController.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            scrollController: scrollController,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final offsetBeforeWheel = scrollController.offset;
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(find.byType(MonkeyTerminalView)),
+        scrollDelta: const Offset(0, -20),
+      ),
+    );
+    await tester.pump();
+
+    expect(offsetBeforeWheel - scrollController.offset, closeTo(20, 0.01));
+  });
+
+  testWidgets('direct scrollback leaves ambient physics to Scrollable', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(Terminal(), hardwareKeyboardOnly: true),
+        ),
+      ),
+    );
+
+    final scrollable = tester.widget<Scrollable>(find.byType(Scrollable));
+    expect(scrollable.physics, isNull);
+  });
 
   testWidgets('scroll reset clears pending touch scroll distance', (
     tester,

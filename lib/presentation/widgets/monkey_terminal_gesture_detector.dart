@@ -24,9 +24,13 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
     this.onLongPressUp,
     this.onDragStart,
     this.onDragUpdate,
+    this.onTouchScrollDown,
     this.onTouchScrollStart,
     this.onTouchScrollUpdate,
     this.onTouchScrollEnd,
+    this.onTouchScrollCancel,
+    this.touchScrollVelocityTrackerBuilder,
+    this.touchScrollMultitouchDragStrategy,
     this.onDoubleTapDown,
     this.shouldBypassDoubleTap,
   });
@@ -63,11 +67,19 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
 
   final GestureDragUpdateCallback? onDragUpdate;
 
+  final GestureDragDownCallback? onTouchScrollDown;
+
   final GestureDragStartCallback? onTouchScrollStart;
 
   final GestureDragUpdateCallback? onTouchScrollUpdate;
 
   final GestureDragEndCallback? onTouchScrollEnd;
+
+  final GestureDragCancelCallback? onTouchScrollCancel;
+
+  final GestureVelocityTrackerBuilder? touchScrollVelocityTrackerBuilder;
+
+  final MultitouchDragStrategy? touchScrollMultitouchDragStrategy;
 
   @override
   State<MonkeyTerminalGestureDetector> createState() =>
@@ -199,9 +211,11 @@ class _MonkeyTerminalGestureDetectorState
           );
     }
 
-    if (widget.onTouchScrollStart != null ||
+    if (widget.onTouchScrollDown != null ||
+        widget.onTouchScrollStart != null ||
         widget.onTouchScrollUpdate != null ||
-        widget.onTouchScrollEnd != null) {
+        widget.onTouchScrollEnd != null ||
+        widget.onTouchScrollCancel != null) {
       gestures[VerticalDragGestureRecognizer] =
           GestureRecognizerFactoryWithHandlers<VerticalDragGestureRecognizer>(
             () => VerticalDragGestureRecognizer(
@@ -211,9 +225,21 @@ class _MonkeyTerminalGestureDetectorState
             (VerticalDragGestureRecognizer instance) {
               instance
                 ..dragStartBehavior = DragStartBehavior.down
+                ..onDown = widget.onTouchScrollDown
                 ..onStart = widget.onTouchScrollStart
                 ..onUpdate = widget.onTouchScrollUpdate
-                ..onEnd = widget.onTouchScrollEnd;
+                ..onEnd = widget.onTouchScrollEnd
+                ..onCancel = widget.onTouchScrollCancel;
+              final velocityTrackerBuilder =
+                  widget.touchScrollVelocityTrackerBuilder;
+              if (velocityTrackerBuilder != null) {
+                instance.velocityTrackerBuilder = velocityTrackerBuilder;
+              }
+              final multitouchDragStrategy =
+                  widget.touchScrollMultitouchDragStrategy;
+              if (multitouchDragStrategy != null) {
+                instance.multitouchDragStrategy = multitouchDragStrategy;
+              }
             },
           );
     }

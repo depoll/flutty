@@ -28,9 +28,13 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     this.onTertiaryTapUp,
     this.onLongPressStart,
     this.onLongPressMoveUpdate,
+    this.onTouchScrollDown,
     this.onTouchScrollStart,
     this.onTouchScrollUpdate,
     this.onTouchScrollEnd,
+    this.onTouchScrollCancel,
+    this.touchScrollVelocityTrackerBuilder,
+    this.touchScrollMultitouchDragStrategy,
     this.resolveLinkTap,
     this.onLinkTapDown,
     this.onLinkTap,
@@ -59,11 +63,19 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
 
   final GestureTapUpCallback? onTertiaryTapUp;
 
+  final GestureDragDownCallback? onTouchScrollDown;
+
   final GestureDragStartCallback? onTouchScrollStart;
 
   final GestureDragUpdateCallback? onTouchScrollUpdate;
 
   final GestureDragEndCallback? onTouchScrollEnd;
+
+  final GestureDragCancelCallback? onTouchScrollCancel;
+
+  final GestureVelocityTrackerBuilder? touchScrollVelocityTrackerBuilder;
+
+  final MultitouchDragStrategy? touchScrollMultitouchDragStrategy;
 
   /// Optional override for touch long-press start. When provided, the default
   /// behavior of selecting a word in the terminal is suppressed.
@@ -122,9 +134,15 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onSecondaryTapUp: onSecondaryTapUp,
       onTertiaryTapDown: onTertiaryTapDown,
       onTertiaryTapUp: onTertiaryTapUp,
+      onTouchScrollDown: onTouchScrollDown,
       onTouchScrollStart: onTouchScrollStart,
       onTouchScrollUpdate: onTouchScrollUpdate,
       onTouchScrollEnd: onTouchScrollEnd,
+      onTouchScrollCancel: onTouchScrollCancel,
+      touchScrollVelocityTrackerBuilder:
+          widget.touchScrollVelocityTrackerBuilder,
+      touchScrollMultitouchDragStrategy:
+          widget.touchScrollMultitouchDragStrategy,
       onLongPressStart: widget.enableTerminalSelectionGestures
           ? onLongPressStart
           : null,
@@ -224,6 +242,11 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
     _tapDown(widget.onSecondaryTapDown, details, TerminalMouseButton.right);
   }
 
+  void onTouchScrollDown(DragDownDetails details) {
+    _clearPendingLinkTap();
+    widget.onTouchScrollDown?.call(details);
+  }
+
   void onTouchScrollStart(DragStartDetails details) {
     _clearPendingLinkTap();
     widget.onTouchScrollStart?.call(details);
@@ -237,6 +260,11 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   void onTouchScrollEnd(DragEndDetails details) {
     _clearPendingLinkTap();
     widget.onTouchScrollEnd?.call(details);
+  }
+
+  void onTouchScrollCancel() {
+    _clearPendingLinkTap();
+    widget.onTouchScrollCancel?.call();
   }
 
   void onSecondaryTapUp(TapUpDetails details) {

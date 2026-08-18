@@ -59,7 +59,11 @@ import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_key_input.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
+import 'terminal_wheel_scroll_calibrator.dart';
 
+// Match direct pixel scrolling to the conventional multi-row terminal wheel
+// pace.
+const _terminalViewportTouchScrollSensitivity = 3.0;
 const _minimumFaintTextContrast = 4.5;
 const _minimumCursorTextContrast = 4.5;
 const _minimumCellTextContrast = 4.5;
@@ -775,8 +779,6 @@ class MonkeyTerminalView extends StatefulWidget {
 
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  static const _touchScrollReportedWheelLinesPerEvent = 3.0;
-
   late FocusNode _focusNode;
 
   late final ShortcutManager _shortcutManager;
@@ -788,14 +790,21 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   final _viewportKey = GlobalKey();
 
   String? _composingText;
+  ScrollHoldController? _directTouchScrollHold;
+  Drag? _directTouchScrollDrag;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
+  final _touchWheelCalibrator = TerminalWheelScrollCalibrator();
+  late bool _touchScrollIsAltBuffer;
+  late MouseMode _touchScrollMouseMode;
+  late MouseReportMode _touchScrollMouseReportMode;
   final ListQueue<
     ({TerminalMouseButton button, CellOffset position, int count})
   >
   _pendingTouchScrollRuns = ListQueue();
   bool _touchScrollDrainScheduled = false;
   int _touchScrollDispatchGeneration = 0;
+  int _touchScrollBacklogFrames = 0;
   late final Ticker _touchScrollInertiaTicker;
   late final Ticker _graphicsAnimationTicker;
   Simulation? _touchScrollInertiaSimulation;
@@ -856,6 +865,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _scrollController = widget.scrollController ?? ScrollController();
     _scrollController.addListener(_handleViewportScrolled);
     _lastTerminalViewWidth = widget.terminal.viewWidth;
+    _touchScrollIsAltBuffer = widget.terminal.isUsingAltBuffer;
+    _touchScrollMouseMode = widget.terminal.mouseMode;
+    _touchScrollMouseReportMode = widget.terminal.mouseReportMode;
     widget.terminal.addListener(_handleTerminalMetricsChanged);
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
@@ -917,10 +929,15 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   @override
   void didUpdateWidget(covariant MonkeyTerminalView oldWidget) {
     if (oldWidget.terminal != widget.terminal) {
+      _cancelDirectTouchScrollDrag();
       oldWidget.terminal.removeListener(_handleTerminalMetricsChanged);
       _stopGraphicsAnimationTicker();
       _lastTerminalViewWidth = widget.terminal.viewWidth;
       widget.terminal.addListener(_handleTerminalMetricsChanged);
+      _touchScrollIsAltBuffer = widget.terminal.isUsingAltBuffer;
+      _touchScrollMouseMode = widget.terminal.mouseMode;
+      _touchScrollMouseReportMode = widget.terminal.mouseReportMode;
+      _touchWheelCalibrator.reset(forgetEstimate: true);
       _stopTouchScrollInertia();
       _resetTouchScrollDispatch();
       _scheduleGraphicsAnimationSync();
@@ -938,6 +955,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _controller = widget.controller ?? TerminalController();
     }
     if (oldWidget.scrollController != widget.scrollController) {
+      _cancelDirectTouchScrollDrag();
       _scrollController.removeListener(_handleViewportScrolled);
       if (oldWidget.scrollController == null) {
         _scrollController.dispose();
@@ -947,18 +965,24 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _scheduleGraphicsAnimationSync();
     }
     if (oldWidget.simulateScroll != widget.simulateScroll) {
+      _touchWheelCalibrator.reset();
       _stopTouchScrollInertia();
       _resetTouchScrollDispatch();
     }
-    if (oldWidget.touchScrollToTerminal && !widget.touchScrollToTerminal) {
+    if (oldWidget.touchScrollToTerminal != widget.touchScrollToTerminal) {
+      _touchWheelCalibrator.reset();
+      _cancelDirectTouchScrollDrag();
       _stopTouchScrollInertia();
       _resetTouchScrollDispatch();
     }
     if (oldWidget.forceSgrTouchScroll != widget.forceSgrTouchScroll) {
+      _touchWheelCalibrator.reset();
       _stopTouchScrollInertia();
       _resetTouchScrollDispatch();
     }
     if (oldWidget.scrollResetGeneration != widget.scrollResetGeneration) {
+      _touchWheelCalibrator.reset();
+      _cancelDirectTouchScrollDrag();
       _stopTouchScrollInertia();
       _resetTouchScrollDispatch();
     }
@@ -973,6 +997,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     WidgetsBinding.instance.removeObserver(this);
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
     _pendingFocusInReportTimer?.cancel();
+    _cancelDirectTouchScrollDrag();
+    _touchWheelCalibrator.dispose();
     _stopTouchScrollInertia();
     _resetTouchScrollDispatch();
     _touchScrollInertiaTicker.dispose();
@@ -1017,6 +1043,27 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _handleTerminalMetricsChanged() {
+    final nextIsAltBuffer = widget.terminal.isUsingAltBuffer;
+    final nextMouseMode = widget.terminal.mouseMode;
+    final nextMouseReportMode = widget.terminal.mouseReportMode;
+    final transportChanged =
+        _touchScrollIsAltBuffer != nextIsAltBuffer ||
+        _touchScrollMouseMode != nextMouseMode ||
+        _touchScrollMouseReportMode != nextMouseReportMode;
+    _touchScrollIsAltBuffer = nextIsAltBuffer;
+    _touchScrollMouseMode = nextMouseMode;
+    _touchScrollMouseReportMode = nextMouseReportMode;
+    if (transportChanged) {
+      _cancelDirectTouchScrollDrag();
+      _touchWheelCalibrator.reset();
+      _resetTouchScrollDispatch();
+      _stopTouchScrollInertia();
+    } else if (_touchWheelCalibrator.observingTerminalOutput) {
+      _touchWheelCalibrator.terminalChanged(
+        captureTerminalViewportLines(widget.terminal),
+      );
+    }
+
     _syncGraphicsAnimationTicker();
     _scheduleGraphicsAnimationSync();
     final currentViewWidth = widget.terminal.viewWidth;
@@ -1234,6 +1281,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     final shouldFillHorizontalRemainder =
         terminalViewportPadding.left == 0 && terminalViewportPadding.right == 0;
 
+    final inheritedScrollBehavior = ScrollConfiguration.of(context);
+    final directScrollDragDevices = <PointerDeviceKind>{
+      ...inheritedScrollBehavior.dragDevices,
+    }..remove(PointerDeviceKind.touch);
+
     Widget child = Scrollable(
       key: _scrollableKey,
       controller: _scrollController,
@@ -1292,6 +1344,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       );
     }
 
+    child = ScrollConfiguration(
+      behavior: inheritedScrollBehavior.copyWith(
+        dragDevices: directScrollDragDevices,
+      ),
+      child: child,
+    );
+
     if (!widget.hardwareKeyboardOnly) {
       child = CustomTextEdit(
         key: _customTextEditKey,
@@ -1344,13 +1403,23 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       resolveLinkTap: widget.resolveLinkTap == null ? null : _resolveLinkTap,
       onLinkTapDown: widget.onLinkTapDown == null ? null : _onLinkTapDown,
       onLinkTap: widget.onLinkTap,
+      onTouchScrollDown: _onTouchScrollDown,
       onTouchScrollStart: widget.touchScrollToTerminal
           ? _onTouchScrollStart
-          : null,
+          : _onDirectTouchScrollStart,
       onTouchScrollUpdate: widget.touchScrollToTerminal
           ? _onTouchScrollUpdate
-          : null,
-      onTouchScrollEnd: widget.touchScrollToTerminal ? _onTouchScrollEnd : null,
+          : _onDirectTouchScrollUpdate,
+      onTouchScrollEnd: widget.touchScrollToTerminal
+          ? _onTouchScrollEnd
+          : _onDirectTouchScrollEnd,
+      onTouchScrollCancel: widget.touchScrollToTerminal
+          ? _onTouchScrollCancel
+          : _onDirectTouchScrollCancel,
+      touchScrollVelocityTrackerBuilder: inheritedScrollBehavior
+          .velocityTrackerBuilder(context),
+      touchScrollMultitouchDragStrategy: inheritedScrollBehavior
+          .getMultitouchDragStrategy(context),
       readOnly: widget.readOnly || widget.useSystemSelection,
       enableTerminalSelectionGestures: !widget.useSystemSelection,
       child: child,
@@ -1476,10 +1545,120 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.onSecondaryTapUp?.call(details, offset);
   }
 
+  void _cancelDirectTouchScrollDrag() {
+    _directTouchScrollHold?.cancel();
+    _directTouchScrollHold = null;
+    _directTouchScrollDrag?.cancel();
+    _directTouchScrollDrag = null;
+  }
+
+  void _disposeDirectTouchScrollHold() {
+    _directTouchScrollHold = null;
+  }
+
+  void _onTouchScrollDown(DragDownDetails details) {
+    if (widget.touchScrollToTerminal || widget.terminal.isUsingAltBuffer) {
+      _stopTouchScrollInertia();
+      return;
+    }
+    _directTouchScrollHold?.cancel();
+    final position = _scrollableKey.currentState?.position;
+    if (position == null) {
+      _directTouchScrollHold = null;
+      return;
+    }
+    _directTouchScrollHold = position.hold(_disposeDirectTouchScrollHold);
+  }
+
+  void _onDirectTouchScrollStart(DragStartDetails details) {
+    if (widget.terminal.isUsingAltBuffer) {
+      _onTouchScrollStart(details);
+      return;
+    }
+    _directTouchScrollDrag?.cancel();
+    _directTouchScrollDrag = null;
+    final position = _scrollableKey.currentState?.position;
+    if (position == null) {
+      _directTouchScrollHold?.cancel();
+      _directTouchScrollHold = null;
+      return;
+    }
+    _directTouchScrollDrag = position.drag(
+      details,
+      () => _directTouchScrollDrag = null,
+    );
+    _disposeDirectTouchScrollHold();
+  }
+
+  void _onDirectTouchScrollUpdate(DragUpdateDetails details) {
+    if (widget.terminal.isUsingAltBuffer) {
+      _onTouchScrollUpdate(details);
+      return;
+    }
+    final primaryDelta = details.primaryDelta;
+    final drag = _directTouchScrollDrag;
+    if (primaryDelta == null || drag == null) {
+      return;
+    }
+    final scaledDelta = primaryDelta * _terminalViewportTouchScrollSensitivity;
+    drag.update(
+      DragUpdateDetails(
+        sourceTimeStamp: details.sourceTimeStamp,
+        delta: Offset(0, scaledDelta),
+        primaryDelta: scaledDelta,
+        globalPosition: details.globalPosition,
+        localPosition: details.localPosition,
+        kind: details.kind,
+      ),
+    );
+  }
+
+  void _onDirectTouchScrollEnd(DragEndDetails details) {
+    if (widget.terminal.isUsingAltBuffer) {
+      _onTouchScrollEnd(details);
+      return;
+    }
+    final drag = _directTouchScrollDrag;
+    if (drag == null) {
+      return;
+    }
+    final pixelsPerSecond = details.velocity.pixelsPerSecond;
+    final scaledVelocity =
+        (details.primaryVelocity ?? pixelsPerSecond.dy) *
+        _terminalViewportTouchScrollSensitivity;
+    drag.end(
+      DragEndDetails(
+        globalPosition: details.globalPosition,
+        localPosition: details.localPosition,
+        velocity: Velocity(
+          pixelsPerSecond: Offset(pixelsPerSecond.dx, scaledVelocity),
+        ),
+        primaryVelocity: scaledVelocity,
+      ),
+    );
+    _directTouchScrollDrag = null;
+  }
+
+  void _onDirectTouchScrollCancel() {
+    if (widget.terminal.isUsingAltBuffer) {
+      _onTouchScrollCancel();
+      return;
+    }
+    _cancelDirectTouchScrollDrag();
+  }
+
+  void _onTouchScrollCancel() {
+    _stopTouchScrollInertia();
+    _resetTouchScrollDispatch();
+  }
+
   void _onTouchScrollStart(DragStartDetails details) {
     _stopTouchScrollInertia();
     _lastTouchScrollPosition = details.localPosition;
-    _resetTouchScrollDispatch();
+    if (!_touchWheelCalibrator.waitingForResponse) {
+      _touchWheelCalibrator.beginGesture();
+      _resetTouchScrollDispatch(preserveRemainder: true);
+    }
   }
 
   void _onTouchScrollUpdate(DragUpdateDetails details) {
@@ -1508,26 +1687,44 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (lineHeight <= 0) {
       return 0;
     }
-    if (widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll) {
-      return lineHeight * _touchScrollReportedWheelLinesPerEvent;
-    }
-    return lineHeight;
+    return lineHeight * _touchWheelCalibrator.rowsPerEvent;
   }
 
   void _applyTouchScrollDelta(double delta) {
+    _touchScrollRemainder += delta;
     final stepHeight = _touchScrollStepHeight;
-    if (stepHeight <= 0) {
+    if (stepHeight <= 0 || _touchWheelCalibrator.waitingForResponse) {
       return;
     }
-    _touchScrollRemainder += delta;
     final position = _resolveViewportMousePosition(_lastTouchScrollPosition);
+    final canReportMouse =
+        widget.forceSgrTouchScroll || widget.terminal.mouseMode.reportScroll;
     while (_touchScrollRemainder.abs() >= stepHeight) {
       final scrollUp = _touchScrollRemainder > 0;
+      final scrollDirection = scrollUp ? 1 : -1;
+      final lineHeight = renderTerminal.lineHeight;
+      final calibrationStarted =
+          canReportMouse &&
+          _touchWheelCalibrator.needsMeasurement &&
+          _touchWheelCalibrator.begin(
+            before: captureTerminalViewportLines(widget.terminal),
+            onSettled: (previousRows, rows) {
+              if (!mounted) {
+                return;
+              }
+              _touchScrollRemainder -=
+                  scrollDirection * lineHeight * (rows - previousRows);
+              _applyTouchScrollDelta(0);
+            },
+          );
       _enqueueTouchScrollRun(
         scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
         position,
       );
       _touchScrollRemainder += scrollUp ? -stepHeight : stepHeight;
+      if (calibrationStarted) {
+        break;
+      }
     }
     _drainTouchScrollInput();
   }
@@ -1567,7 +1764,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         (widget.terminal.mouseMode.reportScroll &&
             widget.terminal.mouseReportMode == MouseReportMode.sgr);
     if (canBatchSgr) {
-      var budget = 6;
+      // Start with one report so responsive applications can render each
+      // increment. Increase throughput only while requested movement remains
+      // queued across frames, then return to one as soon as caught up.
+      var budget = math.min(1 + _touchScrollBacklogFrames, 6);
       while (budget > 0 && _pendingTouchScrollRuns.isNotEmpty) {
         final run = _pendingTouchScrollRuns.first;
         final count = math.min(run.count, budget);
@@ -1579,12 +1779,18 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         _consumeTouchScrollRun(count);
         budget -= count;
       }
+      if (_pendingTouchScrollRuns.isEmpty) {
+        _touchScrollBacklogFrames = 0;
+      } else {
+        _touchScrollBacklogFrames = math.min(_touchScrollBacklogFrames + 1, 5);
+      }
       // Lock the frame-wide budget even when the queue is empty; pointer updates
       // received before this callback only append runs for the next frame.
       _scheduleTouchScrollDrain();
       return;
     }
 
+    _touchScrollBacklogFrames = 0;
     while (_pendingTouchScrollRuns.isNotEmpty) {
       final run = _pendingTouchScrollRuns.first;
       final handled = _sendTouchScrollMouseInput(run.button, run.position);
@@ -1617,11 +1823,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     });
   }
 
-  void _resetTouchScrollDispatch() {
+  void _resetTouchScrollDispatch({bool preserveRemainder = false}) {
     _touchScrollDispatchGeneration += 1;
     _touchScrollDrainScheduled = false;
     _pendingTouchScrollRuns.clear();
-    _touchScrollRemainder = 0;
+    _touchScrollBacklogFrames = 0;
+    if (!preserveRemainder) {
+      _touchScrollRemainder = 0;
+    }
   }
 
   void _startTouchScrollInertia(double velocity) {
