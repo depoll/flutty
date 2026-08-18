@@ -100,6 +100,55 @@ def _validate_file(path: Path, expected_size: tuple[int, int]) -> None:
     )
 
 
+def _validate_copilot_image_frame(path: Path) -> None:
+    """Reject accidental slivers while allowing one intentionally cropped edge."""
+    with Image.open(path) as image:
+        rgb = image.convert('RGB')
+        width, height = rgb.size
+        target = (64, 196, 255)
+
+        def is_frame_pixel(x: int, y: int) -> bool:
+            pixel = rgb.getpixel((x, y))
+            if not isinstance(pixel, tuple) or len(pixel) < 3:
+                return False
+            red, green, blue = pixel[:3]
+            return (
+                abs(red - target[0]) <= 18
+                and abs(green - target[1]) <= 18
+                and abs(blue - target[2]) <= 12
+            )
+
+        horizontal_rows = [
+            y
+            for y in range(height)
+            if sum(is_frame_pixel(x, y) for x in range(width)) >= width * 0.2
+        ]
+        vertical_columns = [
+            x
+            for x in range(width)
+            if sum(is_frame_pixel(x, y) for y in range(height)) >= height * 0.1
+        ]
+
+    def group_count(values: list[int]) -> int:
+        if not values:
+            return 0
+        return 1 + sum(
+            values[index] != values[index - 1] + 1
+            for index in range(1, len(values))
+        )
+
+    horizontal_edges = group_count(horizontal_rows)
+    vertical_edges = group_count(vertical_columns)
+    visible_edges = horizontal_edges + vertical_edges
+    if horizontal_edges == 0 or vertical_edges == 0 or visible_edges < 3:
+        raise ValueError(
+            f'{path.relative_to(ROOT)} shows only a sliver of the inline '
+            f'Copilot image (horizontal edges: {horizontal_edges}, vertical '
+            f'edges: {vertical_edges}); regenerate with enough app content '
+            'visible to look intentional',
+        )
+
+
 def _ocr_texts(paths: list[Path]) -> dict[Path, str]:
     if platform.system() != 'Darwin' or shutil.which('swift') is None:
         raise RuntimeError(
@@ -183,6 +232,7 @@ def _validate_ocr_content(paths: list[Path]) -> None:
     for path, text in texts.items():
         filename = path.name
         if filename in {'01_iphone_6_9.png', '01_ipad_13.png', '1.png'}:
+            _validate_copilot_image_frame(path)
             _require_ocr_markers(path, text, ['Copilot'])
             # Require labels unique to the embedded light-mode hosts screenshot
             # (not words that also appear in the submitted Copilot prompt).

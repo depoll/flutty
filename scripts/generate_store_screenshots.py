@@ -542,6 +542,7 @@ class StoreDemoEnvironment:
     def _setup_monkeymux(self) -> None:
         self._prepare_demo_dir()
         self._teardown_monkeymux()
+        dummy_anthropic_key = 'sk' + '-ant-api03-' + ('0' * 64) + '-dummy'
         self._write_pane_script(
             'copilot',
             f"""
@@ -563,7 +564,7 @@ class StoreDemoEnvironment:
               BASH_SILENCE_DEPRECATION_WARNING=1 \\
               CLAUDE_CODE_HIDE_ACCOUNT_INFO=1 \\
               CLAUDE_CODE_HIDE_CWD=1 \\
-              ANTHROPIC_API_KEY=sk-ant-api03-0000000000000000000000000000000000000000000000000000000000000000-dummy \\
+              ANTHROPIC_API_KEY={dummy_anthropic_key} \\
               {self._shell_quote(self._claude)} \\
               --bare \\
               --name 'Claude Code Workspace'
@@ -830,7 +831,9 @@ class StoreDemoEnvironment:
             cropped = ImageEnhance.Sharpness(cropped).enhance(1.25)
             cropped = ImageEnhance.Color(cropped).enhance(1.08)
 
-            max_width = 960
+            # Keep the attachment short enough that narrow phone captures show
+            # substantial app content instead of only the bottom of the image.
+            max_width = 640
             if cropped.width > max_width:
                 ratio = max_width / cropped.width
                 cropped = cropped.resize(
@@ -988,13 +991,19 @@ class StoreDemoEnvironment:
         image_path = self.demo_dir / COPILOT_DEMO_IMAGE_NAME
         if not image_path.is_file():
             raise RuntimeError(f'Missing Copilot demo image: {image_path}')
-        # Submit the image path as the first prompt so Copilot CLI attaches and
-        # renders the screenshot inline in the conversation.
+        # Copilot recognizes an image path as an attachment only when it arrives
+        # as a terminal paste. A plain injected filename is treated as prompt
+        # text and the model cannot see or render the image.
+        self._monkeymux_send_literal(
+            'copilot',
+            f'\x1b[200~{COPILOT_DEMO_IMAGE_NAME}\x1b[201~',
+        )
+        time.sleep(2)
         prompt = (
-            f'{COPILOT_DEMO_IMAGE_NAME} Visually describe only what is shown in '
-            'this light-mode MonkeySSH screenshot and call out the strongest '
-            'store-listing details. Do not run tools, read other files, load '
-            'skills, or access paths outside this workspace.'
+            'Visually describe only what is shown in this light-mode MonkeySSH '
+            'screenshot and call out the strongest store-listing details. Do '
+            'not run tools, read other files, load skills, or access paths '
+            'outside this workspace.'
         )
         self._monkeymux_send_literal('copilot', prompt)
         self._monkeymux_send_keys('copilot', 'Enter')
@@ -1158,7 +1167,7 @@ class StoreDemoEnvironment:
             (re.escape(str(Path.home())), 'home directory'),
             (rf'\b{re.escape(self.username)}\b', 'local username'),
             (r'\bDavid\b', 'account display name'),
-            (r'Organization', 'account organization'),
+            (r'\bOrganization\s*:', 'account organization'),
             (r'ANTHROPIC_API_KEY', 'API key environment label'),
         ]
         if not allow_billing_label:
