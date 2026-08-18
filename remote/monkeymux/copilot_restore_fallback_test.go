@@ -145,8 +145,12 @@ func TestEnrichRestoreCopilotFallsBackToCwd(t *testing.T) {
 		t.Fatalf("session id = %q, want most-recent session for cwd (recent-session)", got)
 	}
 	options := createWindowOptionsForRestore(restore.Windows[0], false)
-	if options.command != "copilot --resume 'recent-session' || copilot" {
-		t.Fatalf("command = %q, want copilot resume with fresh fallback", options.command)
+	want := agentResumeCommandWithFreshFallback(
+		agentResumeCommand("copilot", "recent-session", false),
+		agentLaunchCommand("copilot", false),
+	)
+	if options.command != want {
+		t.Fatalf("command = %q, want %q", options.command, want)
 	}
 }
 

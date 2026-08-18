@@ -1971,6 +1971,15 @@ func acquireSessionLock(session string) (func(), error) {
 	var nextStaleCheck time.Time
 	for clears := 0; ; {
 		record, acquired, err := installSessionLockFile(path)
+		if errors.Is(err, os.ErrNotExist) && time.Now().Before(deadline) {
+			// A concurrent cleanup may remove the per-user runtime directory
+			// after the initial MkdirAll. Recreate it and retry the same lock
+			// generation instead of failing an otherwise valid contender.
+			if mkdirErr := os.MkdirAll(filepath.Dir(path), 0o700); mkdirErr != nil {
+				return nil, mkdirErr
+			}
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
