@@ -42,6 +42,7 @@ Widget _wrap(
   String? preferredFontFamily,
   ValueChanged<double>? onFontSizeCommitted,
   AcpChatAttachmentActionsBuilder? attachmentActionsBuilder,
+  EdgeInsets mediaPadding = EdgeInsets.zero,
 }) {
   final ssh = _MockSshService();
   final key = routeKey ?? fakeAcpKey();
@@ -59,7 +60,11 @@ Widget _wrap(
     ],
     child: MaterialApp(
       home: MediaQuery(
-        data: MediaQueryData(size: size),
+        data: MediaQueryData(
+          size: size,
+          padding: mediaPadding,
+          viewPadding: mediaPadding,
+        ),
         child: AgentChatScreen(
           hostId: key.hostId,
           providerId: key.providerId,
@@ -136,12 +141,21 @@ void main() {
         ),
       ],
     );
-    await tester.pumpWidget(_wrap(manager, embedded: true));
+    await tester.pumpWidget(
+      _wrap(manager, embedded: true, preferredFontSize: 20),
+    );
     await tester.pumpAndSettle();
 
+    expect(find.byType(AppBar), findsNothing);
     expect(find.text('Model: Sonnet'), findsOneWidget);
     expect(find.text('Effort: Medium'), findsOneWidget);
     expect(find.text('Mode: Code'), findsOneWidget);
+    final selectorContext = tester.element(find.text('Model: Sonnet'));
+    expect(MediaQuery.of(selectorContext).textScaler.scale(14), 14);
+    expect(
+      tester.getTopLeft(find.text('Model: Sonnet')).dy,
+      greaterThanOrEqualTo(tester.getBottomLeft(find.byType(AcpComposer)).dy),
+    );
 
     await tester.tap(find.byTooltip('Change model'));
     await tester.pumpAndSettle();
@@ -160,6 +174,108 @@ void main() {
     await tester.tap(find.text('Ask').last);
     await tester.pumpAndSettle();
     expect(manager.modeSets, contains('ask'));
+  });
+
+  testWidgets('legacy thinking levels render as Effort, not Mode', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager(
+      sessions: [
+        fakeAcpSession(
+          modeState: const AcpSessionModeState(
+            currentModeId: 'medium',
+            availableModes: [
+              AcpSessionMode(id: 'low', name: 'Low'),
+              AcpSessionMode(id: 'medium', name: 'Medium'),
+              AcpSessionMode(id: 'high', name: 'High'),
+            ],
+          ),
+        ),
+      ],
+    );
+    await tester.pumpWidget(_wrap(manager, embedded: true));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Effort: Medium'), findsOneWidget);
+    expect(find.textContaining('Mode:'), findsNothing);
+    await tester.tap(find.byTooltip('Change effort'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('High').last);
+    await tester.pumpAndSettle();
+    expect(manager.modeSets, contains('high'));
+  });
+
+  testWidgets('generic mode-shaped effort levels do not create a Mode pill', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager(
+      sessions: [
+        fakeAcpSession(
+          configOptions: const [
+            AcpSelectConfigOption(
+              id: 'session-mode',
+              name: 'Mode',
+              currentValue: 'medium',
+              category: 'mode',
+              options: [
+                AcpConfigValue(value: 'low', name: 'Low'),
+                AcpConfigValue(value: 'medium', name: 'Medium'),
+                AcpConfigValue(value: 'high', name: 'High'),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+    await tester.pumpWidget(_wrap(manager, embedded: true));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Effort: Medium'), findsOneWidget);
+    expect(find.textContaining('Mode:'), findsNothing);
+    await tester.tap(find.byTooltip('Change effort'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('High').last);
+    await tester.pumpAndSettle();
+    expect(manager.configOptionSets, contains(('session-mode', 'high')));
+  });
+
+  testWidgets('standalone pills respect SafeArea and default/off stays Mode', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager(
+      sessions: [
+        fakeAcpSession(
+          configOptions: const [
+            AcpSelectConfigOption(
+              id: 'interaction-mode',
+              name: 'Mode',
+              currentValue: 'default',
+              category: 'mode',
+              options: [
+                AcpConfigValue(value: 'default', name: 'Default'),
+                AcpConfigValue(value: 'off', name: 'Off'),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      _wrap(manager, mediaPadding: const EdgeInsets.only(bottom: 34)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Mode: Default'), findsOneWidget);
+    expect(find.textContaining('Effort:'), findsNothing);
+    final pillSafeAreas = tester
+        .widgetList<SafeArea>(
+          find.ancestor(
+            of: find.text('Mode: Default'),
+            matching: find.byType(SafeArea),
+          ),
+        )
+        .where((safeArea) => safeArea.bottom);
+    expect(pillSafeAreas, isNotEmpty);
   });
 
   testWidgets('opens an inline image in a sized interactive viewer', (
@@ -445,6 +561,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('sessions'), findsNothing);
+      expect(find.byType(AppBar), findsNothing);
       expect(find.byTooltip('MonkeyMux windows'), findsNothing);
       final threadContext = tester.element(find.byType(AcpMessageThread));
       expect(
@@ -520,7 +637,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('agent is working'), findsOneWidget);
-    expect(find.textContaining('· working'), findsOneWidget);
     final statusStripProgress = tester
         .widgetList<LinearProgressIndicator>(
           find.byType(LinearProgressIndicator),

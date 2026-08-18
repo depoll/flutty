@@ -436,18 +436,22 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     ];
   }
 
-  PreferredSizeWidget? _buildQuickConfigBar(AcpSessionState session) {
+  Widget? _buildQuickConfigBar(
+    AcpSessionState session, {
+    required bool useBottomSafeArea,
+  }) {
     final selectors = _quickConfigSelectors(session);
     if (selectors.isEmpty) {
       return null;
     }
     final scheme = Theme.of(context).colorScheme;
-    return PreferredSize(
-      preferredSize: const Size.fromHeight(44),
+    return SafeArea(
+      top: false,
+      bottom: useBottomSafeArea,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: scheme.surface,
-          border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+          border: Border(top: BorderSide(color: scheme.outlineVariant)),
         ),
         child: SizedBox(
           height: 44,
@@ -478,17 +482,12 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     final modelOption = firstMatching(
       (option) => (option.category ?? '').toLowerCase() == 'model',
     );
+    final effortOption = firstMatching(_quickConfigOptionIsEffort);
     final modeOption = firstMatching(
-      (option) => (option.category ?? '').toLowerCase() == 'mode',
+      (option) =>
+          (option.category ?? '').toLowerCase() == 'mode' &&
+          !_quickConfigOptionIsEffort(option),
     );
-    final effortOption = firstMatching((option) {
-      final category = (option.category ?? '').toLowerCase();
-      final identity = '${option.id} ${option.name}'.toLowerCase();
-      return category == 'thought' ||
-          identity.contains('effort') ||
-          identity.contains('reasoning') ||
-          identity.contains('thinking');
-    });
     final selectors = <_AcpQuickSelectorData>[];
 
     void addGeneric(String label, AcpSelectConfigOption? option) {
@@ -533,9 +532,33 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     }
 
     addGeneric('Effort', effortOption);
+    final legacyModeState = session.modeState;
+    final legacyModeIsEffort =
+        legacyModeState != null && _legacyModeStateIsEffort(legacyModeState);
+    if (effortOption == null &&
+        legacyModeState != null &&
+        legacyModeIsEffort &&
+        legacyModeState.availableModes.isNotEmpty) {
+      selectors.add(
+        _AcpQuickSelectorData(
+          label: 'Effort',
+          currentValue: legacyModeState.currentModeId,
+          choices: [
+            for (final mode in legacyModeState.availableModes)
+              _AcpQuickChoice(
+                value: mode.id,
+                label: mode.name.isEmpty ? mode.id : mode.name,
+                description: mode.description,
+              ),
+          ],
+          onSelected: (value) => manager.setMode(_key, value),
+        ),
+      );
+    }
+
     addGeneric('Mode', modeOption);
-    if (modeOption == null) {
-      final state = session.modeState;
+    if (modeOption == null && !legacyModeIsEffort) {
+      final state = legacyModeState;
       if (state != null && state.availableModes.isNotEmpty) {
         selectors.add(
           _AcpQuickSelectorData(
@@ -556,6 +579,59 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     }
     return selectors;
   }
+
+  bool _quickConfigOptionIsEffort(AcpSelectConfigOption option) {
+    final identity = '${option.id} ${option.name}'.toLowerCase();
+    if (identity.contains('effort') ||
+        identity.contains('reasoning') ||
+        identity.contains('thinking')) {
+      return true;
+    }
+    final values = [
+      for (final value in option.options) value.value,
+      for (final group in option.groups)
+        for (final value in group.options) value.value,
+    ];
+    return values.any(_isEffortStrengthLevel) && values.every(_isEffortLevel);
+  }
+
+  bool _legacyModeStateIsEffort(AcpSessionModeState state) =>
+      state.availableModes.any(
+        (mode) =>
+            _isEffortStrengthLevel(mode.id) ||
+            _isEffortStrengthLevel(mode.name),
+      ) &&
+      state.availableModes.every(
+        (mode) => _isEffortLevel(mode.id) || _isEffortLevel(mode.name),
+      );
+
+  bool _isEffortStrengthLevel(String value) => const {
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+  }.contains(_normalizedConfigValue(value));
+
+  bool _isEffortLevel(String value) {
+    final normalized = _normalizedConfigValue(value);
+    return const {
+      'off',
+      'none',
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'auto',
+      'default',
+    }.contains(normalized);
+  }
+
+  String _normalizedConfigValue(String value) =>
+      value.trim().toLowerCase().replaceAll(RegExp(r'[\s_-]+'), '');
 
   List<_AcpQuickChoice> _quickConfigChoices(AcpSelectConfigOption option) => [
     for (final value in option.options)
@@ -779,21 +855,6 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         .asData
         ?.value;
     final session = managerState?.byKeyValue(_key.value);
-    final isWide = MediaQuery.sizeOf(context).width >= kAgentChatWideBreakpoint;
-    final Widget conversation;
-    if (isWide && !widget.embedded) {
-      conversation = Scaffold(
-        body: Row(
-          children: [
-            AcpSessionRail(currentKey: _key),
-            Expanded(child: _buildConversation(session, showBack: true)),
-          ],
-        ),
-      );
-    } else {
-      conversation = _buildConversation(session, showBack: !widget.embedded);
-    }
-
     final fontSize = clampAgentChatFontSize(
       widget.preferredFontSize ?? ref.watch(fontSizeNotifierProvider),
     );
@@ -801,186 +862,230 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         widget.preferredFontFamily ??
         ref.watch(fontFamilyNotifierProvider) ??
         'monospace';
-    return _AgentChatZoomSurface(
+    final onFontSizeCommitted =
+        widget.onFontSizeCommitted ??
+        (double size) => unawaited(
+          ref.read(fontSizeNotifierProvider.notifier).setFontSize(size),
+        );
+    Widget wrapContent(Widget child) => _AgentChatZoomSurface(
       fontSize: fontSize,
       fontFamily: fontFamily,
-      onFontSizeCommitted:
-          widget.onFontSizeCommitted ??
-          (size) => unawaited(
-            ref.read(fontSizeNotifierProvider.notifier).setFontSize(size),
-          ),
-      child: conversation,
+      onFontSizeCommitted: onFontSizeCommitted,
+      child: child,
+    );
+
+    final isWide = MediaQuery.sizeOf(context).width >= kAgentChatWideBreakpoint;
+    if (isWide && !widget.embedded) {
+      return Scaffold(
+        body: Row(
+          children: [
+            AcpSessionRail(currentKey: _key),
+            Expanded(
+              child: _buildConversation(
+                session,
+                showBack: true,
+                contentWrapper: wrapContent,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return _buildConversation(
+      session,
+      showBack: !widget.embedded,
+      contentWrapper: wrapContent,
     );
   }
 
   Widget _buildConversation(
     AcpSessionState? session, {
     required bool showBack,
+    required Widget Function(Widget child) contentWrapper,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     if (session == null) {
-      return Scaffold(
-        appBar: AppBar(
-          automaticallyImplyLeading: showBack,
-          title: Text('Agent', style: FluttyTheme.displayMono()),
-        ),
-        body: _connectError != null
-            ? _buildConnectError(_connectError!)
-            : _connecting
-            ? const Center(child: CircularProgressIndicator())
-            : Center(
-                child: TextButton.icon(
-                  onPressed: _ensureConnected,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Reconnect'),
-                ),
+      final content = _connectError != null
+          ? _buildConnectError(_connectError!)
+          : _connecting
+          ? const Center(child: CircularProgressIndicator())
+          : Center(
+              child: TextButton.icon(
+                onPressed: _ensureConnected,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reconnect'),
               ),
+            );
+      return Scaffold(
+        appBar: widget.embedded
+            ? null
+            : AppBar(
+                automaticallyImplyLeading: showBack,
+                title: Text('Agent', style: FluttyTheme.displayMono()),
+              ),
+        body: contentWrapper(content),
       );
     }
 
     final entries = mapAcpSessionTimeline(session);
     final prompts = _prompts(session);
     final activity = acpSessionActivityDisplay(session);
+    final quickConfigBar = _buildQuickConfigBar(
+      session,
+      useBottomSafeArea: !widget.embedded,
+    );
     _scheduleAutoScroll();
 
     return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: showBack,
-        titleSpacing: 0,
-        title: InkWell(
-          onTap: widget.embedded
-              ? null
-              : () => showAcpSessionSwitcher(context, currentKey: _key),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: FluttyTheme.spacingSm,
-              vertical: FluttyTheme.spacingXs,
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Flexible(
-                  child: Column(
+      appBar: widget.embedded
+          ? null
+          : AppBar(
+              automaticallyImplyLeading: showBack,
+              titleSpacing: 0,
+              title: InkWell(
+                onTap: widget.embedded
+                    ? null
+                    : () => showAcpSessionSwitcher(context, currentKey: _key),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: FluttyTheme.spacingSm,
+                    vertical: FluttyTheme.spacingXs,
+                  ),
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        acpSessionDisplayTitle(session),
-                        style: FluttyTheme.displayMono(fontSize: 16),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      Text(
-                        '${session.providerLabel} · '
-                        '${acpCwdSummary(session.cwd)} · '
-                        '${activity.label}',
-                        style: FluttyTheme.monoStyle.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                          fontSize: 12,
+                      Flexible(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              acpSessionDisplayTitle(session),
+                              style: FluttyTheme.displayMono(fontSize: 16),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              '${session.providerLabel} · '
+                              '${acpCwdSummary(session.cwd)} · '
+                              '${activity.label}',
+                              style: FluttyTheme.monoStyle.copyWith(
+                                color: colorScheme.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
                         ),
-                        overflow: TextOverflow.ellipsis,
                       ),
+                      if (!widget.embedded)
+                        const Icon(Icons.expand_more, size: 20),
                     ],
                   ),
                 ),
-                if (!widget.embedded) const Icon(Icons.expand_more, size: 20),
+              ),
+              actions: [
+                if (!widget.embedded)
+                  IconButton(
+                    tooltip: 'MonkeyMux windows',
+                    icon: const Icon(Icons.window_outlined),
+                    onPressed: _openMonkeyMuxWindows,
+                  ),
+                _buildOverflowMenu(session),
               ],
             ),
-          ),
-        ),
-        bottom: _buildQuickConfigBar(session),
-        actions: [
-          if (!widget.embedded)
-            IconButton(
-              tooltip: 'MonkeyMux windows',
-              icon: const Icon(Icons.window_outlined),
-              onPressed: _openMonkeyMuxWindows,
-            ),
-          _buildOverflowMenu(session),
-        ],
-      ),
-      body: SafeArea(
-        top: false,
-        bottom: !widget.embedded,
-        child: Column(
-          children: [
-            if (session.status != AcpConnectionStatus.ready)
-              _buildSessionStatusBanner(session)
-            else if (!activity.isReady)
-              _SessionStatusBanner(
-                message: switch (activity.label) {
-                  'working' => 'agent is working',
-                  'sending' => 'sending prompt',
-                  'cancelling' => 'cancelling current turn',
-                  _ => activity.label,
-                },
-                icon: activity.icon,
-                tone: activity.tone,
-                transitioning:
-                    session.promptStatus != AcpPromptStatus.idle &&
-                    !activity.needsInput,
-                progressFraction: widget.embedded
-                    ? null
-                    : activity.progressFraction,
-                indeterminateProgress:
-                    !widget.embedded && activity.indeterminate,
-              ),
-            Expanded(
-              child: Stack(
-                children: [
-                  if (entries.isEmpty)
-                    _AcpEmptyConversation(
-                      providerLabel: session.providerLabel,
-                      cwd: acpCwdSummary(session.cwd),
-                    )
-                  else
-                    AcpMessageThread(
-                      entries: entries,
-                      controller: _scroll,
-                      imageResolver: _resolveChatImage,
-                      onTapImage: _openImageViewer,
-                      onOpenResource: _openResource,
-                      onCopyResource: (resource) =>
-                          _copyToClipboard(resource.uri, 'Resource'),
-                      onCopyCode: (code) => _copyToClipboard(code, 'Code'),
-                      onOpenLocation: (location) =>
-                          _openRemotePath(location.path),
-                    ),
-                  if (_showJumpToLatest)
-                    Positioned(
-                      right: FluttyTheme.spacingMd,
-                      bottom: FluttyTheme.spacingMd,
-                      child: SizedBox.square(
-                        dimension: 44,
-                        child: FloatingActionButton.small(
-                          heroTag: 'acp-jump-latest',
-                          tooltip: 'Jump to latest',
-                          onPressed: _jumpToLatest,
-                          child: const Icon(Icons.arrow_downward),
-                        ),
+      body: Column(
+        children: [
+          Expanded(
+            child: contentWrapper(
+              SafeArea(
+                top: false,
+                bottom: !widget.embedded,
+                child: Column(
+                  children: [
+                    if (session.status != AcpConnectionStatus.ready)
+                      _buildSessionStatusBanner(session)
+                    else if (!activity.isReady)
+                      _SessionStatusBanner(
+                        message: switch (activity.label) {
+                          'working' => 'agent is working',
+                          'sending' => 'sending prompt',
+                          'cancelling' => 'cancelling current turn',
+                          _ => activity.label,
+                        },
+                        icon: activity.icon,
+                        tone: activity.tone,
+                        transitioning:
+                            session.promptStatus != AcpPromptStatus.idle &&
+                            !activity.needsInput,
+                        progressFraction: widget.embedded
+                            ? null
+                            : activity.progressFraction,
+                        indeterminateProgress:
+                            !widget.embedded && activity.indeterminate,
+                      ),
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          if (entries.isEmpty)
+                            _AcpEmptyConversation(
+                              providerLabel: session.providerLabel,
+                              cwd: acpCwdSummary(session.cwd),
+                            )
+                          else
+                            AcpMessageThread(
+                              entries: entries,
+                              controller: _scroll,
+                              imageResolver: _resolveChatImage,
+                              onTapImage: _openImageViewer,
+                              onOpenResource: _openResource,
+                              onCopyResource: (resource) =>
+                                  _copyToClipboard(resource.uri, 'Resource'),
+                              onCopyCode: (code) =>
+                                  _copyToClipboard(code, 'Code'),
+                              onOpenLocation: (location) =>
+                                  _openRemotePath(location.path),
+                            ),
+                          if (_showJumpToLatest)
+                            Positioned(
+                              right: FluttyTheme.spacingMd,
+                              bottom: FluttyTheme.spacingMd,
+                              child: SizedBox.square(
+                                dimension: 44,
+                                child: FloatingActionButton.small(
+                                  heroTag: 'acp-jump-latest',
+                                  tooltip: 'Jump to latest',
+                                  onPressed: _jumpToLatest,
+                                  child: const Icon(Icons.arrow_downward),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
-                ],
+                    if (prompts.isNotEmpty)
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: MediaQuery.sizeOf(context).height * 0.34,
+                        ),
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: FluttyTheme.spacingMd,
+                          ),
+                          child: AcpPermissionSurface(prompts: prompts),
+                        ),
+                      ),
+                    AcpComposer(
+                      controller: _composer,
+                      attachmentActions: _attachmentActions(session),
+                      useBottomSafeArea: !widget.embedded,
+                    ),
+                  ],
+                ),
               ),
             ),
-            if (prompts.isNotEmpty)
-              ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: MediaQuery.sizeOf(context).height * 0.34,
-                ),
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: FluttyTheme.spacingMd,
-                  ),
-                  child: AcpPermissionSurface(prompts: prompts),
-                ),
-              ),
-            AcpComposer(
-              controller: _composer,
-              attachmentActions: _attachmentActions(session),
-              useBottomSafeArea: !widget.embedded,
-            ),
-          ],
-        ),
+          ),
+          ?quickConfigBar,
+        ],
       ),
     );
   }

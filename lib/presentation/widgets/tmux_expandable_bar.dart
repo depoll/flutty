@@ -1559,7 +1559,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     ThemeData theme,
     TmuxWindow window,
   ) {
-    final isActive = window.isActive;
+    // Native ACP is a peer mux window: the server-active terminal is
+    // visually unselected while ACP owns the viewport.
+    final isActive =
+        window.isActive && widget.activeNativeAcpSessionKey == null;
     final progress = widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
         ? window.terminalProgress
         : null;
@@ -2053,7 +2056,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
-    final isActive = window.isActive;
+    // Native ACP is a peer mux window: the server-active terminal is
+    // visually unselected while ACP owns the viewport.
+    final isActive =
+        window.isActive && widget.activeNativeAcpSessionKey == null;
     final title = _redactStoreScreenshotIdentities
         ? _storeScreenshotWindowTitle(window)
         : window.displayTitle;
