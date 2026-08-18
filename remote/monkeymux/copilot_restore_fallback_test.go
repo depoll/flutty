@@ -114,7 +114,11 @@ func TestDiscoverCopilotSessionIDsPrefersFreshSessionOnStaleLock(t *testing.T) {
 // instead of relaunching blank.
 func TestEnrichRestoreCopilotFallsBackToCwd(t *testing.T) {
 	originalProcessStart := processStartedAtForMetadata
-	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
+	originalProcessTable := processTableForMetadata
+	t.Cleanup(func() {
+		processStartedAtForMetadata = originalProcessStart
+		processTableForMetadata = originalProcessTable
+	})
 	home := t.TempDir()
 	setTestHomeDir(t, home)
 	stateDir := filepath.Join(home, ".copilot", "session-state")
@@ -125,10 +129,16 @@ func TestEnrichRestoreCopilotFallsBackToCwd(t *testing.T) {
 
 	now := time.Now()
 	processStartedAtForMetadata = func(pid int) time.Time {
-		if pid == 200 {
+		if pid == 201 {
 			return now.Add(-time.Minute)
 		}
 		return time.Time{}
+	}
+	processTableForMetadata = func() map[int]processInfo {
+		return map[int]processInfo{
+			200: {pid: 200, ppid: 1, comm: "cmd.exe", args: "cmd.exe"},
+			201: {pid: 201, ppid: 200, comm: "copilot", args: "copilot"},
+		}
 	}
 	writeCopilotSession(t, stateDir, "old-session", project, 0, now.Add(-48*time.Hour))
 	writeCopilotSession(t, stateDir, "recent-session", project, 0, now)
@@ -188,11 +198,18 @@ func TestAssignCopilotSessionsByWorkingDirectoryDedups(t *testing.T) {
 			// Already resolved by the process table — must be left untouched and
 			// not reused for the other windows.
 			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, AgentSessionID: "sess-middle"},
-			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, PanePid: 201},
-			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, PanePid: 202},
+			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, PanePid: 201, LastActivityEpochSeconds: now.Unix()},
+			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, PanePid: 202, LastActivityEpochSeconds: now.Add(-2 * time.Hour).Unix()},
 		},
 	}
-	assignCopilotSessionsByWorkingDirectory(restore)
+	assignCopilotSessionsByWorkingDirectory(
+		restore,
+		map[int]processInfo{
+			201: {pid: 201, ppid: 1, comm: "copilot", args: "copilot"},
+			202: {pid: 202, ppid: 1, comm: "copilot", args: "copilot"},
+		},
+		map[int]struct{}{201: {}, 202: {}},
+	)
 
 	if restore.Windows[0].AgentSessionID != "sess-middle" {
 		t.Fatalf("window 0 changed to %q, want untouched sess-middle", restore.Windows[0].AgentSessionID)
@@ -207,6 +224,19 @@ func TestAssignCopilotSessionsByWorkingDirectoryDedups(t *testing.T) {
 
 // TestAssignCopilotSessionsByWorkingDirectoryNormalizesPaths confirms a window
 // cwd and a session cwd match through ~ expansion and symlink resolution.
+
+func TestCopilotActivityAssignmentsRejectPartialOverlap(t *testing.T) {
+	now := time.Now()
+	a := copilotSessionEntry{id: "a", updatedAt: now}
+	b := copilotSessionEntry{id: "b", updatedAt: now.Add(10 * time.Second)}
+	got := uniqueCopilotSessionAssignments(map[int][]copilotSessionEntry{
+		0: {a},
+		1: {a, b},
+	})
+	if len(got) != 0 {
+		t.Fatalf("partial-overlap Copilot assignments = %#v, want none", got)
+	}
+}
 
 func TestCopilotCwdFallbackDoesNotResumeSessionFromBeforeFreshProcess(t *testing.T) {
 	originalProcessStart := processStartedAtForMetadata
@@ -227,7 +257,11 @@ func TestCopilotCwdFallbackDoesNotResumeSessionFromBeforeFreshProcess(t *testing
 		Name: "Copilot CLI", AgentTool: "copilot", Cwd: project, PanePid: 200,
 	}}}
 
-	assignCopilotSessionsByWorkingDirectory(restore)
+	assignCopilotSessionsByWorkingDirectory(
+		restore,
+		map[int]processInfo{200: {pid: 200, ppid: 1, comm: "copilot", args: "copilot"}},
+		map[int]struct{}{200: {}},
+	)
 
 	if got := restore.Windows[0].AgentSessionID; got != "" {
 		t.Fatalf("fresh Copilot process inherited stale session %q", got)
@@ -263,7 +297,11 @@ func TestAssignCopilotSessionsByWorkingDirectoryNormalizesPaths(t *testing.T) {
 			{Name: "Copilot CLI", AgentTool: "copilot", Cwd: linkDir, PanePid: 200},
 		},
 	}
-	assignCopilotSessionsByWorkingDirectory(restore)
+	assignCopilotSessionsByWorkingDirectory(
+		restore,
+		map[int]processInfo{200: {pid: 200, ppid: 1, comm: "copilot", args: "copilot"}},
+		map[int]struct{}{200: {}},
+	)
 	if got := restore.Windows[0].AgentSessionID; got != "linked-session" {
 		t.Fatalf("session id = %q, want linked-session via symlink normalization", got)
 	}

@@ -11059,9 +11059,14 @@ func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
 		processTableForMetadata = originalProcessTable
 	})
 	now := time.Now().UTC().Truncate(time.Second)
-	processTableForMetadata = func() map[int]processInfo { return nil }
+	processTableForMetadata = func() map[int]processInfo {
+		return map[int]processInfo{
+			200: {pid: 200, ppid: 1, comm: "cmd.exe", args: "cmd.exe"},
+			201: {pid: 201, ppid: 200, comm: "agy", args: "agy"},
+		}
+	}
 	processStartedAtForMetadata = func(pid int) time.Time {
-		if pid == 200 {
+		if pid == 201 {
 			return now.Add(-time.Minute)
 		}
 		return time.Time{}
@@ -11115,13 +11120,18 @@ func TestEnrichRestoreAntigravityRejectsOtherWorkspaceFileMtime(t *testing.T) {
 		processStartedAtForMetadata = originalProcessStart
 		processTableForMetadata = originalProcessTable
 	})
-	processTableForMetadata = func() map[int]processInfo { return nil }
+	processTableForMetadata = func() map[int]processInfo {
+		return map[int]processInfo{
+			200: {pid: 200, ppid: 1, comm: "cmd.exe", args: "cmd.exe"},
+			201: {pid: 201, ppid: 200, comm: "agy", args: "agy"},
+		}
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	project := filepath.Join(home, "project")
 	now := time.Now().UTC().Truncate(time.Second)
 	processStartedAtForMetadata = func(pid int) time.Time {
-		if pid == 200 {
+		if pid == 201 {
 			return now.Add(-time.Minute)
 		}
 		return time.Time{}
@@ -11186,13 +11196,23 @@ func TestCursorAgentToolMapping(t *testing.T) {
 
 func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
 	originalProcessStart := processStartedAtForMetadata
-	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
+	originalProcessTable := processTableForMetadata
+	t.Cleanup(func() {
+		processStartedAtForMetadata = originalProcessStart
+		processTableForMetadata = originalProcessTable
+	})
 	now := time.Now()
 	processStartedAtForMetadata = func(pid int) time.Time {
-		if pid == 200 {
+		if pid == 201 {
 			return now.Add(-time.Minute)
 		}
 		return time.Time{}
+	}
+	processTableForMetadata = func() map[int]processInfo {
+		return map[int]processInfo{
+			200: {pid: 200, ppid: 1, comm: "cmd.exe", args: "cmd.exe"},
+			201: {pid: 201, ppid: 200, comm: "cursor-agent", args: "cursor-agent"},
+		}
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)

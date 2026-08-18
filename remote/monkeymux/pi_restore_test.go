@@ -951,7 +951,7 @@ func TestPiSessionIdentitySurvivesSecondUpgradeAndRejectsRotation(t *testing.T) 
 		100: {pid: 100, ppid: 1, comm: "pi.exe", args: "pi.exe"},
 		101: {pid: 101, ppid: 1, comm: "pi.exe", args: "pi.exe"},
 	}
-	processStartedAtForMetadata = func(int) time.Time { return started }
+	processStartedAtForMetadata = func(int) time.Time { return started.Add(-3 * time.Hour) }
 	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}, 101: {}})
 	if got[0].sessionPath != firstPath || got[1].sessionPath != secondPath {
 		t.Fatalf("second-upgrade sessions = %#v, want persisted exact paths", got)
@@ -962,6 +962,40 @@ func TestPiSessionIdentitySurvivesSecondUpgradeAndRejectsRotation(t *testing.T) 
 	got = discoverPiSessions(restore, processes, map[int]struct{}{100: {}, 101: {}})
 	if len(got) != 0 {
 		t.Fatalf("sessions after unowned rotation = %#v, want fresh launch", got)
+	}
+}
+
+func TestDiscoverPiSessionsRejectsPersistedPathWithoutCurrentProcessWrite(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	started := time.Now().UTC().Truncate(time.Second)
+	path := filepath.Join(root, "project", "stale.jsonl")
+	writePiTestSessionTimes(t, path, "stale-session", project, started.Add(-2*time.Hour), started.Add(-time.Hour))
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return started
+		}
+		return time.Time{}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
+		AgentSessionID: "stale-session", AgentSessionDir: filepath.Dir(path), AgentSessionPath: path,
+	}}}
+
+	if got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}}); len(got) != 0 {
+		t.Fatalf("persisted path without current-process write restored: %#v", got)
 	}
 }
 
