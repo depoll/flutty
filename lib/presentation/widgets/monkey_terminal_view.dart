@@ -804,6 +804,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   _pendingTouchScrollRuns = ListQueue();
   bool _touchScrollDrainScheduled = false;
   int _touchScrollDispatchGeneration = 0;
+  int _touchScrollBacklogFrames = 0;
   late final Ticker _touchScrollInertiaTicker;
   late final Ticker _graphicsAnimationTicker;
   Simulation? _touchScrollInertiaSimulation;
@@ -1763,10 +1764,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         (widget.terminal.mouseMode.reportScroll &&
             widget.terminal.mouseReportMode == MouseReportMode.sgr);
     if (canBatchSgr) {
-      // A single protocol report can move several application rows. Give
-      // multi-row responders a render opportunity between reports instead of
-      // batching several coarse jumps into the same frame.
-      var budget = _touchWheelCalibrator.rowsPerEvent > 1 ? 1 : 6;
+      // Start with one report so responsive applications can render each
+      // increment. Increase throughput only while requested movement remains
+      // queued across frames, then return to one as soon as caught up.
+      var budget = math.min(1 + _touchScrollBacklogFrames, 6);
       while (budget > 0 && _pendingTouchScrollRuns.isNotEmpty) {
         final run = _pendingTouchScrollRuns.first;
         final count = math.min(run.count, budget);
@@ -1778,12 +1779,18 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         _consumeTouchScrollRun(count);
         budget -= count;
       }
+      if (_pendingTouchScrollRuns.isEmpty) {
+        _touchScrollBacklogFrames = 0;
+      } else {
+        _touchScrollBacklogFrames = math.min(_touchScrollBacklogFrames + 1, 5);
+      }
       // Lock the frame-wide budget even when the queue is empty; pointer updates
       // received before this callback only append runs for the next frame.
       _scheduleTouchScrollDrain();
       return;
     }
 
+    _touchScrollBacklogFrames = 0;
     while (_pendingTouchScrollRuns.isNotEmpty) {
       final run = _pendingTouchScrollRuns.first;
       final handled = _sendTouchScrollMouseInput(run.button, run.position);
@@ -1820,6 +1827,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _touchScrollDispatchGeneration += 1;
     _touchScrollDrainScheduled = false;
     _pendingTouchScrollRuns.clear();
+    _touchScrollBacklogFrames = 0;
     if (!preserveRemainder) {
       _touchScrollRemainder = 0;
     }

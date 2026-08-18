@@ -356,6 +356,7 @@ void main() {
 
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 80));
+      await tester.pumpAndSettle();
 
       expect(
         _countOccurrences(output.join(), '\x1b[<65;'),
@@ -378,22 +379,19 @@ void main() {
       );
 
       // Once measured, a later gesture emits without another response probe.
-      // Coarse responders are paced one report per frame so several multi-row
-      // jumps cannot collapse into one visual update.
+      // Every responder starts with one report; only persistent queued movement
+      // increases the frame budget.
       final reportsBeforeGesture = 6 ~/ rowsPerWheelEvent;
       final reportsInGesture = 6 ~/ rowsPerWheelEvent;
-      final immediateReports = rowsPerWheelEvent > 1 ? 1 : reportsInGesture;
       expect(
         _countOccurrences(output.join(), '\x1b[<65;'),
-        reportsBeforeGesture + immediateReports,
+        reportsBeforeGesture + 1,
       );
-      if (rowsPerWheelEvent > 1) {
-        await tester.pump();
-        expect(
-          _countOccurrences(output.join(), '\x1b[<65;'),
-          reportsBeforeGesture + reportsInGesture,
-        );
-      }
+      await tester.pumpAndSettle();
+      expect(
+        _countOccurrences(output.join(), '\x1b[<65;'),
+        reportsBeforeGesture + reportsInGesture,
+      );
 
       final reportsAfterLearnedGesture = 12 ~/ rowsPerWheelEvent;
       terminal.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
@@ -662,6 +660,7 @@ void main() {
 
     expect(output, hasLength(1));
     await tester.pump(const Duration(milliseconds: 301));
+    await tester.pumpAndSettle();
     expect(_countOccurrences(output.join(), '\x1b[<65;'), 3);
     detector.onTouchScrollCancel!();
   });
@@ -830,7 +829,7 @@ void main() {
   });
 
   testWidgets(
-    'reported wheel scrolling coalesces exact events per local frame',
+    'reported wheel scrolling increases batching only for persistent backlog',
     (tester) async {
       final terminal = Terminal();
       final output = <String>[];
@@ -882,17 +881,22 @@ void main() {
         ),
       );
 
-      // Ten down events followed by four up events are preserved across the
-      // direction reversal, but only six reports fit in one local frame.
+      // Start linewise, then increase the budget only while the backlog
+      // survives across frames. Direction order remains exact.
       expect(output, hasLength(1));
-      expect(_countOccurrences(output.single, '\u001b[<65;'), 6);
+      expect(_countOccurrences(output.single, '\u001b[<65;'), 1);
+      await tester.pump();
+      expect(output, hasLength(2));
+      expect(_countOccurrences(output[1], '\u001b[<65;'), 2);
       await tester.pump();
       expect(output, hasLength(3));
-      expect(_countOccurrences(output[1], '\u001b[<65;'), 4);
-      expect(_countOccurrences(output[2], '\u001b[<64;'), 2);
+      expect(_countOccurrences(output[2], '\u001b[<65;'), 3);
       await tester.pump();
       expect(output, hasLength(4));
-      expect(_countOccurrences(output.last, '\u001b[<64;'), 2);
+      expect(_countOccurrences(output[3], '\u001b[<65;'), 4);
+      await tester.pump();
+      expect(output, hasLength(5));
+      expect(_countOccurrences(output[4], '\u001b[<64;'), 4);
       final joined = output.join();
       expect(_countOccurrences(joined, '\u001b[<65;'), 10);
       expect(_countOccurrences(joined, '\u001b[<64;'), 4);
