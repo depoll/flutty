@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
+import 'acp_chat_typography.dart';
 import 'acp_code_block.dart';
 import 'acp_inline_image.dart';
 
@@ -83,7 +84,7 @@ class AcpMarkdown extends StatelessWidget {
       Color? color,
       FontStyle? fontStyle,
       TextDecoration? decoration,
-    }) => FluttyTheme.monoStyle.copyWith(
+    }) => AcpChatTypography.monoStyleOf(context).copyWith(
       fontSize: fontSize,
       fontWeight: fontWeight,
       color: color ?? scheme.onSurface,

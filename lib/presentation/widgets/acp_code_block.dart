@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:highlight/highlight.dart' show Node, highlight;
 
 import '../../app/theme.dart';
+import 'acp_chat_typography.dart';
 import 'syntax_highlight_theme.dart';
 
 /// Converts highlight.js [Node]s into styled [TextSpan]s using a highlight.js
@@ -117,10 +118,9 @@ class _AcpCodeBlockState extends State<AcpCodeBlock> {
     final scheme = theme.colorScheme;
     final syntaxTheme =
         widget.syntaxTheme ?? defaultAcpSyntaxTheme(theme.brightness);
-    final baseStyle = FluttyTheme.monoStyle.copyWith(
-      color: scheme.onSurface,
-      height: 1.4,
-    );
+    final baseStyle = AcpChatTypography.monoStyleOf(
+      context,
+    ).copyWith(color: scheme.onSurface, height: 1.4);
     final language = widget.language;
 
     return Semantics(
@@ -204,10 +204,9 @@ class _CodeBlockHeader extends StatelessWidget {
           Expanded(
             child: Text(
               language != null && language!.isNotEmpty ? language! : 'text',
-              style: FluttyTheme.monoStyle.copyWith(
-                fontSize: 11,
-                color: scheme.onSurfaceVariant,
-              ),
+              style: AcpChatTypography.monoStyleOf(
+                context,
+              ).copyWith(fontSize: 11, color: scheme.onSurfaceVariant),
             ),
           ),
           if (showCopyButton)

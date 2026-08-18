@@ -221,7 +221,7 @@ class AcpSessionTile extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final session = entry.session;
     final status = session != null
-        ? acpStatusDisplay(session.status)
+        ? acpSessionActivityDisplay(session)
         : const AcpStatusDisplay(
             label: 'recent',
             icon: Icons.history,
@@ -229,9 +229,6 @@ class AcpSessionTile extends StatelessWidget {
           );
     final cwd = session?.cwd ?? entry.recent?.cwd;
     final activity = session?.lastActivityAt ?? entry.recent?.lastActivityAt;
-    final needsPermission =
-        (session?.pendingPermissions.isNotEmpty ?? false) ||
-        (session?.pendingWrites.isNotEmpty ?? false);
     return Semantics(
       selected: selected,
       button: true,
@@ -252,17 +249,12 @@ class AcpSessionTile extends StatelessWidget {
           ),
           overflow: TextOverflow.ellipsis,
         ),
-        trailing: needsPermission
-            ? Tooltip(
-                message: 'Needs permission',
-                child: Icon(Icons.pending_actions, color: colorScheme.tertiary),
-              )
-            : Text(
-                status.label,
-                style: FluttyTheme.monoStyle.copyWith(
-                  color: acpStatusColor(colorScheme, status.tone),
-                ),
-              ),
+        trailing: Text(
+          status.label,
+          style: FluttyTheme.monoStyle.copyWith(
+            color: acpStatusColor(colorScheme, status.tone),
+          ),
+        ),
       ),
     );
   }

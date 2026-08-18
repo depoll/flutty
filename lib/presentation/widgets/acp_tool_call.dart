@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
+import 'acp_chat_typography.dart';
 import 'acp_diff.dart';
 import 'acp_inline_image.dart';
 
@@ -214,7 +215,9 @@ class _StatusBadge extends StatelessWidget {
       const SizedBox(width: FluttyTheme.spacingXs),
       Text(
         label,
-        style: FluttyTheme.monoStyle.copyWith(fontSize: 11, color: color),
+        style: AcpChatTypography.monoStyleOf(
+          context,
+        ).copyWith(fontSize: 11, color: color),
       ),
     ],
   );
@@ -304,11 +307,9 @@ class _LabeledMonoBlock extends StatelessWidget {
               scrollDirection: Axis.horizontal,
               child: SelectableText(
                 text,
-                style: FluttyTheme.monoStyle.copyWith(
-                  fontSize: 12,
-                  color: scheme.onSurface,
-                  height: 1.4,
-                ),
+                style: AcpChatTypography.monoStyleOf(
+                  context,
+                ).copyWith(fontSize: 12, color: scheme.onSurface, height: 1.4),
               ),
             ),
           ),
@@ -368,7 +369,7 @@ class _LocationRow extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: FluttyTheme.monoStyle.copyWith(
+              style: AcpChatTypography.monoStyleOf(context).copyWith(
                 fontSize: 12,
                 color: onOpen != null ? scheme.primary : scheme.onSurface,
               ),

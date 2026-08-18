@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
+import 'acp_chat_typography.dart';
 
 /// Renders token-usage and context-window metrics as unobtrusive, monospace
 /// session metadata.
@@ -32,10 +33,9 @@ class AcpUsageView extends StatelessWidget {
     }
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final labelStyle = FluttyTheme.monoStyle.copyWith(
-      fontSize: 11,
-      color: scheme.onSurfaceVariant,
-    );
+    final labelStyle = AcpChatTypography.monoStyleOf(
+      context,
+    ).copyWith(fontSize: 11, color: scheme.onSurfaceVariant);
 
     final stats = <String>[];
     if (usage.inputTokens != null) {

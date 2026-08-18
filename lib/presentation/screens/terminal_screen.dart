@@ -91,6 +91,7 @@ import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
+import 'agent_chat_screen.dart';
 import 'port_forward_browser_screen.dart';
 import 'sftp_screen.dart';
 import 'snippet_edit_screen.dart';
@@ -3671,6 +3672,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
   double _tmuxSidebarDragOffset = 0;
+  AcpSessionKey? _activeNativeAcpSessionKey;
   String? _connectionOpenedWorkingDirectory;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
@@ -11014,6 +11016,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       onSessionEnded: _handleMuxSessionEnded,
+      activeNativeAcpSessionKey: _activeNativeAcpSessionKey,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
         tmuxWorkingDirectory: _tmuxWorkingDirectory,
@@ -11164,6 +11167,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         case TmuxSwitchWindowAction(:final windowIndex):
           await _switchTmuxWindow(session, windowIndex);
           if (!mounted) return;
+          _showTerminalViewport();
           unawaited(
             ref
                 .read(telemetryServiceProvider)
@@ -11174,6 +11178,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         case TmuxNewWindowAction(:final command, :final windowName):
           await _createTmuxWindow(session, command: command, name: windowName);
           if (!mounted) return;
+          _showTerminalViewport();
           unawaited(
             ref
                 .read(telemetryServiceProvider)
@@ -11195,6 +11200,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _openNativeAcpSession(key);
         case TmuxCloseAcpSessionAction(:final key):
           await ref.read(acpSessionManagerProvider).stopSession(key);
+          if (mounted && _activeNativeAcpSessionKey == key) {
+            _showTerminalViewport();
+          }
         case TmuxResumeSessionAction(
           :final resumeCommand,
           :final workingDirectory,
@@ -11205,6 +11213,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             workingDirectory: workingDirectory,
           );
           if (!mounted) return;
+          _showTerminalViewport();
           final tool = agentLaunchToolForCommandText(resumeCommand);
           unawaited(
             ref
@@ -11270,15 +11279,71 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return;
     }
-    unawaited(
-      context.push<void>(
-        buildAgentChatLocation(
-          hostId: key.hostId,
-          providerId: key.providerId,
-          bridgeId: key.bridgeId,
-          acpSessionId: key.acpSessionId,
+    if (key.hostId != widget.hostId) {
+      unawaited(
+        context.push<void>(
+          buildAgentChatLocation(
+            hostId: key.hostId,
+            providerId: key.providerId,
+            bridgeId: key.bridgeId,
+            acpSessionId: key.acpSessionId,
+          ),
         ),
-      ),
+      );
+      return;
+    }
+    setState(() => _activeNativeAcpSessionKey = key);
+    _collapseTmuxBarIfExpanded();
+  }
+
+  void _showTerminalViewport() {
+    if (!mounted || _activeNativeAcpSessionKey == null) {
+      return;
+    }
+    setState(() => _activeNativeAcpSessionKey = null);
+    if (!_isMobilePlatform) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _terminalFocusNode.requestFocus();
+        }
+      });
+    }
+  }
+
+  void _commitNativeAgentFontSize(double fontSize) {
+    final connectionId = _connectionId;
+    if (!mounted || connectionId == null) {
+      return;
+    }
+    final next = clampTerminalFontSize(fontSize);
+    setState(() => _sessionFontSizeOverride = next);
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionFontSize(connectionId, next);
+  }
+
+  Widget _buildEmbeddedNativeAgentView(AcpSessionKey key) {
+    final globalFontSize = ref.watch(fontSizeNotifierProvider);
+    final fontSize = resolveTerminalFontSize(
+      globalFontSize: globalFontSize,
+      sessionFontSize: _sessionFontSizeOverride,
+    );
+    final fontFamily =
+        _host?.terminalFontFamily ??
+        ref.watch(fontFamilyNotifierProvider) ??
+        'monospace';
+    return AgentChatScreen(
+      key: ValueKey<String>('native-agent-${key.value}'),
+      hostId: key.hostId,
+      providerId: key.providerId,
+      bridgeId: key.bridgeId,
+      acpSessionId: key.acpSessionId,
+      embedded: true,
+      preferredFontSize: fontSize,
+      preferredFontFamily: fontFamily,
+      onFontSizeCommitted: _commitNativeAgentFontSize,
+      onExitEmbedded: _showTerminalViewport,
+      onSessionChanged: _openNativeAcpSession,
     );
   }
 
@@ -12546,6 +12611,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final activeSession = _connectionId == null
         ? null
         : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
+    final showsNativeAgent = _activeNativeAcpSessionKey != null;
     // Keep the user-selected theme as the session base. Remote OSC color
     // setters are applied only to the session's effective terminal theme.
     final configuredTerminalTheme = _resolveEffectiveTerminalTheme();
@@ -12589,7 +12655,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
-    final terminalProgress = _terminalProgress;
+    final activeNativeKey = _activeNativeAcpSessionKey;
+    final activeNativeSession = activeNativeKey == null
+        ? null
+        : ref
+              .watch(acpSessionManagerStateProvider)
+              .asData
+              ?.value
+              .byKeyValue(activeNativeKey.value);
+    final nativeActivity = activeNativeSession == null
+        ? null
+        : acpSessionActivityDisplay(activeNativeSession);
+    final terminalProgress = activeNativeKey == null
+        ? _terminalProgress
+        : nativeActivity?.progressFraction != null
+        ? TerminalProgress(
+            state: TerminalProgressState.normal,
+            percentage: (nativeActivity!.progressFraction! * 100).round(),
+          )
+        : nativeActivity?.indeterminate ?? false
+        ? const TerminalProgress(state: TerminalProgressState.indeterminate)
+        : null;
     final commandMarkCount =
         (_sessionController.observedSession ?? activeSession)
             ?.terminalCommandMarkCount ??
@@ -12602,7 +12688,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     return PopScope(
-      canPop: !_isTmuxBarExpanded,
+      canPop: !_isTmuxBarExpanded && !showsNativeAgent,
       onPopInvokedWithResult: (didPop, _) {
         _logAndroidPredictiveBackDiagnostics(
           context,
@@ -12613,7 +12699,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _clearAppThemeOverride();
           return;
         }
-        _collapseTmuxBarIfExpanded();
+        if (_isTmuxBarExpanded) {
+          _collapseTmuxBarIfExpanded();
+        } else {
+          _showTerminalViewport();
+        }
       },
       child: Scaffold(
         resizeToAvoidBottomInset: !isMobile || systemKeyboardVisible,
@@ -12660,11 +12750,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
           bottom:
               terminalProgress == null &&
-                  (!_showsTerminalMetadata || statusChips.isEmpty)
+                  (showsNativeAgent ||
+                      !_showsTerminalMetadata ||
+                      statusChips.isEmpty)
               ? null
               : PreferredSize(
                   preferredSize: Size.fromHeight(
-                    (_showsTerminalMetadata && statusChips.isNotEmpty
+                    (!showsNativeAgent &&
+                                _showsTerminalMetadata &&
+                                statusChips.isNotEmpty
                             ? 40
                             : 0) +
                         (terminalProgress == null ? 0 : 3),
@@ -12672,7 +12766,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (_showsTerminalMetadata && statusChips.isNotEmpty)
+                      if (!showsNativeAgent &&
+                          _showsTerminalMetadata &&
+                          statusChips.isNotEmpty)
                         Container(
                           alignment: Alignment.centerLeft,
                           width: double.infinity,
@@ -12717,7 +12813,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   : () => unawaited(_openConnectionFileBrowser()),
               tooltip: 'Browse files',
             ),
-            if (isMobile)
+            if (isMobile && !showsNativeAgent)
               IconButton(
                 icon: Icon(
                   systemKeyboardVisible
@@ -12729,149 +12825,152 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     ? 'Hide system keyboard'
                     : 'Show system keyboard',
               ),
-            IconButton(
-              icon: _ExtraKeysToggleKeycap(
-                key: ValueKey<String>(
-                  _showKeyboardToolbar
-                      ? 'extra-keys-toggle-active'
-                      : 'extra-keys-toggle-inactive',
+            if (!showsNativeAgent)
+              IconButton(
+                icon: _ExtraKeysToggleKeycap(
+                  key: ValueKey<String>(
+                    _showKeyboardToolbar
+                        ? 'extra-keys-toggle-active'
+                        : 'extra-keys-toggle-inactive',
+                  ),
+                  isActive: _showKeyboardToolbar,
                 ),
-                isActive: _showKeyboardToolbar,
+                onPressed: _toggleKeyboardToolbar,
+                tooltip: _showKeyboardToolbar
+                    ? 'Hide extra keys'
+                    : 'Show extra keys',
               ),
-              onPressed: _toggleKeyboardToolbar,
-              tooltip: _showKeyboardToolbar
-                  ? 'Hide extra keys'
-                  : 'Show extra keys',
-            ),
-            MenuAnchor(
-              key: _terminalOverflowMenuButtonKey,
-              style: _terminalOverflowMenuStyle(
-                context: context,
-                isMobilePlatform: isMobile,
-              ),
-              reservedPadding: _terminalOverflowMenuReservedPadding(
-                context: context,
-                isMobilePlatform: isMobile,
-              ),
-              menuChildren: [
-                _terminalOverflowMenuItem(
+            if (!showsNativeAgent)
+              MenuAnchor(
+                key: _terminalOverflowMenuButtonKey,
+                style: _terminalOverflowMenuStyle(
                   context: context,
-                  icon: Icons.code_rounded,
-                  label: 'Snippets',
-                  action: 'snippets',
+                  isMobilePlatform: isMobile,
                 ),
-                _terminalOverflowMenuItem(
+                reservedPadding: _terminalOverflowMenuReservedPadding(
                   context: context,
-                  icon: Icons.palette_outlined,
-                  label: 'Change Theme',
-                  action: 'change_theme',
+                  isMobilePlatform: isMobile,
                 ),
-                _terminalOverflowMenuItem(
-                  context: context,
-                  icon: Icons.alt_route_rounded,
-                  label: 'Port Forwards',
-                  action: 'port_forwards',
-                  enabled:
-                      _connectionId != null &&
-                      connectionState == SshConnectionState.connected,
-                ),
-                if (showsDeviceDebugAction)
-                  _terminalOverflowSwitchMenuItem(
-                    context: context,
-                    icon: Icons.bug_report_outlined,
-                    label: 'Device debugging',
-                    value: deviceDebugController?.state.isActive ?? false,
-                    loading: deviceDebugController?.state.isBusy ?? false,
-                    action: 'toggle_device_debug',
-                    enabled:
-                        deviceDebugController != null &&
-                        connectionState == SshConnectionState.connected,
-                  ),
-                if (isPortForwardBrowserSupported())
-                  _terminalOverflowMenuItem(
-                    context: context,
-                    icon: Icons.open_in_browser_outlined,
-                    label: 'Open Forwarded Browser',
-                    action: 'open_port_forward_browser',
-                  ),
-                _terminalOverflowSubmenuButton(
-                  context: context,
-                  isMobile: isMobile,
-                  icon: Icons.tune_rounded,
-                  label: 'Options',
-                  menuChildren: _terminalOptionsMenuItems(
-                    context: context,
-                    hasTerminalInfo: statusChips.isNotEmpty,
-                    isMobile: isMobile,
-                  ),
-                ),
-                _terminalOverflowMenuDivider(context),
-                if (!isMobile)
-                  _terminalOverflowMenuItem(
-                    context: context,
-                    icon: _isNativeSelectionMode
-                        ? Icons.deselect_rounded
-                        : Icons.select_all_rounded,
-                    label: _isNativeSelectionMode
-                        ? 'Exit Native Selection'
-                        : 'Native Selection',
-                    action: 'native_select',
-                  ),
-                if (commandMarkCount > 0)
-                  _terminalOverflowMenuItem(
-                    context: context,
-                    icon: Icons.history_rounded,
-                    label: commandMarkCount == 1
-                        ? 'Previous Command'
-                        : 'Previous Command ($commandMarkCount)',
-                    action: 'previous_command',
-                  ),
-                if (_workingDirectoryPath != null)
-                  _terminalOverflowMenuItem(
-                    context: context,
-                    icon: Icons.folder_copy_outlined,
-                    label: 'Copy Current Directory',
-                    action: 'copy_working_directory',
-                  ),
-                if (_currentTerminalSelectionText() != null)
+                menuChildren: [
                   _terminalOverflowMenuItem(
                     context: context,
                     icon: Icons.code_rounded,
-                    label: 'Create Snippet',
-                    action: 'create_snippet',
+                    label: 'Snippets',
+                    action: 'snippets',
                   ),
-                _terminalOverflowSubmenuButton(
-                  context: context,
-                  isMobile: isMobile,
-                  icon: Icons.paste_rounded,
-                  label: 'Paste',
-                  menuChildren: _terminalPastingMenuItems(context),
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.palette_outlined,
+                    label: 'Change Theme',
+                    action: 'change_theme',
+                  ),
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.alt_route_rounded,
+                    label: 'Port Forwards',
+                    action: 'port_forwards',
+                    enabled:
+                        _connectionId != null &&
+                        connectionState == SshConnectionState.connected,
+                  ),
+                  if (showsDeviceDebugAction)
+                    _terminalOverflowSwitchMenuItem(
+                      context: context,
+                      icon: Icons.bug_report_outlined,
+                      label: 'Device debugging',
+                      value: deviceDebugController?.state.isActive ?? false,
+                      loading: deviceDebugController?.state.isBusy ?? false,
+                      action: 'toggle_device_debug',
+                      enabled:
+                          deviceDebugController != null &&
+                          connectionState == SshConnectionState.connected,
+                    ),
+                  if (isPortForwardBrowserSupported())
+                    _terminalOverflowMenuItem(
+                      context: context,
+                      icon: Icons.open_in_browser_outlined,
+                      label: 'Open Forwarded Browser',
+                      action: 'open_port_forward_browser',
+                    ),
+                  _terminalOverflowSubmenuButton(
+                    context: context,
+                    isMobile: isMobile,
+                    icon: Icons.tune_rounded,
+                    label: 'Options',
+                    menuChildren: _terminalOptionsMenuItems(
+                      context: context,
+                      hasTerminalInfo: statusChips.isNotEmpty,
+                      isMobile: isMobile,
+                    ),
+                  ),
+                  _terminalOverflowMenuDivider(context),
+                  if (!isMobile)
+                    _terminalOverflowMenuItem(
+                      context: context,
+                      icon: _isNativeSelectionMode
+                          ? Icons.deselect_rounded
+                          : Icons.select_all_rounded,
+                      label: _isNativeSelectionMode
+                          ? 'Exit Native Selection'
+                          : 'Native Selection',
+                      action: 'native_select',
+                    ),
+                  if (commandMarkCount > 0)
+                    _terminalOverflowMenuItem(
+                      context: context,
+                      icon: Icons.history_rounded,
+                      label: commandMarkCount == 1
+                          ? 'Previous Command'
+                          : 'Previous Command ($commandMarkCount)',
+                      action: 'previous_command',
+                    ),
+                  if (_workingDirectoryPath != null)
+                    _terminalOverflowMenuItem(
+                      context: context,
+                      icon: Icons.folder_copy_outlined,
+                      label: 'Copy Current Directory',
+                      action: 'copy_working_directory',
+                    ),
+                  if (_currentTerminalSelectionText() != null)
+                    _terminalOverflowMenuItem(
+                      context: context,
+                      icon: Icons.code_rounded,
+                      label: 'Create Snippet',
+                      action: 'create_snippet',
+                    ),
+                  _terminalOverflowSubmenuButton(
+                    context: context,
+                    isMobile: isMobile,
+                    icon: Icons.paste_rounded,
+                    label: 'Paste',
+                    menuChildren: _terminalPastingMenuItems(context),
+                  ),
+                  _terminalOverflowMenuDivider(context),
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.link_off_rounded,
+                    label: 'Disconnect',
+                    action: 'disconnect',
+                  ),
+                ],
+                builder: (context, controller, _) => IconButton(
+                  icon: const Icon(Icons.more_vert),
+                  tooltip: MaterialLocalizations.of(context).showMenuTooltip,
+                  onPressed: () {
+                    if (controller.isOpen) {
+                      controller.close();
+                    } else {
+                      controller.open();
+                    }
+                  },
                 ),
-                _terminalOverflowMenuDivider(context),
-                _terminalOverflowMenuItem(
-                  context: context,
-                  icon: Icons.link_off_rounded,
-                  label: 'Disconnect',
-                  action: 'disconnect',
-                ),
-              ],
-              builder: (context, controller, _) => IconButton(
-                icon: const Icon(Icons.more_vert),
-                tooltip: MaterialLocalizations.of(context).showMenuTooltip,
-                onPressed: () {
-                  if (controller.isOpen) {
-                    controller.close();
-                  } else {
-                    controller.open();
-                  }
-                },
               ),
-            ),
           ],
         ),
         body: Builder(
           builder: (bodyContext) {
             final showsKeyboardToolbar =
+                !showsNativeAgent &&
                 _showKeyboardToolbar &&
                 !showsDisconnectedOverlay &&
                 (!_isNativeSelectionMode || _isMobilePlatform);
@@ -13569,6 +13668,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         message: overlayMessage,
         onRetry: _reconnect,
       );
+    }
+
+    final activeNativeAcpSessionKey = _activeNativeAcpSessionKey;
+    if (activeNativeAcpSessionKey != null) {
+      return _buildEmbeddedNativeAgentView(activeNativeAcpSessionKey);
     }
 
     // Use a session override when pinch-zoom has customized this connection.

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
+import 'acp_chat_typography.dart';
 
 /// Formats a byte [size] into a short human-readable string.
 String formatResourceSize(int size) {
@@ -109,7 +110,7 @@ class AcpResourceChip extends StatelessWidget {
                   resource.displayName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: FluttyTheme.monoStyle.copyWith(
+                  style: AcpChatTypography.monoStyleOf(context).copyWith(
                     fontSize: 12,
                     color: scheme.onSurface,
                     fontWeight: FontWeight.w500,

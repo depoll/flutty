@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
+import 'acp_chat_typography.dart';
 import 'acp_inline_image.dart';
 import 'acp_resource_chip.dart';
 
@@ -41,7 +42,7 @@ class AcpUserPromptView extends StatelessWidget {
       case AcpTextPart(:final text):
         return SelectableText(
           text,
-          style: FluttyTheme.monoStyle.copyWith(
+          style: AcpChatTypography.monoStyleOf(context).copyWith(
             color: Theme.of(context).colorScheme.onSurface,
             fontSize: 14,
             height: 1.45,
@@ -110,11 +111,12 @@ class AcpUserPromptView extends StatelessWidget {
                         const SizedBox(width: FluttyTheme.spacingXs),
                         Text(
                           'queued',
-                          style: FluttyTheme.monoStyle.copyWith(
-                            color: scheme.onPrimaryContainer,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                          ),
+                          style: AcpChatTypography.monoStyleOf(context)
+                              .copyWith(
+                                color: scheme.onPrimaryContainer,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
                         ),
                       ],
                     ),

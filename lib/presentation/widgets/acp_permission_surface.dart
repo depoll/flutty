@@ -5,6 +5,7 @@ import '../../app/theme.dart';
 import '../../domain/models/acp_client_capabilities.dart' as client;
 import '../../domain/models/acp_session_state.dart' as session;
 import '../../domain/models/acp_updates.dart';
+import 'acp_chat_typography.dart';
 
 /// A user-decision surface abstracting both the session-manager permission
 /// requests and the client-capability service's pending permissions/writes.
@@ -284,10 +285,9 @@ class _PermissionCard extends StatelessWidget {
             prompt.contextLine!,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: FluttyTheme.monoStyle.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              fontSize: 12,
-            ),
+            style: AcpChatTypography.monoStyleOf(
+              context,
+            ).copyWith(color: theme.colorScheme.onSurfaceVariant, fontSize: 12),
           ),
         ],
         const SizedBox(height: FluttyTheme.spacingSm),

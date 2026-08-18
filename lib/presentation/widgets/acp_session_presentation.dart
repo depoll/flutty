@@ -8,6 +8,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../../domain/models/acp_session_state.dart';
+import '../../domain/models/acp_updates.dart';
 
 /// A short, mono status label plus a color role for an ACP connection status.
 @immutable
@@ -17,6 +18,10 @@ class AcpStatusDisplay {
     required this.label,
     required this.icon,
     required this.tone,
+    this.progressFraction,
+    this.indeterminate = false,
+    this.needsInput = false,
+    this.isReady = false,
   });
 
   /// Lowercase, terminal-native status label (e.g. `ready`, `reconnecting`).
@@ -27,6 +32,18 @@ class AcpStatusDisplay {
 
   /// Semantic tone used to resolve a theme color.
   final AcpStatusTone tone;
+
+  /// Determinate progress from zero to one when the agent exposes a plan.
+  final double? progressFraction;
+
+  /// Whether work is active without a determinate progress value.
+  final bool indeterminate;
+
+  /// Whether the session is blocked on a local user decision.
+  final bool needsInput;
+
+  /// Whether the agent is connected and idle, ready for another prompt.
+  final bool isReady;
 }
 
 /// Semantic tone for a status, resolved to a concrete color from the theme.
@@ -80,6 +97,7 @@ AcpStatusDisplay acpStatusDisplay(AcpConnectionStatus status) =>
         label: 'ready',
         icon: Icons.check_circle_outline,
         tone: AcpStatusTone.active,
+        isReady: true,
       ),
       AcpConnectionStatus.reconnecting => const AcpStatusDisplay(
         label: 'reconnecting',
@@ -112,6 +130,58 @@ AcpStatusDisplay acpStatusDisplay(AcpConnectionStatus status) =>
         tone: AcpStatusTone.neutral,
       ),
     };
+
+/// Resolves connection, prompt-turn, permission, and plan state into one
+/// terminal-like activity descriptor. User decisions take priority over active
+/// work so a background native session cannot silently wait for attention.
+AcpStatusDisplay acpSessionActivityDisplay(AcpSessionState session) {
+  if (session.status != AcpConnectionStatus.ready) {
+    return acpStatusDisplay(session.status);
+  }
+  if (session.pendingPermissions.isNotEmpty ||
+      session.pendingWrites.isNotEmpty) {
+    return const AcpStatusDisplay(
+      label: 'waiting for input',
+      icon: Icons.pending_actions,
+      tone: AcpStatusTone.warning,
+      needsInput: true,
+    );
+  }
+
+  switch (session.promptStatus) {
+    case AcpPromptStatus.idle:
+      return acpStatusDisplay(AcpConnectionStatus.ready);
+    case AcpPromptStatus.sending:
+      return const AcpStatusDisplay(
+        label: 'sending',
+        icon: Icons.arrow_upward_rounded,
+        tone: AcpStatusTone.active,
+        indeterminate: true,
+      );
+    case AcpPromptStatus.streaming:
+      final plan = session.plan;
+      final progress = plan.isEmpty
+          ? null
+          : plan
+                    .where((entry) => entry.status == AcpPlanStatus.completed)
+                    .length /
+                plan.length;
+      return AcpStatusDisplay(
+        label: 'working',
+        icon: Icons.auto_awesome,
+        tone: AcpStatusTone.active,
+        progressFraction: progress,
+        indeterminate: progress == null,
+      );
+    case AcpPromptStatus.cancelling:
+      return const AcpStatusDisplay(
+        label: 'cancelling',
+        icon: Icons.stop_circle_outlined,
+        tone: AcpStatusTone.warning,
+        indeterminate: true,
+      );
+  }
+}
 
 /// Returns a compact, content-safe working-directory summary.
 ///

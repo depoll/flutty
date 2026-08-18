@@ -3,7 +3,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
+import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/presentation/widgets/acp_session_presentation.dart';
+
+import '../../support/fake_acp_session_manager.dart';
 
 void main() {
   group('acpCwdSummary', () {
@@ -68,12 +71,86 @@ void main() {
         acpStatusDisplay(AcpConnectionStatus.failed).tone,
         AcpStatusTone.error,
       );
+      expect(acpStatusDisplay(AcpConnectionStatus.ready).isReady, isTrue);
+      expect(acpStatusDisplay(AcpConnectionStatus.failed).isReady, isFalse);
     });
 
     test('status colors resolve from the color scheme', () {
       const scheme = ColorScheme.dark();
       expect(acpStatusColor(scheme, AcpStatusTone.active), scheme.primary);
       expect(acpStatusColor(scheme, AcpStatusTone.error), scheme.error);
+    });
+  });
+
+  group('acpSessionActivityDisplay', () {
+    test('streaming without a plan reports indeterminate working state', () {
+      final display = acpSessionActivityDisplay(
+        fakeAcpSession(promptStatus: AcpPromptStatus.streaming),
+      );
+
+      expect(display.label, 'working');
+      expect(display.indeterminate, isTrue);
+      expect(display.progressFraction, isNull);
+    });
+
+    test('streaming plan reports determinate completion', () {
+      final display = acpSessionActivityDisplay(
+        fakeAcpSession(
+          promptStatus: AcpPromptStatus.streaming,
+          plan: const [
+            AcpPlanEntry(
+              content: 'done',
+              priority: AcpPlanPriority.high,
+              status: AcpPlanStatus.completed,
+            ),
+            AcpPlanEntry(
+              content: 'next',
+              priority: AcpPlanPriority.medium,
+              status: AcpPlanStatus.inProgress,
+            ),
+          ],
+        ),
+      );
+
+      expect(display.label, 'working');
+      expect(display.indeterminate, isFalse);
+      expect(display.progressFraction, 0.5);
+    });
+
+    test('pending user decision takes priority over working state', () {
+      final display = acpSessionActivityDisplay(
+        fakeAcpSession(
+          promptStatus: AcpPromptStatus.streaming,
+          pendingWrites: [
+            AcpPendingWrite(
+              requestKey: 'write-1',
+              sessionId: 'session-1',
+              path: '/repo/file.dart',
+              contentByteLength: 12,
+              requestedAt: DateTime(2026),
+            ),
+          ],
+        ),
+      );
+
+      expect(display.label, 'waiting for input');
+      expect(display.needsInput, isTrue);
+      expect(display.indeterminate, isFalse);
+    });
+
+    test('sending and cancelling expose distinct active states', () {
+      expect(
+        acpSessionActivityDisplay(
+          fakeAcpSession(promptStatus: AcpPromptStatus.sending),
+        ).label,
+        'sending',
+      );
+      expect(
+        acpSessionActivityDisplay(
+          fakeAcpSession(promptStatus: AcpPromptStatus.cancelling),
+        ).label,
+        'cancelling',
+      );
     });
   });
 }

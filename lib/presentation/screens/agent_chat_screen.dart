@@ -33,12 +33,14 @@ import '../../domain/services/acp_concurrency_policy.dart';
 import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../controllers/acp_composer_controller.dart';
 import '../controllers/acp_sftp_client_cache.dart';
 import '../models/acp_attachment_picker_adapters.dart';
 import '../models/acp_timeline.dart' as ui;
 import '../models/acp_timeline_mapper.dart';
+import '../widgets/acp_chat_typography.dart';
 import '../widgets/acp_composer.dart';
 import '../widgets/acp_concurrency_choice.dart';
 import '../widgets/acp_config_option_controls.dart';
@@ -52,6 +54,8 @@ import '../widgets/acp_session_switcher.dart';
 import '../widgets/brand_error_state.dart';
 import '../widgets/cursor_block.dart';
 import '../widgets/terminal_overlay_focus.dart';
+import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
+import '../widgets/terminal_text_style.dart';
 import 'sftp_screen.dart';
 
 /// Builds the attachment picker actions for a chat session. Overridable in
@@ -62,6 +66,14 @@ typedef AcpChatAttachmentActionsBuilder =
 /// Wide-layout breakpoint for the session rail.
 const double kAgentChatWideBreakpoint = 840;
 
+/// Clamps native agent text to the same supported range as terminal text.
+double clampAgentChatFontSize(num size) {
+  if (!size.isFinite) {
+    return 8;
+  }
+  return size.clamp(8, 32).toDouble();
+}
+
 /// Full-screen agent chat for one ACP session.
 class AgentChatScreen extends ConsumerStatefulWidget {
   /// Creates an agent chat screen from its opaque session identifiers.
@@ -71,6 +83,12 @@ class AgentChatScreen extends ConsumerStatefulWidget {
     required this.bridgeId,
     required this.acpSessionId,
     this.attachmentActionsBuilder,
+    this.embedded = false,
+    this.preferredFontSize,
+    this.preferredFontFamily,
+    this.onFontSizeCommitted,
+    this.onExitEmbedded,
+    this.onSessionChanged,
     super.key,
   });
 
@@ -88,6 +106,24 @@ class AgentChatScreen extends ConsumerStatefulWidget {
 
   /// Optional attachment picker override for tests.
   final AcpChatAttachmentActionsBuilder? attachmentActionsBuilder;
+
+  /// Whether the conversation replaces a terminal viewport inside its shell.
+  final bool embedded;
+
+  /// Terminal/session font size used by the embedded conversation.
+  final double? preferredFontSize;
+
+  /// Terminal/host font family used by the embedded conversation.
+  final String? preferredFontFamily;
+
+  /// Persists a font size committed by a completed pinch gesture.
+  final ValueChanged<double>? onFontSizeCommitted;
+
+  /// Returns an embedded conversation to the terminal viewport.
+  final VoidCallback? onExitEmbedded;
+
+  /// Replaces the active embedded conversation after a fork.
+  final ValueChanged<AcpSessionKey>? onSessionChanged;
 
   @override
   ConsumerState<AgentChatScreen> createState() => _AgentChatScreenState();
@@ -184,6 +220,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
               key,
               session: manager.state.byKeyValue(key.value),
             );
+            if (widget.embedded) {
+              widget.onSessionChanged?.call(key);
+            }
           }
           unawaited(manager.selectSession(key));
           unawaited(_ensureSftpClient());
@@ -598,9 +637,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         ?.value;
     final session = managerState?.byKeyValue(_key.value);
     final isWide = MediaQuery.sizeOf(context).width >= kAgentChatWideBreakpoint;
-
-    if (isWide) {
-      return Scaffold(
+    final Widget conversation;
+    if (isWide && !widget.embedded) {
+      conversation = Scaffold(
         body: Row(
           children: [
             AcpSessionRail(currentKey: _key),
@@ -608,8 +647,27 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
           ],
         ),
       );
+    } else {
+      conversation = _buildConversation(session, showBack: !widget.embedded);
     }
-    return _buildConversation(session, showBack: true);
+
+    final fontSize = clampAgentChatFontSize(
+      widget.preferredFontSize ?? ref.watch(fontSizeNotifierProvider),
+    );
+    final fontFamily =
+        widget.preferredFontFamily ??
+        ref.watch(fontFamilyNotifierProvider) ??
+        'monospace';
+    return _AgentChatZoomSurface(
+      fontSize: fontSize,
+      fontFamily: fontFamily,
+      onFontSizeCommitted:
+          widget.onFontSizeCommitted ??
+          (size) => unawaited(
+            ref.read(fontSizeNotifierProvider.notifier).setFontSize(size),
+          ),
+      child: conversation,
+    );
   }
 
   Widget _buildConversation(
@@ -619,7 +677,10 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     final colorScheme = Theme.of(context).colorScheme;
     if (session == null) {
       return Scaffold(
-        appBar: AppBar(title: Text('Agent', style: FluttyTheme.displayMono())),
+        appBar: AppBar(
+          automaticallyImplyLeading: showBack,
+          title: Text('Agent', style: FluttyTheme.displayMono()),
+        ),
         body: _connectError != null
             ? _buildConnectError(_connectError!)
             : _connecting
@@ -636,6 +697,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
 
     final entries = mapAcpSessionTimeline(session);
     final prompts = _prompts(session);
+    final activity = acpSessionActivityDisplay(session);
     _scheduleAutoScroll();
 
     return Scaffold(
@@ -643,7 +705,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         automaticallyImplyLeading: showBack,
         titleSpacing: 0,
         title: InkWell(
-          onTap: () => showAcpSessionSwitcher(context, currentKey: _key),
+          onTap: widget.embedded
+              ? null
+              : () => showAcpSessionSwitcher(context, currentKey: _key),
           child: Padding(
             padding: const EdgeInsets.symmetric(
               horizontal: FluttyTheme.spacingSm,
@@ -665,7 +729,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                       Text(
                         '${session.providerLabel} · '
                         '${acpCwdSummary(session.cwd)} · '
-                        '${acpStatusDisplay(session.status).label}',
+                        '${activity.label}',
                         style: FluttyTheme.monoStyle.copyWith(
                           color: colorScheme.onSurfaceVariant,
                           fontSize: 12,
@@ -675,17 +739,18 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                     ],
                   ),
                 ),
-                const Icon(Icons.expand_more, size: 20),
+                if (!widget.embedded) const Icon(Icons.expand_more, size: 20),
               ],
             ),
           ),
         ),
         actions: [
-          IconButton(
-            tooltip: 'MonkeyMux windows',
-            icon: const Icon(Icons.window_outlined),
-            onPressed: _openMonkeyMuxWindows,
-          ),
+          if (!widget.embedded)
+            IconButton(
+              tooltip: 'MonkeyMux windows',
+              icon: const Icon(Icons.window_outlined),
+              onPressed: _openMonkeyMuxWindows,
+            ),
           _buildOverflowMenu(session),
         ],
       ),
@@ -694,7 +759,23 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         child: Column(
           children: [
             if (session.status != AcpConnectionStatus.ready)
-              _buildSessionStatusBanner(session),
+              _buildSessionStatusBanner(session)
+            else if (!activity.isReady)
+              _SessionStatusBanner(
+                message: switch (activity.label) {
+                  'working' => 'agent is working',
+                  'sending' => 'sending prompt',
+                  'cancelling' => 'cancelling current turn',
+                  _ => activity.label,
+                },
+                icon: activity.icon,
+                tone: activity.tone,
+                transitioning:
+                    session.promptStatus != AcpPromptStatus.idle &&
+                    !activity.needsInput,
+                progressFraction: activity.progressFraction,
+                indeterminateProgress: activity.indeterminate,
+              ),
             Expanded(
               child: Stack(
                 children: [
@@ -840,6 +921,10 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   }
 
   void _openMonkeyMuxWindows() {
+    if (widget.embedded) {
+      widget.onExitEmbedded?.call();
+      return;
+    }
     if (context.canPop()) {
       context.pop();
       return;
@@ -848,6 +933,10 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   }
 
   void _leaveChat() {
+    if (widget.embedded) {
+      widget.onExitEmbedded?.call();
+      return;
+    }
     if (context.canPop()) {
       context.pop();
       return;
@@ -867,7 +956,11 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         ),
       );
     }
-    context.push<void>('/terminal/${widget.hostId}');
+    if (widget.embedded) {
+      widget.onExitEmbedded?.call();
+    } else {
+      context.push<void>('/terminal/${widget.hostId}');
+    }
   }
 
   Widget _buildOverflowMenu(AcpSessionState session) {
@@ -1044,14 +1137,18 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     }
     switch (result) {
       case AcpSessionLaunchStarted(:final key):
-        context.replace(
-          buildAgentChatLocation(
-            hostId: key.hostId,
-            providerId: key.providerId,
-            bridgeId: key.bridgeId,
-            acpSessionId: key.acpSessionId,
-          ),
-        );
+        if (widget.embedded) {
+          widget.onSessionChanged?.call(key);
+        } else {
+          context.replace(
+            buildAgentChatLocation(
+              hostId: key.hostId,
+              providerId: key.providerId,
+              bridgeId: key.bridgeId,
+              acpSessionId: key.acpSessionId,
+            ),
+          );
+        }
       case AcpSessionLaunchFailed(:final error):
         _showSnack(error.message);
       case AcpSessionLaunchBlocked():
@@ -1084,6 +1181,9 @@ class _SessionStatusBanner extends StatelessWidget {
     required this.message,
     required this.icon,
     required this.transitioning,
+    this.tone = AcpStatusTone.neutral,
+    this.progressFraction,
+    this.indeterminateProgress = false,
     this.actionLabel,
     this.onAction,
   });
@@ -1091,12 +1191,16 @@ class _SessionStatusBanner extends StatelessWidget {
   final String message;
   final IconData icon;
   final bool transitioning;
+  final AcpStatusTone tone;
+  final double? progressFraction;
+  final bool indeterminateProgress;
   final String? actionLabel;
   final VoidCallback? onAction;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final statusColor = acpStatusColor(scheme, tone);
     return Semantics(
       container: true,
       liveRegion: true,
@@ -1111,32 +1215,47 @@ class _SessionStatusBanner extends StatelessWidget {
             horizontal: FluttyTheme.spacingMd,
             vertical: FluttyTheme.spacingSm,
           ),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 18, color: scheme.onSurfaceVariant),
-              const SizedBox(width: FluttyTheme.spacingSm),
-              Expanded(
-                child: Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        message,
-                        style: FluttyTheme.monoStyle.copyWith(
-                          color: scheme.onSurface,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
+              Row(
+                children: [
+                  Icon(icon, size: 18, color: statusColor),
+                  const SizedBox(width: FluttyTheme.spacingSm),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            message,
+                            style: AcpChatTypography.monoStyleOf(context)
+                                .copyWith(
+                                  color: scheme.onSurface,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
                         ),
-                      ),
+                        if (transitioning) ...[
+                          const SizedBox(width: FluttyTheme.spacingSm),
+                          CursorBlock(color: statusColor, size: 10),
+                        ],
+                      ],
                     ),
-                    if (transitioning) ...[
-                      const SizedBox(width: FluttyTheme.spacingSm),
-                      CursorBlock(color: scheme.primary, size: 10),
-                    ],
-                  ],
-                ),
+                  ),
+                  if (actionLabel != null)
+                    TextButton(onPressed: onAction, child: Text(actionLabel!)),
+                ],
               ),
-              if (actionLabel != null)
-                TextButton(onPressed: onAction, child: Text(actionLabel!)),
+              if (progressFraction != null || indeterminateProgress) ...[
+                const SizedBox(height: FluttyTheme.spacingXs),
+                LinearProgressIndicator(
+                  value: indeterminateProgress ? null : progressFraction,
+                  minHeight: 2,
+                  color: statusColor,
+                  backgroundColor: scheme.surfaceContainerHighest,
+                ),
+              ],
             ],
           ),
         ),
@@ -1194,6 +1313,139 @@ class _AcpEmptyConversation extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _AgentChatZoomSurface extends StatefulWidget {
+  const _AgentChatZoomSurface({
+    required this.fontSize,
+    required this.fontFamily,
+    required this.onFontSizeCommitted,
+    required this.child,
+  });
+
+  final double fontSize;
+  final String fontFamily;
+  final ValueChanged<double> onFontSizeCommitted;
+  final Widget child;
+
+  @override
+  State<_AgentChatZoomSurface> createState() => _AgentChatZoomSurfaceState();
+}
+
+class _AgentChatZoomSurfaceState extends State<_AgentChatZoomSurface> {
+  double? _gestureBaseFontSize;
+  double? _localFontSize;
+  bool _isPinching = false;
+  bool _pinchChangedFontSize = false;
+
+  @override
+  void didUpdateWidget(_AgentChatZoomSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_isPinching && oldWidget.fontSize != widget.fontSize) {
+      _localFontSize = null;
+    }
+  }
+
+  void _handlePinchStart() {
+    final current = _localFontSize ?? widget.fontSize;
+    _gestureBaseFontSize = current;
+    _pinchChangedFontSize = false;
+    setState(() => _isPinching = true);
+  }
+
+  void _handlePinchUpdate(double scale) {
+    final base = _gestureBaseFontSize;
+    if (base == null || !scale.isFinite || scale <= 0) {
+      return;
+    }
+    final next = clampAgentChatFontSize(base * scale);
+    if (_localFontSize == next) {
+      return;
+    }
+    setState(() {
+      _localFontSize = next;
+      _pinchChangedFontSize = next != base;
+    });
+  }
+
+  void _handlePinchEnd() {
+    final committed = _localFontSize ?? widget.fontSize;
+    final shouldCommit = _pinchChangedFontSize;
+    _gestureBaseFontSize = null;
+    _pinchChangedFontSize = false;
+    setState(() => _isPinching = false);
+    if (shouldCommit) {
+      widget.onFontSizeCommitted(committed);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final fontSize = clampAgentChatFontSize(_localFontSize ?? widget.fontSize);
+    final mediaQuery = MediaQuery.of(context);
+    final inheritedScale = mediaQuery.textScaler.scale(14) / 14;
+    final textScaler = TextScaler.linear(inheritedScale * fontSize / 14);
+    final theme = Theme.of(context);
+    final configuredMono = resolveMonospaceTextStyle(
+      widget.fontFamily,
+      platform: theme.platform,
+    );
+    final monoStyle = FluttyTheme.monoStyle.merge(configuredMono);
+    final scaledTheme = theme.copyWith(
+      textTheme: theme.textTheme.apply(fontFamily: configuredMono.fontFamily),
+      primaryTextTheme: theme.primaryTextTheme.apply(
+        fontFamily: configuredMono.fontFamily,
+      ),
+    );
+
+    Widget child = MediaQuery(
+      data: mediaQuery.copyWith(textScaler: textScaler),
+      child: Theme(
+        data: scaledTheme,
+        child: AcpChatTypography(monoStyle: monoStyle, child: widget.child),
+      ),
+    );
+    if (_isPinching) {
+      child = Stack(
+        fit: StackFit.expand,
+        children: [
+          child,
+          Positioned(
+            top: 12,
+            right: 12,
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.inverseSurface,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: FluttyTheme.spacingSm,
+                    vertical: FluttyTheme.spacingXs,
+                  ),
+                  child: Text(
+                    '${fontSize.toStringAsFixed(0)} pt',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: theme.colorScheme.onInverseSurface,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return TerminalPinchZoomGestureHandler(
+      onPinchStart: _handlePinchStart,
+      onPinchUpdate: _handlePinchUpdate,
+      onPinchEnd: _handlePinchEnd,
+      child: child,
     );
   }
 }

@@ -1130,15 +1130,11 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     final providerLabel =
         session?.providerLabel ?? providerLabels[key.providerId] ?? 'Agent';
     final cwd = acpCwdSummary(session?.cwd ?? recent?.cwd);
-    final status = session == null ? null : acpStatusDisplay(session.status);
+    final status = session == null ? null : acpSessionActivityDisplay(session);
     final statusColor = status == null
         ? theme.colorScheme.onSurfaceVariant
         : acpStatusColor(theme.colorScheme, status.tone);
     final tool = providerTools[key.providerId];
-    final hasPendingPermission =
-        session != null &&
-        (session.pendingPermissions.isNotEmpty ||
-            session.pendingWrites.isNotEmpty);
 
     return ListTile(
       key: ValueKey('native-acp-session-${key.value}'),
@@ -1159,22 +1155,12 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            hasPendingPermission
-                ? Icons.approval_outlined
-                : (status?.icon ?? Icons.history),
-            size: 14,
-            color: hasPendingPermission
-                ? theme.colorScheme.tertiary
-                : statusColor,
-          ),
+          Icon(status?.icon ?? Icons.history, size: 14, color: statusColor),
           const SizedBox(width: 4),
           Text(
-            hasPendingPermission ? 'permission' : (status?.label ?? 'recent'),
+            status?.label ?? 'recent',
             style: FluttyTheme.monoStyle.copyWith(
-              color: hasPendingPermission
-                  ? theme.colorScheme.tertiary
-                  : statusColor,
+              color: statusColor,
               fontSize: 11,
             ),
           ),

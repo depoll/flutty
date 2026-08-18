@@ -9,6 +9,7 @@ import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_timeline.dart';
+import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/services/acp_bridge_connector.dart';
 import 'package:monkeyssh/domain/services/acp_provider_service.dart';
 import 'package:monkeyssh/domain/services/acp_recent_sessions_service.dart';
@@ -263,6 +264,8 @@ AcpSessionState fakeAcpSession({
   List<AcpSessionConfigOption> configOptions = const <AcpSessionConfigOption>[],
   AcpSessionModeState? modeState,
   AcpModelState? modelState,
+  AcpPromptStatus promptStatus = AcpPromptStatus.idle,
+  List<AcpPlanEntry> plan = const <AcpPlanEntry>[],
   List<AcpPendingPermission> pendingPermissions =
       const <AcpPendingPermission>[],
   List<AcpPendingWrite> pendingWrites = const <AcpPendingWrite>[],
@@ -286,6 +289,8 @@ AcpSessionState fakeAcpSession({
     configOptions: configOptions,
     modeState: modeState,
     modelState: modelState,
+    promptStatus: promptStatus,
+    plan: plan,
     pendingPermissions: pendingPermissions,
     pendingWrites: pendingWrites,
     timeline: timeline,

@@ -24,6 +24,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.onSidebarDragOffsetChanged,
     this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
+    this.activeNativeAcpSessionKey,
     this.onWindowsChanged,
     this.onWindowStateChanged,
     this.onActiveWindowTerminalModeChanged,
@@ -101,6 +102,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Best-known project working directory for AI session scoping.
   final String? scopeWorkingDirectory;
+
+  /// Native ACP session currently replacing the terminal viewport.
+  final AcpSessionKey? activeNativeAcpSessionKey;
 
   /// Height of the collapsed handle bar. The terminal adds this as
   /// bottom padding so the handle sits over empty space.
@@ -280,6 +284,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _clearSeenAlertNotifications(widget.session, widget.tmuxSessionName);
     _bounceController.dispose();
     super.dispose();
+  }
+
+  AcpSwitcherEntry? get _activeNativeAcpEntry {
+    final activeKey = widget.activeNativeAcpSessionKey;
+    if (activeKey == null) {
+      return null;
+    }
+    return _nativeAcpEntries
+        .where((entry) => entry.keyValue == activeKey.value)
+        .firstOrNull;
   }
 
   List<AcpSwitcherEntry> get _nativeAcpEntries =>
@@ -1342,11 +1356,21 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildHandleBar(ThemeData theme) {
     final displayedWindows = _displayedWindows;
-    final handleLabel = resolveTmuxBarHandleLabel(
-      widget.tmuxSessionName,
-      activeWindowTitle: resolveTmuxBarActiveWindowTitle(displayedWindows),
-    );
-    final activeWindowTool = resolveTmuxBarActiveWindowTool(displayedWindows);
+    final activeNative = _activeNativeAcpEntry;
+    final nativeActivity = activeNative?.session == null
+        ? null
+        : acpSessionActivityDisplay(activeNative!.session!);
+    final handleLabel = activeNative == null
+        ? resolveTmuxBarHandleLabel(
+            widget.tmuxSessionName,
+            activeWindowTitle: resolveTmuxBarActiveWindowTitle(
+              displayedWindows,
+            ),
+          )
+        : '${activeNative.title} · ${nativeActivity?.label ?? 'recent'}';
+    final activeWindowTool = activeNative == null
+        ? resolveTmuxBarActiveWindowTool(displayedWindows)
+        : _nativeAcpTool(activeNative.session?.key ?? activeNative.recent!.key);
     final tooltip = _expanded
         ? 'Collapse tmux windows'
         : 'Show tmux windows: $handleLabel';
@@ -1412,11 +1436,21 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildSidebarHandle(ThemeData theme) {
     final displayedWindows = _displayedWindows;
-    final handleLabel = resolveTmuxBarHandleLabel(
-      widget.tmuxSessionName,
-      activeWindowTitle: resolveTmuxBarActiveWindowTitle(displayedWindows),
-    );
-    final activeWindowTool = resolveTmuxBarActiveWindowTool(displayedWindows);
+    final activeNative = _activeNativeAcpEntry;
+    final nativeActivity = activeNative?.session == null
+        ? null
+        : acpSessionActivityDisplay(activeNative!.session!);
+    final handleLabel = activeNative == null
+        ? resolveTmuxBarHandleLabel(
+            widget.tmuxSessionName,
+            activeWindowTitle: resolveTmuxBarActiveWindowTitle(
+              displayedWindows,
+            ),
+          )
+        : '${activeNative.title} · ${nativeActivity?.label ?? 'recent'}';
+    final activeWindowTool = activeNative == null
+        ? resolveTmuxBarActiveWindowTool(displayedWindows)
+        : _nativeAcpTool(activeNative.session?.key ?? activeNative.recent!.key);
     final tooltip = _expanded
         ? 'Collapse tmux windows'
         : 'Show tmux windows: $handleLabel';
@@ -1895,6 +1929,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     AcpSwitcherEntry entry,
   ) {
     final key = entry.session?.key ?? entry.recent!.key;
+    final isActive = widget.activeNativeAcpSessionKey == key;
+    final activity = entry.session == null
+        ? null
+        : acpSessionActivityDisplay(entry.session!);
+    final activityColor = activity == null
+        ? theme.colorScheme.onSurfaceVariant
+        : acpStatusColor(theme.colorScheme, activity.tone);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       child: Tooltip(
@@ -1912,14 +1953,30 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHigh,
+              color: isActive
+                  ? theme.colorScheme.primaryContainer
+                  : theme.colorScheme.surfaceContainerHigh,
               borderRadius: BorderRadius.circular(12),
+              border: isActive
+                  ? Border.all(color: theme.colorScheme.primary)
+                  : null,
             ),
-            child: Center(
-              child: AgentToolIcon(
-                tool: _nativeAcpTool(key),
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                AgentToolIcon(
+                  tool: _nativeAcpTool(key),
+                  color: isActive
+                      ? theme.colorScheme.onPrimaryContainer
+                      : theme.colorScheme.onSurfaceVariant,
+                ),
+                if (activity != null && !activity.isReady)
+                  Positioned(
+                    right: 3,
+                    bottom: 3,
+                    child: Icon(activity.icon, size: 11, color: activityColor),
+                  ),
+              ],
             ),
           ),
         ),
@@ -1931,13 +1988,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final session = entry.session;
     final recent = entry.recent;
     final key = session?.key ?? recent!.key;
-    final status = session == null ? null : acpStatusDisplay(session.status);
+    final status = session == null ? null : acpSessionActivityDisplay(session);
     final statusColor = status == null
         ? theme.colorScheme.onSurfaceVariant
         : acpStatusColor(theme.colorScheme, status.tone);
+    final isActive = widget.activeNativeAcpSessionKey == key;
     return ListTile(
       key: ValueKey('monkeymux-acp-${key.value}'),
       dense: true,
+      selected: isActive,
+      selectedTileColor: theme.colorScheme.primaryContainer.withAlpha(96),
       minTileHeight: 44,
       contentPadding: const EdgeInsets.only(left: 12, right: 8),
       horizontalTitleGap: 10,
@@ -1954,7 +2014,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         overflow: TextOverflow.ellipsis,
         style: theme.textTheme.bodySmall?.copyWith(color: statusColor),
       ),
-      trailing: const Icon(Icons.chat_bubble_outline, size: 16),
+      trailing: Icon(
+        status?.icon ?? Icons.chat_bubble_outline,
+        size: 16,
+        color: statusColor,
+      ),
       onTap: () {
         unawaited(HapticFeedback.selectionClick());
         unawaited(widget.onAction(TmuxOpenAcpSessionAction(key)));

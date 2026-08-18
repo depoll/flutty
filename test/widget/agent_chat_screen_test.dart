@@ -15,10 +15,12 @@ import 'package:monkeyssh/domain/services/acp_concurrency_policy.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/agent_chat_screen.dart';
+import 'package:monkeyssh/presentation/widgets/acp_chat_typography.dart';
 import 'package:monkeyssh/presentation/widgets/acp_composer.dart';
 import 'package:monkeyssh/presentation/widgets/acp_inline_image.dart';
 import 'package:monkeyssh/presentation/widgets/acp_message_thread.dart';
 import 'package:monkeyssh/presentation/widgets/acp_permission_surface.dart';
+import 'package:monkeyssh/presentation/widgets/terminal_pinch_zoom_gesture_handler.dart';
 
 import '../support/fake_acp_session_manager.dart';
 
@@ -33,6 +35,10 @@ Widget _wrap(
   Size size = const Size(390, 800),
   AcpSessionKey? routeKey,
   bool hasActiveSshSession = false,
+  bool embedded = false,
+  double? preferredFontSize,
+  String? preferredFontFamily,
+  ValueChanged<double>? onFontSizeCommitted,
 }) {
   final ssh = _MockSshService();
   final key = routeKey ?? fakeAcpKey();
@@ -58,6 +64,10 @@ Widget _wrap(
           acpSessionId: key.acpSessionId,
           attachmentActionsBuilder: (_, _) =>
               const AcpComposerAttachmentActions(),
+          embedded: embedded,
+          preferredFontSize: preferredFontSize,
+          preferredFontFamily: preferredFontFamily,
+          onFontSizeCommitted: onFontSizeCommitted,
         ),
       ),
     ),
@@ -347,5 +357,161 @@ void main() {
     expect(manager.stopped, contains(blockingKey.value));
     expect(manager.forkCount, 2);
     expect(find.text('Retry failed.'), findsOneWidget);
+  });
+
+  testWidgets(
+    'embedded native chat uses terminal typography without a second session rail',
+    (tester) async {
+      final session = fakeAcpSession(
+        timeline: fakeAcpTimeline('Scaled native response'),
+      );
+      await tester.pumpWidget(
+        _wrap(
+          FakeAcpSessionManager(sessions: [session]),
+          size: const Size(1100, 800),
+          embedded: true,
+          preferredFontSize: 20,
+          preferredFontFamily: 'Roboto Mono',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('sessions'), findsNothing);
+      expect(find.byTooltip('MonkeyMux windows'), findsNothing);
+      final threadContext = tester.element(find.byType(AcpMessageThread));
+      expect(
+        MediaQuery.of(threadContext).textScaler.scale(14),
+        closeTo(20, 0.01),
+      );
+      expect(
+        AcpChatTypography.monoStyleOf(threadContext).fontFamily,
+        contains('RobotoMono'),
+      );
+    },
+  );
+
+  testWidgets('pinch zoom resizes native chat and commits the font size', (
+    tester,
+  ) async {
+    final committed = <double>[];
+    final session = fakeAcpSession(
+      timeline: fakeAcpTimeline('Pinch-resizable response'),
+    );
+    await tester.pumpWidget(
+      _wrap(
+        FakeAcpSessionManager(sessions: [session]),
+        embedded: true,
+        preferredFontSize: 14,
+        onFontSizeCommitted: committed.add,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final target = find.byType(TerminalPinchZoomGestureHandler);
+    final center = tester.getCenter(target);
+    final first = await tester.createGesture(pointer: 21);
+    final second = await tester.createGesture(pointer: 22);
+    await first.down(center - const Offset(30, 0));
+    await second.down(center + const Offset(30, 0));
+    await tester.pump();
+    await second.moveTo(center + const Offset(60, 0));
+    await tester.pump();
+
+    expect(find.text('21 pt'), findsOneWidget);
+    final threadContext = tester.element(find.byType(AcpMessageThread));
+    expect(MediaQuery.of(threadContext).textScaler.scale(14), closeTo(21, 0.1));
+
+    await first.up();
+    await second.up();
+    await tester.pump();
+    expect(committed.single, closeTo(21, 0.1));
+  });
+
+  testWidgets('native chat shows working state and determinate plan progress', (
+    tester,
+  ) async {
+    final session = fakeAcpSession(
+      promptStatus: AcpPromptStatus.streaming,
+      plan: const [
+        AcpPlanEntry(
+          content: 'done',
+          priority: AcpPlanPriority.high,
+          status: AcpPlanStatus.completed,
+        ),
+        AcpPlanEntry(
+          content: 'next',
+          priority: AcpPlanPriority.medium,
+          status: AcpPlanStatus.inProgress,
+        ),
+      ],
+      timeline: fakeAcpTimeline('Working response'),
+    );
+    await tester.pumpWidget(
+      _wrap(FakeAcpSessionManager(sessions: [session]), embedded: true),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('agent is working'), findsOneWidget);
+    expect(find.textContaining('· working'), findsOneWidget);
+    final progress = tester
+        .widgetList<LinearProgressIndicator>(
+          find.byType(LinearProgressIndicator),
+        )
+        .singleWhere((indicator) => indicator.minHeight == 2);
+    expect(progress.value, 0.5);
+  });
+
+  testWidgets('waiting for input takes priority over native working state', (
+    tester,
+  ) async {
+    final session = fakeAcpSession(
+      promptStatus: AcpPromptStatus.streaming,
+      pendingWrites: [
+        AcpPendingWrite(
+          requestKey: 'write-1',
+          sessionId: 'session-1',
+          path: '/repo/file.dart',
+          contentByteLength: 12,
+          requestedAt: DateTime(2026),
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      _wrap(FakeAcpSessionManager(sessions: [session]), embedded: true),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('waiting for input'), findsOneWidget);
+    expect(find.text('agent is working'), findsNothing);
+    expect(find.byType(AcpPermissionSurface), findsOneWidget);
+  });
+
+  testWidgets('two-finger tap without scaling does not pin a font override', (
+    tester,
+  ) async {
+    final committed = <double>[];
+    await tester.pumpWidget(
+      _wrap(
+        FakeAcpSessionManager(sessions: [fakeAcpSession()]),
+        embedded: true,
+        preferredFontSize: 14,
+        onFontSizeCommitted: committed.add,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final center = tester.getCenter(
+      find.byType(TerminalPinchZoomGestureHandler),
+    );
+    final first = await tester.createGesture(pointer: 31);
+    final second = await tester.createGesture(pointer: 32);
+    await first.down(center - const Offset(30, 0));
+    await second.down(center + const Offset(30, 0));
+    await tester.pump();
+    await first.up();
+    await second.up();
+    await tester.pump();
+
+    expect(committed, isEmpty);
   });
 }

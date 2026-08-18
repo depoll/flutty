@@ -8,6 +8,7 @@ import '../../domain/models/acp_attachment.dart';
 import '../../domain/models/acp_updates.dart';
 import '../controllers/acp_composer_controller.dart';
 import 'acp_attachment_strip.dart';
+import 'acp_chat_typography.dart';
 import 'acp_slash_command_picker.dart';
 
 /// Opens an attachment picker and returns the selected candidates.
@@ -391,18 +392,20 @@ class _AcpComposerState extends State<AcpComposer> {
                               keyboardType: TextInputType.multiline,
                               textInputAction: TextInputAction.newline,
                               textCapitalization: TextCapitalization.sentences,
-                              style: FluttyTheme.monoStyle.copyWith(
-                                color: scheme.onSurface,
-                                fontSize: 14,
-                              ),
+                              style: AcpChatTypography.monoStyleOf(
+                                context,
+                              ).copyWith(color: scheme.onSurface, fontSize: 14),
                               decoration: InputDecoration(
                                 isDense: true,
                                 border: InputBorder.none,
                                 hintText: widget.hintText,
-                                hintStyle: FluttyTheme.monoStyle.copyWith(
-                                  color: scheme.onSurfaceVariant,
-                                  fontSize: 14,
-                                ),
+                                hintStyle:
+                                    AcpChatTypography.monoStyleOf(
+                                      context,
+                                    ).copyWith(
+                                      color: scheme.onSurfaceVariant,
+                                      fontSize: 14,
+                                    ),
                               ),
                             ),
                           ),

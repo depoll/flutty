@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
+import 'acp_chat_typography.dart';
 
 /// Presentation helpers for [AcpPlanItemStatus].
 extension AcpPlanItemStatusPresentation on AcpPlanItemStatus {
@@ -64,10 +65,9 @@ class AcpPlanView extends StatelessWidget {
                   ),
                   Text(
                     '$completed/$total',
-                    style: FluttyTheme.monoStyle.copyWith(
-                      fontSize: 12,
-                      color: scheme.onSurfaceVariant,
-                    ),
+                    style: AcpChatTypography.monoStyleOf(
+                      context,
+                    ).copyWith(fontSize: 12, color: scheme.onSurfaceVariant),
                   ),
                 ],
               ),
