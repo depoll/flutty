@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/app/theme.dart';
 import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
@@ -22,6 +23,7 @@ import 'package:monkeyssh/presentation/widgets/acp_composer.dart';
 import 'package:monkeyssh/presentation/widgets/acp_inline_image.dart';
 import 'package:monkeyssh/presentation/widgets/acp_message_thread.dart';
 import 'package:monkeyssh/presentation/widgets/acp_permission_surface.dart';
+import 'package:monkeyssh/presentation/widgets/cursor_block.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_pinch_zoom_gesture_handler.dart';
 
 import '../support/fake_acp_session_manager.dart';
@@ -634,9 +636,23 @@ void main() {
     await tester.pumpWidget(
       _wrap(FakeAcpSessionManager(sessions: [session]), embedded: true),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('agent is working'), findsOneWidget);
+    final cursor = find.byKey(const ValueKey('acp-running-cursor'));
+    expect(cursor, findsOneWidget);
+    expect(find.byType(CursorBlock), findsOneWidget);
+    final messageViewport = find
+        .ancestor(of: cursor, matching: find.byType(Stack))
+        .first;
+    expect(
+      tester.getBottomRight(cursor).dy,
+      closeTo(
+        tester.getBottomRight(messageViewport).dy - FluttyTheme.spacingMd,
+        0.1,
+      ),
+    );
     final statusStripProgress = tester
         .widgetList<LinearProgressIndicator>(
           find.byType(LinearProgressIndicator),
@@ -700,7 +716,8 @@ void main() {
     await tester.pumpWidget(
       _wrap(FakeAcpSessionManager(sessions: [session]), embedded: true),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('waiting for input'), findsOneWidget);
     expect(find.text('agent is working'), findsNothing);

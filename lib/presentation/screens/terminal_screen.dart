@@ -851,6 +851,13 @@ TmuxBarPlacement resolveTmuxBarPlacement(double availableWidth) {
 bool resolveTerminalScreenCanPop({required bool isTmuxBarExpanded}) =>
     !isTmuxBarExpanded;
 
+/// Whether actions that read or mutate terminal viewport state belong in the
+/// overflow menu for the current content mode.
+@visibleForTesting
+bool resolveShowTerminalViewportMenuActions({
+  required bool nativeAgentActive,
+}) => !nativeAgentActive;
+
 /// Resolves the wide-layout sidebar width while the user drags it.
 @visibleForTesting
 double resolveTmuxSidebarWidth({
@@ -4347,8 +4354,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required BuildContext context,
     required bool hasTerminalInfo,
     required bool isMobile,
+    required bool nativeAgentActive,
   }) => [
-    if (hasTerminalInfo)
+    if (!nativeAgentActive && hasTerminalInfo)
       _terminalOverflowMenuItem(
         context: context,
         icon: _showsTerminalMetadata
@@ -4366,19 +4374,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         label: _showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar',
         action: 'toggle_tmux_bar',
       ),
-    if (isMobile)
+    if (!nativeAgentActive && isMobile)
       _terminalOverflowCheckboxMenuItem(
         context: context,
         label: 'Tap to Show Keyboard',
         checked: ref.read(tapToShowKeyboardNotifierProvider),
         action: 'toggle_tap_keyboard',
       ),
-    _terminalOverflowCheckboxMenuItem(
-      context: context,
-      label: 'Shell Completion Popups',
-      checked: ref.read(shellCompletionsNotifierProvider),
-      action: 'toggle_shell_completions',
-    ),
+    if (!nativeAgentActive)
+      _terminalOverflowCheckboxMenuItem(
+        context: context,
+        label: 'Shell Completion Popups',
+        checked: ref.read(shellCompletionsNotifierProvider),
+        action: 'toggle_shell_completions',
+      ),
   ];
 
   bool get _showsNativeSelectionOverlay => shouldShowNativeSelectionOverlay(
@@ -12649,6 +12658,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ? null
         : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
     final showsNativeAgent = _activeNativeAcpSessionKey != null;
+    final showsTerminalViewportMenuActions =
+        resolveShowTerminalViewportMenuActions(
+          nativeAgentActive: showsNativeAgent,
+        );
     // Keep the user-selected theme as the session base. Remote OSC color
     // setters are applied only to the session's effective terminal theme.
     final configuredTerminalTheme = _resolveEffectiveTerminalTheme();
@@ -12705,14 +12718,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         : acpSessionActivityDisplay(activeNativeSession);
     final terminalProgress = activeNativeKey == null
         ? _terminalProgress
-        : nativeActivity?.progressFraction != null
-        ? TerminalProgress(
-            state: TerminalProgressState.normal,
-            percentage: (nativeActivity!.progressFraction! * 100).round(),
-          )
-        : nativeActivity?.indeterminate ?? false
-        ? const TerminalProgress(state: TerminalProgressState.indeterminate)
-        : null;
+        : nativeActivity == null
+        ? null
+        : acpActivityTerminalProgress(nativeActivity);
     final commandMarkCount =
         (_sessionController.observedSession ?? activeSession)
             ?.terminalCommandMarkCount ??
@@ -12875,104 +12883,108 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     ? 'Hide extra keys'
                     : 'Show extra keys',
               ),
-            if (!showsNativeAgent)
-              MenuAnchor(
-                key: _terminalOverflowMenuButtonKey,
-                style: _terminalOverflowMenuStyle(
-                  context: context,
-                  isMobilePlatform: isMobile,
-                ),
-                reservedPadding: _terminalOverflowMenuReservedPadding(
-                  context: context,
-                  isMobilePlatform: isMobile,
-                ),
-                menuChildren: [
+            MenuAnchor(
+              key: _terminalOverflowMenuButtonKey,
+              style: _terminalOverflowMenuStyle(
+                context: context,
+                isMobilePlatform: isMobile,
+              ),
+              reservedPadding: _terminalOverflowMenuReservedPadding(
+                context: context,
+                isMobilePlatform: isMobile,
+              ),
+              menuChildren: [
+                if (showsTerminalViewportMenuActions)
                   _terminalOverflowMenuItem(
                     context: context,
                     icon: Icons.code_rounded,
                     label: 'Snippets',
                     action: 'snippets',
                   ),
-                  _terminalOverflowMenuItem(
+                _terminalOverflowMenuItem(
+                  context: context,
+                  icon: Icons.palette_outlined,
+                  label: 'Change Theme',
+                  action: 'change_theme',
+                ),
+                _terminalOverflowMenuItem(
+                  context: context,
+                  icon: Icons.alt_route_rounded,
+                  label: 'Port Forwards',
+                  action: 'port_forwards',
+                  enabled:
+                      _connectionId != null &&
+                      connectionState == SshConnectionState.connected,
+                ),
+                if (showsDeviceDebugAction)
+                  _terminalOverflowSwitchMenuItem(
                     context: context,
-                    icon: Icons.palette_outlined,
-                    label: 'Change Theme',
-                    action: 'change_theme',
-                  ),
-                  _terminalOverflowMenuItem(
-                    context: context,
-                    icon: Icons.alt_route_rounded,
-                    label: 'Port Forwards',
-                    action: 'port_forwards',
+                    icon: Icons.bug_report_outlined,
+                    label: 'Device debugging',
+                    value: deviceDebugController?.state.isActive ?? false,
+                    loading: deviceDebugController?.state.isBusy ?? false,
+                    action: 'toggle_device_debug',
                     enabled:
-                        _connectionId != null &&
+                        deviceDebugController != null &&
                         connectionState == SshConnectionState.connected,
                   ),
-                  if (showsDeviceDebugAction)
-                    _terminalOverflowSwitchMenuItem(
-                      context: context,
-                      icon: Icons.bug_report_outlined,
-                      label: 'Device debugging',
-                      value: deviceDebugController?.state.isActive ?? false,
-                      loading: deviceDebugController?.state.isBusy ?? false,
-                      action: 'toggle_device_debug',
-                      enabled:
-                          deviceDebugController != null &&
-                          connectionState == SshConnectionState.connected,
-                    ),
-                  if (isPortForwardBrowserSupported())
-                    _terminalOverflowMenuItem(
-                      context: context,
-                      icon: Icons.open_in_browser_outlined,
-                      label: 'Open Forwarded Browser',
-                      action: 'open_port_forward_browser',
-                    ),
-                  _terminalOverflowSubmenuButton(
+                if (isPortForwardBrowserSupported())
+                  _terminalOverflowMenuItem(
                     context: context,
-                    isMobile: isMobile,
-                    icon: Icons.tune_rounded,
-                    label: 'Options',
-                    menuChildren: _terminalOptionsMenuItems(
-                      context: context,
-                      hasTerminalInfo: statusChips.isNotEmpty,
-                      isMobile: isMobile,
-                    ),
+                    icon: Icons.open_in_browser_outlined,
+                    label: 'Open Forwarded Browser',
+                    action: 'open_port_forward_browser',
                   ),
-                  _terminalOverflowMenuDivider(context),
-                  if (!isMobile)
-                    _terminalOverflowMenuItem(
-                      context: context,
-                      icon: _isNativeSelectionMode
-                          ? Icons.deselect_rounded
-                          : Icons.select_all_rounded,
-                      label: _isNativeSelectionMode
-                          ? 'Exit Native Selection'
-                          : 'Native Selection',
-                      action: 'native_select',
-                    ),
-                  if (commandMarkCount > 0)
-                    _terminalOverflowMenuItem(
-                      context: context,
-                      icon: Icons.history_rounded,
-                      label: commandMarkCount == 1
-                          ? 'Previous Command'
-                          : 'Previous Command ($commandMarkCount)',
-                      action: 'previous_command',
-                    ),
-                  if (_workingDirectoryPath != null)
-                    _terminalOverflowMenuItem(
-                      context: context,
-                      icon: Icons.folder_copy_outlined,
-                      label: 'Copy Current Directory',
-                      action: 'copy_working_directory',
-                    ),
-                  if (_currentTerminalSelectionText() != null)
-                    _terminalOverflowMenuItem(
-                      context: context,
-                      icon: Icons.code_rounded,
-                      label: 'Create Snippet',
-                      action: 'create_snippet',
-                    ),
+                _terminalOverflowSubmenuButton(
+                  context: context,
+                  isMobile: isMobile,
+                  icon: Icons.tune_rounded,
+                  label: 'Options',
+                  menuChildren: _terminalOptionsMenuItems(
+                    context: context,
+                    hasTerminalInfo: statusChips.isNotEmpty,
+                    isMobile: isMobile,
+                    nativeAgentActive: showsNativeAgent,
+                  ),
+                ),
+                _terminalOverflowMenuDivider(context),
+                if (showsTerminalViewportMenuActions && !isMobile)
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: _isNativeSelectionMode
+                        ? Icons.deselect_rounded
+                        : Icons.select_all_rounded,
+                    label: _isNativeSelectionMode
+                        ? 'Exit Native Selection'
+                        : 'Native Selection',
+                    action: 'native_select',
+                  ),
+                if (showsTerminalViewportMenuActions && commandMarkCount > 0)
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.history_rounded,
+                    label: commandMarkCount == 1
+                        ? 'Previous Command'
+                        : 'Previous Command ($commandMarkCount)',
+                    action: 'previous_command',
+                  ),
+                if (showsTerminalViewportMenuActions &&
+                    _workingDirectoryPath != null)
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.folder_copy_outlined,
+                    label: 'Copy Current Directory',
+                    action: 'copy_working_directory',
+                  ),
+                if (showsTerminalViewportMenuActions &&
+                    _currentTerminalSelectionText() != null)
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.code_rounded,
+                    label: 'Create Snippet',
+                    action: 'create_snippet',
+                  ),
+                if (showsTerminalViewportMenuActions)
                   _terminalOverflowSubmenuButton(
                     context: context,
                     isMobile: isMobile,
@@ -12980,26 +12992,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     label: 'Paste',
                     menuChildren: _terminalPastingMenuItems(context),
                   ),
+                if (showsTerminalViewportMenuActions)
                   _terminalOverflowMenuDivider(context),
-                  _terminalOverflowMenuItem(
-                    context: context,
-                    icon: Icons.link_off_rounded,
-                    label: 'Disconnect',
-                    action: 'disconnect',
-                  ),
-                ],
-                builder: (context, controller, _) => IconButton(
-                  icon: const Icon(Icons.more_vert),
-                  tooltip: MaterialLocalizations.of(context).showMenuTooltip,
-                  onPressed: () {
-                    if (controller.isOpen) {
-                      controller.close();
-                    } else {
-                      controller.open();
-                    }
-                  },
+                _terminalOverflowMenuItem(
+                  context: context,
+                  icon: Icons.link_off_rounded,
+                  label: 'Disconnect',
+                  action: 'disconnect',
                 ),
+              ],
+              builder: (context, controller, _) => IconButton(
+                icon: const Icon(Icons.more_vert),
+                tooltip: MaterialLocalizations.of(context).showMenuTooltip,
+                onPressed: () {
+                  if (controller.isOpen) {
+                    controller.close();
+                  } else {
+                    controller.open();
+                  }
+                },
               ),
+            ),
           ],
         ),
         body: Builder(

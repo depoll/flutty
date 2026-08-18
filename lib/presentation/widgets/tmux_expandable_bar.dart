@@ -1939,6 +1939,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final activityColor = activity == null
         ? theme.colorScheme.onSurfaceVariant
         : acpStatusColor(theme.colorScheme, activity.tone);
+    final progress = activity == null
+        ? null
+        : acpActivityTerminalProgress(activity);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       child: Tooltip(
@@ -1976,8 +1979,39 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 if (activity != null && !activity.isReady)
                   Positioned(
                     right: 3,
-                    bottom: 3,
+                    top: 3,
                     child: Icon(activity.icon, size: 11, color: activityColor),
+                  ),
+                Positioned(
+                  right: -9,
+                  bottom: -9,
+                  child: DecoratedBox(
+                    key: ValueKey('monkeymux-sidebar-acp-index-${key.value}'),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHigh,
+                      border: Border.all(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        width: 1.5,
+                      ),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const SizedBox(width: 18, height: 15),
+                  ),
+                ),
+                if (progress != null)
+                  Positioned(
+                    left: -7,
+                    right: 7,
+                    bottom: -11,
+                    child: _MuxWindowProgressIndicator(
+                      key: ValueKey(
+                        'monkeymux-sidebar-acp-progress-${key.value}',
+                      ),
+                      progress: progress,
+                      semanticsWindowLabel:
+                          'Native agent window: ${entry.title}',
+                      compact: true,
+                    ),
                   ),
               ],
             ),
@@ -1991,10 +2025,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final session = entry.session;
     final recent = entry.recent;
     final key = session?.key ?? recent!.key;
-    final status = session == null ? null : acpSessionActivityDisplay(session);
-    final statusColor = status == null
+    final activity = session == null
+        ? null
+        : acpSessionActivityDisplay(session);
+    final activityColor = activity == null
         ? theme.colorScheme.onSurfaceVariant
-        : acpStatusColor(theme.colorScheme, status.tone);
+        : acpStatusColor(theme.colorScheme, activity.tone);
+    final progress = activity == null
+        ? null
+        : acpActivityTerminalProgress(activity);
     final isActive = widget.activeNativeAcpSessionKey == key;
     return ListTile(
       key: ValueKey('monkeymux-acp-${key.value}'),
@@ -2002,31 +2041,102 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       selected: isActive,
       selectedTileColor: theme.colorScheme.primaryContainer.withAlpha(96),
       minTileHeight: 44,
-      contentPadding: const EdgeInsets.only(left: 12, right: 8),
+      contentPadding: const EdgeInsets.only(left: 12, right: 4),
       horizontalTitleGap: 10,
-      leading: AgentToolIcon(
-        tool: _nativeAcpTool(key),
-        size: 18,
-        color: statusColor,
+      minLeadingWidth: 24,
+      leading: Container(
+        key: ValueKey('monkeymux-acp-number-slot-${key.value}'),
+        width: 22,
+        height: 22,
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(6),
+        ),
       ),
-      title: Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(
-        '${acpCwdSummary(session?.cwd ?? recent?.cwd)} · '
-        '${status?.label ?? 'recent'}',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodySmall?.copyWith(color: statusColor),
+      title: Row(
+        children: [
+          AgentToolIcon(
+            tool: _nativeAcpTool(key),
+            size: 16,
+            color: activityColor,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              entry.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: isActive
+                  ? theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    )
+                  : null,
+            ),
+          ),
+        ],
       ),
-      trailing: Icon(
-        status?.icon ?? Icons.chat_bubble_outline,
-        size: 16,
-        color: statusColor,
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${acpCwdSummary(session?.cwd ?? recent?.cwd)} · '
+            '${activity?.label ?? 'recent'}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(color: activityColor),
+          ),
+          if (progress != null) ...[
+            const SizedBox(height: 3),
+            _MuxWindowProgressIndicator(
+              key: ValueKey('monkeymux-acp-progress-${key.value}'),
+              progress: progress,
+              semanticsWindowLabel: 'Native agent window: ${entry.title}',
+            ),
+          ],
+        ],
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: _AcpMuxWindowStatusBadge(session: session),
+          ),
+          if (session != null)
+            IconButton(
+              icon: const Icon(Icons.close, size: 16),
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+              padding: EdgeInsets.zero,
+              tooltip: 'Close window',
+              onPressed: () =>
+                  unawaited(_confirmCloseNativeAcpSession(key, entry.title)),
+            )
+          else
+            const SizedBox(width: 30),
+        ],
       ),
       onTap: () {
         unawaited(HapticFeedback.selectionClick());
         unawaited(widget.onAction(TmuxOpenAcpSessionAction(key)));
       },
     );
+  }
+
+  Future<void> _confirmCloseNativeAcpSession(
+    AcpSessionKey key,
+    String title,
+  ) async {
+    final confirmed = await confirmMuxWindowClose(
+      context: context,
+      ref: widget.ref,
+      title: title,
+    );
+    if (!mounted || !confirmed) {
+      return;
+    }
+    await widget.onAction(TmuxCloseAcpSessionAction(key));
   }
 
   Future<void> _confirmCloseWindow(TmuxWindow window) async {
@@ -2189,6 +2299,69 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               _startPendingSelectionTimer(window.index);
               unawaited(widget.onAction(TmuxSwitchWindowAction(window.index)));
             },
+    );
+  }
+}
+
+class _AcpMuxWindowStatusBadge extends StatelessWidget {
+  const _AcpMuxWindowStatusBadge({required this.session});
+
+  final AcpSessionState? session;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final display = session == null
+        ? const AcpStatusDisplay(
+            label: 'recent',
+            icon: Icons.history,
+            tone: AcpStatusTone.neutral,
+          )
+        : acpSessionMuxStatusDisplay(session!);
+    final (foreground, background) = switch (display.tone) {
+      AcpStatusTone.active => (
+        theme.colorScheme.onPrimaryContainer,
+        theme.colorScheme.primaryContainer,
+      ),
+      AcpStatusTone.warning => (
+        theme.colorScheme.onTertiaryContainer,
+        theme.colorScheme.tertiaryContainer,
+      ),
+      AcpStatusTone.error => (
+        theme.colorScheme.onErrorContainer,
+        theme.colorScheme.errorContainer,
+      ),
+      AcpStatusTone.neutral => (
+        theme.colorScheme.onSurfaceVariant,
+        theme.colorScheme.surfaceContainerHighest,
+      ),
+    };
+    return Semantics(
+      label: 'native agent ${display.label}',
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(display.icon, size: 12, color: foreground),
+              const SizedBox(width: 3),
+              Text(
+                display.label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontSize: 10,
+                  color: foreground,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

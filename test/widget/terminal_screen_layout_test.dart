@@ -45,6 +45,17 @@ void main() {
       expect(resolveTerminalScreenCanPop(isTmuxBarExpanded: true), isFalse);
     });
 
+    test('native mode hides only terminal-viewport menu actions', () {
+      expect(
+        resolveShowTerminalViewportMenuActions(nativeAgentActive: false),
+        isTrue,
+      );
+      expect(
+        resolveShowTerminalViewportMenuActions(nativeAgentActive: true),
+        isFalse,
+      );
+    });
+
     test('moves tmux controls to a sidebar only when width allows it', () {
       const breakpoint = tmuxSidebarExpandedWidth + tmuxSidebarMinTerminalWidth;
 

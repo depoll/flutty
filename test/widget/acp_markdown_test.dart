@@ -143,7 +143,9 @@ void main() {
     expect(find.byType(AcpInlineImage), findsOneWidget);
   });
 
-  testWidgets('streaming assistant message shows cursor block', (tester) async {
+  testWidgets('streaming assistant leaves cursor to chat viewport', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       wrap(
         const AcpMessageThread(
@@ -160,7 +162,7 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(find.byType(CursorBlock), findsOneWidget);
+    expect(find.byType(CursorBlock), findsNothing);
   });
 
   testWidgets('completed assistant message has no cursor block', (

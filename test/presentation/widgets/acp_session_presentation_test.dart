@@ -153,4 +153,47 @@ void main() {
       );
     });
   });
+
+  group('native mux window parity', () {
+    test('idle and active turns use waiting/running vocabulary', () {
+      expect(acpSessionMuxStatusDisplay(fakeAcpSession()).label, 'waiting');
+      expect(
+        acpSessionMuxStatusDisplay(
+          fakeAcpSession(promptStatus: AcpPromptStatus.streaming),
+        ).label,
+        'running',
+      );
+    });
+
+    test('projects indeterminate and determinate terminal progress', () {
+      final indeterminate = acpActivityTerminalProgress(
+        acpSessionActivityDisplay(
+          fakeAcpSession(promptStatus: AcpPromptStatus.streaming),
+        ),
+      );
+      expect(indeterminate?.percentage, isNull);
+
+      final determinate = acpActivityTerminalProgress(
+        acpSessionActivityDisplay(
+          fakeAcpSession(
+            promptStatus: AcpPromptStatus.streaming,
+            plan: const [
+              AcpPlanEntry(
+                content: 'done',
+                priority: AcpPlanPriority.high,
+                status: AcpPlanStatus.completed,
+              ),
+              AcpPlanEntry(
+                content: 'next',
+                priority: AcpPlanPriority.medium,
+                status: AcpPlanStatus.inProgress,
+              ),
+            ],
+          ),
+        ),
+      );
+      expect(determinate?.percentage, 50);
+      expect(determinate?.fraction, 0.5);
+    });
+  });
 }

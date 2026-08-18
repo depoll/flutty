@@ -1045,6 +1045,18 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                               onOpenLocation: (location) =>
                                   _openRemotePath(location.path),
                             ),
+                          if (session.promptStatus != AcpPromptStatus.idle)
+                            Positioned(
+                              key: const ValueKey('acp-running-cursor'),
+                              left: FluttyTheme.spacingMd,
+                              bottom: FluttyTheme.spacingMd,
+                              child: IgnorePointer(
+                                child: CursorBlock(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  size: 12,
+                                ),
+                              ),
+                            ),
                           if (_showJumpToLatest)
                             Positioned(
                               right: FluttyTheme.spacingMd,
@@ -1617,7 +1629,13 @@ class _SessionStatusBanner extends StatelessWidget {
                         ),
                         if (transitioning) ...[
                           const SizedBox(width: FluttyTheme.spacingSm),
-                          CursorBlock(color: statusColor, size: 10),
+                          SizedBox.square(
+                            dimension: 10,
+                            child: CircularProgressIndicator.adaptive(
+                              strokeWidth: 1.5,
+                              valueColor: AlwaysStoppedAnimation(statusColor),
+                            ),
+                          ),
                         ],
                       ],
                     ),
@@ -1658,14 +1676,7 @@ class _AcpEmptyConversation extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.terminal, color: scheme.primary, size: 22),
-                const SizedBox(width: FluttyTheme.spacingSm),
-                CursorBlock(color: scheme.primary, size: 14),
-              ],
-            ),
+            Icon(Icons.terminal, color: scheme.primary, size: 22),
             const SizedBox(height: FluttyTheme.spacingMd),
             Text(
               'ready when you are',

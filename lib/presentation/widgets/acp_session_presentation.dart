@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/acp_updates.dart';
+import '../../domain/models/terminal_progress.dart';
 
 /// A short, mono status label plus a color role for an ACP connection status.
 @immutable
@@ -183,7 +184,55 @@ AcpStatusDisplay acpSessionActivityDisplay(AcpSessionState session) {
   }
 }
 
+/// Maps a native session onto the same compact waiting/running vocabulary used
+/// by terminal mux windows.
+AcpStatusDisplay acpSessionMuxStatusDisplay(AcpSessionState session) {
+  if (session.status != AcpConnectionStatus.ready) {
+    return acpStatusDisplay(session.status);
+  }
+  if (session.pendingPermissions.isNotEmpty ||
+      session.pendingWrites.isNotEmpty) {
+    return const AcpStatusDisplay(
+      label: 'waiting',
+      icon: Icons.pending_actions,
+      tone: AcpStatusTone.warning,
+      needsInput: true,
+    );
+  }
+  return switch (session.promptStatus) {
+    AcpPromptStatus.idle => const AcpStatusDisplay(
+      label: 'waiting',
+      icon: Icons.hourglass_bottom,
+      tone: AcpStatusTone.warning,
+      isReady: true,
+    ),
+    AcpPromptStatus.sending ||
+    AcpPromptStatus.streaming ||
+    AcpPromptStatus.cancelling => const AcpStatusDisplay(
+      label: 'running',
+      icon: Icons.play_arrow,
+      tone: AcpStatusTone.active,
+    ),
+  };
+}
+
+/// Projects native agent activity onto the same progress model used by
+/// MonkeyMux terminal windows and the terminal title bar.
+TerminalProgress? acpActivityTerminalProgress(AcpStatusDisplay activity) {
+  final fraction = activity.progressFraction;
+  if (fraction != null) {
+    return TerminalProgress(
+      state: TerminalProgressState.normal,
+      percentage: (fraction.clamp(0, 1) * 100).round(),
+    );
+  }
+  return activity.indeterminate
+      ? const TerminalProgress(state: TerminalProgressState.indeterminate)
+      : null;
+}
+
 /// Returns a compact, content-safe working-directory summary.
+
 ///
 /// Home is shown as `~`; other paths keep their final segment prefixed with a
 /// leading `…/` when they are nested, so a long absolute path never dominates a

@@ -137,6 +137,32 @@ void main() {
     expect(find.text('Read file'), findsOneWidget);
   });
 
+  testWidgets('expands and renders a tool image inline', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        AcpMessageThread(
+          entries: [
+            AcpToolCallEntry(
+              id: 'image-tool',
+              toolCall: AcpToolCall(
+                id: 'image-tool',
+                title: 'Show image',
+                status: AcpToolStatus.completed,
+                images: [AcpImageContent(bytes: _pngBytes)],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(AcpInlineImage), findsNothing);
+    await tester.tap(find.text('Show image'));
+    await tester.pump();
+    expect(find.byType(AcpInlineImage), findsOneWidget);
+  });
+
   testWidgets('renders in light and dark themes', (tester) async {
     for (final brightness in Brightness.values) {
       await tester.pumpWidget(

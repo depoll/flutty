@@ -22,6 +22,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/tmux_service.dart';
+import 'acp_mux_window_status_badge.dart';
 import 'acp_new_session_sheet.dart';
 import 'acp_session_presentation.dart';
 import 'acp_session_switcher.dart';
@@ -1181,10 +1182,15 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     final providerLabel =
         session?.providerLabel ?? providerLabels[key.providerId] ?? 'Agent';
     final cwd = acpCwdSummary(session?.cwd ?? recent?.cwd);
-    final status = session == null ? null : acpSessionActivityDisplay(session);
-    final statusColor = status == null
+    final activity = session == null
+        ? null
+        : acpSessionActivityDisplay(session);
+    final activityColor = activity == null
         ? theme.colorScheme.onSurfaceVariant
-        : acpStatusColor(theme.colorScheme, status.tone);
+        : acpStatusColor(theme.colorScheme, activity.tone);
+    final progress = activity == null
+        ? null
+        : acpActivityTerminalProgress(activity);
     final tool = providerTools[key.providerId];
 
     return ListTile(
@@ -1192,40 +1198,70 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       minTileHeight: 48,
       contentPadding: const EdgeInsets.only(left: 16, right: 4),
       horizontalTitleGap: 10,
-      minLeadingWidth: 28,
-      leading: AgentToolIcon(tool: tool, color: statusColor),
-      title: Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(
-        '$providerLabel · $cwd',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
+      minLeadingWidth: 24,
+      leading: Container(
+        key: ValueKey('native-acp-number-slot-${key.value}'),
+        width: 22,
+        height: 22,
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(6),
         ),
+      ),
+      title: Row(
+        children: [
+          AgentToolIcon(tool: tool, size: 16, color: activityColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              entry.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$providerLabel · $cwd · ${activity?.label ?? 'recent'}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(color: activityColor),
+          ),
+          if (progress != null) ...[
+            const SizedBox(height: 3),
+            LinearProgressIndicator(
+              key: ValueKey('native-acp-progress-${key.value}'),
+              value: progress.percentage == null ? null : progress.fraction,
+              minHeight: 3,
+              color: activityColor,
+              backgroundColor: theme.colorScheme.surfaceContainerHighest,
+            ),
+          ],
+        ],
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(status?.icon ?? Icons.history, size: 14, color: statusColor),
-          const SizedBox(width: 4),
-          Text(
-            status?.label ?? 'recent',
-            style: FluttyTheme.monoStyle.copyWith(
-              color: statusColor,
-              fontSize: 11,
-            ),
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: AcpMuxWindowStatusBadge(session: session),
           ),
           if (session != null)
             IconButton(
               icon: const Icon(Icons.close, size: 16),
+              visualDensity: VisualDensity.compact,
               constraints: const BoxConstraints.tightFor(width: 44, height: 44),
               padding: EdgeInsets.zero,
-              tooltip: 'Stop native agent session',
+              tooltip: 'Close window',
               onPressed: () =>
                   unawaited(_confirmStopNativeAcpSession(key, entry.title)),
             )
           else
-            const SizedBox(width: 12),
+            const SizedBox(width: 30),
         ],
       ),
       onTap: () => Navigator.pop(context, TmuxOpenAcpSessionAction(key)),
@@ -1236,29 +1272,12 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     AcpSessionKey key,
     String title,
   ) async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await confirmMuxWindowClose(
       context: context,
-      requestFocus: terminalOverlayRouteRequestFocus(context),
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Stop native session?'),
-        content: Text('Stop “$title”? Any running turn will be interrupted.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(dialogContext).colorScheme.error,
-              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
-            ),
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Stop session'),
-          ),
-        ],
-      ),
+      ref: ref,
+      title: title,
     );
-    if (!mounted || confirmed != true) {
+    if (!mounted || !confirmed) {
       return;
     }
     Navigator.pop(context, TmuxCloseAcpSessionAction(key));

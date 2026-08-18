@@ -8,6 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
+import 'package:monkeyssh/domain/models/acp_session_state.dart';
+import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
@@ -19,6 +21,7 @@ import 'package:monkeyssh/domain/services/remote_multiplexer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
+import 'package:monkeyssh/presentation/widgets/acp_mux_window_status_badge.dart';
 import 'package:monkeyssh/presentation/widgets/premium_badge.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_navigator.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_status_badge.dart';
@@ -176,6 +179,30 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Close window?'), findsNothing);
     expect(find.text('confirmed 2'), findsOneWidget);
+  });
+
+  testWidgets('native mux badges show waiting and running', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              AcpMuxWindowStatusBadge(session: fakeAcpSession()),
+              AcpMuxWindowStatusBadge(
+                session: fakeAcpSession(
+                  promptStatus: AcpPromptStatus.streaming,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('waiting'), findsOneWidget);
+    expect(find.text('running'), findsOneWidget);
+    expect(find.byIcon(Icons.hourglass_bottom), findsOneWidget);
+    expect(find.byIcon(Icons.play_arrow), findsOneWidget);
   });
 
   group('tmux navigator UI', () {
@@ -1057,6 +1084,19 @@ void main() {
             key: key,
             title: 'Fix authentication',
             cwd: '/home/dev/monkeyssh',
+            promptStatus: AcpPromptStatus.streaming,
+            plan: const [
+              AcpPlanEntry(
+                content: 'done',
+                priority: AcpPlanPriority.high,
+                status: AcpPlanStatus.completed,
+              ),
+              AcpPlanEntry(
+                content: 'next',
+                priority: AcpPlanPriority.medium,
+                status: AcpPlanStatus.inProgress,
+              ),
+            ],
           ),
         ],
       );
@@ -1094,8 +1134,27 @@ void main() {
       );
       expect(find.text('agent windows'), findsOneWidget);
       expect(find.text('Fix authentication'), findsOneWidget);
-      expect(find.text('Copilot CLI · …/monkeyssh'), findsOneWidget);
-      expect(find.text('ready'), findsOneWidget);
+      final nativeRow = find.byKey(ValueKey('native-acp-session-${key.value}'));
+      expect(find.text('Copilot CLI · …/monkeyssh · working'), findsOneWidget);
+      expect(
+        find.descendant(of: nativeRow, matching: find.text('running')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(ValueKey('native-acp-number-slot-${key.value}')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(ValueKey('native-acp-progress-${key.value}')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: nativeRow,
+          matching: find.byTooltip('Close window'),
+        ),
+        findsOneWidget,
+      );
 
       await tester.ensureVisible(find.text('Fix authentication'));
       await tester.pump();

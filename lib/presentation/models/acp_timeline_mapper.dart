@@ -265,7 +265,7 @@ String _markdownFromContent(List<d.AcpContentBlock> content) {
 
 AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
   final diffs = <AcpDiff>[];
-  final images = <AcpImageContent>[];
+  final images = _imagesFromRawToolOutput(entry.rawOutput);
   final outputBlocks = <String>[];
   for (final content in entry.content) {
     switch (content) {
@@ -288,7 +288,7 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
           outputBlocks.add(inner.text);
         } else if (inner is d.AcpImageContent) {
           final image = _mapImage(inner);
-          if (image != null) {
+          if (image != null && !images.contains(image)) {
             images.add(image);
           }
         }
@@ -299,9 +299,24 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
   }
 
   final rawInput = _formatToolPayload(entry.rawInput);
-  var rawOutput = _formatToolPayload(entry.rawOutput);
-  if (rawOutput == null && outputBlocks.isNotEmpty) {
-    rawOutput = _bound(outputBlocks.join('\n\n'), kAcpMapperMaxToolTextChars);
+  final visibleOutputBlocks = outputBlocks
+      .where(
+        (text) => images.isEmpty || !_looksLikeSerializedImagePayload(text),
+      )
+      .toList(growable: true);
+  if (images.isNotEmpty) {
+    for (final text in _textFromRawToolOutput(entry.rawOutput)) {
+      if (!visibleOutputBlocks.contains(text)) {
+        visibleOutputBlocks.add(text);
+      }
+    }
+  }
+  var rawOutput = images.isEmpty ? _formatToolPayload(entry.rawOutput) : null;
+  if (rawOutput == null && visibleOutputBlocks.isNotEmpty) {
+    rawOutput = _bound(
+      visibleOutputBlocks.join('\n\n'),
+      kAcpMapperMaxToolTextChars,
+    );
   }
 
   return AcpToolCallEntry(
@@ -323,6 +338,122 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
       images: images,
     ),
   );
+}
+
+List<AcpImageContent> _imagesFromRawToolOutput(Object? rawOutput) {
+  const maxImages = 8;
+  const maxNodes = 256;
+  final images = <AcpImageContent>[];
+  var visitedNodes = 0;
+
+  void visit(Object? value, int depth) {
+    if (value == null ||
+        depth > 6 ||
+        images.length >= maxImages ||
+        visitedNodes++ >= maxNodes) {
+      return;
+    }
+    if (value is Map) {
+      final map = <String, Object?>{
+        for (final entry in value.entries) entry.key.toString(): entry.value,
+      };
+      if (map['type']?.toString().toLowerCase() == 'image') {
+        var data = map['data'] is String ? map['data']! as String : '';
+        var mimeType = map['mimeType'] is String
+            ? map['mimeType']! as String
+            : (map['mime_type'] is String ? map['mime_type']! as String : '');
+        final uri = map['uri'] is String ? map['uri']! as String : null;
+        if (data.startsWith('data:')) {
+          final separator = data.indexOf(',');
+          final header = separator < 0 ? '' : data.substring(5, separator);
+          if (separator >= 0 && header.toLowerCase().endsWith(';base64')) {
+            if (mimeType.isEmpty) {
+              mimeType = header.substring(0, header.length - ';base64'.length);
+            }
+            data = data.substring(separator + 1);
+          }
+        }
+        final image = _mapImage(
+          d.AcpImageContent(data: data, mimeType: mimeType, uri: uri),
+        );
+        if (image != null && !images.contains(image)) {
+          images.add(image);
+        }
+        return;
+      }
+      for (final child in map.values) {
+        visit(child, depth + 1);
+      }
+      return;
+    }
+    if (value is Iterable) {
+      for (final child in value) {
+        visit(child, depth + 1);
+      }
+    }
+  }
+
+  visit(rawOutput, 0);
+  return images;
+}
+
+List<String> _textFromRawToolOutput(Object? rawOutput) {
+  const maxNodes = 256;
+  final output = <String>[];
+  var visitedNodes = 0;
+
+  void visit(Object? value, int depth) {
+    if (value == null || depth > 6 || visitedNodes++ >= maxNodes) {
+      return;
+    }
+    if (value is Map) {
+      final map = <String, Object?>{
+        for (final entry in value.entries) entry.key.toString(): entry.value,
+      };
+      if (map['type']?.toString().toLowerCase() == 'image') {
+        return;
+      }
+      for (final entry in map.entries) {
+        final key = entry.key.toLowerCase();
+        final child = entry.value;
+        if (child is String &&
+            const {
+              'text',
+              'message',
+              'output',
+              'stdout',
+              'stderr',
+            }.contains(key) &&
+            child.trim().isNotEmpty) {
+          final bounded = _bound(child, kAcpMapperMaxToolTextChars);
+          if (!output.contains(bounded)) {
+            output.add(bounded);
+          }
+        } else {
+          visit(child, depth + 1);
+        }
+      }
+      return;
+    }
+    if (value is Iterable) {
+      for (final child in value) {
+        visit(child, depth + 1);
+      }
+    }
+  }
+
+  visit(rawOutput, 0);
+  return output;
+}
+
+bool _looksLikeSerializedImagePayload(String text) {
+  final trimmed = text.trimLeft();
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    return false;
+  }
+  return text.contains('"type"') &&
+      text.contains('"image"') &&
+      text.contains('"data"');
 }
 
 AcpToolKind _mapToolKind(d.AcpToolKind? kind) => switch (kind?.value) {

@@ -125,6 +125,43 @@ void main() {
     expect(usage.contextWindow, 100);
   });
 
+  test('recovers Pi image blocks retained only in raw tool output', () {
+    const imageData = 'aGk=';
+    final rawOutput = <String, Object?>{
+      'message': 'Rendered image',
+      'content': <Object?>[
+        <String, Object?>{
+          'type': 'image',
+          'data': imageData,
+          'mimeType': 'image/png',
+        },
+      ],
+    };
+    final timeline = AcpTimeline(
+      entries: [
+        AcpToolCallEntry(
+          toolCallId: 'pi-image',
+          order: 0,
+          title: 'read',
+          status: AcpToolStatus.completed,
+          rawOutput: rawOutput,
+          content: [
+            AcpToolContentBlock(content: AcpTextContent(jsonEncode(rawOutput))),
+          ],
+        ),
+      ],
+    );
+
+    final tool =
+        mapAcpSessionTimeline(_state(timeline: timeline)).single
+            as p.AcpToolCallEntry;
+
+    expect(tool.toolCall.images, hasLength(1));
+    expect(tool.toolCall.images.single.bytes, utf8.encode('hi'));
+    expect(tool.toolCall.rawOutput, 'Rendered image');
+    expect(tool.toolCall.rawOutput, isNot(contains(imageData)));
+  });
+
   test('renders a small unified hunk for a one-line edit', () {
     final oldLines = [
       for (var index = 1; index <= 1000; index++) 'line $index',

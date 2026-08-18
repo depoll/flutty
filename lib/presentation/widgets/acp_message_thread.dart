@@ -11,7 +11,6 @@ import 'acp_thought.dart';
 import 'acp_tool_call.dart';
 import 'acp_usage.dart';
 import 'acp_user_prompt.dart';
-import 'cursor_block.dart';
 
 /// Renders an ordered list of [AcpTimelineEntry]s as a conversation thread.
 ///
@@ -167,27 +166,11 @@ class _AssistantMessage extends StatelessWidget {
       onTapImage: onTapImage,
       onCopyCode: onCopyCode,
     );
-    final content = streaming
-        ? Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              markdown,
-              Padding(
-                padding: const EdgeInsets.only(top: FluttyTheme.spacingXs),
-                child: CursorBlock(
-                  color: Theme.of(context).colorScheme.primary,
-                  size: 12,
-                ),
-              ),
-            ],
-          )
-        : markdown;
     return Semantics(
       container: true,
       liveRegion: !streaming,
       label: streaming ? 'Agent response streaming' : 'Agent response complete',
-      child: content,
+      child: markdown,
     );
   }
 }
