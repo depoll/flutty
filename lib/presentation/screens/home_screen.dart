@@ -39,7 +39,6 @@ import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../providers/host_row_providers.dart';
 import '../widgets/agent_tool_icon.dart';
-import '../widgets/agents_panel.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/brand_empty_state.dart';
 import '../widgets/brand_error_state.dart';
@@ -76,9 +75,6 @@ enum HomeScreenTab {
   /// Active SSH connections.
   connections,
 
-  /// ACP coding-agent sessions.
-  agents,
-
   /// SSH key management.
   keys,
 
@@ -100,24 +96,18 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
-  late HomeScreenTab _selectedTab;
+  late int _selectedIndex;
   bool _isOpeningTerminalRoute = false;
 
   /// Switches to the Connections tab so the user lands there when
   /// returning from the terminal.
   void switchToConnectionsTab() {
-    _selectTab(HomeScreenTab.connections);
+    if (_selectedIndex != 1) setState(() => _selectedIndex = 1);
   }
 
   /// Switches back to the Hosts tab.
   void switchToHostsTab() {
-    _selectTab(HomeScreenTab.hosts);
-  }
-
-  void _selectTab(HomeScreenTab tab) {
-    if (_selectedTab != tab) {
-      setState(() => _selectedTab = tab);
-    }
+    if (_selectedIndex != 0) setState(() => _selectedIndex = 0);
   }
 
   Future<void> _openTerminalRoute(String route) async {
@@ -176,7 +166,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void initState() {
     super.initState();
-    _selectedTab = widget.initialTab;
+    _selectedIndex = widget.initialTab.index;
     WidgetsBinding.instance.addObserver(this);
     final transferIntentService = ref.read(transferIntentServiceProvider);
     _incomingTransferSubscription = transferIntentService.incomingPayloads
@@ -204,7 +194,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   void didUpdateWidget(covariant HomeScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.initialTab != widget.initialTab) {
-      _selectedTab = widget.initialTab;
+      _selectedIndex = widget.initialTab.index;
     }
   }
 
@@ -452,14 +442,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       next,
     ) {
       final hadConnections = previous?.isNotEmpty ?? false;
-      if (!hadConnections ||
-          next.isNotEmpty ||
-          _selectedTab != HomeScreenTab.connections) {
+      if (!hadConnections || next.isNotEmpty || _selectedIndex != 1) {
         return;
       }
 
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _selectedTab != HomeScreenTab.connections) {
+        if (!mounted || _selectedIndex != 1) {
           return;
         }
         switchToHostsTab();
@@ -498,8 +486,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     ),
     body: _buildContent(),
     bottomNavigationBar: NavigationBar(
-      selectedIndex: _selectedTab.index,
-      onDestinationSelected: (index) => _selectTab(HomeScreenTab.values[index]),
+      selectedIndex: _selectedIndex,
+      onDestinationSelected: (index) => setState(() => _selectedIndex = index),
       labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
       height: 65,
       destinations: const [
@@ -512,11 +500,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           icon: Icon(Icons.link_outlined),
           selectedIcon: Icon(Icons.link),
           label: 'Connections',
-        ),
-        NavigationDestination(
-          icon: Icon(Icons.hub_outlined),
-          selectedIcon: Icon(Icons.hub),
-          label: 'Agents',
         ),
         NavigationDestination(
           icon: Icon(Icons.key_outlined),
@@ -610,32 +593,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   _NavItem(
                     icon: Icons.dns_rounded,
                     label: 'Hosts',
-                    selected: _selectedTab == HomeScreenTab.hosts,
-                    onTap: () => _selectTab(HomeScreenTab.hosts),
+                    selected: _selectedIndex == 0,
+                    onTap: () => setState(() => _selectedIndex = 0),
                   ),
                   _NavItem(
                     icon: Icons.link,
                     label: 'Connections',
-                    selected: _selectedTab == HomeScreenTab.connections,
-                    onTap: () => _selectTab(HomeScreenTab.connections),
-                  ),
-                  _NavItem(
-                    icon: Icons.hub,
-                    label: 'Agents',
-                    selected: _selectedTab == HomeScreenTab.agents,
-                    onTap: () => _selectTab(HomeScreenTab.agents),
+                    selected: _selectedIndex == 1,
+                    onTap: () => setState(() => _selectedIndex = 1),
                   ),
                   _NavItem(
                     icon: Icons.key_rounded,
                     label: 'Keys',
-                    selected: _selectedTab == HomeScreenTab.keys,
-                    onTap: () => _selectTab(HomeScreenTab.keys),
+                    selected: _selectedIndex == 2,
+                    onTap: () => setState(() => _selectedIndex = 2),
                   ),
                   _NavItem(
                     icon: Icons.code_rounded,
                     label: 'Snippets',
-                    selected: _selectedTab == HomeScreenTab.snippets,
-                    onTap: () => _selectTab(HomeScreenTab.snippets),
+                    selected: _selectedIndex == 3,
+                    onTap: () => setState(() => _selectedIndex = 3),
                   ),
 
                   const Spacer(),
@@ -679,12 +656,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     children: [
       const _TelemetryOptInPromptCard(),
       Expanded(
-        child: switch (_selectedTab) {
-          HomeScreenTab.hosts => const HostsPanel(),
-          HomeScreenTab.connections => const _ConnectionsPanel(),
-          HomeScreenTab.agents => const AgentsPanel(),
-          HomeScreenTab.keys => const _KeysPanel(),
-          HomeScreenTab.snippets => const SnippetsPanel(),
+        child: switch (_selectedIndex) {
+          0 => const HostsPanel(),
+          1 => const _ConnectionsPanel(),
+          2 => const _KeysPanel(),
+          3 => const SnippetsPanel(),
+          _ => const HostsPanel(),
         },
       ),
     ],

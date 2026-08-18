@@ -27,12 +27,12 @@ void main() {
       expect(location.contains('/home/'), isFalse);
     });
 
-    test('agents overview location uses the real home route, not /home', () {
-      final location = buildAgentsOverviewLocation();
+    test('fallback location returns to active connections', () {
+      final location = buildAcpSessionFallbackLocation();
       final uri = Uri.parse(location);
 
       expect(uri.path, '/');
-      expect(uri.queryParameters['tab'], 'agents');
+      expect(uri.queryParameters['tab'], 'connections');
       expect(location.startsWith('/home'), isFalse);
     });
 

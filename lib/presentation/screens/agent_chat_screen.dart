@@ -49,6 +49,7 @@ import '../widgets/acp_permission_surface.dart';
 import '../widgets/acp_session_presentation.dart';
 import '../widgets/acp_session_switcher.dart';
 import '../widgets/brand_error_state.dart';
+import '../widgets/terminal_overlay_focus.dart';
 import 'sftp_screen.dart';
 
 /// Builds the attachment picker actions for a chat session. Overridable in
@@ -746,14 +747,22 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
               ),
             const SizedBox(height: FluttyTheme.spacingSm),
             TextButton.icon(
-              onPressed: () => context.go(buildAgentsOverviewLocation()),
-              icon: const Icon(Icons.hub),
-              label: const Text('Back to agents'),
+              onPressed: _leaveChat,
+              icon: const Icon(Icons.window_outlined),
+              label: const Text('Back to windows'),
             ),
           ],
         ),
       ),
     );
+  }
+
+  void _leaveChat() {
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    context.go(buildAcpSessionFallbackLocation());
   }
 
   void _openTerminalForAuth() {
@@ -820,6 +829,31 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     );
   }
 
+  Future<bool> _confirmDeleteSession() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete session?'),
+        content: const Text(
+          'This permanently removes the session from the agent. This action '
+          'cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete session'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
   Future<void> _handleAction(
     _ChatAction action,
     AcpSessionState session,
@@ -831,19 +865,22 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       case _ChatAction.detach:
         await manager.detachSession(_key);
         if (mounted) {
-          context.go(buildAgentsOverviewLocation());
+          _leaveChat();
         }
       case _ChatAction.stop:
         await manager.stopSession(_key);
         if (mounted) {
-          context.go(buildAgentsOverviewLocation());
+          _leaveChat();
         }
       case _ChatAction.fork:
         await _fork();
       case _ChatAction.delete:
+        if (!await _confirmDeleteSession() || !mounted) {
+          return;
+        }
         await manager.deleteSession(_key);
         if (mounted) {
-          context.go(buildAgentsOverviewLocation());
+          _leaveChat();
         }
     }
   }

@@ -7,16 +7,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/acp_provider_service.dart';
+import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/remote_multiplexer_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
+import 'package:monkeyssh/presentation/widgets/premium_badge.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_navigator.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_status_badge.dart';
+
+import '../support/fake_acp_session_manager.dart';
 
 void main() {
   group('TmuxWindowStatusBadge', () {
@@ -367,7 +373,6 @@ void main() {
                     unawaited(
                       showTmuxNavigator(
                         context: context,
-                        ref: ref,
                         session: session,
                         tmuxSessionName: tmuxSessionName,
                         remoteMuxBackend: RemoteMuxBackend.tmux,
@@ -654,6 +659,298 @@ void main() {
         findsOneWidget,
       );
     });
+
+    testWidgets('ACP-capable tool offers a native mode to free users', (
+      tester,
+    ) async {
+      TmuxNavigatorAction? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async {
+                  result = await showTmuxNewWindowPicker(
+                    context: context,
+                    isProUser: false,
+                    startClisInYoloMode: false,
+                    installedToolsFuture: Future.value(const <AgentLaunchTool>{
+                      AgentLaunchTool.copilotCli,
+                    }),
+                    nativeAcpProviderIds: const <AgentLaunchTool, String>{
+                      AgentLaunchTool.copilotCli:
+                          AcpBuiltinProviderIds.copilotCli,
+                    },
+                  );
+                },
+                child: const Text('Open picker'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+      expect(find.text('native available'), findsOneWidget);
+
+      await tester.tap(find.text('Copilot CLI'));
+      await tester.pumpAndSettle();
+      expect(find.text('Terminal window'), findsOneWidget);
+      expect(find.text('Native interface'), findsOneWidget);
+      expect(find.byType(PremiumBadge), findsOneWidget);
+
+      await tester.tap(find.text('Native interface'));
+      await tester.pumpAndSettle();
+
+      expect(result, isA<TmuxNewAcpSessionAction>());
+      expect(
+        (result! as TmuxNewAcpSessionAction).providerId,
+        AcpBuiltinProviderIds.copilotCli,
+      );
+    });
+
+    testWidgets('Pro user can choose terminal mode for an ACP-capable tool', (
+      tester,
+    ) async {
+      TmuxNavigatorAction? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async {
+                  result = await showTmuxNewWindowPicker(
+                    context: context,
+                    isProUser: true,
+                    startClisInYoloMode: false,
+                    installedToolsFuture: Future.value(const <AgentLaunchTool>{
+                      AgentLaunchTool.openCode,
+                    }),
+                    nativeAcpProviderIds: const <AgentLaunchTool, String>{
+                      AgentLaunchTool.openCode: AcpBuiltinProviderIds.openCode,
+                    },
+                  );
+                },
+                child: const Text('Open picker'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OpenCode'));
+      await tester.pumpAndSettle();
+      final terminalTile = tester.widget<ListTile>(
+        find.widgetWithText(ListTile, 'Terminal window'),
+      );
+      expect(terminalTile.enabled, isTrue);
+
+      await tester.tap(find.text('Terminal window'));
+      await tester.pumpAndSettle();
+
+      expect(result, isA<TmuxNewWindowAction>());
+      expect((result! as TmuxNewWindowAction).windowName, 'opencode');
+    });
+
+    testWidgets('tool without ACP support opens a terminal directly', (
+      tester,
+    ) async {
+      TmuxNavigatorAction? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async {
+                  result = await showTmuxNewWindowPicker(
+                    context: context,
+                    isProUser: true,
+                    startClisInYoloMode: false,
+                    installedToolsFuture: Future.value(const <AgentLaunchTool>{
+                      AgentLaunchTool.claudeCode,
+                    }),
+                  );
+                },
+                child: const Text('Open picker'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Claude Code'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Native interface'), findsNothing);
+      expect(result, isA<TmuxNewWindowAction>());
+    });
+
+    testWidgets('tmux navigator remains terminal-only', (tester) async {
+      final tmuxService = _MockTmuxService();
+      final presetService = _MockAgentLaunchPresetService();
+      final discoveryService = _MockAgentSessionDiscoveryService();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 1,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      const tmuxSessionName = 'main';
+      TmuxNavigatorAction? selected;
+
+      when(
+        () => presetService.getPresetForHost(session.hostId),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(
+        () => tmuxService.listWindows(session, tmuxSessionName),
+      ).thenAnswer((_) async => windows);
+      when(() => tmuxService.detectInstalledAgentTools(session)).thenAnswer(
+        (_) async => const <AgentLaunchTool>{AgentLaunchTool.copilotCli},
+      );
+
+      await _pumpNavigatorHost(
+        tester,
+        tmuxService: tmuxService,
+        presetService: presetService,
+        discoveryService: discoveryService,
+        session: session,
+        tmuxSessionName: tmuxSessionName,
+        acpManager: FakeAcpSessionManager(
+          sessions: [fakeAcpSession(title: 'Native only')],
+        ),
+        onActionSelected: (action) => selected = action,
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.text('native agent sessions'), findsNothing);
+
+      await tester.tap(find.text('New Window'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Copilot CLI'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Native interface'), findsNothing);
+      expect(selected, isA<TmuxNewWindowAction>());
+    });
+
+    testWidgets('MonkeyMux exposes the custom ACP provider picker', (
+      tester,
+    ) async {
+      TmuxNavigatorAction? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async {
+                  result = await showTmuxNewWindowPicker(
+                    context: context,
+                    isProUser: false,
+                    startClisInYoloMode: false,
+                    installedToolsFuture: Future.value(
+                      const <AgentLaunchTool>{},
+                    ),
+                    allowNativeAcpProviderPicker: true,
+                  );
+                },
+                child: const Text('Open picker'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+      expect(find.text('Other native agent'), findsOneWidget);
+
+      await tester.tap(find.text('Other native agent'));
+      await tester.pumpAndSettle();
+
+      expect(result, isA<TmuxNewAcpSessionAction>());
+      expect((result! as TmuxNewAcpSessionAction).providerId, isNull);
+    });
+
+    testWidgets('MonkeyMux navigator lists and opens native ACP sessions', (
+      tester,
+    ) async {
+      final tmuxService = _MockTmuxService();
+      final presetService = _MockAgentLaunchPresetService();
+      final discoveryService = _MockAgentSessionDiscoveryService();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 1,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      const tmuxSessionName = 'main';
+      final key = fakeAcpKey();
+      final manager = FakeAcpSessionManager(
+        sessions: [
+          fakeAcpSession(
+            key: key,
+            title: 'Fix authentication',
+            cwd: '/home/dev/monkeyssh',
+          ),
+        ],
+      );
+      TmuxNavigatorAction? selected;
+
+      when(
+        () => presetService.getPresetForHost(session.hostId),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(
+        () => tmuxService.listWindows(session, tmuxSessionName),
+      ).thenAnswer((_) async => windows);
+
+      await _pumpNavigatorHost(
+        tester,
+        tmuxService: tmuxService,
+        presetService: presetService,
+        discoveryService: discoveryService,
+        session: session,
+        tmuxSessionName: tmuxSessionName,
+        remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        acpManager: manager,
+        onActionSelected: (action) => selected = action,
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('native agent sessions'), findsOneWidget);
+      expect(find.text('Fix authentication'), findsOneWidget);
+      expect(find.text('Copilot CLI · …/monkeyssh'), findsOneWidget);
+      expect(find.text('ready'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('Fix authentication'));
+      await tester.pump();
+      await tester.tap(find.text('Fix authentication'));
+      await tester.pumpAndSettle();
+
+      expect(selected, isA<TmuxOpenAcpSessionAction>());
+      expect((selected! as TmuxOpenAcpSessionAction).key, key);
+    });
   });
 }
 
@@ -667,10 +964,20 @@ Future<void> _pumpNavigatorHost(
   RemoteMuxBackend remoteMuxBackend = RemoteMuxBackend.tmux,
   bool startClisInYoloMode = false,
   ValueChanged<TmuxNavigatorAction?>? onActionSelected,
+  FakeAcpSessionManager? acpManager,
 }) async {
+  final resolvedAcpManager = acpManager ?? FakeAcpSessionManager();
+  addTearDown(resolvedAcpManager.dispose);
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
+        acpSessionManagerProvider.overrideWithValue(resolvedAcpManager),
+        acpProvidersProvider.overrideWith(
+          (ref) => Stream.value(<AcpProvider>[
+            for (final provider in acpBuiltinProviders)
+              AcpBuiltinProviderView(provider),
+          ]),
+        ),
         tmuxServiceProvider.overrideWithValue(tmuxService),
         agentLaunchPresetServiceProvider.overrideWithValue(presetService),
         agentSessionDiscoveryServiceProvider.overrideWithValue(
@@ -685,7 +992,6 @@ Future<void> _pumpNavigatorHost(
                 unawaited(
                   showTmuxNavigator(
                     context: context,
-                    ref: ref,
                     session: session,
                     tmuxSessionName: tmuxSessionName,
                     remoteMuxBackend: remoteMuxBackend,

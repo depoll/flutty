@@ -28,6 +28,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
@@ -37,6 +38,7 @@ import '../../domain/models/terminal_progress.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/app_review_demo_service.dart';
@@ -64,6 +66,7 @@ import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/terminal_wake_lock_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../controllers/terminal_session_controller.dart';
+import '../widgets/acp_new_session_sheet.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/brand_error_state.dart';
@@ -10709,7 +10712,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         deferPostSwitchExec: false,
       );
     } on Exception catch (error) {
-      _showTmuxActionFailure(error);
+      _showTmuxActionFailure(error, TmuxSwitchWindowAction(targetWindow.index));
     }
   }
 
@@ -11127,7 +11130,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       final action = await showTmuxNavigator(
         context: context,
-        ref: ref,
         session: session,
         tmuxSessionName: _tmuxSessionName!,
         remoteMuxBackend: _activeMuxBackend,
@@ -11175,6 +11177,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   hasCommand: command?.trim().isNotEmpty ?? false,
                 ),
           );
+        case TmuxNewAcpSessionAction(
+          :final providerId,
+          :final workingDirectory,
+        ):
+          await _startNativeAcpSession(
+            session,
+            providerId: providerId,
+            workingDirectory: workingDirectory,
+          );
+        case TmuxOpenAcpSessionAction(:final key):
+          _openNativeAcpSession(key);
+        case TmuxCloseAcpSessionAction(:final key):
+          await ref.read(acpSessionManagerProvider).stopSession(key);
         case TmuxResumeSessionAction(
           :final resumeCommand,
           :final workingDirectory,
@@ -11213,15 +11228,68 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'errorType': error.runtimeType,
         },
       );
-      _showTmuxActionFailure(error);
+      _showTmuxActionFailure(error, action);
     }
   }
 
-  void _showTmuxActionFailure(Exception error) {
+  Future<void> _startNativeAcpSession(
+    SshSession session, {
+    String? providerId,
+    String? workingDirectory,
+  }) async {
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Native agent sessions require MonkeyMux.'),
+          ),
+        );
+      }
+      return;
+    }
+    final key = await showAcpNewSessionSheet(
+      context,
+      initialHostId: session.hostId,
+      initialProviderId: providerId,
+      initialWorkingDirectory: workingDirectory,
+      lockHost: true,
+      lockProvider: providerId != null,
+    );
+    if (!mounted || key == null) {
+      return;
+    }
+    _openNativeAcpSession(key);
+  }
+
+  void _openNativeAcpSession(AcpSessionKey key) {
+    if (!mounted) {
+      return;
+    }
+    unawaited(
+      context.push<void>(
+        buildAgentChatLocation(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+        ),
+      ),
+    );
+  }
+
+  void _showTmuxActionFailure(Exception error, TmuxNavigatorAction action) {
     if (!mounted) return;
+    final isAcpAction =
+        action is TmuxNewAcpSessionAction ||
+        action is TmuxOpenAcpSessionAction ||
+        action is TmuxCloseAcpSessionAction;
     final message = switch (error) {
+      TimeoutException() when isAcpAction =>
+        'Timed out waiting for the native agent. Reconnect and try again.',
       TimeoutException() =>
         'Timed out waiting for tmux. Reconnect if actions keep failing.',
+      _ when isAcpAction =>
+        'Native agent action failed. Check the session and try again.',
       _ => 'tmux action failed. Check the session and try again.',
     };
     ScaffoldMessenger.of(

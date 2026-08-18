@@ -1,5 +1,5 @@
 /// Shared, content-safe presentation helpers for rendering ACP session
-/// metadata across the Agents overview, session switcher, and chat screen.
+/// metadata across the MonkeyMux navigator, session switcher, and chat screen.
 ///
 /// None of these helpers persist or log transcript content; they only format
 /// already-in-memory identifiers, coarse status, and timestamps for display.

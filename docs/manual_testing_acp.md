@@ -44,7 +44,10 @@ Use the values printed by `setup_acp_test_env.sh`:
 2. In **Settings → Agents → Custom providers**, add `Fake ACP v1`.
 3. Set the command to the printed absolute `fake-acp-provider` path.
 4. Approve that exact command and use the printed working directory.
-5. Create a session from the Agents panel.
+5. Configure the host to use MonkeyMux, connect its terminal, and open the
+   window navigator.
+6. Choose **New Window → Other native agent**, select `Fake ACP v1`, and start
+   the session.
 
 The provider advertises `/echo`, `/fixtures`, and `/wait`. `/fixtures` emits
 all rendering fixtures and a permission request. `/wait` remains active until
@@ -54,8 +57,9 @@ Cancel is tapped.
 
 Test on the smallest supported phone size:
 
-1. Open **Agents** from the bottom navigation with one thumb.
-2. Create a fake-provider session without rotating the device.
+1. Open a MonkeyMux terminal and its window navigator with one thumb.
+2. Choose **New Window → Other native agent** and create a fake-provider session
+   without rotating the device.
 3. Enter `/fixtures`, select it from the slash-command picker, and send.
 4. Scroll through thought, plan, tool, image, resource, and usage cards.
 5. Choose each permission option in separate turns; the exact choices are
@@ -128,7 +132,8 @@ For every cell:
    support.
 4. Disconnect during streaming and during permission, then verify replay and
    session identity after reconnect.
-5. Close/stop from MonkeySSH and confirm no provider or bridge process remains.
+5. Close/stop from the native chat or MonkeyMux window navigator and confirm
+   no provider or bridge process remains.
 
 ## Privacy checks
 

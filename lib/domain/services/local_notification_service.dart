@@ -470,12 +470,12 @@ const acpAgentChatBridgeQueryKey = 'b';
 /// chat route.
 const acpAgentChatSessionQueryKey = 's';
 
-/// Location that opens the Agents overview tab on the home screen.
+/// Safe fallback used when an ACP chat has no route beneath it.
 ///
-/// This is the safe fallback when a specific chat cannot be deep-linked; it
-/// must match the real home route (`/`) rather than a nonexistent `/home`.
-String buildAgentsOverviewLocation() =>
-    Uri(path: '/', queryParameters: const {'tab': 'agents'}).toString();
+/// Native ACP sessions live in the MonkeyMux window navigator, so the fallback
+/// returns to active connections rather than a separate top-level workspace.
+String buildAcpSessionFallbackLocation() =>
+    Uri(path: '/', queryParameters: const {'tab': 'connections'}).toString();
 
 /// Builds the deep-link location for a specific ACP chat session, carrying
 /// only opaque identifiers. No working directory, title, command, prompt, or
@@ -497,8 +497,8 @@ String buildAgentChatLocation({
 
 /// Builds the safe navigation location for an ACP notification tap.
 ///
-/// When the payload carries the full set of session identifiers, the tap lands
-/// directly on that chat. Otherwise it falls back to the Agents overview.
+/// The redacted payload carries the full set of opaque session identifiers, so
+/// the tap lands directly on the matching native chat.
 String buildAcpNotificationLocation(AcpNotificationPayload payload) =>
     buildAgentChatLocation(
       hostId: payload.hostId,

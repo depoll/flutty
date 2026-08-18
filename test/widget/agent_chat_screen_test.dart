@@ -168,6 +168,30 @@ void main() {
     expect(manager.permissionResponses, [('req-1', 'allow-1')]);
   });
 
+  testWidgets('cancelling delete keeps the remote session', (tester) async {
+    final key = fakeAcpKey();
+    final manager = FakeAcpSessionManager(
+      sessions: [
+        fakeAcpSession(key: key, capabilities: fakeAcpForkCapabilities()),
+      ],
+    );
+    await tester.pumpWidget(_wrap(manager));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete session'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Delete session?'), findsOneWidget);
+    expect(find.textContaining('cannot be undone'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(manager.deleted, isEmpty);
+    expect(find.byType(AcpComposer), findsOneWidget);
+  });
+
   testWidgets('a failed fork surfaces a safe error snackbar', (tester) async {
     final manager =
         FakeAcpSessionManager(

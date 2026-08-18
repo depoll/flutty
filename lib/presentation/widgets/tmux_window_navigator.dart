@@ -5,9 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
+import '../../domain/models/acp_provider.dart';
+import '../../domain/models/acp_recent_session.dart';
+import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/acp_provider_service.dart';
+import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
@@ -15,6 +20,9 @@ import '../../domain/services/remote_multiplexer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/tmux_service.dart';
+import 'acp_new_session_sheet.dart';
+import 'acp_session_presentation.dart';
+import 'acp_session_switcher.dart';
 import 'agent_tool_icon.dart';
 import 'ai_session_picker.dart';
 import 'premium_badge.dart';
@@ -61,12 +69,26 @@ String _telemetryAgentToolName(String toolName) {
   return tool?.name ?? toolName.toLowerCase().replaceAll(' ', '_');
 }
 
+/// Maps known terminal agent tools to their matching ACP providers.
+Map<AgentLaunchTool, String> nativeAcpProvidersByTool(
+  List<AcpProvider> providers,
+) => <AgentLaunchTool, String>{
+  for (final tool in AgentLaunchTool.uiDisplayOrder)
+    tool: ?acpProviderIdForAgentLaunchTool(tool, providers),
+};
+
+/// Maps known terminal agent tools to built-in ACP providers without I/O.
+Map<AgentLaunchTool, String> builtinNativeAcpProvidersByTool() =>
+    nativeAcpProvidersByTool(<AcpProvider>[
+      for (final provider in acpBuiltinProviders)
+        AcpBuiltinProviderView(provider),
+    ]);
+
 /// Shows the tmux window navigator bottom sheet.
 ///
 /// Returns the action the user selected, or `null` if dismissed.
 Future<TmuxNavigatorAction?> showTmuxNavigator({
   required BuildContext context,
-  required WidgetRef ref,
   required SshSession session,
   required String tmuxSessionName,
   required RemoteMuxBackend remoteMuxBackend,
@@ -87,19 +109,20 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
     tmuxExtraFlags: tmuxExtraFlags,
     isProUser: isProUser,
     startClisInYoloMode: startClisInYoloMode,
-    ref: ref,
     scopeWorkingDirectory: scopeWorkingDirectory,
   ),
 );
 
 /// Shows the tmux new-window picker bottom sheet.
-Future<TmuxNewWindowAction?> showTmuxNewWindowPicker({
+Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
   required BuildContext context,
   required bool isProUser,
   required bool startClisInYoloMode,
   Future<Set<AgentLaunchTool>>? installedToolsFuture,
   AgentLaunchTool? preferredTool,
-}) => showModalBottomSheet<TmuxNewWindowAction>(
+  Map<AgentLaunchTool, String> nativeAcpProviderIds = const {},
+  bool allowNativeAcpProviderPicker = false,
+}) => showModalBottomSheet<TmuxNavigatorAction>(
   context: context,
   isScrollControlled: true,
   requestFocus: terminalOverlayRouteRequestFocus(context),
@@ -107,22 +130,120 @@ Future<TmuxNewWindowAction?> showTmuxNewWindowPicker({
     isProUser: isProUser,
     installedToolsFuture: installedToolsFuture,
     preferredTool: preferredTool,
-    onToolSelected: (tool) {
-      Navigator.pop(
-        context,
-        TmuxNewWindowAction(
-          command: buildAgentToolCommand(
-            tool,
-            startInYoloMode: startClisInYoloMode,
+    nativeAcpTools: nativeAcpProviderIds.keys.toSet(),
+    onToolSelected: (tool) async {
+      final providerId = nativeAcpProviderIds[tool];
+      if (providerId == null) {
+        Navigator.pop(
+          context,
+          TmuxNewWindowAction(
+            command: buildAgentToolCommand(
+              tool,
+              startInYoloMode: startClisInYoloMode,
+            ),
+            windowName: tool.commandName,
           ),
-          windowName: tool.commandName,
-        ),
+        );
+        return;
+      }
+      final mode = await _showAgentWindowModePicker(
+        context: context,
+        tool: tool,
+        isProUser: isProUser,
       );
+      if (!context.mounted || mode == null) {
+        return;
+      }
+      switch (mode) {
+        case _AgentWindowMode.terminal:
+          Navigator.pop(
+            context,
+            TmuxNewWindowAction(
+              command: buildAgentToolCommand(
+                tool,
+                startInYoloMode: startClisInYoloMode,
+              ),
+              windowName: tool.commandName,
+            ),
+          );
+        case _AgentWindowMode.nativeAcp:
+          Navigator.pop(
+            context,
+            TmuxNewAcpSessionAction(providerId: providerId),
+          );
+      }
     },
+    onNativeAcpProvider: allowNativeAcpProviderPicker
+        ? () => Navigator.pop(context, const TmuxNewAcpSessionAction())
+        : null,
     onEmptyWindow: () {
       Navigator.pop(context, const TmuxNewWindowAction());
     },
   ),
+);
+
+enum _AgentWindowMode { terminal, nativeAcp }
+
+Future<_AgentWindowMode?> _showAgentWindowModePicker({
+  required BuildContext context,
+  required AgentLaunchTool tool,
+  required bool isProUser,
+}) => showModalBottomSheet<_AgentWindowMode>(
+  context: context,
+  useSafeArea: true,
+  showDragHandle: true,
+  requestFocus: terminalOverlayRouteRequestFocus(context),
+  builder: (context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                TmuxToolPickerSheet._iconForTool(tool, theme),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    tool.label,
+                    style: FluttyTheme.displayMono(
+                      fontSize: 18,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          ListTile(
+            minTileHeight: 52,
+            leading: const Icon(Icons.terminal_outlined),
+            title: const Text('Terminal window'),
+            subtitle: const Text('Run the full CLI in MonkeyMux'),
+            trailing: isProUser ? null : const PremiumBadge(),
+            enabled: isProUser,
+            onTap: isProUser
+                ? () => Navigator.pop(context, _AgentWindowMode.terminal)
+                : null,
+          ),
+          ListTile(
+            minTileHeight: 52,
+            leading: Icon(
+              Icons.chat_bubble_outline,
+              color: theme.colorScheme.primary,
+            ),
+            title: const Text('Native interface'),
+            subtitle: const Text('Use ACP chat, tools, and permissions'),
+            onTap: () => Navigator.pop(context, _AgentWindowMode.nativeAcp),
+          ),
+        ],
+      ),
+    );
+  },
 );
 
 /// Shows the tmux new-window picker as a menu next to [anchorContext].
@@ -258,6 +379,36 @@ class TmuxNewWindowAction extends TmuxNavigatorAction {
 }
 
 /// Resume an AI tool session in a new tmux window.
+class TmuxNewAcpSessionAction extends TmuxNavigatorAction {
+  /// Creates a native ACP session for a provider supported by MonkeyMux.
+  const TmuxNewAcpSessionAction({this.providerId, this.workingDirectory});
+
+  /// Stable ACP provider identifier selected for launch, or null to choose one.
+  final String? providerId;
+
+  /// Working directory inherited from the current MonkeyMux window context.
+  final String? workingDirectory;
+}
+
+/// Open an existing native ACP session from the MonkeyMux window navigator.
+class TmuxOpenAcpSessionAction extends TmuxNavigatorAction {
+  /// Creates an open-native-session action.
+  const TmuxOpenAcpSessionAction(this.key);
+
+  /// Stable session identity.
+  final AcpSessionKey key;
+}
+
+/// Stop a tracked native ACP session from the MonkeyMux window navigator.
+class TmuxCloseAcpSessionAction extends TmuxNavigatorAction {
+  /// Creates a close-native-session action.
+  const TmuxCloseAcpSessionAction(this.key);
+
+  /// Stable session identity.
+  final AcpSessionKey key;
+}
+
+/// Resume an AI tool session in a new tmux window.
 class TmuxResumeSessionAction extends TmuxNavigatorAction {
   /// Creates a new [TmuxResumeSessionAction].
   const TmuxResumeSessionAction(this.resumeCommand, {this.workingDirectory});
@@ -283,11 +434,14 @@ String diagnosticTmuxNavigatorActionKind(TmuxNavigatorAction action) =>
     switch (action) {
       TmuxSwitchWindowAction() => 'switch_window',
       TmuxNewWindowAction() => 'new_window',
+      TmuxNewAcpSessionAction() => 'new_acp_session',
+      TmuxOpenAcpSessionAction() => 'open_acp_session',
+      TmuxCloseAcpSessionAction() => 'close_acp_session',
       TmuxResumeSessionAction() => 'resume_session',
       TmuxCloseWindowAction() => 'close_window',
     };
 
-class _TmuxNavigatorSheet extends StatefulWidget {
+class _TmuxNavigatorSheet extends ConsumerStatefulWidget {
   const _TmuxNavigatorSheet({
     required this.session,
     required this.tmuxSessionName,
@@ -295,7 +449,6 @@ class _TmuxNavigatorSheet extends StatefulWidget {
     required this.remoteMultiplexerService,
     required this.isProUser,
     required this.startClisInYoloMode,
-    required this.ref,
     this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
   });
@@ -307,20 +460,21 @@ class _TmuxNavigatorSheet extends StatefulWidget {
   final String? tmuxExtraFlags;
   final bool isProUser;
   final bool startClisInYoloMode;
-  final WidgetRef ref;
   final String? scopeWorkingDirectory;
 
   @override
-  State<_TmuxNavigatorSheet> createState() => _TmuxNavigatorSheetState();
+  ConsumerState<_TmuxNavigatorSheet> createState() =>
+      _TmuxNavigatorSheetState();
 }
 
-class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
+class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   /// Maximum number of recent sessions to show per tool.
   static const _maxSessionsPerTool = 16;
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
   Future<Set<AgentLaunchTool>>? _installedToolsFuture;
+  Future<List<AcpRecentSessionRef>>? _acpRecents;
   StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
   String? _error;
@@ -343,12 +497,19 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   };
 
   AgentSessionDiscoveryService get _discovery =>
-      widget.ref.read(agentSessionDiscoveryServiceProvider);
+      ref.read(agentSessionDiscoveryServiceProvider);
+
+  void _loadAcpRecents() {
+    _acpRecents = widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux
+        ? ref.read(acpSessionManagerProvider).loadRecentSessions()
+        : null;
+  }
 
   @override
   void initState() {
     super.initState();
     unawaited(_loadPreferredLaunchTool());
+    _loadAcpRecents();
     _subscribeToWindowChanges();
     _loadWindows();
   }
@@ -361,6 +522,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       _installedToolsFuture = null;
       _showSessions = false;
       _hasInitializedSessionProviders = false;
+      _loadAcpRecents();
       unawaited(_loadPreferredLaunchTool());
     }
   }
@@ -393,7 +555,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   Future<void> _loadPreferredLaunchTool() async {
     final hostId = widget.session.hostId;
-    final preset = await widget.ref
+    final preset = await ref
         .read(agentLaunchPresetServiceProvider)
         .getPresetForHost(hostId);
     if (!mounted || widget.session.hostId != hostId) return;
@@ -639,7 +801,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     AiSessionProviderEntry provider,
   ) async {
     unawaited(
-      widget.ref
+      ref
           .read(telemetryServiceProvider)
           .logSessionHistoryOpened(
             tool: _telemetryAgentToolName(provider.toolName),
@@ -672,7 +834,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   }
 
   Future<void> _showNewWindowPicker() async {
-    final installedToolsFuture = _installedToolsFuture ??= widget.ref
+    final installedToolsFuture = _installedToolsFuture ??= ref
         .read(tmuxServiceProvider)
         .detectInstalledAgentTools(widget.session);
     unawaited(
@@ -680,7 +842,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           .then((tools) {
             for (final tool in tools) {
               unawaited(
-                widget.ref
+                ref
                     .read(telemetryServiceProvider)
                     .logAgentToolDetected(tool: tool.name),
               );
@@ -689,23 +851,43 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           .catchError((Object _) {}),
     );
     unawaited(
-      widget.ref
+      ref
           .read(telemetryServiceProvider)
           .logMuxNewWindowDialogOpened(
             backend: _telemetryMuxBackendName(widget.remoteMuxBackend),
           ),
     );
+    final nativeAcpAvailable =
+        widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+    final nativeAcpProviderIds = nativeAcpAvailable
+        ? builtinNativeAcpProvidersByTool()
+        : const <AgentLaunchTool, String>{};
     final action = await showTmuxNewWindowPicker(
       context: context,
       isProUser: widget.isProUser,
       startClisInYoloMode: widget.startClisInYoloMode,
       installedToolsFuture: installedToolsFuture,
       preferredTool: _preferredLaunchTool,
+      nativeAcpProviderIds: nativeAcpProviderIds,
+      allowNativeAcpProviderPicker: nativeAcpAvailable,
     );
     if (!mounted || action == null) {
       return;
     }
-    _createNewWindow(command: action.command, name: action.windowName);
+    switch (action) {
+      case TmuxNewWindowAction(:final command, :final windowName):
+        _createNewWindow(command: command, name: windowName);
+      case TmuxNewAcpSessionAction(:final providerId):
+        Navigator.pop(
+          context,
+          TmuxNewAcpSessionAction(
+            providerId: providerId,
+            workingDirectory: widget.scopeWorkingDirectory,
+          ),
+        );
+      default:
+        throw StateError('Unexpected new-window picker action');
+    }
   }
 
   @override
@@ -780,6 +962,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                   if (widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux &&
                       (_windows?.isNotEmpty ?? false))
                     _buildMonkeyMuxShortcutHint(theme),
+                  if (widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux)
+                    _buildNativeAcpSessionSection(theme),
                   const Divider(height: 1),
                   // New Window button
                   ListTile(
@@ -810,6 +994,175 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         ),
       ),
     );
+  }
+
+  Widget _buildNativeAcpSessionSection(ThemeData theme) {
+    final manager = ref.watch(acpSessionManagerProvider);
+    final managerState =
+        ref.watch(acpSessionManagerStateProvider).asData?.value ??
+        manager.state;
+    final sessions = managerState.sessions
+        .where((session) => session.key.hostId == widget.session.hostId)
+        .toList(growable: false);
+    final providers =
+        ref.watch(acpProvidersProvider).asData?.value ?? const <AcpProvider>[];
+    final providerLabels = <String, String>{
+      for (final provider in providers) provider.id: provider.label,
+    };
+    final providerTools = <String, AgentLaunchTool>{
+      for (final provider in providers)
+        provider.id: ?agentLaunchToolForCommandName(
+          provider.launchCommand.executable,
+        ),
+    };
+    final recents = _acpRecents;
+    if (recents == null) {
+      return const SizedBox.shrink();
+    }
+    return FutureBuilder<List<AcpRecentSessionRef>>(
+      future: recents,
+      builder: (context, snapshot) {
+        final hostRecents = (snapshot.data ?? const <AcpRecentSessionRef>[])
+            .where((recent) => recent.hostId == widget.session.hostId)
+            .toList(growable: false);
+        final entries = buildAcpSwitcherEntries(
+          sessions: sessions,
+          recents: hostRecents,
+        );
+        if (entries.isEmpty) {
+          return const SizedBox.shrink();
+        }
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+              child: Text(
+                'native agent sessions',
+                style: FluttyTheme.monoStyle.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            for (final entry in entries)
+              _buildNativeAcpSessionTile(
+                entry,
+                providerLabels: providerLabels,
+                providerTools: providerTools,
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildNativeAcpSessionTile(
+    AcpSwitcherEntry entry, {
+    required Map<String, String> providerLabels,
+    required Map<String, AgentLaunchTool> providerTools,
+  }) {
+    final theme = Theme.of(context);
+    final session = entry.session;
+    final recent = entry.recent;
+    final key = session?.key ?? recent!.key;
+    final providerLabel =
+        session?.providerLabel ?? providerLabels[key.providerId] ?? 'Agent';
+    final cwd = acpCwdSummary(session?.cwd ?? recent?.cwd);
+    final status = session == null ? null : acpStatusDisplay(session.status);
+    final statusColor = status == null
+        ? theme.colorScheme.onSurfaceVariant
+        : acpStatusColor(theme.colorScheme, status.tone);
+    final tool = providerTools[key.providerId];
+    final hasPendingPermission =
+        session != null &&
+        (session.pendingPermissions.isNotEmpty ||
+            session.pendingWrites.isNotEmpty);
+
+    return ListTile(
+      key: ValueKey('native-acp-session-${key.value}'),
+      minTileHeight: 48,
+      contentPadding: const EdgeInsets.only(left: 16, right: 4),
+      horizontalTitleGap: 10,
+      minLeadingWidth: 28,
+      leading: AgentToolIcon(tool: tool, color: statusColor),
+      title: Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        '$providerLabel · $cwd',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            hasPendingPermission
+                ? Icons.approval_outlined
+                : (status?.icon ?? Icons.history),
+            size: 14,
+            color: hasPendingPermission
+                ? theme.colorScheme.tertiary
+                : statusColor,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            hasPendingPermission ? 'permission' : (status?.label ?? 'recent'),
+            style: FluttyTheme.monoStyle.copyWith(
+              color: hasPendingPermission
+                  ? theme.colorScheme.tertiary
+                  : statusColor,
+              fontSize: 11,
+            ),
+          ),
+          if (session != null)
+            IconButton(
+              icon: const Icon(Icons.close, size: 16),
+              constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+              padding: EdgeInsets.zero,
+              tooltip: 'Stop native agent session',
+              onPressed: () =>
+                  unawaited(_confirmStopNativeAcpSession(key, entry.title)),
+            )
+          else
+            const SizedBox(width: 12),
+        ],
+      ),
+      onTap: () => Navigator.pop(context, TmuxOpenAcpSessionAction(key)),
+    );
+  }
+
+  Future<void> _confirmStopNativeAcpSession(
+    AcpSessionKey key,
+    String title,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Stop native session?'),
+        content: Text('Stop “$title”? Any running turn will be interrupted.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Stop session'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) {
+      return;
+    }
+    Navigator.pop(context, TmuxCloseAcpSessionAction(key));
   }
 
   Widget _buildMonkeyMuxShortcutHint(ThemeData theme) => Padding(
@@ -968,7 +1321,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           final showSessions = !_showSessions;
           if (showSessions) {
             unawaited(
-              widget.ref
+              ref
                   .read(telemetryServiceProvider)
                   .logSessionHistoryOpened(tool: 'all', sessionCount: 0),
             );
@@ -1028,7 +1381,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                           .where((session) => session.toolName == toolName)
                           .length;
                       unawaited(
-                        widget.ref
+                        ref
                             .read(telemetryServiceProvider)
                             .logAgentSessionsDetected(
                               tool: _telemetryAgentToolName(toolName),
@@ -1116,8 +1469,10 @@ class TmuxToolPickerSheet extends StatelessWidget {
     required this.isProUser,
     required this.onToolSelected,
     required this.onEmptyWindow,
+    this.onNativeAcpProvider,
     this.installedToolsFuture,
     this.preferredTool,
+    this.nativeAcpTools = const <AgentLaunchTool>{},
     super.key,
   });
 
@@ -1135,8 +1490,14 @@ class TmuxToolPickerSheet extends StatelessWidget {
   /// Host-configured preferred tool, if one exists.
   final AgentLaunchTool? preferredTool;
 
+  /// Tools that can launch either a terminal window or a native ACP session.
+  final Set<AgentLaunchTool> nativeAcpTools;
+
   /// Called when the user selects a tool.
   final void Function(AgentLaunchTool tool) onToolSelected;
+
+  /// Opens the host-scoped picker for another ACP provider.
+  final VoidCallback? onNativeAcpProvider;
 
   /// Called when the user selects an empty window.
   final VoidCallback onEmptyWindow;
@@ -1249,14 +1610,39 @@ class TmuxToolPickerSheet extends StatelessWidget {
                               theme,
                             ),
                             title: Text(tool.label),
-                            trailing: !isProUser ? const PremiumBadge() : null,
-                            enabled: isProUser,
+                            trailing: nativeAcpTools.contains(tool)
+                                ? Text(
+                                    isProUser ? '2 modes' : 'native available',
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  )
+                                : (!isProUser ? const PremiumBadge() : null),
+                            enabled: isProUser || nativeAcpTools.contains(tool),
                             onTap: () => onToolSelected(tool),
                           ),
                       ],
                     );
                   },
                 ),
+                if (onNativeAcpProvider != null) ...[
+                  const Divider(height: 1),
+                  ListTile(
+                    visualDensity: _tmuxNavigatorDenseVisualDensity,
+                    minTileHeight: 48,
+                    contentPadding: _tmuxNavigatorTilePadding,
+                    horizontalTitleGap: 12,
+                    minLeadingWidth: 20,
+                    leading: Icon(
+                      Icons.chat_bubble_outline,
+                      color: theme.colorScheme.primary,
+                      size: 18,
+                    ),
+                    title: const Text('Other native agent'),
+                    subtitle: const Text('Choose an ACP provider'),
+                    onTap: onNativeAcpProvider,
+                  ),
+                ],
                 const Divider(height: 1),
                 ListTile(
                   visualDensity: _tmuxNavigatorDenseVisualDensity,

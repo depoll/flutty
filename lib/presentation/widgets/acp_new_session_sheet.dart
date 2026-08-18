@@ -47,6 +47,9 @@ Future<AcpSessionKey?> showAcpNewSessionSheet(
   BuildContext context, {
   int? initialHostId,
   String? initialProviderId,
+  String? initialWorkingDirectory,
+  bool lockHost = false,
+  bool lockProvider = false,
 }) => showModalBottomSheet<AcpSessionKey>(
   context: context,
   isScrollControlled: true,
@@ -55,6 +58,9 @@ Future<AcpSessionKey?> showAcpNewSessionSheet(
   builder: (context) => _NewSessionSheet(
     initialHostId: initialHostId,
     initialProviderId: initialProviderId,
+    initialWorkingDirectory: initialWorkingDirectory,
+    lockHost: lockHost,
+    lockProvider: lockProvider,
   ),
 );
 
@@ -114,6 +120,7 @@ AcpSessionLaunchDefaults resolveAcpSessionLaunchDefaults({
   AcpSessionKey? lastSelected,
   int? initialHostId,
   String? initialProviderId,
+  String? initialWorkingDirectory,
 }) {
   Host? hostForId(int? id) =>
       id == null ? null : hosts.where((host) => host.id == id).firstOrNull;
@@ -183,6 +190,7 @@ AcpSessionLaunchDefaults resolveAcpSessionLaunchDefaults({
     (recent) => recent.providerId == providerId,
   );
   final cwd =
+      nonEmpty(initialWorkingDirectory) ??
       nonEmpty(preset?.workingDirectory) ??
       nonEmpty(host?.tmuxWorkingDirectory) ??
       nonEmpty(matchingRecent?.cwd) ??
@@ -195,10 +203,19 @@ AcpSessionLaunchDefaults resolveAcpSessionLaunchDefaults({
 }
 
 class _NewSessionSheet extends ConsumerStatefulWidget {
-  const _NewSessionSheet({this.initialHostId, this.initialProviderId});
+  const _NewSessionSheet({
+    this.initialHostId,
+    this.initialProviderId,
+    this.initialWorkingDirectory,
+    this.lockHost = false,
+    this.lockProvider = false,
+  });
 
   final int? initialHostId;
   final String? initialProviderId;
+  final String? initialWorkingDirectory;
+  final bool lockHost;
+  final bool lockProvider;
 
   @override
   ConsumerState<_NewSessionSheet> createState() => _NewSessionSheetState();
@@ -226,6 +243,11 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     super.initState();
     _hostId = widget.initialHostId;
     _providerId = widget.initialProviderId;
+    final initialWorkingDirectory = widget.initialWorkingDirectory?.trim();
+    if (initialWorkingDirectory != null && initialWorkingDirectory.isNotEmpty) {
+      _cwd.text = initialWorkingDirectory;
+      _cwdEdited = true;
+    }
     _recents = ref.read(acpSessionManagerProvider).loadRecentSessions();
   }
 
@@ -280,13 +302,16 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
         lastSelected: lastSelected,
         initialHostId: widget.initialHostId,
         initialProviderId: widget.initialProviderId,
+        initialWorkingDirectory: widget.initialWorkingDirectory,
       );
       if (!mounted) {
         return;
       }
       setState(() {
-        _hostId = defaults.hostId;
-        _providerId = defaults.providerId;
+        _hostId = widget.lockHost ? widget.initialHostId : defaults.hostId;
+        _providerId = widget.lockProvider
+            ? widget.initialProviderId
+            : defaults.providerId;
         if (!_cwdEdited) {
           _cwd.text = defaults.cwd;
         }
@@ -309,10 +334,13 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
         presets: const {},
         initialHostId: widget.initialHostId,
         initialProviderId: widget.initialProviderId,
+        initialWorkingDirectory: widget.initialWorkingDirectory,
       );
       setState(() {
-        _hostId = defaults.hostId;
-        _providerId = defaults.providerId;
+        _hostId = widget.lockHost ? widget.initialHostId : defaults.hostId;
+        _providerId = widget.lockProvider
+            ? widget.initialProviderId
+            : defaults.providerId;
         if (!_cwdEdited) {
           _cwd.text = defaults.cwd;
         }
@@ -742,6 +770,18 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
       );
     }
     final controlsDisabled = _busy || _loadingDefaults;
+    final lockedHostUnavailable =
+        widget.lockHost &&
+        (hosts == null ||
+            !hosts.any((host) => host.id == widget.initialHostId));
+    final lockedProviderUnavailable =
+        widget.lockProvider &&
+        (providers == null ||
+            !providers.any(
+              (provider) => provider.id == widget.initialProviderId,
+            ));
+    final lockedContextUnavailable =
+        lockedHostUnavailable || lockedProviderUnavailable;
 
     return PopScope(
       // Block dismissal (back gesture / predictive pop) while a launch is in
@@ -783,6 +823,20 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
                       child: Text('Add a host first to launch an agent.'),
                     );
                   }
+                  if (widget.lockHost) {
+                    final host = hosts.firstWhereOrNull(
+                      (candidate) => candidate.id == _hostId,
+                    );
+                    return InputDecorator(
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.dns_outlined),
+                      ),
+                      child: Text(
+                        host?.label ?? 'Current MonkeyMux host',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    );
+                  }
                   return DropdownButtonFormField<int>(
                     initialValue: _hostId,
                     isExpanded: true,
@@ -819,7 +873,9 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
               const SizedBox(height: FluttyTheme.spacingMd),
               _sectionLabel(context, 'Provider'),
               providersAsync.when(
-                data: _buildProviderPicker,
+                data: widget.lockProvider
+                    ? _buildLockedProvider
+                    : _buildProviderPicker,
                 loading: () => const Padding(
                   padding: EdgeInsets.all(FluttyTheme.spacingMd),
                   child: LinearProgressIndicator(),
@@ -862,7 +918,10 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
               const SizedBox(height: FluttyTheme.spacingLg),
               FilledButton.icon(
                 onPressed:
-                    (controlsDisabled || _hostId == null || _providerId == null)
+                    (controlsDisabled ||
+                        lockedContextUnavailable ||
+                        _hostId == null ||
+                        _providerId == null)
                     ? null
                     : _start,
                 icon: _busy
@@ -879,6 +938,21 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildLockedProvider(List<AcpProvider> providers) {
+    final provider = providers.firstWhereOrNull(
+      (candidate) => candidate.id == _providerId,
+    );
+    return InputDecorator(
+      decoration: const InputDecoration(
+        prefixIcon: Icon(Icons.smart_toy_outlined),
+      ),
+      child: Text(
+        provider?.label ?? 'ACP provider unavailable',
+        overflow: TextOverflow.ellipsis,
       ),
     );
   }

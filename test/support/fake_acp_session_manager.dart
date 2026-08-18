@@ -45,7 +45,9 @@ class FakeAcpSessionManager extends AcpSessionManager {
 
   final List<String> stopped = <String>[];
   final List<String> detached = <String>[];
+  final List<String> deleted = <String>[];
   final List<String> selected = <String>[];
+  final List<({int hostId, String providerId, String cwd})> starts = [];
   final List<(String, String)> permissionResponses = <(String, String)>[];
   final List<String> cancelledPermissions = <String>[];
   final List<String> approvedWrites = <String>[];
@@ -123,6 +125,11 @@ class FakeAcpSessionManager extends AcpSessionManager {
   }
 
   @override
+  Future<void> deleteSession(AcpSessionKey key) async {
+    deleted.add(key.value);
+  }
+
+  @override
   Future<void> respondToPermission(
     AcpSessionKey key,
     String requestKey,
@@ -168,7 +175,10 @@ class FakeAcpSessionManager extends AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
-  }) async => startNewSessionResult;
+  }) async {
+    starts.add((hostId: hostId, providerId: providerId, cwd: cwd));
+    return startNewSessionResult;
+  }
 
   @override
   Future<AcpSessionLaunchResult> reconnectSession({

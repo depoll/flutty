@@ -828,7 +828,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final installedToolsFuture = widget.ref
         .read(tmuxServiceProvider)
         .detectInstalledAgentTools(widget.session);
-    final action = _isSidebar && anchorContext != null
+    final nativeAcpAvailable =
+        widget.activeMuxBackend == RemoteMuxBackend.monkeyMux;
+    final nativeAcpProviderIds = nativeAcpAvailable
+        ? builtinNativeAcpProvidersByTool()
+        : const <AgentLaunchTool, String>{};
+    if (!mounted || (anchorContext != null && !anchorContext.mounted)) {
+      return;
+    }
+    final usesTerminalOnlyContextMenu =
+        _isSidebar &&
+        anchorContext != null &&
+        widget.activeMuxBackend != RemoteMuxBackend.monkeyMux;
+    final action = usesTerminalOnlyContextMenu
         ? await showTmuxNewWindowContextMenu(
             context: context,
             anchorContext: anchorContext,
@@ -843,11 +855,20 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             startClisInYoloMode: widget.startClisInYoloMode,
             installedToolsFuture: installedToolsFuture,
             preferredTool: _preferredLaunchTool,
+            nativeAcpProviderIds: nativeAcpProviderIds,
+            allowNativeAcpProviderPicker: nativeAcpAvailable,
           );
     if (!mounted || action == null) {
       return;
     }
-    await widget.onAction(action);
+    final scopedAction = switch (action) {
+      TmuxNewAcpSessionAction(:final providerId) => TmuxNewAcpSessionAction(
+        providerId: providerId,
+        workingDirectory: widget.scopeWorkingDirectory,
+      ),
+      _ => action,
+    };
+    await widget.onAction(scopedAction);
   }
 
   int _tmuxAlertNotificationId(

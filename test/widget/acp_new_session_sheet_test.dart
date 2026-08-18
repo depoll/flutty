@@ -91,6 +91,9 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
   AgentLaunchPreset? preset,
   int? initialHostId = 1,
   String? initialProviderId = AcpBuiltinProviderIds.copilotCli,
+  String? initialWorkingDirectory,
+  bool lockHost = false,
+  bool lockProvider = false,
   bool startSession = true,
   SshConnectionResult connectionResult = const SshConnectionResult(
     success: true,
@@ -132,6 +135,9 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
                   context,
                   initialHostId: initialHostId,
                   initialProviderId: initialProviderId,
+                  initialWorkingDirectory: initialWorkingDirectory,
+                  lockHost: lockHost,
+                  lockProvider: lockProvider,
                 );
                 completed = true;
               },
@@ -154,6 +160,59 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
 
 void main() {
   final key = fakeAcpKey();
+
+  testWidgets('MonkeyMux launch locks host/provider and inherits window cwd', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager();
+    await _pumpAndLaunch(
+      tester,
+      manager,
+      initialWorkingDirectory: '/home/dev/current-worktree',
+      lockHost: true,
+      lockProvider: true,
+      startSession: false,
+    );
+
+    expect(find.byType(DropdownButtonFormField<int>), findsNothing);
+    expect(find.text('Alpha'), findsOneWidget);
+    expect(find.text('Copilot CLI'), findsOneWidget);
+    expect(find.text('OpenCode'), findsNothing);
+    final cwd = tester.widget<TextField>(find.byType(TextField));
+    expect(cwd.controller?.text, '/home/dev/current-worktree');
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Start session'));
+    await tester.pumpAndSettle();
+
+    expect(manager.starts, [
+      (
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/home/dev/current-worktree',
+      ),
+    ]);
+  });
+
+  testWidgets('locked missing provider cannot silently fall back', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager();
+    await _pumpAndLaunch(
+      tester,
+      manager,
+      initialProviderId: 'removed-provider',
+      lockHost: true,
+      lockProvider: true,
+      startSession: false,
+    );
+
+    expect(find.text('ACP provider unavailable'), findsOneWidget);
+    final startButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Start session'),
+    );
+    expect(startButton.onPressed, isNull);
+    expect(manager.starts, isEmpty);
+  });
 
   test('launch defaults prefer a host saved agent and MonkeyMux setup', () {
     final plainHost = _host(id: 1);
