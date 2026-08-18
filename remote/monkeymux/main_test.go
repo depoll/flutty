@@ -10351,9 +10351,11 @@ func TestDiscoverClaudeSessionIDsUsesOpenProjectFile(t *testing.T) {
 func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T) {
 	originalOpenFiles := processOpenFilePathsForMetadata
 	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
 	t.Cleanup(func() {
 		processOpenFilePathsForMetadata = originalOpenFiles
 		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
 	})
 
 	home := t.TempDir()
@@ -10377,6 +10379,12 @@ func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T
 		}
 		return ""
 	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return time.Now().Add(-time.Minute)
+		}
+		return time.Time{}
+	}
 	processes := map[int]processInfo{
 		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
 		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
@@ -10386,6 +10394,61 @@ func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T
 
 	if got := sessions[100]; got != sessionID {
 		t.Fatalf("claude session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverClaudeSessionIDsDoesNotResumeSessionFromBeforeFreshProcess(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "a69d705a-1822-49de-83ba-c86bd51932bb"
+	projectDir := filepath.Join(home, ".claude", "projects", "-work-project")
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(projectDir, sessionID+".jsonl")
+	if err := os.WriteFile(
+		sessionPath,
+		[]byte(`{"type":"user","cwd":"/work/project","sessionId":"`+sessionID+`"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processStarted := time.Now().UTC().Truncate(time.Second)
+	oldActivity := processStarted.Add(-time.Hour)
+	if err := os.Chtimes(sessionPath, oldActivity, oldActivity); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return processStarted
+		}
+		return time.Time{}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
+	}
+
+	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if len(sessions) != 0 {
+		t.Fatalf("fresh Claude process inherited stale sessions %#v, want none", sessions)
 	}
 }
 

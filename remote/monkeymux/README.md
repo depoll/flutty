@@ -90,7 +90,9 @@ time with the live process start and relaunches a matched session by its exact
 file path. A later unowned write in the same working directory marks that match
 ambiguous (including `/new` and `/resume` rotation), so it launches fresh rather
 than risking the wrong conversation. Plain
-working-directory fallback is used only for one window and one unused session. `--session-dir`,
+working-directory fallback is used only for one window and one unused session. Claude
+Code cwd fallback likewise only considers files written during the current Claude
+process, so a fresh empty window cannot inherit an older conversation. `--session-dir`,
 environment, and global/project `settings.json` session directories are honored,
 while nested child-agent stores are excluded. The server inherits the environment from
 the shell that launched it exactly, so profile-managed values such as `PATH`

@@ -66,6 +66,7 @@ const (
 	piSessionMetadataRecordLimitBytes = 1024 * 1024
 	piSessionHeaderScanLimitBytes     = 1024 * 1024
 	piSessionActivityMatchTolerance   = 15 * time.Second
+	claudeSessionStartTolerance       = 2 * time.Second
 	oscBufferLimitBytes               = 4096
 	processMetadataTimeout            = 500 * time.Millisecond
 	processMetadataInterval           = 500 * time.Millisecond
@@ -4850,8 +4851,8 @@ func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
 // Claude Code stores each session as
 // `~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`. A freshly launched
 // `claude` carries no `--resume` argument, so recover the session from the
-// rollout file the process holds open, or the most recent project file whose
-// `cwd` matches the pane's working directory.
+// rollout file the process holds open, or a project file whose `cwd` matches
+// the pane and which was written during this Claude process's lifetime.
 
 var claudeSessionIDPattern = regexp.MustCompile(
 	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
@@ -4864,6 +4865,7 @@ func discoverClaudeSessionIDs(
 	type unresolvedClaudeProcess struct {
 		panePid          int
 		workingDirectory string
+		processStarted   time.Time
 	}
 	sessions := map[int]string{}
 	unresolved := []unresolvedClaudeProcess{}
@@ -4889,7 +4891,8 @@ func discoverClaudeSessionIDs(
 		workingDirectory := normalizedMetadataPath(
 			processWorkingDirectoryForMetadata(process.pid),
 		)
-		if workingDirectory == "" {
+		processStarted := processStartedAtForMetadata(process.pid)
+		if workingDirectory == "" || processStarted.IsZero() {
 			continue
 		}
 		if _, ok := unresolvedPanes[panePid]; ok {
@@ -4899,6 +4902,7 @@ func discoverClaudeSessionIDs(
 		unresolved = append(unresolved, unresolvedClaudeProcess{
 			panePid:          panePid,
 			workingDirectory: workingDirectory,
+			processStarted:   processStarted,
 		})
 		workingDirectoryCounts[workingDirectory]++
 	}
@@ -4909,6 +4913,7 @@ func discoverClaudeSessionIDs(
 		}
 		if sessionID := claudeRecentSessionIDForWorkingDirectory(
 			candidate.workingDirectory,
+			candidate.processStarted,
 		); sessionID != "" {
 			sessions[candidate.panePid] = sessionID
 		}
@@ -4925,9 +4930,12 @@ func claudeSessionIDFromOpenFiles(pid int) string {
 	return ""
 }
 
-func claudeRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+func claudeRecentSessionIDForWorkingDirectory(
+	workingDirectory string,
+	processStarted time.Time,
+) string {
 	workingDirectory = normalizedMetadataPath(workingDirectory)
-	if workingDirectory == "" {
+	if workingDirectory == "" || processStarted.IsZero() {
 		return ""
 	}
 	home, err := os.UserHomeDir()
@@ -4936,6 +4944,10 @@ func claudeRecentSessionIDForWorkingDirectory(workingDirectory string) string {
 	}
 	projectsDir := filepath.Join(home, ".claude", "projects")
 	for _, path := range recentAgentSessionFiles(projectsDir, 60, isClaudeProjectSessionPath) {
+		info, err := os.Stat(path)
+		if err != nil || info.ModTime().Before(processStarted.Add(-claudeSessionStartTolerance)) {
+			continue
+		}
 		if normalizedMetadataPath(jsonStringFieldFromFile(path, "cwd")) != workingDirectory {
 			continue
 		}
