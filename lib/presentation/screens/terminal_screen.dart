@@ -50,6 +50,7 @@ import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/monkeymux_acp_bridge_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
 import '../../domain/services/monkeymux_service.dart';
 import '../../domain/services/port_forward_browser_service.dart';
@@ -67,6 +68,7 @@ import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/terminal_wake_lock_service.dart';
 import '../../domain/services/tmux_service.dart';
+import '../../domain/services/windows_remote_powershell.dart';
 import '../controllers/terminal_session_controller.dart';
 import '../widgets/acp_composer.dart';
 import '../widgets/acp_concurrency_choice.dart';
@@ -11295,27 +11297,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<Set<String>> _probeNativeAdapterCommands(
     SshSession session,
     Iterable<String> commands,
-  ) async {
-    final safe = commands
-        .where((name) => RegExp(r'^[A-Za-z0-9._@+-]+$').hasMatch(name))
-        .toSet();
-    if (safe.isEmpty || session.remoteIsWindows) {
-      return const <String>{};
-    }
-    final inner = safe
-        .map(
-          (name) =>
-              "command -v '$name' >/dev/null 2>&1 && printf '%s\\n' '$name'",
-        )
-        .join('; ');
-    final shell = await session.execute(inner);
-    final output = await utf8.decodeStream(shell.stdout);
-    await shell.done;
-    return output
-        .split(RegExp(r'[\r\n]+'))
-        .map((value) => value.trim())
-        .where(safe.contains)
-        .toSet();
+  ) {
+    final requested = commands.toSet();
+    final command = session.remoteIsWindows
+        ? buildWindowsPowerShellCommand(
+            buildMonkeyMuxAcpWindowsExecutableProbeScript(requested),
+          )
+        : buildMonkeyMuxAcpExecutableProbeCommand(requested);
+    return session.runQueuedExec(() async {
+      SSHSession? shell;
+      try {
+        shell = await session.execute(command);
+        shell.stderr.drain<void>().ignore();
+        final output = await utf8.decodeStream(shell.stdout);
+        await shell.done;
+        return parseMonkeyMuxAcpExecutableProbeOutput(output, requested);
+      } finally {
+        shell?.close();
+      }
+    });
   }
 
   Future<({AcpLaunchCommand? override, bool terminal})?>

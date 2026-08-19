@@ -21,6 +21,10 @@ const _helperTimeout = Duration(seconds: 15);
 const _profileSourcingPrefix =
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
     '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } >/dev/null 2>&1; '
+    r'case "${SHELL##*/}" in '
+    'zsh) { . ~/.zshrc; } >/dev/null 2>&1;; '
+    'bash) { . ~/.bashrc; } >/dev/null 2>&1;; '
+    'esac; '
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 final _bridgeIdPattern = RegExp(r'^[a-f0-9]{32}$');
 final _commandHashPattern = RegExp(r'^[a-f0-9]{64}$');
@@ -76,6 +80,62 @@ String buildMonkeyMuxAcpProviderCommand(
     );
   }
   return command;
+}
+
+/// Builds a profile-aware POSIX probe for approved executable names.
+///
+/// The user's interactive shell is required for npm/nvm/asdf/mise installs
+/// commonly exposed only from `.zshrc` or `.bashrc`. The command emits names,
+/// never paths or profile output, so callers can parse a strict allowlist.
+String buildMonkeyMuxAcpExecutableProbeCommand(Iterable<String> executables) {
+  final names = _validatedExecutableProbeNames(executables);
+  final inner =
+      'for c in ${names.join(' ')}; do '
+      r'if command -v "$c" >/dev/null 2>&1; then printf "%s\n" "$c"; fi; '
+      'done';
+  final quotedInner = "'${inner.replaceAll("'", "'\"'\"'")}'";
+  return '$_profileSourcingPrefix'
+      r'SH="${SHELL:-/bin/sh}"; "$SH" -ic '
+      '$quotedInner 2>/dev/null || true';
+}
+
+/// Builds the equivalent profile-aware Windows PowerShell probe.
+String buildMonkeyMuxAcpWindowsExecutableProbeScript(
+  Iterable<String> executables,
+) {
+  final names = _validatedExecutableProbeNames(executables);
+  final quotedNames = names.map(powerShellSingleQuote).join(',');
+  final body = [
+    powerShellProfilePathPreamble,
+    '\$__flNames=@($quotedNames);',
+    r'foreach($__flName in $__flNames){',
+    r'$__flCmd=Get-Command -Name $__flName -CommandType Application,ExternalScript -ErrorAction SilentlyContinue|Select-Object -First 1;',
+    r'if($__flCmd -ne $null){[void]$__flOut.Append($__flName).Append("`n")}',
+    '}',
+  ].join();
+  return powerShellUtf8OutputScript(body);
+}
+
+/// Parses executable-probe output against the exact requested allowlist.
+Set<String> parseMonkeyMuxAcpExecutableProbeOutput(
+  String output,
+  Iterable<String> requested,
+) {
+  final allowed = _validatedExecutableProbeNames(requested).toSet();
+  return output
+      .split(RegExp(r'[\r\n]+'))
+      .map((value) => value.trim())
+      .where(allowed.contains)
+      .toSet();
+}
+
+List<String> _validatedExecutableProbeNames(Iterable<String> executables) {
+  final names = executables.toSet().toList()..sort();
+  if (names.isEmpty ||
+      names.any((name) => !RegExp(r'^[A-Za-z0-9._@+-]+$').hasMatch(name))) {
+    throw ArgumentError.value(executables, 'executables');
+  }
+  return names;
 }
 
 /// Installs and controls persistent MonkeyMux ACP bridges over SSH.

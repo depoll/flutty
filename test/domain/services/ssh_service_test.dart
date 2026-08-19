@@ -1490,15 +1490,15 @@ LISTEN ::1:4201
         ),
       );
       addTearDown(() async {
+        for (final completer in doneCompleters) {
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        }
         await session.configureAutomaticPortForwarding(enabled: false);
         for (final controller in stdoutControllers) {
           if (!controller.isClosed) {
             await controller.close();
-          }
-        }
-        for (final completer in doneCompleters) {
-          if (!completer.isCompleted) {
-            completer.complete();
           }
         }
       });
@@ -1525,6 +1525,13 @@ LISTEN ::1:4201
       final rootsUpdated = session.updateAutomaticPortForwardProcessRoots({
         7300,
       });
+      await pumpEventQueue();
+      expect(
+        watcherIndex,
+        1,
+        reason: 'a replacement must wait for the old SSH channel to close',
+      );
+      doneCompleters[0].complete();
       await _waitUntil(() => watcherIndex == 2);
       stdoutControllers[1].add(
         Uint8List.fromList(

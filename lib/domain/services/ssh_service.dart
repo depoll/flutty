@@ -3564,6 +3564,7 @@ class SshSession {
   static const _defaultPortForwardStartTimeout = Duration(seconds: 10);
   static const _automaticPortDiscoveryTimeout = Duration(seconds: 8);
   static const _automaticPortWatcherStartTimeout = Duration(seconds: 10);
+  static const _automaticPortWatcherCloseTimeout = Duration(seconds: 2);
   static const _sftpOpenRetryDelays = [
     Duration(milliseconds: 250),
     Duration(milliseconds: 750),
@@ -4798,7 +4799,7 @@ class SshSession {
       final generation = ++_automaticPortForwardGeneration;
       _automaticPortForwardTimer?.cancel();
       _automaticPortForwardTimer = null;
-      await _stopAutomaticPortForwardWatcher();
+      await _stopAutomaticPortForwardWatcher(waitForClose: true);
       await _startAutomaticPortDiscovery(generation);
     });
     _automaticPortForwardConfiguration = operation.then<void>(
@@ -4864,12 +4865,12 @@ class SshSession {
       final generation = ++_automaticPortForwardGeneration;
       _automaticPortForwardTimer?.cancel();
       _automaticPortForwardTimer = null;
-      await _stopAutomaticPortForwardWatcher();
+      await _stopAutomaticPortForwardWatcher(waitForClose: true);
       await _startAutomaticPortDiscovery(generation);
       return;
     }
 
-    await _stopAutomaticPortForwarding();
+    await _stopAutomaticPortForwarding(waitForWatcherClose: true);
     if (_isClosing) {
       return;
     }
@@ -4883,11 +4884,13 @@ class SshSession {
     await _startAutomaticPortDiscovery(generation);
   }
 
-  Future<void> _stopAutomaticPortForwarding() async {
+  Future<void> _stopAutomaticPortForwarding({
+    bool waitForWatcherClose = false,
+  }) async {
     _automaticPortForwardGeneration++;
     _automaticPortForwardTimer?.cancel();
     _automaticPortForwardTimer = null;
-    await _stopAutomaticPortForwardWatcher();
+    await _stopAutomaticPortForwardWatcher(waitForClose: waitForWatcherClose);
     _automaticPortProxyHost = null;
     _automaticPortForwardExcludedListeners = const {};
     _automaticPortForwardShellTokens = const {};
@@ -5174,7 +5177,7 @@ class SshSession {
       return false;
     }
     if (_isClosing || generation != _automaticPortForwardGeneration) {
-      watcher.close();
+      await _closeAutomaticPortForwardWatcherSession(watcher);
       return false;
     }
 
@@ -5375,7 +5378,9 @@ class SshSession {
     unawaited(refreshAutomaticPortForwards());
   }
 
-  Future<void> _stopAutomaticPortForwardWatcher() async {
+  Future<void> _stopAutomaticPortForwardWatcher({
+    bool waitForClose = false,
+  }) async {
     final watcher = _automaticPortForwardWatcherSession;
     _automaticPortForwardWatcherSession = null;
     final ready = _automaticPortForwardWatcherReady;
@@ -5388,7 +5393,32 @@ class SshSession {
     _automaticPortForwardWatcherSnapshot = null;
     _automaticPortForwardWatcherSnapshotUnavailable = false;
     await subscription?.cancel();
-    watcher?.close();
+    if (watcher != null) {
+      if (waitForClose) {
+        await _closeAutomaticPortForwardWatcherSession(watcher);
+      } else {
+        watcher.close();
+      }
+    }
+  }
+
+  Future<void> _closeAutomaticPortForwardWatcherSession(
+    SSHSession watcher,
+  ) async {
+    watcher.close();
+    try {
+      await watcher.done.timeout(_automaticPortWatcherCloseTimeout);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'automatic_watcher_close_wait_failed',
+        fields: {
+          'connectionId': connectionId,
+          'hostId': hostId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
   }
 
   /// Discovers listening TCP ports and their loopback targets on the remote host.

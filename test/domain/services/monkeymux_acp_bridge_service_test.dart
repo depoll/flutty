@@ -13,6 +13,7 @@ import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 import 'package:monkeyssh/domain/services/remote_file_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/windows_remote_powershell.dart';
 
 const _bridgeId = '0123456789abcdef0123456789abcdef';
 const _otherBridgeId = 'fedcba9876543210fedcba9876543210';
@@ -179,6 +180,8 @@ void main() {
       'space value',
     ], isWindows: false);
     expect(posix, contains('. ~/.zprofile'));
+    expect(posix, contains('. ~/.zshrc'));
+    expect(posix, contains('. ~/.bashrc'));
     expect(posix, contains(r'$HOME/.opencode/bin'));
     expect(posix, contains(r'$HOME/.local/bin'));
     expect(
@@ -199,6 +202,39 @@ void main() {
     );
     expect(script, contains(r"$__flAcpArgs=@('--acp','a''b','x y')"));
     expect(script, contains(r'& $__flAcpExe @__flAcpArgs'));
+  });
+
+  test('probes adapters through interactive POSIX and Windows profiles', () {
+    final posix = buildMonkeyMuxAcpExecutableProbeCommand(const {
+      'npx',
+      'claude-agent-acp',
+    });
+    expect(posix, contains(r'SH="${SHELL:-/bin/sh}"'));
+    expect(posix, contains(r'"$SH" -ic'));
+    expect(posix, contains('claude-agent-acp npx'));
+    expect(posix, contains('. ~/.zshrc'));
+
+    final windows = buildMonkeyMuxAcpWindowsExecutableProbeScript(const {
+      'npx',
+      'claude-agent-acp',
+    });
+    expect(windows, contains(powerShellProfilePathPreamble));
+    expect(windows, contains("'claude-agent-acp','npx'"));
+    expect(windows, contains('-CommandType Application,ExternalScript'));
+  });
+
+  test('parses adapter probe output through the requested allowlist', () {
+    expect(
+      parseMonkeyMuxAcpExecutableProbeOutput(
+        'profile chatter\nclaude-agent-acp\nnpx\nunrequested\n',
+        const {'claude-agent-acp', 'npx'},
+      ),
+      {'claude-agent-acp', 'npx'},
+    );
+    expect(
+      () => buildMonkeyMuxAcpExecutableProbeCommand(const {'npx; unsafe'}),
+      throwsArgumentError,
+    );
   });
 
   test('starts, lists, statuses, and stops bridges on POSIX', () async {
