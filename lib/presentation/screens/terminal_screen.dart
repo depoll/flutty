@@ -67,6 +67,9 @@ import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/terminal_wake_lock_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../controllers/terminal_session_controller.dart';
+import '../widgets/acp_composer.dart';
+import '../widgets/acp_concurrency_choice.dart';
+import '../widgets/acp_connection_support.dart';
 import '../widgets/acp_new_session_sheet.dart';
 import '../widgets/acp_session_presentation.dart';
 import '../widgets/acp_session_switcher.dart';
@@ -3630,6 +3633,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
+  final _nativeComposerFocusController = AcpComposerFocusController();
   bool _keyboardVisibilityRebuildScheduled = false;
   int _terminalFocusRestoreGeneration = 0;
   final _toolbarController = KeyboardToolbarController();
@@ -11230,6 +11234,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (mounted && _activeNativeAcpSessionKey == key) {
             _showTerminalViewport();
           }
+        case TmuxResumeAcpSessionAction(
+          :final providerId,
+          :final acpSessionId,
+          :final workingDirectory,
+        ):
+          await _startNativeAcpSession(
+            session,
+            providerId: providerId,
+            workingDirectory: workingDirectory,
+            resumeSessionId: acpSessionId,
+          );
         case TmuxResumeSessionAction(
           :final resumeCommand,
           :final workingDirectory,
@@ -11277,6 +11292,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     String? providerId,
     String? workingDirectory,
+    String? resumeSessionId,
   }) async {
     if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
       if (mounted) {
@@ -11288,18 +11304,113 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       return;
     }
-    final key = await showAcpNewSessionSheet(
-      context,
-      initialHostId: session.hostId,
-      initialProviderId: providerId,
-      initialWorkingDirectory: workingDirectory,
-      lockHost: true,
-      lockProvider: providerId != null,
-    );
-    if (!mounted || key == null) {
+
+    // The generic native-provider action still needs a picker. A tool chosen
+    // from the MonkeyMux new-window menu already supplies its provider and
+    // should launch immediately, exactly like a terminal mux window.
+    if (providerId == null) {
+      final key = await showAcpNewSessionSheet(
+        context,
+        initialHostId: session.hostId,
+        initialWorkingDirectory: workingDirectory,
+        lockHost: true,
+      );
+      if (mounted && key != null) {
+        _openNativeAcpSession(key);
+      }
       return;
     }
-    _openNativeAcpSession(key);
+
+    final manager = ref.read(acpSessionManagerProvider);
+    final cwd = workingDirectory?.trim().isNotEmpty ?? false
+        ? workingDirectory!.trim()
+        : (_workingDirectoryPath ?? _host?.tmuxWorkingDirectory ?? '~');
+
+    Future<AcpSessionLaunchResult> launch({
+      List<AcpSessionKey> replace = const <AcpSessionKey>[],
+    }) => resumeSessionId == null
+        ? manager.startNewSession(
+            hostId: session.hostId,
+            providerId: providerId,
+            cwd: cwd,
+            confirmInstall: (request) =>
+                confirmAcpMonkeyMuxInstall(context, request),
+            replace: replace,
+          )
+        : manager.resumeProviderSession(
+            hostId: session.hostId,
+            providerId: providerId,
+            acpSessionId: resumeSessionId,
+            cwd: cwd,
+            confirmInstall: (request) =>
+                confirmAcpMonkeyMuxInstall(context, request),
+            replace: replace,
+          );
+
+    var result = await launch();
+    if (result is AcpSessionLaunchBlocked && mounted) {
+      final choice = await showAcpConcurrencyChoice(
+        context,
+        decision: result.decision,
+        managerState: manager.state,
+      );
+      if (!mounted || choice == null) {
+        return;
+      }
+      switch (choice) {
+        case AcpConcurrencyChoice.stopAndContinue:
+          final blocking = [
+            for (final value in result.decision.blockingSessionKeys)
+              manager.state.byKeyValue(value)?.key,
+          ].whereType<AcpSessionKey>().toList(growable: false);
+          result = await launch(replace: blocking);
+        case AcpConcurrencyChoice.upgrade:
+          await context.push<void>(
+            Uri(
+              path: '/upgrade',
+              queryParameters: {
+                'feature': MonetizationFeature.concurrentAcpSessions.name,
+              },
+            ).toString(),
+          );
+          if (!mounted ||
+              !ref
+                  .read(monetizationServiceProvider)
+                  .currentState
+                  .isProUnlocked) {
+            return;
+          }
+          result = await launch();
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    switch (result) {
+      case AcpSessionLaunchStarted(:final key):
+        _openNativeAcpSession(key);
+      case AcpSessionLaunchFailed(:final error):
+        final authCommand =
+            error.kind == AcpSessionErrorKind.authenticationRequired
+            ? acpTerminalAuthCommandFor(providerId)
+            : null;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error.message),
+            action: authCommand == null
+                ? null
+                : SnackBarAction(
+                    label: 'Copy sign-in',
+                    onPressed: () => unawaited(
+                      Clipboard.setData(
+                        ClipboardData(text: authCommand.argv.join(' ')),
+                      ),
+                    ),
+                  ),
+          ),
+        );
+      case AcpSessionLaunchBlocked():
+    }
   }
 
   void _openNativeAcpSession(AcpSessionKey key) {
@@ -11404,6 +11515,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       bridgeId: key.bridgeId,
       acpSessionId: key.acpSessionId,
       embedded: true,
+      composerFocusController: _nativeComposerFocusController,
       preferredFontSize: fontSize,
       preferredFontFamily: fontFamily,
       onFontSizeCommitted: _commitNativeAgentFontSize,
@@ -12883,33 +12995,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   : () => unawaited(_openConnectionFileBrowser()),
               tooltip: 'Browse files',
             ),
-            if (isMobile && !showsNativeAgent)
+            if (isMobile)
               IconButton(
                 icon: Icon(
                   systemKeyboardVisible
                       ? Icons.keyboard_hide
                       : Icons.keyboard_alt_outlined,
                 ),
-                onPressed: () => _toggleSystemKeyboard(systemKeyboardVisible),
+                onPressed: () => showsNativeAgent
+                    ? _toggleNativeComposerKeyboard(systemKeyboardVisible)
+                    : _toggleSystemKeyboard(systemKeyboardVisible),
                 tooltip: systemKeyboardVisible
                     ? 'Hide system keyboard'
                     : 'Show system keyboard',
               ),
-            if (!showsNativeAgent)
-              IconButton(
-                icon: _ExtraKeysToggleKeycap(
-                  key: ValueKey<String>(
-                    _showKeyboardToolbar
-                        ? 'extra-keys-toggle-active'
-                        : 'extra-keys-toggle-inactive',
-                  ),
-                  isActive: _showKeyboardToolbar,
+            IconButton(
+              icon: _ExtraKeysToggleKeycap(
+                key: ValueKey<String>(
+                  _showKeyboardToolbar
+                      ? 'extra-keys-toggle-active'
+                      : 'extra-keys-toggle-inactive',
                 ),
-                onPressed: _toggleKeyboardToolbar,
-                tooltip: _showKeyboardToolbar
-                    ? 'Hide extra keys'
-                    : 'Show extra keys',
+                isActive: _showKeyboardToolbar,
               ),
+              onPressed: _toggleKeyboardToolbar,
+              tooltip: _showKeyboardToolbar
+                  ? 'Hide extra keys'
+                  : 'Show extra keys',
+            ),
             MenuAnchor(
               key: _terminalOverflowMenuButtonKey,
               style: _terminalOverflowMenuStyle(
@@ -13045,7 +13158,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         body: Builder(
           builder: (bodyContext) {
             final showsKeyboardToolbar =
-                !showsNativeAgent &&
                 _showKeyboardToolbar &&
                 !showsDisconnectedOverlay &&
                 (!_isNativeSelectionMode || _isMobilePlatform);
@@ -13073,15 +13185,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   KeyboardToolbar(
                     controller: _toolbarController,
                     terminal: _terminal,
-                    onKeyPressed: _handleKeyboardToolbarKeyPressed,
-                    onPasteRequested: _pasteClipboard,
+                    onKeyPressed: showsNativeAgent
+                        ? null
+                        : _handleKeyboardToolbarKeyPressed,
+                    onTextInput: showsNativeAgent
+                        ? _nativeComposerFocusController.insertText
+                        : null,
+                    onSpecialKey: showsNativeAgent
+                        ? _nativeComposerFocusController.sendSpecialKey
+                        : null,
+                    onPasteRequested: showsNativeAgent
+                        ? _pasteClipboardIntoNativeComposer
+                        : _pasteClipboard,
                     onPasteMenuOpened: _refreshKeyboardToolbarSnippetMenu,
-                    onSnippetPasteRequested: _pasteKeyboardToolbarSnippet,
-                    onPasteMediaRequested: _pastePickedMedia,
-                    onPasteFilesRequested: _pastePickedFiles,
+                    onSnippetPasteRequested: showsNativeAgent
+                        ? _pasteSnippetIntoNativeComposer
+                        : _pasteKeyboardToolbarSnippet,
+                    onPasteMediaRequested: showsNativeAgent
+                        ? _nativeComposerFocusController.pickPhotos
+                        : _pastePickedMedia,
+                    onPasteFilesRequested: showsNativeAgent
+                        ? _nativeComposerFocusController.pickFiles
+                        : _pastePickedFiles,
                     snippets: _keyboardToolbarSnippets,
                     snippetFolders: _keyboardToolbarSnippetFolders,
-                    terminalFocusNode: _terminalFocusNode,
+                    terminalFocusNode: showsNativeAgent
+                        ? null
+                        : _terminalFocusNode,
                   ),
               ],
             );
@@ -13125,6 +13255,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  void _toggleNativeComposerKeyboard(bool isVisible) {
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logSystemKeyboardToggled(visible: !isVisible),
+    );
+    if (isVisible) {
+      _nativeComposerFocusController.dismissKeyboard();
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    } else {
+      _nativeComposerFocusController.requestFocus();
+    }
+  }
+
   void _toggleKeyboardToolbar() {
     final nextValue = !_showKeyboardToolbar;
     final shouldRestoreSystemKeyboard =
@@ -13138,7 +13282,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     setState(() => _showKeyboardToolbar = nextValue);
     if (shouldRestoreSystemKeyboard) {
-      _restoreTerminalFocus(forceShowSystemKeyboard: true);
+      if (_activeNativeAcpSessionKey != null) {
+        _nativeComposerFocusController.requestFocus();
+      } else {
+        _restoreTerminalFocus(forceShowSystemKeyboard: true);
+      }
     }
   }
 
@@ -17980,6 +18128,39 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           KeyboardToolbarSnippetFolder(id: folder.id, name: folder.name),
       ];
     });
+  }
+
+  Future<void> _pasteClipboardIntoNativeComposer() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (!mounted) {
+      return;
+    }
+    final text = data?.text;
+    if (text == null || text.isEmpty) {
+      _showClipboardMessage('Clipboard has no text to paste.');
+      return;
+    }
+    _nativeComposerFocusController.insertText(text);
+  }
+
+  Future<void> _pasteSnippetIntoNativeComposer(
+    KeyboardToolbarSnippet selectedSnippet,
+  ) async {
+    final repository = ref.read(snippetRepositoryProvider);
+    final snippet = await repository.getById(selectedSnippet.id);
+    if (!mounted) {
+      return;
+    }
+    if (snippet == null) {
+      _showClipboardMessage('Snippet is no longer available.');
+      return;
+    }
+    final substitution = await _substituteVariables(context, snippet);
+    if (!mounted || substitution == null || substitution.command.isEmpty) {
+      return;
+    }
+    _nativeComposerFocusController.insertText(substitution.command);
+    unawaited(repository.incrementUsage(snippet.id));
   }
 
   Future<void> _pasteKeyboardToolbarSnippet(

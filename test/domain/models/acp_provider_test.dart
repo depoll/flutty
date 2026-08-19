@@ -313,7 +313,7 @@ void main() {
 
   group('built-in providers', () {
     test('acpBuiltinProviders contains every verified adapter', () {
-      expect(acpBuiltinProviders, hasLength(7));
+      expect(acpBuiltinProviders, hasLength(8));
       expect(acpBuiltinProviders, contains(acpCopilotCliProvider));
       expect(acpBuiltinProviders, contains(acpClaudeAgentProvider));
       expect(acpBuiltinProviders, contains(acpCodexProvider));
@@ -321,6 +321,7 @@ void main() {
       expect(acpBuiltinProviders, contains(acpCursorAgentProvider));
       expect(acpBuiltinProviders, contains(acpAntigravityProvider));
       expect(acpBuiltinProviders, contains(acpPiProvider));
+      expect(acpBuiltinProviders, contains(acpGrokBuildProvider));
     });
 
     test('built-in provider IDs are stable and reserved', () {
@@ -331,6 +332,7 @@ void main() {
       expect(acpCursorAgentProvider.id, 'builtin:cursor-agent-acp');
       expect(acpAntigravityProvider.id, 'builtin:antigravity-acp');
       expect(acpPiProvider.id, 'builtin:pi-acp');
+      expect(acpGrokBuildProvider.id, 'builtin:grok-build');
       for (final provider in acpBuiltinProviders) {
         expect(
           provider.id.startsWith(acpCustomProviderReservedIdPrefix),
@@ -375,11 +377,19 @@ void main() {
         contains('pi-acp'),
       );
       expect(acpPiProvider.launchCommand.argv, ['pi-acp']);
+      expect(acpGrokBuildProvider.launchCommand.argv, [
+        'grok',
+        'agent',
+        'stdio',
+      ]);
     });
 
     test('built-in providers expose terminal-auth command metadata', () {
       expect(acpCopilotCliProvider.terminalAuthCommand, isNotNull);
       expect(acpOpenCodeProvider.terminalAuthCommand, isNotNull);
+      expect(acpClaudeAgentProvider.terminalAuthCommand, isNotNull);
+      expect(acpAntigravityProvider.terminalAuthCommand, isNotNull);
+      expect(acpGrokBuildProvider.terminalAuthCommand, isNotNull);
       expect(acpPiProvider.terminalAuthCommand, isNull);
     });
 

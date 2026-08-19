@@ -410,6 +410,7 @@ final class AcpClientCapabilityService {
 
   /// Capabilities that are safe to advertise for this service instance.
   AcpClientCapabilities get capabilities => AcpClientCapabilities(
+    meta: const <String, Object?>{'subagent-transcript': true},
     fileSystem: fileSystem == null
         ? null
         : const AcpFileSystemCapabilities(

@@ -235,6 +235,34 @@ void main() {
       expect(callCount, 1);
     });
 
+    testWidgets('custom input sinks bypass the terminal', (tester) async {
+      final terminalOutput = <String>[];
+      final customTerminal = Terminal(onOutput: terminalOutput.add);
+      final textInput = <String>[];
+      final specialKeys = <TerminalKey>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: KeyboardToolbar(
+              terminal: customTerminal,
+              onTextInput: textInput.add,
+              onSpecialKey: specialKeys.add,
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Slash'));
+      await tester.tap(find.byTooltip('Left'));
+      await tester.tap(find.byTooltip('Enter'));
+      await tester.pump();
+
+      expect(textInput, ['/']);
+      expect(specialKeys, [TerminalKey.arrowLeft, TerminalKey.enter]);
+      expect(terminalOutput, isEmpty);
+    });
+
     testWidgets('modifier taps call onKeyPressed to reset IME context', (
       tester,
     ) async {

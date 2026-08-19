@@ -244,34 +244,7 @@ void main() {
     expect(defaults.cwd, '/saved-agent-worktree');
   });
 
-  testWidgets('shows the initial configuration stage after launch', (
-    tester,
-  ) async {
-    final session = fakeAcpSession(
-      key: key,
-      configOptions: const [
-        AcpSelectConfigOption(
-          id: 'style',
-          name: 'Style',
-          currentValue: 'a',
-          options: [
-            AcpConfigValue(value: 'a', name: 'Alpha'),
-            AcpConfigValue(value: 'b', name: 'Beta'),
-          ],
-        ),
-      ],
-    );
-    final manager = FakeAcpSessionManager(sessions: [session])
-      ..startNewSessionResult = AcpSessionLaunchStarted(key);
-
-    await _pumpAndLaunch(tester, manager);
-
-    expect(find.text('configure session'), findsOneWidget);
-    expect(find.text('Style'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, 'Open chat'), findsOneWidget);
-  });
-
-  testWidgets('applying a select option calls the config setter', (
+  testWidgets('successful launch returns its key without a config page', (
     tester,
   ) async {
     final session = fakeAcpSession(
@@ -292,115 +265,12 @@ void main() {
       ..startNewSessionResult = AcpSessionLaunchStarted(key);
 
     final result = await _pumpAndLaunch(tester, manager);
-
-    await tester.tap(find.text('Style'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Beta'));
     await tester.pumpAndSettle();
 
-    expect(manager.configOptionSets, contains(('style', 'b')));
-
-    await tester.tap(find.widgetWithText(FilledButton, 'Open chat'));
-    await tester.pumpAndSettle();
     expect(result(), key);
-  });
-
-  testWidgets('toggling a boolean option calls the config setter', (
-    tester,
-  ) async {
-    final session = fakeAcpSession(
-      key: key,
-      configOptions: const [
-        AcpBooleanConfigOption(
-          id: 'verbose',
-          name: 'Verbose',
-          currentValue: false,
-        ),
-      ],
-    );
-    final manager = FakeAcpSessionManager(sessions: [session])
-      ..startNewSessionResult = AcpSessionLaunchStarted(key);
-
-    await _pumpAndLaunch(tester, manager);
-
-    await tester.tap(find.text('Verbose'));
-    await tester.pumpAndSettle();
-
-    expect(manager.configOptionSets, contains(('verbose', true)));
-  });
-
-  testWidgets('choosing a legacy model applies through the model setter', (
-    tester,
-  ) async {
-    final session = fakeAcpSession(
-      key: key,
-      modelState: const AcpModelState(
-        currentModelId: 'm1',
-        availableModels: [
-          AcpModelInfo(id: 'm1', name: 'Model One'),
-          AcpModelInfo(id: 'm2', name: 'Model Two'),
-        ],
-      ),
-    );
-    final manager = FakeAcpSessionManager(sessions: [session])
-      ..startNewSessionResult = AcpSessionLaunchStarted(key);
-
-    await _pumpAndLaunch(tester, manager);
-
-    await tester.tap(find.widgetWithText(ListTile, 'Model'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Model Two'));
-    await tester.pumpAndSettle();
-
-    expect(manager.modelSets, contains('m2'));
-  });
-
-  testWidgets('choosing a legacy mode applies through the mode setter', (
-    tester,
-  ) async {
-    final session = fakeAcpSession(
-      key: key,
-      modeState: const AcpSessionModeState(
-        currentModeId: 'code',
-        availableModes: [
-          AcpSessionMode(id: 'code', name: 'Code'),
-          AcpSessionMode(id: 'ask', name: 'Ask'),
-        ],
-      ),
-    );
-    final manager = FakeAcpSessionManager(sessions: [session])
-      ..startNewSessionResult = AcpSessionLaunchStarted(key);
-
-    await _pumpAndLaunch(tester, manager);
-
-    await tester.tap(find.widgetWithText(ListTile, 'Mode'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Ask'));
-    await tester.pumpAndSettle();
-
-    expect(manager.modeSets, contains('ask'));
-  });
-
-  testWidgets('with no adjustable settings, offers a Skip / Open chat path', (
-    tester,
-  ) async {
-    final session = fakeAcpSession(key: key);
-    final manager = FakeAcpSessionManager(sessions: [session])
-      ..startNewSessionResult = AcpSessionLaunchStarted(key);
-
-    final result = await _pumpAndLaunch(tester, manager);
-
-    expect(find.text('configure session'), findsOneWidget);
-    expect(
-      find.text('This agent exposes no adjustable settings.'),
-      findsOneWidget,
-    );
-    final skip = find.widgetWithText(FilledButton, 'Skip · Open chat');
-    expect(skip, findsOneWidget);
-
-    await tester.tap(skip);
-    await tester.pumpAndSettle();
-    expect(result(), key);
+    expect(find.text('configure session'), findsNothing);
+    expect(find.text('Style'), findsNothing);
+    expect(manager.configOptionSets, isEmpty);
   });
 
   testWidgets(

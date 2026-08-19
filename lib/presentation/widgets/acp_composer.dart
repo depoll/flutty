@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:xterm/xterm.dart';
 
 import '../../app/theme.dart';
 import '../../domain/models/acp_attachment.dart';
@@ -15,6 +16,9 @@ import 'acp_slash_command_picker.dart';
 typedef AcpAttachmentPick =
     Future<List<AcpAttachmentCandidate>> Function(BuildContext context);
 
+/// Opens the app's snippet picker and returns text to insert at the caret.
+typedef AcpSnippetPick = Future<String?> Function(BuildContext context);
+
 /// The injectable attachment-picker entry points offered by the add menu.
 ///
 /// Each entry is optional; only the provided sources appear in the menu. All
@@ -24,10 +28,14 @@ typedef AcpAttachmentPick =
 class AcpComposerAttachmentActions {
   /// Creates attachment actions.
   const AcpComposerAttachmentActions({
+    this.pickSnippet,
     this.pickPhotos,
     this.pickFiles,
     this.pickRemoteFiles,
   });
+
+  /// Picks a saved command snippet to insert into the prompt.
+  final AcpSnippetPick? pickSnippet;
 
   /// Picks photos or media from the device gallery/camera.
   final AcpAttachmentPick? pickPhotos;
@@ -40,7 +48,47 @@ class AcpComposerAttachmentActions {
 
   /// Whether at least one source is available.
   bool get hasAny =>
-      pickPhotos != null || pickFiles != null || pickRemoteFiles != null;
+      pickSnippet != null ||
+      pickPhotos != null ||
+      pickFiles != null ||
+      pickRemoteFiles != null;
+}
+
+/// Controls the native composer focus from the persistent terminal shell.
+class AcpComposerFocusController {
+  _AcpComposerState? _state;
+
+  /// Whether the composer currently owns text focus.
+  bool get hasFocus => _state?._focusNode.hasFocus ?? false;
+
+  /// Focuses the composer and opens the platform keyboard.
+  void requestFocus() => _state?._focusNode.requestFocus();
+
+  /// Dismisses the platform keyboard without discarding the draft.
+  void dismissKeyboard() => _state?._focusNode.unfocus();
+
+  /// Inserts text at the current composer selection.
+  void insertText(String text) => _state?._insertExternalText(text);
+
+  /// Applies one special toolbar key to the composer selection.
+  void sendSpecialKey(TerminalKey key) => _state?._handleExternalKey(key);
+
+  /// Opens the composer's photo/media picker.
+  Future<void> pickPhotos() async =>
+      _state?._handleAddAction(_AcpAddAction.photos);
+
+  /// Opens the composer's local-file picker.
+  Future<void> pickFiles() async =>
+      _state?._handleAddAction(_AcpAddAction.files);
+
+  // ignore: use_setters_to_change_properties
+  void _attach(_AcpComposerState state) => _state = state;
+
+  void _detach(_AcpComposerState state) {
+    if (identical(_state, state)) {
+      _state = null;
+    }
+  }
 }
 
 /// A mobile-first, keyboard- and safe-area-aware ACP prompt composer.
@@ -56,6 +104,7 @@ class AcpComposer extends StatefulWidget {
     required this.controller,
     super.key,
     this.attachmentActions = const AcpComposerAttachmentActions(),
+    this.focusController,
     this.onOpenConfig,
     this.hintText = 'Message the agent',
     this.useBottomSafeArea = true,
@@ -66,6 +115,9 @@ class AcpComposer extends StatefulWidget {
 
   /// The attachment picker entry points to expose in the add menu.
   final AcpComposerAttachmentActions attachmentActions;
+
+  /// Optional owner used by the terminal shell's persistent keyboard button.
+  final AcpComposerFocusController? focusController;
 
   /// Opens the session configuration surface; hidden when null.
   final VoidCallback? onOpenConfig;
@@ -95,11 +147,16 @@ class _AcpComposerState extends State<AcpComposer> {
     _focusNode = FocusNode(onKeyEvent: _handleKey);
     _text.addListener(_onFieldChanged);
     _controller.addListener(_onControllerChanged);
+    widget.focusController?._attach(this);
   }
 
   @override
   void didUpdateWidget(AcpComposer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.focusController, widget.focusController)) {
+      oldWidget.focusController?._detach(this);
+      widget.focusController?._attach(this);
+    }
     if (!identical(oldWidget.controller, widget.controller)) {
       oldWidget.controller.removeListener(_onControllerChanged);
       widget.controller.addListener(_onControllerChanged);
@@ -112,6 +169,7 @@ class _AcpComposerState extends State<AcpComposer> {
 
   @override
   void dispose() {
+    widget.focusController?._detach(this);
     _text.removeListener(_onFieldChanged);
     // Detach from whichever controller is currently bound.
     _controller.removeListener(_onControllerChanged);
@@ -216,40 +274,75 @@ class _AcpComposerState extends State<AcpComposer> {
     _focusNode.requestFocus();
   }
 
-  Future<void> _openAddMenu() async {
+  void _insertExternalText(String text) {
+    if (!_controller.isEditable || text.isEmpty) {
+      return;
+    }
+    final selection = _text.selection;
+    final start = selection.isValid
+        ? selection.start.clamp(0, _text.text.length)
+        : _controller.caret;
+    final end = selection.isValid
+        ? selection.end.clamp(start, _text.text.length)
+        : start;
+    final next = _text.text.replaceRange(start, end, text);
+    _controller.setText(next, caret: start + text.length);
+    _focusNode.requestFocus();
+  }
+
+  void _handleExternalKey(TerminalKey key) {
+    final caret = _controller.caret.clamp(0, _controller.text.length);
+    switch (key) {
+      case TerminalKey.escape:
+        _controller.dismissSlash();
+        _focusNode.unfocus();
+      case TerminalKey.tab:
+        _insertExternalText('\t');
+      case TerminalKey.enter:
+        _insertExternalText('\n');
+      case TerminalKey.arrowLeft:
+        _controller.setText(
+          _controller.text,
+          caret: (caret - 1).clamp(0, _controller.text.length),
+        );
+      case TerminalKey.arrowRight:
+        _controller.setText(
+          _controller.text,
+          caret: (caret + 1).clamp(0, _controller.text.length),
+        );
+      case TerminalKey.arrowUp || TerminalKey.pageUp || TerminalKey.home:
+        _controller.setText(_controller.text, caret: 0);
+      case TerminalKey.arrowDown || TerminalKey.pageDown || TerminalKey.end:
+        _controller.setText(_controller.text, caret: _controller.text.length);
+      default:
+        return;
+    }
+    _focusNode.requestFocus();
+  }
+
+  Future<void> _handleAddAction(_AcpAddAction action) async {
     final actions = widget.attachmentActions;
-    final source = await showModalBottomSheet<AcpAttachmentPick>(
-      context: context,
-      useSafeArea: true,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (actions.pickPhotos != null)
-              ListTile(
-                leading: const Icon(Icons.photo_library_outlined),
-                title: const Text('Photo or video'),
-                onTap: () => Navigator.of(context).pop(actions.pickPhotos),
-              ),
-            if (actions.pickFiles != null)
-              ListTile(
-                leading: const Icon(Icons.attach_file),
-                title: const Text('Choose file'),
-                onTap: () => Navigator.of(context).pop(actions.pickFiles),
-              ),
-            if (actions.pickRemoteFiles != null)
-              ListTile(
-                leading: const Icon(Icons.cloud_outlined),
-                title: const Text('Remote file (SFTP)'),
-                onTap: () => Navigator.of(context).pop(actions.pickRemoteFiles),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (source == null || !mounted) {
+    switch (action) {
+      case _AcpAddAction.snippet:
+        final snippet = await actions.pickSnippet?.call(context);
+        if (!mounted || snippet == null || snippet.isEmpty) {
+          return;
+        }
+        final caret = _controller.caret.clamp(0, _controller.text.length);
+        final next = _controller.text.replaceRange(caret, caret, snippet);
+        _controller.setText(next, caret: caret + snippet.length);
+        _focusNode.requestFocus();
+      case _AcpAddAction.photos:
+        await _addAttachments(actions.pickPhotos);
+      case _AcpAddAction.files:
+        await _addAttachments(actions.pickFiles);
+      case _AcpAddAction.remoteFiles:
+        await _addAttachments(actions.pickRemoteFiles);
+    }
+  }
+
+  Future<void> _addAttachments(AcpAttachmentPick? source) async {
+    if (source == null || !_controller.canAddAttachment) {
       return;
     }
     final candidates = await source(context);
@@ -261,6 +354,7 @@ class _AcpComposerState extends State<AcpComposer> {
         break;
       }
     }
+    _focusNode.requestFocus();
   }
 
   Future<void> _handlePrimaryAction() async {
@@ -379,11 +473,12 @@ class _AcpComposerState extends State<AcpComposer> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         _AddButton(
+                          actions: widget.attachmentActions,
                           enabled:
                               _controller.isEditable &&
-                              widget.attachmentActions.hasAny &&
-                              _controller.canAddAttachment,
-                          onPressed: _openAddMenu,
+                              widget.attachmentActions.hasAny,
+                          attachmentsEnabled: _controller.canAddAttachment,
+                          onSelected: _handleAddAction,
                         ),
                         Expanded(
                           child: ConstrainedBox(
@@ -397,12 +492,17 @@ class _AcpComposerState extends State<AcpComposer> {
                               keyboardType: TextInputType.multiline,
                               textInputAction: TextInputAction.newline,
                               textCapitalization: TextCapitalization.sentences,
+                              textAlignVertical: TextAlignVertical.center,
                               style: AcpChatTypography.monoStyleOf(
                                 context,
                               ).copyWith(color: scheme.onSurface, fontSize: 14),
                               decoration: InputDecoration(
                                 isDense: true,
-                                border: InputBorder.none,
+                                filled: false,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: FluttyTheme.spacingMd,
+                                  vertical: 13,
+                                ),
                                 hintText: widget.hintText,
                                 hintStyle:
                                     AcpChatTypography.monoStyleOf(
@@ -445,19 +545,81 @@ class _AcpComposerState extends State<AcpComposer> {
   }
 }
 
-class _AddButton extends StatelessWidget {
-  const _AddButton({required this.enabled, required this.onPressed});
+enum _AcpAddAction { snippet, photos, files, remoteFiles }
 
+class _AddButton extends StatelessWidget {
+  const _AddButton({
+    required this.actions,
+    required this.enabled,
+    required this.attachmentsEnabled,
+    required this.onSelected,
+  });
+
+  final AcpComposerAttachmentActions actions;
   final bool enabled;
-  final VoidCallback onPressed;
+  final bool attachmentsEnabled;
+  final ValueChanged<_AcpAddAction> onSelected;
 
   @override
-  Widget build(BuildContext context) => IconButton(
-    tooltip: 'Add attachment',
-    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-    icon: const Icon(Icons.add),
-    onPressed: enabled ? onPressed : null,
-  );
+  Widget build(BuildContext context) {
+    final itemCount = [
+      actions.pickSnippet,
+      actions.pickPhotos,
+      actions.pickFiles,
+      actions.pickRemoteFiles,
+    ].where((action) => action != null).length;
+    return PopupMenuButton<_AcpAddAction>(
+      enabled: enabled,
+      tooltip: 'Add to prompt',
+      position: PopupMenuPosition.over,
+      offset: Offset(0, -(itemCount * 48.0 + 12)),
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 210),
+      icon: const Icon(Icons.add),
+      itemBuilder: (context) => [
+        if (actions.pickSnippet != null)
+          const PopupMenuItem(
+            value: _AcpAddAction.snippet,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.code_rounded),
+              title: Text('Snippet'),
+            ),
+          ),
+        if (actions.pickPhotos != null)
+          PopupMenuItem(
+            value: _AcpAddAction.photos,
+            enabled: attachmentsEnabled,
+            child: const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.photo_library_outlined),
+              title: Text('Photo or video'),
+            ),
+          ),
+        if (actions.pickFiles != null)
+          PopupMenuItem(
+            value: _AcpAddAction.files,
+            enabled: attachmentsEnabled,
+            child: const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.attach_file),
+              title: Text('Choose file'),
+            ),
+          ),
+        if (actions.pickRemoteFiles != null)
+          PopupMenuItem(
+            value: _AcpAddAction.remoteFiles,
+            enabled: attachmentsEnabled,
+            child: const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.cloud_outlined),
+              title: Text('Remote file (SFTP)'),
+            ),
+          ),
+      ],
+      onSelected: onSelected,
+    );
+  }
 }
 
 class _PrimaryActionButton extends StatelessWidget {
@@ -490,7 +652,12 @@ class _PrimaryActionButton extends StatelessWidget {
         height: 44,
         child: IconButton.filled(
           tooltip: label,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 44, height: 44),
           style: IconButton.styleFrom(
+            minimumSize: const Size.square(44),
+            maximumSize: const Size.square(44),
+            padding: EdgeInsets.zero,
             backgroundColor: scheme.primary,
             foregroundColor: scheme.onPrimary,
           ),

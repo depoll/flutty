@@ -209,8 +209,8 @@ func acpStartCommand(args []string) {
 	launch := acpLaunchConfig{
 		ProviderID: *providerID,
 		Provider:   *provider,
-		Command:  *command,
-		Cwd:      *cwd,
+		Command:    *command,
+		Cwd:        *cwd,
 	}
 	buildCommand := func() (*exec.Cmd, io.WriteCloser, error) {
 		cmd := exec.Command(exe, "acp", "serve", "--id", id)
@@ -461,23 +461,23 @@ func newAcpBridge(id string, provider string, command string, cwd string) (*acpB
 	now := time.Now()
 	hash := sha256.Sum256([]byte(command))
 	bridge := &acpBridge{
-		id:                 id,
-		provider:           provider,
-		commandHash:        hex.EncodeToString(hash[:]),
-		cwd:                expandedCwd,
-		cmd:                cmd,
-		stdin:              stdin,
-		state:              "running",
-		startedAt:          now,
-		lastActivity:       now,
-		clients:            map[string]*acpBridgeClient{},
-		pendingRequests:    map[string]struct{}{},
+		id:                   id,
+		provider:             provider,
+		commandHash:          hex.EncodeToString(hash[:]),
+		cwd:                  expandedCwd,
+		cmd:                  cmd,
+		stdin:                stdin,
+		state:                "running",
+		startedAt:            now,
+		lastActivity:         now,
+		clients:              map[string]*acpBridgeClient{},
+		pendingRequests:      map[string]struct{}{},
 		inFlightTurns:        map[string]struct{}{},
 		sessionSetupRequests: map[string]struct{}{},
-		providerDone:       make(chan struct{}),
-		providerOutput:     stdout,
-		providerOutputDone: make(chan struct{}),
-		done:               make(chan struct{}),
+		providerDone:         make(chan struct{}),
+		providerOutput:       stdout,
+		providerOutputDone:   make(chan struct{}),
+		done:                 make(chan struct{}),
 	}
 	go func() {
 		defer stdout.Close()

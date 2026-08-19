@@ -23,6 +23,7 @@ import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/widgets/acp_mux_window_status_badge.dart';
+import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 import 'package:monkeyssh/presentation/widgets/premium_badge.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_navigator.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_status_badge.dart';
@@ -548,7 +549,7 @@ void main() {
       ).called(1);
     });
 
-    testWidgets('passes host yolo mode when resuming an AI session', (
+    testWidgets('resumes a supported history session as native ACP', (
       tester,
     ) async {
       final tmuxService = _MockTmuxService();
@@ -617,6 +618,7 @@ void main() {
         discoveryService: discoveryService,
         session: session,
         tmuxSessionName: tmuxSessionName,
+        remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         startClisInYoloMode: true,
         onActionSelected: (action) => selectedAction = action,
       );
@@ -637,17 +639,20 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Resume codex work'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Native chat'));
+      await tester.pumpAndSettle();
 
-      expect(selectedAction, isA<TmuxResumeSessionAction>());
-      final resumeAction = selectedAction! as TmuxResumeSessionAction;
-      expect(resumeAction.resumeCommand, "codex --yolo resume 'codex-session'");
+      expect(selectedAction, isA<TmuxResumeAcpSessionAction>());
+      final resumeAction = selectedAction! as TmuxResumeAcpSessionAction;
+      expect(resumeAction.providerId, AcpBuiltinProviderIds.codex);
+      expect(resumeAction.acpSessionId, codexSession.sessionId);
       expect(resumeAction.workingDirectory, '/home/demo/project');
-      verify(
+      verifyNever(
         () => discoveryService.buildResumeCommand(
           codexSession,
           startInYoloMode: true,
         ),
-      ).called(1);
+      );
     });
 
     testWidgets('recovers from a transient empty window reload', (
@@ -1202,6 +1207,10 @@ void main() {
         ),
         findsNothing,
       );
+      final agentIcon = tester.widget<AgentToolIcon>(
+        find.descendant(of: nativeRow, matching: find.byType(AgentToolIcon)),
+      );
+      expect(agentIcon.tool, AgentLaunchTool.copilotCli);
       expect(
         find.byKey(ValueKey('native-acp-progress-${key.value}')),
         findsOneWidget,

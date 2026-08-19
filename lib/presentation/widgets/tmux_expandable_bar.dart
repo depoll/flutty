@@ -882,20 +882,57 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
   }
 
-  void _resumeSession(ToolSessionInfo info) {
-    final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
-    final command = discovery.buildResumeCommand(
-      info,
-      startInYoloMode: widget.startClisInYoloMode,
-    );
+  Future<void> _resumeSession(ToolSessionInfo info) async {
+    final tool = AgentLaunchTool.values
+        .where((candidate) => candidate.label == info.toolName)
+        .firstOrNull;
+    final providerId = tool == null
+        ? null
+        : builtinNativeAcpProvidersByTool()[tool];
+    TmuxNavigatorAction action;
+    if (tool != null &&
+        providerId != null &&
+        widget.activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      final mode = await showAgentWindowModePicker(
+        context: context,
+        tool: tool,
+        isProUser: widget.isProUser,
+      );
+      if (!mounted || mode == null) {
+        return;
+      }
+      action = mode == AgentWindowMode.nativeAcp
+          ? TmuxResumeAcpSessionAction(
+              providerId: providerId,
+              acpSessionId: info.sessionId,
+              workingDirectory: info.workingDirectory,
+            )
+          : TmuxResumeSessionAction(
+              widget.ref
+                  .read(agentSessionDiscoveryServiceProvider)
+                  .buildResumeCommand(
+                    info,
+                    startInYoloMode: widget.startClisInYoloMode,
+                  ),
+              workingDirectory: info.workingDirectory,
+            );
+    } else {
+      action = TmuxResumeSessionAction(
+        widget.ref
+            .read(agentSessionDiscoveryServiceProvider)
+            .buildResumeCommand(
+              info,
+              startInYoloMode: widget.startClisInYoloMode,
+            ),
+        workingDirectory: info.workingDirectory,
+      );
+    }
     final wasExpanded = _expanded;
     setState(() => _expanded = false);
     if (wasExpanded) {
       widget.onExpandedChanged(false);
     }
-    widget.onAction(
-      TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
-    );
+    await widget.onAction(action);
   }
 
   Future<void> _showSessionPickerForTool(
@@ -912,7 +949,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       ),
     );
     if (!mounted || selected == null) return;
-    _resumeSession(selected);
+    await _resumeSession(selected);
   }
 
   Future<void> _showNewWindowPicker({BuildContext? anchorContext}) async {
@@ -1973,6 +2010,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   ) {
     final key = entry.session?.key ?? entry.recent!.key;
     final windowIndex = _nativeAcpWindowIndex(entry);
+    final agentTool = agentLaunchToolForAcpProviderId(key.providerId);
     final isActive = widget.activeNativeAcpSessionKey == key;
     final activity = entry.session == null
         ? null
@@ -2011,14 +2049,40 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             child: Stack(
               alignment: Alignment.center,
               children: [
-                Text(
-                  '$windowIndex',
-                  key: ValueKey('monkeymux-sidebar-acp-index-${key.value}'),
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    color: isActive
-                        ? theme.colorScheme.onPrimaryContainer
-                        : theme.colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w700,
+                AgentToolIcon(
+                  tool: agentTool,
+                  size: 22,
+                  color: isActive
+                      ? theme.colorScheme.onPrimaryContainer
+                      : theme.colorScheme.onSurfaceVariant,
+                ),
+                Positioned(
+                  right: -9,
+                  bottom: -9,
+                  child: DecoratedBox(
+                    key: ValueKey('monkeymux-sidebar-acp-index-${key.value}'),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHigh,
+                      border: Border.all(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        width: 1.5,
+                      ),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: SizedBox(
+                      width: 18,
+                      height: 15,
+                      child: Center(
+                        child: Text(
+                          '$windowIndex',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: activityColor,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
                 if (activity != null && !activity.isReady)
@@ -2055,6 +2119,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final recent = entry.recent;
     final key = session?.key ?? recent!.key;
     final windowIndex = _nativeAcpWindowIndex(entry);
+    final agentTool = agentLaunchToolForAcpProviderId(key.providerId);
     final activity = session == null
         ? null
         : acpSessionActivityDisplay(session);
@@ -2091,13 +2156,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           ),
         ),
       ),
-      title: Text(
-        entry.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: isActive
-            ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)
-            : null,
+      title: Row(
+        children: [
+          AgentToolIcon(tool: agentTool, size: 17, color: activityColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              entry.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: isActive
+                  ? theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    )
+                  : null,
+            ),
+          ),
+        ],
       ),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

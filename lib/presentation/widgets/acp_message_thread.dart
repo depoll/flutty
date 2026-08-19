@@ -31,6 +31,7 @@ class AcpMessageThread extends StatelessWidget {
     this.padding = const EdgeInsets.all(FluttyTheme.spacingMd),
     this.shrinkWrap = false,
     this.physics,
+    this.footer,
     this.imageResolver,
     this.onTapImage,
     this.onOpenResource,
@@ -55,6 +56,9 @@ class AcpMessageThread extends StatelessWidget {
 
   /// Optional scroll physics.
   final ScrollPhysics? physics;
+
+  /// Optional live-state footer rendered after the final transcript entry.
+  final Widget? footer;
 
   /// Resolver for non-inline images.
   final AcpImageResolver? imageResolver;
@@ -134,8 +138,15 @@ class AcpMessageThread extends StatelessWidget {
       padding: padding,
       shrinkWrap: shrinkWrap,
       physics: physics,
-      itemCount: entries.length,
+      itemCount: entries.length + (footer == null ? 0 : 1),
       itemBuilder: (context, index) {
+        if (index == entries.length) {
+          return Padding(
+            key: const ValueKey('acp-message-thread-footer'),
+            padding: const EdgeInsets.only(top: FluttyTheme.spacingMd),
+            child: Align(alignment: Alignment.centerLeft, child: footer),
+          );
+        }
         final entry = entries[index];
         return Padding(
           key: ValueKey(entry.id),

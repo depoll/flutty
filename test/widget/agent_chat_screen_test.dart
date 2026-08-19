@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
-import 'package:monkeyssh/app/theme.dart';
 import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
@@ -250,6 +249,16 @@ void main() {
                 AcpConfigValue(value: 'high', name: 'High'),
               ],
             ),
+            AcpSelectConfigOption(
+              id: 'fast-mode',
+              name: 'Fast mode',
+              currentValue: 'off',
+              category: 'model_config',
+              options: [
+                AcpConfigValue(value: 'off', name: 'Off'),
+                AcpConfigValue(value: 'on', name: 'On'),
+              ],
+            ),
           ],
           modeState: const AcpSessionModeState(
             currentModeId: 'code',
@@ -270,6 +279,7 @@ void main() {
     expect(find.text('Model: Sonnet'), findsOneWidget);
     expect(find.text('Effort: Medium'), findsOneWidget);
     expect(find.text('Mode: Code'), findsOneWidget);
+    expect(find.text('Fast mode: Off'), findsOneWidget);
     final selectorContext = tester.element(find.text('Model: Sonnet'));
     expect(MediaQuery.of(selectorContext).textScaler.scale(14), 14);
     expect(
@@ -294,6 +304,12 @@ void main() {
     await tester.tap(find.text('Ask').last);
     await tester.pumpAndSettle();
     expect(manager.modeSets, contains('ask'));
+
+    await tester.tap(find.byTooltip('Change fast mode'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('On').last);
+    await tester.pumpAndSettle();
+    expect(manager.configOptionSets, contains(('fast-mode', 'on')));
   });
 
   testWidgets('legacy thinking levels render as Effort, not Mode', (
@@ -776,15 +792,10 @@ void main() {
     final cursor = find.byKey(const ValueKey('acp-running-cursor'));
     expect(cursor, findsOneWidget);
     expect(find.byType(CursorBlock), findsOneWidget);
-    final messageViewport = find
-        .ancestor(of: cursor, matching: find.byType(Stack))
-        .first;
     expect(
-      tester.getBottomRight(cursor).dy,
-      closeTo(
-        tester.getBottomRight(messageViewport).dy - FluttyTheme.spacingMd,
-        0.1,
-      ),
+      tester.getTopLeft(cursor).dy,
+      greaterThan(tester.getBottomLeft(find.text('Working response')).dy),
+      reason: 'the running cursor belongs below transcript content',
     );
     final statusStripProgress = tester
         .widgetList<LinearProgressIndicator>(
@@ -796,6 +807,83 @@ void main() {
       isEmpty,
       reason: 'embedded status progress belongs to terminal chrome only',
     );
+  });
+
+  testWidgets('user scrolling up is not overridden by streaming updates', (
+    tester,
+  ) async {
+    final key = fakeAcpKey();
+    final entries = <AcpTimelineEntry>[
+      for (var index = 0; index < 30; index++)
+        AcpMessageEntry(
+          order: index,
+          role: AcpMessageRole.agent,
+          messageId: 'message-$index',
+          content: [AcpTextContent('Response line $index ' * 4)],
+        ),
+    ];
+    final session = fakeAcpSession(
+      key: key,
+      promptStatus: AcpPromptStatus.streaming,
+      timeline: AcpTimeline(entries: entries),
+    );
+    final manager = FakeAcpSessionManager(sessions: [session]);
+    await tester.pumpWidget(_wrap(manager, embedded: true));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final scrollable = find.descendant(
+      of: find.byType(AcpMessageThread),
+      matching: find.byType(Scrollable),
+    );
+    final position = tester.state<ScrollableState>(scrollable.first).position;
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pump();
+    await tester.drag(find.byType(AcpMessageThread), const Offset(0, 320));
+    await tester.pump();
+    final userPosition = position.pixels;
+    expect(userPosition, lessThan(position.maxScrollExtent));
+
+    final threadContext = tester.element(find.byType(AcpMessageThread));
+    final horizontalMetrics = FixedScrollMetrics(
+      minScrollExtent: 0,
+      maxScrollExtent: 100,
+      pixels: 100,
+      viewportDimension: 100,
+      axisDirection: AxisDirection.right,
+      devicePixelRatio: 1,
+    );
+    ScrollStartNotification(
+      metrics: horizontalMetrics,
+      context: threadContext,
+      dragDetails: DragStartDetails(),
+    ).dispatch(threadContext);
+    ScrollEndNotification(
+      metrics: horizontalMetrics,
+      context: threadContext,
+    ).dispatch(threadContext);
+    await tester.pump();
+
+    final updated = session.copyWith(
+      timeline: AcpTimeline(
+        entries: [
+          ...entries,
+          AcpMessageEntry(
+            order: 31,
+            role: AcpMessageRole.agent,
+            messageId: 'new-message',
+            content: const [AcpTextContent('New streaming output')],
+          ),
+        ],
+      ),
+      lastActivityAt: DateTime(2026, 1, 2),
+    );
+    manager.emit(AcpSessionManagerState(sessions: [updated]));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(position.pixels, closeTo(userPosition, 1));
+    expect(find.byTooltip('Jump to latest'), findsOneWidget);
   });
 
   testWidgets('remote selection adds a visible composer attachment', (
@@ -819,7 +907,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Add attachment'));
+    await tester.tap(find.byTooltip('Add to prompt'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Remote file (SFTP)'));
     await tester.pumpAndSettle();

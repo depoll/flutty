@@ -17,6 +17,7 @@ import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -24,6 +25,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/theme.dart';
+import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/acp_attachment.dart';
 import '../../domain/models/acp_protocol.dart';
 import '../../domain/models/acp_provider.dart';
@@ -90,6 +92,7 @@ class AgentChatScreen extends ConsumerStatefulWidget {
     required this.bridgeId,
     required this.acpSessionId,
     this.attachmentActionsBuilder,
+    this.composerFocusController,
     this.embedded = false,
     this.preferredFontSize,
     this.preferredFontFamily,
@@ -114,6 +117,9 @@ class AgentChatScreen extends ConsumerStatefulWidget {
 
   /// Optional attachment picker override for tests.
   final AcpChatAttachmentActionsBuilder? attachmentActionsBuilder;
+
+  /// Lets the containing terminal shell control the native composer keyboard.
+  final AcpComposerFocusController? composerFocusController;
 
   /// Whether the conversation replaces a terminal viewport inside its shell.
   final bool embedded;
@@ -147,6 +153,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
 
   var _autoScroll = true;
   var _showJumpToLatest = false;
+  var _userDraggingTranscript = false;
   var _connecting = true;
   AcpSessionError? _connectError;
   final AcpTimelineMapperCache _timelineMapperCache = AcpTimelineMapperCache();
@@ -411,7 +418,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   }
 
   void _onScroll() {
-    if (!_scroll.hasClients) {
+    if (!_scroll.hasClients || _userDraggingTranscript) {
       return;
     }
     final position = _scroll.position;
@@ -422,6 +429,36 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         _showJumpToLatest = !nearBottom;
       });
     }
+  }
+
+  bool _handleTranscriptScroll(ScrollNotification notification) {
+    if (notification.depth != 0 || notification.metrics.axis != Axis.vertical) {
+      return false;
+    }
+    final isUserStart =
+        notification is ScrollStartNotification &&
+        notification.dragDetails != null;
+    final isUserMove =
+        notification is UserScrollNotification &&
+        notification.direction != ScrollDirection.idle;
+    if ((isUserStart || isUserMove) && !_userDraggingTranscript) {
+      setState(() {
+        _userDraggingTranscript = true;
+        _autoScroll = false;
+        _showJumpToLatest = true;
+      });
+    } else if (notification is ScrollEndNotification &&
+        _userDraggingTranscript) {
+      final nearBottom =
+          notification.metrics.pixels >=
+          notification.metrics.maxScrollExtent - 24;
+      setState(() {
+        _userDraggingTranscript = false;
+        _autoScroll = nearBottom;
+        _showJumpToLatest = !nearBottom;
+      });
+    }
+    return false;
   }
 
   void _scheduleAutoScroll() {
@@ -462,11 +499,56 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       return builder(widget.hostId, connectionId);
     }
     return AcpComposerAttachmentActions(
+      pickSnippet: _pickSnippet,
       pickPhotos: _pickPhotos,
       pickFiles: _pickFiles,
       pickRemoteFiles: (context) =>
           _pickRemoteFiles(context, connectionId, session.cwd),
     );
+  }
+
+  Future<String?> _pickSnippet(BuildContext context) async {
+    final repository = ref.read(snippetRepositoryProvider);
+    final snippets = await repository.getAll();
+    if (!context.mounted) {
+      return null;
+    }
+    if (snippets.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No snippets available.')));
+      return null;
+    }
+    final selected = await showModalBottomSheet<({int id, String command})>(
+      context: context,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (context) => ListView.builder(
+        shrinkWrap: true,
+        itemCount: snippets.length,
+        itemBuilder: (context, index) {
+          final snippet = snippets[index];
+          return ListTile(
+            leading: const Icon(Icons.code_rounded),
+            title: Text(snippet.name),
+            subtitle: Text(
+              snippet.command.replaceAll('\n', ' '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AcpChatTypography.monoStyleOf(context),
+            ),
+            onTap: () => Navigator.of(
+              context,
+            ).pop((id: snippet.id, command: snippet.command)),
+          );
+        },
+      ),
+    );
+    if (selected == null) {
+      return null;
+    }
+    unawaited(repository.incrementUsage(selected.id));
+    return selected.command;
   }
 
   Future<List<AcpAttachmentCandidate>> _pickPhotos(BuildContext context) async {
@@ -568,6 +650,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
           !_quickConfigOptionIsEffort(option),
     );
     final selectors = <_AcpQuickSelectorData>[];
+    final displayedOptionIds = <String>{};
 
     void addGeneric(
       String label,
@@ -581,6 +664,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       if (allChoices.isEmpty) {
         return;
       }
+      displayedOptionIds.add(option.id);
       final partition = scopePiModels
           ? _partitionPiModelChoices(allChoices, option.currentValue)
           : (visible: allChoices, hidden: const <_AcpQuickChoice>[]);
@@ -668,6 +752,16 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             onSelected: (value) => manager.setMode(_key, value),
           ),
         );
+      }
+    }
+
+    // ACP providers may use extension categories such as Codex's
+    // model_config (Fast mode) or collaboration_mode. Preserve the canonical
+    // Model / Effort / Mode ordering above, then surface every remaining
+    // advertised select option instead of silently hiding it.
+    for (final option in generic) {
+      if (!displayedOptionIds.contains(option.id)) {
+        addGeneric(option.name.isEmpty ? option.id : option.name, option);
       }
     }
     return selectors;
@@ -984,9 +1078,12 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     ref.listen<AsyncValue<AcpSessionManagerState>>(
       acpSessionManagerStateProvider,
       (previous, next) {
+        final previousSession = previous?.asData?.value.byKeyValue(_key.value);
         final session = next.asData?.value.byKeyValue(_key.value);
         _composer.updateSession(session);
-        _scheduleAutoScroll();
+        if (!identical(previousSession?.timeline, session?.timeline)) {
+          _scheduleAutoScroll();
+        }
         if (session != null && session.status == AcpConnectionStatus.ready) {
           unawaited(_ensureSftpClient());
         }
@@ -1079,7 +1176,6 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       session,
       useBottomSafeArea: !widget.embedded,
     );
-    _scheduleAutoScroll();
 
     return Scaffold(
       appBar: widget.embedded
@@ -1177,29 +1273,34 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                               cwd: acpCwdSummary(session.cwd),
                             )
                           else
-                            AcpMessageThread(
-                              entries: entries,
-                              controller: _scroll,
-                              imageResolver: _resolveChatImage,
-                              onTapImage: _openImageViewer,
-                              onOpenResource: _openResource,
-                              onCopyResource: (resource) =>
-                                  _copyToClipboard(resource.uri, 'Resource'),
-                              onCopyCode: (code) =>
-                                  _copyToClipboard(code, 'Code'),
-                              onOpenLocation: (location) =>
-                                  _openRemotePath(location.path),
-                            ),
-                          if (session.promptStatus != AcpPromptStatus.idle)
-                            Positioned(
-                              key: const ValueKey('acp-running-cursor'),
-                              left: FluttyTheme.spacingMd,
-                              bottom: FluttyTheme.spacingMd,
-                              child: IgnorePointer(
-                                child: CursorBlock(
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 12,
-                                ),
+                            NotificationListener<ScrollNotification>(
+                              onNotification: _handleTranscriptScroll,
+                              child: AcpMessageThread(
+                                entries: entries,
+                                controller: _scroll,
+                                footer:
+                                    session.promptStatus == AcpPromptStatus.idle
+                                    ? null
+                                    : IgnorePointer(
+                                        key: const ValueKey(
+                                          'acp-running-cursor',
+                                        ),
+                                        child: CursorBlock(
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.primary,
+                                          size: 12,
+                                        ),
+                                      ),
+                                imageResolver: _resolveChatImage,
+                                onTapImage: _openImageViewer,
+                                onOpenResource: _openResource,
+                                onCopyResource: (resource) =>
+                                    _copyToClipboard(resource.uri, 'Resource'),
+                                onCopyCode: (code) =>
+                                    _copyToClipboard(code, 'Code'),
+                                onOpenLocation: (location) =>
+                                    _openRemotePath(location.path),
                               ),
                             ),
                           if (_showJumpToLatest)
@@ -1234,6 +1335,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                     AcpComposer(
                       controller: _composer,
                       attachmentActions: _attachmentActions(session),
+                      focusController: widget.composerFocusController,
                       useBottomSafeArea: !widget.embedded,
                     ),
                   ],

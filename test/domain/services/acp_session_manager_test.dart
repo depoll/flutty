@@ -1227,7 +1227,7 @@ void main() {
     });
 
     test(
-      'resume recreates an expired bridge and keeps the ACP session id',
+      'resume after helper upgrade recreates an expired bridge and keeps the ACP session id',
       () async {
         final key = await startCopilot();
         await manager.detachSession(key);
@@ -1258,6 +1258,30 @@ void main() {
         final recents = await manager.loadRecentSessions();
         expect(recents.map((recent) => recent.key), contains(resumedKey));
         expect(recents.map((recent) => recent.key), isNot(contains(key)));
+      },
+    );
+
+    test(
+      'discovered native session starts a fresh bridge and resumes',
+      () async {
+        const nativeSessionId = 'provider-history-session';
+
+        final result = await manager.resumeProviderSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          acpSessionId: nativeSessionId,
+          cwd: '/repo',
+        );
+
+        expect(result, isA<AcpSessionLaunchStarted>());
+        final key = (result as AcpSessionLaunchStarted).key;
+        expect(key.acpSessionId, nativeSessionId);
+        expect(connector.startedBridges, hasLength(1));
+        expect(
+          connector.servers[key.bridgeId]!.methods,
+          contains('session/resume'),
+        );
+        expect(manager.state.byKeyValue(key.value)!.isLive, isTrue);
       },
     );
 
@@ -1595,6 +1619,10 @@ void main() {
         cwd: '/repo',
       );
       expect(result, isA<AcpSessionLaunchFailed>());
+      final failure = result as AcpSessionLaunchFailed;
+      expect(failure.error.message, contains('Session creation failed'));
+      expect(failure.error.message, isNot(contains('connection setup')));
+      expect(failure.error.message.length, lessThanOrEqualTo(240));
       // The orphaned bridge was best-effort stopped.
       expect(failConnector.startedBridges, hasLength(1));
       expect(failConnector.stoppedBridges, failConnector.startedBridges);

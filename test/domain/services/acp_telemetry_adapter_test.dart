@@ -70,6 +70,7 @@ void main() {
         AcpBuiltinProviderIds.cursorAgent: 'cursor_agent',
         AcpBuiltinProviderIds.antigravity: 'antigravity',
         AcpBuiltinProviderIds.pi: 'pi',
+        AcpBuiltinProviderIds.grokBuild: 'grok_build',
       };
       for (final provider in expected.keys) {
         adapter.sessionOpened(providerCategory: provider, isReconnect: false);

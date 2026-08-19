@@ -16,6 +16,8 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/domain/models/acp_provider.dart';
+import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
@@ -11084,11 +11086,45 @@ void main() {
     );
 
     testWidgets(
+      'keyboard and extra-key controls remain visible in native mode',
+      (tester) async {
+        session.activeNativeAcpSessionKey = AcpSessionKey.of(
+          hostId: host.id,
+          providerId: AcpBuiltinProviderIds.pi,
+          bridgeId: 'native-bridge',
+          acpSessionId: 'native-session',
+        );
+        addTearDown(() => session.activeNativeAcpSessionKey = null);
+
+        await pumpScreen(tester);
+
+        expect(find.byTooltip('Show system keyboard'), findsOneWidget);
+        expect(find.byTooltip('Hide extra keys'), findsOneWidget);
+        expect(find.byType(KeyboardToolbar), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byTooltip('Hide extra keys'),
+            matching: find.byKey(const ValueKey('extra-keys-toggle-active')),
+          ),
+          findsOneWidget,
+        );
+
+        await tester.tap(find.byTooltip('Hide extra keys'));
+        await tester.pump();
+        expect(find.byTooltip('Show extra keys'), findsOneWidget);
+        expect(find.byTooltip('Show system keyboard'), findsOneWidget);
+        expect(find.byType(KeyboardToolbar), findsNothing);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'extra keys toggle uses distinct copy',
       (tester) async {
         await pumpScreen(tester);
 
         expect(find.byTooltip('Hide extra keys'), findsOneWidget);
+        expect(find.byType(KeyboardToolbar), findsOneWidget);
         expect(find.byTooltip('Show system keyboard'), findsOneWidget);
         expect(
           find.descendant(

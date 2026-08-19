@@ -155,6 +155,20 @@ Map<AgentLaunchTool, String> builtinNativeAcpProvidersByTool() =>
         AcpBuiltinProviderView(provider),
     ]);
 
+/// Resolves the branded terminal-agent identity for a built-in ACP provider.
+AgentLaunchTool? agentLaunchToolForAcpProviderId(String providerId) =>
+    switch (providerId) {
+      AcpBuiltinProviderIds.claudeAgent => AgentLaunchTool.claudeCode,
+      AcpBuiltinProviderIds.copilotCli => AgentLaunchTool.copilotCli,
+      AcpBuiltinProviderIds.codex => AgentLaunchTool.codex,
+      AcpBuiltinProviderIds.openCode => AgentLaunchTool.openCode,
+      AcpBuiltinProviderIds.cursorAgent => AgentLaunchTool.cursorAgent,
+      AcpBuiltinProviderIds.antigravity => AgentLaunchTool.antigravity,
+      AcpBuiltinProviderIds.pi => AgentLaunchTool.pi,
+      AcpBuiltinProviderIds.grokBuild => AgentLaunchTool.grokBuild,
+      _ => null,
+    };
+
 /// Shows the tmux window navigator bottom sheet.
 ///
 /// Returns the action the user selected, or `null` if dismissed.
@@ -217,7 +231,7 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
         );
         return;
       }
-      final mode = await _showAgentWindowModePicker(
+      final mode = await showAgentWindowModePicker(
         context: context,
         tool: tool,
         isProUser: isProUser,
@@ -226,7 +240,7 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
         return;
       }
       switch (mode) {
-        case _AgentWindowMode.terminal:
+        case AgentWindowMode.terminal:
           Navigator.pop(
             context,
             TmuxNewWindowAction(
@@ -237,7 +251,7 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
               windowName: tool.commandName,
             ),
           );
-        case _AgentWindowMode.nativeAcp:
+        case AgentWindowMode.nativeAcp:
           Navigator.pop(
             context,
             TmuxNewAcpSessionAction(providerId: providerId),
@@ -253,13 +267,21 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
   ),
 );
 
-enum _AgentWindowMode { terminal, nativeAcp }
+/// Presentation mode for a supported coding-agent mux window.
+enum AgentWindowMode {
+  /// Run the agent's complete terminal CLI.
+  terminal,
 
-Future<_AgentWindowMode?> _showAgentWindowModePicker({
+  /// Run the agent through its ACP-native conversation surface.
+  nativeAcp,
+}
+
+/// Lets the user choose Terminal CLI or Native for [tool].
+Future<AgentWindowMode?> showAgentWindowModePicker({
   required BuildContext context,
   required AgentLaunchTool tool,
   required bool isProUser,
-}) => showModalBottomSheet<_AgentWindowMode>(
+}) => showModalBottomSheet<AgentWindowMode>(
   context: context,
   useSafeArea: true,
   showDragHandle: true,
@@ -310,7 +332,7 @@ Future<_AgentWindowMode?> _showAgentWindowModePicker({
                   trailing: isProUser ? null : const PremiumBadge(),
                   enabled: isProUser,
                   onTap: isProUser
-                      ? () => Navigator.pop(context, _AgentWindowMode.terminal)
+                      ? () => Navigator.pop(context, AgentWindowMode.terminal)
                       : null,
                 ),
                 ListTile(
@@ -322,7 +344,7 @@ Future<_AgentWindowMode?> _showAgentWindowModePicker({
                   title: const Text('Native chat'),
                   subtitle: const Text('Chat, tools, and permissions'),
                   onTap: () =>
-                      Navigator.pop(context, _AgentWindowMode.nativeAcp),
+                      Navigator.pop(context, AgentWindowMode.nativeAcp),
                 ),
               ],
             ),
@@ -495,6 +517,25 @@ class TmuxCloseAcpSessionAction extends TmuxNavigatorAction {
   final AcpSessionKey key;
 }
 
+/// Resume an agent-owned session through a fresh native ACP bridge.
+class TmuxResumeAcpSessionAction extends TmuxNavigatorAction {
+  /// Creates a native resume action.
+  const TmuxResumeAcpSessionAction({
+    required this.providerId,
+    required this.acpSessionId,
+    this.workingDirectory,
+  });
+
+  /// Stable built-in ACP provider identifier.
+  final String providerId;
+
+  /// Opaque session identifier discovered from the agent's own history.
+  final String acpSessionId;
+
+  /// Working directory in which the provider session was created.
+  final String? workingDirectory;
+}
+
 /// Resume an AI tool session in a new tmux window.
 class TmuxResumeSessionAction extends TmuxNavigatorAction {
   /// Creates a new [TmuxResumeSessionAction].
@@ -524,6 +565,7 @@ String diagnosticTmuxNavigatorActionKind(TmuxNavigatorAction action) =>
       TmuxNewAcpSessionAction() => 'new_acp_session',
       TmuxOpenAcpSessionAction() => 'open_acp_session',
       TmuxCloseAcpSessionAction() => 'close_acp_session',
+      TmuxResumeAcpSessionAction() => 'resume_acp_session',
       TmuxResumeSessionAction() => 'resume_session',
       TmuxCloseWindowAction() => 'close_window',
     };
@@ -880,7 +922,36 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     );
   }
 
-  void _resumeSession(ToolSessionInfo info) {
+  Future<void> _resumeSession(ToolSessionInfo info) async {
+    final tool = AgentLaunchTool.values
+        .where((candidate) => candidate.label == info.toolName)
+        .firstOrNull;
+    final providerId = tool == null
+        ? null
+        : builtinNativeAcpProvidersByTool()[tool];
+    if (tool != null &&
+        providerId != null &&
+        widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      final mode = await showAgentWindowModePicker(
+        context: context,
+        tool: tool,
+        isProUser: widget.isProUser,
+      );
+      if (!mounted || mode == null) {
+        return;
+      }
+      if (mode == AgentWindowMode.nativeAcp) {
+        Navigator.pop(
+          context,
+          TmuxResumeAcpSessionAction(
+            providerId: providerId,
+            acpSessionId: info.sessionId,
+            workingDirectory: info.workingDirectory,
+          ),
+        );
+        return;
+      }
+    }
     final command = _discovery.buildResumeCommand(
       info,
       startInYoloMode: widget.startClisInYoloMode,
@@ -924,7 +995,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       },
     );
     if (!mounted || selected == null) return;
-    _resumeSession(selected);
+    await _resumeSession(selected);
   }
 
   Future<void> _showNewWindowPicker() async {
@@ -1158,6 +1229,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     final key = session?.key ?? recent!.key;
     final providerLabel =
         session?.providerLabel ?? providerLabels[key.providerId] ?? 'Agent';
+    final agentTool = agentLaunchToolForAcpProviderId(key.providerId);
     final cwd = acpCwdSummary(session?.cwd ?? recent?.cwd);
     final activity = session == null
         ? null
@@ -1191,7 +1263,19 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           ),
         ),
       ),
-      title: Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Row(
+        children: [
+          AgentToolIcon(tool: agentTool, size: 17, color: activityColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              entry.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,

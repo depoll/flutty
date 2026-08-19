@@ -227,6 +227,46 @@ class AcpSessionManager {
     );
   });
 
+  /// Starts a fresh provider bridge and loads/resumes [acpSessionId].
+  ///
+  /// This is used for sessions discovered from an agent's own CLI history,
+  /// where the ACP session ID is known but no persistent MonkeyMux bridge has
+  /// been created yet. Concurrency and install behavior match [startNewSession].
+  Future<AcpSessionLaunchResult> resumeProviderSession({
+    required int hostId,
+    required String providerId,
+    required String acpSessionId,
+    required String cwd,
+    MonkeyMuxInstallConfirmation? confirmInstall,
+    List<AcpSessionKey> replace = const <AcpSessionKey>[],
+  }) => _serialize(() async {
+    _telemetry.featureOpened();
+    final launch = await _resolveLaunch(providerId);
+    if (launch is _LaunchError) {
+      return AcpSessionLaunchFailed(null, launch.error);
+    }
+    final resolved = launch as _ResolvedLaunch;
+    final workingDirectory = await _resolveWorkingDirectory(hostId, cwd);
+    if (workingDirectory.error case final error?) {
+      return AcpSessionLaunchFailed(null, error);
+    }
+
+    await _stopAll(replace);
+
+    final decision = _evaluate('\u0000resume');
+    if (decision is AcpConcurrencyRequiresChoice) {
+      return AcpSessionLaunchBlocked(decision);
+    }
+
+    return _startBridgeAndSession(
+      hostId: hostId,
+      launch: resolved,
+      cwd: workingDirectory.value!,
+      confirmInstall: confirmInstall,
+      existingSessionId: acpSessionId,
+    );
+  });
+
   /// Reconnects to an existing remote bridge and resumes/loads its ACP session.
   ///
   /// Used on app restart, host reconnect, and when opening a recent session.
@@ -1354,7 +1394,7 @@ class _SessionController {
         _key,
         AcpSessionError(
           kind: AcpSessionErrorKind.protocol,
-          message: 'The agent rejected the session request (${error.code}).',
+          message: _safeAcpRemoteError(error.code, error.message),
         ),
       );
     } on Object catch (error) {
@@ -2089,9 +2129,9 @@ class _SessionController {
       kind: AcpSessionErrorKind.protocol,
       message: 'The agent sent invalid protocol data.',
     ),
-    AcpRemoteException(:final code) => AcpSessionError(
+    AcpRemoteException(:final code, :final message) => AcpSessionError(
       kind: AcpSessionErrorKind.protocol,
-      message: 'The agent rejected connection setup ($code).',
+      message: _safeAcpRemoteError(code, message),
     ),
     AcpConnectionClosedException() => const AcpSessionError(
       kind: AcpSessionErrorKind.transport,
@@ -2103,6 +2143,21 @@ class _SessionController {
       message: 'The agent session encountered an error.',
     ),
   };
+}
+
+String _safeAcpRemoteError(int code, String message) {
+  final compact = message
+      .replaceAll(RegExp(r'[\x00-\x1F\x7F]+'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (compact.isEmpty) {
+    return 'The agent rejected the request ($code).';
+  }
+  const maxChars = 180;
+  final bounded = compact.length <= maxChars
+      ? compact
+      : '${compact.substring(0, maxChars - 1)}…';
+  return 'The agent rejected the request ($code): $bounded';
 }
 
 /// Internal launch outcome union.

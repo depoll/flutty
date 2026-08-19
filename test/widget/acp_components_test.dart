@@ -310,6 +310,11 @@ void main() {
       );
       await settleImage(tester);
       expect(find.text('Image failed to load'), findsOneWidget);
+      expect(
+        tester.getSize(find.byType(AcpInlineImage)).height,
+        lessThan(80),
+        reason: 'failed images must not reserve a large blank transcript area',
+      );
     });
 
     testWidgets('fires tap callback', (tester) async {

@@ -53,6 +53,9 @@ abstract final class AcpBuiltinProviderIds {
 
   /// Pi's standalone ACP adapter.
   static const pi = '${acpCustomProviderReservedIdPrefix}pi-acp';
+
+  /// xAI Grok Build's official ACP stdio server.
+  static const grokBuild = '${acpCustomProviderReservedIdPrefix}grok-build';
 }
 
 /// Validates and normalizes a custom ACP provider ID.
@@ -393,6 +396,10 @@ final acpClaudeAgentProvider = AcpBuiltinProvider(
   executableProbe: AcpExecutableProbe(
     candidateExecutableNames: const ['claude-agent-acp'],
   ),
+  terminalAuthCommand: AcpLaunchCommand(
+    executable: 'claude',
+    arguments: const ['auth', 'login'],
+  ),
 );
 
 /// Built-in Codex ACP provider.
@@ -439,14 +446,29 @@ final acpCursorAgentProvider = AcpBuiltinProvider(
 final acpAntigravityProvider = AcpBuiltinProvider(
   id: AcpBuiltinProviderIds.antigravity,
   label: 'Antigravity',
-  launchCommand: AcpLaunchCommand(executable: 'antigravity-acp'),
+  launchCommand: AcpLaunchCommand(executable: 'agy-acp'),
   executableProbe: AcpExecutableProbe(
-    candidateExecutableNames: const ['antigravity-acp', 'agy-acp'],
+    candidateExecutableNames: const ['agy-acp', 'antigravity-acp'],
+  ),
+  terminalAuthCommand: AcpLaunchCommand(executable: 'agy'),
+);
+
+/// Built-in Grok Build ACP provider.
+final acpGrokBuildProvider = AcpBuiltinProvider(
+  id: AcpBuiltinProviderIds.grokBuild,
+  label: 'Grok Build',
+  launchCommand: AcpLaunchCommand(
+    executable: 'grok',
+    arguments: const ['agent', 'stdio'],
+  ),
+  executableProbe: AcpExecutableProbe(candidateExecutableNames: const ['grok']),
+  terminalAuthCommand: AcpLaunchCommand(
+    executable: 'grok',
+    arguments: const ['login', '--device-auth'],
   ),
 );
 
 /// Built-in Pi ACP provider.
-
 final acpPiProvider = AcpBuiltinProvider(
   id: AcpBuiltinProviderIds.pi,
   label: 'Pi',
@@ -465,6 +487,7 @@ final acpBuiltinProviders = List<AcpBuiltinProvider>.unmodifiable([
   acpCursorAgentProvider,
   acpAntigravityProvider,
   acpPiProvider,
+  acpGrokBuildProvider,
 ]);
 
 /// Approval record for a custom ACP provider's exact launch command.

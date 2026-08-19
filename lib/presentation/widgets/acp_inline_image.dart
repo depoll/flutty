@@ -423,33 +423,41 @@ class _AcpInlineImageState extends State<AcpInlineImage> {
     bool isError = false,
   }) {
     final foreground = isError ? scheme.error : scheme.onSurfaceVariant;
+    if (showProgress) {
+      return ColoredBox(
+        color: scheme.surfaceContainerHighest,
+        child: SizedBox(
+          width: widget.maxWidth,
+          height: 120,
+          child: Center(
+            child: SizedBox.square(
+              dimension: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: scheme.primary,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     return ColoredBox(
       color: scheme.surfaceContainerHighest,
-      child: SizedBox(
-        width: widget.maxWidth,
-        height: 120,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: FluttyTheme.spacingMd,
+          vertical: FluttyTheme.spacingSm,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            if (showProgress)
-              SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: scheme.primary,
-                ),
-              )
-            else if (icon != null)
-              Icon(icon, color: foreground, size: 28),
-            const SizedBox(height: FluttyTheme.spacingSm),
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: FluttyTheme.spacingMd,
-              ),
+            if (icon != null) ...[
+              Icon(icon, color: foreground, size: 20),
+              const SizedBox(width: FluttyTheme.spacingSm),
+            ],
+            Flexible(
               child: Text(
                 label,
-                textAlign: TextAlign.center,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(

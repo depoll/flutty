@@ -185,6 +185,7 @@ class TelemetryService {
     'cursor_agent',
     'antigravity',
     'pi',
+    'grok_build',
     'custom',
     'unknown',
   };
