@@ -5485,6 +5485,7 @@ class SshSession {
     final shellPidsCommand = _posixAutomaticPortShellPidsCommand();
     final listenerCommand = _posixAutomaticPortListenerCommand();
     final script =
+        r'''(cat >/dev/null 2>&1; kill -TERM "$$" 2>/dev/null || true) & watcher_guard=$!; trap 'kill "$watcher_guard" 2>/dev/null || true' EXIT; trap 'exit 0' HUP INT TERM; '''
         "previous_set=0; previous=''; "
         'while :; do '
         'snapshot=\$({ $listenerCommand }); '

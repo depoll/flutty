@@ -1,5 +1,63 @@
 part of '../screens/terminal_screen.dart';
 
+/// Builds the compact native-agent identity used by collapsed mux handles.
+///
+/// The provider mark remains primary while the stable mux window number is a
+/// small badge, matching terminal-window icon/index composition.
+@visibleForTesting
+Widget buildNativeAcpHandleIcon({
+  required ThemeData theme,
+  required AgentLaunchTool? tool,
+  required int windowIndex,
+}) {
+  final color = theme.colorScheme.primary;
+  return SizedBox(
+    width: 22,
+    height: 20,
+    child: Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.centerLeft,
+      children: [
+        AgentToolIcon(
+          key: const ValueKey('native-acp-handle-icon'),
+          tool: tool,
+          size: 16,
+          color: color,
+        ),
+        Positioned(
+          right: -1,
+          bottom: -2,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHigh,
+              border: Border.all(
+                color: theme.colorScheme.surfaceContainerHighest,
+              ),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: SizedBox(
+              key: const ValueKey('native-acp-handle-index'),
+              width: 14,
+              height: 13,
+              child: Center(
+                child: Text(
+                  '$windowIndex',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: color,
+                    fontSize: 8,
+                    fontWeight: FontWeight.w700,
+                    height: 1,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 /// Expandable tmux bar shown as a bottom overlay or a wide-layout side rail.
 ///
 /// Bottom overlay collapsed: a slim handle bar sitting over bottom padding in
@@ -351,14 +409,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final manager = widget.ref.read(acpSessionManagerProvider);
     final hostId = widget.session.hostId;
     _nativeAcpSessions = manager.state.sessions
-        .where((session) => session.key.hostId == hostId && session.isLive)
+        .where(
+          (session) => session.key.hostId == hostId && session.isOpenMuxWindow,
+        )
         .toList(growable: false);
     _acpSessionSubscription = manager.states.listen((state) {
       if (!mounted || widget.session.hostId != hostId) {
         return;
       }
       final nextSessions = state.sessions
-          .where((session) => session.key.hostId == hostId && session.isLive)
+          .where(
+            (session) =>
+                session.key.hostId == hostId && session.isOpenMuxWindow,
+          )
           .toList(growable: false);
       if (_sameNativeWindowPresentation(_nativeAcpSessions, nextSessions)) {
         return;
@@ -1430,6 +1493,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final activeWindowTool = activeNative == null
         ? resolveTmuxBarActiveWindowTool(displayedWindows)
         : null;
+    final activeNativeTool = activeNative == null
+        ? null
+        : agentLaunchToolForAcpProviderId(
+            (activeNative.session?.key ?? activeNative.recent!.key).providerId,
+          );
     final tooltip = _expanded
         ? 'Collapse tmux windows'
         : 'Show tmux windows: $handleLabel';
@@ -1459,6 +1527,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                     nativeWindowIndex: activeNative == null
                         ? null
                         : _nativeAcpWindowIndex(activeNative),
+                    nativeWindowTool: activeNativeTool,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -1516,6 +1585,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final activeWindowTool = activeNative == null
         ? resolveTmuxBarActiveWindowTool(displayedWindows)
         : null;
+    final activeNativeTool = activeNative == null
+        ? null
+        : agentLaunchToolForAcpProviderId(
+            (activeNative.session?.key ?? activeNative.recent!.key).providerId,
+          );
     final tooltip = _expanded
         ? 'Collapse tmux windows'
         : 'Show tmux windows: $handleLabel';
@@ -1525,6 +1599,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       nativeWindowIndex: activeNative == null
           ? null
           : _nativeAcpWindowIndex(activeNative),
+      nativeWindowTool: activeNativeTool,
     );
 
     return Semantics(
@@ -1581,16 +1656,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     ThemeData theme,
     AgentLaunchTool? activeWindowTool, {
     required int? nativeWindowIndex,
+    required AgentLaunchTool? nativeWindowTool,
   }) {
     final color = theme.colorScheme.primary;
     if (nativeWindowIndex != null) {
-      return Text(
-        '$nativeWindowIndex',
-        key: const ValueKey('native-acp-handle-index'),
-        style: theme.textTheme.labelMedium?.copyWith(
-          color: color,
-          fontWeight: FontWeight.w700,
-        ),
+      return buildNativeAcpHandleIcon(
+        theme: theme,
+        tool: nativeWindowTool,
+        windowIndex: nativeWindowIndex,
       );
     }
     if (activeWindowTool != null) {

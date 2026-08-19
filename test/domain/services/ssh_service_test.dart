@@ -843,6 +843,9 @@ LISTEN ::1:4201
       expect(syntaxCheck.exitCode, 0, reason: '${syntaxCheck.stderr}');
       expect(command, startsWith('/bin/sh -c '));
       expect(command, contains('sleep 0.5'));
+      expect(command, contains('cat >/dev/null'));
+      expect(command, contains(r'kill -TERM "$$"'));
+      expect(command, contains('watcher_guard'));
       expect(command, contains(_automaticPortWatcherSnapshotBeginMarker));
       expect(command, contains(_automaticPortWatcherSnapshotEndMarker));
       expect(command, contains('*$_automaticPortDiscoveryUnavailableMarker*)'));

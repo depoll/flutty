@@ -509,6 +509,15 @@ void main() {
       send.constraints,
       const BoxConstraints.tightFor(width: 44, height: 44),
     );
+    final sendFinder = find.ancestor(
+      of: find.byIcon(Icons.arrow_upward),
+      matching: find.byType(IconButton),
+    );
+    expect(
+      tester.getRect(sendFinder).left -
+          tester.getRect(find.byType(TextField)).right,
+      FluttyTheme.spacingSm,
+    );
   });
 
   testWidgets('external focus controller opens and dismisses the composer', (

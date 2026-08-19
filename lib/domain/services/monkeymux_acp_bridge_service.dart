@@ -82,16 +82,21 @@ String buildMonkeyMuxAcpProviderCommand(
   return command;
 }
 
+const _acpExecutableProbeSeparator = '\u001f';
+
 /// Builds a profile-aware POSIX probe for approved executable names.
 ///
 /// The user's interactive shell is required for npm/nvm/asdf/mise installs
-/// commonly exposed only from `.zshrc` or `.bashrc`. The command emits names,
-/// never paths or profile output, so callers can parse a strict allowlist.
+/// commonly exposed only from `.zshrc` or `.bashrc`. Only absolute external
+/// command paths are emitted; aliases and shell functions are ignored.
 String buildMonkeyMuxAcpExecutableProbeCommand(Iterable<String> executables) {
   final names = _validatedExecutableProbeNames(executables);
   final inner =
       'for c in ${names.join(' ')}; do '
-      r'if command -v "$c" >/dev/null 2>&1; then printf "%s\n" "$c"; fi; '
+      r'p=$(command -v "$c" 2>/dev/null || true); '
+      r'case "$p" in /*) printf "%s'
+      '$_acpExecutableProbeSeparator'
+      r'%s\n" "$c" "$p";; esac; '
       'done';
   final quotedInner = "'${inner.replaceAll("'", "'\"'\"'")}'";
   return '$_profileSourcingPrefix'
@@ -105,28 +110,45 @@ String buildMonkeyMuxAcpWindowsExecutableProbeScript(
 ) {
   final names = _validatedExecutableProbeNames(executables);
   final quotedNames = names.map(powerShellSingleQuote).join(',');
+  final separator = powerShellSingleQuote(_acpExecutableProbeSeparator);
   final body = [
     powerShellProfilePathPreamble,
     '\$__flNames=@($quotedNames);',
     r'foreach($__flName in $__flNames){',
     r'$__flCmd=Get-Command -Name $__flName -CommandType Application,ExternalScript -ErrorAction SilentlyContinue|Select-Object -First 1;',
-    r'if($__flCmd -ne $null){[void]$__flOut.Append($__flName).Append("`n")}',
+    r'if($__flCmd -eq $null){continue};',
+    r'$__flPath=$__flCmd.Path;',
+    r'if([string]::IsNullOrWhiteSpace($__flPath)){$__flPath=$__flCmd.Source};',
+    r'if([string]::IsNullOrWhiteSpace($__flPath)){continue};',
+    r"$__flPath=$__flPath -replace '\\','/';",
+    '[void]\$__flOut.Append(\$__flName).Append($separator).Append(\$__flPath).Append("`n");',
     '}',
   ].join();
   return powerShellUtf8OutputScript(body);
 }
 
-/// Parses executable-probe output against the exact requested allowlist.
-Set<String> parseMonkeyMuxAcpExecutableProbeOutput(
+/// Parses executable-probe output into allowlisted absolute paths.
+Map<String, String> parseMonkeyMuxAcpExecutableProbeOutput(
   String output,
   Iterable<String> requested,
 ) {
   final allowed = _validatedExecutableProbeNames(requested).toSet();
-  return output
-      .split(RegExp(r'[\r\n]+'))
-      .map((value) => value.trim())
-      .where(allowed.contains)
-      .toSet();
+  final resolved = <String, String>{};
+  for (final line in output.split(RegExp(r'[\r\n]+'))) {
+    final fields = line.trim().split(_acpExecutableProbeSeparator);
+    if (fields.length != 2 || !allowed.contains(fields.first)) continue;
+    final path = fields.last.replaceAll(r'\', '/');
+    if (!(path.startsWith('/') ||
+        RegExp('^[A-Za-z]:/').hasMatch(path) ||
+        path.startsWith('//'))) {
+      continue;
+    }
+    var basename = path.split('/').last.toLowerCase();
+    basename = basename.replaceFirst(RegExp(r'\.(?:exe|cmd|bat|ps1|com)$'), '');
+    if (basename != fields.first.toLowerCase()) continue;
+    resolved[fields.first] = fields.last;
+  }
+  return Map.unmodifiable(resolved);
 }
 
 List<String> _validatedExecutableProbeNames(Iterable<String> executables) {

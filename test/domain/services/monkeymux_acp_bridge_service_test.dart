@@ -226,10 +226,17 @@ void main() {
   test('parses adapter probe output through the requested allowlist', () {
     expect(
       parseMonkeyMuxAcpExecutableProbeOutput(
-        'profile chatter\nclaude-agent-acp\nnpx\nunrequested\n',
+        'profile chatter\n'
+        'claude-agent-acp\u001f/Users/demo/bin/claude-agent-acp\n'
+        'npx\u001f/opt/homebrew/bin/npx\n'
+        'npx\u001fnpx\n'
+        'unrequested\u001f/usr/bin/unrequested\n',
         const {'claude-agent-acp', 'npx'},
       ),
-      {'claude-agent-acp', 'npx'},
+      {
+        'claude-agent-acp': '/Users/demo/bin/claude-agent-acp',
+        'npx': '/opt/homebrew/bin/npx',
+      },
     );
     expect(
       () => buildMonkeyMuxAcpExecutableProbeCommand(const {'npx; unsafe'}),

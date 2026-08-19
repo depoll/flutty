@@ -1,5 +1,10 @@
 // ignore_for_file: public_member_api_docs, avoid_redundant_argument_values
 
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -44,6 +49,10 @@ class _FakeActiveSessions extends ActiveSessionsNotifier {
 }
 
 class _MockSshService extends Mock implements SshService {}
+
+class _MockSshClient extends Mock implements SSHClient {}
+
+class _MockExecSession extends Mock implements SSHSession {}
 
 class _MockAgentLaunchPresetService extends Mock
     implements AgentLaunchPresetService {}
@@ -99,13 +108,17 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
     success: true,
     connectionId: 1,
   ),
+  SshSession? activeSession,
 }) async {
   AcpSessionKey? returned;
   var completed = false;
   final ssh = _MockSshService();
   final presetService = _MockAgentLaunchPresetService();
-  when(() => ssh.allSessions).thenReturn(const <SshSession>[]);
-  when(() => ssh.getSessionsForHost(any())).thenReturn(const <SshSession>[]);
+  when(() => ssh.allSessions).thenReturn(<SshSession>[?activeSession]);
+  when(
+    () => ssh.getSessionsForHost(any()),
+  ).thenReturn(<SshSession>[?activeSession]);
+  when(() => ssh.getSession(any())).thenReturn(activeSession);
   when(
     () => presetService.getPresetForHost(any()),
   ).thenAnswer((_) async => preset);
@@ -163,6 +176,56 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
 
 void main() {
   final key = fakeAcpKey();
+
+  testWidgets('generic sheet launches Cursor through its resolved binary', (
+    tester,
+  ) async {
+    final client = _MockSshClient();
+    final exec = _MockExecSession();
+    when(() => exec.stdout).thenAnswer(
+      (_) => Stream.value(
+        Uint8List.fromList(
+          utf8.encode(
+            'cursor-agent\u001f/Users/demo/.local/bin/cursor-agent\n',
+          ),
+        ),
+      ),
+    );
+    when(() => exec.stderr).thenAnswer((_) => const Stream.empty());
+    when(() => exec.done).thenAnswer((_) => Future<void>.value());
+    when(exec.close).thenAnswer((_) {});
+    when(
+      () => client.execute(any(), pty: any(named: 'pty')),
+    ).thenAnswer((_) async => exec);
+    final activeSession = SshSession(
+      connectionId: 7,
+      hostId: 1,
+      client: client,
+      config: const SshConnectionConfig(
+        hostname: 'alpha.example.com',
+        port: 22,
+        username: 'root',
+      ),
+    );
+    final cursorKey = fakeAcpKey(providerId: AcpBuiltinProviderIds.cursorAgent);
+    final manager = FakeAcpSessionManager()
+      ..startNewSessionResult = AcpSessionLaunchStarted(cursorKey);
+
+    final result = await _pumpAndLaunch(
+      tester,
+      manager,
+      initialProviderId: AcpBuiltinProviderIds.cursorAgent,
+      activeSession: activeSession,
+    );
+
+    expect(result(), cursorKey);
+    expect(manager.startLaunchOverrides, hasLength(1));
+    expect(
+      manager.startLaunchOverrides.single?.executable,
+      '/Users/demo/.local/bin/cursor-agent',
+    );
+    expect(manager.startLaunchOverrides.single?.arguments, ['acp']);
+  });
 
   testWidgets('MonkeyMux launch locks host/provider and inherits window cwd', (
     tester,

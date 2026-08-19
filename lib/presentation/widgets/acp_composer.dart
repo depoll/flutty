@@ -527,6 +527,7 @@ class _AcpComposerState extends State<AcpComposer> {
                           ),
                         if (_controller.canCancel)
                           _StopTurnButton(onPressed: _stopActiveTurn),
+                        const SizedBox(width: FluttyTheme.spacingSm),
                         _PrimaryActionButton(
                           activity: _controller.activity,
                           canSend: _controller.canSend,

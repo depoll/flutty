@@ -375,6 +375,48 @@ class AcpBuiltinProvider {
   String toString() => 'AcpBuiltinProvider(id: $id, label: $label)';
 }
 
+/// Returns whether [command] is an app-approved launch for [provider].
+///
+/// Besides the exact pinned fallback, this accepts only an absolute executable
+/// path resolved from the remote host whose basename matches a declared probe
+/// alias and whose arguments exactly match the corresponding bundled command.
+/// Shell aliases, functions, relative paths, and changed arguments are rejected.
+bool isApprovedAcpBuiltinLaunchOverride(
+  AcpBuiltinProvider provider,
+  AcpLaunchCommand command,
+) {
+  if (command == provider.adapterFallbackCommand) return true;
+  final executableName = _resolvedAcpExecutableName(command.executable);
+  if (executableName == null) return false;
+
+  if (_listEquality.equals(
+        command.arguments,
+        provider.launchCommand.arguments,
+      ) &&
+      provider.executableProbe.candidateExecutableNames.any(
+        (candidate) => candidate.toLowerCase() == executableName,
+      )) {
+    return true;
+  }
+
+  final fallback = provider.adapterFallbackCommand;
+  return fallback != null &&
+      _listEquality.equals(command.arguments, fallback.arguments) &&
+      fallback.executable.toLowerCase() == executableName;
+}
+
+String? _resolvedAcpExecutableName(String executable) {
+  final normalized = executable.replaceAll(r'\', '/');
+  final isAbsolute =
+      normalized.startsWith('/') ||
+      RegExp('^[A-Za-z]:/').hasMatch(normalized) ||
+      normalized.startsWith('//');
+  if (!isAbsolute) return null;
+  var name = normalized.split('/').last.toLowerCase();
+  name = name.replaceFirst(RegExp(r'\.(?:exe|cmd|bat|ps1|com)$'), '');
+  return name.isEmpty ? null : name;
+}
+
 /// Built-in Copilot CLI ACP provider.
 final acpCopilotCliProvider = AcpBuiltinProvider(
   id: AcpBuiltinProviderIds.copilotCli,

@@ -50,6 +50,9 @@ class FakeAcpSessionManager extends AcpSessionManager {
   final List<String> deleted = <String>[];
   final List<String> selected = <String>[];
   final List<({int hostId, String providerId, String cwd})> starts = [];
+  final List<AcpLaunchCommand?> startLaunchOverrides = <AcpLaunchCommand?>[];
+  final List<AcpLaunchCommand?> reconnectLaunchOverrides =
+      <AcpLaunchCommand?>[];
   final List<(String, String)> permissionResponses = <(String, String)>[];
   final List<String> cancelledPermissions = <String>[];
   final List<String> approvedWrites = <String>[];
@@ -189,6 +192,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {
     starts.add((hostId: hostId, providerId: providerId, cwd: cwd));
+    startLaunchOverrides.add(launchCommandOverride);
     return startNewSessionResult;
   }
 
@@ -203,6 +207,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
     AcpLaunchCommand? launchCommandOverride,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {
+    reconnectLaunchOverrides.add(launchCommandOverride);
     reconnects.add((
       hostId: hostId,
       providerId: providerId,

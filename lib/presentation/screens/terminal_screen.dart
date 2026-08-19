@@ -50,7 +50,6 @@ import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
-import '../../domain/services/monkeymux_acp_bridge_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
 import '../../domain/services/monkeymux_service.dart';
 import '../../domain/services/port_forward_browser_service.dart';
@@ -68,7 +67,6 @@ import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/terminal_wake_lock_service.dart';
 import '../../domain/services/tmux_service.dart';
-import '../../domain/services/windows_remote_powershell.dart';
 import '../controllers/terminal_session_controller.dart';
 import '../widgets/acp_composer.dart';
 import '../widgets/acp_concurrency_choice.dart';
@@ -11294,81 +11292,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<Set<String>> _probeNativeAdapterCommands(
-    SshSession session,
-    Iterable<String> commands,
-  ) {
-    final requested = commands.toSet();
-    final command = session.remoteIsWindows
-        ? buildWindowsPowerShellCommand(
-            buildMonkeyMuxAcpWindowsExecutableProbeScript(requested),
-          )
-        : buildMonkeyMuxAcpExecutableProbeCommand(requested);
-    return session.runQueuedExec(() async {
-      SSHSession? shell;
-      try {
-        shell = await session.execute(command);
-        shell.stderr.drain<void>().ignore();
-        final output = await utf8.decodeStream(shell.stdout);
-        await shell.done;
-        return parseMonkeyMuxAcpExecutableProbeOutput(output, requested);
-      } finally {
-        shell?.close();
-      }
-    });
-  }
-
   Future<({AcpLaunchCommand? override, bool terminal})?>
-  _resolveNativeAdapterLaunch(SshSession session, String providerId) async {
+  _resolveNativeAdapterLaunch(SshSession session, String providerId) {
     final provider = acpBuiltinProviders
         .where((candidate) => candidate.id == providerId)
         .firstOrNull;
-    final fallback = provider?.adapterFallbackCommand;
-    if (provider == null || fallback == null) {
-      return (override: null, terminal: false);
+    if (provider == null) {
+      return Future.value((override: null, terminal: false));
     }
-    final found = await _probeNativeAdapterCommands(session, <String>{
-      ...provider.executableProbe.candidateExecutableNames,
-      fallback.executable,
-    });
-    if (provider.executableProbe.candidateExecutableNames.any(found.contains)) {
-      return (override: null, terminal: false);
-    }
-    final tool = agentLaunchToolForAcpProviderId(providerId);
-    if (!mounted) return null;
-    final useFallback = found.contains(fallback.executable);
-    final choice = await showDialog<String>(
+    return resolveAcpRemoteProviderLaunch(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('${provider.label} adapter required'),
-        content: Text(
-          useFallback
-              ? 'The ACP adapter is not installed. MonkeySSH can run the pinned adapter with npx:\n\n${fallback.argv.join(' ')}'
-              : 'The ACP adapter is not installed and npx is unavailable on this host.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, 'cancel'),
-            child: const Text('Cancel'),
-          ),
-          if (tool != null)
-            OutlinedButton(
-              onPressed: () => Navigator.pop(context, 'terminal'),
-              child: const Text('Use terminal CLI'),
-            ),
-          if (useFallback)
-            FilledButton(
-              onPressed: () => Navigator.pop(context, 'adapter'),
-              child: const Text('Run adapter'),
-            ),
-        ],
-      ),
+      session: session,
+      provider: provider,
+      canUseTerminalCli: agentLaunchToolForAcpProviderId(providerId) != null,
     );
-    return switch (choice) {
-      'adapter' => (override: fallback, terminal: false),
-      'terminal' => (override: null, terminal: true),
-      _ => null,
-    };
   }
 
   Future<void> _startNativeAcpSession(

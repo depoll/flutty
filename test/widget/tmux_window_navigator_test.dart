@@ -22,6 +22,7 @@ import 'package:monkeyssh/domain/services/remote_multiplexer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
+import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/acp_mux_window_status_badge.dart';
 import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 import 'package:monkeyssh/presentation/widgets/premium_badge.dart';
@@ -74,6 +75,44 @@ class _ConfirmCloseHostState extends ConsumerState<_ConfirmCloseHost> {
 }
 
 void main() {
+  testWidgets('native mux handle shows provider icon and window number', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: buildNativeAcpHandleIcon(
+                theme: Theme.of(context),
+                tool: AgentLaunchTool.cursorAgent,
+                windowIndex: 8,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      find.byKey(const ValueKey('native-acp-handle-icon')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('native-acp-handle-index')),
+      findsOneWidget,
+    );
+    expect(find.text('8'), findsOneWidget);
+    expect(
+      tester
+          .widget<AgentToolIcon>(
+            find.byKey(const ValueKey('native-acp-handle-icon')),
+          )
+          .tool,
+      AgentLaunchTool.cursorAgent,
+    );
+  });
+
   group('TmuxWindowStatusBadge', () {
     testWidgets('shows waiting for the active idle window', (tester) async {
       const window = TmuxWindow(

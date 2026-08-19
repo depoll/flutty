@@ -956,7 +956,7 @@ class AcpSessionManager {
     );
     if (builtin != null) {
       if (launchCommandOverride != null &&
-          launchCommandOverride != builtin.adapterFallbackCommand) {
+          !isApprovedAcpBuiltinLaunchOverride(builtin, launchCommandOverride)) {
         return const _LaunchError(
           AcpSessionError(
             kind: AcpSessionErrorKind.commandNotApproved,

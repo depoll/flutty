@@ -60,6 +60,36 @@ void main() {
     });
   });
 
+  group('isOpenMuxWindow', () {
+    test(
+      'keeps locally detached persistent bridges in the mux window list',
+      () {
+        expect(
+          base(
+            status: AcpConnectionStatus.detached,
+            attached: false,
+          ).isOpenMuxWindow,
+          isTrue,
+        );
+      },
+    );
+
+    test('excludes terminal bridge and provider states', () {
+      for (final status in [
+        AcpConnectionStatus.bridgeExpired,
+        AcpConnectionStatus.providerExited,
+        AcpConnectionStatus.failed,
+        AcpConnectionStatus.closed,
+      ]) {
+        expect(
+          base(status: status, attached: false).isOpenMuxWindow,
+          isFalse,
+          reason: status.name,
+        );
+      }
+    });
+  });
+
   group('copyWith', () {
     test('clears nullable fields explicitly', () {
       final withTitle = base().copyWith(title: 'Hello');

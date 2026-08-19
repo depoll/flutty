@@ -97,6 +97,7 @@ class _SshSessionRuntime {
   // yields between slices.
   static const _maxTerminalParseSequenceSliceChars = 256 * 1024;
   static const _terminalParseFrameBudget = Duration(milliseconds: 8);
+  static const _terminalParseContinuationDelay = Duration(milliseconds: 1);
   // While draining a multi-frame backlog (a large switch/reconnect replay),
   // repaint at most this often. The parser keeps advancing every event-loop
   // turn, but coalescing the repaints keeps the raster thread — which must
@@ -1347,9 +1348,11 @@ if(!$__flResolved){$__flResolved='cmd'}
     if (_terminalParsePumpTimer?.isActive ?? false) {
       return;
     }
-    // Resume on the next event-loop turn so the engine can render a frame
-    // between budgets; the run still completes within a handful of frames.
-    _terminalParsePumpTimer = Timer(Duration.zero, () {
+    // A zero-delay timer can repeatedly win the event loop ahead of vsync and
+    // starve rendering while a multi-megabyte replay drains. A tiny positive
+    // delay gives queued platform/frame events a guaranteed turn without
+    // materially slowing catch-up.
+    _terminalParsePumpTimer = Timer(_terminalParseContinuationDelay, () {
       _terminalParsePumpTimer = null;
       _pumpTerminalParse(terminal);
     });

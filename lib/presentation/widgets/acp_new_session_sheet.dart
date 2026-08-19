@@ -468,6 +468,28 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
       return null;
     }
 
+    AcpLaunchCommand? launchCommandOverride;
+    final sshSession = connection.connectionId == null
+        ? null
+        : ref.read(sshServiceProvider).getSession(connection.connectionId!);
+    final builtinProvider = acpBuiltinProviders
+        .where((provider) => provider.id == providerId)
+        .firstOrNull;
+    if (sshSession != null && builtinProvider != null) {
+      final launch = await resolveAcpRemoteProviderLaunch(
+        context: context,
+        session: sshSession,
+        provider: builtinProvider,
+        canUseTerminalCli: builtinProvider.terminalAuthCommand != null,
+      );
+      if (!mounted || launch == null) return null;
+      if (launch.terminal) {
+        await _openTerminalForAuth(providerId);
+        return null;
+      }
+      launchCommandOverride = launch.override;
+    }
+
     final recent = _selectedRecent;
     if (recent != null) {
       return manager.reconnectSession(
@@ -477,6 +499,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
         acpSessionId: recent.acpSessionId,
         cwd: recent.cwd ?? cwd,
         confirmInstall: _confirmInstall,
+        launchCommandOverride: launchCommandOverride,
         replace: replace,
       );
     }
@@ -485,6 +508,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
       providerId: providerId,
       cwd: cwd,
       confirmInstall: _confirmInstall,
+      launchCommandOverride: launchCommandOverride,
       replace: replace,
     );
   }

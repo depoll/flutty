@@ -393,6 +393,25 @@ final class AcpSessionState {
         AcpConnectionStatus.closed => false,
       };
 
+  /// Whether this tracked session still represents an open persistent mux
+  /// window, even when its local ACP transport is parked.
+  ///
+  /// Detached sessions keep their remote MonkeyMux bridge/provider alive and
+  /// remain switchable. Terminal bridge/provider states are no longer windows.
+  bool get isOpenMuxWindow => switch (status) {
+    AcpConnectionStatus.idle ||
+    AcpConnectionStatus.connecting ||
+    AcpConnectionStatus.initializing ||
+    AcpConnectionStatus.authenticationRequired ||
+    AcpConnectionStatus.ready ||
+    AcpConnectionStatus.reconnecting ||
+    AcpConnectionStatus.detached => true,
+    AcpConnectionStatus.bridgeExpired ||
+    AcpConnectionStatus.providerExited ||
+    AcpConnectionStatus.failed ||
+    AcpConnectionStatus.closed => false,
+  };
+
   /// Returns a copy with the provided fields replaced.
   ///
   /// Nullable fields use dedicated `clear*` flags so an explicit `null` can be

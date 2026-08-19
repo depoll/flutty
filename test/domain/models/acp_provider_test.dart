@@ -395,6 +395,62 @@ void main() {
       ]);
     });
 
+    test('resolved built-in executable overrides stay constrained', () {
+      expect(
+        isApprovedAcpBuiltinLaunchOverride(
+          acpCursorAgentProvider,
+          AcpLaunchCommand(
+            executable: '/Users/demo/.local/bin/cursor-agent',
+            arguments: acpCursorAgentProvider.launchCommand.arguments,
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        isApprovedAcpBuiltinLaunchOverride(
+          acpCursorAgentProvider,
+          AcpLaunchCommand(
+            executable: r'C:\Tools\agent.cmd',
+            arguments: const ['acp'],
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        isApprovedAcpBuiltinLaunchOverride(
+          acpClaudeAgentProvider,
+          AcpLaunchCommand(
+            executable: '/opt/homebrew/bin/npx',
+            arguments: const [
+              '--yes',
+              '@agentclientprotocol/claude-agent-acp@0.70.0',
+            ],
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        isApprovedAcpBuiltinLaunchOverride(
+          acpCursorAgentProvider,
+          AcpLaunchCommand(
+            executable: 'cursor-agent',
+            arguments: const ['acp'],
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        isApprovedAcpBuiltinLaunchOverride(
+          acpCursorAgentProvider,
+          AcpLaunchCommand(
+            executable: '/tmp/cursor-agent',
+            arguments: const ['acp', '--unapproved'],
+          ),
+        ),
+        isFalse,
+      );
+    });
+
     test('built-in providers expose terminal-auth command metadata', () {
       expect(acpCopilotCliProvider.terminalAuthCommand, isNotNull);
       expect(acpOpenCodeProvider.terminalAuthCommand, isNotNull);
