@@ -152,7 +152,10 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
   await tester.tap(find.text('open'));
   await tester.pumpAndSettle();
   if (startSession) {
-    await tester.tap(find.widgetWithText(FilledButton, 'Start session'));
+    final startButton = find.widgetWithText(FilledButton, 'Start session');
+    await tester.ensureVisible(startButton);
+    await tester.pumpAndSettle();
+    await tester.tap(startButton);
     await tester.pumpAndSettle();
   }
   return () => completed ? returned : null;
@@ -387,7 +390,10 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Start session'));
+    final startButton = find.widgetWithText(FilledButton, 'Start session');
+    await tester.ensureVisible(startButton);
+    await tester.pumpAndSettle();
+    await tester.tap(startButton);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 

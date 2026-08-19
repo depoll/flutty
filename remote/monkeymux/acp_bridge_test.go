@@ -436,11 +436,11 @@ func TestAcpPendingProviderRequestsAreBoundedByBytes(t *testing.T) {
 func newOrderingTestBridge() *acpBridge {
 	now := time.Now()
 	return &acpBridge{
-		id:              "0123456789abcdef0123456789abcdef",
-		state:           "running",
-		startedAt:       now,
-		lastActivity:    now,
-		clients:         map[string]*acpBridgeClient{},
+		id:                   "0123456789abcdef0123456789abcdef",
+		state:                "running",
+		startedAt:            now,
+		lastActivity:         now,
+		clients:              map[string]*acpBridgeClient{},
 		pendingRequests:      map[string]struct{}{},
 		inFlightTurns:        map[string]struct{}{},
 		sessionSetupRequests: map[string]struct{}{},
