@@ -1181,6 +1181,56 @@ void main() {
     });
 
     test(
+      'parks earlier same-host attachments without stopping persistent bridges',
+      () async {
+        isPro = true;
+        final first = await startCopilot();
+        final firstTransport = connector.servers[first.bridgeId]!;
+
+        final second = await startCopilot();
+        final secondTransport = connector.servers[second.bridgeId]!;
+
+        expect(
+          manager.state.byKeyValue(first.value)!.status,
+          AcpConnectionStatus.detached,
+        );
+        expect(firstTransport.closed, isTrue);
+        expect(manager.state.byKeyValue(second.value)!.isLive, isTrue);
+        expect(manager.liveSessionKeyValues, {second.value});
+        expect(connector.stoppedBridges, isEmpty);
+
+        final reopened = await manager.reconnectSession(
+          hostId: first.hostId,
+          providerId: first.providerId,
+          bridgeId: first.bridgeId,
+          acpSessionId: first.acpSessionId,
+          cwd: '/repo',
+        );
+
+        expect(reopened, isA<AcpSessionLaunchStarted>());
+        expect(manager.state.byKeyValue(first.value)!.isLive, isTrue);
+        expect(
+          manager.state.byKeyValue(second.value)!.status,
+          AcpConnectionStatus.detached,
+        );
+        expect(secondTransport.closed, isTrue);
+        expect(manager.liveSessionKeyValues, {first.value});
+        expect(connector.stoppedBridges, isEmpty);
+        expect(connector.availableBridges, {first.bridgeId, second.bridgeId});
+      },
+    );
+
+    test('keeps attachments on separate SSH hosts live', () async {
+      isPro = true;
+      final first = await startCopilot();
+      final second = await startCopilot(hostId: 2);
+
+      expect(manager.liveSessionKeyValues, {first.value, second.value});
+      expect(connector.servers[first.bridgeId]!.closed, isFalse);
+      expect(connector.servers[second.bridgeId]!.closed, isFalse);
+    });
+
+    test(
       'provider exit marks the session exited without stopping others',
       () async {
         isPro = true;

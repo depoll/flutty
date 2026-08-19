@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
+import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
@@ -184,6 +185,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
     required String providerId,
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
+    AcpLaunchCommand? launchCommandOverride,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {
     starts.add((hostId: hostId, providerId: providerId, cwd: cwd));
@@ -198,6 +200,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
     required String acpSessionId,
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
+    AcpLaunchCommand? launchCommandOverride,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {
     reconnects.add((

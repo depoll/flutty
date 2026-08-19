@@ -28,6 +28,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
@@ -11291,6 +11292,85 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<Set<String>> _probeNativeAdapterCommands(
+    SshSession session,
+    Iterable<String> commands,
+  ) async {
+    final safe = commands
+        .where((name) => RegExp(r'^[A-Za-z0-9._@+-]+$').hasMatch(name))
+        .toSet();
+    if (safe.isEmpty || session.remoteIsWindows) {
+      return const <String>{};
+    }
+    final inner = safe
+        .map(
+          (name) =>
+              "command -v '$name' >/dev/null 2>&1 && printf '%s\\n' '$name'",
+        )
+        .join('; ');
+    final shell = await session.execute(inner);
+    final output = await utf8.decodeStream(shell.stdout);
+    await shell.done;
+    return output
+        .split(RegExp(r'[\r\n]+'))
+        .map((value) => value.trim())
+        .where(safe.contains)
+        .toSet();
+  }
+
+  Future<({AcpLaunchCommand? override, bool terminal})?>
+  _resolveNativeAdapterLaunch(SshSession session, String providerId) async {
+    final provider = acpBuiltinProviders
+        .where((candidate) => candidate.id == providerId)
+        .firstOrNull;
+    final fallback = provider?.adapterFallbackCommand;
+    if (provider == null || fallback == null) {
+      return (override: null, terminal: false);
+    }
+    final found = await _probeNativeAdapterCommands(session, <String>{
+      ...provider.executableProbe.candidateExecutableNames,
+      fallback.executable,
+    });
+    if (provider.executableProbe.candidateExecutableNames.any(found.contains)) {
+      return (override: null, terminal: false);
+    }
+    final tool = agentLaunchToolForAcpProviderId(providerId);
+    if (!mounted) return null;
+    final useFallback = found.contains(fallback.executable);
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('${provider.label} adapter required'),
+        content: Text(
+          useFallback
+              ? 'The ACP adapter is not installed. MonkeySSH can run the pinned adapter with npx:\n\n${fallback.argv.join(' ')}'
+              : 'The ACP adapter is not installed and npx is unavailable on this host.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'cancel'),
+            child: const Text('Cancel'),
+          ),
+          if (tool != null)
+            OutlinedButton(
+              onPressed: () => Navigator.pop(context, 'terminal'),
+              child: const Text('Use terminal CLI'),
+            ),
+          if (useFallback)
+            FilledButton(
+              onPressed: () => Navigator.pop(context, 'adapter'),
+              child: const Text('Run adapter'),
+            ),
+        ],
+      ),
+    );
+    return switch (choice) {
+      'adapter' => (override: fallback, terminal: false),
+      'terminal' => (override: null, terminal: true),
+      _ => null,
+    };
+  }
+
   Future<void> _startNativeAcpSession(
     SshSession session, {
     String? providerId,
@@ -11324,6 +11404,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final adapterLaunch = await _resolveNativeAdapterLaunch(
+      session,
+      providerId,
+    );
+    if (!mounted || adapterLaunch == null) return;
+    if (adapterLaunch.terminal) {
+      final tool = agentLaunchToolForAcpProviderId(providerId);
+      if (tool != null) {
+        await _createTmuxWindow(
+          session,
+          command: buildAgentToolCommand(tool),
+          workingDirectory: workingDirectory,
+          name: tool.commandName,
+        );
+      }
+      return;
+    }
+
     final manager = ref.read(acpSessionManagerProvider);
     final cwd = workingDirectory?.trim().isNotEmpty ?? false
         ? workingDirectory!.trim()
@@ -11338,6 +11436,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             cwd: cwd,
             confirmInstall: (request) =>
                 confirmAcpMonkeyMuxInstall(context, request),
+            launchCommandOverride: adapterLaunch.override,
             replace: replace,
           )
         : manager.resumeProviderSession(
@@ -11347,6 +11446,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             cwd: cwd,
             confirmInstall: (request) =>
                 confirmAcpMonkeyMuxInstall(context, request),
+            launchCommandOverride: adapterLaunch.override,
             replace: replace,
           );
 

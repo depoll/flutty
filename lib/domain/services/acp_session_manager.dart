@@ -198,10 +198,14 @@ class AcpSessionManager {
     required String providerId,
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
+    AcpLaunchCommand? launchCommandOverride,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
     _telemetry.featureOpened();
-    final launch = await _resolveLaunch(providerId);
+    final launch = await _resolveLaunch(
+      providerId,
+      launchCommandOverride: launchCommandOverride,
+    );
     if (launch is _LaunchError) {
       return AcpSessionLaunchFailed(null, launch.error);
     }
@@ -238,10 +242,14 @@ class AcpSessionManager {
     required String acpSessionId,
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
+    AcpLaunchCommand? launchCommandOverride,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
     _telemetry.featureOpened();
-    final launch = await _resolveLaunch(providerId);
+    final launch = await _resolveLaunch(
+      providerId,
+      launchCommandOverride: launchCommandOverride,
+    );
     if (launch is _LaunchError) {
       return AcpSessionLaunchFailed(null, launch.error);
     }
@@ -278,6 +286,7 @@ class AcpSessionManager {
     required String acpSessionId,
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
+    AcpLaunchCommand? launchCommandOverride,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
     _telemetry.featureOpened();
@@ -289,11 +298,15 @@ class AcpSessionManager {
     );
     final existing = _controllers[key.value];
     if (existing != null && existing.state.isLive) {
+      await _parkOtherHostAttachments(hostId, keepBridgeId: bridgeId);
       _select(key.value);
       return AcpSessionLaunchStarted(key);
     }
 
-    final launch = await _resolveLaunch(providerId);
+    final launch = await _resolveLaunch(
+      providerId,
+      launchCommandOverride: launchCommandOverride,
+    );
     if (launch is _LaunchError) {
       return AcpSessionLaunchFailed(key, launch.error);
     }
@@ -317,6 +330,7 @@ class AcpSessionManager {
 
     final List<MonkeyMuxAcpBridgeMetadata> remoteBridges;
     try {
+      await _parkOtherHostAttachments(hostId, keepBridgeId: bridgeId);
       remoteBridges = await _connector.listBridges(
         hostId,
         confirmInstall: confirmInstall,
@@ -602,6 +616,7 @@ class AcpSessionManager {
     final startedAt = _clock();
     MonkeyMuxAcpBridgeStartResult startResult;
     try {
+      await _parkOtherHostAttachments(hostId);
       startResult = await _connector.startBridge(
         hostId: hostId,
         providerId: launch.providerId,
@@ -871,6 +886,36 @@ class AcpSessionManager {
         isProUnlocked: _isProUnlocked(),
       );
 
+  /// Keeps remote native-agent bridges persistent while bounding the number
+  /// of long-lived SSH exec channels held against one host's `MaxSessions`.
+  ///
+  /// A parked controller remains tracked and its remote MonkeyMux bridge keeps
+  /// running. Reopening it reconnects and replays missed output. Controllers
+  /// sharing [keepBridgeId] also share one transport, so they stay attached.
+  Future<void> _parkOtherHostAttachments(
+    int hostId, {
+    String? keepBridgeId,
+  }) async {
+    final toPark = _controllers.values
+        .where(
+          (controller) =>
+              controller.state.key.hostId == hostId &&
+              controller.state.isLive &&
+              controller.state.key.bridgeId != keepBridgeId,
+        )
+        .toList(growable: false);
+    if (toPark.isEmpty) return;
+
+    for (final controller in toPark) {
+      await controller.detach();
+    }
+    _diagnostics.info(
+      'acp.manager',
+      'host_attachments_parked',
+      fields: {'hostId': hostId, 'count': toPark.length},
+    );
+  }
+
   Future<({AcpSessionError? error, String? value})> _resolveWorkingDirectory(
     int hostId,
     String cwd, {
@@ -902,15 +947,27 @@ class AcpSessionManager {
     }
   }
 
-  Future<_LaunchOutcome> _resolveLaunch(String providerId) async {
+  Future<_LaunchOutcome> _resolveLaunch(
+    String providerId, {
+    AcpLaunchCommand? launchCommandOverride,
+  }) async {
     final builtin = acpBuiltinProviders.firstWhereOrNull(
       (provider) => provider.id == providerId,
     );
     if (builtin != null) {
+      if (launchCommandOverride != null &&
+          launchCommandOverride != builtin.adapterFallbackCommand) {
+        return const _LaunchError(
+          AcpSessionError(
+            kind: AcpSessionErrorKind.commandNotApproved,
+            message: 'The adapter launch command is not approved.',
+          ),
+        );
+      }
       return _ResolvedLaunch(
         providerId: builtin.id,
         label: builtin.label,
-        argv: builtin.launchCommand.argv,
+        argv: (launchCommandOverride ?? builtin.launchCommand).argv,
         isCustom: false,
       );
     }
