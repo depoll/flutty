@@ -154,6 +154,22 @@ void main() {
     });
   });
 
+  test('activity snapshots ignore transcript-only changes', () {
+    final first = fakeAcpSession(
+      timeline: fakeAcpTimeline('first transcript'),
+      promptStatus: AcpPromptStatus.streaming,
+    );
+    final second = fakeAcpSession(
+      timeline: fakeAcpTimeline('different transcript'),
+      promptStatus: AcpPromptStatus.streaming,
+    );
+
+    expect(
+      AcpActivitySnapshot.fromSession(first),
+      AcpActivitySnapshot.fromSession(second),
+    );
+  });
+
   group('native mux window parity', () {
     test('idle and active turns use waiting/running vocabulary', () {
       expect(acpSessionMuxStatusDisplay(fakeAcpSession()).label, 'waiting');

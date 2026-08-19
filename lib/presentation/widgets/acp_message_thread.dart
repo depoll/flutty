@@ -108,9 +108,15 @@ class AcpMessageThread extends StatelessWidget {
       case AcpPlanEntry():
         return AcpPlanView(plan: entry.plan);
       case AcpToolCallEntry():
-        return AcpToolCallView(
+        final tool = AcpToolCallView(
           toolCall: entry.toolCall,
           onOpenLocation: onOpenLocation,
+        );
+        return entry.isSubagent ? _SubagentLaunchSurface(child: tool) : tool;
+      case AcpSubagentTranscriptEntry():
+        return _SubagentTranscriptSurface(
+          entry: entry,
+          childBuilder: (child) => _buildEntry(context, child),
         );
       case AcpUsageEntry():
         return AcpUsageView(usage: entry.usage);
@@ -139,6 +145,97 @@ class AcpMessageThread extends StatelessWidget {
       },
     ),
   );
+}
+
+class _SubagentLaunchSurface extends StatelessWidget {
+  const _SubagentLaunchSurface({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Padding(
+        padding: const EdgeInsets.only(bottom: FluttyTheme.spacingXs),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.smart_toy_outlined,
+              size: 14,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: FluttyTheme.spacingXs),
+            Text(
+              'Subagent',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+      child,
+    ],
+  );
+}
+
+class _SubagentTranscriptSurface extends StatelessWidget {
+  const _SubagentTranscriptSurface({
+    required this.entry,
+    required this.childBuilder,
+  });
+
+  final AcpSubagentTranscriptEntry entry;
+  final Widget Function(AcpTimelineEntry entry) childBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      container: true,
+      label: 'Nested subagent transcript',
+      child: Container(
+        key: ValueKey('acp-subagent-transcript-${entry.launchToolCallId}'),
+        margin: const EdgeInsets.only(left: FluttyTheme.spacingSm),
+        padding: const EdgeInsets.only(left: FluttyTheme.spacingMd),
+        decoration: BoxDecoration(
+          border: Border(left: BorderSide(color: scheme.primary, width: 2)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.smart_toy_outlined, size: 14, color: scheme.primary),
+                const SizedBox(width: FluttyTheme.spacingXs),
+                Text(
+                  'Subagent transcript',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: scheme.primary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            for (var index = 0; index < entry.entries.length; index++)
+              Padding(
+                padding: EdgeInsets.only(
+                  top: index == 0
+                      ? FluttyTheme.spacingSm
+                      : FluttyTheme.spacingMd,
+                ),
+                child: childBuilder(entry.entries[index]),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _AssistantMessage extends StatelessWidget {

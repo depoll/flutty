@@ -64,6 +64,10 @@ import 'sftp_screen.dart';
 typedef AcpChatAttachmentActionsBuilder =
     AcpComposerAttachmentActions Function(int hostId, int? connectionId);
 
+/// Receives a connection-card preview together with its originating session.
+typedef AcpChatPreviewChanged =
+    void Function(AcpSessionKey sessionKey, String? preview);
+
 /// Wide-layout breakpoint for the session rail.
 const double kAgentChatWideBreakpoint = 840;
 
@@ -90,6 +94,7 @@ class AgentChatScreen extends ConsumerStatefulWidget {
     this.onFontSizeCommitted,
     this.onExitEmbedded,
     this.onSessionChanged,
+    this.onPreviewChanged,
     super.key,
   });
 
@@ -126,6 +131,9 @@ class AgentChatScreen extends ConsumerStatefulWidget {
   /// Replaces the active embedded conversation after a fork.
   final ValueChanged<AcpSessionKey>? onSessionChanged;
 
+  /// Publishes a bounded conversation preview for connection cards.
+  final AcpChatPreviewChanged? onPreviewChanged;
+
   @override
   ConsumerState<AgentChatScreen> createState() => _AgentChatScreenState();
 }
@@ -139,7 +147,11 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   var _showJumpToLatest = false;
   var _connecting = true;
   AcpSessionError? _connectError;
+  final AcpTimelineMapperCache _timelineMapperCache = AcpTimelineMapperCache();
   final AcpSftpClientCache _sftpCache = AcpSftpClientCache();
+  Timer? _previewPublishTimer;
+  String? _pendingPreview;
+  String? _lastPublishedPreview;
 
   @override
   void initState() {
@@ -163,11 +175,32 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
 
   @override
   void dispose() {
+    _previewPublishTimer?.cancel();
     _scroll
       ..removeListener(_onScroll)
       ..dispose();
     _composer.dispose();
     super.dispose();
+  }
+
+  void _queuePreviewPublish(String? preview) {
+    final callback = widget.onPreviewChanged;
+    if (callback == null ||
+        preview == _pendingPreview ||
+        (preview == _lastPublishedPreview && _previewPublishTimer == null)) {
+      return;
+    }
+    _pendingPreview = preview;
+    _previewPublishTimer ??= Timer(const Duration(milliseconds: 250), () {
+      _previewPublishTimer = null;
+      final next = _pendingPreview;
+      _pendingPreview = null;
+      if (!mounted || next == _lastPublishedPreview) {
+        return;
+      }
+      _lastPublishedPreview = next;
+      callback(_key, next);
+    });
   }
 
   AcpAttachmentUploader? _buildUploader() {
@@ -762,8 +795,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     final size = MediaQuery.sizeOf(context);
     showDialog<void>(
       context: context,
-      builder: (context) => Dialog(
-        insetPadding: const EdgeInsets.all(FluttyTheme.spacingMd),
+      useSafeArea: false,
+      barrierColor: Colors.black,
+      builder: (context) => Dialog.fullscreen(
         backgroundColor: Colors.black,
         child: SizedBox(
           key: const ValueKey('acp-image-viewer'),
@@ -773,13 +807,17 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             children: [
               Positioned.fill(
                 child: InteractiveViewer(
-                  maxScale: 5,
+                  minScale: 0.5,
+                  maxScale: 8,
+                  boundaryMargin: const EdgeInsets.all(96),
+                  clipBehavior: Clip.none,
                   child: Center(
                     child: AcpInlineImage(
                       image: image,
                       resolver: _resolveChatImage,
                       maxWidth: size.width,
                       maxHeight: size.height,
+                      showFrame: false,
                     ),
                   ),
                 ),
@@ -788,9 +826,17 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                 top: 0,
                 right: 0,
                 child: SafeArea(
-                  child: IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white),
-                    onPressed: () => Navigator.of(context).pop(),
+                  child: Padding(
+                    padding: const EdgeInsets.all(FluttyTheme.spacingSm),
+                    child: IconButton.filled(
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black54,
+                        foregroundColor: Colors.white,
+                      ),
+                      tooltip: 'Close image',
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
                   ),
                 ),
               ),
@@ -927,7 +973,8 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       );
     }
 
-    final entries = mapAcpSessionTimeline(session);
+    final entries = _timelineMapperCache.map(session);
+    _queuePreviewPublish(_timelineMapperCache.preview(session));
     final prompts = _prompts(session);
     final activity = acpSessionActivityDisplay(session);
     final quickConfigBar = _buildQuickConfigBar(

@@ -69,7 +69,12 @@ final class AcpTelemetryAdapter implements AcpTelemetrySink {
 
   static String _providerCategory(String providerId) {
     if (providerId == AcpBuiltinProviderIds.copilotCli) return 'copilot_cli';
+    if (providerId == AcpBuiltinProviderIds.claudeAgent) return 'claude_agent';
+    if (providerId == AcpBuiltinProviderIds.codex) return 'codex';
     if (providerId == AcpBuiltinProviderIds.openCode) return 'opencode';
+    if (providerId == AcpBuiltinProviderIds.cursorAgent) return 'cursor_agent';
+    if (providerId == AcpBuiltinProviderIds.antigravity) return 'antigravity';
+    if (providerId == AcpBuiltinProviderIds.pi) return 'pi';
     if (providerId.startsWith(acpCustomProviderReservedIdPrefix)) {
       return 'unknown';
     }

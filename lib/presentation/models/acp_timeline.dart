@@ -41,10 +41,13 @@ enum AcpStatusSeverity {
 @immutable
 sealed class AcpTimelineEntry extends Equatable {
   /// Creates a timeline entry with a stable [id].
-  const AcpTimelineEntry({required this.id});
+  const AcpTimelineEntry({required this.id, this.parentToolCallId});
 
   /// Stable identifier for this entry within its conversation.
   final String id;
+
+  /// Launching tool call for nested subagent output, when present.
+  final String? parentToolCallId;
 }
 
 /// A user prompt made up of ordered content parts.
@@ -77,6 +80,7 @@ final class AcpAssistantMessageEntry extends AcpTimelineEntry {
   const AcpAssistantMessageEntry({
     required super.id,
     required this.markdown,
+    super.parentToolCallId,
     this.status = AcpStreamStatus.complete,
   });
 
@@ -87,7 +91,7 @@ final class AcpAssistantMessageEntry extends AcpTimelineEntry {
   final AcpStreamStatus status;
 
   @override
-  List<Object?> get props => [id, markdown, status];
+  List<Object?> get props => [id, parentToolCallId, markdown, status];
 }
 
 /// A thought / reasoning group emitted by the assistant.
@@ -98,6 +102,7 @@ final class AcpThoughtEntry extends AcpTimelineEntry {
   const AcpThoughtEntry({
     required super.id,
     required this.markdown,
+    super.parentToolCallId,
     this.status = AcpStreamStatus.complete,
     this.title,
   });
@@ -112,10 +117,30 @@ final class AcpThoughtEntry extends AcpTimelineEntry {
   final String? title;
 
   @override
-  List<Object?> get props => [id, markdown, status, title];
+  List<Object?> get props => [id, parentToolCallId, markdown, status, title];
+}
+
+/// A nested transcript emitted by a subagent launched from a tool call.
+final class AcpSubagentTranscriptEntry extends AcpTimelineEntry {
+  /// Creates a nested transcript related to [launchToolCallId].
+  AcpSubagentTranscriptEntry({
+    required super.id,
+    required this.launchToolCallId,
+    required List<AcpTimelineEntry> entries,
+  }) : entries = List.unmodifiable(entries);
+
+  /// Tool call that launched the subagent.
+  final String launchToolCallId;
+
+  /// Ordered nested assistant/thought/tool updates.
+  final List<AcpTimelineEntry> entries;
+
+  @override
+  List<Object?> get props => [id, launchToolCallId, entries];
 }
 
 /// A plan / task list emitted by the assistant.
+
 final class AcpPlanEntry extends AcpTimelineEntry {
   /// Creates a plan entry.
   const AcpPlanEntry({required super.id, required this.plan});
@@ -130,13 +155,21 @@ final class AcpPlanEntry extends AcpTimelineEntry {
 /// A tool call and its (possibly merged) updates.
 final class AcpToolCallEntry extends AcpTimelineEntry {
   /// Creates a tool call entry.
-  const AcpToolCallEntry({required super.id, required this.toolCall});
+  const AcpToolCallEntry({
+    required super.id,
+    required this.toolCall,
+    super.parentToolCallId,
+    this.isSubagent = false,
+  });
 
   /// The merged state of the tool call.
   final AcpToolCall toolCall;
 
+  /// Whether this tool launches a nested subagent transcript.
+  final bool isSubagent;
+
   @override
-  List<Object?> get props => [id, toolCall];
+  List<Object?> get props => [id, parentToolCallId, toolCall, isSubagent];
 }
 
 /// A usage / context-window update.

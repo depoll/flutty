@@ -47,6 +47,71 @@ class AcpStatusDisplay {
   final bool isReady;
 }
 
+/// Equality-stable native activity metadata used by shell chrome.
+///
+/// Transcript updates do not change this snapshot, allowing Riverpod `select`
+/// consumers such as TerminalScreen to skip whole-shell rebuilds while text
+/// streams into the native conversation.
+@immutable
+final class AcpActivitySnapshot {
+  /// Creates a coarse activity snapshot.
+  const AcpActivitySnapshot({
+    required this.status,
+    required this.promptStatus,
+    required this.needsInput,
+    required this.planItemCount,
+    required this.completedPlanItemCount,
+  });
+
+  /// Extracts presentation-relevant fields without retaining transcript data.
+  factory AcpActivitySnapshot.fromSession(AcpSessionState session) =>
+      AcpActivitySnapshot(
+        status: session.status,
+        promptStatus: session.promptStatus,
+        needsInput:
+            session.pendingPermissions.isNotEmpty ||
+            session.pendingWrites.isNotEmpty,
+        planItemCount: session.plan.length,
+        completedPlanItemCount: session.plan
+            .where((entry) => entry.status == AcpPlanStatus.completed)
+            .length,
+      );
+
+  /// Connection state.
+  final AcpConnectionStatus status;
+
+  /// Current turn state.
+  final AcpPromptStatus promptStatus;
+
+  /// Whether a local decision blocks the agent.
+  final bool needsInput;
+
+  /// Total plan tasks.
+  final int planItemCount;
+
+  /// Completed plan tasks.
+  final int completedPlanItemCount;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AcpActivitySnapshot &&
+          status == other.status &&
+          promptStatus == other.promptStatus &&
+          needsInput == other.needsInput &&
+          planItemCount == other.planItemCount &&
+          completedPlanItemCount == other.completedPlanItemCount;
+
+  @override
+  int get hashCode => Object.hash(
+    status,
+    promptStatus,
+    needsInput,
+    planItemCount,
+    completedPlanItemCount,
+  );
+}
+
 /// Semantic tone for a status, resolved to a concrete color from the theme.
 enum AcpStatusTone {
   /// Active / healthy.
@@ -135,12 +200,15 @@ AcpStatusDisplay acpStatusDisplay(AcpConnectionStatus status) =>
 /// Resolves connection, prompt-turn, permission, and plan state into one
 /// terminal-like activity descriptor. User decisions take priority over active
 /// work so a background native session cannot silently wait for attention.
-AcpStatusDisplay acpSessionActivityDisplay(AcpSessionState session) {
-  if (session.status != AcpConnectionStatus.ready) {
-    return acpStatusDisplay(session.status);
+AcpStatusDisplay acpSessionActivityDisplay(AcpSessionState session) =>
+    acpActivitySnapshotDisplay(AcpActivitySnapshot.fromSession(session));
+
+/// Resolves a coarse activity snapshot without reading transcript content.
+AcpStatusDisplay acpActivitySnapshotDisplay(AcpActivitySnapshot snapshot) {
+  if (snapshot.status != AcpConnectionStatus.ready) {
+    return acpStatusDisplay(snapshot.status);
   }
-  if (session.pendingPermissions.isNotEmpty ||
-      session.pendingWrites.isNotEmpty) {
+  if (snapshot.needsInput) {
     return const AcpStatusDisplay(
       label: 'waiting for input',
       icon: Icons.pending_actions,
@@ -149,7 +217,7 @@ AcpStatusDisplay acpSessionActivityDisplay(AcpSessionState session) {
     );
   }
 
-  switch (session.promptStatus) {
+  switch (snapshot.promptStatus) {
     case AcpPromptStatus.idle:
       return acpStatusDisplay(AcpConnectionStatus.ready);
     case AcpPromptStatus.sending:
@@ -160,13 +228,9 @@ AcpStatusDisplay acpSessionActivityDisplay(AcpSessionState session) {
         indeterminate: true,
       );
     case AcpPromptStatus.streaming:
-      final plan = session.plan;
-      final progress = plan.isEmpty
+      final progress = snapshot.planItemCount == 0
           ? null
-          : plan
-                    .where((entry) => entry.status == AcpPlanStatus.completed)
-                    .length /
-                plan.length;
+          : snapshot.completedPlanItemCount / snapshot.planItemCount;
       return AcpStatusDisplay(
         label: 'working',
         icon: Icons.auto_awesome,
@@ -186,12 +250,15 @@ AcpStatusDisplay acpSessionActivityDisplay(AcpSessionState session) {
 
 /// Maps a native session onto the same compact waiting/running vocabulary used
 /// by terminal mux windows.
-AcpStatusDisplay acpSessionMuxStatusDisplay(AcpSessionState session) {
-  if (session.status != AcpConnectionStatus.ready) {
-    return acpStatusDisplay(session.status);
+AcpStatusDisplay acpSessionMuxStatusDisplay(AcpSessionState session) =>
+    acpMuxStatusSnapshotDisplay(AcpActivitySnapshot.fromSession(session));
+
+/// Resolves mux waiting/running status from a coarse activity snapshot.
+AcpStatusDisplay acpMuxStatusSnapshotDisplay(AcpActivitySnapshot snapshot) {
+  if (snapshot.status != AcpConnectionStatus.ready) {
+    return acpStatusDisplay(snapshot.status);
   }
-  if (session.pendingPermissions.isNotEmpty ||
-      session.pendingWrites.isNotEmpty) {
+  if (snapshot.needsInput) {
     return const AcpStatusDisplay(
       label: 'waiting',
       icon: Icons.pending_actions,
@@ -199,7 +266,7 @@ AcpStatusDisplay acpSessionMuxStatusDisplay(AcpSessionState session) {
       needsInput: true,
     );
   }
-  return switch (session.promptStatus) {
+  return switch (snapshot.promptStatus) {
     AcpPromptStatus.idle => const AcpStatusDisplay(
       label: 'waiting',
       icon: Icons.hourglass_bottom,

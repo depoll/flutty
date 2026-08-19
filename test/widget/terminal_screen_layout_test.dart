@@ -56,6 +56,33 @@ void main() {
       );
     });
 
+    test('native composer keyboard resizes the outer mux shell', () {
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          terminalInputConnectionVisible: false,
+          nativeAgentActive: true,
+        ),
+        isTrue,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          terminalInputConnectionVisible: false,
+          nativeAgentActive: false,
+        ),
+        isFalse,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 0,
+          terminalInputConnectionVisible: true,
+          nativeAgentActive: true,
+        ),
+        isFalse,
+      );
+    });
+
     test('moves tmux controls to a sidebar only when width allows it', () {
       const breakpoint = tmuxSidebarExpandedWidth + tmuxSidebarMinTerminalWidth;
 

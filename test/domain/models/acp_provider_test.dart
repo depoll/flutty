@@ -312,16 +312,24 @@ void main() {
   });
 
   group('built-in providers', () {
-    test('acpBuiltinProviders contains Copilot CLI, OpenCode, and Pi', () {
-      expect(acpBuiltinProviders, hasLength(3));
+    test('acpBuiltinProviders contains every verified adapter', () {
+      expect(acpBuiltinProviders, hasLength(7));
       expect(acpBuiltinProviders, contains(acpCopilotCliProvider));
+      expect(acpBuiltinProviders, contains(acpClaudeAgentProvider));
+      expect(acpBuiltinProviders, contains(acpCodexProvider));
       expect(acpBuiltinProviders, contains(acpOpenCodeProvider));
+      expect(acpBuiltinProviders, contains(acpCursorAgentProvider));
+      expect(acpBuiltinProviders, contains(acpAntigravityProvider));
       expect(acpBuiltinProviders, contains(acpPiProvider));
     });
 
     test('built-in provider IDs are stable and reserved', () {
       expect(acpCopilotCliProvider.id, 'builtin:copilot-cli');
+      expect(acpClaudeAgentProvider.id, 'builtin:claude-agent-acp');
+      expect(acpCodexProvider.id, 'builtin:codex-acp');
       expect(acpOpenCodeProvider.id, 'builtin:opencode');
+      expect(acpCursorAgentProvider.id, 'builtin:cursor-agent-acp');
+      expect(acpAntigravityProvider.id, 'builtin:antigravity-acp');
       expect(acpPiProvider.id, 'builtin:pi-acp');
       for (final provider in acpBuiltinProviders) {
         expect(
@@ -346,8 +354,21 @@ void main() {
         contains('copilot'),
       );
       expect(
+        acpClaudeAgentProvider.executableProbe.candidateExecutableNames,
+        contains('claude-agent-acp'),
+      );
+      expect(acpCodexProvider.launchCommand.argv, ['codex-acp']);
+      expect(
         acpOpenCodeProvider.executableProbe.candidateExecutableNames,
         contains('opencode'),
+      );
+      expect(acpCursorAgentProvider.launchCommand.argv, [
+        'cursor-agent',
+        'acp',
+      ]);
+      expect(
+        acpAntigravityProvider.executableProbe.candidateExecutableNames,
+        containsAll(['antigravity-acp', 'agy-acp']),
       );
       expect(
         acpPiProvider.executableProbe.candidateExecutableNames,

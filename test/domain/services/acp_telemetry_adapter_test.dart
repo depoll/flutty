@@ -62,18 +62,23 @@ void main() {
     });
 
     test('maps built-in provider ids to their stable category', () {
-      adapter
-        ..sessionOpened(
-          providerCategory: AcpBuiltinProviderIds.copilotCli,
-          isReconnect: false,
-        )
-        ..sessionOpened(
-          providerCategory: AcpBuiltinProviderIds.openCode,
-          isReconnect: false,
-        );
+      const expected = <String, String>{
+        AcpBuiltinProviderIds.copilotCli: 'copilot_cli',
+        AcpBuiltinProviderIds.claudeAgent: 'claude_agent',
+        AcpBuiltinProviderIds.codex: 'codex',
+        AcpBuiltinProviderIds.openCode: 'opencode',
+        AcpBuiltinProviderIds.cursorAgent: 'cursor_agent',
+        AcpBuiltinProviderIds.antigravity: 'antigravity',
+        AcpBuiltinProviderIds.pi: 'pi',
+      };
+      for (final provider in expected.keys) {
+        adapter.sessionOpened(providerCategory: provider, isReconnect: false);
+      }
 
-      expect(analytics.events[0].value['provider_category'], 'copilot_cli');
-      expect(analytics.events[1].value['provider_category'], 'opencode');
+      expect(
+        analytics.events.map((event) => event.value['provider_category']),
+        expected.values,
+      );
     });
 
     test(

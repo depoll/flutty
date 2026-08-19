@@ -146,6 +146,48 @@ void main() {
       ]);
     });
 
+    test('preserves Claude subagent launch and parent transcript metadata', () {
+      final timeline = _run(AcpTimelineBuilder(), [
+        const AcpToolCallUpdate(
+          toolCallId: 'agent-launch',
+          isInitial: true,
+          title: 'Agent',
+          meta: <String, Object?>{
+            'claudeCode': <String, Object?>{'subagent': true},
+          },
+        ),
+        const AcpContentChunkUpdate(
+          kind: 'agent_message_chunk',
+          messageId: 'nested-message',
+          content: AcpTextContent('nested reply'),
+          meta: <String, Object?>{
+            'claudeCode': <String, Object?>{'parentToolUseId': 'agent-launch'},
+          },
+        ),
+        const AcpContentChunkUpdate(
+          kind: 'agent_message_chunk',
+          messageId: 'nested-message',
+          content: AcpTextContent(' continued'),
+        ),
+        const AcpToolCallUpdate(
+          toolCallId: 'nested-tool',
+          isInitial: true,
+          title: 'Read',
+          meta: <String, Object?>{
+            'claudeCode': <String, Object?>{'parentToolUseId': 'agent-launch'},
+          },
+        ),
+      ]);
+
+      final launch = timeline.entries[0] as AcpToolCallEntry;
+      final message = timeline.entries[1] as AcpMessageEntry;
+      final nestedTool = timeline.entries[2] as AcpToolCallEntry;
+      expect(launch.isSubagent, isTrue);
+      expect(message.parentToolCallId, 'agent-launch');
+      expect(message.content, hasLength(2));
+      expect(nestedTool.parentToolCallId, 'agent-launch');
+    });
+
     test('ignores empty tool-call ids', () {
       final timeline = _run(AcpTimelineBuilder(), [
         const AcpToolCallUpdate(toolCallId: '', isInitial: true),

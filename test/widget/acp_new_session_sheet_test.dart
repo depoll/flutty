@@ -495,6 +495,8 @@ void main() {
       startSession: false,
     );
 
+    await tester.ensureVisible(find.text('Resume …/repo'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Resume …/repo'));
     await tester.pumpAndSettle();
 

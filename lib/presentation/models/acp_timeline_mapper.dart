@@ -33,6 +33,111 @@ const int kAcpMapperMaxToolTextChars = 16 * 1024;
 /// widget's own bounding takes over.
 const int kAcpMapperMaxDiffSourceChars = 128 * 1024;
 
+final Expando<List<AcpTimelineEntry>> _sharedTimelineMappings =
+    Expando<List<AcpTimelineEntry>>('ACP presentation timeline');
+final Expando<_CachedTimelinePreview> _sharedTimelinePreviews =
+    Expando<_CachedTimelinePreview>('ACP connection preview');
+
+final class _CachedTimelinePreview {
+  const _CachedTimelinePreview(this.value);
+
+  final String? value;
+}
+
+/// Memoizes one immutable session-to-presentation mapping.
+///
+/// Theme changes, navigation, and parent mux rebuilds commonly rebuild the
+/// chat with the identical session object. Reusing this result avoids walking
+/// the full transcript and decoding old image payloads again.
+class AcpTimelineMapperCache {
+  /// Creates a timeline mapper cache.
+  AcpTimelineMapperCache();
+  d.AcpSessionState? _session;
+  List<AcpTimelineEntry>? _entries;
+
+  /// Returns the cached mapping when [state] is the same immutable snapshot.
+  List<AcpTimelineEntry> map(d.AcpSessionState state) {
+    if (identical(state, _session)) {
+      return _entries!;
+    }
+    final shared = _sharedTimelineMappings[state];
+    if (shared != null) {
+      _session = state;
+      _entries = shared;
+      return shared;
+    }
+    final entries = mapAcpSessionTimeline(state);
+    _sharedTimelineMappings[state] = entries;
+    _session = state;
+    _entries = entries;
+    return entries;
+  }
+
+  /// Returns a cached bounded connection preview for [state].
+  String? preview(d.AcpSessionState state) {
+    final cached = _sharedTimelinePreviews[state];
+    if (cached != null) {
+      return cached.value;
+    }
+    final value = buildAcpConversationPreview(map(state));
+    _sharedTimelinePreviews[state] = _CachedTimelinePreview(value);
+    return value;
+  }
+
+  /// Drops the retained local snapshot and mapped entries.
+  void clear() {
+    _session = null;
+    _entries = null;
+  }
+}
+
+/// Builds a bounded plain-text preview for Hosts/Connections cards.
+String? buildAcpConversationPreview(
+  List<AcpTimelineEntry> entries, {
+  int maxLines = 8,
+  int maxChars = 900,
+}) {
+  final lines = <String>[];
+
+  String clean(String value) => value
+      .replaceAll(RegExp(r'!\[[^\]]*\]\([^)]+\)'), '[image]')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  void collect(Iterable<AcpTimelineEntry> source, {String prefix = ''}) {
+    for (final entry in source) {
+      final line = switch (entry) {
+        AcpUserPromptEntry() =>
+          'You: ${clean(entry.parts.whereType<AcpTextPart>().map((part) => part.text).join(' '))}',
+        AcpAssistantMessageEntry() => 'Agent: ${clean(entry.markdown)}',
+        AcpToolCallEntry() =>
+          '${entry.isSubagent ? 'Subagent' : 'Tool'}: '
+              '${entry.toolCall.title} · ${entry.toolCall.status.name}',
+        AcpPlanEntry() =>
+          'Plan: ${entry.plan.completedCount}/${entry.plan.totalCount}',
+        AcpUsageEntry() || AcpThoughtEntry() => '',
+        AcpStatusEntry() => clean(entry.message),
+        AcpSubagentTranscriptEntry() => '',
+      };
+      if (line.isNotEmpty) {
+        lines.add('$prefix${_bound(line, 240)}');
+      }
+      if (entry is AcpSubagentTranscriptEntry) {
+        collect(entry.entries, prefix: 'Subagent · ');
+      }
+    }
+  }
+
+  collect(entries);
+  if (lines.isEmpty) {
+    return null;
+  }
+  final selected = lines.length <= maxLines
+      ? lines
+      : lines.sublist(lines.length - maxLines);
+  return _bound(selected.join('\n'), maxChars);
+}
+
 /// Maps [state] into an ordered list of presentation timeline entries.
 ///
 /// The returned list is ordered as: the conversation timeline (user prompts,
@@ -59,6 +164,11 @@ List<AcpTimelineEntry> mapAcpSessionTimeline(d.AcpSessionState state) {
     }
   }
 
+  final nestedConversation = _nestSubagentEntries(entries);
+  entries
+    ..clear()
+    ..addAll(nestedConversation);
+
   final plan = _mapPlan(state.plan);
   if (plan != null) {
     entries.add(AcpPlanEntry(id: 'plan', plan: plan));
@@ -74,7 +184,78 @@ List<AcpTimelineEntry> mapAcpSessionTimeline(d.AcpSessionState state) {
   return List<AcpTimelineEntry>.unmodifiable(entries);
 }
 
+List<AcpTimelineEntry> _nestSubagentEntries(List<AcpTimelineEntry> source) {
+  final childrenByParent = <String, List<AcpTimelineEntry>>{};
+  final topLevel = <AcpTimelineEntry>[];
+  for (final entry in source) {
+    final parent = entry.parentToolCallId;
+    if (parent == null || parent.isEmpty) {
+      topLevel.add(entry);
+    } else {
+      childrenByParent.putIfAbsent(parent, () => []).add(entry);
+    }
+  }
+
+  List<AcpTimelineEntry> takeChildren(String parent, int depth) {
+    if (depth > 8) {
+      return const [];
+    }
+    final children = childrenByParent.remove(parent);
+    if (children == null || children.isEmpty) {
+      return const [];
+    }
+    final nested = <AcpTimelineEntry>[];
+    for (final child in children) {
+      nested.add(child);
+      if (child case AcpToolCallEntry(:final toolCall)) {
+        final descendants = takeChildren(toolCall.id, depth + 1);
+        if (descendants.isNotEmpty) {
+          nested.add(
+            AcpSubagentTranscriptEntry(
+              id: 'subagent-${toolCall.id}',
+              launchToolCallId: toolCall.id,
+              entries: descendants,
+            ),
+          );
+        }
+      }
+    }
+    return nested;
+  }
+
+  final result = <AcpTimelineEntry>[];
+  for (final entry in topLevel) {
+    result.add(entry);
+    if (entry case AcpToolCallEntry(:final toolCall)) {
+      final children = takeChildren(toolCall.id, 0);
+      if (children.isNotEmpty) {
+        result.add(
+          AcpSubagentTranscriptEntry(
+            id: 'subagent-${toolCall.id}',
+            launchToolCallId: toolCall.id,
+            entries: children,
+          ),
+        );
+      }
+    }
+  }
+  for (final parent in childrenByParent.keys.toList(growable: false)) {
+    final orphaned = takeChildren(parent, 0);
+    if (orphaned.isNotEmpty) {
+      result.add(
+        AcpSubagentTranscriptEntry(
+          id: 'subagent-orphan-$parent',
+          launchToolCallId: parent,
+          entries: orphaned,
+        ),
+      );
+    }
+  }
+  return result;
+}
+
 /// Returns the [d.AcpTimelineEntry.order] of the message that should render as
+
 /// still-streaming, or `null` when nothing is streaming.
 int? _streamingTailOrder(
   d.AcpSessionState state,
@@ -119,12 +300,14 @@ AcpTimelineEntry? _mapMessage(
       return AcpAssistantMessageEntry(
         id: 'msg-${entry.order}',
         markdown: _markdownFromContent(entry.content),
+        parentToolCallId: entry.parentToolCallId,
         status: status,
       );
     case d.AcpMessageRole.thought:
       return AcpThoughtEntry(
         id: 'msg-${entry.order}',
         markdown: _markdownFromContent(entry.content),
+        parentToolCallId: entry.parentToolCallId,
         status: status,
       );
   }
@@ -321,6 +504,8 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
 
   return AcpToolCallEntry(
     id: 'tool-${entry.toolCallId}',
+    parentToolCallId: entry.parentToolCallId,
+    isSubagent: entry.isSubagent,
     toolCall: AcpToolCall(
       id: entry.toolCallId,
       title: (entry.title?.isNotEmpty ?? false)

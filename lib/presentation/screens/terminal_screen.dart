@@ -28,7 +28,6 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
-import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_recent_session.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
@@ -850,6 +849,16 @@ TmuxBarPlacement resolveTmuxBarPlacement(double availableWidth) {
 @visibleForTesting
 bool resolveTerminalScreenCanPop({required bool isTmuxBarExpanded}) =>
     !isTmuxBarExpanded;
+
+/// Whether the terminal shell should treat the current bottom inset as an
+/// active keyboard. Native ACP owns its own text input connection, so its
+/// visible inset is sufficient even when the terminal input handler is idle.
+@visibleForTesting
+bool resolveTerminalSystemKeyboardVisible({
+  required double bottomInset,
+  required bool terminalInputConnectionVisible,
+  required bool nativeAgentActive,
+}) => bottomInset > 0 && (terminalInputConnectionVisible || nativeAgentActive);
 
 /// Whether actions that read or mutate terminal viewport state belong in the
 /// overflow menu for the current content mode.
@@ -11356,6 +11365,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
   }
 
+  void _updateNativeAcpPreview(AcpSessionKey sessionKey, String? preview) {
+    final connectionId = _connectionId;
+    if (connectionId == null ||
+        _activeNativeAcpSessionKey?.value != sessionKey.value) {
+      return;
+    }
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionNativeAcpPreview(connectionId, preview);
+  }
+
   void _commitNativeAgentFontSize(double fontSize) {
     final connectionId = _connectionId;
     if (!mounted || connectionId == null) {
@@ -11390,6 +11410,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onFontSizeCommitted: _commitNativeAgentFontSize,
       onExitEmbedded: _showTerminalViewport,
       onSessionChanged: _openNativeAcpSession,
+      onPreviewChanged: _updateNativeAcpPreview,
     );
   }
 
@@ -12638,13 +12659,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
-    // A stale platform bottom inset (keyboard space reserved while the keyboard
-    // is not actually open) must not make the toggle think the keyboard is
-    // visible; otherwise the button would run its hide branch and fail to bring
-    // the keyboard up. Require the app's own input-connection state to agree.
-    final systemKeyboardVisible =
-        MediaQuery.viewInsetsOf(context).bottom > 0 &&
-        _terminalTextInputController.isKeyboardVisible;
+    // Terminal input requires its own live connection to reject stale insets.
+    // Native ACP has a separate composer input, so native focus plus a visible
+    // inset is the corresponding source of truth.
+    final systemKeyboardVisible = resolveTerminalSystemKeyboardVisible(
+      bottomInset: MediaQuery.viewInsetsOf(context).bottom,
+      terminalInputConnectionVisible:
+          _terminalTextInputController.isKeyboardVisible,
+      nativeAgentActive: _activeNativeAcpSessionKey != null,
+    );
     if (_isAndroidPlatform) {
       _logAndroidPredictiveBackDiagnostics(context, phase: 'build');
       _queueAndroidPredictiveBackPostFrameDiagnostics(context);
@@ -12697,25 +12720,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (connectionIdentity != null) {
       titleSubtitleSegments.add(connectionIdentity);
     }
-    if ((_iconName ?? '').isNotEmpty) {
+    if (!showsNativeAgent && (_iconName ?? '').isNotEmpty) {
       titleSubtitleSegments.add(_iconName!);
     }
-    if ((_windowTitle ?? '').isNotEmpty) {
+    if (!showsNativeAgent && (_windowTitle ?? '').isNotEmpty) {
       titleSubtitleSegments.add(_windowTitle!);
     }
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
     final activeNativeKey = _activeNativeAcpSessionKey;
-    final activeNativeSession = activeNativeKey == null
+    final nativeActivitySnapshot = activeNativeKey == null
         ? null
-        : ref
-              .watch(acpSessionManagerStateProvider)
-              .asData
-              ?.value
-              .byKeyValue(activeNativeKey.value);
-    final nativeActivity = activeNativeSession == null
+        : ref.watch(
+            acpSessionManagerStateProvider.select((state) {
+              final session = state.asData?.value.byKeyValue(
+                activeNativeKey.value,
+              );
+              return session == null
+                  ? null
+                  : AcpActivitySnapshot.fromSession(session);
+            }),
+          );
+    final nativeActivity = nativeActivitySnapshot == null
         ? null
-        : acpSessionActivityDisplay(activeNativeSession);
+        : acpActivitySnapshotDisplay(nativeActivitySnapshot);
     final terminalProgress = activeNativeKey == null
         ? _terminalProgress
         : nativeActivity == null

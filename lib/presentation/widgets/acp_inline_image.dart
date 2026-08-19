@@ -88,6 +88,7 @@ class AcpInlineImage extends StatefulWidget {
     this.maxHeight = 260,
     this.maxBytes = kAcpMaxInlineImageBytes,
     this.defaultDecodeDimension = kAcpDefaultImageDecodeDimension,
+    this.showFrame = true,
   });
 
   /// The image to render.
@@ -110,6 +111,9 @@ class AcpInlineImage extends StatefulWidget {
 
   /// Longer-edge decode budget applied when [AcpImageContent] carries no hint.
   final int defaultDecodeDimension;
+
+  /// Whether to draw the rounded inline-card border around the image.
+  final bool showFrame;
 
   @override
   State<AcpInlineImage> createState() => _AcpInlineImageState();
@@ -364,21 +368,23 @@ class _AcpInlineImageState extends State<AcpInlineImage> {
       ),
     };
 
-    final framed = ConstrainedBox(
+    final constrained = ConstrainedBox(
       constraints: BoxConstraints(
         maxWidth: widget.maxWidth,
         maxHeight: widget.maxHeight,
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border.all(color: scheme.outline),
-            borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
-          ),
-          child: child,
-        ),
-      ),
+      child: widget.showFrame
+          ? ClipRRect(
+              borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  border: Border.all(color: scheme.outline),
+                  borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
+                ),
+                child: child,
+              ),
+            )
+          : child,
     );
 
     final onTap = widget.onTap;
@@ -387,11 +393,11 @@ class _AcpInlineImageState extends State<AcpInlineImage> {
       image: true,
       button: onTap != null,
       child: onTap == null
-          ? framed
+          ? constrained
           : InkWell(
               onTap: () => onTap(widget.image),
               borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
-              child: framed,
+              child: constrained,
             ),
     );
   }

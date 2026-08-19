@@ -71,8 +71,7 @@ class _AcpToolCallViewState extends State<AcpToolCallView> {
     return (call.rawInput?.isNotEmpty ?? false) ||
         (call.rawOutput?.isNotEmpty ?? false) ||
         call.locations.isNotEmpty ||
-        call.diffs.isNotEmpty ||
-        call.images.isNotEmpty;
+        call.diffs.isNotEmpty;
   }
 
   ({IconData icon, Color color, bool spinning}) _statusVisual(
@@ -159,6 +158,7 @@ class _AcpToolCallViewState extends State<AcpToolCallView> {
       ),
     );
 
+    final imageActions = AcpImageActions.maybeOf(context);
     return Semantics(
       container: true,
       label: '${call.title}, ${status.label}',
@@ -168,6 +168,30 @@ class _AcpToolCallViewState extends State<AcpToolCallView> {
         mainAxisSize: MainAxisSize.min,
         children: [
           header,
+          if (call.images.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                FluttyTheme.spacingSm,
+                0,
+                FluttyTheme.spacingSm,
+                FluttyTheme.spacingSm,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (var index = 0; index < call.images.length; index++) ...[
+                    if (index > 0)
+                      const SizedBox(height: FluttyTheme.spacingSm),
+                    AcpInlineImage(
+                      image: call.images[index],
+                      resolver: imageActions?.resolver,
+                      onTap: imageActions?.onTap,
+                    ),
+                  ],
+                ],
+              ),
+            ),
           if (_expanded && _hasDetails)
             Padding(
               padding: const EdgeInsets.fromLTRB(
@@ -246,16 +270,6 @@ class _ToolCallDetails extends StatelessWidget {
     }
     for (final diff in toolCall.diffs) {
       children.add(AcpDiffView(diff: diff));
-    }
-    final imageActions = AcpImageActions.maybeOf(context);
-    for (final image in toolCall.images) {
-      children.add(
-        AcpInlineImage(
-          image: image,
-          resolver: imageActions?.resolver,
-          onTap: imageActions?.onTap,
-        ),
-      );
     }
     final output = toolCall.rawOutput;
     if (output != null && output.isNotEmpty) {

@@ -43,6 +43,7 @@ Widget _wrap(
   double? preferredFontSize,
   String? preferredFontFamily,
   ValueChanged<double>? onFontSizeCommitted,
+  AcpChatPreviewChanged? onPreviewChanged,
   AcpChatAttachmentActionsBuilder? attachmentActionsBuilder,
   EdgeInsets mediaPadding = EdgeInsets.zero,
 }) {
@@ -79,6 +80,7 @@ Widget _wrap(
           preferredFontSize: preferredFontSize,
           preferredFontFamily: preferredFontFamily,
           onFontSizeCommitted: onFontSizeCommitted,
+          onPreviewChanged: onPreviewChanged,
         ),
       ),
     ),
@@ -103,6 +105,32 @@ void main() {
     await tester.tap(find.byIcon(Icons.more_vert));
     await tester.pumpAndSettle();
     expect(find.text('Session settings'), findsOneWidget);
+  });
+
+  testWidgets('publishes a throttled native connection preview', (
+    tester,
+  ) async {
+    final previews = <String?>[];
+    final previewKeys = <AcpSessionKey>[];
+    final session = fakeAcpSession(
+      timeline: fakeAcpTimeline('Preview from the native agent'),
+    );
+    await tester.pumpWidget(
+      _wrap(
+        FakeAcpSessionManager(sessions: [session]),
+        embedded: true,
+        onPreviewChanged: (key, preview) {
+          previewKeys.add(key);
+          previews.add(preview);
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(previews, isNotEmpty);
+    expect(previewKeys.single.value, fakeAcpKey().value);
+    expect(previews.last, contains('Preview from the native agent'));
   });
 
   testWidgets('top bar changes model, effort, and mode directly', (
@@ -308,6 +336,21 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(InteractiveViewer), findsOneWidget);
+    final interactive = tester.widget<InteractiveViewer>(
+      find.byType(InteractiveViewer),
+    );
+    expect(interactive.minScale, 0.5);
+    expect(interactive.maxScale, 8);
+    expect(interactive.panEnabled, isTrue);
+    expect(interactive.scaleEnabled, isTrue);
+    expect(interactive.clipBehavior, Clip.none);
+    final dialog = tester.widget<Dialog>(find.byType(Dialog));
+    expect(dialog.backgroundColor, Colors.black);
+    final viewerImage = tester
+        .widgetList<AcpInlineImage>(find.byType(AcpInlineImage))
+        .last;
+    expect(viewerImage.showFrame, isFalse);
+    expect(find.byTooltip('Close image'), findsOneWidget);
     final viewerSize = tester.getSize(
       find.byKey(const ValueKey('acp-image-viewer')),
     );

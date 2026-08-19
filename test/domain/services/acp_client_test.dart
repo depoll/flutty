@@ -120,6 +120,11 @@ void main() {
       'title': 'MonkeySSH',
       'version': '1',
     });
+    expect(
+      ((initializeParams['clientCapabilities'] as Map?)?['_meta']
+          as Map?)?['subagent-transcript'],
+      isTrue,
+    );
     expect(initialization.agentCapabilities.session.list, isTrue);
     expect(sessions.map((session) => session.sessionId), [
       'session-1',

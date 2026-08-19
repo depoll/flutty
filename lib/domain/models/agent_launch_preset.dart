@@ -195,13 +195,21 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
   }
 
   return switch (normalized) {
-    'claude' || 'claude-code' => AgentLaunchTool.claudeCode,
+    'claude' ||
+    'claude-code' ||
+    'claude-agent-acp' => AgentLaunchTool.claudeCode,
     'copilot' || 'github-copilot' => AgentLaunchTool.copilotCli,
-    'codex' || 'codex-cli' => AgentLaunchTool.codex,
+    'codex' || 'codex-cli' || 'codex-acp' => AgentLaunchTool.codex,
     'opencode' || 'open-code' => AgentLaunchTool.openCode,
     'gemini' || 'gemini-cli' => AgentLaunchTool.geminiCli,
-    'agy' || 'antigravity' || 'antigravity-cli' => AgentLaunchTool.antigravity,
-    'cursor-agent' => AgentLaunchTool.cursorAgent,
+    'agy' ||
+    'antigravity' ||
+    'antigravity-cli' ||
+    'antigravity-acp' ||
+    'agy-acp' => AgentLaunchTool.antigravity,
+    'cursor-agent' ||
+    'cursor-acp' ||
+    'cursor-agent-acp' => AgentLaunchTool.cursorAgent,
     'pi' || 'pi-acp' => AgentLaunchTool.pi,
     'hermes' || 'hermes-agent' => AgentLaunchTool.hermes,
     'openclaw' => AgentLaunchTool.openclaw,

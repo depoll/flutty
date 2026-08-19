@@ -5376,11 +5376,16 @@ LISTEN ::1:4201
         acpSessionId: 'session-1',
       );
 
-      notifier.updateSessionNativeAcpFocus(
-        connectionId,
-        key: key,
-        displayTitle: 'Pi',
-      );
+      notifier
+        ..updateSessionNativeAcpFocus(
+          connectionId,
+          key: key,
+          displayTitle: 'Pi',
+        )
+        ..updateSessionNativeAcpPreview(
+          connectionId,
+          'You: inspect this\nAgent: working on it',
+        );
 
       final focused = notifier.getActiveConnection(connectionId)!;
       expect(
@@ -5388,7 +5393,7 @@ LISTEN ::1:4201
         key,
       );
       expect(focused.sessionTitle, 'Pi · native');
-      expect(focused.preview, isNull);
+      expect(focused.preview, 'You: inspect this\nAgent: working on it');
       expect(focused.windowTitle, isNull);
       expect(focused.workingDirectory, isNull);
 
@@ -5397,10 +5402,9 @@ LISTEN ::1:4201
         fakeSshService.getSession(connectionId)!.activeNativeAcpSessionKey,
         isNull,
       );
-      expect(
-        notifier.getActiveConnection(connectionId)!.sessionTitle,
-        isNot('Pi · native'),
-      );
+      final cleared = notifier.getActiveConnection(connectionId)!;
+      expect(cleared.sessionTitle, isNot('Pi · native'));
+      expect(cleared.preview, isNot('You: inspect this\nAgent: working on it'));
     });
 
     test('syncBackgroundStatus serializes queued updates', () async {

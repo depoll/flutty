@@ -562,7 +562,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
   Future<Set<AgentLaunchTool>>? _installedToolsFuture;
-  Future<List<AcpRecentSessionRef>>? _acpRecents;
   StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
   String? _error;
@@ -587,19 +586,10 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   AgentSessionDiscoveryService get _discovery =>
       ref.read(agentSessionDiscoveryServiceProvider);
 
-  void _loadAcpRecents() {
-    _acpRecents = widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux
-        ? ref
-              .read(acpSessionManagerProvider)
-              .loadNavigableSessions(widget.session.hostId)
-        : null;
-  }
-
   @override
   void initState() {
     super.initState();
     unawaited(_loadPreferredLaunchTool());
-    _loadAcpRecents();
     _subscribeToWindowChanges();
     _loadWindows();
   }
@@ -612,7 +602,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       _installedToolsFuture = null;
       _showSessions = false;
       _hasInitializedSessionProviders = false;
-      _loadAcpRecents();
       unawaited(_loadPreferredLaunchTool());
     }
   }
@@ -1112,68 +1101,48 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         ref.watch(acpSessionManagerStateProvider).asData?.value ??
         manager.state;
     final sessions = managerState.sessions
-        .where((session) => session.key.hostId == widget.session.hostId)
+        .where(
+          (session) =>
+              session.key.hostId == widget.session.hostId && session.isLive,
+        )
         .toList(growable: false);
     final providers =
         ref.watch(acpProvidersProvider).asData?.value ?? const <AcpProvider>[];
     final providerLabels = <String, String>{
       for (final provider in providers) provider.id: provider.label,
     };
-    final providerTools = <String, AgentLaunchTool>{
-      for (final provider in providers)
-        provider.id: ?agentLaunchToolForCommandName(
-          provider.launchCommand.executable,
-        ),
-    };
-    final recents = _acpRecents;
-    if (recents == null) {
+    final entries = buildAcpSwitcherEntries(
+      sessions: sessions,
+      recents: const <AcpRecentSessionRef>[],
+    );
+    if (entries.isEmpty) {
       return const SizedBox.shrink();
     }
-    return FutureBuilder<List<AcpRecentSessionRef>>(
-      future: recents,
-      builder: (context, snapshot) {
-        final hostRecents = (snapshot.data ?? const <AcpRecentSessionRef>[])
-            .where((recent) => recent.hostId == widget.session.hostId)
-            .toList(growable: false);
-        final entries = buildAcpSwitcherEntries(
-          sessions: sessions,
-          recents: hostRecents,
-        );
-        if (entries.isEmpty) {
-          return const SizedBox.shrink();
-        }
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Divider(height: 1),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-              child: Text(
-                'agent windows',
-                style: FluttyTheme.monoStyle.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(height: 1),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+          child: Text(
+            'agent windows',
+            style: FluttyTheme.monoStyle.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
             ),
-            for (final entry in entries)
-              _buildNativeAcpSessionTile(
-                entry,
-                providerLabels: providerLabels,
-                providerTools: providerTools,
-              ),
-          ],
-        );
-      },
+          ),
+        ),
+        for (final entry in entries)
+          _buildNativeAcpSessionTile(entry, providerLabels: providerLabels),
+      ],
     );
   }
 
   Widget _buildNativeAcpSessionTile(
     AcpSwitcherEntry entry, {
     required Map<String, String> providerLabels,
-    required Map<String, AgentLaunchTool> providerTools,
   }) {
     final theme = Theme.of(context);
     final session = entry.session;
@@ -1191,8 +1160,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     final progress = activity == null
         ? null
         : acpActivityTerminalProgress(activity);
-    final tool = providerTools[key.providerId];
-
     return ListTile(
       key: ValueKey('native-acp-session-${key.value}'),
       minTileHeight: 48,
@@ -1210,7 +1177,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       ),
       title: Row(
         children: [
-          AgentToolIcon(tool: tool, size: 16, color: activityColor),
+          Icon(Icons.smart_toy_outlined, size: 17, color: activityColor),
           const SizedBox(width: 8),
           Expanded(
             child: Text(

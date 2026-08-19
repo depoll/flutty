@@ -100,7 +100,9 @@ final class AcpClient {
   /// Initializes the ACP connection.
   Future<AcpInitializeResult> initialize({
     int protocolVersion = 1,
-    AcpClientCapabilities capabilities = const AcpClientCapabilities(),
+    AcpClientCapabilities capabilities = const AcpClientCapabilities(
+      meta: <String, Object?>{'subagent-transcript': true},
+    ),
     AcpImplementation clientInfo = const AcpImplementation(
       name: 'monkeyssh',
       title: 'MonkeySSH',

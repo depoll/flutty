@@ -179,7 +179,12 @@ class TelemetryService {
   };
   static const _allowedAcpProviderCategories = <String>{
     'copilot_cli',
+    'claude_agent',
+    'codex',
     'opencode',
+    'cursor_agent',
+    'antigravity',
+    'pi',
     'custom',
     'unknown',
   };

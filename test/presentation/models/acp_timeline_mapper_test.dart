@@ -48,6 +48,28 @@ AcpSessionState _state({
 }
 
 void main() {
+  test('memoizes identical immutable session snapshots', () {
+    final session = _state(
+      timeline: AcpTimeline(
+        entries: [
+          AcpMessageEntry(
+            role: AcpMessageRole.agent,
+            order: 0,
+            content: const [AcpTextContent('cached')],
+          ),
+        ],
+      ),
+    );
+    final cache = AcpTimelineMapperCache();
+
+    final first = cache.map(session);
+    final second = cache.map(session);
+    final afterNavigation = AcpTimelineMapperCache().map(session);
+
+    expect(identical(first, second), isTrue);
+    expect(identical(first, afterNavigation), isTrue);
+  });
+
   test('maps ordered user content, assistant markdown, and tool calls', () {
     final timeline = AcpTimeline(
       entries: [
@@ -123,6 +145,41 @@ void main() {
     final usage = entries.whereType<p.AcpUsageEntry>().single.usage;
     expect(usage.contextUsedTokens, 10);
     expect(usage.contextWindow, 100);
+  });
+
+  test('groups Claude parent-linked updates under the launching subagent', () {
+    final timeline = AcpTimeline(
+      entries: [
+        AcpToolCallEntry(
+          toolCallId: 'agent-launch',
+          order: 0,
+          title: 'Agent',
+          isSubagent: true,
+        ),
+        AcpMessageEntry(
+          role: AcpMessageRole.agent,
+          order: 1,
+          parentToolCallId: 'agent-launch',
+          content: const [AcpTextContent('nested response')],
+        ),
+        AcpToolCallEntry(
+          toolCallId: 'nested-tool',
+          order: 2,
+          title: 'Read',
+          parentToolCallId: 'agent-launch',
+        ),
+      ],
+    );
+
+    final entries = mapAcpSessionTimeline(_state(timeline: timeline));
+
+    final launch = entries.first as p.AcpToolCallEntry;
+    final nested = entries[1] as p.AcpSubagentTranscriptEntry;
+    expect(launch.isSubagent, isTrue);
+    expect(nested.launchToolCallId, 'agent-launch');
+    expect(nested.entries, hasLength(2));
+    expect(nested.entries.first, isA<p.AcpAssistantMessageEntry>());
+    expect(nested.entries.last, isA<p.AcpToolCallEntry>());
   });
 
   test('recovers Pi image blocks retained only in raw tool output', () {

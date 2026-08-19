@@ -33,8 +33,23 @@ abstract final class AcpBuiltinProviderIds {
   /// GitHub Copilot CLI.
   static const copilotCli = '${acpCustomProviderReservedIdPrefix}copilot-cli';
 
+  /// Claude Agent SDK ACP adapter.
+  static const claudeAgent =
+      '${acpCustomProviderReservedIdPrefix}claude-agent-acp';
+
+  /// Codex ACP adapter.
+  static const codex = '${acpCustomProviderReservedIdPrefix}codex-acp';
+
   /// OpenCode CLI.
   static const openCode = '${acpCustomProviderReservedIdPrefix}opencode';
+
+  /// Cursor Agent's native ACP server.
+  static const cursorAgent =
+      '${acpCustomProviderReservedIdPrefix}cursor-agent-acp';
+
+  /// Antigravity ACP adapter.
+  static const antigravity =
+      '${acpCustomProviderReservedIdPrefix}antigravity-acp';
 
   /// Pi's standalone ACP adapter.
   static const pi = '${acpCustomProviderReservedIdPrefix}pi-acp';
@@ -370,6 +385,26 @@ final acpCopilotCliProvider = AcpBuiltinProvider(
   ),
 );
 
+/// Built-in Claude Agent SDK ACP provider.
+final acpClaudeAgentProvider = AcpBuiltinProvider(
+  id: AcpBuiltinProviderIds.claudeAgent,
+  label: 'Claude Agent',
+  launchCommand: AcpLaunchCommand(executable: 'claude-agent-acp'),
+  executableProbe: AcpExecutableProbe(
+    candidateExecutableNames: const ['claude-agent-acp'],
+  ),
+);
+
+/// Built-in Codex ACP provider.
+final acpCodexProvider = AcpBuiltinProvider(
+  id: AcpBuiltinProviderIds.codex,
+  label: 'Codex',
+  launchCommand: AcpLaunchCommand(executable: 'codex-acp'),
+  executableProbe: AcpExecutableProbe(
+    candidateExecutableNames: const ['codex-acp'],
+  ),
+);
+
 /// Built-in OpenCode ACP provider.
 final acpOpenCodeProvider = AcpBuiltinProvider(
   id: AcpBuiltinProviderIds.openCode,
@@ -387,7 +422,31 @@ final acpOpenCodeProvider = AcpBuiltinProvider(
   ),
 );
 
+/// Built-in Cursor Agent native ACP provider.
+final acpCursorAgentProvider = AcpBuiltinProvider(
+  id: AcpBuiltinProviderIds.cursorAgent,
+  label: 'Cursor Agent',
+  launchCommand: AcpLaunchCommand(
+    executable: 'cursor-agent',
+    arguments: const ['acp'],
+  ),
+  executableProbe: AcpExecutableProbe(
+    candidateExecutableNames: const ['cursor-agent', 'agent'],
+  ),
+);
+
+/// Built-in Antigravity ACP provider.
+final acpAntigravityProvider = AcpBuiltinProvider(
+  id: AcpBuiltinProviderIds.antigravity,
+  label: 'Antigravity',
+  launchCommand: AcpLaunchCommand(executable: 'antigravity-acp'),
+  executableProbe: AcpExecutableProbe(
+    candidateExecutableNames: const ['antigravity-acp', 'agy-acp'],
+  ),
+);
+
 /// Built-in Pi ACP provider.
+
 final acpPiProvider = AcpBuiltinProvider(
   id: AcpBuiltinProviderIds.pi,
   label: 'Pi',
@@ -400,7 +459,11 @@ final acpPiProvider = AcpBuiltinProvider(
 /// All built-in ACP providers bundled with the app, in display order.
 final acpBuiltinProviders = List<AcpBuiltinProvider>.unmodifiable([
   acpCopilotCliProvider,
+  acpClaudeAgentProvider,
+  acpCodexProvider,
   acpOpenCodeProvider,
+  acpCursorAgentProvider,
+  acpAntigravityProvider,
   acpPiProvider,
 ]);
 

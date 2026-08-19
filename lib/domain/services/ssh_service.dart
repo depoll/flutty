@@ -3643,6 +3643,9 @@ class SshSession {
   /// In-memory display title for the focused native ACP session.
   String? activeNativeAcpDisplayTitle;
 
+  /// Bounded in-memory conversation preview for the focused native session.
+  String? activeNativeAcpPreview;
+
   /// The terminal multiplexer backend currently attached in this session.
   RemoteMuxBackend? remoteMuxBackend;
 
@@ -8206,7 +8209,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       state: connectionState,
       createdAt: session.createdAt,
       config: session.config,
-      preview: nativeFocusTitle == null ? session.terminalPreview : null,
+      preview: nativeFocusTitle == null
+          ? session.terminalPreview
+          : session.activeNativeAcpPreview,
       previewSnapshot: nativeFocusTitle == null
           ? session.terminalPreviewSnapshot
           : null,
@@ -8308,7 +8313,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           state: entry.value,
           createdAt: session.createdAt,
           config: session.config,
-          preview: nativeFocusTitle == null ? session.terminalPreview : null,
+          preview: nativeFocusTitle == null
+              ? session.terminalPreview
+              : session.activeNativeAcpPreview,
           previewSnapshot: nativeFocusTitle == null
               ? session.terminalPreviewSnapshot
               : null,
@@ -8918,9 +8925,25 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
             session.activeNativeAcpDisplayTitle == displayTitle)) {
       return;
     }
+    final focusChanged = session.activeNativeAcpSessionKey != key;
     session
       ..activeNativeAcpSessionKey = key
       ..activeNativeAcpDisplayTitle = displayTitle;
+    if (focusChanged || key == null) {
+      session.activeNativeAcpPreview = null;
+    }
+    state = {...state};
+  }
+
+  /// Updates the bounded preview for the focused native ACP session.
+  void updateSessionNativeAcpPreview(int connectionId, String? preview) {
+    final session = getSession(connectionId);
+    if (session == null ||
+        session.activeNativeAcpSessionKey == null ||
+        session.activeNativeAcpPreview == preview) {
+      return;
+    }
+    session.activeNativeAcpPreview = preview;
     state = {...state};
   }
 

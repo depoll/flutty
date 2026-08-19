@@ -38,6 +38,21 @@ final class AcpTimelineLimits {
 }
 
 /// Role of a streamed ACP message in the domain timeline.
+String? _claudeParentToolUseId(Map<String, Object?> meta) {
+  final claude = meta['claudeCode'];
+  if (claude is! Map) {
+    return null;
+  }
+  final value = claude['parentToolUseId'];
+  return value is String && value.isNotEmpty ? value : null;
+}
+
+bool _claudeSubagent(Map<String, Object?> meta) {
+  final claude = meta['claudeCode'];
+  return claude is Map && claude['subagent'] == true;
+}
+
+/// Role of a streamed ACP message in the domain timeline.
 enum AcpMessageRole {
   /// A prompt authored by the user.
   user,
@@ -75,6 +90,7 @@ final class AcpMessageEntry extends AcpTimelineEntry {
     required this.role,
     required this.order,
     this.messageId,
+    this.parentToolCallId,
     this.queued = false,
     List<AcpContentBlock> content = const <AcpContentBlock>[],
   }) : content = List<AcpContentBlock>.unmodifiable(content);
@@ -88,6 +104,9 @@ final class AcpMessageEntry extends AcpTimelineEntry {
   /// Identifier grouping streamed chunks into a single message, when present.
   final String? messageId;
 
+  /// Launching tool call for a nested subagent transcript, when present.
+  final String? parentToolCallId;
+
   /// Whether this local user prompt is waiting behind an active turn.
   final bool queued;
 
@@ -99,6 +118,7 @@ final class AcpMessageEntry extends AcpTimelineEntry {
     role: role,
     order: order,
     messageId: messageId,
+    parentToolCallId: parentToolCallId,
     queued: queued,
     content: [...content, block],
   );
@@ -110,6 +130,7 @@ final class AcpMessageEntry extends AcpTimelineEntry {
           role == other.role &&
           order == other.order &&
           messageId == other.messageId &&
+          parentToolCallId == other.parentToolCallId &&
           queued == other.queued &&
           const ListEquality<AcpContentBlock>().equals(content, other.content);
 
@@ -118,6 +139,7 @@ final class AcpMessageEntry extends AcpTimelineEntry {
     role,
     order,
     messageId,
+    parentToolCallId,
     queued,
     const ListEquality<AcpContentBlock>().hash(content),
   );
@@ -138,6 +160,8 @@ final class AcpToolCallEntry extends AcpTimelineEntry {
     List<AcpToolLocation> locations = const <AcpToolLocation>[],
     this.rawInput,
     this.rawOutput,
+    this.parentToolCallId,
+    this.isSubagent = false,
   }) : content = List<AcpToolContent>.unmodifiable(content),
        locations = List<AcpToolLocation>.unmodifiable(locations);
 
@@ -168,6 +192,12 @@ final class AcpToolCallEntry extends AcpTimelineEntry {
   /// Latest opaque raw output.
   final Object? rawOutput;
 
+  /// Launching tool call for a nested subagent update, when present.
+  final String? parentToolCallId;
+
+  /// Whether this tool launches a nested subagent transcript.
+  final bool isSubagent;
+
   /// Returns a copy with the non-null fields of [update] merged in.
   ///
   /// Content, locations, input, and output are treated as complete
@@ -187,6 +217,8 @@ final class AcpToolCallEntry extends AcpTimelineEntry {
         : List<AcpToolLocation>.unmodifiable(update.locations!),
     rawInput: update.rawInput ?? rawInput,
     rawOutput: update.rawOutput ?? rawOutput,
+    parentToolCallId: _claudeParentToolUseId(update.meta) ?? parentToolCallId,
+    isSubagent: isSubagent || _claudeSubagent(update.meta),
   );
 
   @override
@@ -200,6 +232,8 @@ final class AcpToolCallEntry extends AcpTimelineEntry {
           status == other.status &&
           rawInput == other.rawInput &&
           rawOutput == other.rawOutput &&
+          parentToolCallId == other.parentToolCallId &&
+          isSubagent == other.isSubagent &&
           const ListEquality<AcpToolContent>().equals(content, other.content) &&
           const ListEquality<AcpToolLocation>().equals(
             locations,
@@ -215,6 +249,8 @@ final class AcpToolCallEntry extends AcpTimelineEntry {
     status,
     rawInput,
     rawOutput,
+    parentToolCallId,
+    isSubagent,
     const ListEquality<AcpToolContent>().hash(content),
     const ListEquality<AcpToolLocation>().hash(locations),
   );
@@ -407,6 +443,7 @@ class AcpTimelineBuilder {
           role: entry.role,
           order: entry.order,
           messageId: entry.messageId,
+          parentToolCallId: entry.parentToolCallId,
           content: entry.content,
         ),
       );
@@ -470,6 +507,7 @@ class AcpTimelineBuilder {
     final role = _roleFor(update.kind);
     if (role == null) return;
     final messageId = update.messageId;
+    final parentToolCallId = _claudeParentToolUseId(update.meta);
     final block = update.content;
     if (role == AcpMessageRole.user && _shouldSuppressUserEcho(messageId)) {
       return;
@@ -486,7 +524,9 @@ class AcpTimelineBuilder {
       final open = _entries[openIndex];
       if (open is AcpMessageEntry &&
           open.role == role &&
-          open.messageId == messageId) {
+          open.messageId == messageId &&
+          (parentToolCallId == null ||
+              open.parentToolCallId == parentToolCallId)) {
         _replaceEntry(openIndex, open.appendContent(block));
         return;
       }
@@ -499,7 +539,9 @@ class AcpTimelineBuilder {
         final entry = _entries[i];
         if (entry is AcpMessageEntry &&
             entry.role == role &&
-            entry.messageId == messageId) {
+            entry.messageId == messageId &&
+            (parentToolCallId == null ||
+                entry.parentToolCallId == parentToolCallId)) {
           _replaceEntry(i, entry.appendContent(block));
           _openMessageIndex = i;
           return;
@@ -512,6 +554,7 @@ class AcpTimelineBuilder {
         role: role,
         order: _nextOrder++,
         messageId: messageId,
+        parentToolCallId: parentToolCallId,
         content: [block],
       ),
     );
@@ -590,6 +633,7 @@ class AcpTimelineBuilder {
       role: entry.role,
       order: entry.order,
       messageId: entry.messageId,
+      parentToolCallId: entry.parentToolCallId,
       content: content,
     );
   }
@@ -614,6 +658,8 @@ class AcpTimelineBuilder {
       rawOutput: entry.rawOutput == null
           ? null
           : const <String, Object?>{'_truncated': true},
+      parentToolCallId: entry.parentToolCallId,
+      isSubagent: entry.isSubagent,
     );
   }
 

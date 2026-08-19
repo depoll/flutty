@@ -137,7 +137,47 @@ void main() {
     expect(find.text('Read file'), findsOneWidget);
   });
 
-  testWidgets('expands and renders a tool image inline', (tester) async {
+  testWidgets('renders Claude nested subagent transcripts', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        AcpMessageThread(
+          entries: [
+            AcpToolCallEntry(
+              id: 'agent-launch',
+              isSubagent: true,
+              toolCall: AcpToolCall(id: 'agent-launch', title: 'Agent'),
+            ),
+            AcpSubagentTranscriptEntry(
+              id: 'subagent-agent-launch',
+              launchToolCallId: 'agent-launch',
+              entries: const [
+                AcpAssistantMessageEntry(
+                  id: 'nested-message',
+                  markdown: 'Nested response',
+                  parentToolCallId: 'agent-launch',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Subagent'), findsOneWidget);
+    expect(find.text('Subagent transcript'), findsOneWidget);
+    expect(find.text('Nested response'), findsOneWidget);
+    final rail = tester.widget<Container>(
+      find.byKey(const ValueKey('acp-subagent-transcript-agent-launch')),
+    );
+    expect(rail.margin, const EdgeInsets.only(left: FluttyTheme.spacingSm));
+    expect(rail.padding, const EdgeInsets.only(left: FluttyTheme.spacingMd));
+    final decoration = rail.decoration! as BoxDecoration;
+    final border = decoration.border! as Border;
+    expect(border.left.width, 2);
+  });
+
+  testWidgets('renders a tool image inline without expansion', (tester) async {
     await tester.pumpWidget(
       wrap(
         AcpMessageThread(
@@ -157,10 +197,8 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.byType(AcpInlineImage), findsNothing);
-    await tester.tap(find.text('Show image'));
-    await tester.pump();
     expect(find.byType(AcpInlineImage), findsOneWidget);
+    expect(find.byIcon(Icons.expand_more), findsNothing);
   });
 
   testWidgets('renders in light and dark themes', (tester) async {

@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
+import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
@@ -781,6 +782,33 @@ void main() {
       expect(find.text('Could not load tmux windows.'), findsOneWidget);
     });
 
+    test('maps every verified ACP adapter to its terminal tool', () {
+      final mapping = nativeAcpProvidersByTool([
+        for (final provider in acpBuiltinProviders)
+          AcpBuiltinProviderView(provider),
+      ]);
+
+      expect(
+        mapping[AgentLaunchTool.copilotCli],
+        AcpBuiltinProviderIds.copilotCli,
+      );
+      expect(
+        mapping[AgentLaunchTool.claudeCode],
+        AcpBuiltinProviderIds.claudeAgent,
+      );
+      expect(mapping[AgentLaunchTool.codex], AcpBuiltinProviderIds.codex);
+      expect(mapping[AgentLaunchTool.openCode], AcpBuiltinProviderIds.openCode);
+      expect(
+        mapping[AgentLaunchTool.cursorAgent],
+        AcpBuiltinProviderIds.cursorAgent,
+      );
+      expect(
+        mapping[AgentLaunchTool.antigravity],
+        AcpBuiltinProviderIds.antigravity,
+      );
+      expect(mapping[AgentLaunchTool.pi], AcpBuiltinProviderIds.pi);
+    });
+
     testWidgets('ACP-capable tool offers a native mode to free users', (
       tester,
     ) async {
@@ -1098,6 +1126,23 @@ void main() {
               ),
             ],
           ),
+          fakeAcpSession(
+            key: fakeAcpKey(acpSessionId: 'failed-session'),
+            title: 'Failed native session',
+            status: AcpConnectionStatus.failed,
+          ),
+        ],
+        recents: [
+          AcpRecentSessionRef(
+            hostId: key.hostId,
+            providerId: key.providerId,
+            bridgeId: 'archived-bridge',
+            acpSessionId: 'archived-session',
+            title: 'Archived native session',
+            cwd: '/home/dev/monkeyssh',
+            createdAt: DateTime(2025),
+            lastActivityAt: DateTime(2026),
+          ),
         ],
       );
       TmuxNavigatorAction? selected;
@@ -1134,6 +1179,8 @@ void main() {
       );
       expect(find.text('agent windows'), findsOneWidget);
       expect(find.text('Fix authentication'), findsOneWidget);
+      expect(find.text('Failed native session'), findsNothing);
+      expect(find.text('Archived native session'), findsNothing);
       final nativeRow = find.byKey(ValueKey('native-acp-session-${key.value}'));
       expect(find.text('Copilot CLI · …/monkeyssh · working'), findsOneWidget);
       expect(
@@ -1142,6 +1189,13 @@ void main() {
       );
       expect(
         find.byKey(ValueKey('native-acp-number-slot-${key.value}')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: nativeRow,
+          matching: find.byIcon(Icons.smart_toy_outlined),
+        ),
         findsOneWidget,
       );
       expect(

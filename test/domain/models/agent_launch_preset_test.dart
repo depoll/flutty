@@ -524,6 +524,23 @@ void main() {
     });
 
     test('resolves the newly supported CLIs from command names', () {
+      expect(
+        agentLaunchToolForCommandName('claude-agent-acp'),
+        AgentLaunchTool.claudeCode,
+      );
+      expect(agentLaunchToolForCommandName('codex-acp'), AgentLaunchTool.codex);
+      expect(
+        agentLaunchToolForCommandName('cursor-agent-acp'),
+        AgentLaunchTool.cursorAgent,
+      );
+      expect(
+        agentLaunchToolForCommandName('antigravity-acp'),
+        AgentLaunchTool.antigravity,
+      );
+      expect(
+        agentLaunchToolForCommandName('agy-acp'),
+        AgentLaunchTool.antigravity,
+      );
       expect(agentLaunchToolForCommandName('pi'), AgentLaunchTool.pi);
       expect(agentLaunchToolForCommandName('hermes'), AgentLaunchTool.hermes);
       expect(
