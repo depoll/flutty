@@ -100,8 +100,10 @@ String? acpProviderIdForAgentLaunchTool(
   List<AcpProvider> providers,
 ) {
   for (final provider in providers) {
-    if (agentLaunchToolForCommandName(provider.launchCommand.executable) ==
-        tool) {
+    if ((provider.id == AcpBuiltinProviderIds.antigravity &&
+            tool == AgentLaunchTool.antigravity) ||
+        agentLaunchToolForCommandName(provider.launchCommand.executable) ==
+            tool) {
       return provider.id;
     }
   }

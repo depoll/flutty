@@ -3770,6 +3770,10 @@ class SshSession {
   void debugFlushPendingTerminalOutput() =>
       _runtime.debugFlushPendingTerminalOutput();
 
+  /// Pauses hidden terminal parsing while a native ACP viewport is active.
+  void setTerminalParsingPaused({required bool paused}) =>
+      _runtime.setTerminalParsingPaused(paused: paused);
+
   /// The latest terminal window title emitted by the remote session.
   String? get windowTitle => _windowTitle;
 

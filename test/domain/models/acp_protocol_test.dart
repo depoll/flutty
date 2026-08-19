@@ -214,6 +214,45 @@ void main() {
     expect(unknown.meta['vendor'], 'example');
   });
 
+  test('normalizes Grok metadata-only reasoning modes', () {
+    final result = AcpSessionSetupResult.fromJson({
+      'sessionId': 'grok-session',
+      '_meta': {
+        'x.ai/sessionConfig': {
+          'options': [
+            {
+              'id': 'grok-4.6',
+              'category': 'model',
+              'label': 'Grok 4.6',
+              'selected': true,
+            },
+            {
+              'id': 'high',
+              'category': 'mode',
+              'label': 'High Effort',
+              'description': 'Higher implementation quality',
+              'selected': true,
+            },
+            {
+              'id': 'low',
+              'category': 'mode',
+              'label': 'Low Effort',
+              'selected': false,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.modes?.currentModeId, 'high');
+    expect(result.modes?.availableModes.map((mode) => mode.id), [
+      'high',
+      'low',
+    ]);
+    expect(result.modes?.availableModes.first.name, 'High Effort');
+    expect(result.modes?.availableModes.first.description, contains('quality'));
+  });
+
   test('parses permissions and forward-compatible stop reasons', () {
     final permission = AcpPermissionRequest.fromJson({
       'sessionId': 'session-1',

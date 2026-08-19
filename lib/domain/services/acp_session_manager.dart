@@ -1672,10 +1672,16 @@ class _SessionController {
           final rolledBackTimeline = _timelineBuilder.removeLocalUserPrompt(
             queued.localMessageId,
           );
+          final mapped = _mapClientError(error);
           _update(
             (s) => s.copyWith(
+              status: mapped.kind == AcpSessionErrorKind.authenticationRequired
+                  ? AcpConnectionStatus.authenticationRequired
+                  : s.status,
+              pendingAuthentication:
+                  mapped.kind == AcpSessionErrorKind.authenticationRequired,
               promptStatus: AcpPromptStatus.idle,
-              error: _mapClientError(error),
+              error: mapped,
               timeline: rolledBackTimeline,
             ),
           );
@@ -2129,6 +2135,12 @@ class _SessionController {
       kind: AcpSessionErrorKind.protocol,
       message: 'The agent sent invalid protocol data.',
     ),
+    AcpRemoteException(:final message)
+        when _isAcpAuthenticationRequired(message) =>
+      const AcpSessionError(
+        kind: AcpSessionErrorKind.authenticationRequired,
+        message: 'The agent requires authentication.',
+      ),
     AcpRemoteException(:final code, :final message) => AcpSessionError(
       kind: AcpSessionErrorKind.protocol,
       message: _safeAcpRemoteError(code, message),
@@ -2143,6 +2155,13 @@ class _SessionController {
       message: 'The agent session encountered an error.',
     ),
   };
+}
+
+bool _isAcpAuthenticationRequired(String message) {
+  final normalized = message.trim().toLowerCase();
+  return normalized.contains('authentication required') ||
+      normalized.contains('not authenticated') ||
+      normalized.contains('unauthorized');
 }
 
 String _safeAcpRemoteError(int code, String message) {

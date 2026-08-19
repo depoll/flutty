@@ -165,6 +165,8 @@ AgentLaunchTool? agentLaunchToolForAcpProviderId(String providerId) =>
       AcpBuiltinProviderIds.cursorAgent => AgentLaunchTool.cursorAgent,
       AcpBuiltinProviderIds.antigravity => AgentLaunchTool.antigravity,
       AcpBuiltinProviderIds.pi => AgentLaunchTool.pi,
+      AcpBuiltinProviderIds.hermes => AgentLaunchTool.hermes,
+      AcpBuiltinProviderIds.openClaw => AgentLaunchTool.openclaw,
       AcpBuiltinProviderIds.grokBuild => AgentLaunchTool.grokBuild,
       _ => null,
     };

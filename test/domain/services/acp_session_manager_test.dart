@@ -38,6 +38,7 @@ class _FakeAcpServer implements AcpTransport {
     this.failEstablish = false,
     this.rejectInitialize = false,
     this.newSessionErrorCode = -32000,
+    this.promptErrorMessage,
     this.replayTextOnLoad,
     this.permissionIdOnLoad,
   });
@@ -57,6 +58,9 @@ class _FakeAcpServer implements AcpTransport {
 
   /// JSON-RPC error code returned when session creation is rejected.
   final int newSessionErrorCode;
+
+  /// When set, session/prompt returns this remote error message.
+  final String? promptErrorMessage;
 
   /// When set, a `session/load` pushes an agent message chunk with this text
   /// BEFORE replying, simulating synchronous history replay during the load.
@@ -158,7 +162,9 @@ class _FakeAcpServer implements AcpTransport {
         }
         _reply(id, <String, Object?>{});
       case 'session/prompt':
-        if (holdPrompts) {
+        if (promptErrorMessage != null) {
+          _replyError(id, -32000, promptErrorMessage!);
+        } else if (holdPrompts) {
           _heldPromptIds.addLast(id);
         } else {
           _reply(id, {'stopReason': 'end_turn'});
@@ -1608,6 +1614,35 @@ void main() {
   });
 
   group('orphan bridge cleanup', () {
+    test(
+      'prompt authentication failure transitions to sign-in required',
+      () async {
+        final authConnector = _FakeConnector(
+          serverFactory: (_, _) =>
+              _FakeAcpServer(promptErrorMessage: 'Authentication required'),
+        );
+        final authManager = buildManagerWith(authConnector);
+        final started = await authManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.claudeAgent,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+
+        await expectLater(
+          authManager.prompt(key, const [AcpTextContent('hello')]),
+          throwsA(isA<AcpRemoteException>()),
+        );
+        await _pump();
+
+        final state = authManager.state.byKeyValue(key.value)!;
+        expect(state.status, AcpConnectionStatus.authenticationRequired);
+        expect(state.pendingAuthentication, isTrue);
+        expect(state.error?.kind, AcpSessionErrorKind.authenticationRequired);
+        expect(state.error?.message, 'The agent requires authentication.');
+      },
+    );
+
     test('stops a fresh bridge when session creation fails', () async {
       final failConnector = _FakeConnector(
         serverFactory: (_, _) => _FakeAcpServer(failNewSession: true),

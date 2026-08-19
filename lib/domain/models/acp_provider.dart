@@ -56,6 +56,12 @@ abstract final class AcpBuiltinProviderIds {
 
   /// xAI Grok Build's official ACP stdio server.
   static const grokBuild = '${acpCustomProviderReservedIdPrefix}grok-build';
+
+  /// Nous Research Hermes ACP server.
+  static const hermes = '${acpCustomProviderReservedIdPrefix}hermes-acp';
+
+  /// OpenClaw ACP server.
+  static const openClaw = '${acpCustomProviderReservedIdPrefix}openclaw-acp';
 }
 
 /// Validates and normalizes a custom ACP provider ID.
@@ -317,6 +323,7 @@ class AcpBuiltinProvider {
     required this.launchCommand,
     required this.executableProbe,
     this.terminalAuthCommand,
+    this.adapterFallbackCommand,
   });
 
   /// Stable identifier for this provider.
@@ -340,6 +347,9 @@ class AcpBuiltinProvider {
   /// credentials.
   final AcpLaunchCommand? terminalAuthCommand;
 
+  /// Pinned npx command offered when the adapter executable is missing.
+  final AcpLaunchCommand? adapterFallbackCommand;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -348,7 +358,8 @@ class AcpBuiltinProvider {
           label == other.label &&
           launchCommand == other.launchCommand &&
           executableProbe == other.executableProbe &&
-          terminalAuthCommand == other.terminalAuthCommand;
+          terminalAuthCommand == other.terminalAuthCommand &&
+          adapterFallbackCommand == other.adapterFallbackCommand;
 
   @override
   int get hashCode => Object.hash(
@@ -357,6 +368,7 @@ class AcpBuiltinProvider {
     launchCommand,
     executableProbe,
     terminalAuthCommand,
+    adapterFallbackCommand,
   );
 
   @override
@@ -398,7 +410,11 @@ final acpClaudeAgentProvider = AcpBuiltinProvider(
   ),
   terminalAuthCommand: AcpLaunchCommand(
     executable: 'claude',
-    arguments: const ['auth', 'login'],
+    arguments: const ['/login'],
+  ),
+  adapterFallbackCommand: AcpLaunchCommand(
+    executable: 'npx',
+    arguments: const ['--yes', '@agentclientprotocol/claude-agent-acp@0.70.0'],
   ),
 );
 
@@ -409,6 +425,10 @@ final acpCodexProvider = AcpBuiltinProvider(
   launchCommand: AcpLaunchCommand(executable: 'codex-acp'),
   executableProbe: AcpExecutableProbe(
     candidateExecutableNames: const ['codex-acp'],
+  ),
+  adapterFallbackCommand: AcpLaunchCommand(
+    executable: 'npx',
+    arguments: const ['--yes', '@agentclientprotocol/codex-acp@1.4.0'],
   ),
 );
 
@@ -440,17 +460,59 @@ final acpCursorAgentProvider = AcpBuiltinProvider(
   executableProbe: AcpExecutableProbe(
     candidateExecutableNames: const ['cursor-agent', 'agent'],
   ),
+  terminalAuthCommand: AcpLaunchCommand(
+    executable: 'cursor-agent',
+    arguments: const ['login'],
+  ),
 );
 
 /// Built-in Antigravity ACP provider.
 final acpAntigravityProvider = AcpBuiltinProvider(
   id: AcpBuiltinProviderIds.antigravity,
   label: 'Antigravity',
-  launchCommand: AcpLaunchCommand(executable: 'agy-acp'),
+  launchCommand: AcpLaunchCommand(
+    executable: 'npx',
+    arguments: const ['--yes', 'agy-acp@0.5.2'],
+  ),
   executableProbe: AcpExecutableProbe(
-    candidateExecutableNames: const ['agy-acp', 'antigravity-acp'],
+    candidateExecutableNames: const ['agy-acp', 'antigravity-acp', 'npx'],
   ),
   terminalAuthCommand: AcpLaunchCommand(executable: 'agy'),
+  adapterFallbackCommand: AcpLaunchCommand(
+    executable: 'npx',
+    arguments: const ['--yes', 'agy-acp@0.5.2'],
+  ),
+);
+
+/// Built-in Hermes ACP provider.
+final acpHermesProvider = AcpBuiltinProvider(
+  id: AcpBuiltinProviderIds.hermes,
+  label: 'Hermes',
+  launchCommand: AcpLaunchCommand(
+    executable: 'hermes',
+    arguments: const ['acp'],
+  ),
+  executableProbe: AcpExecutableProbe(
+    candidateExecutableNames: const ['hermes', 'hermes-agent'],
+  ),
+  terminalAuthCommand: AcpLaunchCommand(executable: 'hermes'),
+);
+
+/// Built-in OpenClaw ACP provider.
+final acpOpenClawProvider = AcpBuiltinProvider(
+  id: AcpBuiltinProviderIds.openClaw,
+  label: 'OpenClaw',
+  launchCommand: AcpLaunchCommand(
+    executable: 'openclaw',
+    arguments: const ['acp'],
+  ),
+  executableProbe: AcpExecutableProbe(
+    candidateExecutableNames: const ['openclaw'],
+  ),
+  terminalAuthCommand: AcpLaunchCommand(
+    executable: 'openclaw',
+    arguments: const ['tui'],
+  ),
 );
 
 /// Built-in Grok Build ACP provider.
@@ -476,6 +538,10 @@ final acpPiProvider = AcpBuiltinProvider(
   executableProbe: AcpExecutableProbe(
     candidateExecutableNames: const ['pi-acp'],
   ),
+  adapterFallbackCommand: AcpLaunchCommand(
+    executable: 'npx',
+    arguments: const ['--yes', 'pi-acp@0.0.33'],
+  ),
 );
 
 /// All built-in ACP providers bundled with the app, in display order.
@@ -487,6 +553,8 @@ final acpBuiltinProviders = List<AcpBuiltinProvider>.unmodifiable([
   acpCursorAgentProvider,
   acpAntigravityProvider,
   acpPiProvider,
+  acpHermesProvider,
+  acpOpenClawProvider,
   acpGrokBuildProvider,
 ]);
 

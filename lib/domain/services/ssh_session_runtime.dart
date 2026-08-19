@@ -30,6 +30,7 @@ class _SshSessionRuntime {
   Timer? _terminalOutputFlushTimer;
   Timer? _monkeyMuxReplayCoalesceTimer;
   Timer? _terminalParsePumpTimer;
+  bool _terminalParsingPaused = false;
   Duration _terminalOutputFlushInterval = _defaultTerminalOutputFlushInterval;
   SSHSession? _pendingShellOutputShell;
   Terminal? _pendingShellOutputTerminal;
@@ -1173,8 +1174,22 @@ if(!$__flResolved){$__flResolved='cmd'}
   /// synchronously, which would block the UI thread. The remainder resumes on
   /// the next event-loop turn so the app stays responsive while draining as
   /// fast as the device can manage.
+  void setTerminalParsingPaused({required bool paused}) {
+    if (_terminalParsingPaused == paused) {
+      return;
+    }
+    _terminalParsingPaused = paused;
+    if (paused) {
+      _terminalParsePumpTimer?.cancel();
+      _terminalParsePumpTimer = null;
+      _terminalParseBacklog = '';
+      _terminalParseOffset = 0;
+      _lastTerminalParseNotifyAtMs = null;
+    }
+  }
+
   void _enqueueTerminalParse(Terminal terminal, String data) {
-    if (data.isEmpty) {
+    if (data.isEmpty || _terminalParsingPaused) {
       return;
     }
     // Drop already-consumed prefix before appending so the backing string does

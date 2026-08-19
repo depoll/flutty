@@ -7496,6 +7496,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _activeNativeAcpSessionKey = session.activeNativeAcpSessionKey;
+    session.setTerminalParsingPaused(
+      paused: _activeNativeAcpSessionKey != null,
+    );
 
     try {
       // Reuse the session's persistent terminal if it exists (preserves
@@ -11390,10 +11393,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case AcpSessionLaunchStarted(:final key):
         _openNativeAcpSession(key);
       case AcpSessionLaunchFailed(:final error):
-        final authCommand =
-            error.kind == AcpSessionErrorKind.authenticationRequired
-            ? acpTerminalAuthCommandFor(providerId)
-            : null;
+        // Adapter startup can fail before ACP can classify authentication
+        // (for example Cursor exits when its keychain is locked), so always
+        // offer a known provider sign-in command on launch failure.
+        final authCommand = acpTerminalAuthCommandFor(providerId);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(error.message),
@@ -11430,6 +11433,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       return;
     }
+    (_observedSession ?? _activeSession())?.setTerminalParsingPaused(
+      paused: true,
+    );
     setState(() => _activeNativeAcpSessionKey = key);
     _persistNativeAcpFocus(key);
     _collapseTmuxBarIfExpanded();
@@ -11439,7 +11445,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted || _activeNativeAcpSessionKey == null) {
       return;
     }
+    final session = _observedSession ?? _activeSession();
+    // Paint the frozen terminal immediately. Only after that first frame do we
+    // resume parsing and request one frame-budgeted MonkeyMux replay, so the
+    // viewport switch itself never waits on a large terminal backlog.
     setState(() => _activeNativeAcpSessionKey = null);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _activeNativeAcpSessionKey != null) {
+        return;
+      }
+      session?.setTerminalParsingPaused(paused: false);
+      _probeAndForceMuxWindowRefresh();
+    });
     final connectionId = _connectionId;
     if (connectionId != null) {
       ref

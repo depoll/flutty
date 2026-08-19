@@ -1024,6 +1024,54 @@ final class AcpUnknownConfigOption extends AcpSessionConfigOption {
   final AcpJsonMap extensions;
 }
 
+AcpSessionModeState? _modeStateFromProviderMeta(AcpJsonMap meta) {
+  final config = AcpJson.objectField(meta, 'x.ai/sessionConfig');
+  final rawOptions = config == null
+      ? null
+      : AcpJson.listField(config, 'options');
+  if (rawOptions == null) {
+    return null;
+  }
+  final modes = <AcpSessionMode>[];
+  String? selectedId;
+  for (final item in rawOptions) {
+    final option = AcpJson.object(item);
+    if (option == null || AcpJson.string(option, 'category') != 'mode') {
+      continue;
+    }
+    final id = AcpJson.string(option, 'id')?.trim() ?? '';
+    if (id.isEmpty) {
+      continue;
+    }
+    modes.add(
+      AcpSessionMode(
+        id: id,
+        name: AcpJson.string(option, 'label') ?? id,
+        description: AcpJson.string(option, 'description'),
+        meta: AcpJson.meta(option),
+        extensions: AcpJson.extensions(option, const [
+          'id',
+          'category',
+          'label',
+          'description',
+          'selected',
+        ]),
+      ),
+    );
+    if (AcpJson.boolean(option, 'selected') ?? false) {
+      selectedId = id;
+    }
+  }
+  if (modes.isEmpty) {
+    return null;
+  }
+  return AcpSessionModeState(
+    currentModeId: selectedId ?? modes.first.id,
+    availableModes: List<AcpSessionMode>.unmodifiable(modes),
+    meta: config == null ? const <String, Object?>{} : AcpJson.meta(config),
+  );
+}
+
 /// Result of creating, loading, resuming, or forking a session.
 final class AcpSessionSetupResult implements AcpExtensible {
   /// Creates a session setup result.
@@ -1039,6 +1087,7 @@ final class AcpSessionSetupResult implements AcpExtensible {
   /// Parses a session setup result.
   factory AcpSessionSetupResult.fromJson(AcpJsonMap json) {
     final modes = AcpJson.objectField(json, 'modes');
+    final meta = AcpJson.meta(json);
     final models =
         AcpJson.objectField(json, 'models') ??
         AcpJson.objectField(json, 'modelState') ??
@@ -1052,10 +1101,12 @@ final class AcpSessionSetupResult implements AcpExtensible {
     }
     return AcpSessionSetupResult(
       sessionId: AcpJson.string(json, 'sessionId'),
-      modes: modes == null ? null : AcpSessionModeState.fromJson(modes),
+      modes: modes == null
+          ? _modeStateFromProviderMeta(meta)
+          : AcpSessionModeState.fromJson(modes),
       models: models == null ? null : AcpModelState.fromJson(models),
       configOptions: List<AcpSessionConfigOption>.unmodifiable(configOptions),
-      meta: AcpJson.meta(json),
+      meta: meta,
       extensions: AcpJson.extensions(json, const [
         'sessionId',
         'modes',

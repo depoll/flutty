@@ -57,7 +57,7 @@ void main() {
           registry: AcpPendingRequestRegistry(),
         ).capabilities.toJson(),
         {
-          '_meta': {'subagent-transcript': true},
+          '_meta': {'subagent-transcript': true, 'terminal-auth': true},
           'terminal': false,
           'session': {
             'configOptions': {'boolean': {}},

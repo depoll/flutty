@@ -313,7 +313,7 @@ void main() {
 
   group('built-in providers', () {
     test('acpBuiltinProviders contains every verified adapter', () {
-      expect(acpBuiltinProviders, hasLength(8));
+      expect(acpBuiltinProviders, hasLength(10));
       expect(acpBuiltinProviders, contains(acpCopilotCliProvider));
       expect(acpBuiltinProviders, contains(acpClaudeAgentProvider));
       expect(acpBuiltinProviders, contains(acpCodexProvider));
@@ -321,6 +321,8 @@ void main() {
       expect(acpBuiltinProviders, contains(acpCursorAgentProvider));
       expect(acpBuiltinProviders, contains(acpAntigravityProvider));
       expect(acpBuiltinProviders, contains(acpPiProvider));
+      expect(acpBuiltinProviders, contains(acpHermesProvider));
+      expect(acpBuiltinProviders, contains(acpOpenClawProvider));
       expect(acpBuiltinProviders, contains(acpGrokBuildProvider));
     });
 
@@ -332,6 +334,8 @@ void main() {
       expect(acpCursorAgentProvider.id, 'builtin:cursor-agent-acp');
       expect(acpAntigravityProvider.id, 'builtin:antigravity-acp');
       expect(acpPiProvider.id, 'builtin:pi-acp');
+      expect(acpHermesProvider.id, 'builtin:hermes-acp');
+      expect(acpOpenClawProvider.id, 'builtin:openclaw-acp');
       expect(acpGrokBuildProvider.id, 'builtin:grok-build');
       for (final provider in acpBuiltinProviders) {
         expect(
@@ -370,13 +374,20 @@ void main() {
       ]);
       expect(
         acpAntigravityProvider.executableProbe.candidateExecutableNames,
-        containsAll(['antigravity-acp', 'agy-acp']),
+        containsAll(['antigravity-acp', 'agy-acp', 'npx']),
       );
+      expect(acpAntigravityProvider.launchCommand.argv, [
+        'npx',
+        '--yes',
+        'agy-acp@0.5.2',
+      ]);
       expect(
         acpPiProvider.executableProbe.candidateExecutableNames,
         contains('pi-acp'),
       );
       expect(acpPiProvider.launchCommand.argv, ['pi-acp']);
+      expect(acpHermesProvider.launchCommand.argv, ['hermes', 'acp']);
+      expect(acpOpenClawProvider.launchCommand.argv, ['openclaw', 'acp']);
       expect(acpGrokBuildProvider.launchCommand.argv, [
         'grok',
         'agent',
@@ -387,7 +398,10 @@ void main() {
     test('built-in providers expose terminal-auth command metadata', () {
       expect(acpCopilotCliProvider.terminalAuthCommand, isNotNull);
       expect(acpOpenCodeProvider.terminalAuthCommand, isNotNull);
-      expect(acpClaudeAgentProvider.terminalAuthCommand, isNotNull);
+      expect(acpClaudeAgentProvider.terminalAuthCommand?.argv, [
+        'claude',
+        '/login',
+      ]);
       expect(acpAntigravityProvider.terminalAuthCommand, isNotNull);
       expect(acpGrokBuildProvider.terminalAuthCommand, isNotNull);
       expect(acpPiProvider.terminalAuthCommand, isNull);
