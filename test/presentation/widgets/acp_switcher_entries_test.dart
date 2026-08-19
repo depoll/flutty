@@ -64,4 +64,24 @@ void main() {
       expect(entries.last.keyValue, older.key.value);
     });
   });
+
+  group('buildAcpMuxWindowEntries', () {
+    test('ignores activity changes when assigning native window order', () {
+      final first = fakeAcpSession(
+        key: fakeAcpKey(acpSessionId: 'a'),
+        lastActivityAt: DateTime(2025),
+      );
+      final recentlyActive = fakeAcpSession(
+        key: fakeAcpKey(acpSessionId: 'b'),
+        lastActivityAt: DateTime(2027),
+      );
+
+      final entries = buildAcpMuxWindowEntries([recentlyActive, first]);
+
+      expect(entries.map((entry) => entry.keyValue), [
+        first.key.value,
+        recentlyActive.key.value,
+      ]);
+    });
+  });
 }

@@ -1187,8 +1187,12 @@ void main() {
         find.descendant(of: nativeRow, matching: find.text('running')),
         findsOneWidget,
       );
+      final numberSlot = find.byKey(
+        ValueKey('native-acp-number-slot-${key.value}'),
+      );
+      expect(numberSlot, findsOneWidget);
       expect(
-        find.byKey(ValueKey('native-acp-number-slot-${key.value}')),
+        find.descendant(of: numberSlot, matching: find.text('4')),
         findsOneWidget,
       );
       expect(
@@ -1196,7 +1200,7 @@ void main() {
           of: nativeRow,
           matching: find.byIcon(Icons.smart_toy_outlined),
         ),
-        findsOneWidget,
+        findsNothing,
       );
       expect(
         find.byKey(ValueKey('native-acp-progress-${key.value}')),

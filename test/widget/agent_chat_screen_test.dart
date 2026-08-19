@@ -1,5 +1,8 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +12,7 @@ import 'package:monkeyssh/app/theme.dart';
 import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
+import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
@@ -34,6 +38,10 @@ class _MockSshSession extends Mock implements SshSession {}
 
 class _FakeSftpClient extends Fake implements SftpClient {}
 
+class _MockSftpClient extends Mock implements SftpClient {}
+
+class _MockSftpFile extends Mock implements SftpFile {}
+
 Widget _wrap(
   FakeAcpSessionManager manager, {
   Size size = const Size(390, 800),
@@ -44,6 +52,7 @@ Widget _wrap(
   String? preferredFontFamily,
   ValueChanged<double>? onFontSizeCommitted,
   AcpChatPreviewChanged? onPreviewChanged,
+  SftpClient? sftpClient,
   AcpChatAttachmentActionsBuilder? attachmentActionsBuilder,
   EdgeInsets mediaPadding = EdgeInsets.zero,
 }) {
@@ -52,7 +61,9 @@ Widget _wrap(
   final sshSession = _MockSshSession();
   when(() => sshSession.connectionId).thenReturn(7);
   when(() => sshSession.hostId).thenReturn(key.hostId);
-  when(sshSession.sftp).thenAnswer((_) async => _FakeSftpClient());
+  when(
+    sshSession.sftp,
+  ).thenAnswer((_) async => sftpClient ?? _FakeSftpClient());
   when(() => ssh.getSessionsForHost(any())).thenReturn(
     hasActiveSshSession ? <SshSession>[sshSession] : const <SshSession>[],
   );
@@ -131,6 +142,85 @@ void main() {
     expect(previews, isNotEmpty);
     expect(previewKeys.single.value, fakeAcpKey().value);
     expect(previews.last, contains('Preview from the native agent'));
+  });
+
+  testWidgets('Pi model picker reads scope metadata and expands all models', (
+    tester,
+  ) async {
+    final sftp = _MockSftpClient();
+    final settingsFile = _MockSftpFile();
+    final settingsBytes = Uint8List.fromList(
+      utf8.encode('{"enabledModels":["anthropic/*:high"]}'),
+    );
+    const globalSettingsPath = '/home/demo/.pi/agent/settings.json';
+    when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+    when(() => sftp.stat(any(), followLink: false)).thenAnswer((
+      invocation,
+    ) async {
+      final path = invocation.positionalArguments.single as String;
+      if (path == globalSettingsPath) {
+        return SftpFileAttrs(size: settingsBytes.length);
+      }
+      throw StateError('missing optional project settings');
+    });
+    when(
+      () => sftp.open(globalSettingsPath),
+    ).thenAnswer((_) async => settingsFile);
+    when(settingsFile.read).thenAnswer((_) => Stream.value(settingsBytes));
+    when(settingsFile.close).thenAnswer((_) async {});
+
+    final key = fakeAcpKey(providerId: AcpBuiltinProviderIds.pi);
+    final manager = FakeAcpSessionManager(
+      sessions: [
+        fakeAcpSession(
+          key: key,
+          providerLabel: 'Pi',
+          configOptions: const [
+            AcpSelectConfigOption(
+              id: 'model',
+              name: 'Model',
+              category: 'model',
+              currentValue: 'anthropic/claude-sonnet',
+              options: [
+                AcpConfigValue(
+                  value: 'anthropic/claude-sonnet',
+                  name: 'anthropic/Claude Sonnet',
+                ),
+                AcpConfigValue(value: 'openai/gpt-5', name: 'openai/GPT-5'),
+                AcpConfigValue(
+                  value: 'google/gemini-pro',
+                  name: 'google/Gemini Pro',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      _wrap(
+        manager,
+        routeKey: key,
+        hasActiveSshSession: true,
+        sftpClient: sftp,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('Model:'));
+    await tester.pumpAndSettle();
+    expect(find.text('Scoped models'), findsOneWidget);
+    expect(find.text('anthropic/Claude Sonnet'), findsOneWidget);
+    expect(find.text('openai/GPT-5'), findsNothing);
+    expect(find.text('google/Gemini Pro'), findsNothing);
+
+    await tester.tap(find.text('Show all models'));
+    await tester.pumpAndSettle();
+    expect(find.text('All models'), findsOneWidget);
+    expect(find.text('anthropic/Claude Sonnet'), findsOneWidget);
+    expect(find.text('openai/GPT-5'), findsOneWidget);
+    expect(find.text('google/Gemini Pro'), findsOneWidget);
   });
 
   testWidgets('top bar changes model, effort, and mode directly', (

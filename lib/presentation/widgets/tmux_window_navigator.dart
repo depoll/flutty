@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../domain/models/acp_provider.dart';
-import '../../domain/models/acp_recent_session.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/remote_multiplexer.dart';
@@ -586,6 +585,13 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   AgentSessionDiscoveryService get _discovery =>
       ref.read(agentSessionDiscoveryServiceProvider);
 
+  int get _firstNativeAcpWindowIndex =>
+      (_windows ?? const <TmuxWindow>[]).fold<int>(
+        -1,
+        (maximum, window) => window.index > maximum ? window.index : maximum,
+      ) +
+      1;
+
   @override
   void initState() {
     super.initState();
@@ -1111,10 +1117,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     final providerLabels = <String, String>{
       for (final provider in providers) provider.id: provider.label,
     };
-    final entries = buildAcpSwitcherEntries(
-      sessions: sessions,
-      recents: const <AcpRecentSessionRef>[],
-    );
+    final entries = buildAcpMuxWindowEntries(sessions);
     if (entries.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -1134,14 +1137,19 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
             ),
           ),
         ),
-        for (final entry in entries)
-          _buildNativeAcpSessionTile(entry, providerLabels: providerLabels),
+        for (var index = 0; index < entries.length; index++)
+          _buildNativeAcpSessionTile(
+            entries[index],
+            windowIndex: _firstNativeAcpWindowIndex + index,
+            providerLabels: providerLabels,
+          ),
       ],
     );
   }
 
   Widget _buildNativeAcpSessionTile(
     AcpSwitcherEntry entry, {
+    required int windowIndex,
     required Map<String, String> providerLabels,
   }) {
     final theme = Theme.of(context);
@@ -1174,20 +1182,16 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           color: theme.colorScheme.surfaceContainerHigh,
           borderRadius: BorderRadius.circular(6),
         ),
-      ),
-      title: Row(
-        children: [
-          Icon(Icons.smart_toy_outlined, size: 17, color: activityColor),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              entry.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
+        alignment: Alignment.center,
+        child: Text(
+          '$windowIndex',
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: activityColor,
+            fontWeight: FontWeight.w700,
           ),
-        ],
+        ),
       ),
+      title: Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,

@@ -68,6 +68,20 @@ List<AcpSwitcherEntry> buildAcpSwitcherEntries({
   return entries;
 }
 
+/// Orders live native ACP sessions like mux windows, independent of activity.
+///
+/// Window numbers must not reshuffle merely because a background agent emits
+/// output, so creation time and the stable session key are used as tie-breaks.
+List<AcpSwitcherEntry> buildAcpMuxWindowEntries(
+  List<AcpSessionState> sessions,
+) =>
+    <AcpSwitcherEntry>[
+      for (final session in sessions) AcpSwitcherEntry.session(session),
+    ]..sort((a, b) {
+      final created = a.session!.createdAt.compareTo(b.session!.createdAt);
+      return created != 0 ? created : a.keyValue.compareTo(b.keyValue);
+    });
+
 /// Navigates to the chat for [key], replacing the current chat route.
 void _openChat(BuildContext context, AcpSessionKey key, {bool replace = true}) {
   final location = buildAgentChatLocation(

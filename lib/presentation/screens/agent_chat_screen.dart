@@ -26,6 +26,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app/theme.dart';
 import '../../domain/models/acp_attachment.dart';
 import '../../domain/models/acp_protocol.dart';
+import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/acp_timeline.dart' as domain;
@@ -34,6 +35,7 @@ import '../../domain/services/acp_concurrency_policy.dart';
 import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/pi_model_scope_metadata_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../controllers/acp_composer_controller.dart';
@@ -152,6 +154,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   Timer? _previewPublishTimer;
   String? _pendingPreview;
   String? _lastPublishedPreview;
+  String? _piModelScopeIdentity;
+  List<String>? _piEnabledModelPatterns;
+  var _piModelScopeLoading = false;
 
   @override
   void initState() {
@@ -366,6 +371,45 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   static Future<SftpClient> _throwNoSession() =>
       throw StateError('No SSH session');
 
+  void _ensurePiModelScope(AcpSessionState session) {
+    if (_key.providerId != AcpBuiltinProviderIds.pi) {
+      return;
+    }
+    final connectionId = _currentConnectionId();
+    if (connectionId == null) {
+      return;
+    }
+    final identity = '$connectionId:${session.cwd}';
+    if (_piModelScopeLoading || _piModelScopeIdentity == identity) {
+      return;
+    }
+    _piModelScopeLoading = true;
+    unawaited(_loadPiModelScope(identity, session.cwd));
+  }
+
+  Future<void> _loadPiModelScope(String identity, String? cwd) async {
+    List<String>? patterns;
+    try {
+      final sftp = await _ensureSftpClient();
+      if (sftp != null) {
+        patterns = await const PiModelScopeMetadataService().load(
+          sftp,
+          cwd: cwd,
+        );
+      }
+    } on Object {
+      patterns = null;
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _piModelScopeIdentity = identity;
+      _piEnabledModelPatterns = patterns;
+      _piModelScopeLoading = false;
+    });
+  }
+
   void _onScroll() {
     if (!_scroll.hasClients) {
       return;
@@ -497,8 +541,10 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             itemCount: selectors.length,
             separatorBuilder: (_, _) =>
                 const SizedBox(width: FluttyTheme.spacingXs),
-            itemBuilder: (context, index) =>
-                _AcpQuickSelector(selector: selectors[index]),
+            itemBuilder: (context, index) => _AcpQuickSelector(
+              key: ValueKey(selectors[index].label),
+              selector: selectors[index],
+            ),
           ),
         ),
       ),
@@ -523,41 +569,55 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     );
     final selectors = <_AcpQuickSelectorData>[];
 
-    void addGeneric(String label, AcpSelectConfigOption? option) {
+    void addGeneric(
+      String label,
+      AcpSelectConfigOption? option, {
+      bool scopePiModels = false,
+    }) {
       if (option == null) {
         return;
       }
-      final choices = _quickConfigChoices(option);
-      if (choices.isEmpty) {
+      final allChoices = _quickConfigChoices(option);
+      if (allChoices.isEmpty) {
         return;
       }
+      final partition = scopePiModels
+          ? _partitionPiModelChoices(allChoices, option.currentValue)
+          : (visible: allChoices, hidden: const <_AcpQuickChoice>[]);
       selectors.add(
         _AcpQuickSelectorData(
           label: label,
           currentValue: option.currentValue,
-          choices: choices,
+          choices: partition.visible,
+          hiddenChoices: partition.hidden,
           onSelected: (value) =>
               manager.setConfigOption(_key, configId: option.id, value: value),
         ),
       );
     }
 
-    addGeneric('Model', modelOption);
+    addGeneric('Model', modelOption, scopePiModels: true);
     if (modelOption == null) {
       final state = session.modelState;
       if (state != null && state.availableModels.isNotEmpty) {
+        final allChoices = [
+          for (final model in state.availableModels)
+            _AcpQuickChoice(
+              value: model.id,
+              label: model.name.isEmpty ? model.id : model.name,
+              description: model.description,
+            ),
+        ];
+        final partition = _partitionPiModelChoices(
+          allChoices,
+          state.currentModelId,
+        );
         selectors.add(
           _AcpQuickSelectorData(
             label: 'Model',
             currentValue: state.currentModelId,
-            choices: [
-              for (final model in state.availableModels)
-                _AcpQuickChoice(
-                  value: model.id,
-                  label: model.name.isEmpty ? model.id : model.name,
-                  description: model.description,
-                ),
-            ],
+            choices: partition.visible,
+            hiddenChoices: partition.hidden,
             onSelected: (value) => manager.setModel(_key, value),
           ),
         );
@@ -683,6 +743,43 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
           description: value.description,
         ),
   ];
+
+  ({List<_AcpQuickChoice> visible, List<_AcpQuickChoice> hidden})
+  _partitionPiModelChoices(
+    List<_AcpQuickChoice> allChoices,
+    String currentValue,
+  ) {
+    final patterns = _piEnabledModelPatterns;
+    if (_key.providerId != AcpBuiltinProviderIds.pi ||
+        patterns == null ||
+        patterns.isEmpty) {
+      return (visible: allChoices, hidden: const <_AcpQuickChoice>[]);
+    }
+    final byValue = <String, _AcpQuickChoice>{
+      for (final choice in allChoices) choice.value: choice,
+    };
+    final scopedIds = resolvePiScopedModelIds(
+      patterns: patterns,
+      availableModelIds: byValue.keys.toList(growable: false),
+      modelNames: <String, String>{
+        for (final choice in allChoices) choice.value: choice.label,
+      },
+    );
+    final visible = <_AcpQuickChoice>[for (final id in scopedIds) ?byValue[id]];
+    final current = byValue[currentValue];
+    if (current != null &&
+        !visible.any((choice) => choice.value == currentValue)) {
+      visible.insert(0, current);
+    }
+    final visibleValues = visible.map((choice) => choice.value).toSet();
+    final hidden = allChoices
+        .where((choice) => !visibleValues.contains(choice.value))
+        .toList(growable: false);
+    return (
+      visible: List<_AcpQuickChoice>.unmodifiable(visible),
+      hidden: List<_AcpQuickChoice>.unmodifiable(hidden),
+    );
+  }
 
   Future<void> _openConfig(AcpSessionState session) => showAcpConfigOptions(
     context,
@@ -973,6 +1070,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       );
     }
 
+    _ensurePiModelScope(session);
     final entries = _timelineMapperCache.map(session);
     _queuePreviewPublish(_timelineMapperCache.preview(session));
     final prompts = _prompts(session);
@@ -1509,75 +1607,155 @@ class _AcpQuickSelectorData {
     required this.currentValue,
     required this.choices,
     required this.onSelected,
+    this.hiddenChoices = const <_AcpQuickChoice>[],
   });
 
   final String label;
   final String currentValue;
   final List<_AcpQuickChoice> choices;
+  final List<_AcpQuickChoice> hiddenChoices;
   final Future<void> Function(String value) onSelected;
 }
 
-class _AcpQuickSelector extends StatelessWidget {
-  const _AcpQuickSelector({required this.selector});
+enum _AcpQuickMenuAction { showAll, showScoped }
+
+class _AcpQuickSelector extends StatefulWidget {
+  const _AcpQuickSelector({required this.selector, super.key});
 
   final _AcpQuickSelectorData selector;
 
   @override
+  State<_AcpQuickSelector> createState() => _AcpQuickSelectorState();
+}
+
+class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
+  final _menuKey = GlobalKey<PopupMenuButtonState<Object>>();
+  var _showAll = false;
+
+  _AcpQuickSelectorData get selector => widget.selector;
+
+  @override
+  void didUpdateWidget(covariant _AcpQuickSelector oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (selector.hiddenChoices.isEmpty ||
+        selector.label != oldWidget.selector.label) {
+      _showAll = false;
+    }
+  }
+
+  Future<void> _onSelected(Object value) async {
+    if (value case final _AcpQuickMenuAction action) {
+      setState(() => _showAll = action == _AcpQuickMenuAction.showAll);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _menuKey.currentState?.showButtonMenu();
+        }
+      });
+      return;
+    }
+    try {
+      await selector.onSelected(value as String);
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not change ${selector.label.toLowerCase()}.'),
+          ),
+        );
+      }
+    }
+  }
+
+  PopupMenuItem<Object> _choiceItem(
+    _AcpQuickChoice choice,
+    ColorScheme scheme,
+  ) => PopupMenuItem<Object>(
+    value: choice.value,
+    child: Row(
+      children: [
+        SizedBox(
+          width: 24,
+          child: choice.value == selector.currentValue
+              ? const Icon(Icons.check, size: 18)
+              : null,
+        ),
+        const SizedBox(width: FluttyTheme.spacingXs),
+        Flexible(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(choice.label),
+              if ((choice.description ?? '').trim().isNotEmpty)
+                Text(
+                  choice.description!,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final current = selector.choices
+    final allChoices = <_AcpQuickChoice>[
+      ...selector.choices,
+      ...selector.hiddenChoices,
+    ];
+    final current = allChoices
         .where((choice) => choice.value == selector.currentValue)
         .firstOrNull;
-    return PopupMenuButton<String>(
+    final hasScope = selector.hiddenChoices.isNotEmpty;
+    final visibleChoices = _showAll ? allChoices : selector.choices;
+    return PopupMenuButton<Object>(
+      key: _menuKey,
       tooltip: 'Change ${selector.label.toLowerCase()}',
-      onSelected: (value) async {
-        try {
-          await selector.onSelected(value);
-        } on Object {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Could not change ${selector.label.toLowerCase()}.',
-                ),
+      onSelected: _onSelected,
+      itemBuilder: (context) => <PopupMenuEntry<Object>>[
+        if (hasScope)
+          PopupMenuItem<Object>(
+            enabled: false,
+            height: 32,
+            child: Text(
+              _showAll ? 'All models' : 'Scoped models',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
               ),
-            );
-          }
-        }
-      },
-      itemBuilder: (context) => [
-        for (final choice in selector.choices)
-          PopupMenuItem<String>(
-            value: choice.value,
+            ),
+          ),
+        for (final choice in visibleChoices) _choiceItem(choice, scheme),
+        if (hasScope) ...[
+          const PopupMenuDivider(),
+          PopupMenuItem<Object>(
+            value: _showAll
+                ? _AcpQuickMenuAction.showScoped
+                : _AcpQuickMenuAction.showAll,
             child: Row(
               children: [
-                SizedBox(
-                  width: 24,
-                  child: choice.value == selector.currentValue
-                      ? const Icon(Icons.check, size: 18)
-                      : null,
+                Icon(
+                  _showAll ? Icons.unfold_less : Icons.unfold_more,
+                  size: 18,
                 ),
-                const SizedBox(width: FluttyTheme.spacingXs),
+                const SizedBox(width: FluttyTheme.spacingSm),
                 Flexible(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(choice.label),
-                      if ((choice.description ?? '').trim().isNotEmpty)
-                        Text(
-                          choice.description!,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(color: scheme.onSurfaceVariant),
-                        ),
-                    ],
+                  child: Text(
+                    _showAll ? 'Show scoped models' : 'Show all models',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
           ),
+        ],
       ],
       child: DecoratedBox(
         decoration: BoxDecoration(

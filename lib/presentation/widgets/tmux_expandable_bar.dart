@@ -297,11 +297,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   List<AcpSwitcherEntry> get _nativeAcpEntries =>
       widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
-      ? buildAcpSwitcherEntries(
-          sessions: _nativeAcpSessions,
-          recents: const <AcpRecentSessionRef>[],
-        )
+      ? buildAcpMuxWindowEntries(_nativeAcpSessions)
       : const <AcpSwitcherEntry>[];
+
+  int _nativeAcpWindowIndex(AcpSwitcherEntry entry) {
+    final terminalMax = (_displayedWindows ?? const <TmuxWindow>[]).fold<int>(
+      -1,
+      (maximum, window) => window.index > maximum ? window.index : maximum,
+    );
+    final offset = _nativeAcpEntries.indexWhere(
+      (candidate) => candidate.keyValue == entry.keyValue,
+    );
+    return terminalMax + 1 + (offset < 0 ? 0 : offset);
+  }
 
   bool _sameNativeWindowPresentation(
     List<AcpSessionState> previous,
@@ -1411,7 +1419,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                   _buildHandleIcon(
                     theme,
                     activeWindowTool,
-                    nativeAgentActive: activeNative != null,
+                    nativeWindowIndex: activeNative == null
+                        ? null
+                        : _nativeAcpWindowIndex(activeNative),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -1475,7 +1485,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final icon = _buildHandleIcon(
       theme,
       activeWindowTool,
-      nativeAgentActive: activeNative != null,
+      nativeWindowIndex: activeNative == null
+          ? null
+          : _nativeAcpWindowIndex(activeNative),
     );
 
     return Semantics(
@@ -1531,11 +1543,18 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Widget _buildHandleIcon(
     ThemeData theme,
     AgentLaunchTool? activeWindowTool, {
-    required bool nativeAgentActive,
+    required int? nativeWindowIndex,
   }) {
     final color = theme.colorScheme.primary;
-    if (nativeAgentActive) {
-      return Icon(Icons.smart_toy_outlined, size: 17, color: color);
+    if (nativeWindowIndex != null) {
+      return Text(
+        '$nativeWindowIndex',
+        key: const ValueKey('native-acp-handle-index'),
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w700,
+        ),
+      );
     }
     if (activeWindowTool != null) {
       return AgentToolIcon(tool: activeWindowTool, size: 16, color: color);
@@ -1953,6 +1972,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     AcpSwitcherEntry entry,
   ) {
     final key = entry.session?.key ?? entry.recent!.key;
+    final windowIndex = _nativeAcpWindowIndex(entry);
     final isActive = widget.activeNativeAcpSessionKey == key;
     final activity = entry.session == null
         ? null
@@ -1991,12 +2011,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             child: Stack(
               alignment: Alignment.center,
               children: [
-                Icon(
-                  Icons.smart_toy_outlined,
-                  size: 22,
-                  color: isActive
-                      ? theme.colorScheme.onPrimaryContainer
-                      : theme.colorScheme.onSurfaceVariant,
+                Text(
+                  '$windowIndex',
+                  key: ValueKey('monkeymux-sidebar-acp-index-${key.value}'),
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: isActive
+                        ? theme.colorScheme.onPrimaryContainer
+                        : theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 if (activity != null && !activity.isReady)
                   Positioned(
@@ -2004,22 +2027,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                     top: 3,
                     child: Icon(activity.icon, size: 11, color: activityColor),
                   ),
-                Positioned(
-                  right: -9,
-                  bottom: -9,
-                  child: DecoratedBox(
-                    key: ValueKey('monkeymux-sidebar-acp-index-${key.value}'),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHigh,
-                      border: Border.all(
-                        color: theme.colorScheme.surfaceContainerHighest,
-                        width: 1.5,
-                      ),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: const SizedBox(width: 18, height: 15),
-                  ),
-                ),
                 if (progress != null)
                   Positioned(
                     left: -7,
@@ -2047,6 +2054,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final session = entry.session;
     final recent = entry.recent;
     final key = session?.key ?? recent!.key;
+    final windowIndex = _nativeAcpWindowIndex(entry);
     final activity = session == null
         ? null
         : acpSessionActivityDisplay(session);
@@ -2074,24 +2082,22 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           color: theme.colorScheme.surfaceContainerHigh,
           borderRadius: BorderRadius.circular(6),
         ),
-      ),
-      title: Row(
-        children: [
-          Icon(Icons.smart_toy_outlined, size: 17, color: activityColor),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              entry.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: isActive
-                  ? theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    )
-                  : null,
-            ),
+        alignment: Alignment.center,
+        child: Text(
+          '$windowIndex',
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: activityColor,
+            fontWeight: FontWeight.w700,
           ),
-        ],
+        ),
+      ),
+      title: Text(
+        entry.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: isActive
+            ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)
+            : null,
       ),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
