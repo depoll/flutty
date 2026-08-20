@@ -4,6 +4,8 @@ import 'package:collection/collection.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
+import 'agent_launch_preset.dart';
+
 /// Reserved ID prefix for built-in ACP providers.
 ///
 /// Custom provider IDs must never use this prefix so user-defined and
@@ -63,6 +65,22 @@ abstract final class AcpBuiltinProviderIds {
   /// OpenClaw ACP server.
   static const openClaw = '${acpCustomProviderReservedIdPrefix}openclaw-acp';
 }
+
+/// Resolves the terminal-agent identity sharing a built-in ACP provider.
+AgentLaunchTool? agentLaunchToolForBuiltinAcpProviderId(String providerId) =>
+    switch (providerId) {
+      AcpBuiltinProviderIds.claudeAgent => AgentLaunchTool.claudeCode,
+      AcpBuiltinProviderIds.copilotCli => AgentLaunchTool.copilotCli,
+      AcpBuiltinProviderIds.codex => AgentLaunchTool.codex,
+      AcpBuiltinProviderIds.openCode => AgentLaunchTool.openCode,
+      AcpBuiltinProviderIds.cursorAgent => AgentLaunchTool.cursorAgent,
+      AcpBuiltinProviderIds.antigravity => AgentLaunchTool.antigravity,
+      AcpBuiltinProviderIds.pi => AgentLaunchTool.pi,
+      AcpBuiltinProviderIds.hermes => AgentLaunchTool.hermes,
+      AcpBuiltinProviderIds.openClaw => AgentLaunchTool.openclaw,
+      AcpBuiltinProviderIds.grokBuild => AgentLaunchTool.grokBuild,
+      _ => null,
+    };
 
 /// Validates and normalizes a custom ACP provider ID.
 ///
@@ -499,12 +517,39 @@ bool isApprovedAcpBuiltinLaunchOverride(
   final executableName = _resolvedAcpExecutableName(command.executable);
   if (executableName == null) return false;
 
-  final launchArgumentsApproved =
+  final baseArguments = provider.launchCommand.arguments;
+  var launchArgumentsApproved =
       provider.launchProfileSupport?.matches(
         command.arguments,
-        provider.launchCommand.arguments,
+        baseArguments,
       ) ??
-      _listEquality.equals(command.arguments, provider.launchCommand.arguments);
+      _listEquality.equals(command.arguments, baseArguments);
+  final tool = agentLaunchToolForBuiltinAcpProviderId(provider.id);
+  final usesTerminalExecutable =
+      tool != null &&
+      tool.candidateCommandNames.any(
+        (candidate) => candidate.toLowerCase() == executableName,
+      );
+  if (!launchArgumentsApproved && usesTerminalExecutable) {
+    String? profile;
+    final profileSupport = provider.launchProfileSupport;
+    if (profileSupport != null &&
+        command.arguments.length >= 2 &&
+        command.arguments.first == profileSupport.profileOption &&
+        isValidAcpLaunchProfileName(command.arguments[1])) {
+      profile = command.arguments[1];
+    }
+    final expected = <String>[
+      ...buildAgentGlobalLaunchArguments(
+        tool,
+        startInYoloMode: true,
+        launchProfile: profile,
+        quoteProfileForShell: false,
+      ),
+      ...baseArguments,
+    ];
+    launchArgumentsApproved = _listEquality.equals(command.arguments, expected);
+  }
   if (launchArgumentsApproved &&
       provider.executableProbe.candidateExecutableNames.any(
         (candidate) => candidate.toLowerCase() == executableName,

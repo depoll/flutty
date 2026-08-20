@@ -35,6 +35,7 @@ import '../../domain/models/acp_timeline.dart' as domain;
 import '../../domain/services/acp_attachment_service.dart';
 import '../../domain/services/acp_concurrency_policy.dart';
 import '../../domain/services/acp_session_manager.dart';
+import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/pi_model_scope_metadata_service.dart';
@@ -309,6 +310,10 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         ),
       );
     }
+    final launchPreferences = await ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(_key.hostId);
+    if (!mounted) return null;
     final result = await manager.reconnectSession(
       hostId: _key.hostId,
       providerId: _key.providerId,
@@ -316,6 +321,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       acpSessionId: _key.acpSessionId,
       cwd: cwd,
       confirmInstall: (request) => confirmAcpMonkeyMuxInstall(context, request),
+      autoApprovePermissions: launchPreferences.startInYoloMode,
       replace: replace,
     );
     if (result is AcpSessionLaunchBlocked && mounted) {

@@ -157,19 +157,7 @@ Map<AgentLaunchTool, String> builtinNativeAcpProvidersByTool() =>
 
 /// Resolves the branded terminal-agent identity for a built-in ACP provider.
 AgentLaunchTool? agentLaunchToolForAcpProviderId(String providerId) =>
-    switch (providerId) {
-      AcpBuiltinProviderIds.claudeAgent => AgentLaunchTool.claudeCode,
-      AcpBuiltinProviderIds.copilotCli => AgentLaunchTool.copilotCli,
-      AcpBuiltinProviderIds.codex => AgentLaunchTool.codex,
-      AcpBuiltinProviderIds.openCode => AgentLaunchTool.openCode,
-      AcpBuiltinProviderIds.cursorAgent => AgentLaunchTool.cursorAgent,
-      AcpBuiltinProviderIds.antigravity => AgentLaunchTool.antigravity,
-      AcpBuiltinProviderIds.pi => AgentLaunchTool.pi,
-      AcpBuiltinProviderIds.hermes => AgentLaunchTool.hermes,
-      AcpBuiltinProviderIds.openClaw => AgentLaunchTool.openclaw,
-      AcpBuiltinProviderIds.grokBuild => AgentLaunchTool.grokBuild,
-      _ => null,
-    };
+    agentLaunchToolForBuiltinAcpProviderId(providerId);
 
 /// Shows the tmux window navigator bottom sheet.
 ///
@@ -229,6 +217,7 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
               startInYoloMode: startClisInYoloMode,
             ),
             windowName: tool.commandName,
+            agentTool: tool,
           ),
         );
         return;
@@ -251,6 +240,7 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
                 startInYoloMode: startClisInYoloMode,
               ),
               windowName: tool.commandName,
+              agentTool: tool,
             ),
           );
         case AgentWindowMode.nativeAcp:
@@ -419,6 +409,7 @@ Future<TmuxNewWindowAction?> showTmuxNewWindowContextMenu({
                 startInYoloMode: startClisInYoloMode,
               ),
               windowName: tool.commandName,
+              agentTool: tool,
             ),
             child: _TmuxNewWindowMenuItem(
               icon: TmuxToolPickerSheet._iconForTool(tool, Theme.of(context)),
@@ -480,13 +471,16 @@ class TmuxSwitchWindowAction extends TmuxNavigatorAction {
 /// Create a new tmux window, optionally running a command.
 class TmuxNewWindowAction extends TmuxNavigatorAction {
   /// Creates a new [TmuxNewWindowAction].
-  const TmuxNewWindowAction({this.command, this.windowName});
+  const TmuxNewWindowAction({this.command, this.windowName, this.agentTool});
 
   /// Optional command to run in the new window.
   final String? command;
 
   /// Optional name for the new window.
   final String? windowName;
+
+  /// Agent identity when this is a generated terminal-agent launch.
+  final AgentLaunchTool? agentTool;
 }
 
 /// Resume an AI tool session in a new tmux window.
@@ -917,10 +911,18 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     Navigator.pop(context, TmuxCloseWindowAction(window.index));
   }
 
-  void _createNewWindow({String? command, String? name}) {
+  void _createNewWindow({
+    String? command,
+    String? name,
+    AgentLaunchTool? agentTool,
+  }) {
     Navigator.pop(
       context,
-      TmuxNewWindowAction(command: command, windowName: name),
+      TmuxNewWindowAction(
+        command: command,
+        windowName: name,
+        agentTool: agentTool,
+      ),
     );
   }
 
@@ -1042,8 +1044,16 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       return;
     }
     switch (action) {
-      case TmuxNewWindowAction(:final command, :final windowName):
-        _createNewWindow(command: command, name: windowName);
+      case TmuxNewWindowAction(
+        :final command,
+        :final windowName,
+        :final agentTool,
+      ):
+        _createNewWindow(
+          command: command,
+          name: windowName,
+          agentTool: agentTool,
+        );
       case TmuxNewAcpSessionAction(:final providerId):
         Navigator.pop(
           context,

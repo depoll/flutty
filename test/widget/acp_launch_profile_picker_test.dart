@@ -1,9 +1,88 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/services/acp_launch_profile_service.dart';
 import 'package:monkeyssh/presentation/widgets/acp_connection_support.dart';
 
 void main() {
+  test('native ACP uses the shared profile and YOLO argument plan', () {
+    final hermes = applyAcpAgentLaunchSettings(
+      provider: acpHermesProvider,
+      command: AcpLaunchCommand(
+        executable: '/Users/demo/bin/hermes',
+        arguments: const ['--profile', 'work', 'acp'],
+      ),
+      startInYoloMode: true,
+    );
+    expect(hermes.arguments, ['--profile', 'work', '--yolo', 'acp']);
+    expect(
+      isApprovedAcpBuiltinLaunchOverride(acpHermesProvider, hermes),
+      isTrue,
+    );
+
+    final cursor = applyAcpAgentLaunchSettings(
+      provider: acpCursorAgentProvider,
+      command: AcpLaunchCommand(
+        executable: '/Users/demo/bin/cursor-agent',
+        arguments: const ['acp'],
+      ),
+      startInYoloMode: true,
+    );
+    expect(cursor.arguments, ['--force', 'acp']);
+    expect(
+      isApprovedAcpBuiltinLaunchOverride(acpCursorAgentProvider, cursor),
+      isTrue,
+    );
+
+    final copilot = applyAcpAgentLaunchSettings(
+      provider: acpCopilotCliProvider,
+      command: AcpLaunchCommand(
+        executable: '/Users/demo/bin/copilot',
+        arguments: acpCopilotCliProvider.launchCommand.arguments,
+      ),
+      startInYoloMode: true,
+    );
+    expect(copilot.arguments.first, '--yolo');
+    expect(
+      isApprovedAcpBuiltinLaunchOverride(acpCopilotCliProvider, copilot),
+      isTrue,
+    );
+
+    final grok = applyAcpAgentLaunchSettings(
+      provider: acpGrokBuildProvider,
+      command: AcpLaunchCommand(
+        executable: '/Users/demo/bin/grok',
+        arguments: acpGrokBuildProvider.launchCommand.arguments,
+      ),
+      startInYoloMode: true,
+    );
+    expect(grok.arguments, ['--yolo', 'agent', 'stdio']);
+    expect(
+      isApprovedAcpBuiltinLaunchOverride(acpGrokBuildProvider, grok),
+      isTrue,
+    );
+
+    for (final provider in [
+      acpClaudeAgentProvider,
+      acpCodexProvider,
+      acpAntigravityProvider,
+      acpPiProvider,
+    ]) {
+      final adapter = AcpLaunchCommand(
+        executable: '/Users/demo/bin/${provider.launchCommand.executable}',
+        arguments: provider.launchCommand.arguments,
+      );
+      expect(
+        applyAcpAgentLaunchSettings(
+          provider: provider,
+          command: adapter,
+          startInYoloMode: true,
+        ),
+        adapter,
+      );
+    }
+  });
+
   testWidgets('profile picker returns the selected isolated profile', (
     tester,
   ) async {

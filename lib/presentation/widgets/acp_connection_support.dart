@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/models/acp_provider.dart';
+import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/services/acp_launch_profile_service.dart';
 import '../../domain/services/monkeymux_acp_bridge_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
@@ -60,6 +61,7 @@ resolveAcpRemoteProviderLaunch({
   required SshSession session,
   required AcpBuiltinProvider provider,
   required bool canUseTerminalCli,
+  bool startInYoloMode = false,
 }) async {
   final requested = <String>{
     ...provider.executableProbe.candidateExecutableNames,
@@ -99,7 +101,14 @@ resolveAcpRemoteProviderLaunch({
         resolvedCommand: resolved,
       );
       if (profiled == null) return null;
-      return (override: profiled, terminal: false);
+      return (
+        override: applyAcpAgentLaunchSettings(
+          provider: provider,
+          command: profiled,
+          startInYoloMode: startInYoloMode,
+        ),
+        terminal: false,
+      );
     }
   }
 
@@ -154,19 +163,65 @@ resolveAcpRemoteProviderLaunch({
   };
 }
 
+/// Applies global terminal-agent settings before a provider's ACP entrypoint.
+///
+/// Direct ACP implementations use the same profile/YOLO argument plan as their
+/// terminal CLI. Adapter executables keep their pinned argv; native YOLO still
+/// applies generically when MonkeySSH answers ACP permission requests.
+AcpLaunchCommand applyAcpAgentLaunchSettings({
+  required AcpBuiltinProvider provider,
+  required AcpLaunchCommand command,
+  required bool startInYoloMode,
+}) {
+  if (!startInYoloMode) return command;
+  final tool = agentLaunchToolForBuiltinAcpProviderId(provider.id);
+  if (tool == null ||
+      !_isResolvedTerminalExecutable(tool, command.executable)) {
+    return command;
+  }
+  final profileSupport = provider.launchProfileSupport;
+  String? profile;
+  if (profileSupport != null &&
+      command.arguments.length >= 2 &&
+      command.arguments.first == profileSupport.profileOption) {
+    profile = command.arguments[1];
+  }
+  return AcpLaunchCommand(
+    executable: command.executable,
+    arguments: <String>[
+      ...buildAgentGlobalLaunchArguments(
+        tool,
+        startInYoloMode: true,
+        launchProfile: profile,
+        quoteProfileForShell: false,
+      ),
+      ...provider.launchCommand.arguments,
+    ],
+  );
+}
+
+bool _isResolvedTerminalExecutable(AgentLaunchTool tool, String executable) {
+  var name = executable.replaceAll(r'\\', '/').split('/').last.toLowerCase();
+  name = name.replaceFirst(RegExp(r'\.(?:exe|cmd|bat|ps1|com)$'), '');
+  return tool.candidateCommandNames.any(
+    (candidate) => candidate.toLowerCase() == name,
+  );
+}
+
 /// Discovers and, when necessary, asks which isolated provider profile to use.
 ///
-/// Providers with zero or one discovered profile keep their current one-tap
-/// launch behavior. Discovery failures also degrade to the provider's base
-/// command rather than blocking an otherwise usable agent.
-Future<AcpLaunchCommand?> resolveAcpLaunchProfile({
+/// The returned profile is shared by terminal and native launches. Discovery
+/// failures and a single profile preserve one-tap launch; `null` means the user
+/// explicitly cancelled a picker containing multiple profiles.
+Future<AcpLaunchProfile?> selectAcpLaunchProfile({
   required BuildContext context,
   required SshSession session,
   required AcpBuiltinProvider provider,
-  required AcpLaunchCommand resolvedCommand,
 }) async {
   final support = provider.launchProfileSupport;
-  if (support == null) return resolvedCommand;
+  if (support == null) {
+    return const AcpLaunchProfile(argument: null, label: 'Default');
+  }
 
   List<AcpLaunchProfile> profiles;
   try {
@@ -188,15 +243,31 @@ Future<AcpLaunchCommand?> resolveAcpLaunchProfile({
     });
     profiles = parseAcpLaunchProfiles(output, support);
   } on Object {
-    return resolvedCommand;
+    profiles = parseAcpLaunchProfiles('', support);
   }
 
-  if (profiles.length <= 1) return resolvedCommand;
+  if (profiles.length <= 1) return profiles.single;
   if (!context.mounted) return null;
-  final selected = await showAcpLaunchProfilePicker(
+  return showAcpLaunchProfilePicker(
     context: context,
     providerLabel: provider.label,
     profiles: profiles,
+  );
+}
+
+/// Applies the shared launch-profile choice to a resolved ACP executable.
+Future<AcpLaunchCommand?> resolveAcpLaunchProfile({
+  required BuildContext context,
+  required SshSession session,
+  required AcpBuiltinProvider provider,
+  required AcpLaunchCommand resolvedCommand,
+}) async {
+  final support = provider.launchProfileSupport;
+  if (support == null) return resolvedCommand;
+  final selected = await selectAcpLaunchProfile(
+    context: context,
+    session: session,
+    provider: provider,
   );
   if (selected == null) return null;
   return support.apply(resolvedCommand, selected.argument);

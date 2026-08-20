@@ -31,6 +31,7 @@ import '../../domain/services/acp_provider_service.dart';
 import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
+import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -444,6 +445,10 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     }
     final manager = ref.read(acpSessionManagerProvider);
     final cwd = _cwd.text.trim().isEmpty ? '~' : _cwd.text.trim();
+    final launchPreferences = await ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(hostId);
+    if (!mounted) return null;
 
     final knownHost = ref
         .read(allHostsProvider)
@@ -481,6 +486,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
         session: sshSession,
         provider: builtinProvider,
         canUseTerminalCli: builtinProvider.terminalAuthCommand != null,
+        startInYoloMode: launchPreferences.startInYoloMode,
       );
       if (!mounted || launch == null) return null;
       if (launch.terminal) {
@@ -500,6 +506,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
         cwd: recent.cwd ?? cwd,
         confirmInstall: _confirmInstall,
         launchCommandOverride: launchCommandOverride,
+        autoApprovePermissions: launchPreferences.startInYoloMode,
         replace: replace,
       );
     }
@@ -509,6 +516,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
       cwd: cwd,
       confirmInstall: _confirmInstall,
       launchCommandOverride: launchCommandOverride,
+      autoApprovePermissions: launchPreferences.startInYoloMode,
       replace: replace,
     );
   }

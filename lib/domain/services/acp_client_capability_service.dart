@@ -384,6 +384,7 @@ final class AcpClientCapabilityService {
     required this.terminalExecutor,
     required this.allowedRoots,
     required this.registry,
+    this.autoApprovePermissions = false,
     this.limits = const AcpClientCapabilityLimits(),
     DiagnosticsLogger? diagnostics,
   }) : _diagnostics = diagnostics ?? DiagnosticsLogService.instance;
@@ -399,6 +400,12 @@ final class AcpClientCapabilityService {
 
   /// User-decision registry. It may be retained over bridge detach/reconnect.
   final AcpPendingRequestRegistry registry;
+
+  /// Whether the user explicitly enabled YOLO behavior for this host launch.
+  ///
+  /// Permission requests choose only an agent-supplied allow-once option, and
+  /// file writes still pass all normal path and size validation before writing.
+  final bool autoApprovePermissions;
 
   /// Resource limits for this service.
   final AcpClientCapabilityLimits limits;
@@ -592,6 +599,24 @@ final class AcpClientCapabilityService {
     if (permission.sessionId.isEmpty || permission.options.isEmpty) {
       throw const AcpClientCapabilityException('Invalid permission request');
     }
+    if (autoApprovePermissions) {
+      final option = permission.options
+          .where(
+            (candidate) => candidate.kind == AcpPermissionOptionKind.allowOnce,
+          )
+          .firstOrNull;
+      if (option != null) {
+        await request.respond(<String, Object?>{
+          'outcome': AcpSelectedPermissionOutcome(option.id).toJson(),
+        });
+        _diagnostics.info(
+          'acp.capability',
+          'permission_auto_approved',
+          fields: {'optionKind': AcpPermissionOptionKind.allowOnce.value},
+        );
+        return;
+      }
+    }
     final registered = registry.register(
       AcpPendingPermission(request, permission),
     );
@@ -652,6 +677,12 @@ final class AcpClientCapabilityService {
       throw const AcpLimitExceededException(
         'Write exceeds the configured limit',
       );
+    }
+    if (autoApprovePermissions) {
+      await _writeFile(path, content);
+      await request.respond();
+      _diagnostics.info('acp.capability', 'write_auto_approved');
+      return;
     }
     final registered = registry.register(
       AcpPendingFileWrite(

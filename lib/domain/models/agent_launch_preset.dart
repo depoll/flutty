@@ -140,6 +140,10 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.grokBuild => 'Grok Build',
   };
 
+  /// Whether this tool exposes isolated launch profiles.
+  bool get supportsLaunchProfiles =>
+      this == AgentLaunchTool.hermes || this == AgentLaunchTool.openclaw;
+
   /// Whether this tool supports launching directly into YOLO mode.
   bool get supportsYoloMode =>
       yoloArguments.isNotEmpty || yoloEnvironment.isNotEmpty;
@@ -511,11 +515,37 @@ String buildAgentLaunchCommand(
   return baseCommand;
 }
 
+/// Builds global agent arguments shared by terminal and native ACP launches.
+///
+/// These arguments always precede the mode-specific TUI/ACP entrypoint.
+List<String> buildAgentGlobalLaunchArguments(
+  AgentLaunchTool tool, {
+  bool startInYoloMode = false,
+  String? launchProfile,
+  bool quoteProfileForShell = true,
+}) {
+  final profile = launchProfile?.trim();
+  if (profile != null && profile.isNotEmpty && !tool.supportsLaunchProfiles) {
+    throw FormatException('${tool.label} does not support launch profiles.');
+  }
+  final profileArgument = profile == null || !quoteProfileForShell
+      ? profile
+      : _quoteShellArgument(profile);
+  return <String>[
+    if (profileArgument != null && profileArgument.isNotEmpty) ...[
+      '--profile',
+      profileArgument,
+    ],
+    if (startInYoloMode) ...tool.yoloArguments,
+  ];
+}
+
 /// Builds the base shell command for launching [tool].
 String buildAgentToolCommand(
   AgentLaunchTool tool, {
   String? additionalArguments,
   bool startInYoloMode = false,
+  String? launchProfile,
 }) {
   final commandParts = <String>[
     ..._buildAgentToolEnvironmentAssignments(
@@ -523,6 +553,11 @@ String buildAgentToolCommand(
       startInYoloMode: startInYoloMode,
     ),
     tool.commandName,
+    ...buildAgentGlobalLaunchArguments(
+      tool,
+      startInYoloMode: startInYoloMode,
+      launchProfile: launchProfile,
+    ),
     ...tool.launchArguments,
   ];
   final normalizedArguments = _normalizeAgentToolArguments(
@@ -653,17 +688,7 @@ String? _normalizeAgentToolArguments({
       ]),
   };
 
-  final yoloArguments = tool.yoloArguments;
-  if (yoloArguments.isEmpty) {
-    return sanitizedAdditionalArguments;
-  }
-
-  if (sanitizedAdditionalArguments == null ||
-      sanitizedAdditionalArguments.isEmpty) {
-    return yoloArguments.join(' ');
-  }
-
-  return '${yoloArguments.join(' ')} $sanitizedAdditionalArguments';
+  return sanitizedAdditionalArguments;
 }
 
 List<String> _buildAgentToolEnvironmentAssignments(

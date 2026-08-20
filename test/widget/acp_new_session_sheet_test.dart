@@ -15,10 +15,12 @@ import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/services/acp_provider_service.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/widgets/acp_new_session_sheet.dart';
@@ -56,6 +58,9 @@ class _MockExecSession extends Mock implements SSHSession {}
 
 class _MockAgentLaunchPresetService extends Mock
     implements AgentLaunchPresetService {}
+
+class _MockHostCliLaunchPreferencesService extends Mock
+    implements HostCliLaunchPreferencesService {}
 
 Host _host({
   int id = 1,
@@ -104,6 +109,7 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
   bool lockHost = false,
   bool lockProvider = false,
   bool startSession = true,
+  bool startInYoloMode = false,
   SshConnectionResult connectionResult = const SshConnectionResult(
     success: true,
     connectionId: 1,
@@ -114,6 +120,7 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
   var completed = false;
   final ssh = _MockSshService();
   final presetService = _MockAgentLaunchPresetService();
+  final launchPreferencesService = _MockHostCliLaunchPreferencesService();
   when(() => ssh.allSessions).thenReturn(<SshSession>[?activeSession]);
   when(
     () => ssh.getSessionsForHost(any()),
@@ -122,6 +129,9 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
   when(
     () => presetService.getPresetForHost(any()),
   ).thenAnswer((_) async => preset);
+  when(() => launchPreferencesService.getPreferencesForHost(any())).thenAnswer(
+    (_) async => HostCliLaunchPreferences(startInYoloMode: startInYoloMode),
+  );
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
@@ -131,6 +141,9 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
         ),
         sshServiceProvider.overrideWithValue(ssh),
         agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+        hostCliLaunchPreferencesServiceProvider.overrideWithValue(
+          launchPreferencesService,
+        ),
         allHostsProvider.overrideWith((ref) => Stream.value(<Host>[_host()])),
         acpProvidersProvider.overrideWith(
           (ref) => Stream.value(<AcpProvider>[
@@ -330,13 +343,14 @@ void main() {
     final manager = FakeAcpSessionManager(sessions: [session])
       ..startNewSessionResult = AcpSessionLaunchStarted(key);
 
-    final result = await _pumpAndLaunch(tester, manager);
+    final result = await _pumpAndLaunch(tester, manager, startInYoloMode: true);
     await tester.pumpAndSettle();
 
     expect(result(), key);
     expect(find.text('configure session'), findsNothing);
     expect(find.text('Style'), findsNothing);
     expect(manager.configOptionSets, isEmpty);
+    expect(manager.startAutoApprovePermissions, [true]);
   });
 
   testWidgets(

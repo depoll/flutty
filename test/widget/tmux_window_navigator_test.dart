@@ -999,7 +999,9 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(result, isA<TmuxNewWindowAction>());
-      expect((result! as TmuxNewWindowAction).windowName, 'opencode');
+      final action = result! as TmuxNewWindowAction;
+      expect(action.windowName, 'opencode');
+      expect(action.agentTool, AgentLaunchTool.openCode);
     });
 
     testWidgets('tool without ACP support opens a terminal directly', (
@@ -1035,6 +1037,10 @@ void main() {
 
       expect(find.text('Native chat'), findsNothing);
       expect(result, isA<TmuxNewWindowAction>());
+      expect(
+        (result! as TmuxNewWindowAction).agentTool,
+        AgentLaunchTool.claudeCode,
+      );
     });
 
     testWidgets('tmux navigator remains terminal-only', (tester) async {

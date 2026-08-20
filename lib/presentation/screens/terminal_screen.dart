@@ -11210,8 +11210,36 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   backend: _telemetryMuxBackendName(_activeMuxBackend),
                 ),
           );
-        case TmuxNewWindowAction(:final command, :final windowName):
-          await _createTmuxWindow(session, command: command, name: windowName);
+        case TmuxNewWindowAction(
+          :final command,
+          :final windowName,
+          :final agentTool,
+        ):
+          var launchCommand = command;
+          if (agentTool?.supportsLaunchProfiles ?? false) {
+            final providerId = builtinNativeAcpProvidersByTool()[agentTool];
+            final provider = acpBuiltinProviders
+                .where((candidate) => candidate.id == providerId)
+                .firstOrNull;
+            if (provider != null) {
+              final profile = await selectAcpLaunchProfile(
+                context: context,
+                session: session,
+                provider: provider,
+              );
+              if (!mounted || profile == null) return;
+              launchCommand = buildAgentToolCommand(
+                agentTool!,
+                startInYoloMode: _startClisInYoloMode,
+                launchProfile: profile.argument,
+              );
+            }
+          }
+          await _createTmuxWindow(
+            session,
+            command: launchCommand,
+            name: windowName,
+          );
           if (!mounted) return;
           _showTerminalViewport();
           unawaited(
@@ -11219,7 +11247,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 .read(telemetryServiceProvider)
                 .logMuxWindowCreated(
                   backend: _telemetryMuxBackendName(_activeMuxBackend),
-                  hasCommand: command?.trim().isNotEmpty ?? false,
+                  hasCommand: launchCommand?.trim().isNotEmpty ?? false,
                 ),
           );
         case TmuxNewAcpSessionAction(
@@ -11305,6 +11333,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session: session,
       provider: provider,
       canUseTerminalCli: agentLaunchToolForAcpProviderId(providerId) != null,
+      startInYoloMode: _startClisInYoloMode,
     );
   }
 
@@ -11374,6 +11403,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             confirmInstall: (request) =>
                 confirmAcpMonkeyMuxInstall(context, request),
             launchCommandOverride: adapterLaunch.override,
+            autoApprovePermissions: _startClisInYoloMode,
             replace: replace,
           )
         : manager.resumeProviderSession(
@@ -11384,6 +11414,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             confirmInstall: (request) =>
                 confirmAcpMonkeyMuxInstall(context, request),
             launchCommandOverride: adapterLaunch.override,
+            autoApprovePermissions: _startClisInYoloMode,
             replace: replace,
           );
 

@@ -199,6 +199,7 @@ class AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
     _telemetry.featureOpened();
@@ -228,6 +229,7 @@ class AcpSessionManager {
       cwd: workingDirectory.value!,
       confirmInstall: confirmInstall,
       existingSessionId: null,
+      autoApprovePermissions: autoApprovePermissions,
     );
   });
 
@@ -243,6 +245,7 @@ class AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
     _telemetry.featureOpened();
@@ -272,6 +275,7 @@ class AcpSessionManager {
       cwd: workingDirectory.value!,
       confirmInstall: confirmInstall,
       existingSessionId: acpSessionId,
+      autoApprovePermissions: autoApprovePermissions,
     );
   });
 
@@ -287,6 +291,7 @@ class AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
     _telemetry.featureOpened();
@@ -363,6 +368,7 @@ class AcpSessionManager {
         cwd: resolvedCwd,
         confirmInstall: confirmInstall,
         existingSessionId: acpSessionId,
+        autoApprovePermissions: autoApprovePermissions,
       );
       if (restarted is AcpSessionLaunchStarted) {
         await _recentSessions.remove(key);
@@ -391,6 +397,7 @@ class AcpSessionManager {
       cwd: resolvedCwd,
       existingSessionId: acpSessionId,
       confirmInstall: null,
+      autoApprovePermissions: autoApprovePermissions,
     );
   });
 
@@ -612,6 +619,7 @@ class AcpSessionManager {
     required String cwd,
     required MonkeyMuxInstallConfirmation? confirmInstall,
     required String? existingSessionId,
+    required bool autoApprovePermissions,
   }) async {
     final startedAt = _clock();
     MonkeyMuxAcpBridgeStartResult startResult;
@@ -642,6 +650,7 @@ class AcpSessionManager {
       confirmInstall: confirmInstall,
       startedBridge: true,
       bridgeStartedAt: startedAt,
+      autoApprovePermissions: autoApprovePermissions,
     );
   }
 
@@ -652,6 +661,7 @@ class AcpSessionManager {
     required String cwd,
     required String? existingSessionId,
     required MonkeyMuxInstallConfirmation? confirmInstall,
+    required bool autoApprovePermissions,
     bool startedBridge = false,
     DateTime? bridgeStartedAt,
   }) async {
@@ -672,6 +682,7 @@ class AcpSessionManager {
           capabilityServiceFactory: _capabilityServiceFactory(
             hostId: hostId,
             cwd: cwd,
+            autoApprovePermissions: autoApprovePermissions,
           ),
         );
     _attachments[bridgeKey.value] = attachment;
@@ -684,6 +695,7 @@ class AcpSessionManager {
       cwd: cwd,
       clock: _clock,
       diagnostics: _diagnostics,
+      autoApprovePermissions: autoApprovePermissions,
     ).._acquireLease(attachment);
 
     try {
@@ -845,6 +857,7 @@ class AcpSessionManager {
   Future<AcpClientCapabilityService> Function() _capabilityServiceFactory({
     required int hostId,
     required String cwd,
+    required bool autoApprovePermissions,
     AcpPendingRequestRegistry? existingRegistry,
   }) => () async {
     AcpHostCapabilityBinding? binding;
@@ -863,6 +876,7 @@ class AcpSessionManager {
       terminalExecutor: binding?.terminalExecutor,
       allowedRoots: <String>[cwd],
       registry: existingRegistry ?? AcpPendingRequestRegistry(),
+      autoApprovePermissions: autoApprovePermissions,
       diagnostics: _diagnostics,
     );
   };
@@ -1248,12 +1262,14 @@ class _SessionController {
     required String cwd,
     required DateTime Function() clock,
     required DiagnosticsLogger diagnostics,
+    required bool autoApprovePermissions,
   }) : _manager = manager,
        _providerLabel = providerLabel,
        _isCustomProvider = isCustomProvider,
        _cwd = cwd,
        _clock = clock,
-       _diagnostics = diagnostics;
+       _diagnostics = diagnostics,
+       _autoApprovePermissions = autoApprovePermissions;
 
   final AcpSessionManager _manager;
 
@@ -1265,6 +1281,7 @@ class _SessionController {
   String _cwd;
   final DateTime Function() _clock;
   final DiagnosticsLogger _diagnostics;
+  final bool _autoApprovePermissions;
 
   final AcpTimelineBuilder _timelineBuilder = AcpTimelineBuilder();
   final Queue<_QueuedAcpPrompt> _promptQueue = Queue<_QueuedAcpPrompt>();
@@ -1850,6 +1867,7 @@ class _SessionController {
         cwd: _cwd,
         clock: _clock,
         diagnostics: _diagnostics,
+        autoApprovePermissions: _autoApprovePermissions,
       ).._acquireLease(attachment);
       final key = await forkController.adoptForked(
         hostId: _key.hostId,
@@ -1979,6 +1997,7 @@ class _SessionController {
         capabilityServiceFactory: _manager._capabilityServiceFactory(
           hostId: hostId,
           cwd: _cwd,
+          autoApprovePermissions: _autoApprovePermissions,
           existingRegistry: priorRegistry,
         ),
       );

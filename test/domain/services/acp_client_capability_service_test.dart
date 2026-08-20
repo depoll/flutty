@@ -86,6 +86,49 @@ void main() {
     });
 
     test(
+      'native YOLO auto-approves allow-once permissions and validated writes',
+      () async {
+        await service.close();
+        registry = AcpPendingRequestRegistry();
+        service = AcpClientCapabilityService(
+          fileSystem: files,
+          terminalExecutor: terminals,
+          allowedRoots: const ['/workspace'],
+          registry: registry,
+          autoApprovePermissions: true,
+          limits: const AcpClientCapabilityLimits(maxWriteBytes: 16),
+        )..attach(client);
+
+        transport
+          ..sendRequest('permission-yolo', 'session/request_permission', {
+            'sessionId': 'session-1',
+            'toolCall': {'toolCallId': 'call-1'},
+            'options': [
+              {
+                'optionId': 'persist',
+                'name': 'Always allow',
+                'kind': 'allow_always',
+              },
+              {'optionId': 'once', 'name': 'Allow once', 'kind': 'allow_once'},
+            ],
+          })
+          ..sendRequest('write-yolo', 'fs/write_text_file', {
+            'sessionId': 'session-1',
+            'path': '/workspace/a.txt',
+            'content': 'edited',
+          });
+        await _settle();
+
+        expect(transport.responseFor('permission-yolo')['result'], {
+          'outcome': {'outcome': 'selected', 'optionId': 'once'},
+        });
+        expect(transport.responseFor('write-yolo')['result'], isNull);
+        expect(utf8.decode(files.files['/workspace/a.txt']!), 'edited');
+        expect(registry.requests, isEmpty);
+      },
+    );
+
+    test(
       'preserves a pending permission over detach and reconnect replay',
       () async {
         transport.sendRequest('permission-1', 'session/request_permission', {

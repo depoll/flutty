@@ -17,8 +17,10 @@ import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_timeline.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/services/acp_concurrency_policy.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
+import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/agent_chat_screen.dart';
 import 'package:monkeyssh/presentation/widgets/acp_chat_typography.dart';
@@ -32,6 +34,9 @@ import 'package:monkeyssh/presentation/widgets/terminal_pinch_zoom_gesture_handl
 import '../support/fake_acp_session_manager.dart';
 
 class _MockSshService extends Mock implements SshService {}
+
+class _MockHostCliLaunchPreferencesService extends Mock
+    implements HostCliLaunchPreferencesService {}
 
 class _MockSshSession extends Mock implements SshSession {}
 
@@ -56,6 +61,7 @@ Widget _wrap(
   EdgeInsets mediaPadding = EdgeInsets.zero,
 }) {
   final ssh = _MockSshService();
+  final launchPreferences = _MockHostCliLaunchPreferencesService();
   final key = routeKey ?? fakeAcpKey();
   final sshSession = _MockSshSession();
   when(() => sshSession.connectionId).thenReturn(7);
@@ -66,10 +72,16 @@ Widget _wrap(
   when(() => ssh.getSessionsForHost(any())).thenReturn(
     hasActiveSshSession ? <SshSession>[sshSession] : const <SshSession>[],
   );
+  when(
+    () => launchPreferences.getPreferencesForHost(any()),
+  ).thenAnswer((_) async => const HostCliLaunchPreferences());
   return ProviderScope(
     overrides: [
       acpSessionManagerProvider.overrideWithValue(manager),
       sshServiceProvider.overrideWithValue(ssh),
+      hostCliLaunchPreferencesServiceProvider.overrideWithValue(
+        launchPreferences,
+      ),
     ],
     child: MaterialApp(
       home: MediaQuery(

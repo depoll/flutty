@@ -51,6 +51,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
   final List<String> selected = <String>[];
   final List<({int hostId, String providerId, String cwd})> starts = [];
   final List<AcpLaunchCommand?> startLaunchOverrides = <AcpLaunchCommand?>[];
+  final List<bool> startAutoApprovePermissions = <bool>[];
   final List<AcpLaunchCommand?> reconnectLaunchOverrides =
       <AcpLaunchCommand?>[];
   final List<(String, String)> permissionResponses = <(String, String)>[];
@@ -189,10 +190,12 @@ class FakeAcpSessionManager extends AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {
     starts.add((hostId: hostId, providerId: providerId, cwd: cwd));
     startLaunchOverrides.add(launchCommandOverride);
+    startAutoApprovePermissions.add(autoApprovePermissions);
     return startNewSessionResult;
   }
 
@@ -205,6 +208,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {
     reconnectLaunchOverrides.add(launchCommandOverride);

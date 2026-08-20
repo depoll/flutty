@@ -48,6 +48,35 @@ void main() {
         'cursor-agent --force',
       );
     });
+
+    test(
+      'places profiles before terminal modes and preserves YOLO settings',
+      () {
+        expect(
+          buildAgentToolCommand(
+            AgentLaunchTool.hermes,
+            launchProfile: 'work',
+            startInYoloMode: true,
+          ),
+          "hermes --profile 'work' --yolo",
+        );
+        expect(
+          buildAgentToolCommand(
+            AgentLaunchTool.openclaw,
+            launchProfile: 'ops',
+            startInYoloMode: true,
+          ),
+          "openclaw --profile 'ops' tui",
+        );
+        expect(
+          () => buildAgentToolCommand(
+            AgentLaunchTool.claudeCode,
+            launchProfile: 'unsupported',
+          ),
+          throwsFormatException,
+        );
+      },
+    );
   });
 
   group('buildAgentResumeCommand', () {
