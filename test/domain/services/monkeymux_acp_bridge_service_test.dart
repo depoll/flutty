@@ -224,65 +224,104 @@ void main() {
     );
   });
 
-  test('starts ACP through the active MonkeyMux server context', () async {
-    final client = _MockSshClient();
-    final session = _sshSession(client)
-      ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
-      ..remoteMuxSessionName = 'work';
-    final mux = _MockMonkeyMuxService();
-    when(
-      () => mux.runClientCommand(
-        session,
-        'work',
-        any(),
-        priority: any(named: 'priority'),
-      ),
-    ).thenAnswer(
-      (_) async => TerminalClientCommandResult(
-        output: _frame({
-          'version': 1,
-          'type': 'started',
-          'bridgeId': _bridgeId,
-        }),
-        exitCode: 0,
-      ),
-    );
-    final service = MonkeyMuxAcpBridgeService(
-      installer: _FakeInstaller(
-        const MonkeyMuxInstallation(
-          executablePath: '/home/demo/.monkeyssh/monkeymux',
-          platform: 'darwin-arm64',
-          version: 'test',
+  test(
+    'starts every ACP provider through the active MonkeyMux server context',
+    () async {
+      final client = _MockSshClient();
+      final session = _sshSession(client)
+        ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+        ..remoteMuxSessionName = 'work';
+      final mux = _MockMonkeyMuxService();
+      when(
+        () => mux.runClientCommand(
+          session,
+          'work',
+          any(),
+          priority: any(named: 'priority'),
         ),
-      ),
-      monkeyMuxService: mux,
-    );
+      ).thenAnswer(
+        (_) async => TerminalClientCommandResult(
+          output: _frame({
+            'version': 1,
+            'type': 'started',
+            'bridgeId': _bridgeId,
+          }),
+          exitCode: 0,
+        ),
+      );
+      final service = MonkeyMuxAcpBridgeService(
+        installer: _FakeInstaller(
+          const MonkeyMuxInstallation(
+            executablePath: '/home/demo/.monkeyssh/monkeymux',
+            platform: 'darwin-arm64',
+            version: 'test',
+          ),
+        ),
+        monkeyMuxService: mux,
+      );
+      const launches = [
+        (
+          providerId: 'builtin:cursor-agent-acp',
+          label: 'Cursor Agent',
+          argv: ['/Users/demo/.local/bin/cursor-agent', 'acp'],
+          executable: '/Users/demo/.local/bin/cursor-agent',
+        ),
+        (
+          providerId: 'builtin:claude-agent-acp',
+          label: 'Claude Agent',
+          argv: [
+            'npx',
+            '--yes',
+            '@agentclientprotocol/claude-agent-acp@0.70.0',
+          ],
+          executable: 'npx',
+        ),
+        (
+          providerId: 'builtin:opencode',
+          label: 'OpenCode',
+          argv: ['opencode', 'acp'],
+          executable: 'opencode',
+        ),
+        (
+          providerId: 'custom:test-provider',
+          label: 'Custom provider',
+          argv: ['/opt/tools/custom-acp', '--stdio'],
+          executable: '/opt/tools/custom-acp',
+        ),
+      ];
 
-    final result = await service.start(
-      session: session,
-      providerId: 'builtin:cursor-agent-acp',
-      providerLabel: 'Cursor Agent',
-      launchArgv: const ['/Users/demo/.local/bin/cursor-agent', 'acp'],
-      cwd: '/home/demo/project',
-    );
+      for (final launch in launches) {
+        final result = await service.start(
+          session: session,
+          providerId: launch.providerId,
+          providerLabel: launch.label,
+          launchArgv: launch.argv,
+          cwd: '/home/demo/project',
+        );
+        expect(result.bridgeId, _bridgeId);
+      }
 
-    expect(result.bridgeId, _bridgeId);
-    final command =
-        verify(
-              () => mux.runClientCommand(
-                session,
-                'work',
-                captureAny(),
-                priority: any(named: 'priority'),
-              ),
-            ).captured.single
-            as String;
-    expect(command, contains("'acp' 'start'"));
-    expect(command, contains("'--provider-id' 'builtin:cursor-agent-acp'"));
-    expect(command, contains('exec'));
-    expect(command, contains('/Users/demo/.local/bin/cursor-agent'));
-    verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
-  });
+      final commands = verify(
+        () => mux.runClientCommand(
+          session,
+          'work',
+          captureAny(),
+          priority: any(named: 'priority'),
+        ),
+      ).captured.cast<String>().toList(growable: false);
+      expect(commands, hasLength(launches.length));
+      for (var index = 0; index < launches.length; index++) {
+        expect(commands[index], contains("'acp' 'start'"));
+        expect(
+          commands[index],
+          contains("'--provider-id' '${launches[index].providerId}'"),
+        );
+        expect(commands[index], contains('exec'));
+        expect(commands[index], contains(launches[index].executable));
+      }
+      verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+    },
+  );
 
   test('probes adapters through interactive POSIX and Windows profiles', () {
     final posix = buildMonkeyMuxAcpExecutableProbeCommand(const {
