@@ -65,6 +65,8 @@ const (
 	maxTitleBytes                     = 160
 	piSessionMetadataRecordLimitBytes = 1024 * 1024
 	piSessionHeaderScanLimitBytes     = 1024 * 1024
+	piSessionActivityMatchTolerance   = 15 * time.Second
+	agentSessionStartTolerance        = 2 * time.Second
 	oscBufferLimitBytes               = 4096
 	processMetadataTimeout            = 500 * time.Millisecond
 	processMetadataInterval           = 500 * time.Millisecond
@@ -562,6 +564,7 @@ type restoreWindowState struct {
 	AgentSessionID           string                    `json:"agentSessionId,omitempty"`
 	AgentSessionDir          string                    `json:"agentSessionDir,omitempty"`
 	AgentSessionPath         string                    `json:"agentSessionPath,omitempty"`
+	LastActivityEpochSeconds int64                     `json:"lastActivityEpochSeconds,omitempty"`
 	HistoryBase64            string                    `json:"historyBase64,omitempty"`
 	HistoryStartsAtGround    bool                      `json:"historyStartsAtGround,omitempty"`
 	CursorVisible            bool                      `json:"cursorVisible,omitempty"`
@@ -1975,6 +1978,15 @@ func acquireSessionLock(session string) (func(), error) {
 	var nextStaleCheck time.Time
 	for clears := 0; ; {
 		record, acquired, err := installSessionLockFile(path)
+		if errors.Is(err, os.ErrNotExist) && time.Now().Before(deadline) {
+			// A concurrent cleanup may remove the per-user runtime directory
+			// after the initial MkdirAll. Recreate it and retry the same lock
+			// generation instead of failing an otherwise valid contender.
+			if mkdirErr := os.MkdirAll(filepath.Dir(path), 0o700); mkdirErr != nil {
+				return nil, mkdirErr
+			}
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -2494,8 +2506,61 @@ func collectServerRestore(session string, status runningServerStatus) *serverRes
 		restore = restoreFromWindowSnapshots(windows)
 		enrichRestoreWithCapturedShellHistory(session, restore)
 	}
+	if restore != nil && restoreNeedsWindowActivity(restore) {
+		if windows, err := queryServerWindows(session); err == nil {
+			enrichRestoreWithWindowActivity(restore, windows)
+		}
+	}
 	enrichRestoreWithAgentSessionIDs(restore)
 	return restore
+}
+
+func restoreNeedsWindowActivity(restore *serverRestore) bool {
+	if restore == nil {
+		return false
+	}
+	for _, window := range restore.Windows {
+		if agentToolCandidateForRestore(window) == "pi" &&
+			strings.TrimSpace(window.AgentSessionPath) == "" &&
+			window.LastActivityEpochSeconds <= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func enrichRestoreWithWindowActivity(
+	restore *serverRestore,
+	windows []windowSnapshot,
+) {
+	if restore == nil || len(windows) == 0 {
+		return
+	}
+	byID := make(map[string]int64, len(windows))
+	byIndex := make(map[int]int64, len(windows))
+	for _, window := range windows {
+		if window.LastActivityEpochSeconds <= 0 {
+			continue
+		}
+		if id := strings.TrimSpace(window.ID); id != "" {
+			byID[id] = window.LastActivityEpochSeconds
+		}
+		byIndex[window.Index] = window.LastActivityEpochSeconds
+	}
+	for i := range restore.Windows {
+		if restore.Windows[i].LastActivityEpochSeconds > 0 {
+			continue
+		}
+		if id := strings.TrimSpace(restore.Windows[i].ID); id != "" {
+			if activity := byID[id]; activity > 0 {
+				restore.Windows[i].LastActivityEpochSeconds = activity
+			}
+			continue
+		}
+		if activity := byIndex[restore.Windows[i].Index]; activity > 0 {
+			restore.Windows[i].LastActivityEpochSeconds = activity
+		}
+	}
 }
 
 func requestServerRestore(session string) (*serverRestore, error) {
@@ -2597,21 +2662,22 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 	}
 	for _, window := range windows {
 		restore.Windows = append(restore.Windows, restoreWindowState{
-			ID:                 window.ID,
-			Index:              window.Index,
-			Name:               window.Name,
-			Cwd:                window.CurrentPath,
-			CurrentCommand:     window.CurrentCommand,
-			PanePid:            window.PanePid,
-			PaneTitle:          window.PaneTitle,
-			AgentTool:          window.AgentTool,
-			AgentToolConfirmed: window.AgentToolConfirmed,
-			AgentSessionID:     window.AgentSessionID,
-			AgentSessionDir:    window.AgentSessionDir,
-			AgentSessionPath:   window.AgentSessionPath,
-			PrivateModes:       privateModesFromWindowSnapshot(window),
-			TerminalProgress:   copyTerminalProgressSnapshot(window.TerminalProgress),
-			Active:             window.Active,
+			ID:                       window.ID,
+			Index:                    window.Index,
+			Name:                     window.Name,
+			Cwd:                      window.CurrentPath,
+			CurrentCommand:           window.CurrentCommand,
+			PanePid:                  window.PanePid,
+			PaneTitle:                window.PaneTitle,
+			AgentTool:                window.AgentTool,
+			AgentToolConfirmed:       window.AgentToolConfirmed,
+			AgentSessionID:           window.AgentSessionID,
+			AgentSessionDir:          window.AgentSessionDir,
+			AgentSessionPath:         window.AgentSessionPath,
+			LastActivityEpochSeconds: window.LastActivityEpochSeconds,
+			PrivateModes:             privateModesFromWindowSnapshot(window),
+			TerminalProgress:         copyTerminalProgressSnapshot(window.TerminalProgress),
+			Active:                   window.Active,
 		})
 	}
 	return restore
@@ -2813,6 +2879,7 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		return
 	}
 	panePids := map[int]struct{}{}
+	paneWorkingDirectories := map[int]string{}
 	hasAntigravityWindows := false
 	hasCursorWindows := false
 	hasPiWindows := false
@@ -2824,9 +2891,6 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 				panePids[window.PanePid] = struct{}{}
 			}
 		}
-		if strings.TrimSpace(window.AgentSessionID) != "" {
-			continue
-		}
 		switch tool {
 		case "antigravity":
 			hasAntigravityWindows = true
@@ -2835,54 +2899,37 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		}
 		if tool != "" && window.PanePid > 0 {
 			panePids[window.PanePid] = struct{}{}
+			paneWorkingDirectories[window.PanePid] = window.Cwd
 		}
-	}
-	antigravitySessions := map[int]string{}
-	if hasAntigravityWindows {
-		antigravitySessions = discoverAntigravitySessionIDs(restore)
-	}
-	cursorSessions := map[int]string{}
-	if hasCursorWindows {
-		cursorSessions = discoverCursorSessionIDs(restore)
 	}
 	processes := map[int]processInfo{}
 	if len(panePids) > 0 {
-		processes = readProcessTable()
+		processes = processTableForMetadata()
+	}
+	antigravitySessions := map[int]string{}
+	if hasAntigravityWindows {
+		antigravitySessions = discoverAntigravitySessionIDs(restore, processes, panePids)
+	}
+	cursorSessions := map[int]string{}
+	if hasCursorWindows {
+		cursorSessions = discoverCursorSessionIDs(restore, processes, panePids)
 	}
 	piSessions := map[int]piRestoreSession{}
 	if hasPiWindows {
 		piSessions = discoverPiSessions(restore, processes, panePids)
 		applyPiRestoreSessions(restore, piSessions)
 	}
-	if len(panePids) == 0 {
-		for i, sessionID := range antigravitySessions {
-			restore.Windows[i].AgentSessionID = sessionID
-		}
-		for i, sessionID := range cursorSessions {
-			restore.Windows[i].AgentSessionID = sessionID
-		}
-		for i, session := range piSessions {
-			restore.Windows[i].AgentSessionID = session.sessionID
-			restore.Windows[i].AgentSessionDir = session.sessionDir
-			restore.Windows[i].AgentSessionPath = session.sessionPath
-		}
-		assignCopilotSessionsByWorkingDirectory(restore)
-		return
-	}
 	processDiscoveredSessions := map[string]map[int]string{}
 	if len(processes) > 0 {
 		processDiscoveredSessions = map[string]map[int]string{
 			"copilot":  discoverCopilotSessionIDs(processes, panePids),
-			"codex":    discoverCodexSessionIDs(processes, panePids),
-			"opencode": discoverOpenCodeSessionIDs(processes, panePids),
-			"claude":   discoverClaudeSessionIDs(processes, panePids),
-			"gemini":   discoverGeminiSessionIDs(processes, panePids),
+			"codex":    discoverCodexSessionIDs(processes, panePids, paneWorkingDirectories),
+			"opencode": discoverOpenCodeSessionIDs(processes, panePids, paneWorkingDirectories),
+			"claude":   discoverClaudeSessionIDs(processes, panePids, paneWorkingDirectories),
+			"gemini":   discoverGeminiSessionIDs(processes, panePids, paneWorkingDirectories),
 		}
 	}
 	for i := range restore.Windows {
-		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" {
-			continue
-		}
 		tool := agentToolForRestore(restore.Windows[i])
 		panePid := restore.Windows[i].PanePid
 		if tool == "" {
@@ -2894,30 +2941,30 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 			// discovery and lose the exact path.
 			continue
 		}
+		discoveredSessionID := ""
 		if panePid > 0 {
-			if sessionID := processDiscoveredSessions[tool][panePid]; sessionID != "" {
-				restore.Windows[i].AgentSessionID = sessionID
-				continue
-			}
+			discoveredSessionID = processDiscoveredSessions[tool][panePid]
 		}
-		if panePid > 0 && len(processes) > 0 {
-			if sessionID := sessionIDFromDescendantProcessArgs(processes, panePid, tool); sessionID != "" {
-				restore.Windows[i].AgentSessionID = sessionID
-				continue
-			}
+		if discoveredSessionID == "" && panePid > 0 && len(processes) > 0 {
+			discoveredSessionID = sessionIDFromSelectedAgentProcessArgs(
+				processes,
+				panePid,
+				tool,
+			)
 		}
-		if tool == "antigravity" {
-			if sessionID := antigravitySessions[i]; sessionID != "" {
-				restore.Windows[i].AgentSessionID = sessionID
-			}
+		if discoveredSessionID == "" && tool == "antigravity" {
+			discoveredSessionID = antigravitySessions[i]
 		}
-		if tool == "cursor-agent" {
-			if sessionID := cursorSessions[i]; sessionID != "" {
-				restore.Windows[i].AgentSessionID = sessionID
-			}
+		if discoveredSessionID == "" && tool == "cursor-agent" {
+			discoveredSessionID = cursorSessions[i]
 		}
+		// A carried ID describes what MonkeyMux tried to resume, not proof that
+		// the resume succeeded. If the command fell back to a fresh agent, its
+		// live argv/open file/store has no matching identity, so clear the stale
+		// ID instead of forcing that old conversation again on the next upgrade.
+		restore.Windows[i].AgentSessionID = discoveredSessionID
 	}
-	assignCopilotSessionsByWorkingDirectory(restore)
+	assignCopilotSessionsByWorkingDirectory(restore, processes, panePids)
 }
 
 func applyPiRestoreSessions(restore *serverRestore, sessions map[int]piRestoreSession) {
@@ -2928,7 +2975,7 @@ func applyPiRestoreSessions(restore *serverRestore, sessions map[int]piRestoreSe
 		restore.Windows[i].AgentSessionID = ""
 		restore.Windows[i].AgentSessionDir = ""
 		restore.Windows[i].AgentSessionPath = ""
-		if session, ok := sessions[i]; ok {
+		if session, ok := sessions[i]; ok && agentToolForRestore(restore.Windows[i]) == "pi" {
 			restore.Windows[i].AgentSessionID = session.sessionID
 			restore.Windows[i].AgentSessionDir = session.sessionDir
 			restore.Windows[i].AgentSessionPath = session.sessionPath
@@ -2939,44 +2986,48 @@ func applyPiRestoreSessions(restore *serverRestore, sessions map[int]piRestoreSe
 type antigravityHistoryEntry struct {
 	conversationID string
 	workspace      string
+	updatedAt      time.Time
 }
 
-func discoverAntigravitySessionIDs(restore *serverRestore) map[int]string {
+func discoverAntigravitySessionIDs(
+	restore *serverRestore,
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) map[int]string {
 	entries := readAntigravityHistoryEntries()
 	if len(entries) == 0 {
 		return nil
 	}
-	latestSessionID := latestAntigravitySessionID(entries)
-	needsFallback := antigravityRestoreWindowCount(restore) == 1
+	workspaceCounts := map[string]int{}
+	for _, window := range restore.Windows {
+		if agentToolForRestore(window) == "antigravity" {
+			workspaceCounts[normalizedAntigravityWorkspacePath(window.Cwd)]++
+		}
+	}
 	sessions := map[int]string{}
+	liveProcesses := agentProcessesByPane(processes, panePids, "antigravity")
 	for i, window := range restore.Windows {
-		if strings.TrimSpace(window.AgentSessionID) != "" ||
-			agentToolForRestore(window) != "antigravity" {
+		if agentToolForRestore(window) != "antigravity" {
 			continue
 		}
-		if sessionID := antigravitySessionIDForWorkspace(entries, window.Cwd); sessionID != "" {
+		workspace := normalizedAntigravityWorkspacePath(window.Cwd)
+		if workspace == "" || workspaceCounts[workspace] != 1 {
+			continue
+		}
+		process, ok := liveProcesses[window.PanePid]
+		if !ok {
+			continue
+		}
+		processStarted := processStartedAtForMetadata(process.pid)
+		if sessionID := antigravitySessionIDForWorkspace(
+			entries,
+			workspace,
+			processStarted,
+		); sessionID != "" {
 			sessions[i] = sessionID
-			continue
-		}
-		if needsFallback && latestSessionID != "" {
-			sessions[i] = latestSessionID
 		}
 	}
 	return sessions
-}
-
-func antigravityRestoreWindowCount(restore *serverRestore) int {
-	if restore == nil {
-		return 0
-	}
-	count := 0
-	for _, window := range restore.Windows {
-		if strings.TrimSpace(window.AgentSessionID) == "" &&
-			agentToolForRestore(window) == "antigravity" {
-			count++
-		}
-	}
-	return count
 }
 
 func readAntigravityHistoryEntries() []antigravityHistoryEntry {
@@ -2997,6 +3048,7 @@ func readAntigravityHistoryEntries() []antigravityHistoryEntry {
 		var raw struct {
 			ConversationID string `json:"conversationId"`
 			Workspace      string `json:"workspace"`
+			Timestamp      int64  `json:"timestamp"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			continue
@@ -3008,30 +3060,24 @@ func readAntigravityHistoryEntries() []antigravityHistoryEntry {
 		entries = append(entries, antigravityHistoryEntry{
 			conversationID: sessionID,
 			workspace:      normalizedAntigravityWorkspacePath(raw.Workspace),
+			updatedAt:      unixDatabaseTime(strconv.FormatInt(raw.Timestamp, 10)),
 		})
 	}
 	return entries
 }
 
-func latestAntigravitySessionID(entries []antigravityHistoryEntry) string {
-	for i := len(entries) - 1; i >= 0; i-- {
-		if sessionID := strings.TrimSpace(entries[i].conversationID); sessionID != "" {
-			return sessionID
-		}
-	}
-	return ""
-}
-
 func antigravitySessionIDForWorkspace(
 	entries []antigravityHistoryEntry,
 	workspace string,
+	processStarted time.Time,
 ) string {
 	normalizedWorkspace := normalizedAntigravityWorkspacePath(workspace)
 	if normalizedWorkspace == "" {
 		return ""
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].workspace == normalizedWorkspace {
+		if entries[i].workspace == normalizedWorkspace &&
+			sessionUpdatedDuringProcess(entries[i].updatedAt, processStarted) {
 			return entries[i].conversationID
 		}
 	}
@@ -3056,9 +3102,9 @@ func normalizedAntigravityWorkspacePath(value string) string {
 
 // ── Cursor Agent ─────────────────────────────────────────────────────────────
 // Cursor persists chats under ~/.cursor/chats/<workspaceHash>/<chatId>/meta.json.
-// A fresh `cursor-agent` launch carries no resumable id in its process args, so
-// after a MonkeyMux helper update recreates its windows the id is recovered from
-// the chat store keyed by the pane's working directory (matching meta.json cwd).
+// A fresh `cursor-agent` launch carries no resumable id in its process args.
+// Restore only a unique chat for the pane's workspace that was updated during
+// the current Cursor process; older chats leave a fresh window fresh.
 
 type cursorChatEntry struct {
 	chatID    string
@@ -3066,42 +3112,45 @@ type cursorChatEntry struct {
 	updatedAt int64
 }
 
-func discoverCursorSessionIDs(restore *serverRestore) map[int]string {
+func discoverCursorSessionIDs(
+	restore *serverRestore,
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) map[int]string {
 	entries := readCursorChatEntries()
 	if len(entries) == 0 {
 		return nil
 	}
-	latestSessionID := latestCursorSessionID(entries)
-	needsFallback := cursorRestoreWindowCount(restore) == 1
+	workspaceCounts := map[string]int{}
+	for _, window := range restore.Windows {
+		if agentToolForRestore(window) == "cursor-agent" {
+			workspaceCounts[normalizedCursorWorkspacePath(window.Cwd)]++
+		}
+	}
 	sessions := map[int]string{}
+	liveProcesses := agentProcessesByPane(processes, panePids, "cursor-agent")
 	for i, window := range restore.Windows {
-		if strings.TrimSpace(window.AgentSessionID) != "" ||
-			agentToolForRestore(window) != "cursor-agent" {
+		if agentToolForRestore(window) != "cursor-agent" {
 			continue
 		}
-		if sessionID := cursorSessionIDForWorkspace(entries, window.Cwd); sessionID != "" {
+		workspace := normalizedCursorWorkspacePath(window.Cwd)
+		if workspace == "" || workspaceCounts[workspace] != 1 {
+			continue
+		}
+		process, ok := liveProcesses[window.PanePid]
+		if !ok {
+			continue
+		}
+		processStarted := processStartedAtForMetadata(process.pid)
+		if sessionID := cursorSessionIDForWorkspace(
+			entries,
+			workspace,
+			processStarted,
+		); sessionID != "" {
 			sessions[i] = sessionID
-			continue
-		}
-		if needsFallback && latestSessionID != "" {
-			sessions[i] = latestSessionID
 		}
 	}
 	return sessions
-}
-
-func cursorRestoreWindowCount(restore *serverRestore) int {
-	if restore == nil {
-		return 0
-	}
-	count := 0
-	for _, window := range restore.Windows {
-		if strings.TrimSpace(window.AgentSessionID) == "" &&
-			agentToolForRestore(window) == "cursor-agent" {
-			count++
-		}
-	}
-	return count
 }
 
 // readCursorChatEntries reads recent Cursor chat metadata, ordered oldest to
@@ -3178,22 +3227,19 @@ func readCursorChatMeta(path string, chatID string) (cursorChatEntry, bool) {
 	}, true
 }
 
-func latestCursorSessionID(entries []cursorChatEntry) string {
-	for i := len(entries) - 1; i >= 0; i-- {
-		if sessionID := strings.TrimSpace(entries[i].chatID); sessionID != "" {
-			return sessionID
-		}
-	}
-	return ""
-}
-
-func cursorSessionIDForWorkspace(entries []cursorChatEntry, workspace string) string {
+func cursorSessionIDForWorkspace(
+	entries []cursorChatEntry,
+	workspace string,
+	processStarted time.Time,
+) string {
 	normalizedWorkspace := normalizedCursorWorkspacePath(workspace)
 	if normalizedWorkspace == "" {
 		return ""
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].cwd == normalizedWorkspace {
+		updatedAt := time.UnixMilli(entries[i].updatedAt)
+		if entries[i].cwd == normalizedWorkspace &&
+			sessionUpdatedDuringProcess(updatedAt, processStarted) {
 			return entries[i].chatID
 		}
 	}
@@ -3242,6 +3288,8 @@ var processStartedAtForMetadata = func(pid int) time.Time {
 	return inspectProcess(pid).started
 }
 
+var processTableForMetadata = readProcessTable
+
 type piRestoreSession struct {
 	sessionID   string
 	sessionDir  string
@@ -3265,7 +3313,7 @@ func discoverPiSessions(
 	}
 	used := map[string]bool{}
 	for _, window := range restore.Windows {
-		if agentToolCandidateForRestore(window) == "pi" {
+		if agentToolForRestore(window) == "pi" {
 			continue
 		}
 		if id := strings.TrimSpace(window.AgentSessionID); id != "" {
@@ -3292,6 +3340,9 @@ func discoverPiSessions(
 			continue
 		}
 		process, hasProcess := piProcesses[window.PanePid]
+		if agentToolForRestore(window) != "pi" && !hasProcess {
+			continue
+		}
 		if hasProcess {
 			restore.Windows[i].AgentToolConfirmed = true
 			livePiWindows[i] = true
@@ -3390,6 +3441,10 @@ func discoverPiSessions(
 			indices,
 			candidates,
 		) {
+			if !livePiWindows[index] ||
+				!sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) {
+				continue
+			}
 			sessions[index] = piRestoreSession{
 				sessionID:   candidate.sessionID,
 				sessionDir:  filepath.Dir(candidate.path),
@@ -3410,31 +3465,70 @@ func discoverPiSessions(
 			}
 		}
 
+		// Unnamed Pi windows all publish the same `Pi - <cwd>` title. Their
+		// latest terminal output still brackets the JSONL append for that turn,
+		// which gives upgrades a one-to-one signal even after /new or /resume
+		// made process-start correlation stale. Fail closed if timestamps overlap.
+		activityMatches := uniquePiSessionsByWindowActivity(
+			restore,
+			remainingIndices,
+			remainingCandidates,
+			livePiWindows,
+		)
+		freshActivityMatches := map[int]piSessionEntry{}
+		activityOwnedSessionIDs := map[string]bool{}
+		for index, candidate := range activityMatches {
+			if !sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) {
+				continue
+			}
+			freshActivityMatches[index] = candidate
+			activityOwnedSessionIDs[candidate.sessionID] = true
+		}
+		for index, candidate := range freshActivityMatches {
+			if piSessionWasSuperseded(
+				remainingCandidates,
+				candidate,
+				processStarts[index],
+				activityOwnedSessionIDs,
+			) {
+				continue
+			}
+			sessions[index] = piRestoreSession{
+				sessionID:   candidate.sessionID,
+				sessionDir:  filepath.Dir(candidate.path),
+				sessionPath: candidate.path,
+			}
+			used[candidate.sessionID] = true
+		}
+		remainingIndices = remainingIndices[:0]
+		for _, index := range indices {
+			if _, ok := sessions[index]; !ok {
+				remainingIndices = append(remainingIndices, index)
+			}
+		}
+		remainingCandidates = remainingCandidates[:0]
+		for _, candidate := range candidates {
+			if !used[candidate.sessionID] {
+				remainingCandidates = append(remainingCandidates, candidate)
+			}
+		}
+
 		// Compute every pane's process-time match before reserving any session.
 		// A greedy pass can let an earlier pane steal a later pane's only match.
-		provisional := map[int]piSessionEntry{}
-		owners := map[string][]int{}
+		processMatchesByWindow := map[int][]piSessionEntry{}
 		for _, index := range remainingIndices {
-			matches := piLeafSessionMatches(
+			processMatchesByWindow[index] = piLeafSessionMatches(
 				piSessionsCreatedForProcessStart(
 					remainingCandidates,
 					processStarts[index],
 				),
 				remainingCandidates,
 			)
-			if len(matches) != 1 {
-				continue
-			}
-			provisional[index] = matches[0]
-			owners[matches[0].sessionID] = append(owners[matches[0].sessionID], index)
 		}
+		provisional := uniquePiSessionAssignments(processMatchesByWindow)
 		ownedSessionIDs := map[string]bool{}
-		for index, candidate := range provisional {
-			if len(owners[candidate.sessionID]) == 1 {
-				ownedSessionIDs[candidate.sessionID] = true
-			} else {
-				delete(provisional, index)
-			}
+		for _, candidate := range provisional {
+			ownedSessionIDs[candidate.sessionID] = true
 		}
 		accepted := map[int]piSessionEntry{}
 		for index, candidate := range provisional {
@@ -3483,7 +3577,8 @@ func discoverPiSessions(
 				matches = append(matches, candidate)
 			}
 			matches = piLeafSessionMatches(matches, remainingCandidates)
-			if len(matches) != 1 {
+			if len(matches) != 1 ||
+				!sessionUpdatedDuringProcess(matches[0].modTime, processStarts[index]) {
 				continue
 			}
 			persisted[index] = matches[0]
@@ -3519,10 +3614,18 @@ func discoverPiSessions(
 		// Preserve the old cwd fallback only for a genuinely one-to-one
 		// bucket. Never hand a leftover session to a pane after a multi-pane
 		// process match was rejected as ambiguous.
-		if len(remainingIndices) == 1 && len(remainingCandidates) == 1 {
-			index := remainingIndices[0]
-			if _, ok := sessions[index]; !ok {
-				candidate := remainingCandidates[0]
+		if len(indices) == 1 && len(candidates) == 1 {
+			index := indices[0]
+			candidate := candidates[0]
+			if _, ok := sessions[index]; !ok &&
+				livePiWindows[index] &&
+				sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) &&
+				!piSessionWasSuperseded(
+					candidates,
+					candidate,
+					processStarts[index],
+					map[string]bool{candidate.sessionID: true},
+				) {
 				sessions[index] = piRestoreSession{
 					sessionID:   candidate.sessionID,
 					sessionDir:  filepath.Dir(candidate.path),
@@ -3535,13 +3638,65 @@ func discoverPiSessions(
 	return sessions
 }
 
+func uniquePiSessionsByWindowActivity(
+	restore *serverRestore,
+	indices []int,
+	candidates []piSessionEntry,
+	livePiWindows map[int]bool,
+) map[int]piSessionEntry {
+	matchesByWindow := map[int][]piSessionEntry{}
+	for _, index := range indices {
+		if !livePiWindows[index] {
+			continue
+		}
+		epoch := restore.Windows[index].LastActivityEpochSeconds
+		if epoch <= 0 {
+			continue
+		}
+		activity := time.Unix(epoch, 0)
+		matches := []piSessionEntry{}
+		for _, candidate := range candidates {
+			if candidate.modTime.IsZero() {
+				continue
+			}
+			delta := candidate.modTime.Sub(activity)
+			if delta < 0 {
+				delta = -delta
+			}
+			if delta <= piSessionActivityMatchTolerance {
+				matches = append(matches, candidate)
+			}
+		}
+		matchesByWindow[index] = piLeafSessionMatches(matches, candidates)
+	}
+	return uniquePiSessionAssignments(matchesByWindow)
+}
+
+func uniquePiSessionAssignments(
+	matchesByWindow map[int][]piSessionEntry,
+) map[int]piSessionEntry {
+	claimants := map[string]int{}
+	for _, matches := range matchesByWindow {
+		for _, candidate := range matches {
+			claimants[candidate.sessionID]++
+		}
+	}
+	assignments := map[int]piSessionEntry{}
+	for index, matches := range matchesByWindow {
+		if len(matches) != 1 || claimants[matches[0].sessionID] != 1 {
+			continue
+		}
+		assignments[index] = matches[0]
+	}
+	return assignments
+}
+
 func uniquePiSessionsByPaneTitle(
 	restore *serverRestore,
 	indices []int,
 	candidates []piSessionEntry,
 ) map[int]piSessionEntry {
-	provisional := map[int]piSessionEntry{}
-	owners := map[string][]int{}
+	matchesByWindow := map[int][]piSessionEntry{}
 	for _, index := range indices {
 		matches := []piSessionEntry{}
 		for _, candidate := range candidates {
@@ -3549,19 +3704,9 @@ func uniquePiSessionsByPaneTitle(
 				matches = append(matches, candidate)
 			}
 		}
-		matches = piLeafSessionMatches(matches, candidates)
-		if len(matches) != 1 {
-			continue
-		}
-		provisional[index] = matches[0]
-		owners[matches[0].sessionID] = append(owners[matches[0].sessionID], index)
+		matchesByWindow[index] = piLeafSessionMatches(matches, candidates)
 	}
-	for index, candidate := range provisional {
-		if len(owners[candidate.sessionID]) != 1 {
-			delete(provisional, index)
-		}
-	}
-	return provisional
+	return uniquePiSessionAssignments(matchesByWindow)
 }
 
 func piSessionsWithLatestNamesForTitles(
@@ -3709,6 +3854,7 @@ func piProcessesByPane(
 ) map[int]processInfo {
 	selected := map[int]processInfo{}
 	depths := map[int]int{}
+	minimumDepthCount := map[int]int{}
 	for _, process := range processes {
 		panePid := ancestorPanePID(processes, process.pid, panePids)
 		if panePid <= 0 {
@@ -3724,11 +3870,21 @@ func piProcessesByPane(
 		if depth < 0 {
 			continue
 		}
-		if prior, ok := depths[panePid]; ok && prior <= depth {
+		prior, exists := depths[panePid]
+		if !exists || depth < prior {
+			selected[panePid] = process
+			depths[panePid] = depth
+			minimumDepthCount[panePid] = 1
 			continue
 		}
-		selected[panePid] = process
-		depths[panePid] = depth
+		if depth == prior {
+			minimumDepthCount[panePid]++
+		}
+	}
+	for panePid, count := range minimumDepthCount {
+		if count != 1 {
+			delete(selected, panePid)
+		}
 	}
 	return selected
 }
@@ -4232,6 +4388,9 @@ func discoverCopilotSessionIDs(
 			// one so a restored window resumes the live session rather than an
 			// abandoned one.
 			modTime := copilotLockModTime(lock)
+			if !sessionUpdatedDuringProcess(modTime, processStartedAtForMetadata(pid)) {
+				continue
+			}
 			if previous, exists := chosenModTime[panePid]; exists && !modTime.After(previous) {
 				continue
 			}
@@ -4251,13 +4410,16 @@ func copilotLockModTime(lock string) time.Time {
 	return time.Time{}
 }
 
+type copilotSessionEntry struct {
+	id        string
+	updatedAt time.Time
+}
+
 // copilotSessionsByWorkingDirectory groups on-disk copilot sessions by the
 // working directory recorded in each session's events log, most recently
-// active first. It is the on-disk fallback used when the live process table no
-// longer maps a restored copilot window to its session (the helper upgrade
-// already reaped the process, ps timed out, or the inuse lock had been
-// cleared) so the window can still resume the right conversation.
-func copilotSessionsByWorkingDirectory() map[string][]string {
+// active first. It supplements authoritative inuse-lock discovery only with
+// sessions updated during the window's current process lifetime.
+func copilotSessionsByWorkingDirectory() map[string][]copilotSessionEntry {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
@@ -4267,11 +4429,7 @@ func copilotSessionsByWorkingDirectory() map[string][]string {
 	if err != nil {
 		return nil
 	}
-	type sessionEntry struct {
-		id      string
-		modTime time.Time
-	}
-	byDirectory := map[string][]sessionEntry{}
+	byDirectory := map[string][]copilotSessionEntry{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -4287,21 +4445,15 @@ func copilotSessionsByWorkingDirectory() map[string][]string {
 		}
 		byDirectory[workingDirectory] = append(
 			byDirectory[workingDirectory],
-			sessionEntry{id: entry.Name(), modTime: modTime},
+			copilotSessionEntry{id: entry.Name(), updatedAt: modTime},
 		)
 	}
-	result := map[string][]string{}
-	for workingDirectory, list := range byDirectory {
+	for _, list := range byDirectory {
 		sort.SliceStable(list, func(i, j int) bool {
-			return list[i].modTime.After(list[j].modTime)
+			return list[i].updatedAt.After(list[j].updatedAt)
 		})
-		ids := make([]string, 0, len(list))
-		for _, session := range list {
-			ids = append(ids, session.id)
-		}
-		result[workingDirectory] = ids
 	}
-	return result
+	return byDirectory
 }
 
 // copilotSessionWorkingDirectory returns the normalized working directory a
@@ -4358,27 +4510,16 @@ func normalizedCopilotWorkingDirectory(path string) string {
 }
 
 // assignCopilotSessionsByWorkingDirectory is the on-disk fallback for restored
-// copilot windows the live process table no longer maps to a session. Each such
-// window resumes the most recent copilot session recorded for its working
-// directory instead of relaunching blank, so a helper upgrade keeps the
-// conversation open in every copilot window. Sessions already claimed by
-// another window (via the process table or an earlier fallback) are never
-// reused, so windows sharing a directory get distinct sessions.
-func assignCopilotSessionsByWorkingDirectory(restore *serverRestore) {
+// Copilot windows whose inuse lock could not identify a session. It considers
+// only sessions updated during that window process and uses terminal activity
+// to disambiguate multiple candidates. Stale or overlapping evidence stays
+// fresh; sessions claimed by another window are never reused.
+func assignCopilotSessionsByWorkingDirectory(
+	restore *serverRestore,
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) {
 	if restore == nil {
-		return
-	}
-	needing := []int{}
-	for i := range restore.Windows {
-		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" {
-			continue
-		}
-		if agentToolForRestore(restore.Windows[i]) != "copilot" {
-			continue
-		}
-		needing = append(needing, i)
-	}
-	if len(needing) == 0 {
 		return
 	}
 	sessionsByDirectory := copilotSessionsByWorkingDirectory()
@@ -4391,42 +4532,150 @@ func assignCopilotSessionsByWorkingDirectory(restore *serverRestore) {
 			used[id] = true
 		}
 	}
-	for _, i := range needing {
+	liveProcesses := agentProcessesByPane(processes, panePids, "copilot")
+	matchesByWindow := map[int][]copilotSessionEntry{}
+	for i := range restore.Windows {
+		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" ||
+			agentToolForRestore(restore.Windows[i]) != "copilot" {
+			continue
+		}
+		process, ok := liveProcesses[restore.Windows[i].PanePid]
+		if !ok {
+			continue
+		}
 		workingDirectory := normalizedCopilotWorkingDirectory(restore.Windows[i].Cwd)
 		if workingDirectory == "" {
 			continue
 		}
-		for _, id := range sessionsByDirectory[workingDirectory] {
-			if used[id] {
+		processStarted := processStartedAtForMetadata(process.pid)
+		candidates := []copilotSessionEntry{}
+		for _, session := range sessionsByDirectory[workingDirectory] {
+			if used[session.id] ||
+				!sessionUpdatedDuringProcess(session.updatedAt, processStarted) {
 				continue
 			}
-			restore.Windows[i].AgentSessionID = id
-			used[id] = true
-			break
+			candidates = append(candidates, session)
+		}
+		if len(candidates) > 1 && restore.Windows[i].LastActivityEpochSeconds > 0 {
+			activity := time.Unix(restore.Windows[i].LastActivityEpochSeconds, 0)
+			activityMatches := candidates[:0]
+			for _, candidate := range candidates {
+				delta := candidate.updatedAt.Sub(activity)
+				if delta < 0 {
+					delta = -delta
+				}
+				if delta <= piSessionActivityMatchTolerance {
+					activityMatches = append(activityMatches, candidate)
+				}
+			}
+			candidates = activityMatches
+		}
+		matchesByWindow[i] = candidates
+	}
+	for index, session := range uniqueCopilotSessionAssignments(matchesByWindow) {
+		restore.Windows[index].AgentSessionID = session.id
+	}
+}
+
+func uniqueCopilotSessionAssignments(
+	matchesByWindow map[int][]copilotSessionEntry,
+) map[int]copilotSessionEntry {
+	claimants := map[string]int{}
+	for _, matches := range matchesByWindow {
+		for _, candidate := range matches {
+			claimants[candidate.id]++
 		}
 	}
+	assignments := map[int]copilotSessionEntry{}
+	for index, matches := range matchesByWindow {
+		if len(matches) != 1 || claimants[matches[0].id] != 1 {
+			continue
+		}
+		assignments[index] = matches[0]
+	}
+	return assignments
+}
+
+func agentProcessesByPane(
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+	tool string,
+) map[int]processInfo {
+	selected := map[int]processInfo{}
+	minimumDepth := map[int]int{}
+	minimumDepthCount := map[int]int{}
+	for _, process := range processes {
+		panePid := ancestorPanePID(processes, process.pid, panePids)
+		if panePid <= 0 {
+			continue
+		}
+		command := commandNameFromProcessFields(process.comm, process.args)
+		if agentToolFromCommandName(command) != tool {
+			continue
+		}
+		depth := processDepthFromAncestor(processes, process.pid, panePid)
+		if depth < 0 {
+			continue
+		}
+		priorDepth, exists := minimumDepth[panePid]
+		if !exists || depth < priorDepth {
+			minimumDepth[panePid] = depth
+			minimumDepthCount[panePid] = 1
+			selected[panePid] = process
+			continue
+		}
+		if depth == priorDepth {
+			minimumDepthCount[panePid]++
+		}
+	}
+	for panePid, count := range minimumDepthCount {
+		if count != 1 {
+			delete(selected, panePid)
+		}
+	}
+	return selected
+}
+
+func agentWorkingDirectoryForMetadata(
+	processPID int,
+	panePID int,
+	fallbackWorkingDirectories []map[int]string,
+) string {
+	if workingDirectory := normalizedMetadataPath(
+		processWorkingDirectoryForMetadata(processPID),
+	); workingDirectory != "" {
+		return workingDirectory
+	}
+	if len(fallbackWorkingDirectories) == 0 {
+		return ""
+	}
+	return normalizedMetadataPath(fallbackWorkingDirectories[0][panePID])
 }
 
 func discoverCodexSessionIDs(
 	processes map[int]processInfo,
 	panePids map[int]struct{},
+	fallbackWorkingDirectories ...map[int]string,
 ) map[int]string {
 	type unresolvedCodexProcess struct {
 		panePid          int
 		workingDirectory string
+		processStarted   time.Time
 	}
 	sessions := map[int]string{}
 	unresolved := []unresolvedCodexProcess{}
 	unresolvedPanes := map[int]struct{}{}
 	workingDirectoryCounts := map[string]int{}
-	for _, process := range processes {
-		panePid := ancestorPanePID(processes, process.pid, panePids)
-		if panePid <= 0 || sessions[panePid] != "" {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != "codex" {
-			continue
+	countedWorkingDirectoryPanes := map[int]bool{}
+	for panePid, process := range agentProcessesByPane(processes, panePids, "codex") {
+		workingDirectory := agentWorkingDirectoryForMetadata(
+			process.pid,
+			panePid,
+			fallbackWorkingDirectories,
+		)
+		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
+			workingDirectoryCounts[workingDirectory]++
+			countedWorkingDirectoryPanes[panePid] = true
 		}
 		if sessionID := agentSessionIDFromArgs("codex", process.args); sessionID != "" {
 			sessions[panePid] = sessionID
@@ -4436,10 +4685,8 @@ func discoverCodexSessionIDs(
 			sessions[panePid] = sessionID
 			continue
 		}
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
-		)
-		if workingDirectory == "" {
+		processStarted := processStartedAtForMetadata(process.pid)
+		if workingDirectory == "" || processStarted.IsZero() {
 			continue
 		}
 		if _, ok := unresolvedPanes[panePid]; ok {
@@ -4449,15 +4696,18 @@ func discoverCodexSessionIDs(
 		unresolved = append(unresolved, unresolvedCodexProcess{
 			panePid:          panePid,
 			workingDirectory: workingDirectory,
+			processStarted:   processStarted,
 		})
-		workingDirectoryCounts[workingDirectory]++
 	}
 	for _, candidate := range unresolved {
 		if sessions[candidate.panePid] != "" ||
 			workingDirectoryCounts[candidate.workingDirectory] != 1 {
 			continue
 		}
-		if sessionID := codexRecentSessionIDForWorkingDirectory(candidate.workingDirectory); sessionID != "" {
+		if sessionID := codexRecentSessionIDForWorkingDirectory(
+			candidate.workingDirectory,
+			candidate.processStarted,
+		); sessionID != "" {
 			sessions[candidate.panePid] = sessionID
 		}
 	}
@@ -4473,9 +4723,12 @@ func codexSessionIDFromOpenFiles(pid int) string {
 	return ""
 }
 
-func codexRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+func codexRecentSessionIDForWorkingDirectory(
+	workingDirectory string,
+	processStarted time.Time,
+) string {
 	workingDirectory = normalizedMetadataPath(workingDirectory)
-	if workingDirectory == "" {
+	if workingDirectory == "" || processStarted.IsZero() {
 		return ""
 	}
 	home, err := os.UserHomeDir()
@@ -4484,6 +4737,10 @@ func codexRecentSessionIDForWorkingDirectory(workingDirectory string) string {
 	}
 	sessionsDir := filepath.Join(home, ".codex", "sessions")
 	for _, path := range recentCodexRolloutFiles(sessionsDir, 30) {
+		info, err := os.Stat(path)
+		if err != nil || !sessionUpdatedDuringProcess(info.ModTime(), processStarted) {
+			continue
+		}
 		if normalizedMetadataPath(codexRolloutWorkingDirectory(path)) != workingDirectory {
 			continue
 		}
@@ -4570,12 +4827,13 @@ func codexSessionIDFromRolloutName(name string) string {
 // ── OpenCode ───────────────────────────────────────────────────────────────
 // OpenCode persists sessions in a SQLite store keyed by working directory, so
 // a session launched fresh (`opencode`, no `--session`) carries no resumable
-// ID in its process arguments. Recover the most recent session for the pane's
-// working directory so it keeps resuming after a MonkeyMux helper update.
+// ID in its process arguments. Recover only a same-directory row updated during
+// the current OpenCode process so an older project session is never injected.
 
 type openCodeSessionEntry struct {
 	sessionID string
 	directory string
+	updatedAt time.Time
 }
 
 // openCodeSessionEntriesReader is overridable in tests so the SQLite-backed
@@ -4585,31 +4843,32 @@ var openCodeSessionEntriesReader = defaultOpenCodeSessionEntries
 func discoverOpenCodeSessionIDs(
 	processes map[int]processInfo,
 	panePids map[int]struct{},
+	fallbackWorkingDirectories ...map[int]string,
 ) map[int]string {
 	type unresolvedOpenCodeProcess struct {
 		panePid          int
 		workingDirectory string
+		processStarted   time.Time
 	}
 	sessions := map[int]string{}
 	unresolved := []unresolvedOpenCodeProcess{}
 	unresolvedPanes := map[int]struct{}{}
 	workingDirectoryCounts := map[string]int{}
-	for _, process := range processes {
-		panePid := ancestorPanePID(processes, process.pid, panePids)
-		if panePid <= 0 || sessions[panePid] != "" {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != "opencode" {
-			continue
+	countedWorkingDirectoryPanes := map[int]bool{}
+	for panePid, process := range agentProcessesByPane(processes, panePids, "opencode") {
+		workingDirectory := agentWorkingDirectoryForMetadata(
+			process.pid,
+			panePid,
+			fallbackWorkingDirectories,
+		)
+		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
+			workingDirectoryCounts[workingDirectory]++
+			countedWorkingDirectoryPanes[panePid] = true
 		}
 		if sessionID := agentSessionIDFromArgs("opencode", process.args); sessionID != "" {
 			sessions[panePid] = sessionID
 			continue
 		}
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
-		)
 		if workingDirectory == "" {
 			continue
 		}
@@ -4617,11 +4876,15 @@ func discoverOpenCodeSessionIDs(
 			continue
 		}
 		unresolvedPanes[panePid] = struct{}{}
+		processStarted := processStartedAtForMetadata(process.pid)
+		if processStarted.IsZero() {
+			continue
+		}
 		unresolved = append(unresolved, unresolvedOpenCodeProcess{
 			panePid:          panePid,
 			workingDirectory: workingDirectory,
+			processStarted:   processStarted,
 		})
-		workingDirectoryCounts[workingDirectory]++
 	}
 	if len(unresolved) == 0 {
 		return sessions
@@ -4638,6 +4901,7 @@ func discoverOpenCodeSessionIDs(
 		if sessionID := openCodeSessionIDForWorkingDirectory(
 			entries,
 			candidate.workingDirectory,
+			candidate.processStarted,
 		); sessionID != "" {
 			sessions[candidate.panePid] = sessionID
 		}
@@ -4652,14 +4916,16 @@ func readOpenCodeSessionEntries() []openCodeSessionEntry {
 func openCodeSessionIDForWorkingDirectory(
 	entries []openCodeSessionEntry,
 	workingDirectory string,
+	processStarted time.Time,
 ) string {
 	workingDirectory = normalizedMetadataPath(workingDirectory)
-	if workingDirectory == "" {
+	if workingDirectory == "" || processStarted.IsZero() {
 		return ""
 	}
 	// entries are ordered most-recently-updated first.
 	for _, entry := range entries {
-		if entry.directory == workingDirectory {
+		if entry.directory == workingDirectory &&
+			sessionUpdatedDuringProcess(entry.updatedAt, processStarted) {
 			return entry.sessionID
 		}
 	}
@@ -4684,7 +4950,7 @@ func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
 		return nil
 	}
 	const separator = "\x1f"
-	query := "SELECT id, directory FROM session " +
+	query := "SELECT id, directory, time_updated FROM session " +
 		"WHERE parent_id IS NULL AND time_archived IS NULL " +
 		"ORDER BY time_updated DESC LIMIT 200;"
 	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
@@ -4705,7 +4971,7 @@ func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		parts := strings.SplitN(line, separator, 2)
+		parts := strings.SplitN(line, separator, 3)
 		sessionID := strings.TrimSpace(parts[0])
 		if sessionID == "" {
 			continue
@@ -4714,9 +4980,14 @@ func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
 		if len(parts) > 1 {
 			directory = normalizedMetadataPath(parts[1])
 		}
+		updatedAt := time.Time{}
+		if len(parts) > 2 {
+			updatedAt = unixDatabaseTime(parts[2])
+		}
 		entries = append(entries, openCodeSessionEntry{
 			sessionID: sessionID,
 			directory: directory,
+			updatedAt: updatedAt,
 		})
 	}
 	return entries
@@ -4726,8 +4997,8 @@ func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
 // Claude Code stores each session as
 // `~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`. A freshly launched
 // `claude` carries no `--resume` argument, so recover the session from the
-// rollout file the process holds open, or the most recent project file whose
-// `cwd` matches the pane's working directory.
+// rollout file the process holds open, or a project file whose `cwd` matches
+// the pane and which was written during this Claude process's lifetime.
 
 var claudeSessionIDPattern = regexp.MustCompile(
 	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
@@ -4736,23 +5007,27 @@ var claudeSessionIDPattern = regexp.MustCompile(
 func discoverClaudeSessionIDs(
 	processes map[int]processInfo,
 	panePids map[int]struct{},
+	fallbackWorkingDirectories ...map[int]string,
 ) map[int]string {
 	type unresolvedClaudeProcess struct {
 		panePid          int
 		workingDirectory string
+		processStarted   time.Time
 	}
 	sessions := map[int]string{}
 	unresolved := []unresolvedClaudeProcess{}
 	unresolvedPanes := map[int]struct{}{}
 	workingDirectoryCounts := map[string]int{}
-	for _, process := range processes {
-		panePid := ancestorPanePID(processes, process.pid, panePids)
-		if panePid <= 0 || sessions[panePid] != "" {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != "claude" {
-			continue
+	countedWorkingDirectoryPanes := map[int]bool{}
+	for panePid, process := range agentProcessesByPane(processes, panePids, "claude") {
+		workingDirectory := agentWorkingDirectoryForMetadata(
+			process.pid,
+			panePid,
+			fallbackWorkingDirectories,
+		)
+		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
+			workingDirectoryCounts[workingDirectory]++
+			countedWorkingDirectoryPanes[panePid] = true
 		}
 		if sessionID := agentSessionIDFromArgs("claude", process.args); sessionID != "" {
 			sessions[panePid] = sessionID
@@ -4762,10 +5037,8 @@ func discoverClaudeSessionIDs(
 			sessions[panePid] = sessionID
 			continue
 		}
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
-		)
-		if workingDirectory == "" {
+		processStarted := processStartedAtForMetadata(process.pid)
+		if workingDirectory == "" || processStarted.IsZero() {
 			continue
 		}
 		if _, ok := unresolvedPanes[panePid]; ok {
@@ -4775,8 +5048,8 @@ func discoverClaudeSessionIDs(
 		unresolved = append(unresolved, unresolvedClaudeProcess{
 			panePid:          panePid,
 			workingDirectory: workingDirectory,
+			processStarted:   processStarted,
 		})
-		workingDirectoryCounts[workingDirectory]++
 	}
 	for _, candidate := range unresolved {
 		if sessions[candidate.panePid] != "" ||
@@ -4785,6 +5058,7 @@ func discoverClaudeSessionIDs(
 		}
 		if sessionID := claudeRecentSessionIDForWorkingDirectory(
 			candidate.workingDirectory,
+			candidate.processStarted,
 		); sessionID != "" {
 			sessions[candidate.panePid] = sessionID
 		}
@@ -4801,9 +5075,12 @@ func claudeSessionIDFromOpenFiles(pid int) string {
 	return ""
 }
 
-func claudeRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+func claudeRecentSessionIDForWorkingDirectory(
+	workingDirectory string,
+	processStarted time.Time,
+) string {
 	workingDirectory = normalizedMetadataPath(workingDirectory)
-	if workingDirectory == "" {
+	if workingDirectory == "" || processStarted.IsZero() {
 		return ""
 	}
 	home, err := os.UserHomeDir()
@@ -4812,6 +5089,10 @@ func claudeRecentSessionIDForWorkingDirectory(workingDirectory string) string {
 	}
 	projectsDir := filepath.Join(home, ".claude", "projects")
 	for _, path := range recentAgentSessionFiles(projectsDir, 60, isClaudeProjectSessionPath) {
+		info, err := os.Stat(path)
+		if err != nil || !sessionUpdatedDuringProcess(info.ModTime(), processStarted) {
+			continue
+		}
 		if normalizedMetadataPath(jsonStringFieldFromFile(path, "cwd")) != workingDirectory {
 			continue
 		}
@@ -4847,9 +5128,8 @@ func isClaudeProjectSessionPath(path string) bool {
 // ── Gemini CLI ───────────────────────────────────────────────────────────────
 // Gemini stores chats at `~/.gemini/tmp/<project>/chats/session-*.json`, with
 // the resumable `sessionId` and the project `directories` recorded inside the
-// file. Recover the session from the chat file the process holds open, or the
-// most recent non-subagent chat whose directories include the pane's working
-// directory.
+// file. Recover the session from the chat file the process holds open, or a
+// non-subagent chat for the pane's directory updated during this process.
 
 var (
 	geminiSessionIDFieldPattern   = regexp.MustCompile(`"sessionId"\s*:\s*"((?:\\.|[^"\\])*)"`)
@@ -4867,23 +5147,27 @@ type geminiSessionMetadata struct {
 func discoverGeminiSessionIDs(
 	processes map[int]processInfo,
 	panePids map[int]struct{},
+	fallbackWorkingDirectories ...map[int]string,
 ) map[int]string {
 	type unresolvedGeminiProcess struct {
 		panePid          int
 		workingDirectory string
+		processStarted   time.Time
 	}
 	sessions := map[int]string{}
 	unresolved := []unresolvedGeminiProcess{}
 	unresolvedPanes := map[int]struct{}{}
 	workingDirectoryCounts := map[string]int{}
-	for _, process := range processes {
-		panePid := ancestorPanePID(processes, process.pid, panePids)
-		if panePid <= 0 || sessions[panePid] != "" {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != "gemini" {
-			continue
+	countedWorkingDirectoryPanes := map[int]bool{}
+	for panePid, process := range agentProcessesByPane(processes, panePids, "gemini") {
+		workingDirectory := agentWorkingDirectoryForMetadata(
+			process.pid,
+			panePid,
+			fallbackWorkingDirectories,
+		)
+		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
+			workingDirectoryCounts[workingDirectory]++
+			countedWorkingDirectoryPanes[panePid] = true
 		}
 		if sessionID := agentSessionIDFromArgs("gemini", process.args); sessionID != "" {
 			sessions[panePid] = sessionID
@@ -4893,9 +5177,6 @@ func discoverGeminiSessionIDs(
 			sessions[panePid] = sessionID
 			continue
 		}
-		workingDirectory := normalizedMetadataPath(
-			processWorkingDirectoryForMetadata(process.pid),
-		)
 		if workingDirectory == "" {
 			continue
 		}
@@ -4903,11 +5184,15 @@ func discoverGeminiSessionIDs(
 			continue
 		}
 		unresolvedPanes[panePid] = struct{}{}
+		processStarted := processStartedAtForMetadata(process.pid)
+		if processStarted.IsZero() {
+			continue
+		}
 		unresolved = append(unresolved, unresolvedGeminiProcess{
 			panePid:          panePid,
 			workingDirectory: workingDirectory,
+			processStarted:   processStarted,
 		})
-		workingDirectoryCounts[workingDirectory]++
 	}
 	for _, candidate := range unresolved {
 		if sessions[candidate.panePid] != "" ||
@@ -4916,6 +5201,7 @@ func discoverGeminiSessionIDs(
 		}
 		if sessionID := geminiRecentSessionIDForWorkingDirectory(
 			candidate.workingDirectory,
+			candidate.processStarted,
 		); sessionID != "" {
 			sessions[candidate.panePid] = sessionID
 		}
@@ -4936,9 +5222,12 @@ func geminiSessionIDFromOpenFiles(pid int) string {
 	return ""
 }
 
-func geminiRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+func geminiRecentSessionIDForWorkingDirectory(
+	workingDirectory string,
+	processStarted time.Time,
+) string {
 	workingDirectory = normalizedMetadataPath(workingDirectory)
-	if workingDirectory == "" {
+	if workingDirectory == "" || processStarted.IsZero() {
 		return ""
 	}
 	home, err := os.UserHomeDir()
@@ -4947,6 +5236,10 @@ func geminiRecentSessionIDForWorkingDirectory(workingDirectory string) string {
 	}
 	tmpDir := filepath.Join(home, ".gemini", "tmp")
 	for _, path := range recentAgentSessionFiles(tmpDir, 60, isGeminiChatSessionPath) {
+		info, err := os.Stat(path)
+		if err != nil || !sessionUpdatedDuringProcess(info.ModTime(), processStarted) {
+			continue
+		}
 		metadata := readGeminiSessionMetadata(path)
 		if metadata.sessionID == "" || metadata.isSubagent {
 			continue
@@ -5018,6 +5311,32 @@ func geminiDirectoriesFromText(text string) []string {
 }
 
 // ── Shared agent session-file helpers ────────────────────────────────────────
+
+// sessionUpdatedDuringProcess is the common safety boundary for cwd/history
+// fallback. A store record from before the foreground process started cannot
+// describe a fresh agent launched by that process.
+func sessionUpdatedDuringProcess(updatedAt time.Time, processStarted time.Time) bool {
+	return !updatedAt.IsZero() &&
+		!processStarted.IsZero() &&
+		!updatedAt.Before(processStarted.Add(-agentSessionStartTolerance))
+}
+
+func unixDatabaseTime(value string) time.Time {
+	raw, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || raw <= 0 {
+		return time.Time{}
+	}
+	switch {
+	case raw >= 100_000_000_000_000_000:
+		return time.Unix(0, raw)
+	case raw >= 100_000_000_000_000:
+		return time.UnixMicro(raw)
+	case raw >= 100_000_000_000:
+		return time.UnixMilli(raw)
+	default:
+		return time.Unix(raw, 0)
+	}
+}
 
 // recentAgentSessionFiles returns up to limit matching files under root,
 // ordered most-recently-modified first.
@@ -5213,25 +5532,21 @@ func ancestorPanePID(
 	return 0
 }
 
-func sessionIDFromDescendantProcessArgs(
+func sessionIDFromSelectedAgentProcessArgs(
 	processes map[int]processInfo,
 	panePid int,
 	tool string,
 ) string {
-	targetPanePids := map[int]struct{}{panePid: struct{}{}}
-	for _, process := range processes {
-		if ancestorPanePID(processes, process.pid, targetPanePids) != panePid {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != tool {
-			continue
-		}
-		if sessionID := agentSessionIDFromArgs(tool, process.args); sessionID != "" {
-			return sessionID
-		}
+	selected := agentProcessesByPane(
+		processes,
+		map[int]struct{}{panePid: {}},
+		tool,
+	)
+	process, ok := selected[panePid]
+	if !ok {
+		return ""
 	}
-	return ""
+	return agentSessionIDFromArgs(tool, process.args)
 }
 
 func agentSessionIDFromArgs(tool string, args string) string {
@@ -8427,6 +8742,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			AgentSessionID:           window.agentSessionID,
 			AgentSessionDir:          window.agentSessionDir,
 			AgentSessionPath:         window.agentSessionPath,
+			LastActivityEpochSeconds: window.lastActivity.Unix(),
 			CursorVisible:            window.cursorVisible,
 			CursorVisibilityKnown:    window.cursorVisibilityKnown,
 			PrivateModes:             copyPrivateModes(window.privateModes),
@@ -14569,7 +14885,10 @@ func piResumeCommand(sessionID string, sessionDir string, sessionPath string) st
 }
 
 func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) string {
-	quotedSessionID := shellQuote(sessionID)
+	quotedSessionID, ok := shellArgument(sessionID)
+	if !ok {
+		return ""
+	}
 	switch tool {
 	case "claude":
 		if startInYoloMode {
@@ -14652,15 +14971,7 @@ func canonicalAgentCommandName(command string) string {
 // the shell before it can reach the fallback, so closing a window never
 // relaunches the agent.
 func agentResumeCommandWithFreshFallback(resume string, launch string) string {
-	resume = strings.TrimSpace(resume)
-	launch = strings.TrimSpace(launch)
-	if resume == "" {
-		return launch
-	}
-	if launch == "" || launch == resume {
-		return resume
-	}
-	return resume + " || " + launch
+	return piResumeCommandWithFreshFallback(resume, launch)
 }
 
 func agentToolFromTerminalTitle(title string) string {

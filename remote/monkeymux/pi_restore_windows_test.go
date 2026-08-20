@@ -27,6 +27,28 @@ func TestPiRestoreTreatsWindowsShellsAsShells(t *testing.T) {
 	}
 }
 
+func TestAgentRestoreCommandUsesWindowsShellSyntax(t *testing.T) {
+	t.Setenv("ComSpec", "cmd.exe")
+	t.Setenv("MONKEYMUX_SHELL", "cmd.exe")
+	if got := agentResumeCommand("claude", "session id", false); got != `claude --resume "session id"` {
+		t.Fatalf("cmd resume command = %q", got)
+	}
+	if got := agentResumeCommandWithFreshFallback(`claude --resume "session id"`, "claude"); got != `claude --resume "session id" || claude` {
+		t.Fatalf("cmd fallback command = %q", got)
+	}
+	if got := agentResumeCommand("claude", "session%id", false); got != "" {
+		t.Fatalf("unsafe cmd resume command = %q", got)
+	}
+
+	t.Setenv("MONKEYMUX_SHELL", "powershell.exe")
+	if got := agentResumeCommand("claude", "session's id", false); got != `claude --resume 'session''s id'` {
+		t.Fatalf("PowerShell resume command = %q", got)
+	}
+	if got := agentResumeCommandWithFreshFallback("claude --resume session-id", "claude"); got != "claude --resume session-id; if (-not $?) { claude }" {
+		t.Fatalf("PowerShell fallback command = %q", got)
+	}
+}
+
 func TestPiRestoreCommandIsSafeForCmd(t *testing.T) {
 	t.Setenv("ComSpec", "cmd.exe")
 	t.Setenv("MONKEYMUX_SHELL", "cmd.exe")
