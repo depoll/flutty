@@ -3723,30 +3723,17 @@ print(json.dumps(sessions))
               maximum: 12,
             )
           : calculateRecentSessionMetadataReadLimit(max);
-      final output = session.remoteIsWindows
-          ? await _execWindowsPowerShell(
-              session,
-              windowsListNewestFilesScript(
-                relativeRoot: '.pi/agent/sessions',
-                includeGlobs: const ['*.jsonl'],
-                limit: scanLimit,
-              ),
-            )
-          : await _exec(
-              session,
-              'find ~/.pi/agent/sessions -name "*.jsonl" -type f '
-              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
-            );
-      if (output.trim().isEmpty) {
+      final sessionPaths = await _listPiSessionPaths(
+        session,
+        workingDirectory,
+        relatedWorkingDirectories,
+        scanLimit: scanLimit,
+        prioritizedCount: metadataReadLimit,
+        previewOnly: previewOnly,
+      );
+      if (sessionPaths.isEmpty) {
         return const _ToolDiscoveryResult.success('Pi', []);
       }
-
-      final sessionPaths = output
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .toList(growable: false);
       final recentSessionPaths = sessionPaths
           .take(metadataReadLimit)
           .toList(growable: false);
@@ -3829,6 +3816,86 @@ print(json.dumps(sessions))
     } on Object {
       return const _ToolDiscoveryResult.failure('Pi');
     }
+  }
+
+  /// Lists Pi candidates from the active project buckets before the global
+  /// history. Pi users often have enough sessions across worktrees that a small
+  /// global preview scan never reaches the active project's files.
+  Future<List<String>> _listPiSessionPaths(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories, {
+    required int scanLimit,
+    required int prioritizedCount,
+    required bool previewOnly,
+  }) async {
+    List<String> parsePaths(String output) => output
+        .trim()
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
+
+    final scopeDirectories = relatedWorkingDirectories.isNotEmpty
+        ? relatedWorkingDirectories
+        : workingDirectory == null || workingDirectory.isEmpty
+        ? const <String>[]
+        : <String>[workingDirectory];
+    final buckets = scopeDirectories
+        .map(piEncodedSessionDirectoryName)
+        .whereType<String>()
+        .toSet()
+        .toList(growable: false);
+
+    var scopedPaths = const <String>[];
+    if (buckets.isNotEmpty) {
+      final scopedOutput = session.remoteIsWindows
+          ? await _execWindowsPowerShell(
+              session,
+              windowsListNewestFilesScript(
+                relativeRoot: '.pi/agent/sessions/${buckets.first}',
+                additionalRelativeRoots: buckets
+                    .skip(1)
+                    .map((bucket) => '.pi/agent/sessions/$bucket')
+                    .toList(growable: false),
+                includeGlobs: const ['*.jsonl'],
+                limit: scanLimit,
+              ),
+            )
+          : await _exec(
+              session,
+              'find ${buckets.map((bucket) => '"\$HOME"/.pi/agent/sessions/${_shellQuote(bucket)}').join(' ')} '
+              '-maxdepth 1 -name "*.jsonl" -type f '
+              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+            );
+      scopedPaths = parsePaths(scopedOutput);
+      // The provider menu only needs one in-scope row. Avoid a second remote
+      // scan once that row is known, and likewise stop when the full picker has
+      // enough prioritized candidates to fill its metadata budget.
+      if ((previewOnly && scopedPaths.isNotEmpty) ||
+          scopedPaths.length >= prioritizedCount) {
+        return scopedPaths.take(scanLimit).toList(growable: false);
+      }
+    }
+
+    final globalOutput = session.remoteIsWindows
+        ? await _execWindowsPowerShell(
+            session,
+            windowsListNewestFilesScript(
+              relativeRoot: '.pi/agent/sessions',
+              includeGlobs: const ['*.jsonl'],
+              limit: scanLimit,
+            ),
+          )
+        : await _exec(
+            session,
+            'find ~/.pi/agent/sessions -name "*.jsonl" -type f '
+            '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+          );
+    return <String>{
+      ...scopedPaths,
+      ...parsePaths(globalOutput),
+    }.take(scanLimit).toList(growable: false);
   }
 
   /// Keeps Pi sessions recorded in scope, plus sessions Pi has since relocated
