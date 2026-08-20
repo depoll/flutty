@@ -237,6 +237,8 @@ final settingsServiceProvider = Provider<SettingsService>(
 abstract class _AsyncSettingsNotifier<T> extends Notifier<T> {
   late SettingsService _settings;
   bool _disposed = false;
+  Future<void>? _initialization;
+  var _stateRevision = 0;
 
   SettingsService get _settingsService => _settings;
 
@@ -251,14 +253,32 @@ abstract class _AsyncSettingsNotifier<T> extends Notifier<T> {
     _settings = ref.watch(settingsServiceProvider);
     _disposed = false;
     ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
+    final initializationRevision = _stateRevision;
+    _initialization = Future<void>.microtask(
+      () => _init(initializationRevision),
+    );
     return _defaultValue;
   }
 
-  Future<void> _init() async {
+  Future<void> _init(int initializationRevision) async {
     if (_disposed) return;
     final value = await _loadValue();
-    if (_disposed) return;
+    if (_disposed || initializationRevision != _stateRevision) return;
+    state = value;
+  }
+
+  /// Waits until this notifier has loaded its persisted value.
+  Future<T> initializedValue() async {
+    await _initialization;
+    return state;
+  }
+
+  /// Publishes a value after its persistent write has completed.
+  ///
+  /// Incrementing the revision prevents an older initialization read from
+  /// replacing a newer user choice when both operations overlap.
+  void _setPersistedState(T value) {
+    _stateRevision++;
     state = value;
   }
 }
@@ -451,7 +471,7 @@ class ConfirmMuxWindowCloseNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.confirmMuxWindowClose,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 

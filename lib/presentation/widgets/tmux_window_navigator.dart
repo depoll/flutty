@@ -48,9 +48,11 @@ Future<bool> confirmMuxWindowClose({
   required WidgetRef ref,
   required String title,
 }) async {
-  if (!ref.read(confirmMuxWindowCloseNotifierProvider)) {
-    return true;
-  }
+  final shouldConfirm = await ref
+      .read(confirmMuxWindowCloseNotifierProvider.notifier)
+      .initializedValue();
+  if (!context.mounted) return false;
+  if (!shouldConfirm) return true;
   var dontAskAgain = false;
   final result = await showDialog<({bool confirmed, bool dontAskAgain})>(
     context: context,

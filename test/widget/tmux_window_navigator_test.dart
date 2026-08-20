@@ -3,10 +3,12 @@
 import 'dart:async';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
@@ -221,6 +223,29 @@ void main() {
     expect(find.text('confirmed 2'), findsOneWidget);
   });
 
+  testWidgets('saved close preference is honored on the first app frame', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    await SettingsService(
+      db,
+    ).setBool(SettingKeys.confirmMuxWindowClose, value: false);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [databaseProvider.overrideWithValue(db)],
+        child: const MaterialApp(home: _ConfirmCloseHost()),
+      ),
+    );
+
+    await tester.tap(find.text('Request close'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Close window?'), findsNothing);
+    expect(find.text('confirmed 1'), findsOneWidget);
+  });
+
   testWidgets('native mux badges show waiting and running', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -336,6 +361,7 @@ void main() {
         session: session,
         tmuxSessionName: sessionName,
         remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        confirmWindowClose: true,
       );
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
@@ -1295,6 +1321,7 @@ Future<void> _pumpNavigatorHost(
   required String tmuxSessionName,
   RemoteMuxBackend remoteMuxBackend = RemoteMuxBackend.tmux,
   bool startClisInYoloMode = false,
+  bool? confirmWindowClose,
   ValueChanged<TmuxNavigatorAction?>? onActionSelected,
   FakeAcpSessionManager? acpManager,
 }) async {
@@ -1303,6 +1330,10 @@ Future<void> _pumpNavigatorHost(
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
+        if (confirmWindowClose != null)
+          confirmMuxWindowCloseNotifierProvider.overrideWith(
+            _TestConfirmMuxWindowCloseNotifier.new,
+          ),
         acpSessionManagerProvider.overrideWithValue(resolvedAcpManager),
         acpProvidersProvider.overrideWith(
           (ref) => Stream.value(<AcpProvider>[
