@@ -456,6 +456,45 @@ func TestEnrichRestoreWithAgentSessionIDsKeepsFreshPiWindowFresh(t *testing.T) {
 	}
 }
 
+func TestDiscoverPiSessionsUsesConfirmedWindowActivityWithoutProcessTable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	activity := time.Now().UTC().Truncate(time.Second)
+	path := filepath.Join(root, "project", "active.jsonl")
+	writePiTestSession(t, path, "active-session", project, activity)
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		Name:                     "Pi",
+		Cwd:                      project,
+		CurrentCommand:           "pi",
+		AgentTool:                "pi",
+		AgentToolConfirmed:       true,
+		LastActivityEpochSeconds: activity.Unix(),
+	}}}
+
+	got := discoverPiSessions(restore, nil, nil)
+	session, ok := got[0]
+	if !ok {
+		t.Fatal("confirmed Pi window activity did not restore a session")
+	}
+	if session.sessionID != "active-session" || session.sessionPath != path {
+		t.Fatalf("activity-correlated Pi session = %#v", session)
+	}
+	options := createWindowOptionsForRestore(restoreWindowState{
+		AgentTool:        "pi",
+		AgentSessionID:   session.sessionID,
+		AgentSessionDir:  session.sessionDir,
+		AgentSessionPath: session.sessionPath,
+	}, false)
+	want := piResumeCommandWithFreshFallback(
+		piResumeCommand(session.sessionID, session.sessionDir, session.sessionPath),
+		piLaunchCommand(session.sessionDir),
+	)
+	if options.command != want {
+		t.Fatalf("restored Pi command = %q, want %q", options.command, want)
+	}
+}
+
 func TestDiscoverPiSessionsDeclinesAmbiguousCwdFallback(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)

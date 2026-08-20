@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.161"
+	monkeyMuxVersion                  = "0.1.162"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3333,6 +3333,7 @@ func discoverPiSessions(
 	sessions := map[int]piRestoreSession{}
 	processStarts := map[int]time.Time{}
 	livePiWindows := map[int]bool{}
+	trustedPiWindows := map[int]bool{}
 	type fallbackKey struct {
 		root string
 		cwd  string
@@ -3350,6 +3351,9 @@ func discoverPiSessions(
 			restore.Windows[i].AgentToolConfirmed = true
 			livePiWindows[i] = true
 		}
+		trustedPiWindows[i] = hasProcess ||
+			(restore.Windows[i].AgentToolConfirmed &&
+				agentToolForRestore(restore.Windows[i]) == "pi")
 		if hasProcess {
 			if entry, ok := piSessionFromProcessArgs(process.args, window.Cwd); ok && !used[entry.sessionID] {
 				sessions[i] = piRestoreSession{
@@ -3444,8 +3448,13 @@ func discoverPiSessions(
 			indices,
 			candidates,
 		) {
-			if !livePiWindows[index] ||
-				!sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) {
+			if !trustedPiWindows[index] ||
+				!piSessionFreshForRestoreWindow(
+					restore.Windows[index],
+					candidate,
+					processStarts[index],
+					livePiWindows[index],
+				) {
 				continue
 			}
 			sessions[index] = piRestoreSession{
@@ -3476,19 +3485,24 @@ func discoverPiSessions(
 			restore,
 			remainingIndices,
 			remainingCandidates,
-			livePiWindows,
+			trustedPiWindows,
 		)
 		freshActivityMatches := map[int]piSessionEntry{}
 		activityOwnedSessionIDs := map[string]bool{}
 		for index, candidate := range activityMatches {
-			if !sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) {
+			if !piSessionFreshForRestoreWindow(
+				restore.Windows[index],
+				candidate,
+				processStarts[index],
+				livePiWindows[index],
+			) {
 				continue
 			}
 			freshActivityMatches[index] = candidate
 			activityOwnedSessionIDs[candidate.sessionID] = true
 		}
 		for index, candidate := range freshActivityMatches {
-			if piSessionWasSuperseded(
+			if !processStarts[index].IsZero() && piSessionWasSuperseded(
 				remainingCandidates,
 				candidate,
 				processStarts[index],
@@ -3639,6 +3653,29 @@ func discoverPiSessions(
 		}
 	}
 	return sessions
+}
+
+func piSessionFreshForRestoreWindow(
+	window restoreWindowState,
+	candidate piSessionEntry,
+	processStarted time.Time,
+	hasLiveProcess bool,
+) bool {
+	if hasLiveProcess {
+		return sessionUpdatedDuringProcess(candidate.modTime, processStarted)
+	}
+	if !window.AgentToolConfirmed ||
+		agentToolForRestore(window) != "pi" ||
+		window.LastActivityEpochSeconds <= 0 ||
+		candidate.modTime.IsZero() {
+		return false
+	}
+	activity := time.Unix(window.LastActivityEpochSeconds, 0)
+	delta := candidate.modTime.Sub(activity)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= piSessionActivityMatchTolerance
 }
 
 func uniquePiSessionsByWindowActivity(
