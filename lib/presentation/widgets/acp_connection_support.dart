@@ -9,8 +9,10 @@ import '../../data/repositories/host_repository.dart';
 import '../../domain/models/acp_provider.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/services/acp_launch_profile_service.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/monkeymux_acp_bridge_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
+import '../../domain/services/ssh_exec_queue.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/windows_remote_powershell.dart';
 import 'connection_attempt_dialog.dart';
@@ -49,6 +51,97 @@ Future<SshConnectionResult> ensureAcpHostConnection(
   return connectToHostWithProgressDialog(context, ref, host, forceNew: false);
 }
 
+const _acpExecutableProbeCacheTtl = Duration(seconds: 30);
+final _acpExecutableProbeCaches = Expando<_AcpExecutableProbeCache>(
+  'acp-executable-probe',
+);
+
+class _AcpExecutableProbeCache {
+  Map<String, String>? value;
+  DateTime? loadedAt;
+  Future<Map<String, String>>? pending;
+}
+
+Set<String> _allBuiltinAcpExecutableNames() => <String>{
+  for (final provider in acpBuiltinProviders) ...[
+    ...provider.executableProbe.candidateExecutableNames,
+    if (provider.adapterFallbackCommand case final fallback?)
+      fallback.executable,
+  ],
+};
+
+Future<Map<String, String>> _loadAcpRemoteExecutables(
+  SshSession session,
+) async {
+  final cache = _acpExecutableProbeCaches[session] ??=
+      _AcpExecutableProbeCache();
+  final now = DateTime.now();
+  if (cache.value case final value?
+      when cache.loadedAt != null &&
+          now.difference(cache.loadedAt!) < _acpExecutableProbeCacheTtl) {
+    DiagnosticsLogService.instance.debug(
+      'acp.launch',
+      'executable_probe_cache_hit',
+      fields: {
+        'connectionId': session.connectionId,
+        'ageMs': now.difference(cache.loadedAt!).inMilliseconds,
+      },
+    );
+    return value;
+  }
+  if (cache.pending case final pending?) return pending;
+  final requested = _allBuiltinAcpExecutableNames();
+  final startedAt = DateTime.now();
+  final future = session.runQueuedExec(() async {
+    final command = session.remoteIsWindows
+        ? buildWindowsPowerShellCommand(
+            buildMonkeyMuxAcpWindowsExecutableProbeScript(requested),
+          )
+        : buildMonkeyMuxAcpExecutableProbeCommand(requested);
+    SSHSession? shell;
+    try {
+      shell = await session.execute(command);
+      shell.stderr.drain<void>().ignore();
+      final output = await utf8.decodeStream(shell.stdout);
+      await shell.done;
+      return parseMonkeyMuxAcpExecutableProbeOutput(output, requested);
+    } finally {
+      shell?.close();
+    }
+  }, priority: SshExecPriority.low);
+  cache.pending = future;
+  try {
+    final value = await future;
+    cache
+      ..value = value
+      ..loadedAt = DateTime.now();
+    DiagnosticsLogService.instance.debug(
+      'acp.launch',
+      'executable_probe_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
+        'matchCount': value.length,
+      },
+    );
+    return value;
+  } finally {
+    cache.pending = null;
+  }
+}
+
+/// Warms approved ACP executable paths while the terminal is already usable.
+///
+/// This is best-effort and never blocks shell startup. The launch path awaits
+/// the same deduplicated probe if the user acts before it completes.
+Future<void> prewarmAcpRemoteExecutables(SshSession session) async {
+  try {
+    await _loadAcpRemoteExecutables(session);
+  } on Object {
+    // Launch performs the normal checked probe and surfaces any real failure.
+  }
+}
+
 /// Resolves and confirms the exact remote command used for a built-in ACP
 /// provider, regardless of which launch surface initiated the session.
 ///
@@ -64,28 +157,7 @@ resolveAcpRemoteProviderLaunch({
   bool startInYoloMode = false,
   ValueChanged<AcpLaunchProfile>? onProfileSelected,
 }) async {
-  final requested = <String>{
-    ...provider.executableProbe.candidateExecutableNames,
-    if (provider.adapterFallbackCommand case final fallback?)
-      fallback.executable,
-  };
-  final command = session.remoteIsWindows
-      ? buildWindowsPowerShellCommand(
-          buildMonkeyMuxAcpWindowsExecutableProbeScript(requested),
-        )
-      : buildMonkeyMuxAcpExecutableProbeCommand(requested);
-  final found = await session.runQueuedExec(() async {
-    SSHSession? shell;
-    try {
-      shell = await session.execute(command);
-      shell.stderr.drain<void>().ignore();
-      final output = await utf8.decodeStream(shell.stdout);
-      await shell.done;
-      return parseMonkeyMuxAcpExecutableProbeOutput(output, requested);
-    } finally {
-      shell?.close();
-    }
-  });
+  final found = await _loadAcpRemoteExecutables(session);
 
   if (!context.mounted) return null;
   for (final candidate in provider.executableProbe.candidateExecutableNames) {

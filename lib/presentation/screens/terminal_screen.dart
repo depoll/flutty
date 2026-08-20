@@ -73,6 +73,7 @@ import '../controllers/terminal_session_controller.dart';
 import '../widgets/acp_composer.dart';
 import '../widgets/acp_concurrency_choice.dart';
 import '../widgets/acp_connection_support.dart';
+import '../widgets/acp_native_starting_view.dart';
 import '../widgets/acp_new_session_sheet.dart';
 import '../widgets/acp_session_presentation.dart';
 import '../widgets/acp_session_switcher.dart';
@@ -3507,6 +3508,37 @@ class _StoreDemoAutoConfirmDialogState {
   bool open = true;
 }
 
+enum _NativeAcpLaunchPhase { resolvingAdapter, startingSession }
+
+@immutable
+class _NativeAcpLaunchState {
+  const _NativeAcpLaunchState({
+    required this.generation,
+    required this.providerId,
+    required this.providerLabel,
+    required this.phase,
+    required this.resuming,
+    required this.startedAt,
+  });
+
+  final int generation;
+  final String providerId;
+  final String providerLabel;
+  final _NativeAcpLaunchPhase phase;
+  final bool resuming;
+  final DateTime startedAt;
+
+  _NativeAcpLaunchState copyWith({required _NativeAcpLaunchPhase phase}) =>
+      _NativeAcpLaunchState(
+        generation: generation,
+        providerId: providerId,
+        providerLabel: providerLabel,
+        phase: phase,
+        resuming: resuming,
+        startedAt: startedAt,
+      );
+}
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -3703,6 +3735,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxBarExpanded = false;
   double _tmuxSidebarDragOffset = 0;
   AcpSessionKey? _activeNativeAcpSessionKey;
+  _NativeAcpLaunchState? _nativeAcpLaunchState;
+  var _nativeAcpLaunchGeneration = 0;
   final Map<String, AcpChatScrollState> _nativeAcpScrollStates = {};
   String? _connectionOpenedWorkingDirectory;
   String? _tmuxLaunchWorkingDirectory;
@@ -7679,6 +7713,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _syncTerminalWakeLock(SshConnectionState.connected);
       if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
         _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        unawaited(prewarmAcpRemoteExecutables(session));
       } else {
         _scheduleTerminalSizeRefresh();
       }
@@ -11366,11 +11401,114 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return '${provider?.label ?? 'Agent'} · ${profile.label}';
   }
 
+  void _beginNativeAcpLaunch(SshSession session, _NativeAcpLaunchState launch) {
+    session.setTerminalParsingPaused(paused: true);
+    setState(() => _nativeAcpLaunchState = launch);
+    _collapseTmuxBarIfExpanded();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _nativeAcpLaunchState?.generation != launch.generation) {
+        return;
+      }
+      DiagnosticsLogService.instance.info(
+        'acp.launch',
+        'visual_ready',
+        fields: {
+          'connectionId': session.connectionId,
+          'durationMs': DateTime.now()
+              .difference(launch.startedAt)
+              .inMilliseconds,
+        },
+      );
+    });
+  }
+
+  void _updateNativeAcpLaunchPhase(
+    int generation,
+    _NativeAcpLaunchPhase phase,
+  ) {
+    if (!mounted || _nativeAcpLaunchState?.generation != generation) return;
+    setState(() {
+      _nativeAcpLaunchState = _nativeAcpLaunchState!.copyWith(phase: phase);
+    });
+  }
+
+  void _finishNativeAcpLaunch(SshSession session, int generation) {
+    if (!mounted || _nativeAcpLaunchState?.generation != generation) return;
+    final launch = _nativeAcpLaunchState!;
+    final hasActiveNativeSession = _activeNativeAcpSessionKey != null;
+    DiagnosticsLogService.instance.info(
+      'acp.launch',
+      'visual_finished',
+      fields: {
+        'connectionId': session.connectionId,
+        'durationMs': DateTime.now()
+            .difference(launch.startedAt)
+            .inMilliseconds,
+        'openedSession': false,
+      },
+    );
+    setState(() => _nativeAcpLaunchState = null);
+    if (hasActiveNativeSession) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          _nativeAcpLaunchState != null ||
+          _activeNativeAcpSessionKey != null) {
+        return;
+      }
+      session.setTerminalParsingPaused(paused: false);
+      _probeAndForceMuxWindowRefresh();
+    });
+  }
+
   Future<void> _startNativeAcpSession(
     SshSession session, {
     String? providerId,
     String? workingDirectory,
     String? resumeSessionId,
+  }) async {
+    if (providerId == null || _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return _performNativeAcpSessionStart(
+        session,
+        providerId: providerId,
+        workingDirectory: workingDirectory,
+        resumeSessionId: resumeSessionId,
+      );
+    }
+    if (_nativeAcpLaunchState != null) return;
+    final provider = acpBuiltinProviders
+        .where((candidate) => candidate.id == providerId)
+        .firstOrNull;
+    final generation = ++_nativeAcpLaunchGeneration;
+    _beginNativeAcpLaunch(
+      session,
+      _NativeAcpLaunchState(
+        generation: generation,
+        providerId: providerId,
+        providerLabel: provider?.label ?? 'Native agent',
+        phase: _NativeAcpLaunchPhase.resolvingAdapter,
+        resuming: resumeSessionId != null,
+        startedAt: DateTime.now(),
+      ),
+    );
+    try {
+      await _performNativeAcpSessionStart(
+        session,
+        providerId: providerId,
+        workingDirectory: workingDirectory,
+        resumeSessionId: resumeSessionId,
+        launchGeneration: generation,
+      );
+    } finally {
+      _finishNativeAcpLaunch(session, generation);
+    }
+  }
+
+  Future<void> _performNativeAcpSessionStart(
+    SshSession session, {
+    String? providerId,
+    String? workingDirectory,
+    String? resumeSessionId,
+    int? launchGeneration,
   }) async {
     if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
       if (mounted) {
@@ -11404,6 +11542,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       providerId,
     );
     if (!mounted || adapterLaunch == null) return;
+    if (launchGeneration != null) {
+      _updateNativeAcpLaunchPhase(
+        launchGeneration,
+        _NativeAcpLaunchPhase.startingSession,
+      );
+    }
     if (adapterLaunch.terminal) {
       final tool = agentLaunchToolForAcpProviderId(providerId);
       if (tool != null) {
@@ -11556,7 +11700,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     (_observedSession ?? _activeSession())?.setTerminalParsingPaused(
       paused: true,
     );
-    setState(() => _activeNativeAcpSessionKey = key);
+    final launch = _nativeAcpLaunchState;
+    if (launch != null) {
+      DiagnosticsLogService.instance.info(
+        'acp.launch',
+        'visual_finished',
+        fields: {
+          'connectionId': ?_connectionId,
+          'durationMs': DateTime.now()
+              .difference(launch.startedAt)
+              .inMilliseconds,
+          'openedSession': true,
+        },
+      );
+    }
+    setState(() {
+      _nativeAcpLaunchState = null;
+      _activeNativeAcpSessionKey = key;
+    });
     _persistNativeAcpFocus(key);
     _collapseTmuxBarIfExpanded();
   }
@@ -11661,6 +11822,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ref
         .read(activeSessionsProvider.notifier)
         .updateSessionFontSize(connectionId, next);
+  }
+
+  Widget _buildNativeAgentStartingView(_NativeAcpLaunchState launch) {
+    final detail = switch (launch.phase) {
+      _NativeAcpLaunchPhase.resolvingAdapter => 'checking native adapter…',
+      _NativeAcpLaunchPhase.startingSession =>
+        'opening persistent agent session…',
+    };
+    return AcpNativeStartingView(
+      key: ValueKey<_NativeAcpLaunchPhase>(launch.phase),
+      providerLabel: launch.providerLabel,
+      detail: detail,
+      resuming: launch.resuming,
+      tool: agentLaunchToolForAcpProviderId(launch.providerId),
+    );
   }
 
   Widget _buildEmbeddedNativeAgentView(AcpSessionKey key) {
@@ -12949,7 +13125,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       bottomInset: MediaQuery.viewInsetsOf(context).bottom,
       terminalInputConnectionVisible:
           _terminalTextInputController.isKeyboardVisible,
-      nativeAgentActive: _activeNativeAcpSessionKey != null,
+      nativeAgentActive:
+          _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null,
     );
     if (_isAndroidPlatform) {
       _logAndroidPredictiveBackDiagnostics(context, phase: 'build');
@@ -12963,7 +13140,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final activeSession = _connectionId == null
         ? null
         : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
-    final showsNativeAgent = _activeNativeAcpSessionKey != null;
+    final showsNativeAgent =
+        _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null;
     final showsTerminalViewportMenuActions =
         resolveShowTerminalViewportMenuActions(
           nativeAgentActive: showsNativeAgent,
@@ -14063,6 +14241,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         message: overlayMessage,
         onRetry: _reconnect,
       );
+    }
+
+    final nativeAcpLaunchState = _nativeAcpLaunchState;
+    if (nativeAcpLaunchState != null) {
+      return _buildNativeAgentStartingView(nativeAcpLaunchState);
     }
 
     final activeNativeAcpSessionKey = _activeNativeAcpSessionKey;

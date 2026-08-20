@@ -3294,24 +3294,21 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
         await tester.pump();
 
-        expect(executedCommands, hasLength(1));
-        expect(executedCommands.single, contains('/tmp/monkeymux'));
-        expect(executedCommands.single, contains(' attach'));
-        expect(executedCommands.single, contains('--update-policy never'));
-        expect(executedCommands.single, contains(sessionName));
+        final attachCommands = executedCommands
+            .where((command) => command.contains(' attach'))
+            .toList(growable: false);
+        expect(attachCommands, hasLength(1));
+        final attachCommand = attachCommands.single;
+        expect(attachCommand, contains('/tmp/monkeymux'));
+        expect(attachCommand, contains('--update-policy never'));
+        expect(attachCommand, contains(sessionName));
         final viewportSize = tester
             .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
             .viewportCellSize!;
-        expect(
-          executedCommands.single,
-          contains('--width ${viewportSize.columns}'),
-        );
-        expect(
-          executedCommands.single,
-          contains('--height ${viewportSize.rows}'),
-        );
-        expect(executedCommands.single, isNot(contains('--width 59')));
-        expect(executedCommands.single, isNot(contains('--height 50')));
+        expect(attachCommand, contains('--width ${viewportSize.columns}'));
+        expect(attachCommand, contains('--height ${viewportSize.rows}'));
+        expect(attachCommand, isNot(contains('--width 59')));
+        expect(attachCommand, isNot(contains('--height 50')));
         expect(
           shellWrites.map(utf8.decode).join(),
           isNot(contains('/tmp/monkeymux')),
@@ -3327,10 +3324,11 @@ void main() {
         loginOpen.complete(loginShell);
         final replacementShell = await replacementShellFuture;
 
-        expect(executedCommands, hasLength(2));
         expect(
-          executedCommands.last,
-          _trueColorLoginShellCommand(session.config),
+          executedCommands.where(
+            (command) => command == _trueColorLoginShellCommand(session.config),
+          ),
+          hasLength(1),
         );
         expect(replacementShell, same(loginShell));
         verify(() => loginShell.resizeTerminal(100, 32, 800, 512)).called(1);
@@ -8572,15 +8570,21 @@ void main() {
         );
         expect(find.text('Disconnected'), findsOneWidget);
         expect(find.text('Reconnect'), findsOneWidget);
-        expect(executedCommands, hasLength(1));
+        expect(
+          executedCommands.where((command) => command.contains(' attach')),
+          hasLength(1),
+        );
 
         await tester.tap(find.text('Reconnect'));
         await tester.pump();
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
 
-        expect(reconnectCommands, hasLength(1));
-        final reconnectCommand = reconnectCommands.single;
+        final reconnectAttachCommands = reconnectCommands
+            .where((command) => command.contains(' attach'))
+            .toList(growable: false);
+        expect(reconnectAttachCommands, hasLength(1));
+        final reconnectCommand = reconnectAttachCommands.single;
         expect(reconnectCommand, contains('/tmp/monkeymux'));
         expect(reconnectCommand, contains(' attach'));
         expect(reconnectCommand, contains('--existing'));
