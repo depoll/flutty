@@ -199,6 +199,7 @@ class AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    String? providerLabelOverride,
     bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
@@ -210,7 +211,10 @@ class AcpSessionManager {
     if (launch is _LaunchError) {
       return AcpSessionLaunchFailed(null, launch.error);
     }
-    final resolved = launch as _ResolvedLaunch;
+    final resolved = _withProviderLabel(
+      launch as _ResolvedLaunch,
+      providerLabelOverride,
+    );
     final workingDirectory = await _resolveWorkingDirectory(hostId, cwd);
     if (workingDirectory.error case final error?) {
       return AcpSessionLaunchFailed(null, error);
@@ -245,6 +249,7 @@ class AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    String? providerLabelOverride,
     bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
@@ -256,7 +261,10 @@ class AcpSessionManager {
     if (launch is _LaunchError) {
       return AcpSessionLaunchFailed(null, launch.error);
     }
-    final resolved = launch as _ResolvedLaunch;
+    final resolved = _withProviderLabel(
+      launch as _ResolvedLaunch,
+      providerLabelOverride,
+    );
     final workingDirectory = await _resolveWorkingDirectory(hostId, cwd);
     if (workingDirectory.error case final error?) {
       return AcpSessionLaunchFailed(null, error);
@@ -291,6 +299,7 @@ class AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    String? providerLabelOverride,
     bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
@@ -314,7 +323,10 @@ class AcpSessionManager {
     if (launch is _LaunchError) {
       return AcpSessionLaunchFailed(key, launch.error);
     }
-    final resolved = launch as _ResolvedLaunch;
+    final resolved = _withProviderLabel(
+      launch as _ResolvedLaunch,
+      providerLabelOverride,
+    );
     final workingDirectory = await _resolveWorkingDirectory(
       hostId,
       cwd,
@@ -896,6 +908,20 @@ class AcpSessionManager {
         candidateSessionKey: candidateKeyValue,
         isProUnlocked: _isProUnlocked(),
       );
+
+  _ResolvedLaunch _withProviderLabel(
+    _ResolvedLaunch launch,
+    String? providerLabelOverride,
+  ) {
+    final label = providerLabelOverride?.trim();
+    if (label == null || label.isEmpty || label == launch.label) return launch;
+    return _ResolvedLaunch(
+      providerId: launch.providerId,
+      label: label,
+      argv: launch.argv,
+      isCustom: launch.isCustom,
+    );
+  }
 
   Future<({AcpSessionError? error, String? value})> _resolveWorkingDirectory(
     int hostId,

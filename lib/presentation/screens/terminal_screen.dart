@@ -28,6 +28,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/acp_native_preview.dart';
 import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
@@ -40,6 +41,7 @@ import '../../domain/models/terminal_progress.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/acp_launch_profile_service.dart';
 import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
@@ -11217,6 +11219,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           :final agentTool,
         ):
           var launchCommand = command;
+          var launchWindowName = windowName;
           if (agentTool?.supportsLaunchProfiles ?? false) {
             final providerId = builtinNativeAcpProvidersByTool()[agentTool];
             final provider = acpBuiltinProviders
@@ -11234,12 +11237,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 startInYoloMode: _startClisInYoloMode,
                 launchProfile: profile.argument,
               );
+              if (profile.showInTitle) {
+                launchWindowName = '${agentTool.label} · ${profile.label}';
+              }
             }
           }
           await _createTmuxWindow(
             session,
             command: launchCommand,
-            name: windowName,
+            name: launchWindowName,
           );
           if (!mounted) return;
           _showTerminalViewport();
@@ -11322,21 +11328,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<({AcpLaunchCommand? override, bool terminal})?>
-  _resolveNativeAdapterLaunch(SshSession session, String providerId) {
+  Future<
+    ({AcpLaunchCommand? override, bool terminal, AcpLaunchProfile? profile})?
+  >
+  _resolveNativeAdapterLaunch(SshSession session, String providerId) async {
     final provider = acpBuiltinProviders
         .where((candidate) => candidate.id == providerId)
         .firstOrNull;
     if (provider == null) {
-      return Future.value((override: null, terminal: false));
+      return (override: null, terminal: false, profile: null);
     }
-    return resolveAcpRemoteProviderLaunch(
+    AcpLaunchProfile? selectedProfile;
+    final launch = await resolveAcpRemoteProviderLaunch(
       context: context,
       session: session,
       provider: provider,
       canUseTerminalCli: agentLaunchToolForAcpProviderId(providerId) != null,
       startInYoloMode: _startClisInYoloMode,
+      onProfileSelected: (profile) => selectedProfile = profile,
     );
+    if (launch == null) return null;
+    return (
+      override: launch.override,
+      terminal: launch.terminal,
+      profile: selectedProfile,
+    );
+  }
+
+  String? _nativeProfileDisplayLabel(
+    String providerId,
+    AcpLaunchProfile? profile,
+  ) {
+    if (profile == null || !profile.showInTitle) return null;
+    final provider = acpBuiltinProviders
+        .where((candidate) => candidate.id == providerId)
+        .firstOrNull;
+    return '${provider?.label ?? 'Agent'} · ${profile.label}';
   }
 
   Future<void> _startNativeAcpSession(
@@ -11405,6 +11432,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             confirmInstall: (request) =>
                 confirmAcpMonkeyMuxInstall(context, request),
             launchCommandOverride: adapterLaunch.override,
+            providerLabelOverride: _nativeProfileDisplayLabel(
+              providerId,
+              adapterLaunch.profile,
+            ),
             autoApprovePermissions: _startClisInYoloMode,
             replace: replace,
           )
@@ -11416,6 +11447,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             confirmInstall: (request) =>
                 confirmAcpMonkeyMuxInstall(context, request),
             launchCommandOverride: adapterLaunch.override,
+            providerLabelOverride: _nativeProfileDisplayLabel(
+              providerId,
+              adapterLaunch.profile,
+            ),
             autoApprovePermissions: _startClisInYoloMode,
             replace: replace,
           );
@@ -11573,6 +11608,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .updateSessionNativeAcpPreview(connectionId, preview);
   }
 
+  void _updateNativeAcpPreviewSnapshot(
+    AcpSessionKey sessionKey,
+    AcpNativePreviewSnapshot? preview,
+  ) {
+    final connectionId = _connectionId;
+    if (connectionId == null ||
+        _activeNativeAcpSessionKey?.value != sessionKey.value) {
+      return;
+    }
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionNativeAcpPreviewSnapshot(connectionId, preview);
+  }
+
   void _updateNativeAcpScroll(
     AcpSessionKey sessionKey,
     AcpChatScrollState state,
@@ -11623,6 +11672,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExitEmbedded: _showTerminalViewport,
       onSessionChanged: _openNativeAcpSession,
       onPreviewChanged: _updateNativeAcpPreview,
+      onNativePreviewChanged: _updateNativeAcpPreviewSnapshot,
       initialScrollState: _nativeAcpScrollStates[key.value],
       onScrollChanged: _updateNativeAcpScroll,
     );

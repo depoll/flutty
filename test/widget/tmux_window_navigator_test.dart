@@ -1260,6 +1260,10 @@ void main() {
         findsOneWidget,
       );
       expect(
+        find.descendant(of: nativeRow, matching: find.text('NATIVE')),
+        findsOneWidget,
+      );
+      expect(
         find.byKey(ValueKey('native-acp-progress-${key.value}')),
         findsOneWidget,
       );

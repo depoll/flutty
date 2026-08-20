@@ -534,6 +534,19 @@ void main() {
     expect(manager.state.selectedKey, key.value);
   });
 
+  test('uses selected profile in the native session title', () async {
+    final result = await manager.startNewSession(
+      hostId: 1,
+      providerId: AcpBuiltinProviderIds.copilotCli,
+      providerLabelOverride: 'Hermes · work',
+      cwd: '/repo',
+    );
+
+    expect(result, isA<AcpSessionLaunchStarted>());
+    final key = (result as AcpSessionLaunchStarted).key;
+    expect(manager.state.byKeyValue(key.value)!.providerLabel, 'Hermes · work');
+  });
+
   test(
     'resolves a tilde cwd before launching the bridge and ACP session',
     () async {

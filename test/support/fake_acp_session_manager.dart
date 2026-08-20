@@ -190,6 +190,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    String? providerLabelOverride,
     bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {
@@ -208,6 +209,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
     AcpLaunchCommand? launchCommandOverride,
+    String? providerLabelOverride,
     bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {

@@ -16,6 +16,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../models/acp_native_preview.dart';
 import '../models/acp_session_keys.dart';
 import '../models/port_proxy_name.dart';
 import '../models/remote_multiplexer.dart';
@@ -3647,6 +3648,9 @@ class SshSession {
   /// Bounded in-memory conversation preview for the focused native session.
   String? activeNativeAcpPreview;
 
+  /// Role-aware live preview for the focused native session.
+  AcpNativePreviewSnapshot? activeNativeAcpPreviewSnapshot;
+
   /// The terminal multiplexer backend currently attached in this session.
   RemoteMuxBackend? remoteMuxBackend;
 
@@ -6508,6 +6512,7 @@ class ActiveConnection {
     required this.config,
     this.preview,
     this.previewSnapshot,
+    this.nativeAcpPreviewSnapshot,
     this.terminalTheme,
     this.sessionTitle,
     this.windowTitle,
@@ -6541,6 +6546,9 @@ class ActiveConnection {
 
   /// The latest styled terminal preview snippet, when available.
   final TerminalPreviewSnapshot? previewSnapshot;
+
+  /// Role-aware native-agent preview, when a native window is focused.
+  final AcpNativePreviewSnapshot? nativeAcpPreviewSnapshot;
 
   /// The active terminal theme resolved for this connection.
   final TerminalThemeData? terminalTheme;
@@ -8250,6 +8258,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       previewSnapshot: nativeFocusTitle == null
           ? session.terminalPreviewSnapshot
           : null,
+      nativeAcpPreviewSnapshot: nativeFocusTitle == null
+          ? null
+          : session.activeNativeAcpPreviewSnapshot,
       terminalTheme: session.terminalTheme,
       sessionTitle: nativeFocusTitle ?? _connectionSessionTitles[connectionId],
       windowTitle: nativeFocusTitle == null ? session.windowTitle : null,
@@ -8354,6 +8365,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           previewSnapshot: nativeFocusTitle == null
               ? session.terminalPreviewSnapshot
               : null,
+          nativeAcpPreviewSnapshot: nativeFocusTitle == null
+              ? null
+              : session.activeNativeAcpPreviewSnapshot,
           terminalTheme: session.terminalTheme,
           sessionTitle:
               nativeFocusTitle ?? _connectionSessionTitles[connectionId],
@@ -8965,7 +8979,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       ..activeNativeAcpSessionKey = key
       ..activeNativeAcpDisplayTitle = displayTitle;
     if (focusChanged || key == null) {
-      session.activeNativeAcpPreview = null;
+      session
+        ..activeNativeAcpPreview = null
+        ..activeNativeAcpPreviewSnapshot = null;
     }
     state = {...state};
   }
@@ -8979,6 +8995,21 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       return;
     }
     session.activeNativeAcpPreview = preview;
+    state = {...state};
+  }
+
+  /// Updates the role-aware preview for the focused native ACP session.
+  void updateSessionNativeAcpPreviewSnapshot(
+    int connectionId,
+    AcpNativePreviewSnapshot? snapshot,
+  ) {
+    final session = getSession(connectionId);
+    if (session == null ||
+        session.activeNativeAcpSessionKey == null ||
+        session.activeNativeAcpPreviewSnapshot == snapshot) {
+      return;
+    }
+    session.activeNativeAcpPreviewSnapshot = snapshot;
     state = {...state};
   }
 

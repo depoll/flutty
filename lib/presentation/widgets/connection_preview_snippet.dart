@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../app/theme.dart';
+import '../../domain/models/acp_native_preview.dart';
 import '../../domain/models/terminal_preview.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
@@ -79,6 +80,7 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   required Iterable<TerminalThemeData> availableThemes,
   String? preview,
   TerminalPreviewSnapshot? previewSnapshot,
+  AcpNativePreviewSnapshot? nativeAcpPreviewSnapshot,
   TerminalThemeData? activeTerminalTheme,
   String? sessionTitle,
   String? windowTitle,
@@ -123,6 +125,7 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
     title: titleSegments.join(' • '),
     body: body,
     previewSnapshot: previewSnapshot,
+    nativeAcpPreviewSnapshot: nativeAcpPreviewSnapshot,
     metadata: metadataSegments.isEmpty ? null : metadataSegments.join(' • '),
     terminalTheme:
         activeTerminalTheme ??
@@ -143,6 +146,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     required this.endpoint,
     this.preview,
     this.previewSnapshot,
+    this.nativeAcpPreviewSnapshot,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -164,6 +168,9 @@ class ConnectionPreviewSnippet extends StatelessWidget {
 
   /// Latest styled terminal preview snapshot, when available.
   final TerminalPreviewSnapshot? previewSnapshot;
+
+  /// Role-aware native-agent preview, when available.
+  final AcpNativePreviewSnapshot? nativeAcpPreviewSnapshot;
 
   /// Active coding-agent session title, when available.
   final String? sessionTitle;
@@ -255,7 +262,8 @@ class ConnectionPreviewSnippet extends StatelessWidget {
             ),
           ),
         ],
-        if (previewText != null && previewText.isNotEmpty) ...[
+        if ((previewText != null && previewText.isNotEmpty) ||
+            nativeAcpPreviewSnapshot != null) ...[
           if (showEndpoint ||
               activityTitle != null ||
               (workingDirectoryLabel?.isNotEmpty ?? false) ||
@@ -270,13 +278,17 @@ class ConnectionPreviewSnippet extends StatelessWidget {
               border: Border.all(color: borderColor),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: _AdaptiveTerminalPreviewText(
-              text: previewText,
-              previewSnapshot: previewSnapshot,
-              terminalTheme: terminalTheme,
-              color: previewTextColor,
-              maxLines: previewMaxLines,
-            ),
+            child: nativeAcpPreviewSnapshot == null
+                ? _AdaptiveTerminalPreviewText(
+                    text: previewText ?? '',
+                    previewSnapshot: previewSnapshot,
+                    terminalTheme: terminalTheme,
+                    color: previewTextColor,
+                    maxLines: previewMaxLines,
+                  )
+                : _NativeAcpConnectionPreview(
+                    snapshot: nativeAcpPreviewSnapshot!,
+                  ),
           ),
         ],
       ],
@@ -292,6 +304,7 @@ class ConnectionPreviewStackEntry {
     required this.title,
     required this.body,
     this.previewSnapshot,
+    this.nativeAcpPreviewSnapshot,
     this.metadata,
     this.terminalTheme,
   });
@@ -304,6 +317,9 @@ class ConnectionPreviewStackEntry {
 
   /// Styled preview cell data shown inside the card, when available.
   final TerminalPreviewSnapshot? previewSnapshot;
+
+  /// Role-aware native-agent preview shown inside the card.
+  final AcpNativePreviewSnapshot? nativeAcpPreviewSnapshot;
 
   /// Connection metadata shown separately from the terminal preview.
   final String? metadata;
@@ -318,12 +334,19 @@ class ConnectionPreviewStackEntry {
           other.title == title &&
           other.body == body &&
           other.previewSnapshot == previewSnapshot &&
+          other.nativeAcpPreviewSnapshot == nativeAcpPreviewSnapshot &&
           other.metadata == metadata &&
           other.terminalTheme == terminalTheme;
 
   @override
-  int get hashCode =>
-      Object.hash(title, body, previewSnapshot, metadata, terminalTheme);
+  int get hashCode => Object.hash(
+    title,
+    body,
+    previewSnapshot,
+    nativeAcpPreviewSnapshot,
+    metadata,
+    terminalTheme,
+  );
 }
 
 /// Renders one or more connection preview cards in a visibly offset stack.
@@ -482,13 +505,17 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
                   padding: const EdgeInsets.only(
                     top: _stackPreviewTextTopInset,
                   ),
-                  child: _AdaptiveTerminalPreviewText(
-                    text: entry.body,
-                    previewSnapshot: entry.previewSnapshot,
-                    terminalTheme: entry.terminalTheme,
-                    color: textColor,
-                    maxLines: _previewMaxLines,
-                  ),
+                  child: entry.nativeAcpPreviewSnapshot == null
+                      ? _AdaptiveTerminalPreviewText(
+                          text: entry.body,
+                          previewSnapshot: entry.previewSnapshot,
+                          terminalTheme: entry.terminalTheme,
+                          color: textColor,
+                          maxLines: _previewMaxLines,
+                        )
+                      : _NativeAcpConnectionPreview(
+                          snapshot: entry.nativeAcpPreviewSnapshot!,
+                        ),
                 ),
               ),
             ),
@@ -509,6 +536,92 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         child: card,
       ),
+    );
+  }
+}
+
+class _NativeAcpConnectionPreview extends StatelessWidget {
+  const _NativeAcpConnectionPreview({required this.snapshot});
+
+  final AcpNativePreviewSnapshot snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ClipRect(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              for (final line in snapshot.lines)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 3),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        switch (line.kind) {
+                          AcpNativePreviewKind.user => Icons.person_outline,
+                          AcpNativePreviewKind.agent =>
+                            Icons.smart_toy_outlined,
+                          AcpNativePreviewKind.tool => Icons.terminal,
+                          AcpNativePreviewKind.status => Icons.info_outline,
+                        },
+                        size: 11,
+                        color: switch (line.kind) {
+                          AcpNativePreviewKind.user => scheme.primary,
+                          AcpNativePreviewKind.agent => scheme.onSurface,
+                          AcpNativePreviewKind.tool => scheme.tertiary,
+                          AcpNativePreviewKind.status =>
+                            scheme.onSurfaceVariant,
+                        },
+                      ),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: Text(
+                          line.text,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontSize: 9.5,
+                            height: 1.18,
+                            color: scheme.onSurface,
+                            fontWeight: line.kind == AcpNativePreviewKind.user
+                                ? FontWeight.w600
+                                : FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                      if (line.active)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4, top: 3),
+                          child: SizedBox.square(
+                            dimension: 7,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.2,
+                              color: scheme.primary,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (snapshot.indeterminate || snapshot.progressFraction != null) ...[
+          const SizedBox(height: 4),
+          LinearProgressIndicator(
+            value: snapshot.indeterminate ? null : snapshot.progressFraction,
+            minHeight: 2,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ],
+      ],
     );
   }
 }
@@ -571,6 +684,8 @@ double _stackPreviewCardHeightForEntry({
     0,
     cardWidth - _stackPreviewCardHorizontalPadding,
   );
+
+  if (entry.nativeAcpPreviewSnapshot != null) return maxHeight;
 
   final styledSnapshot = entry.previewSnapshot;
   final styledTheme = entry.terminalTheme;

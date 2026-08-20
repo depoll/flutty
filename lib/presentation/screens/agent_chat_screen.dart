@@ -27,6 +27,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app/theme.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/acp_attachment.dart';
+import '../../domain/models/acp_native_preview.dart';
 import '../../domain/models/acp_protocol.dart';
 import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_session_keys.dart';
@@ -73,6 +74,10 @@ typedef AcpChatAttachmentActionsBuilder =
 typedef AcpChatPreviewChanged =
     void Function(AcpSessionKey sessionKey, String? preview);
 
+/// Receives a role-aware native preview together with its originating session.
+typedef AcpChatNativePreviewChanged =
+    void Function(AcpSessionKey sessionKey, AcpNativePreviewSnapshot? preview);
+
 /// Session-owned conversation scroll state retained across embedded remounts.
 @immutable
 class AcpChatScrollState {
@@ -118,6 +123,7 @@ class AgentChatScreen extends ConsumerStatefulWidget {
     this.onExitEmbedded,
     this.onSessionChanged,
     this.onPreviewChanged,
+    this.onNativePreviewChanged,
     this.initialScrollState,
     this.onScrollChanged,
     super.key,
@@ -162,6 +168,9 @@ class AgentChatScreen extends ConsumerStatefulWidget {
   /// Publishes a bounded conversation preview for connection cards.
   final AcpChatPreviewChanged? onPreviewChanged;
 
+  /// Publishes a bounded role-aware preview for connection cards.
+  final AcpChatNativePreviewChanged? onNativePreviewChanged;
+
   /// Retained transcript position for an embedded session remount.
   final AcpChatScrollState? initialScrollState;
 
@@ -179,6 +188,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
 
   late bool _autoScroll;
   late bool _showJumpToLatest;
+  var _initialScrollSettled = false;
+  var _initialScrollScheduled = false;
+  Timer? _initialScrollSettleTimer;
   var _userDraggingTranscript = false;
   var _connecting = true;
   AcpSessionError? _connectError;
@@ -187,6 +199,8 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   Timer? _previewPublishTimer;
   String? _pendingPreview;
   String? _lastPublishedPreview;
+  AcpNativePreviewSnapshot? _pendingNativePreview;
+  AcpNativePreviewSnapshot? _lastPublishedNativePreview;
   String? _piModelScopeIdentity;
   List<String>? _piEnabledModelPatterns;
   var _piModelScopeLoading = false;
@@ -220,6 +234,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   @override
   void dispose() {
     _previewPublishTimer?.cancel();
+    _initialScrollSettleTimer?.cancel();
     _publishScrollState();
     _scroll
       ..removeListener(_onScroll)
@@ -228,23 +243,33 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     super.dispose();
   }
 
-  void _queuePreviewPublish(String? preview) {
-    final callback = widget.onPreviewChanged;
-    if (callback == null ||
-        preview == _pendingPreview ||
-        (preview == _lastPublishedPreview && _previewPublishTimer == null)) {
-      return;
-    }
+  void _queuePreviewPublish(
+    String? preview,
+    AcpNativePreviewSnapshot? nativePreview,
+  ) {
+    final textChanged =
+        preview != _pendingPreview && preview != _lastPublishedPreview;
+    final nativeChanged =
+        nativePreview != _pendingNativePreview &&
+        nativePreview != _lastPublishedNativePreview;
+    if (!textChanged && !nativeChanged && _previewPublishTimer == null) return;
     _pendingPreview = preview;
+    _pendingNativePreview = nativePreview;
     _previewPublishTimer ??= Timer(const Duration(milliseconds: 250), () {
       _previewPublishTimer = null;
-      final next = _pendingPreview;
+      final nextText = _pendingPreview;
+      final nextNative = _pendingNativePreview;
       _pendingPreview = null;
-      if (!mounted || next == _lastPublishedPreview) {
-        return;
+      _pendingNativePreview = null;
+      if (!mounted) return;
+      if (nextText != _lastPublishedPreview) {
+        _lastPublishedPreview = nextText;
+        widget.onPreviewChanged?.call(_key, nextText);
       }
-      _lastPublishedPreview = next;
-      callback(_key, next);
+      if (nextNative != _lastPublishedNativePreview) {
+        _lastPublishedNativePreview = nextNative;
+        widget.onNativePreviewChanged?.call(_key, nextNative);
+      }
     });
   }
 
@@ -509,6 +534,29 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       _publishScrollState();
     }
     return false;
+  }
+
+  void _scheduleInitialScrollRestore() {
+    if (_initialScrollSettled || _initialScrollScheduled) return;
+    _initialScrollScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initialScrollScheduled = false;
+      if (!mounted || _initialScrollSettled || !_scroll.hasClients) return;
+      final retained = widget.initialScrollState;
+      if (retained != null && !retained.autoScroll) {
+        _initialScrollSettled = true;
+        _publishScrollState();
+        return;
+      }
+      _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      _initialScrollSettleTimer ??= Timer(const Duration(milliseconds: 60), () {
+        _initialScrollSettleTimer = null;
+        if (!mounted || !_scroll.hasClients) return;
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+        _initialScrollSettled = true;
+        _publishScrollState();
+      });
+    });
   }
 
   void _scheduleAutoScroll() {
@@ -1088,6 +1136,28 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     );
   }
 
+  void _openMarkdownLink(String text, String? href, String title) {
+    final target = href?.trim();
+    if (target == null || target.isEmpty) return;
+    final uri = Uri.tryParse(target);
+    if (uri == null) return;
+    switch (uri.scheme.toLowerCase()) {
+      case 'http' || 'https' || 'mailto':
+        unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+      case 'file':
+        _openRemotePath(uri.path);
+      case '':
+        if (target.startsWith('/') ||
+            target.startsWith('~/') ||
+            target.startsWith('./') ||
+            target.startsWith('../')) {
+          _openRemotePath(target);
+        }
+      default:
+        return;
+    }
+  }
+
   void _openResource(ui.AcpResourceRef resource) {
     final uri = resource.uri;
     if (uri.startsWith('http://') || uri.startsWith('https://')) {
@@ -1145,6 +1215,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         .asData
         ?.value;
     final session = managerState?.byKeyValue(_key.value);
+    _scheduleInitialScrollRestore();
     final fontSize = clampAgentChatFontSize(
       widget.preferredFontSize ?? ref.watch(fontSizeNotifierProvider),
     );
@@ -1188,6 +1259,95 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     );
   }
 
+  AcpNativePreviewSnapshot? _buildNativePreview(
+    List<ui.AcpTimelineEntry> entries,
+    AcpStatusDisplay activity,
+  ) {
+    final lines = <AcpNativePreviewLine>[];
+    void add(AcpNativePreviewLine line) {
+      if (line.text.isEmpty) return;
+      lines.insert(0, line);
+      if (lines.length > 6) lines.removeLast();
+    }
+
+    for (final entry in entries.reversed) {
+      switch (entry) {
+        case ui.AcpUserPromptEntry(:final parts):
+          final content = parts
+              .map(
+                (part) => switch (part) {
+                  ui.AcpTextPart(:final text) => text,
+                  ui.AcpImagePart() => '[image]',
+                  ui.AcpResourcePart(:final resource) =>
+                    '[${resource.displayName}]',
+                },
+              )
+              .join(' ');
+          add(
+            AcpNativePreviewLine(
+              kind: AcpNativePreviewKind.user,
+              text: _boundedNativePreviewText(content),
+            ),
+          );
+        case ui.AcpAssistantMessageEntry(:final markdown, :final status):
+          add(
+            AcpNativePreviewLine(
+              kind: AcpNativePreviewKind.agent,
+              text: _boundedNativePreviewText(markdown),
+              active: status == ui.AcpStreamStatus.streaming,
+            ),
+          );
+        case ui.AcpToolCallEntry(:final toolCall):
+          add(
+            AcpNativePreviewLine(
+              kind: AcpNativePreviewKind.tool,
+              text: _boundedNativePreviewText(toolCall.title),
+              active:
+                  toolCall.status == ui.AcpToolStatus.pending ||
+                  toolCall.status == ui.AcpToolStatus.running,
+            ),
+          );
+        case ui.AcpStatusEntry(:final message):
+          add(
+            AcpNativePreviewLine(
+              kind: AcpNativePreviewKind.status,
+              text: _boundedNativePreviewText(message),
+            ),
+          );
+        case ui.AcpThoughtEntry(:final status):
+          if (status == ui.AcpStreamStatus.streaming) {
+            add(
+              const AcpNativePreviewLine(
+                kind: AcpNativePreviewKind.status,
+                text: 'Thinking',
+                active: true,
+              ),
+            );
+          }
+        case ui.AcpSubagentTranscriptEntry() ||
+            ui.AcpPlanEntry() ||
+            ui.AcpUsageEntry():
+          break;
+      }
+      if (lines.length >= 6) break;
+    }
+    if (lines.isEmpty && activity.isReady) return null;
+    return AcpNativePreviewSnapshot(
+      lines: lines,
+      progressFraction: activity.progressFraction,
+      indeterminate: activity.indeterminate,
+    );
+  }
+
+  String _boundedNativePreviewText(String value) {
+    final normalized = value
+        .replaceAll(RegExp('[`*_>#]'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (normalized.length <= 180) return normalized;
+    return '${normalized.substring(0, 179)}…';
+  }
+
   Widget _buildConversation(
     AcpSessionState? session, {
     required bool showBack,
@@ -1219,9 +1379,12 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
 
     _ensurePiModelScope(session);
     final entries = _timelineMapperCache.map(session);
-    _queuePreviewPublish(_timelineMapperCache.preview(session));
-    final prompts = _prompts(session);
     final activity = acpSessionActivityDisplay(session);
+    _queuePreviewPublish(
+      _timelineMapperCache.preview(session),
+      _buildNativePreview(entries, activity),
+    );
+    final prompts = _prompts(session);
     final quickConfigBar = _buildQuickConfigBar(
       session,
       useBottomSafeArea: !widget.embedded,
@@ -1295,7 +1458,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                   children: [
                     if (session.status != AcpConnectionStatus.ready)
                       _buildSessionStatusBanner(session)
-                    else if (!activity.isReady)
+                    else if (!activity.isReady && activity.label != 'working')
                       _SessionStatusBanner(
                         message: switch (activity.label) {
                           'working' => 'agent is working',
@@ -1323,34 +1486,45 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                               cwd: acpCwdSummary(session.cwd),
                             )
                           else
-                            NotificationListener<ScrollNotification>(
-                              onNotification: _handleTranscriptScroll,
-                              child: AcpMessageThread(
-                                entries: entries,
-                                controller: _scroll,
-                                footer:
-                                    session.promptStatus == AcpPromptStatus.idle
-                                    ? null
-                                    : IgnorePointer(
-                                        key: const ValueKey(
-                                          'acp-running-cursor',
+                            NotificationListener<ScrollMetricsNotification>(
+                              onNotification: (_) {
+                                _scheduleAutoScroll();
+                                return false;
+                              },
+                              child: NotificationListener<ScrollNotification>(
+                                onNotification: _handleTranscriptScroll,
+                                child: AcpMessageThread(
+                                  entries: entries,
+                                  controller: _scroll,
+                                  footer:
+                                      session.promptStatus ==
+                                          AcpPromptStatus.idle
+                                      ? null
+                                      : IgnorePointer(
+                                          key: const ValueKey(
+                                            'acp-running-cursor',
+                                          ),
+                                          child: CursorBlock(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.primary,
+                                            size: 12,
+                                          ),
                                         ),
-                                        child: CursorBlock(
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                          size: 12,
-                                        ),
+                                  imageResolver: _resolveChatImage,
+                                  onTapImage: _openImageViewer,
+                                  onOpenResource: _openResource,
+                                  onCopyResource: (resource) =>
+                                      _copyToClipboard(
+                                        resource.uri,
+                                        'Resource',
                                       ),
-                                imageResolver: _resolveChatImage,
-                                onTapImage: _openImageViewer,
-                                onOpenResource: _openResource,
-                                onCopyResource: (resource) =>
-                                    _copyToClipboard(resource.uri, 'Resource'),
-                                onCopyCode: (code) =>
-                                    _copyToClipboard(code, 'Code'),
-                                onOpenLocation: (location) =>
-                                    _openRemotePath(location.path),
+                                  onTapLink: _openMarkdownLink,
+                                  onCopyCode: (code) =>
+                                      _copyToClipboard(code, 'Code'),
+                                  onOpenLocation: (location) =>
+                                      _openRemotePath(location.path),
+                                ),
                               ),
                             ),
                           if (_showJumpToLatest)

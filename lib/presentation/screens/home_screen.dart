@@ -13,6 +13,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/commands/duplicate_host_command.dart';
+import '../../domain/models/acp_native_preview.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
@@ -1281,6 +1282,8 @@ class _HostRow extends ConsumerWidget {
                     endpoint: '${host.username}@${host.hostname}:${host.port}',
                     preview: connection?.preview,
                     previewSnapshot: connection?.previewSnapshot,
+                    nativeAcpPreviewSnapshot:
+                        connection?.nativeAcpPreviewSnapshot,
                     terminalTheme:
                         connection?.terminalTheme ??
                         resolveConnectionPreviewTheme(
@@ -1662,6 +1665,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.onTap,
     this.preview,
     this.previewSnapshot,
+    this.nativeAcpPreviewSnapshot,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -1677,6 +1681,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
   final String endpoint;
   final String? preview;
   final TerminalPreviewSnapshot? previewSnapshot;
+  final AcpNativePreviewSnapshot? nativeAcpPreviewSnapshot;
   final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
@@ -1708,6 +1713,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
         endpoint: subtitle,
         preview: preview,
         previewSnapshot: previewSnapshot,
+        nativeAcpPreviewSnapshot: nativeAcpPreviewSnapshot,
         sessionTitle: sessionTitle,
         windowTitle: windowTitle,
         iconName: iconName,
@@ -1800,6 +1806,8 @@ class _ConnectionsPanel extends ConsumerWidget {
                       availableThemes: terminalThemes,
                       preview: connection.preview,
                       previewSnapshot: connection.previewSnapshot,
+                      nativeAcpPreviewSnapshot:
+                          connection.nativeAcpPreviewSnapshot,
                       activeTerminalTheme: connection.terminalTheme,
                       sessionTitle: connection.sessionTitle,
                       windowTitle: connection.windowTitle,
@@ -1914,6 +1922,7 @@ class _ConnectionPreviewText extends StatelessWidget {
     required this.endpoint,
     this.preview,
     this.previewSnapshot,
+    this.nativeAcpPreviewSnapshot,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -1926,6 +1935,7 @@ class _ConnectionPreviewText extends StatelessWidget {
   final String endpoint;
   final String? preview;
   final TerminalPreviewSnapshot? previewSnapshot;
+  final AcpNativePreviewSnapshot? nativeAcpPreviewSnapshot;
   final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
@@ -1943,6 +1953,7 @@ class _ConnectionPreviewText extends StatelessWidget {
     ),
     preview: preview,
     previewSnapshot: previewSnapshot,
+    nativeAcpPreviewSnapshot: nativeAcpPreviewSnapshot,
     sessionTitle: sessionTitle,
     windowTitle: windowTitle,
     iconName: iconName,

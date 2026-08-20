@@ -62,6 +62,7 @@ resolveAcpRemoteProviderLaunch({
   required AcpBuiltinProvider provider,
   required bool canUseTerminalCli,
   bool startInYoloMode = false,
+  ValueChanged<AcpLaunchProfile>? onProfileSelected,
 }) async {
   final requested = <String>{
     ...provider.executableProbe.candidateExecutableNames,
@@ -99,6 +100,7 @@ resolveAcpRemoteProviderLaunch({
         session: session,
         provider: provider,
         resolvedCommand: resolved,
+        onProfileSelected: onProfileSelected,
       );
       if (profiled == null) return null;
       return (
@@ -248,10 +250,17 @@ Future<AcpLaunchProfile?> selectAcpLaunchProfile({
 
   if (profiles.length <= 1) return profiles.single;
   if (!context.mounted) return null;
-  return showAcpLaunchProfilePicker(
+  final selected = await showAcpLaunchProfilePicker(
     context: context,
     providerLabel: provider.label,
     profiles: profiles,
+  );
+  if (selected == null) return null;
+  return AcpLaunchProfile(
+    argument: selected.argument,
+    label: selected.label,
+    isActive: selected.isActive,
+    showInTitle: true,
   );
 }
 
@@ -261,6 +270,7 @@ Future<AcpLaunchCommand?> resolveAcpLaunchProfile({
   required SshSession session,
   required AcpBuiltinProvider provider,
   required AcpLaunchCommand resolvedCommand,
+  ValueChanged<AcpLaunchProfile>? onProfileSelected,
 }) async {
   final support = provider.launchProfileSupport;
   if (support == null) return resolvedCommand;
@@ -270,6 +280,7 @@ Future<AcpLaunchCommand?> resolveAcpLaunchProfile({
     provider: provider,
   );
   if (selected == null) return null;
+  onProfileSelected?.call(selected);
   return support.apply(resolvedCommand, selected.argument);
 }
 

@@ -27,6 +27,7 @@ import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/services/acp_concurrency_policy.dart';
+import '../../domain/services/acp_launch_profile_service.dart';
 import '../../domain/services/acp_provider_service.dart';
 import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
@@ -474,6 +475,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     }
 
     AcpLaunchCommand? launchCommandOverride;
+    AcpLaunchProfile? selectedProfile;
     final sshSession = connection.connectionId == null
         ? null
         : ref.read(sshServiceProvider).getSession(connection.connectionId!);
@@ -487,6 +489,7 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
         provider: builtinProvider,
         canUseTerminalCli: builtinProvider.terminalAuthCommand != null,
         startInYoloMode: launchPreferences.startInYoloMode,
+        onProfileSelected: (profile) => selectedProfile = profile,
       );
       if (!mounted || launch == null) return null;
       if (launch.terminal) {
@@ -506,6 +509,9 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
         cwd: recent.cwd ?? cwd,
         confirmInstall: _confirmInstall,
         launchCommandOverride: launchCommandOverride,
+        providerLabelOverride: selectedProfile?.showInTitle ?? false
+            ? '${builtinProvider?.label ?? 'Agent'} · ${selectedProfile!.label}'
+            : null,
         autoApprovePermissions: launchPreferences.startInYoloMode,
         replace: replace,
       );
@@ -516,6 +522,9 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
       cwd: cwd,
       confirmInstall: _confirmInstall,
       launchCommandOverride: launchCommandOverride,
+      providerLabelOverride: selectedProfile?.showInTitle ?? false
+          ? '${builtinProvider?.label ?? 'Agent'} · ${selectedProfile!.label}'
+          : null,
       autoApprovePermissions: launchPreferences.startInYoloMode,
       replace: replace,
     );

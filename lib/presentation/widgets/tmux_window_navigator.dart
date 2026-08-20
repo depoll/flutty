@@ -1280,9 +1280,29 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           AgentToolIcon(tool: agentTool, size: 17, color: activityColor),
           const SizedBox(width: 4),
           Tooltip(
-            key: ValueKey('native-acp-indicator-${key.value}'),
             message: 'Native agent',
-            child: Icon(Icons.chat_bubble, size: 11, color: activityColor),
+            child: Semantics(
+              label: 'Native agent',
+              child: Container(
+                key: ValueKey('native-acp-indicator-${key.value}'),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: activityColor.withAlpha(24),
+                  border: Border.all(color: activityColor.withAlpha(110)),
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: Text(
+                  'NATIVE',
+                  style: FluttyTheme.monoStyle.copyWith(
+                    color: activityColor,
+                    fontSize: 8,
+                    height: 1,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ),
+            ),
           ),
           const SizedBox(width: 8),
           Expanded(

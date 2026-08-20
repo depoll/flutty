@@ -13,6 +13,7 @@ class AcpLaunchProfile {
     required this.argument,
     required this.label,
     this.isActive = false,
+    this.showInTitle = false,
   });
 
   /// Exact value passed to the provider's profile option, or `null` for the
@@ -25,16 +26,20 @@ class AcpLaunchProfile {
   /// Whether the provider reports this as its currently active profile.
   final bool isActive;
 
+  /// Whether this choice came from a list containing multiple profiles.
+  final bool showInTitle;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is AcpLaunchProfile &&
           argument == other.argument &&
           label == other.label &&
-          isActive == other.isActive;
+          isActive == other.isActive &&
+          showInTitle == other.showInTitle;
 
   @override
-  int get hashCode => Object.hash(argument, label, isActive);
+  int get hashCode => Object.hash(argument, label, isActive, showInTitle);
 }
 
 /// Builds a bounded, read-only remote command that enumerates launch profiles.

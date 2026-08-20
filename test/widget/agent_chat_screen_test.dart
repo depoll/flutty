@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
+import 'package:monkeyssh/domain/models/acp_native_preview.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/models/acp_recent_session.dart';
@@ -56,6 +57,7 @@ Widget _wrap(
   String? preferredFontFamily,
   ValueChanged<double>? onFontSizeCommitted,
   AcpChatPreviewChanged? onPreviewChanged,
+  AcpChatNativePreviewChanged? onNativePreviewChanged,
   AcpChatScrollState? initialScrollState,
   AcpChatScrollChanged? onScrollChanged,
   SftpClient? sftpClient,
@@ -105,6 +107,7 @@ Widget _wrap(
           preferredFontFamily: preferredFontFamily,
           onFontSizeCommitted: onFontSizeCommitted,
           onPreviewChanged: onPreviewChanged,
+          onNativePreviewChanged: onNativePreviewChanged,
           initialScrollState: initialScrollState,
           onScrollChanged: onScrollChanged,
         ),
@@ -124,6 +127,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(AcpMessageThread), findsOneWidget);
+    expect(
+      tester.widget<AcpMessageThread>(find.byType(AcpMessageThread)).onTapLink,
+      isNotNull,
+    );
     expect(find.textContaining('Hello from the agent'), findsOneWidget);
     expect(find.byType(AcpComposer), findsOneWidget);
     expect(find.byTooltip('MonkeyMux windows'), findsOneWidget);
@@ -137,6 +144,7 @@ void main() {
     tester,
   ) async {
     final previews = <String?>[];
+    final nativePreviews = <AcpNativePreviewSnapshot?>[];
     final previewKeys = <AcpSessionKey>[];
     final session = fakeAcpSession(
       timeline: fakeAcpTimeline('Preview from the native agent'),
@@ -149,6 +157,7 @@ void main() {
           previewKeys.add(key);
           previews.add(preview);
         },
+        onNativePreviewChanged: (_, preview) => nativePreviews.add(preview),
       ),
     );
     await tester.pump();
@@ -157,6 +166,15 @@ void main() {
     expect(previews, isNotEmpty);
     expect(previewKeys.single.value, fakeAcpKey().value);
     expect(previews.last, contains('Preview from the native agent'));
+    expect(nativePreviews, isNotEmpty);
+    expect(
+      nativePreviews.last!.lines.any(
+        (line) =>
+            line.kind == AcpNativePreviewKind.agent &&
+            line.text.contains('Preview from the native agent'),
+      ),
+      isTrue,
+    );
   });
 
   testWidgets('Pi model picker reads scope metadata and expands all models', (
@@ -804,7 +822,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('agent is working'), findsOneWidget);
+    expect(find.text('agent is working'), findsNothing);
     final cursor = find.byKey(const ValueKey('acp-running-cursor'));
     expect(cursor, findsOneWidget);
     expect(find.byType(CursorBlock), findsOneWidget);
@@ -934,6 +952,7 @@ void main() {
     final firstPosition = tester
         .state<ScrollableState>(scrollable.first)
         .position;
+    expect(firstPosition.pixels, closeTo(firstPosition.maxScrollExtent, 1));
     firstPosition.jumpTo(firstPosition.maxScrollExtent);
     await tester.pump();
     await tester.drag(find.byType(AcpMessageThread), const Offset(0, 420));
@@ -961,7 +980,11 @@ void main() {
         .state<ScrollableState>(restoredScrollable.first)
         .position;
 
-    expect(restoredPosition.pixels, closeTo(expectedOffset, 1));
+    final clampedOffset = expectedOffset.clamp(
+      restoredPosition.minScrollExtent,
+      restoredPosition.maxScrollExtent,
+    );
+    expect(restoredPosition.pixels, closeTo(clampedOffset, 1));
     expect(find.byTooltip('Jump to latest'), findsOneWidget);
   });
 
