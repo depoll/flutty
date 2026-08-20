@@ -8,9 +8,11 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/monkeymux_acp_bridge.dart';
+import '../models/remote_multiplexer.dart';
 import 'acp_transport.dart';
 import 'diagnostics_log_service.dart';
 import 'monkeymux_installer_service.dart';
+import 'monkeymux_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'windows_remote_powershell.dart';
@@ -33,6 +35,7 @@ final _commandHashPattern = RegExp(r'^[a-f0-9]{64}$');
 final monkeyMuxAcpBridgeServiceProvider = Provider<MonkeyMuxAcpBridgeService>(
   (ref) => MonkeyMuxAcpBridgeService(
     installer: ref.watch(monkeyMuxInstallerServiceProvider),
+    monkeyMuxService: ref.watch(monkeyMuxServiceProvider),
   ),
 );
 
@@ -72,7 +75,6 @@ String buildMonkeyMuxAcpProviderCommand(
   final command = isWindows
       ? buildWindowsPowerShellCommand(windowsScript)
       : '$_profileSourcingPrefix'
-            '${_cursorKeychainEnvironmentBootstrap(launchArgv)}'
             'exec ${launchArgv.map(_posixShellQuote).join(' ')}';
   if (utf8.encode(command).length > 8192) {
     throw const MonkeyMuxAcpBridgeException(
@@ -82,21 +84,6 @@ String buildMonkeyMuxAcpProviderCommand(
   }
   return command;
 }
-
-bool _isCursorAcpLaunch(List<String> launchArgv) {
-  if (launchArgv.length < 2 || launchArgv[1] != 'acp') return false;
-  final executable = launchArgv.first.replaceAll(r'\', '/').split('/').last;
-  final normalized = executable.toLowerCase().replaceFirst(
-    RegExp(r'\.(?:exe|cmd|bat|ps1|com)$'),
-    '',
-  );
-  return normalized == 'cursor-agent' || normalized == 'agent';
-}
-
-String _cursorKeychainEnvironmentBootstrap(List<String> launchArgv) =>
-    !_isCursorAcpLaunch(launchArgv)
-    ? ''
-    : r'''if [ -z "${CURSOR_API_KEY:-}" ] && [ -x /usr/bin/security ]; then __fl_cursor_api_key=$(/usr/bin/security find-generic-password -a cursor-user -s cursor-access-token -w 2>/dev/null || true); if [ -n "$__fl_cursor_api_key" ]; then export CURSOR_API_KEY="$__fl_cursor_api_key"; fi; unset __fl_cursor_api_key; fi; ''';
 
 const _acpExecutableProbeSeparator = '\u001f';
 
@@ -181,11 +168,14 @@ final class MonkeyMuxAcpBridgeService {
   /// Creates a bridge service.
   MonkeyMuxAcpBridgeService({
     required MonkeyMuxInstallerService installer,
+    MonkeyMuxService? monkeyMuxService,
     DiagnosticsLogger? diagnostics,
   }) : _installer = installer,
+       _monkeyMuxService = monkeyMuxService,
        _diagnostics = diagnostics ?? DiagnosticsLogService.instance;
 
   final MonkeyMuxInstallerService _installer;
+  final MonkeyMuxService? _monkeyMuxService;
   final DiagnosticsLogger _diagnostics;
 
   /// Starts a persistent bridge using the exact approved [launchArgv].
@@ -209,16 +199,19 @@ final class MonkeyMuxAcpBridgeService {
     );
     final startedAt = DateTime.now();
     try {
-      final message = await _runHelper(session, installation, [
+      final arguments = [
         'acp',
         'start',
+        '--provider-id',
+        providerId,
         '--provider',
         providerLabel,
         '--command',
         providerCommand,
         '--cwd',
         cwd,
-      ]);
+      ];
+      final message = await _runStartHelper(session, installation, arguments);
       _requireType(message, 'started');
       final bridgeId = _readBridgeId(message['bridgeId']);
       _diagnostics.info(
@@ -247,6 +240,43 @@ final class MonkeyMuxAcpBridgeService {
       );
       Error.throwWithStackTrace(error, stackTrace);
     }
+  }
+
+  Future<Map<String, Object?>> _runStartHelper(
+    SshSession session,
+    MonkeyMuxInstallation installation,
+    List<String> arguments,
+  ) async {
+    final sessionName = session.remoteMuxBackend == RemoteMuxBackend.monkeyMux
+        ? session.remoteMuxSessionName?.trim()
+        : null;
+    final monkeyMuxService = _monkeyMuxService;
+    if (monkeyMuxService == null ||
+        sessionName == null ||
+        sessionName.isEmpty) {
+      return _runHelper(session, installation, arguments);
+    }
+
+    // Spawn the persistent ACP bridge through the already-running MonkeyMux
+    // server. On macOS this preserves the server's login/bootstrap security
+    // context (and therefore Cursor's own Keychain access), unlike a fresh SSH
+    // exec channel. The nested helper returns immediately after detaching the
+    // bridge daemon; no ACP bytes pass through the control channel.
+    final result = await monkeyMuxService.runClientCommand(
+      session,
+      sessionName,
+      _buildHelperCommand(installation, arguments),
+    );
+    if (result.exitCode != 0 || result.output.trim().isEmpty) {
+      throw const MonkeyMuxAcpBridgeException(
+        MonkeyMuxAcpBridgeErrorKind.helperProcess,
+        'The MonkeyMux server could not start the ACP bridge.',
+      );
+    }
+    return _decodeSingleFrame(
+      utf8.encode(result.output.trim()),
+      maxBytes: _metadataMaxBytes,
+    );
   }
 
   /// Lists running bridges using only the helper's safe metadata schema.

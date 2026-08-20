@@ -458,6 +458,10 @@ void main() {
         'claude',
         '/login',
       ]);
+      expect(acpCursorAgentProvider.terminalAuthCommand?.argv, [
+        'cursor-agent',
+        'login',
+      ]);
       expect(acpAntigravityProvider.terminalAuthCommand, isNotNull);
       expect(acpGrokBuildProvider.terminalAuthCommand, isNotNull);
       expect(acpPiProvider.terminalAuthCommand, isNull);

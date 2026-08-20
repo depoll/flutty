@@ -8,8 +8,11 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/monkeymux_acp_bridge.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/terminal_backend.dart';
 import 'package:monkeyssh/domain/services/monkeymux_acp_bridge_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
+import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 import 'package:monkeyssh/domain/services/remote_file_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
@@ -23,6 +26,8 @@ const _commandHash =
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockSshChannel extends Mock implements SSHSession {}
+
+class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {}
 
 final class _FakeInstaller extends MonkeyMuxInstallerService {
   _FakeInstaller(this.installation)
@@ -204,36 +209,79 @@ void main() {
     expect(script, contains(r'& $__flAcpExe @__flAcpArgs'));
   });
 
-  test('Cursor ACP bootstraps its API key inside the provider process', () {
+  test('Cursor ACP leaves credential handling to Cursor', () {
     final cursor = buildMonkeyMuxAcpProviderCommand(const [
       '/Users/demo/.local/bin/cursor-agent',
       'acp',
     ], isWindows: false);
-    expect(cursor, contains(r'[ -z "${CURSOR_API_KEY:-}" ]'));
-    expect(
-      cursor,
-      contains(
-        '/usr/bin/security find-generic-password -a cursor-user '
-        '-s cursor-access-token -w',
-      ),
-    );
-    expect(cursor, contains(r'export CURSOR_API_KEY="$__fl_cursor_api_key"'));
+    expect(cursor, isNot(contains('AGENT_CLI_CREDENTIAL_STORE')));
+    expect(cursor, isNot(contains('cursor-access-token')));
+    expect(cursor, isNot(contains('CURSOR_API_KEY')));
+    expect(cursor, isNot(contains('security find-generic-password')));
     expect(
       cursor,
       contains("exec '/Users/demo/.local/bin/cursor-agent' 'acp'"),
     );
+  });
 
-    final copilot = buildMonkeyMuxAcpProviderCommand(const [
-      'copilot',
-      '--acp',
-    ], isWindows: false);
-    expect(copilot, isNot(contains('cursor-access-token')));
+  test('starts ACP through the active MonkeyMux server context', () async {
+    final client = _MockSshClient();
+    final session = _sshSession(client)
+      ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+      ..remoteMuxSessionName = 'work';
+    final mux = _MockMonkeyMuxService();
+    when(
+      () => mux.runClientCommand(
+        session,
+        'work',
+        any(),
+        priority: any(named: 'priority'),
+      ),
+    ).thenAnswer(
+      (_) async => TerminalClientCommandResult(
+        output: _frame({
+          'version': 1,
+          'type': 'started',
+          'bridgeId': _bridgeId,
+        }),
+        exitCode: 0,
+      ),
+    );
+    final service = MonkeyMuxAcpBridgeService(
+      installer: _FakeInstaller(
+        const MonkeyMuxInstallation(
+          executablePath: '/home/demo/.monkeyssh/monkeymux',
+          platform: 'darwin-arm64',
+          version: 'test',
+        ),
+      ),
+      monkeyMuxService: mux,
+    );
 
-    final windowsCursor = buildMonkeyMuxAcpProviderCommand(const [
-      r'C:\Tools\cursor-agent.exe',
-      'acp',
-    ], isWindows: true);
-    expect(windowsCursor, isNot(contains('cursor-access-token')));
+    final result = await service.start(
+      session: session,
+      providerId: 'builtin:cursor-agent-acp',
+      providerLabel: 'Cursor Agent',
+      launchArgv: const ['/Users/demo/.local/bin/cursor-agent', 'acp'],
+      cwd: '/home/demo/project',
+    );
+
+    expect(result.bridgeId, _bridgeId);
+    final command =
+        verify(
+              () => mux.runClientCommand(
+                session,
+                'work',
+                captureAny(),
+                priority: any(named: 'priority'),
+              ),
+            ).captured.single
+            as String;
+    expect(command, contains("'acp' 'start'"));
+    expect(command, contains("'--provider-id' 'builtin:cursor-agent-acp'"));
+    expect(command, contains('exec'));
+    expect(command, contains('/Users/demo/.local/bin/cursor-agent'));
+    verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
   });
 
   test('probes adapters through interactive POSIX and Windows profiles', () {
