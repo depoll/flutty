@@ -359,7 +359,7 @@ func TestPiEncodedSessionDirNameMatchesPiLayout(t *testing.T) {
 }
 
 func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
-	for _, name := range []string{"pi", "/Users/demo/.local/bin/pi"} {
+	for _, name := range []string{"pi", "pi-agent", "/Users/demo/.local/bin/pi"} {
 		if got := agentToolFromCommandName(name); got != "pi" {
 			t.Fatalf("agentToolFromCommandName(%q) = %q, want pi", name, got)
 		}
@@ -394,7 +394,10 @@ func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
 		CurrentCommand: "pi",
 		AgentSessionID: "session-id",
 	}, true)
-	want := piResumeCommandWithFreshFallback("pi --session session-id", "pi")
+	want := piResumeCommandWithFreshFallback(
+		piResumeCommand("session-id", "", ""),
+		piLaunchCommand(""),
+	)
 	if options.agentTool != "pi" || options.command != want {
 		t.Fatalf("Pi restore options = tool:%q command:%q, want tool pi command %q", options.agentTool, options.command, want)
 	}
@@ -428,8 +431,8 @@ func TestPiResumeCommandRejectsShellMetacharacters(t *testing.T) {
 		CurrentCommand: "pi",
 		AgentSessionID: "session&id",
 	}, false)
-	if options.command != "pi" {
-		t.Fatalf("unsafe session command = %q, want fresh pi", options.command)
+	if options.command != piLaunchCommand("") {
+		t.Fatalf("unsafe session command = %q, want managed fresh Pi", options.command)
 	}
 }
 
@@ -716,6 +719,46 @@ func TestDiscoverPiSessionsDeclinesInitialSessionAfterResume(t *testing.T) {
 
 	if got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}}); len(got) != 0 {
 		t.Fatalf("resumed Pi session match = %#v, want fresh fallback rather than initial session", got)
+	}
+}
+
+func TestDiscoverPiSessionsPrefersExactExtensionIdentity(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	t.Cleanup(func() { processOpenFilePathsForMetadata = originalOpenFiles })
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	launchDirectory := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktrees", "feature")
+	path := filepath.Join(root, "sessions", "resumed.jsonl")
+	writePiTestSessionTimes(
+		t,
+		path,
+		"resumed-session",
+		worktree,
+		time.Now().Add(-3*time.Hour),
+		time.Now().Add(-2*time.Hour),
+	)
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid:                   100,
+		CurrentCommand:            "pi",
+		AgentTool:                 "pi",
+		AgentToolConfirmed:        true,
+		Cwd:                       launchDirectory,
+		PaneTitle:                 "π - unrelated-title",
+		AgentSessionID:            "resumed-session",
+		AgentSessionDir:           filepath.Dir(path),
+		AgentSessionPath:          path,
+		AgentSessionIdentityExact: true,
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "resumed-session" || got.sessionPath != path {
+		t.Fatalf("exact Pi extension identity = %#v, want exact resumed path", got)
 	}
 }
 

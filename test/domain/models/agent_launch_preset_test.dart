@@ -642,6 +642,23 @@ void main() {
       );
     });
 
+    test('wraps only MonkeyMux Pi commands with exact identity support', () {
+      expect(
+        buildMonkeyMuxAgentToolCommand(
+          AgentLaunchTool.pi,
+          'pi --session-dir sessions',
+        ),
+        'monkeymux pi-agent --session-dir sessions',
+      );
+      expect(
+        buildMonkeyMuxAgentToolCommand(
+          AgentLaunchTool.claudeCode,
+          'claude --resume session',
+        ),
+        'claude --resume session',
+      );
+    });
+
     test('builds resume commands for the newly supported CLIs', () {
       expect(
         buildAgentResumeCommand(AgentLaunchTool.pi, 'abc123'),

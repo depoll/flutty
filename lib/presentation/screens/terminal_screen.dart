@@ -11975,13 +11975,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       if (!mounted) return;
     }
+    final tool = agentLaunchToolForCommandText(command);
+    final createCommand =
+        backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux && tool != null
+        ? buildMonkeyMuxAgentToolCommand(tool, command!)
+        : command;
     await backend.createWindow(
-      command: command,
+      command: createCommand,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
     );
     if (!mounted) return;
-    final tool = agentLaunchToolForCommandText(command);
     if (tool != null) {
       unawaited(
         ref

@@ -21,7 +21,7 @@ func TestPiRestoreTreatsWindowsShellsAsShells(t *testing.T) {
 		if got := agentToolForRestore(state); got != "pi" {
 			t.Fatalf("confirmed Pi behind Windows shell %q classified as %q", command, got)
 		}
-		if got := createWindowOptionsForRestore(state, false).command; got != "pi" {
+		if got := createWindowOptionsForRestore(state, false).command; got != piLaunchCommand("") {
 			t.Fatalf("confirmed Pi behind Windows shell %q restore command = %q", command, got)
 		}
 	}
@@ -52,7 +52,7 @@ func TestAgentRestoreCommandUsesWindowsShellSyntax(t *testing.T) {
 func TestPiRestoreCommandIsSafeForCmd(t *testing.T) {
 	t.Setenv("ComSpec", "cmd.exe")
 	t.Setenv("MONKEYMUX_SHELL", "cmd.exe")
-	if got := piResumeCommand("session-id", "", ""); got != "pi --session session-id" {
+	if got := piResumeCommand("session-id", "", ""); got != piLaunchCommand("")+" --session session-id" {
 		t.Fatalf("ordinary resume command = %q", got)
 	}
 	if got := piResumeCommandWithFreshFallback("pi --session session-id", "pi"); got != "pi --session session-id || pi" {
@@ -70,7 +70,7 @@ func TestPiRestoreCommandIsSafeForCmd(t *testing.T) {
 		"session-id",
 		`C:\Program Files\Pi Sessions`,
 		`C:\Program Files\Pi Sessions\session.jsonl`,
-	); got != `pi --session "C:\Program Files\Pi Sessions\session.jsonl"` {
+	); got != piLaunchCommand("")+` --session "C:\Program Files\Pi Sessions\session.jsonl"` {
 		t.Fatalf("path resume command = %q", got)
 	}
 	if got, ok := shellArgument(`C:\Program Files\Pi Sessions`); !ok || got != `"C:\Program Files\Pi Sessions"` {

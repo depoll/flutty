@@ -540,6 +540,16 @@ List<String> buildAgentGlobalLaunchArguments(
   ];
 }
 
+/// Wraps a generated terminal command with MonkeyMux-specific integration.
+///
+/// Pi exposes its exact session ID/path to extensions on every session switch.
+/// The helper wrapper injects that private extension; plain tmux launches keep
+/// the original command because they may not have MonkeyMux installed.
+String buildMonkeyMuxAgentToolCommand(AgentLaunchTool tool, String command) {
+  if (tool != AgentLaunchTool.pi) return command;
+  return command.replaceFirst(RegExp(r'^pi(?=\s|$)'), 'monkeymux pi-agent');
+}
+
 /// Builds the base shell command for launching [tool].
 String buildAgentToolCommand(
   AgentLaunchTool tool, {

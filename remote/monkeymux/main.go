@@ -535,6 +535,7 @@ type windowSnapshot struct {
 	AgentSessionID            string                    `json:"agentSessionId,omitempty"`
 	AgentSessionDir           string                    `json:"agentSessionDir,omitempty"`
 	AgentSessionPath          string                    `json:"agentSessionPath,omitempty"`
+	AgentSessionIdentityExact bool                      `json:"agentSessionIdentityExact,omitempty"`
 	LastActivityEpochSeconds  int64                     `json:"lastActivityEpochSeconds,omitempty"`
 	TerminalReportsMouseWheel bool                      `json:"terminalReportsMouseWheel,omitempty"`
 	TerminalMouseReportSgr    bool                      `json:"terminalMouseReportSgr,omitempty"`
@@ -555,30 +556,31 @@ type serverRestore struct {
 }
 
 type restoreWindowState struct {
-	ID                       string                    `json:"id,omitempty"`
-	Index                    int                       `json:"index,omitempty"`
-	Name                     string                    `json:"name,omitempty"`
-	Cwd                      string                    `json:"cwd,omitempty"`
-	CurrentCommand           string                    `json:"currentCommand,omitempty"`
-	PanePid                  int                       `json:"panePid,omitempty"`
-	PaneTitle                string                    `json:"paneTitle,omitempty"`
-	AgentTool                string                    `json:"agentTool,omitempty"`
-	AgentToolConfirmed       bool                      `json:"agentToolConfirmed,omitempty"`
-	AgentSessionID           string                    `json:"agentSessionId,omitempty"`
-	AgentSessionDir          string                    `json:"agentSessionDir,omitempty"`
-	AgentSessionPath         string                    `json:"agentSessionPath,omitempty"`
-	LastActivityEpochSeconds int64                     `json:"lastActivityEpochSeconds,omitempty"`
-	HistoryBase64            string                    `json:"historyBase64,omitempty"`
-	HistoryStartsAtGround    bool                      `json:"historyStartsAtGround,omitempty"`
-	CursorVisible            bool                      `json:"cursorVisible,omitempty"`
-	CursorVisibilityKnown    bool                      `json:"cursorVisibilityKnown,omitempty"`
-	PrivateModes             map[string]bool           `json:"privateModes,omitempty"`
-	InsertModeEnabled        bool                      `json:"insertModeEnabled,omitempty"`
-	InsertModeKnown          bool                      `json:"insertModeKnown,omitempty"`
-	ApplicationKeypadEnabled bool                      `json:"applicationKeypadEnabled,omitempty"`
-	ApplicationKeypadKnown   bool                      `json:"applicationKeypadKnown,omitempty"`
-	TerminalProgress         *terminalProgressSnapshot `json:"terminalProgress,omitempty"`
-	Active                   bool                      `json:"active,omitempty"`
+	ID                        string                    `json:"id,omitempty"`
+	Index                     int                       `json:"index,omitempty"`
+	Name                      string                    `json:"name,omitempty"`
+	Cwd                       string                    `json:"cwd,omitempty"`
+	CurrentCommand            string                    `json:"currentCommand,omitempty"`
+	PanePid                   int                       `json:"panePid,omitempty"`
+	PaneTitle                 string                    `json:"paneTitle,omitempty"`
+	AgentTool                 string                    `json:"agentTool,omitempty"`
+	AgentToolConfirmed        bool                      `json:"agentToolConfirmed,omitempty"`
+	AgentSessionID            string                    `json:"agentSessionId,omitempty"`
+	AgentSessionDir           string                    `json:"agentSessionDir,omitempty"`
+	AgentSessionPath          string                    `json:"agentSessionPath,omitempty"`
+	AgentSessionIdentityExact bool                      `json:"agentSessionIdentityExact,omitempty"`
+	LastActivityEpochSeconds  int64                     `json:"lastActivityEpochSeconds,omitempty"`
+	HistoryBase64             string                    `json:"historyBase64,omitempty"`
+	HistoryStartsAtGround     bool                      `json:"historyStartsAtGround,omitempty"`
+	CursorVisible             bool                      `json:"cursorVisible,omitempty"`
+	CursorVisibilityKnown     bool                      `json:"cursorVisibilityKnown,omitempty"`
+	PrivateModes              map[string]bool           `json:"privateModes,omitempty"`
+	InsertModeEnabled         bool                      `json:"insertModeEnabled,omitempty"`
+	InsertModeKnown           bool                      `json:"insertModeKnown,omitempty"`
+	ApplicationKeypadEnabled  bool                      `json:"applicationKeypadEnabled,omitempty"`
+	ApplicationKeypadKnown    bool                      `json:"applicationKeypadKnown,omitempty"`
+	TerminalProgress          *terminalProgressSnapshot `json:"terminalProgress,omitempty"`
+	Active                    bool                      `json:"active,omitempty"`
 }
 
 type muxServer struct {
@@ -665,6 +667,7 @@ type muxWindow struct {
 	agentSessionID              string
 	agentSessionDir             string
 	agentSessionPath            string
+	agentSessionIdentityExact   bool
 	foregroundPid               int
 	foregroundCommand           string
 	paneTitle                   string
@@ -979,6 +982,8 @@ func main() {
 		gcCommand()
 	case "acp":
 		acpCommand(os.Args[2:])
+	case "pi-agent":
+		piAgentCommand(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(monkeyMuxVersion)
 	case "help", "--help", "-h":
@@ -1010,6 +1015,55 @@ func printUsage(writer io.Writer) {
 func usageAndExit() {
 	printUsage(os.Stderr)
 	os.Exit(2)
+}
+
+const piIdentityExtensionSource = `export default function (pi) {
+  const publish = (_event, ctx) => {
+    const id = ctx.sessionManager.getSessionId();
+    const file = ctx.sessionManager.getSessionFile();
+    if (!id || !file) return;
+    const payload = Buffer.from(JSON.stringify({ id, file }), "utf8")
+      .toString("base64url");
+    process.stdout.write("\u001b]1337;MonkeyMuxPi=" + payload + "\u0007");
+  };
+  pi.on("session_start", publish);
+}
+`
+
+func piAgentCommand(args []string) {
+	extensionPath, err := ensurePiIdentityExtension()
+	if err != nil {
+		fatal(fmt.Errorf("prepare Pi session integration: %w", err))
+	}
+	commandArgs := make([]string, 0, len(args)+2)
+	commandArgs = append(commandArgs, "--extension", extensionPath)
+	commandArgs = append(commandArgs, args...)
+	command := exec.Command("pi", commandArgs...)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Env = os.Environ()
+	if err := command.Run(); err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitError.ExitCode())
+		}
+		fatal(err)
+	}
+}
+
+func ensurePiIdentityExtension() (string, error) {
+	directory, err := runtimeDirectory()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(directory, "monkeymux-pi-identity.ts")
+	if data, readErr := os.ReadFile(path); readErr == nil && string(data) == piIdentityExtensionSource {
+		return path, nil
+	}
+	if err := os.WriteFile(path, []byte(piIdentityExtensionSource), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func attachCommand(args []string) {
@@ -2665,22 +2719,23 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 	}
 	for _, window := range windows {
 		restore.Windows = append(restore.Windows, restoreWindowState{
-			ID:                       window.ID,
-			Index:                    window.Index,
-			Name:                     window.Name,
-			Cwd:                      window.CurrentPath,
-			CurrentCommand:           window.CurrentCommand,
-			PanePid:                  window.PanePid,
-			PaneTitle:                window.PaneTitle,
-			AgentTool:                window.AgentTool,
-			AgentToolConfirmed:       window.AgentToolConfirmed,
-			AgentSessionID:           window.AgentSessionID,
-			AgentSessionDir:          window.AgentSessionDir,
-			AgentSessionPath:         window.AgentSessionPath,
-			LastActivityEpochSeconds: window.LastActivityEpochSeconds,
-			PrivateModes:             privateModesFromWindowSnapshot(window),
-			TerminalProgress:         copyTerminalProgressSnapshot(window.TerminalProgress),
-			Active:                   window.Active,
+			ID:                        window.ID,
+			Index:                     window.Index,
+			Name:                      window.Name,
+			Cwd:                       window.CurrentPath,
+			CurrentCommand:            window.CurrentCommand,
+			PanePid:                   window.PanePid,
+			PaneTitle:                 window.PaneTitle,
+			AgentTool:                 window.AgentTool,
+			AgentToolConfirmed:        window.AgentToolConfirmed,
+			AgentSessionID:            window.AgentSessionID,
+			AgentSessionDir:           window.AgentSessionDir,
+			AgentSessionPath:          window.AgentSessionPath,
+			AgentSessionIdentityExact: window.AgentSessionIdentityExact,
+			LastActivityEpochSeconds:  window.LastActivityEpochSeconds,
+			PrivateModes:              privateModesFromWindowSnapshot(window),
+			TerminalProgress:          copyTerminalProgressSnapshot(window.TerminalProgress),
+			Active:                    window.Active,
 		})
 	}
 	return restore
@@ -2978,10 +3033,12 @@ func applyPiRestoreSessions(restore *serverRestore, sessions map[int]piRestoreSe
 		restore.Windows[i].AgentSessionID = ""
 		restore.Windows[i].AgentSessionDir = ""
 		restore.Windows[i].AgentSessionPath = ""
+		restore.Windows[i].AgentSessionIdentityExact = false
 		if session, ok := sessions[i]; ok && agentToolForRestore(restore.Windows[i]) == "pi" {
 			restore.Windows[i].AgentSessionID = session.sessionID
 			restore.Windows[i].AgentSessionDir = session.sessionDir
 			restore.Windows[i].AgentSessionPath = session.sessionPath
+			restore.Windows[i].AgentSessionIdentityExact = session.identityExact
 		}
 	}
 }
@@ -3294,9 +3351,10 @@ var processStartedAtForMetadata = func(pid int) time.Time {
 var processTableForMetadata = readProcessTable
 
 type piRestoreSession struct {
-	sessionID   string
-	sessionDir  string
-	sessionPath string
+	sessionID     string
+	sessionDir    string
+	sessionPath   string
+	identityExact bool
 }
 
 // discoverPiSessions first correlates each pane with its live Pi process. A
@@ -3355,6 +3413,21 @@ func discoverPiSessions(
 			(restore.Windows[i].AgentToolConfirmed &&
 				agentToolForRestore(restore.Windows[i]) == "pi")
 		if hasProcess {
+			if window.AgentSessionIdentityExact {
+				path := normalizedPiSessionDirectory(window.AgentSessionPath, window.Cwd)
+				if entry, ok := readPiSessionEntry(path); ok &&
+					entry.sessionID == strings.TrimSpace(window.AgentSessionID) &&
+					!used[entry.sessionID] {
+					sessions[i] = piRestoreSession{
+						sessionID:     entry.sessionID,
+						sessionDir:    filepath.Dir(entry.path),
+						sessionPath:   entry.path,
+						identityExact: true,
+					}
+					used[entry.sessionID] = true
+					continue
+				}
+			}
 			if entry, ok := piSessionFromProcessArgs(process.args, window.Cwd); ok && !used[entry.sessionID] {
 				sessions[i] = piRestoreSession{
 					sessionID:   entry.sessionID,
@@ -6052,19 +6125,20 @@ func createWindowOptionsForRestore(
 		)
 	}
 	return createWindowOptions{
-		name:                  firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
-		cwd:                   state.Cwd,
-		command:               command,
-		history:               history,
-		paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
-		agentTool:             agentTool,
-		agentSessionID:        state.AgentSessionID,
-		agentSessionDir:       state.AgentSessionDir,
-		agentSessionPath:      state.AgentSessionPath,
-		cursorVisible:         state.CursorVisible,
-		cursorVisibilityKnown: state.CursorVisibilityKnown,
-		privateModes:          privateModesForRestore(state.PrivateModes),
-		terminalProgress:      copyTerminalProgressSnapshot(state.TerminalProgress),
+		name:                      firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
+		cwd:                       state.Cwd,
+		command:                   command,
+		history:                   history,
+		paneTitle:                 firstNonEmptyString(state.PaneTitle, state.Name),
+		agentTool:                 agentTool,
+		agentSessionID:            state.AgentSessionID,
+		agentSessionDir:           state.AgentSessionDir,
+		agentSessionPath:          state.AgentSessionPath,
+		agentSessionIdentityExact: state.AgentSessionIdentityExact,
+		cursorVisible:             state.CursorVisible,
+		cursorVisibilityKnown:     state.CursorVisibilityKnown,
+		privateModes:              privateModesForRestore(state.PrivateModes),
+		terminalProgress:          copyTerminalProgressSnapshot(state.TerminalProgress),
 	}
 }
 
@@ -6092,26 +6166,27 @@ func isShellRestoreWindow(state restoreWindowState) bool {
 }
 
 type createWindowOptions struct {
-	name                     string
-	cwd                      string
-	command                  string
-	args                     []string
-	history                  []byte
-	paneTitle                string
-	agentTool                string
-	agentSessionID           string
-	agentSessionDir          string
-	agentSessionPath         string
-	cursorVisible            bool
-	cursorVisibilityKnown    bool
-	privateModes             map[string]bool
-	terminalProgress         *terminalProgressSnapshot
-	insertModeEnabled        bool
-	insertModeKnown          bool
-	applicationKeypadEnabled bool
-	applicationKeypadKnown   bool
-	themeHint                []byte
-	capabilityHint           []byte
+	name                      string
+	cwd                       string
+	command                   string
+	args                      []string
+	history                   []byte
+	paneTitle                 string
+	agentTool                 string
+	agentSessionID            string
+	agentSessionDir           string
+	agentSessionPath          string
+	agentSessionIdentityExact bool
+	cursorVisible             bool
+	cursorVisibilityKnown     bool
+	privateModes              map[string]bool
+	terminalProgress          *terminalProgressSnapshot
+	insertModeEnabled         bool
+	insertModeKnown           bool
+	applicationKeypadEnabled  bool
+	applicationKeypadKnown    bool
+	themeHint                 []byte
+	capabilityHint            []byte
 }
 
 func newWindowAgentTool(
@@ -6201,33 +6276,34 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.windowWatchers.Add(2)
 	s.nextID++
 	window := &muxWindow{
-		id:                       fmt.Sprintf("@%d", s.nextID),
-		index:                    len(s.windows),
-		name:                     name,
-		cwd:                      cwd,
-		command:                  filepath.Base(cmd.Path),
-		agentTool:                agentTool,
-		agentToolConfirmed:       agentToolConfirmed,
-		agentSessionID:           options.agentSessionID,
-		agentSessionDir:          options.agentSessionDir,
-		agentSessionPath:         options.agentSessionPath,
-		foregroundPid:            proc.Pid(),
-		foregroundCommand:        filepath.Base(cmd.Path),
-		paneTitle:                paneTitle,
-		pty:                      windowPty,
-		ptyWidth:                 cols,
-		ptyHeight:                rows,
-		proc:                     proc,
-		history:                  append([]byte(nil), options.history...),
-		lastActivity:             time.Now(),
-		cursorVisible:            cursorVisible,
-		cursorVisibilityKnown:    options.cursorVisibilityKnown,
-		privateModes:             copyPrivateModes(options.privateModes),
-		terminalProgress:         copyTerminalProgressSnapshot(options.terminalProgress),
-		insertModeEnabled:        options.insertModeEnabled,
-		insertModeKnown:          options.insertModeKnown,
-		applicationKeypadEnabled: options.applicationKeypadEnabled,
-		applicationKeypadKnown:   options.applicationKeypadKnown,
+		id:                        fmt.Sprintf("@%d", s.nextID),
+		index:                     len(s.windows),
+		name:                      name,
+		cwd:                       cwd,
+		command:                   filepath.Base(cmd.Path),
+		agentTool:                 agentTool,
+		agentToolConfirmed:        agentToolConfirmed,
+		agentSessionID:            options.agentSessionID,
+		agentSessionDir:           options.agentSessionDir,
+		agentSessionPath:          options.agentSessionPath,
+		agentSessionIdentityExact: options.agentSessionIdentityExact,
+		foregroundPid:             proc.Pid(),
+		foregroundCommand:         filepath.Base(cmd.Path),
+		paneTitle:                 paneTitle,
+		pty:                       windowPty,
+		ptyWidth:                  cols,
+		ptyHeight:                 rows,
+		proc:                      proc,
+		history:                   append([]byte(nil), options.history...),
+		lastActivity:              time.Now(),
+		cursorVisible:             cursorVisible,
+		cursorVisibilityKnown:     options.cursorVisibilityKnown,
+		privateModes:              copyPrivateModes(options.privateModes),
+		terminalProgress:          copyTerminalProgressSnapshot(options.terminalProgress),
+		insertModeEnabled:         options.insertModeEnabled,
+		insertModeKnown:           options.insertModeKnown,
+		applicationKeypadEnabled:  options.applicationKeypadEnabled,
+		applicationKeypadKnown:    options.applicationKeypadKnown,
 	}
 	s.windows = append(s.windows, window)
 	if s.activeID != "" && s.activeID != window.id {
@@ -8938,28 +9014,29 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 		}
 		window.refreshProcessMetadataLocked(time.Now())
 		state := restoreWindowState{
-			ID:                       window.id,
-			Index:                    window.index,
-			Name:                     window.name,
-			Cwd:                      window.cwd,
-			CurrentCommand:           window.currentCommandLocked(),
-			PanePid:                  window.metadataProcessIDLocked(),
-			PaneTitle:                window.paneTitle,
-			AgentTool:                window.agentToolLocked(),
-			AgentToolConfirmed:       window.agentToolConfirmedLocked(),
-			AgentSessionID:           window.agentSessionID,
-			AgentSessionDir:          window.agentSessionDir,
-			AgentSessionPath:         window.agentSessionPath,
-			LastActivityEpochSeconds: window.lastActivity.Unix(),
-			CursorVisible:            window.cursorVisible,
-			CursorVisibilityKnown:    window.cursorVisibilityKnown,
-			PrivateModes:             copyPrivateModes(window.privateModes),
-			TerminalProgress:         copyTerminalProgressSnapshot(window.terminalProgress),
-			InsertModeEnabled:        window.insertModeEnabled,
-			InsertModeKnown:          window.insertModeKnown,
-			ApplicationKeypadEnabled: window.applicationKeypadEnabled,
-			ApplicationKeypadKnown:   window.applicationKeypadKnown,
-			Active:                   s.activeID == window.id,
+			ID:                        window.id,
+			Index:                     window.index,
+			Name:                      window.name,
+			Cwd:                       window.cwd,
+			CurrentCommand:            window.currentCommandLocked(),
+			PanePid:                   window.metadataProcessIDLocked(),
+			PaneTitle:                 window.paneTitle,
+			AgentTool:                 window.agentToolLocked(),
+			AgentToolConfirmed:        window.agentToolConfirmedLocked(),
+			AgentSessionID:            window.agentSessionID,
+			AgentSessionDir:           window.agentSessionDir,
+			AgentSessionPath:          window.agentSessionPath,
+			AgentSessionIdentityExact: window.agentSessionIdentityExact,
+			LastActivityEpochSeconds:  window.lastActivity.Unix(),
+			CursorVisible:             window.cursorVisible,
+			CursorVisibilityKnown:     window.cursorVisibilityKnown,
+			PrivateModes:              copyPrivateModes(window.privateModes),
+			TerminalProgress:          copyTerminalProgressSnapshot(window.terminalProgress),
+			InsertModeEnabled:         window.insertModeEnabled,
+			InsertModeKnown:           window.insertModeKnown,
+			ApplicationKeypadEnabled:  window.applicationKeypadEnabled,
+			ApplicationKeypadKnown:    window.applicationKeypadKnown,
+			Active:                    s.activeID == window.id,
 		}
 		if isShellRestoreWindow(state) && len(window.history) > 0 {
 			history, historyStart := window.historyTailWithParserLocked()
@@ -9001,6 +9078,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		AgentSessionID:            window.agentSessionID,
 		AgentSessionDir:           window.agentSessionDir,
 		AgentSessionPath:          window.agentSessionPath,
+		AgentSessionIdentityExact: window.agentSessionIdentityExact,
 		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
 		TerminalMouseReportSgr:    window.mouseTrackingActiveLocked() && window.privateModes["1006"],
@@ -12472,8 +12550,9 @@ func (w *muxWindow) stripLocallyAnsweredThemeQueriesLocked(chunk []byte, hint []
 		}
 		sequenceEnd := payloadStart + payloadEnd + terminatorLength
 		payload := data[payloadStart : payloadStart+payloadEnd]
+		privatePiIdentity := bytes.HasPrefix(payload, []byte("1337;MonkeyMuxPi="))
 		queryKeys := themeQueryKeysFromOscPayload(string(payload))
-		if !answerable(queryKeys) {
+		if !privatePiIdentity && !answerable(queryKeys) {
 			i = sequenceEnd
 			continue
 		}
@@ -14643,6 +14722,8 @@ func isReplayUnsafeOscNotification(payload []byte) bool {
 	switch code {
 	case "99", "777":
 		return true
+	case "1337":
+		return strings.HasPrefix(rest, "MonkeyMuxPi=")
 	case "9":
 		// iTerm2 notifications are `OSC 9 ; <text>`. ConEmu reuses OSC 9 with a
 		// numeric sub-command (9;4 progress, 9;9 working dir, ...); leave those
@@ -15011,11 +15092,21 @@ func agentToolFromCommandName(command string) string {
 		return "antigravity"
 	case "cursor-agent":
 		return "cursor-agent"
-	case "pi":
+	case "pi", "pi-agent":
 		return "pi"
 	default:
 		return ""
 	}
+}
+
+func monkeyMuxPiAgentLaunchCommand() string {
+	executable, err := os.Executable()
+	if err == nil {
+		if argument, ok := shellArgument(executable); ok {
+			return argument + " pi-agent"
+		}
+	}
+	return "monkeymux pi-agent"
 }
 
 func agentLaunchCommand(tool string, startInYoloMode bool) string {
@@ -15056,7 +15147,7 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 		}
 		return "cursor-agent"
 	case "pi":
-		return "pi"
+		return monkeyMuxPiAgentLaunchCommand()
 	default:
 		return ""
 	}
@@ -15065,13 +15156,13 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 func piLaunchCommand(sessionDir string) string {
 	sessionDir = strings.TrimSpace(sessionDir)
 	if sessionDir == "" {
-		return "pi"
+		return monkeyMuxPiAgentLaunchCommand()
 	}
 	argument, ok := shellArgument(sessionDir)
 	if !ok {
-		return "pi"
+		return monkeyMuxPiAgentLaunchCommand()
 	}
-	return "pi --session-dir " + argument
+	return monkeyMuxPiAgentLaunchCommand() + " --session-dir " + argument
 }
 
 func piResumeCommand(sessionID string, sessionDir string, sessionPath string) string {
@@ -15083,7 +15174,7 @@ func piResumeCommand(sessionID string, sessionDir string, sessionPath string) st
 		if !ok {
 			return ""
 		}
-		return "pi --session " + argument
+		return monkeyMuxPiAgentLaunchCommand() + " --session " + argument
 	}
 	launch := piLaunchCommand(sessionDir)
 	if strings.TrimSpace(sessionDir) != "" && launch == "pi" {
@@ -15151,7 +15242,7 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 		if !safePiSessionIDPattern.MatchString(sessionID) {
 			return ""
 		}
-		return "pi --session " + sessionID
+		return monkeyMuxPiAgentLaunchCommand() + " --session " + sessionID
 	default:
 		return ""
 	}
@@ -15782,6 +15873,8 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 		}
 	case "9":
 		w.applyTerminalProgressPayloadLocked(value)
+	case "1337":
+		w.applyPiIdentityPayloadLocked(value)
 	}
 	queryKeys := themeQueryKeysFromOscPayload(payload)
 	if len(queryKeys) == 0 {
@@ -15810,6 +15903,38 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 		w.themeColorQueryKeys[key] = true
 	}
 	return queryKeys
+}
+
+func (w *muxWindow) applyPiIdentityPayloadLocked(value string) {
+	const prefix = "MonkeyMuxPi="
+	if !strings.HasPrefix(value, prefix) || w.agentToolLocked() != "pi" {
+		return
+	}
+	encoded := strings.TrimPrefix(value, prefix)
+	data, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(data) == 0 || len(data) > oscBufferLimitBytes {
+		return
+	}
+	var identity struct {
+		ID   string `json:"id"`
+		File string `json:"file"`
+	}
+	if json.Unmarshal(data, &identity) != nil {
+		return
+	}
+	identity.ID = strings.TrimSpace(identity.ID)
+	identity.File = filepath.Clean(strings.TrimSpace(identity.File))
+	if !safePiSessionIDPattern.MatchString(identity.ID) ||
+		!filepath.IsAbs(identity.File) ||
+		!strings.HasSuffix(strings.ToLower(identity.File), ".jsonl") {
+		return
+	}
+	w.agentSessionID = identity.ID
+	w.agentSessionPath = identity.File
+	w.agentSessionDir = filepath.Dir(identity.File)
+	w.agentSessionIdentityExact = true
+	w.agentTool = "pi"
+	w.agentToolConfirmed = true
 }
 
 func appendThemeQueryKeys(existing []string, keys []string) []string {

@@ -8718,6 +8718,24 @@ func TestActiveOutputKeepsUnansweredPaletteQueryInAttach(t *testing.T) {
 	}
 }
 
+func TestStripLocallyAnsweredThemeQueriesConsumesSplitPiIdentity(t *testing.T) {
+	window := &muxWindow{}
+	first := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("before\x1b]1337;MonkeyMuxPi=abc"),
+		nil,
+	)
+	if got := string(first); got != "before" {
+		t.Fatalf("first filtered output = %q, want before", got)
+	}
+	second := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("123\x07after"),
+		nil,
+	)
+	if got := string(second); got != "after" {
+		t.Fatalf("second filtered output = %q, want after", got)
+	}
+}
+
 func TestStripLocallyAnsweredThemeQueriesLeavesNormalOutput(t *testing.T) {
 	chunk := []byte("plain text without queries\x1b]2;Title\x07")
 	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
@@ -9061,6 +9079,50 @@ func TestWindowMetadataTracksOscTitleAsPaneTitle(t *testing.T) {
 	}
 	if window.paneTitle != "Claude Code · flutty" {
 		t.Fatalf("pane title = %q, want OSC title", window.paneTitle)
+	}
+}
+
+func TestWindowMetadataTracksExactPiIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resumed.jsonl")
+	payload, err := json.Marshal(map[string]string{
+		"id":   "session-id",
+		"file": path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	window := &muxWindow{
+		command:            "monkeymux pi-agent",
+		foregroundCommand:  "pi",
+		agentTool:          "pi",
+		agentToolConfirmed: true,
+	}
+
+	window.observeTerminalMetadataLocked(
+		[]byte("\x1b]1337;MonkeyMuxPi=" + encoded + "\x07"),
+	)
+
+	if window.agentSessionID != "session-id" ||
+		window.agentSessionPath != path ||
+		window.agentSessionDir != filepath.Dir(path) ||
+		!window.agentSessionIdentityExact {
+		t.Fatalf("Pi identity = id:%q path:%q dir:%q", window.agentSessionID, window.agentSessionPath, window.agentSessionDir)
+	}
+}
+
+func TestWindowMetadataRejectsPiIdentityFromOtherProcess(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString(
+		[]byte(`{"id":"session-id","file":"/tmp/session.jsonl"}`),
+	)
+	window := &muxWindow{command: "zsh", foregroundCommand: "zsh"}
+
+	window.observeTerminalMetadataLocked(
+		[]byte("\x1b]1337;MonkeyMuxPi=" + payload + "\x07"),
+	)
+
+	if window.agentSessionID != "" || window.agentSessionPath != "" {
+		t.Fatalf("non-Pi process stored identity: %#v", window)
 	}
 }
 
