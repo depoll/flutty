@@ -2391,6 +2391,60 @@ branch refs/heads/main
     });
 
     test(
+      'Pi provider preview prioritizes the scope over newer unrelated files',
+      () async {
+        final client = _MockSshClient();
+        const projectPath =
+            '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
+            '2026-04-12T21-07-44-781Z_01JYX7ABCD.jsonl';
+        final unrelatedPaths = List<String>.generate(
+          7,
+          (index) =>
+              '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-other--/'
+              '2026-04-13T00-00-0$index-000Z_OTHER$index.jsonl',
+        );
+
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          if (command.contains(projectPath)) {
+            return _buildExecSession(
+              stdout: _remoteSnapshotLine(projectPath, '''
+{"type":"session","version":3,"id":"01JYX7ABCD","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/flutty"}
+{"type":"message","message":{"role":"user","content":"Scoped Pi session"}}
+'''),
+            );
+          }
+          if (command.contains('--Users-depoll-Code-flutty--')) {
+            return _buildExecSession(stdout: projectPath);
+          }
+          if (command.contains('find ~/.pi/agent/sessions')) {
+            return _buildExecSession(
+              stdout: <String>[...unrelatedPaths, projectPath].join('\n'),
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final snapshots = await discovery
+            .discoverSessionsStream(
+              _buildDiscoverySession(client),
+              workingDirectory: '/Users/depoll/Code/flutty',
+              maxPerTool: 1,
+            )
+            .toList();
+        final piPreviews = snapshots
+            .expand((snapshot) => snapshot.sessions)
+            .where((session) => session.toolName == 'Pi')
+            .toList(growable: false);
+
+        expect(piPreviews, isNotEmpty);
+        expect(piPreviews.first.sessionId, '01JYX7ABCD');
+        expect(piPreviews.first.summary, 'Scoped Pi session');
+      },
+    );
+
+    test(
       'Pi discovery keeps a session relocated out of the scoped directory',
       () async {
         final client = _MockSshClient();
