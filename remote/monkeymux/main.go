@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.163"
+	monkeyMuxVersion                  = "0.1.164"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3421,22 +3421,37 @@ func discoverPiSessions(
 			entries = readPiSessionEntries(key.root)
 			entriesByRoot[key.root] = entries
 		}
+		// Pi's interactive /resume picker can switch to a session recorded in a
+		// different working directory without putting the selected path in argv
+		// or changing the shell process' cwd. Load current names before applying
+		// cwd filtering so Pi's published title can retain that exact cross-cwd
+		// candidate. Unnamed titles retain every matching cwd basename and rely
+		// on the existing one-to-one activity/process evidence below.
+		entries = piSessionsWithLatestNamesForTitles(restore, indices, entries)
 		encodedCwd := piEncodedSessionDirName(key.cwd)
 		candidates := []piSessionEntry{}
 		for _, entry := range entries {
 			if used[entry.sessionID] {
 				continue
 			}
+			matchesPublishedTitle := false
+			for _, index := range indices {
+				if piSessionMatchesPaneTitle(entry, restore.Windows[index].PaneTitle) ||
+					piSessionCwdMatchesPaneTitle(entry, restore.Windows[index].PaneTitle) {
+					matchesPublishedTitle = true
+					break
+				}
+			}
 			// A relocated session (Pi's worktree flow) records the pane's
 			// working directory only in the origin of its parentSession
-			// chain, so match either the live cwd or that origin bucket.
+			// chain, so match either the live cwd, that origin bucket, or an
+			// exact title published after an interactive cross-cwd resume.
 			if entry.cwd == key.cwd ||
-				(encodedCwd != "" && entry.originDir == encodedCwd) {
+				(encodedCwd != "" && entry.originDir == encodedCwd) ||
+				matchesPublishedTitle {
 				candidates = append(candidates, entry)
 			}
 		}
-
-		candidates = piSessionsWithLatestNamesForTitles(restore, indices, candidates)
 
 		// Official Pi publishes named sessions as `π - <name> - <cwd>`;
 		// older/custom builds may use `Pi`. Unlike process-start correlation, this
@@ -3837,6 +3852,18 @@ func piSessionMatchesPaneTitle(entry piSessionEntry, paneTitle string) bool {
 	}
 	title := cleanTerminalTitle(paneTitle)
 	wantSuffix := " - " + name + " - " + cwdName
+	return title == cleanTerminalTitle("π"+wantSuffix) ||
+		title == cleanTerminalTitle("Pi"+wantSuffix)
+}
+
+func piSessionCwdMatchesPaneTitle(entry piSessionEntry, paneTitle string) bool {
+	titleCwd := firstNonEmptyString(entry.rawCwd, entry.cwd)
+	cwdName := filepath.Base(strings.TrimSpace(titleCwd))
+	if cwdName == "" {
+		return false
+	}
+	title := cleanTerminalTitle(paneTitle)
+	wantSuffix := " - " + cwdName
 	return title == cleanTerminalTitle("π"+wantSuffix) ||
 		title == cleanTerminalTitle("Pi"+wantSuffix)
 }

@@ -719,6 +719,74 @@ func TestDiscoverPiSessionsDeclinesInitialSessionAfterResume(t *testing.T) {
 	}
 }
 
+func TestDiscoverPiSessionsRestoresInteractiveResumeIntoWorktree(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	launchDirectory := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktrees", "feature")
+	otherWorktree := filepath.Join(root, "archive", "feature")
+	started := time.Now().Add(-time.Hour).UTC()
+	activity := started.Add(30 * time.Minute)
+	writePiTestSessionTimes(
+		t,
+		filepath.Join(root, "archive", "old.jsonl"),
+		"old-session",
+		otherWorktree,
+		started.Add(-2*time.Hour),
+		started.Add(10*time.Minute),
+	)
+	resumedPath := filepath.Join(root, "worktree", "resumed.jsonl")
+	writePiTestSessionTimes(
+		t,
+		resumedPath,
+		"resumed-session",
+		worktree,
+		started.Add(-2*time.Hour),
+		activity,
+	)
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	// Pi was launched in launchDirectory and changed sessions through its
+	// interactive picker, so neither argv nor the pane cwd names the worktree.
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid:                  100,
+		CurrentCommand:           "pi",
+		AgentTool:                "pi",
+		Cwd:                      launchDirectory,
+		PaneTitle:                "π - feature",
+		LastActivityEpochSeconds: activity.Unix(),
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "resumed-session" || got.sessionPath != resumedPath {
+		t.Fatalf("cross-worktree interactive resume = %#v, want exact resumed path", got)
+	}
+	options := createWindowOptionsForRestore(restoreWindowState{
+		AgentTool:        "pi",
+		AgentSessionID:   got.sessionID,
+		AgentSessionDir:  got.sessionDir,
+		AgentSessionPath: got.sessionPath,
+	}, false)
+	want := piResumeCommandWithFreshFallback(
+		piResumeCommand(got.sessionID, got.sessionDir, got.sessionPath),
+		piLaunchCommand(got.sessionDir),
+	)
+	if options.command != want {
+		t.Fatalf("cross-worktree restore command = %q, want %q", options.command, want)
+	}
+}
+
 func TestDiscoverPiSessionsAssignsTwoKnownNodeProcessesMutually(t *testing.T) {
 	originalOpenFiles := processOpenFilePathsForMetadata
 	originalProcessStart := processStartedAtForMetadata
