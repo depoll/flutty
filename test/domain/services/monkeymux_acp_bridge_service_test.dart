@@ -233,10 +233,13 @@ void main() {
         ..remoteMuxSessionName = 'work';
       final mux = _MockMonkeyMuxService();
       when(
-        () => mux.runClientCommand(
+        () => mux.startAcpBridge(
           session,
           'work',
-          any(),
+          providerId: any(named: 'providerId'),
+          provider: any(named: 'provider'),
+          command: any(named: 'command'),
+          cwd: any(named: 'cwd'),
           priority: any(named: 'priority'),
         ),
       ).thenAnswer(
@@ -313,28 +316,31 @@ void main() {
         expect(result.bridgeId, _bridgeId);
       }
 
-      final commands = verify(
+      for (final launch in launches) {
+        final command =
+            verify(
+                  () => mux.startAcpBridge(
+                    session,
+                    'work',
+                    providerId: launch.providerId,
+                    provider: launch.label,
+                    command: captureAny(named: 'command'),
+                    cwd: '/home/demo/project',
+                    priority: any(named: 'priority'),
+                  ),
+                ).captured.single
+                as String;
+        expect(command, contains('exec'));
+        expect(command, contains(launch.executable));
+      }
+      verifyNever(
         () => mux.runClientCommand(
           session,
-          'work',
-          captureAny(),
+          any(),
+          any(),
           priority: any(named: 'priority'),
         ),
-      ).captured.cast<String>().toList(growable: false);
-      expect(commands, hasLength(launches.length));
-      for (var index = 0; index < launches.length; index++) {
-        expect(commands[index], contains("'acp' 'start'"));
-        expect(
-          commands[index],
-          contains("'--provider-id' '${launches[index].providerId}'"),
-        );
-        expect(commands[index], contains('exec'));
-        expect(commands[index], contains(launches[index].executable));
-      }
-      expect(commands[3], contains('--profile'));
-      expect(commands[3], contains('work'));
-      expect(commands[4], contains('--profile'));
-      expect(commands[4], contains('ops'));
+      );
       verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
     },
   );

@@ -933,6 +933,39 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     );
   }
 
+  /// Starts an ACP bridge directly inside the existing MonkeyMux server.
+  ///
+  /// This preserves the server's inherited login/security environment without
+  /// spawning a second detached helper process.
+  Future<TerminalClientCommandResult> startAcpBridge(
+    SshSession session,
+    String sessionName, {
+    required String providerId,
+    required String provider,
+    required String command,
+    required String cwd,
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    if (isAppReviewDemoSession(session)) {
+      return const TerminalClientCommandResult(
+        output:
+            '{"version":1,"type":"started","bridgeId":"00000000000000000000000000000000"}',
+        exitCode: 0,
+      );
+    }
+    final response = await _runControlCommand(session, sessionName, {
+      'type': 'start_acp_bridge',
+      'providerId': providerId,
+      'provider': provider,
+      'command': command,
+      'cwd': cwd,
+    }, priority: priority);
+    return TerminalClientCommandResult(
+      output: response.data ?? '',
+      exitCode: response.exitCode,
+    );
+  }
+
   /// Returns metadata for an already-running MonkeyMux server, if any.
   Future<MonkeyMuxServerStatus?> runningServerStatus(
     SshSession session,
@@ -1436,7 +1469,7 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
 }
 
 Duration _oneShotResponseTimeout(Map<String, Object?> request) =>
-    request['type'] == 'run_command'
+    request['type'] == 'run_command' || request['type'] == 'start_acp_bridge'
     ? _oneShotRunCommandResponseTimeout
     : _oneShotControlResponseTimeout;
 

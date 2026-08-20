@@ -12448,6 +12448,83 @@ func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
 	}
 }
 
+func TestControlStartAcpBridgeHostsProviderInServer(t *testing.T) {
+	dir := testAcpRuntimeDirectory(t)
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("SHELL", "/bin/sh")
+	server := newMuxServer("test")
+	serverConn, clientConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleControl(serverConn, bufio.NewReader(serverConn))
+	}()
+	decoder := json.NewDecoder(clientConn)
+	readResponse := func() controlResponse {
+		t.Helper()
+		if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		var response controlResponse
+		if err := decoder.Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	if response := readResponse(); response.Type != "hello" {
+		t.Fatalf("first response type = %q, want hello", response.Type)
+	}
+	if response := readResponse(); response.Type != "window_list" {
+		t.Fatalf("second response type = %q, want window_list", response.Type)
+	}
+	request := controlMessage{
+		ID:         "cursor-start",
+		Type:       "start_acp_bridge",
+		ProviderID: "builtin:cursor-agent-acp",
+		Provider:   "Cursor Agent",
+		Command:    "cat",
+		Cwd:        ".",
+	}
+	if err := json.NewEncoder(clientConn).Encode(request); err != nil {
+		t.Fatal(err)
+	}
+	response := readResponse()
+	if response.ID != request.ID || response.Type != "acp_bridge_started" {
+		t.Fatalf("start response = %#v", response)
+	}
+	var frame acpWireMessage
+	if err := json.Unmarshal([]byte(response.Data), &frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame.Type != "started" || !validAcpBridgeID(frame.BridgeID) {
+		t.Fatalf("started frame = %#v", frame)
+	}
+	info, err := acpBridgeStatus(frame.BridgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ProviderID != request.ProviderID || info.State != "running" {
+		t.Fatalf("bridge status = %#v", info)
+	}
+
+	conn, err := dialAcpBridge(frame.BridgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = writeAcpWireFrame(conn, acpWireMessage{
+		Version: acpBridgeProtocolVersion,
+		Type:    "command",
+		Command: "stop",
+	})
+	_ = conn.Close()
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control handler did not stop")
+	}
+}
+
 func TestControlClientCloseCancelsRunCommand(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	server := newMuxServer("test")

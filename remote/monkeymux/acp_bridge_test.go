@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,45 @@ import (
 	"testing"
 	"time"
 )
+
+func TestStartAcpBridgeInProcessHostsProviderInServer(t *testing.T) {
+	dir := testAcpRuntimeDirectory(t)
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	id, err := startAcpBridgeInProcess(
+		ctx,
+		"builtin:cursor-agent-acp",
+		"Cursor Agent",
+		"cat",
+		".",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := acpBridgeStatus(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ProviderID != "builtin:cursor-agent-acp" || info.State != "running" {
+		t.Fatalf("unexpected bridge metadata: %+v", info)
+	}
+
+	conn, err := dialAcpBridge(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAcpWireFrame(conn, acpWireMessage{
+		Version: acpBridgeProtocolVersion,
+		Type:    "command",
+		Command: "stop",
+	}); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+}
 
 func TestAcpWireFramingRoundTrip(t *testing.T) {
 	var buffer bytes.Buffer

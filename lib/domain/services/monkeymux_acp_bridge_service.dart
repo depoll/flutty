@@ -199,19 +199,14 @@ final class MonkeyMuxAcpBridgeService {
     );
     final startedAt = DateTime.now();
     try {
-      final arguments = [
-        'acp',
-        'start',
-        '--provider-id',
-        providerId,
-        '--provider',
-        providerLabel,
-        '--command',
-        providerCommand,
-        '--cwd',
-        cwd,
-      ];
-      final message = await _runStartHelper(session, installation, arguments);
+      final message = await _runStartHelper(
+        session,
+        installation,
+        providerId: providerId,
+        providerLabel: providerLabel,
+        providerCommand: providerCommand,
+        cwd: cwd,
+      );
       _requireType(message, 'started');
       final bridgeId = _readBridgeId(message['bridgeId']);
       _diagnostics.info(
@@ -244,9 +239,24 @@ final class MonkeyMuxAcpBridgeService {
 
   Future<Map<String, Object?>> _runStartHelper(
     SshSession session,
-    MonkeyMuxInstallation installation,
-    List<String> arguments,
-  ) async {
+    MonkeyMuxInstallation installation, {
+    required String providerId,
+    required String providerLabel,
+    required String providerCommand,
+    required String cwd,
+  }) async {
+    final arguments = [
+      'acp',
+      'start',
+      '--provider-id',
+      providerId,
+      '--provider',
+      providerLabel,
+      '--command',
+      providerCommand,
+      '--cwd',
+      cwd,
+    ];
     final sessionName = session.remoteMuxBackend == RemoteMuxBackend.monkeyMux
         ? session.remoteMuxSessionName?.trim()
         : null;
@@ -257,15 +267,16 @@ final class MonkeyMuxAcpBridgeService {
       return _runHelper(session, installation, arguments);
     }
 
-    // Spawn the persistent ACP bridge through the already-running MonkeyMux
-    // server. On macOS this preserves the server's login/bootstrap security
-    // context (and therefore Cursor's own Keychain access), unlike a fresh SSH
-    // exec channel. The nested helper returns immediately after detaching the
-    // bridge daemon; no ACP bytes pass through the control channel.
-    final result = await monkeyMuxService.runClientCommand(
+    // Host the ACP bridge directly inside the running MonkeyMux server. The
+    // provider inherits the exact server login/security environment (including
+    // Cursor's Keychain context) without a fragile nested detached helper.
+    final result = await monkeyMuxService.startAcpBridge(
       session,
       sessionName,
-      _buildHelperCommand(installation, arguments),
+      providerId: providerId,
+      provider: providerLabel,
+      command: providerCommand,
+      cwd: cwd,
     );
     if (result.exitCode != 0 || result.output.trim().isEmpty) {
       throw const MonkeyMuxAcpBridgeException(

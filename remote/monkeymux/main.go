@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.160"
+	monkeyMuxVersion                  = "0.1.161"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -254,6 +254,7 @@ var capabilities = []string{
 	"upgrade-restore-v1",
 	"acp-bridge-v1",
 	"acp-bridge-replay-v1",
+	"acp-bridge-control-start-v1",
 }
 
 var (
@@ -469,6 +470,8 @@ type controlMessage struct {
 	Name           string   `json:"name,omitempty"`
 	Cwd            string   `json:"cwd,omitempty"`
 	Command        string   `json:"command,omitempty"`
+	ProviderID     string   `json:"providerId,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
 	Args           []string `json:"args,omitempty"`
 	Data           string   `json:"data,omitempty"`
 	BracketedPaste bool     `json:"bracketedPaste,omitempty"`
@@ -8496,6 +8499,8 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			return
 		}
 		client.runShellCommandAsync(s, request)
+	case "start_acp_bridge":
+		client.startAcpBridgeAsync(s, request)
 	case "inject_input":
 		s.focusAttachClientByID(request.ClientID, 0, 0, false)
 		id := request.WindowID
@@ -8643,6 +8648,94 @@ func (c *controlClient) close() {
 	for _, cancel := range cancels {
 		cancel()
 	}
+}
+
+func startAcpBridgeInProcess(
+	ctx context.Context,
+	providerID string,
+	provider string,
+	command string,
+	cwd string,
+) (string, error) {
+	if err := validateAcpLaunch(provider, command, cwd); err != nil {
+		return "", err
+	}
+	if err := validateAcpProviderID(providerID); err != nil {
+		return "", err
+	}
+	id, err := newAcpBridgeID()
+	if err != nil {
+		return "", errors.New("unable to allocate ACP bridge")
+	}
+	bridge, err := newAcpBridge(id, provider, command, cwd)
+	if err != nil {
+		return "", errors.New("unable to start ACP provider")
+	}
+	bridge.providerID = providerID
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- serveAcpBridge(bridge) }()
+
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-serveDone:
+			if err == nil {
+				err = errors.New("ACP bridge stopped before startup")
+			}
+			return "", err
+		case <-ctx.Done():
+			bridge.stop()
+			return "", errors.New("ACP bridge did not start")
+		case <-ticker.C:
+			conn, err := dialAcpBridge(id)
+			if err == nil {
+				_ = conn.Close()
+				return id, nil
+			}
+		}
+	}
+}
+
+func (c *controlClient) startAcpBridgeAsync(s *muxServer, request controlMessage) {
+	commandKey := fmt.Sprintf("%s/acp/%d", request.ID, time.Now().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), socketTimeout)
+	if !c.trackCommand(commandKey, cancel) {
+		cancel()
+		c.sendError(request, errRunCommandClientClosed)
+		return
+	}
+	go func() {
+		defer c.untrackCommand(commandKey)
+		defer cancel()
+		bridgeID, err := startAcpBridgeInProcess(
+			ctx,
+			request.ProviderID,
+			request.Provider,
+			request.Command,
+			request.Cwd,
+		)
+		if err != nil {
+			c.sendError(request, err)
+			return
+		}
+		frame, err := json.Marshal(acpWireMessage{
+			Version:  acpBridgeProtocolVersion,
+			Type:     "started",
+			BridgeID: bridgeID,
+		})
+		if err != nil {
+			c.sendError(request, errors.New("unable to encode ACP bridge response"))
+			return
+		}
+		c.send(controlResponse{
+			ID:      request.ID,
+			Type:    "acp_bridge_started",
+			Status:  "ok",
+			Session: s.session,
+			Data:    string(frame),
+		})
+	}()
 }
 
 func (c *controlClient) runShellCommandAsync(s *muxServer, request controlMessage) {
