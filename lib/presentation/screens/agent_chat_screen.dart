@@ -73,6 +73,23 @@ typedef AcpChatAttachmentActionsBuilder =
 typedef AcpChatPreviewChanged =
     void Function(AcpSessionKey sessionKey, String? preview);
 
+/// Session-owned conversation scroll state retained across embedded remounts.
+@immutable
+class AcpChatScrollState {
+  /// Creates a retained transcript position.
+  const AcpChatScrollState({required this.offset, required this.autoScroll});
+
+  /// Logical scroll offset from the top of the transcript.
+  final double offset;
+
+  /// Whether new output should continue following the bottom.
+  final bool autoScroll;
+}
+
+/// Receives retained scroll state together with its originating session.
+typedef AcpChatScrollChanged =
+    void Function(AcpSessionKey sessionKey, AcpChatScrollState state);
+
 /// Wide-layout breakpoint for the session rail.
 const double kAgentChatWideBreakpoint = 840;
 
@@ -101,6 +118,8 @@ class AgentChatScreen extends ConsumerStatefulWidget {
     this.onExitEmbedded,
     this.onSessionChanged,
     this.onPreviewChanged,
+    this.initialScrollState,
+    this.onScrollChanged,
     super.key,
   });
 
@@ -143,6 +162,12 @@ class AgentChatScreen extends ConsumerStatefulWidget {
   /// Publishes a bounded conversation preview for connection cards.
   final AcpChatPreviewChanged? onPreviewChanged;
 
+  /// Retained transcript position for an embedded session remount.
+  final AcpChatScrollState? initialScrollState;
+
+  /// Persists transcript position for the containing terminal session.
+  final AcpChatScrollChanged? onScrollChanged;
+
   @override
   ConsumerState<AgentChatScreen> createState() => _AgentChatScreenState();
 }
@@ -150,10 +175,10 @@ class AgentChatScreen extends ConsumerStatefulWidget {
 class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   late AcpSessionKey _key;
   late final AcpComposerController _composer;
-  final ScrollController _scroll = ScrollController();
+  late final ScrollController _scroll;
 
-  var _autoScroll = true;
-  var _showJumpToLatest = false;
+  late bool _autoScroll;
+  late bool _showJumpToLatest;
   var _userDraggingTranscript = false;
   var _connecting = true;
   AcpSessionError? _connectError;
@@ -175,6 +200,12 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       bridgeId: widget.bridgeId,
       acpSessionId: widget.acpSessionId,
     );
+    final retainedScroll = widget.initialScrollState;
+    _autoScroll = retainedScroll?.autoScroll ?? true;
+    _showJumpToLatest = !_autoScroll;
+    _scroll = ScrollController(
+      initialScrollOffset: retainedScroll?.offset ?? 0,
+    );
     final manager = ref.read(acpSessionManagerProvider);
     _composer = AcpComposerController(
       manager: manager,
@@ -189,6 +220,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   @override
   void dispose() {
     _previewPublishTimer?.cancel();
+    _publishScrollState();
     _scroll
       ..removeListener(_onScroll)
       ..dispose();
@@ -423,8 +455,18 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     });
   }
 
+  void _publishScrollState() {
+    if (!_scroll.hasClients) return;
+    widget.onScrollChanged?.call(
+      _key,
+      AcpChatScrollState(offset: _scroll.offset, autoScroll: _autoScroll),
+    );
+  }
+
   void _onScroll() {
-    if (!_scroll.hasClients || _userDraggingTranscript) {
+    if (!_scroll.hasClients) return;
+    if (_userDraggingTranscript) {
+      _publishScrollState();
       return;
     }
     final position = _scroll.position;
@@ -435,6 +477,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         _showJumpToLatest = !nearBottom;
       });
     }
+    _publishScrollState();
   }
 
   bool _handleTranscriptScroll(ScrollNotification notification) {
@@ -463,6 +506,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         _autoScroll = nearBottom;
         _showJumpToLatest = !nearBottom;
       });
+      _publishScrollState();
     }
     return false;
   }

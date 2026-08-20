@@ -3701,6 +3701,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxBarExpanded = false;
   double _tmuxSidebarDragOffset = 0;
   AcpSessionKey? _activeNativeAcpSessionKey;
+  final Map<String, AcpChatScrollState> _nativeAcpScrollStates = {};
   String? _connectionOpenedWorkingDirectory;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
@@ -11263,6 +11264,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _openNativeAcpSession(key);
         case TmuxCloseAcpSessionAction(:final key):
           await ref.read(acpSessionManagerProvider).stopSession(key);
+          _nativeAcpScrollStates.remove(key.value);
           if (mounted && _activeNativeAcpSessionKey == key) {
             _showTerminalViewport();
           }
@@ -11571,6 +11573,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .updateSessionNativeAcpPreview(connectionId, preview);
   }
 
+  void _updateNativeAcpScroll(
+    AcpSessionKey sessionKey,
+    AcpChatScrollState state,
+  ) {
+    // Refresh insertion order so the bounded map retains recently visited
+    // native windows without coupling UI scroll state to transcript/domain data.
+    _nativeAcpScrollStates
+      ..remove(sessionKey.value)
+      ..[sessionKey.value] = state;
+    while (_nativeAcpScrollStates.length > 32) {
+      _nativeAcpScrollStates.remove(_nativeAcpScrollStates.keys.first);
+    }
+  }
+
   void _commitNativeAgentFontSize(double fontSize) {
     final connectionId = _connectionId;
     if (!mounted || connectionId == null) {
@@ -11607,6 +11623,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExitEmbedded: _showTerminalViewport,
       onSessionChanged: _openNativeAcpSession,
       onPreviewChanged: _updateNativeAcpPreview,
+      initialScrollState: _nativeAcpScrollStates[key.value],
+      onScrollChanged: _updateNativeAcpScroll,
     );
   }
 

@@ -1180,45 +1180,35 @@ void main() {
       expect(connector.stoppedBridges, isEmpty);
     });
 
-    test(
-      'parks earlier same-host attachments without stopping persistent bridges',
-      () async {
-        isPro = true;
-        final first = await startCopilot();
-        final firstTransport = connector.servers[first.bridgeId]!;
+    test('keeps same-host agent windows attached while switching', () async {
+      isPro = true;
+      final first = await startCopilot();
+      final firstTransport = connector.servers[first.bridgeId]!;
+      final second = await startCopilot();
+      final secondTransport = connector.servers[second.bridgeId]!;
 
-        final second = await startCopilot();
-        final secondTransport = connector.servers[second.bridgeId]!;
+      expect(manager.state.byKeyValue(first.value)!.isLive, isTrue);
+      expect(manager.state.byKeyValue(second.value)!.isLive, isTrue);
+      expect(firstTransport.closed, isFalse);
+      expect(secondTransport.closed, isFalse);
+      expect(manager.liveSessionKeyValues, {first.value, second.value});
 
-        expect(
-          manager.state.byKeyValue(first.value)!.status,
-          AcpConnectionStatus.detached,
-        );
-        expect(firstTransport.closed, isTrue);
-        expect(manager.state.byKeyValue(second.value)!.isLive, isTrue);
-        expect(manager.liveSessionKeyValues, {second.value});
-        expect(connector.stoppedBridges, isEmpty);
+      final reopened = await manager.reconnectSession(
+        hostId: first.hostId,
+        providerId: first.providerId,
+        bridgeId: first.bridgeId,
+        acpSessionId: first.acpSessionId,
+        cwd: '/repo',
+      );
 
-        final reopened = await manager.reconnectSession(
-          hostId: first.hostId,
-          providerId: first.providerId,
-          bridgeId: first.bridgeId,
-          acpSessionId: first.acpSessionId,
-          cwd: '/repo',
-        );
-
-        expect(reopened, isA<AcpSessionLaunchStarted>());
-        expect(manager.state.byKeyValue(first.value)!.isLive, isTrue);
-        expect(
-          manager.state.byKeyValue(second.value)!.status,
-          AcpConnectionStatus.detached,
-        );
-        expect(secondTransport.closed, isTrue);
-        expect(manager.liveSessionKeyValues, {first.value});
-        expect(connector.stoppedBridges, isEmpty);
-        expect(connector.availableBridges, {first.bridgeId, second.bridgeId});
-      },
-    );
+      expect(reopened, isA<AcpSessionLaunchStarted>());
+      expect(manager.state.byKeyValue(first.value)!.isLive, isTrue);
+      expect(manager.state.byKeyValue(second.value)!.isLive, isTrue);
+      expect(firstTransport.closed, isFalse);
+      expect(secondTransport.closed, isFalse);
+      expect(connector.stoppedBridges, isEmpty);
+      expect(connector.availableBridges, {first.bridgeId, second.bridgeId});
+    });
 
     test('keeps attachments on separate SSH hosts live', () async {
       isPro = true;

@@ -495,6 +495,59 @@ func TestDiscoverPiSessionsUsesConfirmedWindowActivityWithoutProcessTable(t *tes
 	}
 }
 
+func TestDiscoverPiSessionsUsesConfirmedPublishedTitleWithoutProcessTable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	written := time.Now().Add(-time.Hour).UTC()
+	path := filepath.Join(root, "project", "named.jsonl")
+	writePiTestSession(t, path, "named-session", project, written)
+	appendPiTestSessionName(t, path, "long restore")
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		Name:                     "Pi",
+		Cwd:                      project,
+		CurrentCommand:           "pi",
+		AgentTool:                "pi",
+		AgentToolConfirmed:       true,
+		PaneTitle:                "π - long restore - project",
+		LastActivityEpochSeconds: time.Now().Unix(),
+	}}}
+
+	got := discoverPiSessions(restore, nil, nil)
+	if got[0].sessionID != "named-session" || got[0].sessionPath != path {
+		t.Fatalf("title-correlated processless Pi session = %#v", got)
+	}
+}
+
+func TestDiscoverPiSessionsUsesLatestForSingleConfirmedWindowWithoutProcessTable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	now := time.Now().UTC().Truncate(time.Second)
+	writePiTestSession(
+		t,
+		filepath.Join(root, "project", "older.jsonl"),
+		"older-session",
+		project,
+		now.Add(-2*time.Hour),
+	)
+	latestPath := filepath.Join(root, "project", "current.jsonl")
+	writePiTestSession(t, latestPath, "current-session", project, now.Add(-time.Hour))
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		Name:                     "Pi",
+		Cwd:                      project,
+		CurrentCommand:           "pi",
+		AgentTool:                "pi",
+		AgentToolConfirmed:       true,
+		LastActivityEpochSeconds: now.Unix(),
+	}}}
+
+	got := discoverPiSessions(restore, nil, nil)
+	if got[0].sessionID != "current-session" || got[0].sessionPath != latestPath {
+		t.Fatalf("latest confirmed Pi session = %#v", got)
+	}
+}
+
 func TestDiscoverPiSessionsDeclinesAmbiguousCwdFallback(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)

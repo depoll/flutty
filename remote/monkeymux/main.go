@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.162"
+	monkeyMuxVersion                  = "0.1.163"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3628,6 +3628,30 @@ func discoverPiSessions(
 			used[candidate.sessionID] = true
 		}
 
+		// If process-table inspection was unavailable, a single confirmed Pi
+		// window may still own the newest primary session in its cwd bucket. This
+		// is weaker than an exact title/activity match, so allow it only for one
+		// window, require a unique newest file no later than captured activity,
+		// and never use it when another Pi pane could claim the same bucket.
+		if len(indices) == 1 {
+			index := indices[0]
+			if _, ok := sessions[index]; !ok && trustedPiWindows[index] &&
+				!livePiWindows[index] {
+				if candidate, ok := uniqueLatestPiSession(remainingCandidates); ok {
+					activity := time.Unix(restore.Windows[index].LastActivityEpochSeconds, 0)
+					if !activity.IsZero() &&
+						!candidate.modTime.After(activity.Add(piSessionActivityMatchTolerance)) {
+						sessions[index] = piRestoreSession{
+							sessionID:   candidate.sessionID,
+							sessionDir:  filepath.Dir(candidate.path),
+							sessionPath: candidate.path,
+						}
+						used[candidate.sessionID] = true
+					}
+				}
+			}
+		}
+
 		// Preserve the old cwd fallback only for a genuinely one-to-one
 		// bucket. Never hand a leftover session to a pane after a multi-pane
 		// process match was rejected as ambiguous.
@@ -3655,6 +3679,27 @@ func discoverPiSessions(
 	return sessions
 }
 
+func uniqueLatestPiSession(candidates []piSessionEntry) (piSessionEntry, bool) {
+	var latest piSessionEntry
+	found := false
+	tied := false
+	for _, candidate := range candidates {
+		if candidate.modTime.IsZero() {
+			continue
+		}
+		if !found || candidate.modTime.After(latest.modTime) {
+			latest = candidate
+			found = true
+			tied = false
+			continue
+		}
+		if candidate.modTime.Equal(latest.modTime) {
+			tied = true
+		}
+	}
+	return latest, found && !tied
+}
+
 func piSessionFreshForRestoreWindow(
 	window restoreWindowState,
 	candidate piSessionEntry,
@@ -3664,10 +3709,16 @@ func piSessionFreshForRestoreWindow(
 	if hasLiveProcess {
 		return sessionUpdatedDuringProcess(candidate.modTime, processStarted)
 	}
-	if !window.AgentToolConfirmed ||
-		agentToolForRestore(window) != "pi" ||
-		window.LastActivityEpochSeconds <= 0 ||
-		candidate.modTime.IsZero() {
+	if !window.AgentToolConfirmed || agentToolForRestore(window) != "pi" {
+		return false
+	}
+	// A published Pi session name is an exact identity signal and remains
+	// stable even while a long-running progress animation advances window
+	// activity without touching the JSONL file.
+	if piSessionMatchesPaneTitle(candidate, window.PaneTitle) {
+		return true
+	}
+	if window.LastActivityEpochSeconds <= 0 || candidate.modTime.IsZero() {
 		return false
 	}
 	activity := time.Unix(window.LastActivityEpochSeconds, 0)

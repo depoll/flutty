@@ -303,7 +303,6 @@ class AcpSessionManager {
     );
     final existing = _controllers[key.value];
     if (existing != null && existing.state.isLive) {
-      await _parkOtherHostAttachments(hostId, keepBridgeId: bridgeId);
       _select(key.value);
       return AcpSessionLaunchStarted(key);
     }
@@ -335,7 +334,6 @@ class AcpSessionManager {
 
     final List<MonkeyMuxAcpBridgeMetadata> remoteBridges;
     try {
-      await _parkOtherHostAttachments(hostId, keepBridgeId: bridgeId);
       remoteBridges = await _connector.listBridges(
         hostId,
         confirmInstall: confirmInstall,
@@ -624,7 +622,6 @@ class AcpSessionManager {
     final startedAt = _clock();
     MonkeyMuxAcpBridgeStartResult startResult;
     try {
-      await _parkOtherHostAttachments(hostId);
       startResult = await _connector.startBridge(
         hostId: hostId,
         providerId: launch.providerId,
@@ -899,36 +896,6 @@ class AcpSessionManager {
         candidateSessionKey: candidateKeyValue,
         isProUnlocked: _isProUnlocked(),
       );
-
-  /// Keeps remote native-agent bridges persistent while bounding the number
-  /// of long-lived SSH exec channels held against one host's `MaxSessions`.
-  ///
-  /// A parked controller remains tracked and its remote MonkeyMux bridge keeps
-  /// running. Reopening it reconnects and replays missed output. Controllers
-  /// sharing [keepBridgeId] also share one transport, so they stay attached.
-  Future<void> _parkOtherHostAttachments(
-    int hostId, {
-    String? keepBridgeId,
-  }) async {
-    final toPark = _controllers.values
-        .where(
-          (controller) =>
-              controller.state.key.hostId == hostId &&
-              controller.state.isLive &&
-              controller.state.key.bridgeId != keepBridgeId,
-        )
-        .toList(growable: false);
-    if (toPark.isEmpty) return;
-
-    for (final controller in toPark) {
-      await controller.detach();
-    }
-    _diagnostics.info(
-      'acp.manager',
-      'host_attachments_parked',
-      fields: {'hostId': hostId, 'count': toPark.length},
-    );
-  }
 
   Future<({AcpSessionError? error, String? value})> _resolveWorkingDirectory(
     int hostId,

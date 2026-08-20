@@ -56,6 +56,8 @@ Widget _wrap(
   String? preferredFontFamily,
   ValueChanged<double>? onFontSizeCommitted,
   AcpChatPreviewChanged? onPreviewChanged,
+  AcpChatScrollState? initialScrollState,
+  AcpChatScrollChanged? onScrollChanged,
   SftpClient? sftpClient,
   AcpChatAttachmentActionsBuilder? attachmentActionsBuilder,
   EdgeInsets mediaPadding = EdgeInsets.zero,
@@ -103,6 +105,8 @@ Widget _wrap(
           preferredFontFamily: preferredFontFamily,
           onFontSizeCommitted: onFontSizeCommitted,
           onPreviewChanged: onPreviewChanged,
+          initialScrollState: initialScrollState,
+          onScrollChanged: onScrollChanged,
         ),
       ),
     ),
@@ -895,6 +899,69 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(position.pixels, closeTo(userPosition, 1));
+    expect(find.byTooltip('Jump to latest'), findsOneWidget);
+  });
+
+  testWidgets('embedded native chat restores scroll position after remount', (
+    tester,
+  ) async {
+    final entries = <AcpTimelineEntry>[
+      for (var index = 0; index < 40; index++)
+        AcpMessageEntry(
+          order: index,
+          role: AcpMessageRole.agent,
+          messageId: 'retained-$index',
+          content: [AcpTextContent('Retained response $index ' * 5)],
+        ),
+    ];
+    final manager = FakeAcpSessionManager(
+      sessions: [fakeAcpSession(timeline: AcpTimeline(entries: entries))],
+    );
+    AcpChatScrollState? retained;
+    await tester.pumpWidget(
+      _wrap(
+        manager,
+        embedded: true,
+        onScrollChanged: (_, state) => retained = state,
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final scrollable = find.descendant(
+      of: find.byType(AcpMessageThread),
+      matching: find.byType(Scrollable),
+    );
+    final firstPosition = tester
+        .state<ScrollableState>(scrollable.first)
+        .position;
+    firstPosition.jumpTo(firstPosition.maxScrollExtent);
+    await tester.pump();
+    await tester.drag(find.byType(AcpMessageThread), const Offset(0, 420));
+    await tester.pump();
+    expect(retained?.autoScroll, isFalse);
+    final expectedOffset = retained!.offset;
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    await tester.pumpWidget(
+      _wrap(
+        manager,
+        embedded: true,
+        initialScrollState: retained,
+        onScrollChanged: (_, state) => retained = state,
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final restoredScrollable = find.descendant(
+      of: find.byType(AcpMessageThread),
+      matching: find.byType(Scrollable),
+    );
+    final restoredPosition = tester
+        .state<ScrollableState>(restoredScrollable.first)
+        .position;
+
+    expect(restoredPosition.pixels, closeTo(expectedOffset, 1));
     expect(find.byTooltip('Jump to latest'), findsOneWidget);
   });
 
