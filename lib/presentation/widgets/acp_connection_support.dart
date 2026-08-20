@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/models/acp_provider.dart';
+import '../../domain/services/acp_launch_profile_service.dart';
 import '../../domain/services/monkeymux_acp_bridge_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -83,16 +84,22 @@ resolveAcpRemoteProviderLaunch({
     }
   });
 
+  if (!context.mounted) return null;
   for (final candidate in provider.executableProbe.candidateExecutableNames) {
     final executable = found[candidate];
     if (executable != null) {
-      return (
-        override: AcpLaunchCommand(
-          executable: executable,
-          arguments: provider.launchCommand.arguments,
-        ),
-        terminal: false,
+      final resolved = AcpLaunchCommand(
+        executable: executable,
+        arguments: provider.launchCommand.arguments,
       );
+      final profiled = await resolveAcpLaunchProfile(
+        context: context,
+        session: session,
+        provider: provider,
+        resolvedCommand: resolved,
+      );
+      if (profiled == null) return null;
+      return (override: profiled, terminal: false);
     }
   }
 
@@ -146,6 +153,149 @@ resolveAcpRemoteProviderLaunch({
     _ => null,
   };
 }
+
+/// Discovers and, when necessary, asks which isolated provider profile to use.
+///
+/// Providers with zero or one discovered profile keep their current one-tap
+/// launch behavior. Discovery failures also degrade to the provider's base
+/// command rather than blocking an otherwise usable agent.
+Future<AcpLaunchCommand?> resolveAcpLaunchProfile({
+  required BuildContext context,
+  required SshSession session,
+  required AcpBuiltinProvider provider,
+  required AcpLaunchCommand resolvedCommand,
+}) async {
+  final support = provider.launchProfileSupport;
+  if (support == null) return resolvedCommand;
+
+  List<AcpLaunchProfile> profiles;
+  try {
+    final discoveryCommand = buildAcpLaunchProfileDiscoveryCommand(
+      support: support,
+      isWindows: session.remoteIsWindows,
+    );
+    final output = await session.runQueuedExec(() async {
+      SSHSession? shell;
+      try {
+        shell = await session.execute(discoveryCommand);
+        shell.stderr.drain<void>().ignore();
+        final stdout = await utf8.decodeStream(shell.stdout);
+        await shell.done;
+        return stdout;
+      } finally {
+        shell?.close();
+      }
+    });
+    profiles = parseAcpLaunchProfiles(output, support);
+  } on Object {
+    return resolvedCommand;
+  }
+
+  if (profiles.length <= 1) return resolvedCommand;
+  if (!context.mounted) return null;
+  final selected = await showAcpLaunchProfilePicker(
+    context: context,
+    providerLabel: provider.label,
+    profiles: profiles,
+  );
+  if (selected == null) return null;
+  return support.apply(resolvedCommand, selected.argument);
+}
+
+/// Shows the one-handed launch-profile chooser used by profile-aware agents.
+Future<AcpLaunchProfile?> showAcpLaunchProfilePicker({
+  required BuildContext context,
+  required String providerLabel,
+  required List<AcpLaunchProfile> profiles,
+}) => showModalBottomSheet<AcpLaunchProfile>(
+  context: context,
+  useSafeArea: true,
+  isScrollControlled: true,
+  showDragHandle: true,
+  builder: (sheetContext) {
+    final theme = Theme.of(sheetContext);
+    final scheme = theme.colorScheme;
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.72,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 12, 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Choose $providerLabel profile',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Select the isolated profile for this native session.',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Cancel',
+                  onPressed: () => Navigator.pop(sheetContext),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: scheme.outlineVariant),
+          Flexible(
+            child: ListView.builder(
+              shrinkWrap: true,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              itemCount: profiles.length,
+              itemBuilder: (context, index) {
+                final profile = profiles[index];
+                return ListTile(
+                  leading: Icon(
+                    profile.argument == null || profile.label == 'Default'
+                        ? Icons.settings_outlined
+                        : Icons.account_tree_outlined,
+                  ),
+                  title: Text(
+                    profile.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  trailing: profile.isActive
+                      ? Text(
+                          'Current',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        )
+                      : null,
+                  onTap: () => Navigator.pop(sheetContext, profile),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  },
+);
 
 /// Requests permission to install or update the bundled MonkeyMux helper used
 /// by persistent ACP sessions.

@@ -283,6 +283,18 @@ void main() {
           executable: 'opencode',
         ),
         (
+          providerId: 'builtin:hermes-acp',
+          label: 'Hermes',
+          argv: ['hermes', '--profile', 'work', 'acp'],
+          executable: 'hermes',
+        ),
+        (
+          providerId: 'builtin:openclaw-acp',
+          label: 'OpenClaw',
+          argv: ['openclaw', '--profile', 'ops', 'acp'],
+          executable: 'openclaw',
+        ),
+        (
           providerId: 'custom:test-provider',
           label: 'Custom provider',
           argv: ['/opt/tools/custom-acp', '--stdio'],
@@ -319,6 +331,10 @@ void main() {
         expect(commands[index], contains('exec'));
         expect(commands[index], contains(launches[index].executable));
       }
+      expect(commands[3], contains('--profile'));
+      expect(commands[3], contains('work'));
+      expect(commands[4], contains('--profile'));
+      expect(commands[4], contains('ops'));
       verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
     },
   );

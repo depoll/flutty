@@ -387,7 +387,32 @@ void main() {
       );
       expect(acpPiProvider.launchCommand.argv, ['pi-acp']);
       expect(acpHermesProvider.launchCommand.argv, ['hermes', 'acp']);
+      expect(
+        acpHermesProvider.launchProfileSupport?.discoveryKind,
+        AcpLaunchProfileDiscoveryKind.nestedProfileDirectories,
+      );
+      expect(
+        acpHermesProvider.launchProfileSupport?.profileHomeEnvironmentVariable,
+        'HERMES_HOME',
+      );
+      expect(
+        acpHermesProvider.launchProfileSupport?.nestedProfilesDirectory,
+        'profiles',
+      );
+      expect(
+        acpHermesProvider.launchProfileSupport?.activeProfileFile,
+        'active_profile',
+      );
+      expect(
+        acpHermesProvider.launchProfileSupport?.defaultProfileArgument,
+        'default',
+      );
       expect(acpOpenClawProvider.launchCommand.argv, ['openclaw', 'acp']);
+      expect(
+        acpOpenClawProvider.launchProfileSupport?.homeDirectoryPrefix,
+        '.openclaw-',
+      );
+      expect(acpCursorAgentProvider.launchProfileSupport, isNull);
       expect(acpGrokBuildProvider.launchCommand.argv, [
         'grok',
         'agent',
@@ -428,6 +453,46 @@ void main() {
           ),
         ),
         isTrue,
+      );
+      expect(
+        isApprovedAcpBuiltinLaunchOverride(
+          acpHermesProvider,
+          AcpLaunchCommand(
+            executable: '/Users/demo/.local/bin/hermes',
+            arguments: const ['--profile', 'work', 'acp'],
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        isApprovedAcpBuiltinLaunchOverride(
+          acpOpenClawProvider,
+          AcpLaunchCommand(
+            executable: '/Users/demo/.local/bin/openclaw',
+            arguments: const ['--profile', 'ops', 'acp'],
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        isApprovedAcpBuiltinLaunchOverride(
+          acpHermesProvider,
+          AcpLaunchCommand(
+            executable: '/Users/demo/.local/bin/hermes',
+            arguments: const ['--profile', '../unsafe', 'acp'],
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        isApprovedAcpBuiltinLaunchOverride(
+          acpHermesProvider,
+          AcpLaunchCommand(
+            executable: '/Users/demo/.local/bin/hermes',
+            arguments: const ['acp', '--profile', 'work'],
+          ),
+        ),
+        isFalse,
       );
       expect(
         isApprovedAcpBuiltinLaunchOverride(

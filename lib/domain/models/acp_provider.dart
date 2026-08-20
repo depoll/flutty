@@ -309,6 +309,110 @@ class AcpExecutableProbe {
       'AcpExecutableProbe(candidates: $candidateExecutableNames)';
 }
 
+/// How a built-in provider stores launch profiles on the remote host.
+enum AcpLaunchProfileDiscoveryKind {
+  /// Named profiles are child directories below a provider state root.
+  nestedProfileDirectories,
+
+  /// Named profiles are sibling home directories with a stable basename prefix.
+  homeDirectoryPrefix,
+}
+
+/// Profile-selection metadata for a built-in ACP provider.
+@immutable
+class AcpLaunchProfileSupport {
+  /// Creates immutable profile capability metadata.
+  const AcpLaunchProfileSupport({
+    required this.discoveryKind,
+    this.homeDirectoryPrefix,
+    this.profileHomeEnvironmentVariable,
+    this.defaultProfileHomeDirectory,
+    this.nestedProfilesDirectory,
+    this.activeProfileFile,
+    this.profileOption = '--profile',
+    this.defaultProfileArgument,
+  });
+
+  /// Strategy used to enumerate profiles.
+  final AcpLaunchProfileDiscoveryKind discoveryKind;
+
+  /// Directory basename prefix used by
+  /// [AcpLaunchProfileDiscoveryKind.homeDirectoryPrefix].
+  final String? homeDirectoryPrefix;
+
+  /// Optional environment variable overriding the provider state root.
+  final String? profileHomeEnvironmentVariable;
+
+  /// State-root directory below the user's home when no override is set.
+  final String? defaultProfileHomeDirectory;
+
+  /// Child directory containing named profiles.
+  final String? nestedProfilesDirectory;
+
+  /// Optional state-root file containing the active profile name.
+  final String? activeProfileFile;
+
+  /// Global CLI option placed before the provider subcommand.
+  final String profileOption;
+
+  /// Explicit argument selecting the base profile, or `null` when omitting the
+  /// option is the only way to select it.
+  final String? defaultProfileArgument;
+
+  /// Adds an explicit profile selection before the provider subcommand.
+  AcpLaunchCommand apply(AcpLaunchCommand command, String? profile) {
+    if (profile == null) return command;
+    if (!isValidAcpLaunchProfileName(profile)) {
+      throw const FormatException('Invalid ACP launch profile name');
+    }
+    return AcpLaunchCommand(
+      executable: command.executable,
+      arguments: [profileOption, profile, ...command.arguments],
+    );
+  }
+
+  /// Whether [arguments] is the bundled argv plus one valid profile selector.
+  bool matches(List<String> arguments, List<String> baseArguments) {
+    if (_listEquality.equals(arguments, baseArguments)) return true;
+    return arguments.length == baseArguments.length + 2 &&
+        arguments[0] == profileOption &&
+        isValidAcpLaunchProfileName(arguments[1]) &&
+        _listEquality.equals(arguments.sublist(2), baseArguments);
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AcpLaunchProfileSupport &&
+          discoveryKind == other.discoveryKind &&
+          homeDirectoryPrefix == other.homeDirectoryPrefix &&
+          profileHomeEnvironmentVariable ==
+              other.profileHomeEnvironmentVariable &&
+          defaultProfileHomeDirectory == other.defaultProfileHomeDirectory &&
+          nestedProfilesDirectory == other.nestedProfilesDirectory &&
+          activeProfileFile == other.activeProfileFile &&
+          profileOption == other.profileOption &&
+          defaultProfileArgument == other.defaultProfileArgument;
+
+  @override
+  int get hashCode => Object.hash(
+    discoveryKind,
+    homeDirectoryPrefix,
+    profileHomeEnvironmentVariable,
+    defaultProfileHomeDirectory,
+    nestedProfilesDirectory,
+    activeProfileFile,
+    profileOption,
+    defaultProfileArgument,
+  );
+}
+
+/// Returns whether [name] can safely be passed as one exact profile argument.
+bool isValidAcpLaunchProfileName(String name) =>
+    name.isNotEmpty &&
+    name.length <= 128 &&
+    !name.contains(RegExp(r'[\x00-\x1f\x7f/\\]'));
+
 /// Immutable, app-bundled definition of an ACP-compatible coding-agent
 /// provider.
 ///
@@ -324,6 +428,7 @@ class AcpBuiltinProvider {
     required this.executableProbe,
     this.terminalAuthCommand,
     this.adapterFallbackCommand,
+    this.launchProfileSupport,
   });
 
   /// Stable identifier for this provider.
@@ -350,6 +455,9 @@ class AcpBuiltinProvider {
   /// Pinned npx command offered when the adapter executable is missing.
   final AcpLaunchCommand? adapterFallbackCommand;
 
+  /// Optional capability for discovering and selecting isolated CLI profiles.
+  final AcpLaunchProfileSupport? launchProfileSupport;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -359,7 +467,8 @@ class AcpBuiltinProvider {
           launchCommand == other.launchCommand &&
           executableProbe == other.executableProbe &&
           terminalAuthCommand == other.terminalAuthCommand &&
-          adapterFallbackCommand == other.adapterFallbackCommand;
+          adapterFallbackCommand == other.adapterFallbackCommand &&
+          launchProfileSupport == other.launchProfileSupport;
 
   @override
   int get hashCode => Object.hash(
@@ -369,6 +478,7 @@ class AcpBuiltinProvider {
     executableProbe,
     terminalAuthCommand,
     adapterFallbackCommand,
+    launchProfileSupport,
   );
 
   @override
@@ -389,10 +499,13 @@ bool isApprovedAcpBuiltinLaunchOverride(
   final executableName = _resolvedAcpExecutableName(command.executable);
   if (executableName == null) return false;
 
-  if (_listEquality.equals(
+  final launchArgumentsApproved =
+      provider.launchProfileSupport?.matches(
         command.arguments,
         provider.launchCommand.arguments,
-      ) &&
+      ) ??
+      _listEquality.equals(command.arguments, provider.launchCommand.arguments);
+  if (launchArgumentsApproved &&
       provider.executableProbe.candidateExecutableNames.any(
         (candidate) => candidate.toLowerCase() == executableName,
       )) {
@@ -538,6 +651,14 @@ final acpHermesProvider = AcpBuiltinProvider(
     candidateExecutableNames: const ['hermes', 'hermes-agent'],
   ),
   terminalAuthCommand: AcpLaunchCommand(executable: 'hermes'),
+  launchProfileSupport: const AcpLaunchProfileSupport(
+    discoveryKind: AcpLaunchProfileDiscoveryKind.nestedProfileDirectories,
+    profileHomeEnvironmentVariable: 'HERMES_HOME',
+    defaultProfileHomeDirectory: '.hermes',
+    nestedProfilesDirectory: 'profiles',
+    activeProfileFile: 'active_profile',
+    defaultProfileArgument: 'default',
+  ),
 );
 
 /// Built-in OpenClaw ACP provider.
@@ -554,6 +675,10 @@ final acpOpenClawProvider = AcpBuiltinProvider(
   terminalAuthCommand: AcpLaunchCommand(
     executable: 'openclaw',
     arguments: const ['tui'],
+  ),
+  launchProfileSupport: const AcpLaunchProfileSupport(
+    discoveryKind: AcpLaunchProfileDiscoveryKind.homeDirectoryPrefix,
+    homeDirectoryPrefix: '.openclaw-',
   ),
 );
 
