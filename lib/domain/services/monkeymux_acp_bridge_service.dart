@@ -278,7 +278,7 @@ final class MonkeyMuxAcpBridgeService {
       command: providerCommand,
       cwd: cwd,
     );
-    if (result.exitCode != 0 || result.output.trim().isEmpty) {
+    if ((result.exitCode ?? 0) != 0 || result.output.trim().isEmpty) {
       throw const MonkeyMuxAcpBridgeException(
         MonkeyMuxAcpBridgeErrorKind.helperProcess,
         'The MonkeyMux server could not start the ACP bridge.',

@@ -249,7 +249,6 @@ void main() {
             'type': 'started',
             'bridgeId': _bridgeId,
           }),
-          exitCode: 0,
         ),
       );
       final service = MonkeyMuxAcpBridgeService(
