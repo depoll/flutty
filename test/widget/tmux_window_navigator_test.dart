@@ -75,7 +75,7 @@ class _ConfirmCloseHostState extends ConsumerState<_ConfirmCloseHost> {
 }
 
 void main() {
-  testWidgets('native mux handle shows provider icon and window number', (
+  testWidgets('native mux handle shows provider icon without window number', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -86,7 +86,6 @@ void main() {
               child: buildNativeAcpHandleIcon(
                 theme: Theme.of(context),
                 tool: AgentLaunchTool.cursorAgent,
-                windowIndex: 8,
               ),
             ),
           ),
@@ -99,10 +98,10 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.byKey(const ValueKey('native-acp-handle-index')),
+      find.byKey(const ValueKey('native-acp-handle-indicator')),
       findsOneWidget,
     );
-    expect(find.text('8'), findsOneWidget);
+    expect(find.byKey(const ValueKey('native-acp-handle-index')), findsNothing);
     expect(
       tester
           .widget<AgentToolIcon>(
@@ -1250,6 +1249,10 @@ void main() {
         find.descendant(of: nativeRow, matching: find.byType(AgentToolIcon)),
       );
       expect(agentIcon.tool, AgentLaunchTool.copilotCli);
+      expect(
+        find.byKey(ValueKey('native-acp-indicator-${key.value}')),
+        findsOneWidget,
+      );
       expect(
         find.byKey(ValueKey('native-acp-progress-${key.value}')),
         findsOneWidget,

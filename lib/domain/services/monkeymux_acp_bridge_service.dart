@@ -72,7 +72,8 @@ String buildMonkeyMuxAcpProviderCommand(
   final command = isWindows
       ? buildWindowsPowerShellCommand(windowsScript)
       : '$_profileSourcingPrefix'
-            '${launchArgv.map(_posixShellQuote).join(' ')}';
+            '${_cursorKeychainEnvironmentBootstrap(launchArgv)}'
+            'exec ${launchArgv.map(_posixShellQuote).join(' ')}';
   if (utf8.encode(command).length > 8192) {
     throw const MonkeyMuxAcpBridgeException(
       MonkeyMuxAcpBridgeErrorKind.invalidLaunch,
@@ -81,6 +82,21 @@ String buildMonkeyMuxAcpProviderCommand(
   }
   return command;
 }
+
+bool _isCursorAcpLaunch(List<String> launchArgv) {
+  if (launchArgv.length < 2 || launchArgv[1] != 'acp') return false;
+  final executable = launchArgv.first.replaceAll(r'\', '/').split('/').last;
+  final normalized = executable.toLowerCase().replaceFirst(
+    RegExp(r'\.(?:exe|cmd|bat|ps1|com)$'),
+    '',
+  );
+  return normalized == 'cursor-agent' || normalized == 'agent';
+}
+
+String _cursorKeychainEnvironmentBootstrap(List<String> launchArgv) =>
+    !_isCursorAcpLaunch(launchArgv)
+    ? ''
+    : r'''if [ -z "${CURSOR_API_KEY:-}" ] && [ -x /usr/bin/security ]; then __fl_cursor_api_key=$(/usr/bin/security find-generic-password -a cursor-user -s cursor-access-token -w 2>/dev/null || true); if [ -n "$__fl_cursor_api_key" ]; then export CURSOR_API_KEY="$__fl_cursor_api_key"; fi; unset __fl_cursor_api_key; fi; ''';
 
 const _acpExecutableProbeSeparator = '\u001f';
 

@@ -186,7 +186,7 @@ void main() {
     expect(posix, contains(r'$HOME/.local/bin'));
     expect(
       posix,
-      endsWith("'copilot' '--acp' 'quote'\"'\"'value' 'space value'"),
+      endsWith("exec 'copilot' '--acp' 'quote'\"'\"'value' 'space value'"),
     );
 
     final windows = buildMonkeyMuxAcpProviderCommand(const [
@@ -202,6 +202,38 @@ void main() {
     );
     expect(script, contains(r"$__flAcpArgs=@('--acp','a''b','x y')"));
     expect(script, contains(r'& $__flAcpExe @__flAcpArgs'));
+  });
+
+  test('Cursor ACP bootstraps its API key inside the provider process', () {
+    final cursor = buildMonkeyMuxAcpProviderCommand(const [
+      '/Users/demo/.local/bin/cursor-agent',
+      'acp',
+    ], isWindows: false);
+    expect(cursor, contains(r'[ -z "${CURSOR_API_KEY:-}" ]'));
+    expect(
+      cursor,
+      contains(
+        '/usr/bin/security find-generic-password -a cursor-user '
+        '-s cursor-access-token -w',
+      ),
+    );
+    expect(cursor, contains(r'export CURSOR_API_KEY="$__fl_cursor_api_key"'));
+    expect(
+      cursor,
+      contains("exec '/Users/demo/.local/bin/cursor-agent' 'acp'"),
+    );
+
+    final copilot = buildMonkeyMuxAcpProviderCommand(const [
+      'copilot',
+      '--acp',
+    ], isWindows: false);
+    expect(copilot, isNot(contains('cursor-access-token')));
+
+    final windowsCursor = buildMonkeyMuxAcpProviderCommand(const [
+      r'C:\Tools\cursor-agent.exe',
+      'acp',
+    ], isWindows: true);
+    expect(windowsCursor, isNot(contains('cursor-access-token')));
   });
 
   test('probes adapters through interactive POSIX and Windows profiles', () {

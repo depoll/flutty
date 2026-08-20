@@ -1268,6 +1268,12 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       title: Row(
         children: [
           AgentToolIcon(tool: agentTool, size: 17, color: activityColor),
+          const SizedBox(width: 4),
+          Tooltip(
+            key: ValueKey('native-acp-indicator-${key.value}'),
+            message: 'Native agent',
+            child: Icon(Icons.chat_bubble, size: 11, color: activityColor),
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(

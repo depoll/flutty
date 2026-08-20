@@ -2,13 +2,13 @@ part of '../screens/terminal_screen.dart';
 
 /// Builds the compact native-agent identity used by collapsed mux handles.
 ///
-/// The provider mark remains primary while the stable mux window number is a
-/// small badge, matching terminal-window icon/index composition.
+/// The provider mark identifies the agent and the chat badge distinguishes a
+/// native ACP pane from a terminal window running the same tool. Window numbers
+/// remain in the expanded window list, matching terminal-bar behavior.
 @visibleForTesting
 Widget buildNativeAcpHandleIcon({
   required ThemeData theme,
   required AgentLaunchTool? tool,
-  required int windowIndex,
 }) {
   final color = theme.colorScheme.primary;
   return SizedBox(
@@ -25,35 +25,44 @@ Widget buildNativeAcpHandleIcon({
           color: color,
         ),
         Positioned(
-          right: -1,
-          bottom: -2,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHigh,
-              border: Border.all(
-                color: theme.colorScheme.surfaceContainerHighest,
-              ),
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: SizedBox(
-              key: const ValueKey('native-acp-handle-index'),
-              width: 14,
-              height: 13,
-              child: Center(
-                child: Text(
-                  '$windowIndex',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: color,
-                    fontSize: 8,
-                    fontWeight: FontWeight.w700,
-                    height: 1,
-                  ),
-                ),
-              ),
-            ),
+          right: 0,
+          bottom: 0,
+          child: _NativeAgentIndicator(
+            key: const ValueKey('native-acp-handle-indicator'),
+            color: color,
+            size: 10,
           ),
         ),
       ],
+    ),
+  );
+}
+
+class _NativeAgentIndicator extends StatelessWidget {
+  const _NativeAgentIndicator({
+    required this.color,
+    required this.size,
+    super.key,
+  });
+
+  final Color color;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: 'Native agent',
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        ),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: SizedBox.square(
+        dimension: size,
+        child: Icon(Icons.chat_bubble, size: size * 0.62, color: color),
+      ),
     ),
   );
 }
@@ -1660,11 +1669,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }) {
     final color = theme.colorScheme.primary;
     if (nativeWindowIndex != null) {
-      return buildNativeAcpHandleIcon(
-        theme: theme,
-        tool: nativeWindowTool,
-        windowIndex: nativeWindowIndex,
-      );
+      return buildNativeAcpHandleIcon(theme: theme, tool: nativeWindowTool);
     }
     if (activeWindowTool != null) {
       return AgentToolIcon(tool: activeWindowTool, size: 16, color: color);
@@ -2130,6 +2135,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                       : theme.colorScheme.onSurfaceVariant,
                 ),
                 Positioned(
+                  left: 2,
+                  top: 2,
+                  child: _NativeAgentIndicator(
+                    key: ValueKey('monkeymux-sidebar-acp-native-${key.value}'),
+                    color: activityColor,
+                    size: 10,
+                  ),
+                ),
+                Positioned(
                   right: -9,
                   bottom: -9,
                   child: DecoratedBox(
@@ -2232,6 +2246,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       title: Row(
         children: [
           AgentToolIcon(tool: agentTool, size: 17, color: activityColor),
+          const SizedBox(width: 4),
+          _NativeAgentIndicator(
+            key: ValueKey('monkeymux-acp-native-${key.value}'),
+            color: activityColor,
+            size: 12,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
