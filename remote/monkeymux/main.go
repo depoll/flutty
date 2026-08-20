@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.165"
+	monkeyMuxVersion                  = "0.1.166"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -984,8 +984,8 @@ func main() {
 		acpCommand(os.Args[2:])
 	case "pi-agent":
 		piAgentCommand(os.Args[2:])
-	case "cursor-agent-login":
-		cursorAgentLoginCommand(os.Args[2:])
+	case "cursor-agent-auth":
+		cursorAgentAuthCommand(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(monkeyMuxVersion)
 	case "help", "--help", "-h":
@@ -1053,15 +1053,20 @@ func piAgentCommand(args []string) {
 	}
 }
 
-func cursorAgentLoginCommand(args []string) {
+func cursorAgentAuthCommand(args []string) {
 	if len(args) != 0 {
 		usageAndExit()
 	}
-	command := exec.Command("cursor-agent", "login")
+	var command *exec.Cmd
+	if acpRuntimeGOOS == "darwin" {
+		command = exec.Command("/usr/bin/security", "unlock-keychain")
+	} else {
+		command = exec.Command("cursor-agent", "login")
+	}
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
-	command.Env = acpProviderEnvironment(os.Environ(), cursorAgentAcpProviderID)
+	command.Env = inheritedEnvironment(os.Environ())
 	if err := command.Run(); err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitError.ExitCode())
@@ -8878,6 +8883,9 @@ func startAcpBridgeInProcess(
 		return "", errors.New("unable to allocate ACP bridge")
 	}
 	bridge, err := newAcpBridge(id, providerID, provider, command, cwd)
+	if errors.Is(err, errCursorAgentKeychainLocked) {
+		return "", errCursorAgentKeychainLocked
+	}
 	if err != nil {
 		return "", errors.New("unable to start ACP provider")
 	}

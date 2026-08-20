@@ -192,6 +192,9 @@ enum MonkeyMuxAcpBridgeErrorKind {
   /// The provider is no longer accepting input.
   providerUnavailable,
 
+  /// Cursor Agent cannot read credentials because the macOS keychain is locked.
+  keychainLocked,
+
   /// The provider process exited.
   providerExited,
 

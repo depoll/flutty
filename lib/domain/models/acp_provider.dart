@@ -662,7 +662,7 @@ final acpCursorAgentProvider = AcpBuiltinProvider(
   ),
   terminalAuthCommand: AcpLaunchCommand(
     executable: 'monkeymux',
-    arguments: const ['cursor-agent-login'],
+    arguments: const ['cursor-agent-auth'],
   ),
 );
 

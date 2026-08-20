@@ -20,6 +20,7 @@ import 'windows_remote_powershell.dart';
 const _metadataMaxBytes = 64 * 1024;
 const _maxBridgeListEntries = 1024;
 const _helperTimeout = Duration(seconds: 15);
+const _cursorKeychainLockedError = 'Cursor Agent login keychain is locked';
 const _profileSourcingPrefix =
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
     '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } >/dev/null 2>&1; '
@@ -270,24 +271,34 @@ final class MonkeyMuxAcpBridgeService {
     // Host the ACP bridge directly inside the running MonkeyMux server. The
     // provider inherits the exact server login/security environment (including
     // Cursor's Keychain context) without a fragile nested detached helper.
-    final result = await monkeyMuxService.startAcpBridge(
-      session,
-      sessionName,
-      providerId: providerId,
-      provider: providerLabel,
-      command: providerCommand,
-      cwd: cwd,
-    );
-    if ((result.exitCode ?? 0) != 0 || result.output.trim().isEmpty) {
-      throw const MonkeyMuxAcpBridgeException(
-        MonkeyMuxAcpBridgeErrorKind.helperProcess,
-        'The MonkeyMux server could not start the ACP bridge.',
+    try {
+      final result = await monkeyMuxService.startAcpBridge(
+        session,
+        sessionName,
+        providerId: providerId,
+        provider: providerLabel,
+        command: providerCommand,
+        cwd: cwd,
       );
+      if ((result.exitCode ?? 0) != 0 || result.output.trim().isEmpty) {
+        throw const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.helperProcess,
+          'The MonkeyMux server could not start the ACP bridge.',
+        );
+      }
+      return _decodeSingleFrame(
+        utf8.encode(result.output.trim()),
+        maxBytes: _metadataMaxBytes,
+      );
+    } on MonkeyMuxInstallException catch (error) {
+      if (error.message == _cursorKeychainLockedError) {
+        throw const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.keychainLocked,
+          'Cursor Agent needs the Mac login keychain unlocked.',
+        );
+      }
+      rethrow;
     }
-    return _decodeSingleFrame(
-      utf8.encode(result.output.trim()),
-      maxBytes: _metadataMaxBytes,
-    );
   }
 
   /// Lists running bridges using only the helper's safe metadata schema.

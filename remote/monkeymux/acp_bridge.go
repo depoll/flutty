@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -380,6 +381,9 @@ func acpServeCommand(args []string) {
 		launch.Command,
 		launch.Cwd,
 	)
+	if errors.Is(err, errCursorAgentKeychainLocked) {
+		fatal(errCursorAgentKeychainLocked)
+	}
 	if err != nil {
 		fatal(errors.New("unable to start ACP provider"))
 	}
@@ -427,20 +431,38 @@ func validAcpBridgeID(id string) bool {
 
 const cursorAgentAcpProviderID = "builtin:cursor-agent-acp"
 
-func acpProviderEnvironment(base []string, providerID string) []string {
-	result := inheritedEnvironment(base)
-	if providerID != cursorAgentAcpProviderID {
-		return result
-	}
-	const assignment = "AGENT_CLI_CREDENTIAL_STORE=file"
-	for index, value := range result {
-		key, _, ok := strings.Cut(value, "=")
-		if ok && strings.EqualFold(key, "AGENT_CLI_CREDENTIAL_STORE") {
-			result[index] = assignment
-			return result
+var errCursorAgentKeychainLocked = errors.New("Cursor Agent login keychain is locked")
+var acpRuntimeGOOS = runtime.GOOS
+var cursorAgentKeychainProbe = func() int {
+	command := exec.Command(
+		"/usr/bin/security",
+		"find-generic-password",
+		"-a", "cursor-user",
+		"-s", "cursor-access-token",
+		"-g",
+	)
+	command.Env = inheritedEnvironment(os.Environ())
+	if err := command.Run(); err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			return exitError.ExitCode()
 		}
+		return -1
 	}
-	return append(result, assignment)
+	return 0
+}
+
+func validateAcpProviderEnvironment(providerID string) error {
+	if providerID != cursorAgentAcpProviderID || acpRuntimeGOOS != "darwin" ||
+		strings.TrimSpace(os.Getenv("CURSOR_API_KEY")) != "" ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("AGENT_CLI_CREDENTIAL_STORE")), "file") {
+		return nil
+	}
+	// macOS `security` status 36 is the same lock state Cursor Agent reports.
+	// Output is discarded by exec.Cmd; only this fixed numeric status is used.
+	if cursorAgentKeychainProbe() == 36 {
+		return errCursorAgentKeychainLocked
+	}
+	return nil
 }
 
 func newAcpBridge(
@@ -454,9 +476,12 @@ func newAcpBridge(
 	if err != nil {
 		return nil, err
 	}
+	if err := validateAcpProviderEnvironment(providerID); err != nil {
+		return nil, err
+	}
 	cmd := newAcpProviderCommand(command)
 	cmd.Dir = expandedCwd
-	cmd.Env = acpProviderEnvironment(os.Environ(), providerID)
+	cmd.Env = inheritedEnvironment(os.Environ())
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

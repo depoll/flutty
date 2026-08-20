@@ -11498,22 +11498,37 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case AcpSessionLaunchStarted(:final key):
         _openNativeAcpSession(key);
       case AcpSessionLaunchFailed(:final error):
-        // Adapter startup can fail before ACP can classify authentication
-        // (for example Cursor exits when its keychain is locked), so always
-        // offer a known provider sign-in command on launch failure.
         final authCommand = acpTerminalAuthCommandFor(providerId);
+        final unlocksCursorKeychain =
+            providerId == AcpBuiltinProviderIds.cursorAgent &&
+            error.kind == AcpSessionErrorKind.authenticationRequired;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(error.message),
             action: authCommand == null
                 ? null
                 : SnackBarAction(
-                    label: 'Copy sign-in',
-                    onPressed: () => unawaited(
-                      Clipboard.setData(
-                        ClipboardData(text: authCommand.argv.join(' ')),
-                      ),
-                    ),
+                    label: unlocksCursorKeychain
+                        ? 'Unlock keychain'
+                        : 'Copy sign-in',
+                    onPressed: () {
+                      if (unlocksCursorKeychain) {
+                        unawaited(
+                          _createTmuxWindow(
+                            session,
+                            command: authCommand.argv.join(' '),
+                            name: 'Unlock keychain',
+                            workingDirectory: workingDirectory,
+                          ),
+                        );
+                        return;
+                      }
+                      unawaited(
+                        Clipboard.setData(
+                          ClipboardData(text: authCommand.argv.join(' ')),
+                        ),
+                      );
+                    },
                   ),
           ),
         );

@@ -348,6 +348,7 @@ class _FakeConnector implements AcpBridgeConnector {
   transportErrorControllers =
       <String, StreamController<MonkeyMuxAcpBridgeException>>{};
   MonkeyMuxInstallConfirmation? lastListConfirmInstall;
+  Exception? startError;
   int _bridgeCounter = 0;
 
   @override
@@ -359,6 +360,7 @@ class _FakeConnector implements AcpBridgeConnector {
     required String cwd,
     MonkeyMuxInstallConfirmation? confirmInstall,
   }) async {
+    if (startError case final error?) throw error;
     final bridgeId = 'bridge-${++_bridgeCounter}';
     startedBridges.add(bridgeId);
     availableBridges.add(bridgeId);
@@ -545,6 +547,27 @@ void main() {
     expect(result, isA<AcpSessionLaunchStarted>());
     final key = (result as AcpSessionLaunchStarted).key;
     expect(manager.state.byKeyValue(key.value)!.providerLabel, 'Hermes · work');
+  });
+
+  test('maps locked Cursor keychain to authentication required', () async {
+    connector.startError = const MonkeyMuxAcpBridgeException(
+      MonkeyMuxAcpBridgeErrorKind.keychainLocked,
+      'Cursor Agent needs the Mac login keychain unlocked.',
+    );
+
+    final result = await manager.startNewSession(
+      hostId: 1,
+      providerId: AcpBuiltinProviderIds.cursorAgent,
+      cwd: '/repo',
+    );
+
+    expect(result, isA<AcpSessionLaunchFailed>());
+    final error = (result as AcpSessionLaunchFailed).error;
+    expect(error.kind, AcpSessionErrorKind.authenticationRequired);
+    expect(
+      error.message,
+      'Unlock the Mac login keychain to start Cursor Agent.',
+    );
   });
 
   test(

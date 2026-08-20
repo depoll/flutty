@@ -525,7 +525,7 @@ void main() {
       ]);
       expect(acpCursorAgentProvider.terminalAuthCommand?.argv, [
         'monkeymux',
-        'cursor-agent-login',
+        'cursor-agent-auth',
       ]);
       expect(acpAntigravityProvider.terminalAuthCommand, isNotNull);
       expect(acpGrokBuildProvider.terminalAuthCommand, isNotNull);

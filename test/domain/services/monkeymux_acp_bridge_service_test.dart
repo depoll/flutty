@@ -344,6 +344,54 @@ void main() {
     },
   );
 
+  test('maps Cursor keychain lock from active MonkeyMux server', () async {
+    final client = _MockSshClient();
+    final session = _sshSession(client)
+      ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+      ..remoteMuxSessionName = 'work';
+    final mux = _MockMonkeyMuxService();
+    when(
+      () => mux.startAcpBridge(
+        session,
+        'work',
+        providerId: any(named: 'providerId'),
+        provider: any(named: 'provider'),
+        command: any(named: 'command'),
+        cwd: any(named: 'cwd'),
+        priority: any(named: 'priority'),
+      ),
+    ).thenThrow(
+      const MonkeyMuxInstallException('Cursor Agent login keychain is locked'),
+    );
+    final service = MonkeyMuxAcpBridgeService(
+      installer: _FakeInstaller(
+        const MonkeyMuxInstallation(
+          executablePath: '/home/demo/.monkeyssh/monkeymux',
+          platform: 'darwin-arm64',
+          version: 'test',
+        ),
+      ),
+      monkeyMuxService: mux,
+    );
+
+    await expectLater(
+      service.start(
+        session: session,
+        providerId: 'builtin:cursor-agent-acp',
+        providerLabel: 'Cursor Agent',
+        launchArgv: const ['cursor-agent', 'acp'],
+        cwd: '/home/demo/project',
+      ),
+      throwsA(
+        isA<MonkeyMuxAcpBridgeException>().having(
+          (error) => error.kind,
+          'kind',
+          MonkeyMuxAcpBridgeErrorKind.keychainLocked,
+        ),
+      ),
+    );
+  });
+
   test('probes adapters through interactive POSIX and Windows profiles', () {
     final posix = buildMonkeyMuxAcpExecutableProbeCommand(const {
       'npx',

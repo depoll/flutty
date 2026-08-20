@@ -632,14 +632,23 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
   }
 
   Future<void> _showAuthRequired(String providerId) async {
+    final unlocksCursorKeychain =
+        providerId == AcpBuiltinProviderIds.cursorAgent;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Sign in required'),
-        content: const Text(
-          'This agent needs you to sign in first. Open a terminal to complete '
-          'its sign-in flow, then start the session again. MonkeySSH never '
-          'stores third-party credentials.',
+        title: Text(
+          unlocksCursorKeychain ? 'Unlock Mac keychain' : 'Sign in required',
+        ),
+        content: Text(
+          unlocksCursorKeychain
+              ? 'Cursor Agent credentials are in the locked Mac login '
+                    'keychain. Open a terminal and enter the Mac password '
+                    'there, then start the session again. MonkeySSH never '
+                    'reads or stores the password.'
+              : 'This agent needs you to sign in first. Open a terminal to '
+                    'complete its sign-in flow, then start the session again. '
+                    'MonkeySSH never stores third-party credentials.',
         ),
         actions: [
           TextButton(

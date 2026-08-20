@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -343,29 +344,33 @@ func TestAcpProviderExitWaitsForFinalOutputDrain(t *testing.T) {
 	}
 }
 
-func TestAcpProviderEnvironmentUsesFileCredentialsOnlyForCursor(t *testing.T) {
-	base := []string{"PATH=/usr/bin", "AGENT_CLI_CREDENTIAL_STORE=keychain"}
-	cursor := acpProviderEnvironment(base, cursorAgentAcpProviderID)
-	if got := environmentValue(cursor, "AGENT_CLI_CREDENTIAL_STORE"); got != "file" {
-		t.Fatalf("Cursor credential store = %q, want file", got)
-	}
-	other := acpProviderEnvironment(base, "builtin:other")
-	if got := environmentValue(other, "AGENT_CLI_CREDENTIAL_STORE"); got != "keychain" {
-		t.Fatalf("other credential store = %q, want inherited keychain", got)
-	}
-	if got := environmentValue(base, "AGENT_CLI_CREDENTIAL_STORE"); got != "keychain" {
-		t.Fatalf("base environment mutated to %q", got)
-	}
-}
+func TestValidateAcpProviderEnvironmentDetectsLockedCursorKeychain(t *testing.T) {
+	originalGOOS := acpRuntimeGOOS
+	originalProbe := cursorAgentKeychainProbe
+	t.Cleanup(func() {
+		acpRuntimeGOOS = originalGOOS
+		cursorAgentKeychainProbe = originalProbe
+	})
+	t.Setenv("CURSOR_API_KEY", "")
+	t.Setenv("AGENT_CLI_CREDENTIAL_STORE", "")
+	acpRuntimeGOOS = "darwin"
+	cursorAgentKeychainProbe = func() int { return 36 }
 
-func environmentValue(environment []string, key string) string {
-	for _, value := range environment {
-		name, current, ok := strings.Cut(value, "=")
-		if ok && strings.EqualFold(name, key) {
-			return current
-		}
+	if err := validateAcpProviderEnvironment(cursorAgentAcpProviderID); !errors.Is(err, errCursorAgentKeychainLocked) {
+		t.Fatalf("locked Cursor keychain error = %v", err)
 	}
-	return ""
+	if err := validateAcpProviderEnvironment("builtin:other"); err != nil {
+		t.Fatalf("other provider inherited Cursor keychain error: %v", err)
+	}
+	cursorAgentKeychainProbe = func() int { return 44 }
+	if err := validateAcpProviderEnvironment(cursorAgentAcpProviderID); err != nil {
+		t.Fatalf("missing Cursor credential was classified as locked: %v", err)
+	}
+	t.Setenv("CURSOR_API_KEY", "configured")
+	cursorAgentKeychainProbe = func() int { return 36 }
+	if err := validateAcpProviderEnvironment(cursorAgentAcpProviderID); err != nil {
+		t.Fatalf("API-key Cursor launch probed keychain: %v", err)
+	}
 }
 
 func TestAcpProviderExitDrainsRealPipeBeforePublishingExit(t *testing.T) {
@@ -849,29 +854,52 @@ func TestAcpIdleCleanupRequiresTrueIdle(t *testing.T) {
 	}
 }
 
-func TestCursorAcpProviderProcessReceivesFileCredentialStore(t *testing.T) {
+func TestCursorAcpProviderRejectsLockedKeychainBeforeLaunch(t *testing.T) {
+	originalGOOS := acpRuntimeGOOS
+	originalProbe := cursorAgentKeychainProbe
+	t.Cleanup(func() {
+		acpRuntimeGOOS = originalGOOS
+		cursorAgentKeychainProbe = originalProbe
+	})
+	t.Setenv("CURSOR_API_KEY", "")
+	t.Setenv("AGENT_CLI_CREDENTIAL_STORE", "")
+	acpRuntimeGOOS = "darwin"
+	cursorAgentKeychainProbe = func() int { return 36 }
+
 	bridge, err := newAcpBridge(
 		"0123456789abcdef0123456789abcdef",
 		cursorAgentAcpProviderID,
 		"Cursor Agent",
-		`test "$AGENT_CLI_CREDENTIAL_STORE" = file`,
+		"exit 0",
 		".",
 	)
-	if err != nil {
-		t.Fatal(err)
+	if bridge != nil || !errors.Is(err, errCursorAgentKeychainLocked) {
+		t.Fatalf("locked Cursor bridge = %#v, %v", bridge, err)
 	}
-	defer bridge.stop()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if bridge.snapshot().State == "exited" {
-			if bridge.exitCode == nil || *bridge.exitCode != 0 {
-				t.Fatalf("Cursor environment probe exit = %#v", bridge.exitCode)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+}
+
+func TestStartAcpBridgePreservesLockedKeychainError(t *testing.T) {
+	originalGOOS := acpRuntimeGOOS
+	originalProbe := cursorAgentKeychainProbe
+	t.Cleanup(func() {
+		acpRuntimeGOOS = originalGOOS
+		cursorAgentKeychainProbe = originalProbe
+	})
+	t.Setenv("CURSOR_API_KEY", "")
+	t.Setenv("AGENT_CLI_CREDENTIAL_STORE", "")
+	acpRuntimeGOOS = "darwin"
+	cursorAgentKeychainProbe = func() int { return 36 }
+
+	bridgeID, err := startAcpBridgeInProcess(
+		context.Background(),
+		cursorAgentAcpProviderID,
+		"Cursor Agent",
+		"exit 0",
+		".",
+	)
+	if bridgeID != "" || !errors.Is(err, errCursorAgentKeychainLocked) {
+		t.Fatalf("locked Cursor start = %q, %v", bridgeID, err)
 	}
-	t.Fatal("Cursor environment probe did not exit")
 }
 
 func TestAcpProviderExitPublishesExitedState(t *testing.T) {

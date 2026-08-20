@@ -1067,6 +1067,8 @@ class AcpSessionManager {
           MonkeyMuxAcpBridgeErrorKind.invalidMetadata ||
           MonkeyMuxAcpBridgeErrorKind.unsupportedVersion =>
             AcpSessionErrorKind.bridgeUnavailable,
+          MonkeyMuxAcpBridgeErrorKind.keychainLocked =>
+            AcpSessionErrorKind.authenticationRequired,
           MonkeyMuxAcpBridgeErrorKind.providerExited =>
             AcpSessionErrorKind.providerExited,
           MonkeyMuxAcpBridgeErrorKind.replayOverflow ||
@@ -1090,6 +1092,8 @@ class AcpSessionManager {
             'The agent launch configuration was rejected.',
           MonkeyMuxAcpBridgeErrorKind.invalidBridgeId =>
             'The saved native agent session is no longer available.',
+          MonkeyMuxAcpBridgeErrorKind.keychainLocked =>
+            'Unlock the Mac login keychain to start Cursor Agent.',
           MonkeyMuxAcpBridgeErrorKind.providerExited ||
           MonkeyMuxAcpBridgeErrorKind.providerUnavailable =>
             'The native agent process exited.',
