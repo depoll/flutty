@@ -213,6 +213,7 @@ func acpStartCommand(args []string) {
 		Cwd:        *cwd,
 	}
 	buildCommand := func() (*exec.Cmd, io.WriteCloser, error) {
+		// #nosec G204 -- exe is os.Executable(), never provider or user input.
 		cmd := exec.Command(exe, "acp", "serve", "--id", id)
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
@@ -372,7 +373,13 @@ func acpServeCommand(args []string) {
 	if err := validateAcpProviderID(launch.ProviderID); err != nil {
 		fatal(err)
 	}
-	bridge, err := newAcpBridge(*id, launch.Provider, launch.Command, launch.Cwd)
+	bridge, err := newAcpBridge(
+		*id,
+		launch.ProviderID,
+		launch.Provider,
+		launch.Command,
+		launch.Cwd,
+	)
 	if err != nil {
 		fatal(errors.New("unable to start ACP provider"))
 	}
@@ -418,14 +425,38 @@ func validAcpBridgeID(id string) bool {
 	return acpBridgeIDPattern.MatchString(id)
 }
 
-func newAcpBridge(id string, provider string, command string, cwd string) (*acpBridge, error) {
+const cursorAgentAcpProviderID = "builtin:cursor-agent-acp"
+
+func acpProviderEnvironment(base []string, providerID string) []string {
+	result := inheritedEnvironment(base)
+	if providerID != cursorAgentAcpProviderID {
+		return result
+	}
+	const assignment = "AGENT_CLI_CREDENTIAL_STORE=file"
+	for index, value := range result {
+		key, _, ok := strings.Cut(value, "=")
+		if ok && strings.EqualFold(key, "AGENT_CLI_CREDENTIAL_STORE") {
+			result[index] = assignment
+			return result
+		}
+	}
+	return append(result, assignment)
+}
+
+func newAcpBridge(
+	id string,
+	providerID string,
+	provider string,
+	command string,
+	cwd string,
+) (*acpBridge, error) {
 	expandedCwd, err := expandHomePath(cwd)
 	if err != nil {
 		return nil, err
 	}
 	cmd := newAcpProviderCommand(command)
 	cmd.Dir = expandedCwd
-	cmd.Env = inheritedEnvironment(os.Environ())
+	cmd.Env = acpProviderEnvironment(os.Environ(), providerID)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

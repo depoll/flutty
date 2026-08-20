@@ -343,10 +343,36 @@ func TestAcpProviderExitWaitsForFinalOutputDrain(t *testing.T) {
 	}
 }
 
+func TestAcpProviderEnvironmentUsesFileCredentialsOnlyForCursor(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "AGENT_CLI_CREDENTIAL_STORE=keychain"}
+	cursor := acpProviderEnvironment(base, cursorAgentAcpProviderID)
+	if got := environmentValue(cursor, "AGENT_CLI_CREDENTIAL_STORE"); got != "file" {
+		t.Fatalf("Cursor credential store = %q, want file", got)
+	}
+	other := acpProviderEnvironment(base, "builtin:other")
+	if got := environmentValue(other, "AGENT_CLI_CREDENTIAL_STORE"); got != "keychain" {
+		t.Fatalf("other credential store = %q, want inherited keychain", got)
+	}
+	if got := environmentValue(base, "AGENT_CLI_CREDENTIAL_STORE"); got != "keychain" {
+		t.Fatalf("base environment mutated to %q", got)
+	}
+}
+
+func environmentValue(environment []string, key string) string {
+	for _, value := range environment {
+		name, current, ok := strings.Cut(value, "=")
+		if ok && strings.EqualFold(name, key) {
+			return current
+		}
+	}
+	return ""
+}
+
 func TestAcpProviderExitDrainsRealPipeBeforePublishingExit(t *testing.T) {
 	const outputCount = 300
 	bridge, err := newAcpBridge(
 		"0123456789abcdef0123456789abcdef",
+		"",
 		"test",
 		`sleep 0.2; i=0; while [ "$i" -lt 300 ]; do printf '{"jsonrpc":"2.0","method":"final/%s"}\n' "$i"; i=$((i+1)); done`,
 		".",
@@ -823,11 +849,37 @@ func TestAcpIdleCleanupRequiresTrueIdle(t *testing.T) {
 	}
 }
 
+func TestCursorAcpProviderProcessReceivesFileCredentialStore(t *testing.T) {
+	bridge, err := newAcpBridge(
+		"0123456789abcdef0123456789abcdef",
+		cursorAgentAcpProviderID,
+		"Cursor Agent",
+		`test "$AGENT_CLI_CREDENTIAL_STORE" = file`,
+		".",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.stop()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if bridge.snapshot().State == "exited" {
+			if bridge.exitCode == nil || *bridge.exitCode != 0 {
+				t.Fatalf("Cursor environment probe exit = %#v", bridge.exitCode)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("Cursor environment probe did not exit")
+}
+
 func TestAcpProviderExitPublishesExitedState(t *testing.T) {
 	dir := testAcpRuntimeDirectory(t)
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	bridge, err := newAcpBridge(
 		"0123456789abcdef0123456789abcdef",
+		"",
 		"test",
 		"exit 7",
 		".",
@@ -853,6 +905,7 @@ func TestAcpProviderExitPublishesExitedState(t *testing.T) {
 func TestAcpProviderCommandUsesPipesNotTerminal(t *testing.T) {
 	bridge, err := newAcpBridge(
 		"0123456789abcdef0123456789abcdef",
+		"",
 		"test",
 		"test ! -t 0 && test ! -t 1",
 		".",
@@ -882,7 +935,7 @@ func startTestAcpBridge(t *testing.T, command string) (*acpBridge, func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bridge, err := newAcpBridge(id, "test", command, ".")
+	bridge, err := newAcpBridge(id, "", "test", command, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
