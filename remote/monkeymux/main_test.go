@@ -6323,6 +6323,46 @@ func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
 	waitForRecordedOutput(t, conn, want)
 }
 
+func TestRedrawResizeBoundsLongPiTranscriptRepaint(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "pi",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	window.redrawForwardingReplay = []byte("terminal reset")
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	oldLine := append(
+		[]byte("UNIQUE_TRANSCRIPT_HEAD\r\n"),
+		bytes.Repeat([]byte("old transcript line that is superseded\r\n"), 20000)...,
+	)
+	server.handleWindowOutput("@1", oldLine)
+	server.handleWindowOutput("@1", []byte("\x1b[Hfinal visible Pi frame"))
+	server.resumePausedAttachForwarding("@1", generation)
+
+	got := conn.String()
+	if !strings.Contains(got, "final visible Pi frame") {
+		t.Fatalf("bounded redraw dropped the final frame")
+	}
+	if strings.Contains(got, "UNIQUE_TRANSCRIPT_HEAD") {
+		t.Fatalf("bounded redraw retained the superseded transcript head")
+	}
+	max := foregroundRedrawBufferLimitBytes + len("terminal reset") + 128
+	if len(got) > max {
+		t.Fatalf("bounded redraw = %d bytes, want <= %d", len(got), max)
+	}
+}
+
 func TestRedrawResizeWrapsBufferedRedrawAtomically(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}

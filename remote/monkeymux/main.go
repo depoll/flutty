@@ -78,6 +78,7 @@ const (
 	bracketedPasteStartCarryDelay     = 20 * time.Millisecond
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
 	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
+	foregroundRedrawBufferLimitBytes  = 512 * 1024
 	windowUpdateMinInterval           = 750 * time.Millisecond
 	windowHistoryLimitBytes           = 128 * 1024
 	windowFullReplayHistoryLimitBytes = 512 * 1024
@@ -9223,6 +9224,47 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 	})
 }
 
+func trimForegroundRedrawBuffer(data []byte, preservedPrefix []byte) []byte {
+	if len(data) <= foregroundRedrawBufferLimitBytes {
+		return data
+	}
+	body := data
+	prefix := []byte(nil)
+	if len(preservedPrefix) > 0 && bytes.HasPrefix(body, preservedPrefix) {
+		prefix = preservedPrefix
+		body = body[len(preservedPrefix):]
+	}
+	if len(body) <= foregroundRedrawBufferLimitBytes {
+		return data
+	}
+	start := len(body) - foregroundRedrawBufferLimitBytes
+	start = advanceReplayStartToTerminalGround(
+		body,
+		start,
+		terminalOutputParserSnapshot{},
+	)
+	if start >= len(body) {
+		return append([]byte(nil), prefix...)
+	}
+	// Prefer a natural terminal/text boundary near the size cut so the reset
+	// replay is followed by a complete control sequence or line.
+	scanEnd := start + 2048
+	if scanEnd > len(body) {
+		scanEnd = len(body)
+	}
+	for index := start; index < scanEnd; index++ {
+		switch body[index] {
+		case '\x1b', '\n', '\r':
+			start = index
+			index = scanEnd
+		}
+	}
+	result := make([]byte, 0, len(prefix)+len(body)-start)
+	result = append(result, prefix...)
+	result = append(result, body[start:]...)
+	return result
+}
+
 func (s *muxServer) resumePausedAttachForwarding(
 	windowID string,
 	generation int,
@@ -9267,6 +9309,15 @@ func (s *muxServer) resumePausedAttachForwarding(
 	}
 	primaryNeedsFailover =
 		primaryNeedsFailover || window.redrawForwardingPrimaryNeedsFailover
+	// A long normal-buffer agent such as Pi can repaint its entire transcript
+	// on SIGWINCH. The reset replay already establishes a clean terminal frame,
+	// so retain only a parser-safe tail of that redraw instead of sending many
+	// megabytes to a mobile client. Preserve terminal-query prefixes verbatim.
+	if len(replay) > 0 && window.terminalOutputIsGroundLocked() {
+		buffered = trimForegroundRedrawBuffer(buffered, queryData)
+		failoverBuffered = trimForegroundRedrawBuffer(failoverBuffered, queryData)
+		secondaryBuffered = trimForegroundRedrawBuffer(secondaryBuffered, nil)
+	}
 	// Substituting the fallback discards the buffered redraw, so it is only
 	// safe once that redraw has ended on a sequence boundary. Resuming mid
 	// escape sequence would drop the head of a sequence whose tail is still to
