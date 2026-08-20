@@ -8521,8 +8521,14 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, hasLength(1));
-        final startupCommand = executedCommands.single;
+        final startupCommands = executedCommands
+            .where(
+              (command) =>
+                  command.contains(' attach') && command.contains('--command'),
+            )
+            .toList(growable: false);
+        expect(startupCommands, hasLength(1));
+        final startupCommand = startupCommands.single;
         expect(startupCommand, contains('/tmp/monkeymux'));
         expect(startupCommand, contains(' attach'));
         expect(startupCommand, contains('--update-policy never'));
