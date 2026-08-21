@@ -14,6 +14,8 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/commands/duplicate_host_command.dart';
 import '../../domain/models/acp_native_preview.dart';
+import '../../domain/models/acp_provider.dart';
+import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
@@ -21,12 +23,14 @@ import '../../domain/models/terminal_preview.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/home_screen_shortcut_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
+import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/monkeymux_service.dart';
 import '../../domain/services/remote_multiplexer_service.dart';
@@ -39,6 +43,9 @@ import '../../domain/services/tmux_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../providers/host_row_providers.dart';
+import '../widgets/acp_mux_window_status_badge.dart';
+import '../widgets/acp_session_presentation.dart';
+import '../widgets/acp_session_switcher.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/brand_empty_state.dart';
@@ -3600,13 +3607,43 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       });
     }
 
-    if (!_queried || _windows == null || _windows!.isEmpty) {
+    if (!_queried || _windows == null) {
+      return const SizedBox.shrink();
+    }
+
+    final windows = _windows!;
+    final activeSession = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    final nativeAcpSessions = _muxBackend == RemoteMuxBackend.monkeyMux
+        ? () {
+            final manager = ref.watch(acpSessionManagerProvider);
+            final managerState =
+                ref.watch(acpSessionManagerStateProvider).asData?.value ??
+                manager.state;
+            return managerState.sessions
+                .where(
+                  (session) =>
+                      session.key.hostId == activeSession?.hostId &&
+                      session.isOpenMuxWindow,
+                )
+                .toList(growable: false);
+          }()
+        : const <AcpSessionState>[];
+    final nativeAcpEntries = buildAcpMuxWindowEntries(nativeAcpSessions);
+    if (windows.isEmpty && nativeAcpEntries.isEmpty) {
       return const SizedBox.shrink();
     }
 
     final theme = Theme.of(context);
     final hasAgentSessionAccess = _hasAgentSessionAccess;
-    final windows = _windows!;
+    final totalWindowCount = windows.length + nativeAcpEntries.length;
+    final firstNativeWindowIndex =
+        windows.fold<int>(
+          -1,
+          (maximum, window) => window.index > maximum ? window.index : maximum,
+        ) +
+        1;
     final alertCount = windows.where((w) => w.hasAlert).length;
 
     return Padding(
@@ -3629,8 +3666,8 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                   const SizedBox(width: 4),
                   Text(
                     _sessionName != null
-                        ? '$_sessionName · ${windows.length} windows'
-                        : '${_muxBackend.label} · ${windows.length} windows',
+                        ? '$_sessionName · $totalWindowCount windows'
+                        : '${_muxBackend.label} · $totalWindowCount windows',
                     style: theme.textTheme.labelSmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -3666,6 +3703,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           if (_expanded) ...[
             const SizedBox(height: 4),
             for (final window in windows) _buildWindowRow(theme, window),
+            for (var index = 0; index < nativeAcpEntries.length; index++)
+              _buildNativeAcpWindowRow(
+                theme,
+                nativeAcpEntries[index],
+                windowIndex: firstNativeWindowIndex + index,
+              ),
 
             const SizedBox(height: 4),
             if (hasAgentSessionAccess) ...[
@@ -4040,6 +4083,138 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       ),
     ),
   );
+
+  Widget _buildNativeAcpWindowRow(
+    ThemeData theme,
+    AcpSwitcherEntry entry, {
+    required int windowIndex,
+  }) {
+    final session = entry.session!;
+    final key = session.key;
+    final activity = acpSessionActivityDisplay(session);
+    final activityColor = acpStatusColor(theme.colorScheme, activity.tone);
+    final agentTool = agentLaunchToolForBuiltinAcpProviderId(key.providerId);
+
+    return InkWell(
+      key: ValueKey('connection-native-acp-window-${key.value}'),
+      onTap: () => unawaited(
+        context.push<void>(
+          buildAgentChatLocation(
+            hostId: key.hostId,
+            providerId: key.providerId,
+            bridgeId: key.bridgeId,
+            acpSessionId: key.acpSessionId,
+          ),
+        ),
+      ),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+        child: Row(
+          children: [
+            Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                '$windowIndex',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontSize: 10,
+                  color: activityColor,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: AgentToolIcon(
+                tool: agentTool,
+                size: 14,
+                color: activityColor,
+              ),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        key: ValueKey(
+                          'connection-native-acp-indicator-${key.value}',
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: activityColor.withAlpha(24),
+                          border: Border.all(
+                            color: activityColor.withAlpha(110),
+                          ),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          'NATIVE',
+                          style: FluttyTheme.monoStyle.copyWith(
+                            color: activityColor,
+                            fontSize: 7,
+                            height: 1,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.3,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: Text(
+                          entry.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    '${session.providerLabel} · ${acpCwdSummary(session.cwd)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      fontSize: 10,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 6, right: 6),
+              child: AcpMuxWindowStatusBadge(session: session),
+            ),
+            GestureDetector(
+              onTap: () => unawaited(
+                ref.read(acpSessionManagerProvider).stopSession(key),
+              ),
+              child: Icon(
+                Icons.close,
+                size: 14,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
     final title = window.displayTitle;
