@@ -115,6 +115,7 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
     connectionId: 1,
   ),
   SshSession? activeSession,
+  List<AcpProvider>? providers,
 }) async {
   AcpSessionKey? returned;
   var completed = false;
@@ -146,10 +147,13 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
         ),
         allHostsProvider.overrideWith((ref) => Stream.value(<Host>[_host()])),
         acpProvidersProvider.overrideWith(
-          (ref) => Stream.value(<AcpProvider>[
-            for (final builtin in acpBuiltinProviders)
-              AcpBuiltinProviderView(builtin),
-          ]),
+          (ref) => Stream.value(
+            providers ??
+                <AcpProvider>[
+                  for (final builtin in acpBuiltinProviders)
+                    AcpBuiltinProviderView(builtin),
+                ],
+          ),
         ),
       ],
       child: MaterialApp(
@@ -189,6 +193,33 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
 
 void main() {
   final key = fakeAcpKey();
+
+  testWidgets('provider picker excludes custom ACP definitions', (
+    tester,
+  ) async {
+    final custom = AcpCustomProviderView(
+      AcpCustomProviderDefinition.create(
+        id: 'custom-provider',
+        label: 'Custom provider',
+        launchCommand: AcpLaunchCommand(executable: '/opt/custom-acp'),
+        now: DateTime.utc(2026),
+      ),
+    );
+
+    await _pumpAndLaunch(
+      tester,
+      FakeAcpSessionManager(),
+      startSession: false,
+      providers: <AcpProvider>[
+        AcpBuiltinProviderView(acpCopilotCliProvider),
+        custom,
+      ],
+    );
+
+    expect(find.text('Copilot CLI'), findsOneWidget);
+    expect(find.text('Custom provider'), findsNothing);
+    expect(find.text('Add custom provider'), findsNothing);
+  });
 
   testWidgets('generic sheet launches Cursor through its resolved binary', (
     tester,

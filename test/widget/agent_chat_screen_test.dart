@@ -283,6 +283,12 @@ void main() {
                 AcpConfigValue(value: 'high', name: 'High'),
               ],
             ),
+            AcpBooleanConfigOption(
+              id: 'yolo',
+              name: 'Auto-approve',
+              category: 'permissions',
+              currentValue: false,
+            ),
             AcpSelectConfigOption(
               id: 'fast-mode',
               name: 'Fast mode',
@@ -314,6 +320,7 @@ void main() {
     expect(find.text('Effort: Medium'), findsOneWidget);
     expect(find.text('Mode: Code'), findsOneWidget);
     expect(find.text('Fast mode: Off'), findsOneWidget);
+    expect(find.text('Permissions: Ask'), findsOneWidget);
     final selectorContext = tester.element(find.text('Model: Sonnet'));
     expect(MediaQuery.of(selectorContext).textScaler.scale(14), 14);
     expect(
@@ -339,11 +346,21 @@ void main() {
     await tester.pumpAndSettle();
     expect(manager.modeSets, contains('ask'));
 
+    await tester.ensureVisible(find.byTooltip('Change fast mode'));
+    await tester.pump();
     await tester.tap(find.byTooltip('Change fast mode'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('On').last);
     await tester.pumpAndSettle();
     expect(manager.configOptionSets, contains(('fast-mode', 'on')));
+
+    await tester.ensureVisible(find.byTooltip('Change permissions'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Change permissions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Auto-approve').last);
+    await tester.pumpAndSettle();
+    expect(manager.configOptionSets, contains(('yolo', true)));
   });
 
   testWidgets('legacy thinking levels render as Effort, not Mode', (
@@ -873,7 +890,7 @@ void main() {
     final position = tester.state<ScrollableState>(scrollable.first).position;
     position.jumpTo(position.maxScrollExtent);
     await tester.pump();
-    await tester.drag(find.byType(AcpMessageThread), const Offset(0, 320));
+    await tester.drag(find.byType(AcpMessageThread), const Offset(0, 40));
     await tester.pump();
     final userPosition = position.pixels;
     expect(userPosition, lessThan(position.maxScrollExtent));

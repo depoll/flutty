@@ -198,7 +198,6 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
   Future<Set<AgentLaunchTool>>? installedToolsFuture,
   AgentLaunchTool? preferredTool,
   Map<AgentLaunchTool, String> nativeAcpProviderIds = const {},
-  bool allowNativeAcpProviderPicker = false,
 }) => showModalBottomSheet<TmuxNavigatorAction>(
   context: context,
   isScrollControlled: true,
@@ -252,9 +251,6 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
           );
       }
     },
-    onNativeAcpProvider: allowNativeAcpProviderPicker
-        ? () => Navigator.pop(context, const TmuxNewAcpSessionAction())
-        : null,
     onEmptyWindow: () {
       Navigator.pop(context, const TmuxNewWindowAction());
     },
@@ -1040,7 +1036,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       installedToolsFuture: installedToolsFuture,
       preferredTool: _preferredLaunchTool,
       nativeAcpProviderIds: nativeAcpProviderIds,
-      allowNativeAcpProviderPicker: nativeAcpAvailable,
     );
     if (!mounted || action == null) {
       return;
@@ -1682,7 +1677,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
     required this.isProUser,
     required this.onToolSelected,
     required this.onEmptyWindow,
-    this.onNativeAcpProvider,
     this.installedToolsFuture,
     this.preferredTool,
     this.nativeAcpTools = const <AgentLaunchTool>{},
@@ -1708,9 +1702,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
 
   /// Called when the user selects a tool.
   final void Function(AgentLaunchTool tool) onToolSelected;
-
-  /// Opens the host-scoped picker for another ACP provider.
-  final VoidCallback? onNativeAcpProvider;
 
   /// Called when the user selects an empty window.
   final VoidCallback onEmptyWindow;
@@ -1840,24 +1831,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
                     );
                   },
                 ),
-                if (onNativeAcpProvider != null) ...[
-                  const Divider(height: 1),
-                  ListTile(
-                    visualDensity: _tmuxNavigatorDenseVisualDensity,
-                    minTileHeight: 48,
-                    contentPadding: _tmuxNavigatorTilePadding,
-                    horizontalTitleGap: 12,
-                    minLeadingWidth: 20,
-                    leading: Icon(
-                      Icons.chat_bubble_outline,
-                      color: theme.colorScheme.primary,
-                      size: 18,
-                    ),
-                    title: const Text('Custom native chat'),
-                    subtitle: const Text('Choose an agent provider'),
-                    onTap: onNativeAcpProvider,
-                  ),
-                ],
                 const Divider(height: 1),
                 ListTile(
                   visualDensity: _tmuxNavigatorDenseVisualDensity,

@@ -101,6 +101,10 @@ void main() {
         await tester.pump();
         expect(find.text(entry.value.$1), findsOneWidget);
         expect(find.byIcon(entry.value.$2), findsOneWidget);
+        expect(
+          tester.getSize(find.byType(AcpToolCallView)).height,
+          closeTo(44, 0.1),
+        );
       }
     });
 

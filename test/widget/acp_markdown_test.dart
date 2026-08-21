@@ -49,6 +49,18 @@ void main() {
     expect(find.byType(Table), findsOneWidget);
   });
 
+  testWidgets('uses compact native paragraph rhythm', (tester) async {
+    await tester.pumpWidget(
+      wrap(const AcpMarkdown(data: 'First paragraph.\n\nSecond paragraph.')),
+    );
+    await tester.pump();
+
+    final markdown = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+    expect(markdown.styleSheet?.p?.fontSize, 13);
+    expect(markdown.styleSheet?.p?.height, 1.4);
+    expect(markdown.styleSheet?.blockSpacing, FluttyTheme.spacingSm);
+  });
+
   testWidgets('renders selectable markdown text', (tester) async {
     await tester.pumpWidget(
       wrap(const AcpMarkdown(data: '# Heading\n\nhello world')),

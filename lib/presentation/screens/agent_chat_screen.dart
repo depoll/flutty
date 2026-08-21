@@ -495,7 +495,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       return;
     }
     final position = _scroll.position;
-    final nearBottom = position.pixels >= position.maxScrollExtent - 120;
+    final nearBottom = position.pixels >= position.maxScrollExtent - 2;
     if (nearBottom != _autoScroll || _showJumpToLatest == nearBottom) {
       setState(() {
         _autoScroll = nearBottom;
@@ -525,7 +525,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         _userDraggingTranscript) {
       final nearBottom =
           notification.metrics.pixels >=
-          notification.metrics.maxScrollExtent - 24;
+          notification.metrics.maxScrollExtent - 2;
       setState(() {
         _userDraggingTranscript = false;
         _autoScroll = nearBottom;
@@ -552,6 +552,11 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       _initialScrollSettleTimer ??= Timer(const Duration(milliseconds: 60), () {
         _initialScrollSettleTimer = null;
         if (!mounted || !_scroll.hasClients) return;
+        if (!_autoScroll || _userDraggingTranscript) {
+          _initialScrollSettled = true;
+          _publishScrollState();
+          return;
+        }
         _scroll.jumpTo(_scroll.position.maxScrollExtent);
         _initialScrollSettled = true;
         _publishScrollState();
@@ -742,10 +747,16 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       (option) => (option.category ?? '').toLowerCase() == 'model',
     );
     final effortOption = firstMatching(_quickConfigOptionIsEffort);
+    final permissionOption = firstMatching(_quickConfigOptionIsPermissionMode);
+    final permissionToggle = session.configOptions
+        .whereType<AcpBooleanConfigOption>()
+        .where(_quickConfigOptionIsPermissionMode)
+        .firstOrNull;
     final modeOption = firstMatching(
       (option) =>
           (option.category ?? '').toLowerCase() == 'mode' &&
-          !_quickConfigOptionIsEffort(option),
+          !_quickConfigOptionIsEffort(option) &&
+          !_quickConfigOptionIsPermissionMode(option),
     );
     final selectors = <_AcpQuickSelectorData>[];
     final displayedOptionIds = <String>{};
@@ -853,6 +864,34 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       }
     }
 
+    addGeneric('Permissions', permissionOption);
+    if (permissionOption == null && permissionToggle != null) {
+      displayedOptionIds.add(permissionToggle.id);
+      selectors.add(
+        _AcpQuickSelectorData(
+          label: 'Permissions',
+          currentValue: permissionToggle.currentValue ? 'true' : 'false',
+          choices: const [
+            _AcpQuickChoice(
+              value: 'false',
+              label: 'Ask',
+              description: 'Ask before protected actions.',
+            ),
+            _AcpQuickChoice(
+              value: 'true',
+              label: 'Auto-approve',
+              description: 'Approve supported actions automatically.',
+            ),
+          ],
+          onSelected: (value) => manager.setConfigOption(
+            _key,
+            configId: permissionToggle.id,
+            value: value == 'true',
+          ),
+        ),
+      );
+    }
+
     // ACP providers may use extension categories such as Codex's
     // model_config (Fast mode) or collaboration_mode. Preserve the canonical
     // Model / Effort / Mode ordering above, then surface every remaining
@@ -863,6 +902,17 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       }
     }
     return selectors;
+  }
+
+  bool _quickConfigOptionIsPermissionMode(AcpSessionConfigOption option) {
+    final category = (option.category ?? '').toLowerCase();
+    final identity = '${option.id} ${option.name}'.toLowerCase();
+    return category == 'permission' ||
+        category == 'permissions' ||
+        identity.contains('permission') ||
+        identity.contains('approval') ||
+        identity.contains('auto-approve') ||
+        identity.contains('yolo');
   }
 
   bool _quickConfigOptionIsEffort(AcpSelectConfigOption option) {

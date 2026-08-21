@@ -1056,7 +1056,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             installedToolsFuture: installedToolsFuture,
             preferredTool: _preferredLaunchTool,
             nativeAcpProviderIds: nativeAcpProviderIds,
-            allowNativeAcpProviderPicker: nativeAcpAvailable,
           );
     if (!mounted || action == null) {
       return;

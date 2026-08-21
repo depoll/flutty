@@ -1125,26 +1125,20 @@ void main() {
       expect(selected, isA<TmuxNewWindowAction>());
     });
 
-    testWidgets('MonkeyMux exposes the custom ACP provider picker', (
+    testWidgets('MonkeyMux omits the custom native provider action', (
       tester,
     ) async {
-      TmuxNavigatorAction? result;
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
             body: Builder(
               builder: (context) => TextButton(
-                onPressed: () async {
-                  result = await showTmuxNewWindowPicker(
-                    context: context,
-                    isProUser: false,
-                    startClisInYoloMode: false,
-                    installedToolsFuture: Future.value(
-                      const <AgentLaunchTool>{},
-                    ),
-                    allowNativeAcpProviderPicker: true,
-                  );
-                },
+                onPressed: () => showTmuxNewWindowPicker(
+                  context: context,
+                  isProUser: false,
+                  startClisInYoloMode: false,
+                  installedToolsFuture: Future.value(const <AgentLaunchTool>{}),
+                ),
                 child: const Text('Open picker'),
               ),
             ),
@@ -1154,13 +1148,10 @@ void main() {
 
       await tester.tap(find.text('Open picker'));
       await tester.pumpAndSettle();
-      expect(find.text('Custom native chat'), findsOneWidget);
 
-      await tester.tap(find.text('Custom native chat'));
-      await tester.pumpAndSettle();
-
-      expect(result, isA<TmuxNewAcpSessionAction>());
-      expect((result! as TmuxNewAcpSessionAction).providerId, isNull);
+      expect(find.text('Custom native chat'), findsNothing);
+      expect(find.text('Choose an agent provider'), findsNothing);
+      expect(find.text('Empty terminal'), findsOneWidget);
     });
 
     testWidgets('MonkeyMux navigator lists and opens native ACP sessions', (

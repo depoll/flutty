@@ -358,8 +358,14 @@ class _AcpComposerState extends State<AcpComposer> {
   }
 
   Future<void> _handlePrimaryAction() async {
-    if (_controller.canSend) {
-      await _controller.send();
+    if (!_controller.canSend) return;
+    await _controller.send();
+    if (!mounted) return;
+    final error = _controller.error;
+    if (error != null &&
+        error.isUploadRecoverable &&
+        _controller.attachments.isNotEmpty) {
+      await _confirmRemoteUpload();
     }
   }
 

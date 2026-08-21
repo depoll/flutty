@@ -1,10 +1,10 @@
 /// Staged new-session flow for launching an ACP coding-agent session.
 ///
 /// Walks the user through: choose a saved host → connect/reuse SSH → choose a
-/// built-in or custom provider → choose a working directory → start a new
-/// session or reconnect a recent one. It handles helper-install confirmation,
+/// built-in provider → choose a working directory → start a new session or
+/// reconnect a recent one. It handles helper-install confirmation,
 /// missing/auth-required providers (with a safe Open Terminal escape hatch),
-/// custom provider management, and the free-tier concurrency choice.
+/// and the free-tier concurrency choice.
 ///
 /// No prompts, transcripts, or command text are ever logged.
 library;
@@ -39,7 +39,6 @@ import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 import 'acp_concurrency_choice.dart';
 import 'acp_connection_support.dart';
-import 'acp_custom_provider_editor.dart';
 import 'acp_session_presentation.dart';
 
 /// Opens the staged new-session sheet, returning the launched session key when
@@ -667,31 +666,15 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     }
   }
 
-  Future<void> _addCustomProvider() async {
-    final result = await showAcpCustomProviderEditor(
-      context,
-      providerService: ref.read(acpProviderServiceProvider),
-    );
-    if (result?.saved != null && mounted) {
-      setState(() => _providerId = result!.saved!.id);
-    }
-  }
-
-  Future<void> _editCustomProvider(AcpCustomProviderView provider) async {
-    await showAcpCustomProviderEditor(
-      context,
-      providerService: ref.read(acpProviderServiceProvider),
-      existing: provider.definition,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
     final providersAsync = ref.watch(acpProvidersProvider);
     final hosts = hostsAsync.asData?.value;
-    final providers = providersAsync.asData?.value;
+    final providers = providersAsync.asData?.value
+        .where((provider) => !provider.isCustom)
+        .toList(growable: false);
     if (hosts != null && providers != null) {
       _scheduleDefaults(hosts, providers);
     } else if (!_defaultsScheduled &&
@@ -806,9 +789,14 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
               const SizedBox(height: FluttyTheme.spacingMd),
               _sectionLabel(context, 'Provider'),
               providersAsync.when(
-                data: widget.lockProvider
-                    ? _buildLockedProvider
-                    : _buildProviderPicker,
+                data: (allProviders) {
+                  final builtins = allProviders
+                      .where((provider) => !provider.isCustom)
+                      .toList(growable: false);
+                  return widget.lockProvider
+                      ? _buildLockedProvider(builtins)
+                      : _buildProviderPicker(builtins);
+                },
                 loading: () => const Padding(
                   padding: EdgeInsets.all(FluttyTheme.spacingMd),
                   child: LinearProgressIndicator(),
@@ -890,42 +878,22 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
     );
   }
 
-  Widget _buildProviderPicker(List<AcpProvider> providers) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildProviderPicker(List<AcpProvider> providers) => Wrap(
+    spacing: FluttyTheme.spacingSm,
+    runSpacing: FluttyTheme.spacingSm,
     children: [
-      Wrap(
-        spacing: FluttyTheme.spacingSm,
-        runSpacing: FluttyTheme.spacingSm,
-        children: [
-          for (final provider in providers)
-            _ProviderChip(
-              key: ValueKey('provider-${provider.id}'),
-              provider: provider,
-              selected: provider.id == _providerId,
-              onSelected: (_busy || _loadingDefaults)
-                  ? null
-                  : () => setState(() {
-                      _providerId = provider.id;
-                      _selectedRecent = null;
-                    }),
-              onEdit:
-                  (provider is AcpCustomProviderView &&
-                      !_busy &&
-                      !_loadingDefaults)
-                  ? () => _editCustomProvider(provider)
-                  : null,
-            ),
-        ],
-      ),
-      const SizedBox(height: FluttyTheme.spacingXs),
-      Align(
-        alignment: Alignment.centerLeft,
-        child: TextButton.icon(
-          onPressed: (_busy || _loadingDefaults) ? null : _addCustomProvider,
-          icon: const Icon(Icons.add),
-          label: const Text('Add custom provider'),
+      for (final provider in providers)
+        _ProviderChip(
+          key: ValueKey('provider-${provider.id}'),
+          provider: provider,
+          selected: provider.id == _providerId,
+          onSelected: (_busy || _loadingDefaults)
+              ? null
+              : () => setState(() {
+                  _providerId = provider.id;
+                  _selectedRecent = null;
+                }),
         ),
-      ),
     ],
   );
 
@@ -999,27 +967,19 @@ class _ProviderChip extends StatelessWidget {
     required this.provider,
     required this.selected,
     required this.onSelected,
-    this.onEdit,
     super.key,
   });
 
   final AcpProvider provider;
   final bool selected;
   final VoidCallback? onSelected;
-  final VoidCallback? onEdit;
 
   @override
   Widget build(BuildContext context) => InputChip(
     label: Text(provider.label),
     selected: selected,
     onSelected: onSelected == null ? null : (_) => onSelected!(),
-    avatar: Icon(
-      provider.isCustom ? Icons.terminal : Icons.smart_toy_outlined,
-      size: 18,
-    ),
-    onDeleted: onEdit,
-    deleteIcon: onEdit == null ? null : const Icon(Icons.edit, size: 16),
-    deleteButtonTooltipMessage: onEdit == null ? null : 'Edit provider',
+    avatar: const Icon(Icons.smart_toy_outlined, size: 18),
   );
 }
 

@@ -1333,7 +1333,7 @@ void main() {
         expect(connector.lastListConfirmInstall, same(confirmInstall));
         expect(
           connector.servers[resumedKey.bridgeId]!.methods,
-          contains('session/resume'),
+          contains('session/load'),
         );
         expect(manager.state.byKeyValue(key.value), isNull);
         expect(manager.state.byKeyValue(resumedKey.value)!.isLive, isTrue);
@@ -1359,10 +1359,9 @@ void main() {
         final key = (result as AcpSessionLaunchStarted).key;
         expect(key.acpSessionId, nativeSessionId);
         expect(connector.startedBridges, hasLength(1));
-        expect(
-          connector.servers[key.bridgeId]!.methods,
-          contains('session/resume'),
-        );
+        final methods = connector.servers[key.bridgeId]!.methods;
+        expect(methods, contains('session/load'));
+        expect(methods, isNot(contains('session/resume')));
         expect(manager.state.byKeyValue(key.value)!.isLive, isTrue);
       },
     );

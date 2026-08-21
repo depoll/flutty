@@ -705,6 +705,7 @@ class AcpSessionManager {
       clock: _clock,
       diagnostics: _diagnostics,
       autoApprovePermissions: autoApprovePermissions,
+      freshBridge: startedBridge,
     ).._acquireLease(attachment);
 
     try {
@@ -1260,13 +1261,15 @@ class _SessionController {
     required DateTime Function() clock,
     required DiagnosticsLogger diagnostics,
     required bool autoApprovePermissions,
+    required bool freshBridge,
   }) : _manager = manager,
        _providerLabel = providerLabel,
        _isCustomProvider = isCustomProvider,
        _cwd = cwd,
        _clock = clock,
        _diagnostics = diagnostics,
-       _autoApprovePermissions = autoApprovePermissions;
+       _autoApprovePermissions = autoApprovePermissions,
+       _freshBridge = freshBridge;
 
   final AcpSessionManager _manager;
 
@@ -1279,6 +1282,7 @@ class _SessionController {
   final DateTime Function() _clock;
   final DiagnosticsLogger _diagnostics;
   final bool _autoApprovePermissions;
+  bool _freshBridge;
 
   final AcpTimelineBuilder _timelineBuilder = AcpTimelineBuilder();
   final Queue<_QueuedAcpPrompt> _promptQueue = Queue<_QueuedAcpPrompt>();
@@ -1377,6 +1381,7 @@ class _SessionController {
     }
 
     final resolvedSessionId = await _establishSession(existingSessionId, init);
+    _freshBridge = false;
     _key = AcpSessionKey.of(
       hostId: hostId,
       providerId: providerId,
@@ -1420,6 +1425,18 @@ class _SessionController {
         }
         return id;
       }
+      // A newly started adapter must load historical state from its durable
+      // store. `session/resume` is for a session already owned by the live ACP
+      // process and can acknowledge without loading CLI history (observed with
+      // Claude and Codex adapters), which looks like a successful fresh chat.
+      if (_freshBridge && caps.loadSession) {
+        final result = await attachment.client.loadSession(
+          sessionId: existingSessionId,
+          cwd: _cwd,
+        );
+        _applySetupResult(result);
+        return existingSessionId;
+      }
       if (caps.session.resume) {
         final result = await attachment.client.resumeSession(
           sessionId: existingSessionId,
@@ -1436,8 +1453,11 @@ class _SessionController {
         _applySetupResult(result);
         return existingSessionId;
       }
-      // Neither resume nor load is advertised. Trust that the persistent
-      // bridge kept the provider session alive and reuse the id directly.
+      if (_freshBridge) {
+        throw const AcpUnsupportedCapabilityException('session/load');
+      }
+      // Neither resume nor load is advertised. An existing bridge still owns
+      // the live provider session, so reconnect can safely retain its id.
       return existingSessionId;
     } on _LaunchException {
       rethrow;
@@ -1865,6 +1885,7 @@ class _SessionController {
         clock: _clock,
         diagnostics: _diagnostics,
         autoApprovePermissions: _autoApprovePermissions,
+        freshBridge: false,
       ).._acquireLease(attachment);
       final key = await forkController.adoptForked(
         hostId: _key.hostId,

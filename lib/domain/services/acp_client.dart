@@ -329,6 +329,10 @@ final class AcpClient {
         if (meta.isNotEmpty) '_meta': meta,
       },
       timeout: timeout,
+      // A prompt response completes only after the streamed turn settles.
+      // Provider/transport shutdown and explicit cancel already terminate it,
+      // so the generic short control-request deadline is a false timeout here.
+      noTimeout: timeout == null,
     );
     return AcpPromptResult.fromJson(_requireObject(result));
   }

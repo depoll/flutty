@@ -2358,8 +2358,10 @@ branch refs/heads/main
       const sessionPath =
           '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
           '2026-04-12T21-07-44-781Z_01JYX7ABCD.jsonl';
+      final commands = <String>[];
       when(() => client.execute(any())).thenAnswer((invocation) async {
         final command = invocation.positionalArguments.first as String;
+        commands.add(command);
         if (command.contains('find ~/.pi/agent/sessions')) {
           return _buildExecSession(stdout: sessionPath);
         }
@@ -2384,6 +2386,16 @@ branch refs/heads/main
       expect(info.sessionId, '01JYX7ABCD');
       expect(info.summary, 'Fix the tmux navigator crash');
       expect(info.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(
+        commands,
+        contains(
+          allOf(
+            contains('{ find ~/.pi/agent/sessions'),
+            contains('|| true; }'),
+          ),
+        ),
+      );
+      expect(commands, contains(contains(r'$HEAD_BIN -c 65536')));
       expect(
         discovery.buildResumeCommand(info),
         "cd '/Users/depoll/Code/flutty' && pi --session '01JYX7ABCD'",

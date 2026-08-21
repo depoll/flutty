@@ -178,7 +178,7 @@ final class _PendingResponse {
   final AcpRequestId id;
   final String method;
   final Completer<Object?> completer;
-  final Timer timer;
+  final Timer? timer;
 }
 
 /// Default bounded ACP JSON-RPC frame size, large enough for a 10 MiB image
@@ -246,6 +246,7 @@ final class AcpJsonRpcConnection {
     Object? params,
     Duration? timeout,
     AcpRequestId? id,
+    bool noTimeout = false,
   }) {
     _ensureOpen();
     final requestId = id ?? _requestIdFactory();
@@ -260,15 +261,18 @@ final class AcpJsonRpcConnection {
       throw StateError('Duplicate JSON-RPC request ID: $requestId');
     }
     final completer = Completer<Object?>();
-    final effectiveTimeout = timeout ?? defaultRequestTimeout;
-    late final Timer timer;
-    timer = Timer(effectiveTimeout, () {
-      final pending = _pending.remove(requestId);
-      if (pending == null || pending.completer.isCompleted) return;
-      pending.completer.completeError(
-        AcpRequestTimeoutException(requestId, method, effectiveTimeout),
-      );
-    });
+    final effectiveTimeout = noTimeout
+        ? null
+        : timeout ?? defaultRequestTimeout;
+    final timer = effectiveTimeout == null
+        ? null
+        : Timer(effectiveTimeout, () {
+            final pending = _pending.remove(requestId);
+            if (pending == null || pending.completer.isCompleted) return;
+            pending.completer.completeError(
+              AcpRequestTimeoutException(requestId, method, effectiveTimeout),
+            );
+          });
     _pending[requestId] = _PendingResponse(
       id: requestId,
       method: method,
@@ -283,7 +287,7 @@ final class AcpJsonRpcConnection {
         'params': ?params,
       }).catchError((Object error, StackTrace stackTrace) {
         final pending = _pending.remove(requestId);
-        pending?.timer.cancel();
+        pending?.timer?.cancel();
         if (pending != null && !pending.completer.isCompleted) {
           pending.completer.completeError(error, stackTrace);
         }
@@ -303,7 +307,14 @@ final class AcpJsonRpcConnection {
     Object? params,
     Duration? timeout,
     AcpRequestId? id,
-  }) => sendRequest(method, params: params, timeout: timeout, id: id).future;
+    bool noTimeout = false,
+  }) => sendRequest(
+    method,
+    params: params,
+    timeout: timeout,
+    id: id,
+    noTimeout: noTimeout,
+  ).future;
 
   /// Sends a JSON-RPC notification.
   Future<void> notify(String method, {Object? params}) {
@@ -416,7 +427,7 @@ final class AcpJsonRpcConnection {
     }
     final pending = _pending.remove(id);
     if (pending == null) return;
-    pending.timer.cancel();
+    pending.timer?.cancel();
     final error = AcpJson.objectField(message, 'error');
     if (error != null) {
       final code = AcpJson.integer(error, 'code');
@@ -451,7 +462,7 @@ final class AcpJsonRpcConnection {
   void _cancelRequest(AcpRequestId id) {
     final pending = _pending.remove(id);
     if (pending == null) return;
-    pending.timer.cancel();
+    pending.timer?.cancel();
     if (!pending.completer.isCompleted) {
       pending.completer.completeError(
         AcpRequestCancelledException(pending.id, pending.method),
@@ -511,7 +522,7 @@ final class AcpJsonRpcConnection {
     if (_closed) return;
     _closed = true;
     for (final pending in _pending.values) {
-      pending.timer.cancel();
+      pending.timer?.cancel();
       if (!pending.completer.isCompleted) {
         pending.completer.completeError(reason, stackTrace);
       }

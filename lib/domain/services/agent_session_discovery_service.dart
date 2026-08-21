@@ -11,6 +11,7 @@ import '../models/tmux_state.dart';
 import 'acp_client.dart';
 import 'acp_json_rpc_connection.dart';
 import 'acp_ssh_exec_transport.dart';
+import 'diagnostics_log_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'terminal_connection_backend_service.dart';
@@ -3730,7 +3731,10 @@ print(json.dumps(sessions))
       final snapshots = await _readRemoteFileSnapshots(
         session,
         recentSessionPaths,
-        maxLines: previewOnly ? 40 : 80,
+        // Pi image/tool records can be multi-megabyte single JSONL lines. The
+        // picker needs only the header, name, and first prompt, so bound bytes
+        // rather than an unbounded number of lines.
+        maxBytes: 64 * 1024,
       );
       final sessions = <ToolSessionInfo>[];
       final sessionFilePaths = <String>[];
@@ -3803,7 +3807,16 @@ print(json.dumps(sessions))
         ),
         hadError: hadError,
       );
-    } on Object {
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'agent.discovery',
+        'tool_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'tool': 'pi',
+          'errorType': error.runtimeType,
+        },
+      );
       return const _ToolDiscoveryResult.failure('Pi');
     }
   }
@@ -3854,9 +3867,10 @@ print(json.dumps(sessions))
             )
           : await _exec(
               session,
-              'find ${buckets.map((bucket) => '"\$HOME"/.pi/agent/sessions/${_shellQuote(bucket)}').join(' ')} '
+              '{ find ${buckets.map((bucket) => '"\$HOME"/.pi/agent/sessions/${_shellQuote(bucket)}').join(' ')} '
               '-maxdepth 1 -name "*.jsonl" -type f '
-              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+              '-exec ls -1t {} + 2>/dev/null || true; } | '
+              'head -n $scanLimit',
             );
       scopedPaths = parsePaths(scopedOutput);
       // The provider menu only needs one in-scope row. Avoid a second remote
@@ -3879,8 +3893,9 @@ print(json.dumps(sessions))
           )
         : await _exec(
             session,
-            'find ~/.pi/agent/sessions -name "*.jsonl" -type f '
-            '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+            '{ find ~/.pi/agent/sessions -name "*.jsonl" -type f '
+            '-exec ls -1t {} + 2>/dev/null || true; } | '
+            'head -n $scanLimit',
           );
     return <String>{
       ...scopedPaths,

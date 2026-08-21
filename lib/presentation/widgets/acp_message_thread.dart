@@ -143,14 +143,14 @@ class AcpMessageThread extends StatelessWidget {
         if (index == entries.length) {
           return Padding(
             key: const ValueKey('acp-message-thread-footer'),
-            padding: const EdgeInsets.only(top: FluttyTheme.spacingMd),
+            padding: const EdgeInsets.only(top: FluttyTheme.spacingSm),
             child: Align(alignment: Alignment.centerLeft, child: footer),
           );
         }
         final entry = entries[index];
         return Padding(
           key: ValueKey(entry.id),
-          padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingMd),
+          padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingSm),
           child: _buildEntry(context, entry),
         );
       },

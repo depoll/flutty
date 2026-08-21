@@ -117,43 +117,48 @@ class _AcpToolCallViewState extends State<AcpToolCallView> {
     final header = InkWell(
       onTap: _hasDetails ? () => setState(() => _expanded = !_expanded) : null,
       borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: FluttyTheme.spacingSm,
-          vertical: FluttyTheme.spacingSm,
-        ),
-        child: Row(
-          children: [
-            Icon(call.kind.icon, size: 18, color: scheme.onSurfaceVariant),
-            const SizedBox(width: FluttyTheme.spacingSm),
-            Expanded(
-              child: Text(
-                call.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: scheme.onSurface,
-                  fontWeight: FontWeight.w500,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 44),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: FluttyTheme.spacingSm,
+            vertical: FluttyTheme.spacingXs,
+          ),
+          child: Row(
+            children: [
+              Icon(call.kind.icon, size: 17, color: scheme.onSurfaceVariant),
+              const SizedBox(width: FluttyTheme.spacingSm),
+              Expanded(
+                child: Text(
+                  call.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AcpChatTypography.monoStyleOf(context).copyWith(
+                    color: scheme.onSurface,
+                    fontSize: 13,
+                    height: 1.25,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: FluttyTheme.spacingSm),
-            _StatusBadge(
-              icon: visual.icon,
-              color: visual.color,
-              label: status.label,
-              spinning: visual.spinning && !reduceMotion,
-            ),
-            if (_hasDetails)
-              Padding(
-                padding: const EdgeInsets.only(left: FluttyTheme.spacingXs),
-                child: Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: scheme.onSurfaceVariant,
-                ),
+              const SizedBox(width: FluttyTheme.spacingSm),
+              _StatusBadge(
+                icon: visual.icon,
+                color: visual.color,
+                label: status.label,
+                spinning: visual.spinning && !reduceMotion,
               ),
-          ],
+              if (_hasDetails)
+                Padding(
+                  padding: const EdgeInsets.only(left: FluttyTheme.spacingXs),
+                  child: Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );

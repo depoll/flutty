@@ -79,7 +79,7 @@ class AcpMarkdown extends StatelessWidget {
     final scheme = theme.colorScheme;
     final base = MarkdownStyleSheet.fromTheme(theme);
     TextStyle mono({
-      double fontSize = 14,
+      double fontSize = 13,
       FontWeight fontWeight = FontWeight.w400,
       Color? color,
       FontStyle? fontStyle,
@@ -90,15 +90,16 @@ class AcpMarkdown extends StatelessWidget {
       color: color ?? scheme.onSurface,
       fontStyle: fontStyle,
       decoration: decoration,
-      height: 1.5,
+      height: 1.4,
     );
     final styleSheet = base.copyWith(
+      blockSpacing: FluttyTheme.spacingSm,
       p: mono(),
       a: mono(
         color: scheme.primary,
         decoration: TextDecoration.underline,
       ).copyWith(decorationColor: scheme.primary),
-      code: mono(fontSize: 13).copyWith(
+      code: mono().copyWith(
         color: scheme.onSurface,
         backgroundColor: scheme.surfaceContainerHighest,
       ),
@@ -121,8 +122,8 @@ class AcpMarkdown extends StatelessWidget {
       blockquotePadding: const EdgeInsets.all(FluttyTheme.spacingSm),
       listBullet: mono(),
       tableBorder: TableBorder.all(color: scheme.outline),
-      tableHead: mono(fontSize: 13, fontWeight: FontWeight.w600),
-      tableBody: mono(fontSize: 13),
+      tableHead: mono(fontWeight: FontWeight.w600),
+      tableBody: mono(),
       horizontalRuleDecoration: BoxDecoration(
         border: Border(top: BorderSide(color: scheme.outline)),
       ),

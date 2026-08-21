@@ -193,6 +193,28 @@ void main() {
     },
   );
 
+  test('no-timeout request can finish after the default deadline', () async {
+    final transport = _MemoryTransport();
+    final connection = AcpJsonRpcConnection(
+      transport: transport,
+      defaultRequestTimeout: const Duration(milliseconds: 10),
+      requestIdFactory: () => 'streaming-prompt',
+    );
+
+    final result = connection.request('session/prompt', noTimeout: true);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    transport.add(
+      _encodeMessage({
+        'jsonrpc': '2.0',
+        'id': 'streaming-prompt',
+        'result': {'stopReason': 'end_turn'},
+      }),
+    );
+
+    expect(await result, {'stopReason': 'end_turn'});
+    await connection.close();
+  });
+
   test('rejects oversized frames with an explicit protocol error', () async {
     final transport = _MemoryTransport();
     final connection = AcpJsonRpcConnection(

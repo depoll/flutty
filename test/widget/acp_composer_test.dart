@@ -136,6 +136,29 @@ void main() {
     expect(manager.promptCount, 1);
   });
 
+  testWidgets('unsupported arbitrary file immediately offers private upload', (
+    tester,
+  ) async {
+    final manager = _RecordingManager();
+    final controller = _makeController(manager)
+      ..addAttachment(
+        AcpAttachmentCandidate.memory(
+          name: 'notes.bin',
+          bytes: Uint8List.fromList(const [1, 2, 3]),
+          mimeType: 'application/octet-stream',
+        ),
+      );
+    addTearDown(controller.dispose);
+    await _pump(tester, controller);
+
+    await tester.tap(find.bySemanticsLabel('Send'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Upload to the server?'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Upload'), findsOneWidget);
+    expect(manager.promptCount, 0);
+  });
+
   testWidgets('streaming keeps a fixed Stop control and disabled Queue slot', (
     tester,
   ) async {
