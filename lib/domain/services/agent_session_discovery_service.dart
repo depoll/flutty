@@ -694,68 +694,35 @@ parseGrokSessionMetadata(String raw) {
   );
 }
 
-/// Parses Pi session metadata from the head of a session JSONL transcript.
+/// Parses the first and only record Pi lookup reads.
 ///
-/// Pi writes a `{"type":"session"}` header record first, carrying the session
-/// id, ISO timestamp, and cwd. A later `session_info` record may set a
-/// user-defined display name, otherwise the first user message is summarized.
+/// A valid Pi session file starts with a `type=session` JSON object containing
+/// its authoritative id, cwd, and creation timestamp. No transcript records are
+/// inspected.
 @visibleForTesting
-({
-  String? sessionId,
-  String? summary,
-  String? workingDirectory,
-  String? parentSessionPath,
-  DateTime? updatedAt,
-  bool parsedAny,
-})
-parsePiSessionMetadata(String raw) {
-  String? sessionId;
-  String? displayName;
-  String? firstUserMessage;
-  String? workingDirectory;
-  String? parentSessionPath;
-  DateTime? updatedAt;
-  var parsedAny = false;
-
-  for (final line in const LineSplitter().convert(raw)) {
-    final decoded = _tryDecodeJsonObject(line);
-    if (decoded == null) continue;
-    parsedAny = true;
-
-    final type = _readStringField(decoded, 'type');
-    if (type == 'session') {
-      sessionId ??= _readStringField(decoded, 'id');
-      workingDirectory ??= _readStringField(decoded, 'cwd');
-      parentSessionPath ??= _readStringField(decoded, 'parentSession');
-      updatedAt ??= _parseDateTimeValue(decoded['timestamp']);
-      continue;
-    }
-
-    // The latest session_info wins so renames replace earlier names.
-    if (type == 'session_info') {
-      final name = _readStringField(decoded, 'name');
-      if (name != null && name.trim().isNotEmpty) {
-        displayName = name.trim();
-      }
-      continue;
-    }
-
-    if (type != 'message' || firstUserMessage != null) continue;
-    final message = _readMapField(decoded, 'message');
-    if (_readStringField(message, 'role') != 'user') continue;
-    final text = _extractClaudeUserSummary(_readPiMessageText(message));
-    if (text != null && text.trim().isNotEmpty) {
-      firstUserMessage = text;
-    }
+({String? sessionId, String? workingDirectory, DateTime? createdAt, bool valid})
+parsePiSessionHeader(String raw) {
+  final firstLine = const LineSplitter().convert(raw.trimLeft()).firstOrNull;
+  final decoded = firstLine == null ? null : _tryDecodeJsonObject(firstLine);
+  if (decoded == null || _readStringField(decoded, 'type') != 'session') {
+    return (
+      sessionId: null,
+      workingDirectory: null,
+      createdAt: null,
+      valid: false,
+    );
   }
-
+  final sessionId = _readStringField(decoded, 'id')?.trim();
+  final workingDirectory = _readStringField(decoded, 'cwd')?.trim();
   return (
     sessionId: sessionId,
-    summary: displayName ?? firstUserMessage,
     workingDirectory: workingDirectory,
-    parentSessionPath: parentSessionPath,
-    updatedAt: updatedAt,
-    parsedAny: parsedAny,
+    createdAt: _parseDateTimeValue(decoded['timestamp']),
+    valid:
+        sessionId != null &&
+        sessionId.isNotEmpty &&
+        workingDirectory != null &&
+        workingDirectory.isNotEmpty,
   );
 }
 
@@ -776,64 +743,6 @@ String? piEncodedSessionDirectoryName(String? workingDirectory) {
   if (withoutLeadingSeparator.isEmpty) return null;
   final encoded = withoutLeadingSeparator.replaceAll(RegExp(r'[/\\:]'), '-');
   return '--$encoded--';
-}
-
-/// Reads the bucket directory name out of a Pi session file path.
-///
-/// Splits on either separator because a Windows listing reports forward
-/// slashes while Pi writes `parentSession` as a native backslash path.
-@visibleForTesting
-String? piSessionBucketName(String? sessionFilePath) {
-  final trimmed = sessionFilePath?.trim();
-  if (trimmed == null || trimmed.isEmpty) return null;
-  final segments = trimmed
-      .split(RegExp(r'[/\\]'))
-      .where((segment) => segment.isNotEmpty)
-      .toList(growable: false);
-  return segments.length < 2 ? null : segments[segments.length - 2];
-}
-
-/// The bucket a session was relocated out of, or null when it was not.
-///
-/// Pi records the previous file in `parentSession` for three different
-/// operations, and only one of them means the conversation moved:
-///
-/// * relocation into another working directory rewrites the session and
-///   **deletes** the previous file;
-/// * rotation (`/new`) keeps the previous file, in the same bucket;
-/// * `--fork` keeps the previous file and may write the new session into a
-///   different bucket.
-///
-/// Both conditions are therefore required. Without the deletion check a fork
-/// would be offered in the project it was forked from, which is a different
-/// conversation than the one the user started there. Only the immediate parent
-/// is considered: a session that moved and was then rotated or forked is a new
-/// conversation, not the one that left the original directory.
-@visibleForTesting
-String? piRelocationSourceBucketName({
-  required String sessionFilePath,
-  required String? parentSessionPath,
-  required bool parentExists,
-}) {
-  if (parentExists) return null;
-  final parentBucket = piSessionBucketName(parentSessionPath);
-  if (parentBucket == null) return null;
-  return parentBucket == piSessionBucketName(sessionFilePath)
-      ? null
-      : parentBucket;
-}
-
-/// Extracts the Pi session id from a `<timestamp>_<sessionId>.jsonl` file name.
-///
-/// The leading ISO timestamp has its `:` and `.` characters replaced with `-`
-/// and therefore never contains an underscore, so the id is everything after
-/// the first separator.
-String _piSessionIdFromFileName(String fileName) {
-  final separatorIndex = fileName.indexOf('_');
-  if (separatorIndex < 0 || separatorIndex + 1 >= fileName.length) {
-    return fileName;
-  }
-  return fileName.substring(separatorIndex + 1);
 }
 
 /// Parses `sqlite3`-separated Hermes session rows into session metadata.
@@ -1846,11 +1755,12 @@ class AgentSessionDiscoveryService {
 
     unawaited(() async {
       try {
-        final relatedWorkingDirectories =
-            await _resolveRelatedWorkingDirectoriesCached(
-              session,
-              workingDirectory,
-            );
+        final relatedWorkingDirectories = toolName == 'Pi'
+            ? const <String>[]
+            : await _resolveRelatedWorkingDirectoriesCached(
+                session,
+                workingDirectory,
+              );
         final discoveries = _startToolDiscoveries(
           session,
           workingDirectory: workingDirectory,
@@ -2049,7 +1959,6 @@ class AgentSessionDiscoveryService {
             _discoverPiSessions(
               session,
               workingDirectory,
-              relatedWorkingDirectories,
               effectiveMaxPerTool,
               previewOnly: previewOnly,
             ),
@@ -2128,12 +2037,7 @@ class AgentSessionDiscoveryService {
       relatedWorkingDirectories,
       maxPerTool,
     ),
-    'Pi' => _discoverPiSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-    ),
+    'Pi' => _discoverPiSessions(session, workingDirectory, maxPerTool),
     'Hermes' => _discoverHermesSessions(
       session,
       workingDirectory,
@@ -3693,7 +3597,6 @@ print(json.dumps(sessions))
   Future<_ToolDiscoveryResult> _discoverPiSessions(
     SshSession session,
     String? workingDirectory,
-    List<String> relatedWorkingDirectories,
     int max, {
     bool previewOnly = false,
   }) async {
@@ -3717,10 +3620,7 @@ print(json.dumps(sessions))
       final sessionPaths = await _listPiSessionPaths(
         session,
         workingDirectory,
-        relatedWorkingDirectories,
         scanLimit: scanLimit,
-        prioritizedCount: metadataReadLimit,
-        previewOnly: previewOnly,
       );
       if (sessionPaths.isEmpty) {
         DiagnosticsLogService.instance.debug(
@@ -3740,85 +3640,49 @@ print(json.dumps(sessions))
       final recentSessionPaths = sessionPaths
           .take(metadataReadLimit)
           .toList(growable: false);
+      // Pi's first JSONL record is the complete session header. Reading exactly
+      // that line avoids every image, tool result, and transcript-size concern.
       final snapshots = await _readRemoteFileSnapshots(
         session,
         recentSessionPaths,
-        // Pi image/tool records can be multi-megabyte single JSONL lines. The
-        // picker needs only the header, name, and first prompt, so bound bytes
-        // rather than an unbounded number of lines.
-        maxBytes: 64 * 1024,
+        maxLines: 1,
       );
       final sessions = <ToolSessionInfo>[];
-      final sessionFilePaths = <String>[];
-      final parentSessionPathsByFile = <String, String>{};
       var hadError = false;
 
       for (final filePath in recentSessionPaths) {
-        final fileName = filePath.split('/').last.replaceAll('.jsonl', '');
-        String? sessionId;
-        String? summary;
-        String? sessionWorkingDirectory;
-        DateTime? lastActive;
-
         final snapshot = snapshots[filePath];
         if (snapshot == null) {
           hadError = true;
-        } else {
-          try {
-            final metadata = parsePiSessionMetadata(snapshot.content);
-            if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
-              hadError = true;
-            }
-            sessionId = metadata.sessionId;
-            summary = metadata.summary;
-            sessionWorkingDirectory = metadata.workingDirectory;
-            lastActive = metadata.updatedAt;
-            final parentSessionPath = metadata.parentSessionPath?.trim();
-            if (parentSessionPath != null && parentSessionPath.isNotEmpty) {
-              parentSessionPathsByFile[filePath] = parentSessionPath;
-            }
-          } on Object {
-            hadError = true;
-          }
-          // The header timestamp is the session start, so prefer the file
-          // mtime, which tracks the most recent appended turn.
-          lastActive = snapshot.modifiedAt ?? lastActive;
+          continue;
         }
-
-        final resolvedId = sessionId ?? _piSessionIdFromFileName(fileName);
-        sessions.add(
-          ToolSessionInfo(
-            toolName: 'Pi',
-            sessionId: resolvedId,
-            workingDirectory: sessionWorkingDirectory,
-            lastActive: lastActive,
-            // A bounded head may end before Pi's first user message (for
-            // example when startup context or an image record is large). Keep
-            // the valid header resumable instead of letting generic summary
-            // normalization discard an ID-only row.
-            summary: summary ?? 'Pi session ${_truncateId(resolvedId)}',
-          ),
-        );
-        sessionFilePaths.add(filePath);
+        try {
+          final header = parsePiSessionHeader(snapshot.content);
+          final sessionId = header.sessionId?.trim();
+          final sessionWorkingDirectory = header.workingDirectory?.trim();
+          if (sessionId == null ||
+              sessionId.isEmpty ||
+              sessionWorkingDirectory == null ||
+              sessionWorkingDirectory.isEmpty) {
+            hadError = true;
+            continue;
+          }
+          sessions.add(
+            ToolSessionInfo(
+              toolName: 'Pi',
+              sessionId: sessionId,
+              workingDirectory: sessionWorkingDirectory,
+              // The header timestamp is creation time. File mtime tracks the
+              // latest turn and is therefore the picker ordering authority.
+              lastActive: snapshot.modifiedAt ?? header.createdAt,
+              summary: 'Pi session ${_truncateId(sessionId)}',
+            ),
+          );
+        } on Object {
+          hadError = true;
+        }
       }
-      final scopedSessions =
-          workingDirectory != null && workingDirectory.isNotEmpty
-          ? _scopePiSessionsToWorkingDirectory(
-              sessions: sessions,
-              sessionFilePaths: sessionFilePaths,
-              relocationBucketsByFile: await _piRelocationBucketsByFile(
-                session,
-                parentSessionPathsByFile,
-              ),
-              workingDirectory: workingDirectory,
-              relatedWorkingDirectories: relatedWorkingDirectories,
-              caseInsensitiveBuckets: session.remoteIsWindows,
-            )
-          : sessions;
-      final returnedSessions = sortAndLimitDiscoveredSessions(
-        scopedSessions.isNotEmpty ? scopedSessions : sessions,
-        max,
-      );
+      final returnedSessions = sortAndLimitDiscoveredSessions(sessions, max);
       DiagnosticsLogService.instance.debug(
         'agent.discovery',
         'pi_complete',
@@ -3827,7 +3691,6 @@ print(json.dumps(sessions))
           'candidateCount': sessionPaths.length,
           'snapshotCount': snapshots.length,
           'parsedCount': sessions.length,
-          'scopedCount': scopedSessions.length,
           'returnedCount': returnedSessions.length,
           'previewOnly': previewOnly,
           'hadError': hadError,
@@ -3852,224 +3715,42 @@ print(json.dumps(sessions))
     }
   }
 
-  /// Lists Pi candidates from the active project buckets before the global
-  /// history. Pi users often have enough sessions across worktrees that a small
-  /// global preview scan never reaches the active project's files.
+  /// Lists Pi sessions from the one bucket encoded from the active pane cwd.
+  ///
+  /// There is deliberately no worktree-family or global-history fallback here:
+  /// Pi stores cwd in both the bucket name and first record, so looking up the
+  /// pane means deriving that bucket and reading it directly.
   Future<List<String>> _listPiSessionPaths(
     SshSession session,
-    String? workingDirectory,
-    List<String> relatedWorkingDirectories, {
+    String? workingDirectory, {
     required int scanLimit,
-    required int prioritizedCount,
-    required bool previewOnly,
   }) async {
-    List<String> parsePaths(String output) => output
-        .trim()
-        .split('\n')
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty)
-        .toList(growable: false);
-
-    final scopeDirectories = relatedWorkingDirectories.isNotEmpty
-        ? relatedWorkingDirectories
-        : workingDirectory == null || workingDirectory.isEmpty
-        ? const <String>[]
-        : <String>[workingDirectory];
-    final buckets = scopeDirectories
-        .map(piEncodedSessionDirectoryName)
-        .whereType<String>()
-        .toSet()
-        .toList(growable: false);
-
-    var scopedPaths = const <String>[];
-    if (buckets.isNotEmpty) {
-      final scopedOutput = session.remoteIsWindows
-          ? await _execWindowsPowerShell(
-              session,
-              windowsListNewestFilesScript(
-                relativeRoot: '.pi/agent/sessions/${buckets.first}',
-                additionalRelativeRoots: buckets
-                    .skip(1)
-                    .map((bucket) => '.pi/agent/sessions/$bucket')
-                    .toList(growable: false),
-                includeGlobs: const ['*.jsonl'],
-                limit: scanLimit,
-              ),
-            )
-          : await _exec(
-              session,
-              '{ find ${buckets.map((bucket) => '"\$HOME"/.pi/agent/sessions/${_shellQuote(bucket)}').join(' ')} '
-              '-maxdepth 1 -name "*.jsonl" -type f '
-              '-exec ls -1t {} + 2>/dev/null || true; } | '
-              'head -n $scanLimit',
-            );
-      scopedPaths = parsePaths(scopedOutput);
-      // The provider menu only needs one in-scope row. Avoid a second remote
-      // scan once that row is known, and likewise stop when the full picker has
-      // enough prioritized candidates to fill its metadata budget.
-      if ((previewOnly && scopedPaths.isNotEmpty) ||
-          scopedPaths.length >= prioritizedCount) {
-        return scopedPaths.take(scanLimit).toList(growable: false);
-      }
-    }
-
-    final globalOutput = session.remoteIsWindows
+    final bucket = piEncodedSessionDirectoryName(workingDirectory);
+    if (bucket == null) return const <String>[];
+    final output = session.remoteIsWindows
         ? await _execWindowsPowerShell(
             session,
             windowsListNewestFilesScript(
-              relativeRoot: '.pi/agent/sessions',
+              relativeRoot: '.pi/agent/sessions/$bucket',
               includeGlobs: const ['*.jsonl'],
               limit: scanLimit,
             ),
           )
         : await _exec(
             session,
-            '{ find ~/.pi/agent/sessions -name "*.jsonl" -type f '
+            r'{ find "$HOME"/.pi/agent/sessions/'
+            '${_shellQuote(bucket)} '
+            '-maxdepth 1 -name "*.jsonl" -type f '
             '-exec ls -1t {} + 2>/dev/null || true; } | '
             'head -n $scanLimit',
           );
-    return <String>{
-      ...scopedPaths,
-      ...parsePaths(globalOutput),
-    }.take(scanLimit).toList(growable: false);
-  }
-
-  /// Keeps Pi sessions recorded in scope, plus sessions Pi has since relocated
-  /// out of it.
-  ///
-  /// Relocating a session rewrites it into a bucket named for the new working
-  /// directory, so its recorded cwd no longer matches the directory the
-  /// conversation started in. The origin of its `parentSession` chain still
-  /// names that directory, which keeps the conversation offered where the user
-  /// began it.
-  List<ToolSessionInfo> _scopePiSessionsToWorkingDirectory({
-    required List<ToolSessionInfo> sessions,
-    required List<String> sessionFilePaths,
-    required Map<String, String> relocationBucketsByFile,
-    required String workingDirectory,
-    required List<String> relatedWorkingDirectories,
-    required bool caseInsensitiveBuckets,
-  }) {
-    final scopeDirectories = relatedWorkingDirectories.isNotEmpty
-        ? relatedWorkingDirectories
-        : <String>[workingDirectory];
-    String bucketKey(String bucket) =>
-        caseInsensitiveBuckets ? bucket.toLowerCase() : bucket;
-    final scopeDirectoriesByBucket = <String, String>{};
-    for (final directory in scopeDirectories) {
-      final bucket = piEncodedSessionDirectoryName(directory);
-      if (bucket != null) {
-        scopeDirectoriesByBucket.putIfAbsent(
-          bucketKey(bucket),
-          () => directory,
-        );
-      }
-    }
-
-    final scoped = <ToolSessionInfo>[];
-    for (var index = 0; index < sessions.length; index++) {
-      final info = sessions[index];
-      if (discoveredSessionMatchesScope(
-        info,
-        workingDirectory,
-        relatedWorkingDirectories: relatedWorkingDirectories,
-      )) {
-        scoped.add(info);
-        continue;
-      }
-      final relocationBucket = relocationBucketsByFile[sessionFilePaths[index]];
-      final originDirectory = relocationBucket == null
-          ? null
-          : scopeDirectoriesByBucket[bucketKey(relocationBucket)];
-      if (originDirectory == null) continue;
-      scoped.add(
-        ToolSessionInfo(
-          toolName: info.toolName,
-          sessionId: info.sessionId,
-          workingDirectory: info.workingDirectory,
-          originWorkingDirectory: originDirectory,
-          lastActive: info.lastActive,
-          summary: info.summary,
-        ),
-      );
-    }
-    return scoped.toList(growable: false);
-  }
-
-  /// Maps each session file to the bucket Pi relocated it out of.
-  ///
-  /// Only entries whose parent sits in another bucket are probed, so the common
-  /// case (no relocation, or a rotation in place) costs no extra round trip.
-  Future<Map<String, String>> _piRelocationBucketsByFile(
-    SshSession session,
-    Map<String, String> parentSessionPathsByFile,
-  ) async {
-    final crossBucketParents = <String, String>{};
-    for (final entry in parentSessionPathsByFile.entries) {
-      final parentBucket = piSessionBucketName(entry.value);
-      if (parentBucket == null) continue;
-      if (parentBucket == piSessionBucketName(entry.key)) continue;
-      crossBucketParents[entry.key] = entry.value;
-    }
-    if (crossBucketParents.isEmpty) return const <String, String>{};
-
-    final existingParents = await _existingRemoteSessionPaths(
-      session,
-      crossBucketParents.values,
-    );
-    final relocationBuckets = <String, String>{};
-    for (final entry in crossBucketParents.entries) {
-      final bucket = piRelocationSourceBucketName(
-        sessionFilePath: entry.key,
-        parentSessionPath: entry.value,
-        parentExists: existingParents.contains(entry.value),
-      );
-      if (bucket != null) relocationBuckets[entry.key] = bucket;
-    }
-    return relocationBuckets;
-  }
-
-  /// Returns the subset of [paths] that still exist on the remote.
-  ///
-  /// Pi deletes a session file when it relocates that conversation into another
-  /// directory, and keeps it for a rotation or a fork, so existence is what
-  /// separates the two. Absence from the discovery listing cannot stand in for
-  /// this check: that listing is capped at the newest files, so a retained
-  /// parent can simply fall outside it.
-  Future<Set<String>> _existingRemoteSessionPaths(
-    SshSession session,
-    Iterable<String> paths,
-  ) async {
-    final candidates = paths.toSet();
-    if (candidates.isEmpty) return const <String>{};
-    try {
-      final String output;
-      if (session.remoteIsWindows) {
-        final literals = candidates.map(powerShellSingleQuote).join(',');
-        output = await _execWindowsPowerShell(
-          session,
-          '@($literals) | Where-Object { Test-Path -LiteralPath \$_ } | '
-          r'ForEach-Object { $_ }',
-        );
-      } else {
-        final quoted = candidates.map(_shellQuote).join(' ');
-        output = await _exec(
-          session,
-          'for __flutty_parent in $quoted; do '
-          r'[ -e "$__flutty_parent" ] && '
-          r'printf "%s\n" "$__flutty_parent"; done',
-        );
-      }
-      return output
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .toSet();
-    } on Object {
-      // A failed probe must not promote forks into another project, so treat
-      // every candidate parent as still present.
-      return candidates;
-    }
+    return output
+        .trim()
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .take(scanLimit)
+        .toList(growable: false);
   }
 
   // ── Hermes ─────────────────────────────────────────────────────────────
@@ -5791,21 +5472,6 @@ String? _extractGeminiUserSummary(List<dynamic>? messages) {
     if (displayContent != null && displayContent.trim().isNotEmpty) {
       return _summarizeSessionText(displayContent);
     }
-  }
-  return null;
-}
-
-/// Reads the plain text of a Pi message whose content is either a bare string
-/// or a list of content blocks.
-String? _readPiMessageText(Map<String, dynamic>? message) {
-  final content = message?['content'];
-  if (content is String) return content;
-  if (content is! List) return null;
-
-  for (final block in content.whereType<Map<String, dynamic>>()) {
-    if (_readStringField(block, 'type') != 'text') continue;
-    final text = _readStringField(block, 'text');
-    if (text != null && text.trim().isNotEmpty) return text;
   }
   return null;
 }

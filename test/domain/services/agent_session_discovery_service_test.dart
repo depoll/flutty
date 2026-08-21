@@ -1088,64 +1088,40 @@ cwd: /tmp/demo
     });
   });
 
-  group('parsePiSessionMetadata', () {
-    test('reads the session header and first user prompt', () {
-      final metadata = parsePiSessionMetadata('''
-{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/flutty"}
-{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"Fix the tmux navigator crash"}}
+  group('parsePiSessionHeader', () {
+    test('reads id, cwd, and timestamp from the first session record', () {
+      final header = parsePiSessionHeader('''
+{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/MonkeySSH"}
 ''');
 
-      expect(metadata.parsedAny, isTrue);
-      expect(metadata.sessionId, '01JYX7');
-      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
-      expect(metadata.summary, 'Fix the tmux navigator crash');
-      expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:07:44.781Z'));
+      expect(header.valid, isTrue);
+      expect(header.sessionId, '01JYX7');
+      expect(header.workingDirectory, '/Users/depoll/Code/MonkeySSH');
+      expect(header.createdAt, DateTime.parse('2026-04-12T21:07:44.781Z'));
     });
 
-    test('prefers the latest session_info name over the first prompt', () {
-      final metadata = parsePiSessionMetadata('''
-{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/tmp/project"}
-{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"initial prompt"}}
-{"type":"session_info","id":"b","parentId":"a","name":"Refactor auth"}
-{"type":"session_info","id":"c","parentId":"b","name":"Refactor auth module"}
+    test('ignores every record after the first line', () {
+      final header = parsePiSessionHeader('''
+{"type":"session","id":"01JYX7","cwd":"/Users/depoll/Code/MonkeySSH"}
+{"type":"session","id":"WRONG","cwd":"/tmp/wrong"}
+{"type":"message","message":{"role":"user","content":"private prompt"}}
 ''');
 
-      expect(metadata.summary, 'Refactor auth module');
+      expect(header.valid, isTrue);
+      expect(header.sessionId, '01JYX7');
+      expect(header.workingDirectory, '/Users/depoll/Code/MonkeySSH');
     });
 
-    test('reads user text from structured content blocks', () {
-      final metadata = parsePiSessionMetadata('''
-{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/tmp/project"}
-{"type":"message","message":{"role":"user","content":[{"type":"image"},{"type":"text","text":"Explain this diagram"}]}}
-''');
-
-      expect(metadata.summary, 'Explain this diagram');
-    });
-
-    test('reports no parsed content for an unreadable transcript', () {
-      final metadata = parsePiSessionMetadata('not json at all');
-
-      expect(metadata.parsedAny, isFalse);
-      expect(metadata.sessionId, isNull);
-    });
-
-    test('reads the parent session a relocated transcript came from', () {
-      final metadata = parsePiSessionMetadata('''
-{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/worktrees/feature","parentSession":"/Users/depoll/.pi/agent/sessions/--Users-depoll-Code-flutty--/2026-04-12T21-07-30-000Z_01JYX6.jsonl"}
-''');
-
+    test('rejects malformed, non-session, and incomplete first records', () {
+      expect(parsePiSessionHeader('not json').valid, isFalse);
       expect(
-        metadata.parentSessionPath,
-        '/Users/depoll/.pi/agent/sessions/--Users-depoll-Code-flutty--/2026-04-12T21-07-30-000Z_01JYX6.jsonl',
+        parsePiSessionHeader('{"type":"message","id":"x"}').valid,
+        isFalse,
       );
-    });
-
-    test('leaves the parent session unset for a fresh transcript', () {
-      final metadata = parsePiSessionMetadata('''
-{"type":"session","version":3,"id":"01JYX7","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/tmp/project"}
-''');
-
-      expect(metadata.parentSessionPath, isNull);
+      expect(
+        parsePiSessionHeader('{"type":"session","id":"x"}').valid,
+        isFalse,
+      );
     });
   });
 
@@ -1167,96 +1143,6 @@ cwd: /tmp/demo
     test('returns null when there is no directory to encode', () {
       expect(piEncodedSessionDirectoryName(null), isNull);
       expect(piEncodedSessionDirectoryName('  '), isNull);
-    });
-  });
-
-  group('piSessionBucketName', () {
-    test('reads the bucket from a POSIX session path', () {
-      expect(
-        piSessionBucketName(
-          '/home/dev/.pi/agent/sessions/--home-dev--/a.jsonl',
-        ),
-        '--home-dev--',
-      );
-    });
-
-    test('reads the bucket from a native Windows session path', () {
-      expect(
-        piSessionBucketName(
-          r'C:\Users\dev\.pi\agent\sessions\--C-Users-dev-proj--\a.jsonl',
-        ),
-        '--C-Users-dev-proj--',
-      );
-    });
-
-    test('returns null without a containing directory', () {
-      expect(piSessionBucketName('a.jsonl'), isNull);
-      expect(piSessionBucketName(null), isNull);
-    });
-  });
-
-  group('piRelocationSourceBucketName', () {
-    const sessionsRoot = '/home/dev/.pi/agent/sessions';
-    const projectBucket = '--home-dev-project--';
-    const worktreeBucket = '--home-dev-worktree--';
-    const relocated = '$sessionsRoot/$worktreeBucket/relocated.jsonl';
-    const parentInProject = '$sessionsRoot/$projectBucket/origin.jsonl';
-
-    test('reports the bucket a deleted parent named', () {
-      expect(
-        piRelocationSourceBucketName(
-          sessionFilePath: relocated,
-          parentSessionPath: parentInProject,
-          parentExists: false,
-        ),
-        projectBucket,
-      );
-    });
-
-    test('ignores a fork, whose parent is still on disk', () {
-      expect(
-        piRelocationSourceBucketName(
-          sessionFilePath: relocated,
-          parentSessionPath: parentInProject,
-          parentExists: true,
-        ),
-        isNull,
-      );
-    });
-
-    test('ignores a rotation inside the same directory', () {
-      expect(
-        piRelocationSourceBucketName(
-          sessionFilePath: relocated,
-          parentSessionPath: '$sessionsRoot/$worktreeBucket/previous.jsonl',
-          parentExists: false,
-        ),
-        isNull,
-      );
-    });
-
-    test('ignores a session that has no parent at all', () {
-      expect(
-        piRelocationSourceBucketName(
-          sessionFilePath: relocated,
-          parentSessionPath: null,
-          parentExists: false,
-        ),
-        isNull,
-      );
-    });
-
-    test('matches a Windows parent recorded with backslashes', () {
-      expect(
-        piRelocationSourceBucketName(
-          sessionFilePath:
-              'C:/Users/dev/.pi/agent/sessions/--C-Users-dev-wt--/a.jsonl',
-          parentSessionPath:
-              r'C:\Users\dev\.pi\agent\sessions\--C-Users-dev-proj--\b.jsonl',
-          parentExists: false,
-        ),
-        '--C-Users-dev-proj--',
-      );
     });
   });
 
@@ -2353,7 +2239,7 @@ branch refs/heads/main
       },
     );
 
-    test('Pi discovery resolves session id, name, and cwd', () async {
+    test('Pi discovery resolves session header id and cwd', () async {
       final client = _MockSshClient();
       const sessionPath =
           '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
@@ -2362,10 +2248,8 @@ branch refs/heads/main
       when(() => client.execute(any())).thenAnswer((invocation) async {
         final command = invocation.positionalArguments.first as String;
         commands.add(command);
-        if (command.contains('find ~/.pi/agent/sessions')) {
-          return _buildExecSession(stdout: sessionPath);
-        }
-        if (command.contains(sessionPath)) {
+        if (command.contains(r"$SED_BIN -n '1,1p'") &&
+            command.contains(sessionPath)) {
           return _buildExecSession(
             stdout: _remoteSnapshotLine(sessionPath, '''
 {"type":"session","version":3,"id":"01JYX7ABCD","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/flutty"}
@@ -2373,33 +2257,53 @@ branch refs/heads/main
 ''', mtime: 1777243460),
           );
         }
+        if (command.contains('--Users-depoll-Code-flutty--')) {
+          return _buildExecSession(stdout: sessionPath);
+        }
         return _buildExecSession();
       });
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(session, toolName: 'Pi');
+      final result = await discovery.discoverSessions(
+        session,
+        workingDirectory: '/Users/depoll/Code/flutty',
+        toolName: 'Pi',
+      );
 
       expect(result.sessions, hasLength(1));
       final info = result.sessions.single;
       expect(info.toolName, 'Pi');
       expect(info.sessionId, '01JYX7ABCD');
-      expect(info.summary, 'Fix the tmux navigator crash');
+      expect(info.summary, 'Pi session 01JYX7ABCD');
       expect(info.workingDirectory, '/Users/depoll/Code/flutty');
       expect(
         commands,
         contains(
           allOf(
-            contains('{ find ~/.pi/agent/sessions'),
-            contains('|| true; }'),
+            contains(r'{ find "$HOME"/.pi/agent/sessions/'),
+            contains('--Users-depoll-Code-flutty--'),
+            contains('-maxdepth 1'),
           ),
         ),
       );
-      expect(commands, contains(contains(r'$HEAD_BIN -c 65536')));
+      expect(commands, contains(contains(r"$SED_BIN -n '1,1p'")));
+      expect(commands, isNot(contains(contains('git -C'))));
       expect(
         discovery.buildResumeCommand(info),
         "cd '/Users/depoll/Code/flutty' && pi --session '01JYX7ABCD'",
       );
+    });
+
+    test('Pi discovery does not guess without a pane cwd', () async {
+      final client = _MockSshClient();
+      final result = await AgentSessionDiscoveryService().discoverSessions(
+        _buildDiscoverySession(client),
+        toolName: 'Pi',
+      );
+
+      expect(result.sessions, isEmpty);
+      verifyNever(() => client.execute(any()));
     });
 
     test('Pi discovery keeps a scoped header-only session resumable', () async {
@@ -2409,7 +2313,7 @@ branch refs/heads/main
           '2026-04-12T21-07-44-781Z_01JYX7HEADER.jsonl';
       when(() => client.execute(any())).thenAnswer((invocation) async {
         final command = invocation.positionalArguments.first as String;
-        if (command.contains(r'$HEAD_BIN -c') &&
+        if (command.contains(r"$SED_BIN -n '1,1p'") &&
             command.contains(sessionPath)) {
           return _buildExecSession(
             stdout: _remoteSnapshotLine(sessionPath, '''
@@ -2436,179 +2340,44 @@ branch refs/heads/main
       expect(result.sessions.single.summary, 'Pi session 01JYX7HEADER');
     });
 
-    test(
-      'Pi provider preview prioritizes the scope over newer unrelated files',
-      () async {
-        final client = _MockSshClient();
-        const projectPath =
-            '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
-            '2026-04-12T21-07-44-781Z_01JYX7ABCD.jsonl';
-        final unrelatedPaths = List<String>.generate(
-          7,
-          (index) =>
-              '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-other--/'
-              '2026-04-13T00-00-0$index-000Z_OTHER$index.jsonl',
-        );
-
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
-          if (command.contains(projectPath)) {
-            return _buildExecSession(
-              stdout: _remoteSnapshotLine(projectPath, '''
+    test('Pi provider preview reads the exact pane cwd bucket', () async {
+      final client = _MockSshClient();
+      const projectPath =
+          '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
+          '2026-04-12T21-07-44-781Z_01JYX7ABCD.jsonl';
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains(projectPath)) {
+          return _buildExecSession(
+            stdout: _remoteSnapshotLine(projectPath, '''
 {"type":"session","version":3,"id":"01JYX7ABCD","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/flutty"}
 {"type":"message","message":{"role":"user","content":"Scoped Pi session"}}
 '''),
-            );
-          }
-          if (command.contains('--Users-depoll-Code-flutty--')) {
-            return _buildExecSession(stdout: projectPath);
-          }
-          if (command.contains('find ~/.pi/agent/sessions')) {
-            return _buildExecSession(
-              stdout: <String>[...unrelatedPaths, projectPath].join('\n'),
-            );
-          }
-          return _buildExecSession();
-        });
+          );
+        }
+        if (command.contains('--Users-depoll-Code-flutty--')) {
+          return _buildExecSession(stdout: projectPath);
+        }
+        return _buildExecSession();
+      });
 
-        final discovery = AgentSessionDiscoveryService();
-        final snapshots = await discovery
-            .discoverSessionsStream(
-              _buildDiscoverySession(client),
-              workingDirectory: '/Users/depoll/Code/flutty',
-              maxPerTool: 1,
-            )
-            .toList();
-        final piPreviews = snapshots
-            .expand((snapshot) => snapshot.sessions)
-            .where((session) => session.toolName == 'Pi')
-            .toList(growable: false);
+      final discovery = AgentSessionDiscoveryService();
+      final snapshots = await discovery
+          .discoverSessionsStream(
+            _buildDiscoverySession(client),
+            workingDirectory: '/Users/depoll/Code/flutty',
+            maxPerTool: 1,
+          )
+          .toList();
+      final piPreviews = snapshots
+          .expand((snapshot) => snapshot.sessions)
+          .where((session) => session.toolName == 'Pi')
+          .toList(growable: false);
 
-        expect(piPreviews, isNotEmpty);
-        expect(piPreviews.first.sessionId, '01JYX7ABCD');
-        expect(piPreviews.first.summary, 'Scoped Pi session');
-      },
-    );
-
-    test(
-      'Pi discovery keeps a session relocated out of the scoped directory',
-      () async {
-        final client = _MockSshClient();
-        const sessionsRoot = '/Users/demo/.pi/agent/sessions';
-        const projectPath =
-            '$sessionsRoot/--Users-depoll-Code-flutty--/'
-            '2026-04-12T21-07-44-781Z_01JYX7ABCD.jsonl';
-        const relocatedPath =
-            '$sessionsRoot/--Users-depoll-worktrees-feature--/'
-            '2026-04-12T22-10-00-000Z_01JYX8RELOC.jsonl';
-        const unrelatedPath =
-            '$sessionsRoot/--Users-depoll-Code-other--/'
-            '2026-04-12T23-00-00-000Z_01JYX9OTHER.jsonl';
-        // Relocation deletes the file this session was rewritten from, so the
-        // parent path is the only record of where the conversation started.
-        const deletedOriginPath =
-            '$sessionsRoot/--Users-depoll-Code-flutty--/'
-            '2026-04-12T22-09-50-000Z_01JYX8ORIGIN.jsonl';
-
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
-          if (command.contains('find ~/.pi/agent/sessions')) {
-            return _buildExecSession(
-              stdout: '$relocatedPath\n$unrelatedPath\n$projectPath\n',
-            );
-          }
-          if (command.contains(relocatedPath)) {
-            return _buildExecSession(
-              stdout:
-                  _remoteSnapshotLine(relocatedPath, '''
-{"type":"session","version":3,"id":"01JYX8RELOC","timestamp":"2026-04-12T22:10:00.000Z","cwd":"/Users/depoll/worktrees/feature","parentSession":"$deletedOriginPath"}
-{"type":"message","message":{"role":"user","content":"Continue the worktree work"}}
-''', mtime: 1777243999) +
-                  _remoteSnapshotLine(unrelatedPath, '''
-{"type":"session","version":3,"id":"01JYX9OTHER","timestamp":"2026-04-12T23:00:00.000Z","cwd":"/Users/depoll/Code/other"}
-{"type":"message","message":{"role":"user","content":"Unrelated project work"}}
-''', mtime: 1777244500) +
-                  _remoteSnapshotLine(projectPath, '''
-{"type":"session","version":3,"id":"01JYX7ABCD","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/flutty"}
-{"type":"message","message":{"role":"user","content":"Fix the tmux navigator crash"}}
-''', mtime: 1777243460),
-            );
-          }
-          return _buildExecSession();
-        });
-
-        final discovery = AgentSessionDiscoveryService();
-        final session = _buildDiscoverySession(client);
-        final result = await discovery.discoverSessions(
-          session,
-          workingDirectory: '/Users/depoll/Code/flutty',
-          toolName: 'Pi',
-        );
-
-        expect(
-          result.sessions.map((info) => info.sessionId),
-          containsAll(<String>['01JYX8RELOC', '01JYX7ABCD']),
-        );
-        expect(
-          result.sessions.map((info) => info.sessionId),
-          isNot(contains('01JYX9OTHER')),
-        );
-        // Resuming a relocated session belongs in the directory it moved to.
-        final relocated = result.sessions.firstWhere(
-          (info) => info.sessionId == '01JYX8RELOC',
-        );
-        expect(relocated.workingDirectory, '/Users/depoll/worktrees/feature');
-      },
-    );
-
-    test(
-      'Pi discovery leaves a fork in the project it now belongs to',
-      () async {
-        final client = _MockSshClient();
-        const sessionsRoot = '/Users/demo/.pi/agent/sessions';
-        const forkPath =
-            '$sessionsRoot/--Users-depoll-Code-other--/'
-            '2026-04-12T22-10-00-000Z_01JYXFORK.jsonl';
-        // A fork records a cross-directory parent exactly like a relocation, but
-        // keeps that parent on disk, so it is a different conversation from the
-        // one the user started in the scoped project.
-        const retainedParentPath =
-            '$sessionsRoot/--Users-depoll-Code-flutty--/'
-            '2026-04-12T22-09-50-000Z_01JYXSOURCE.jsonl';
-
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
-          if (command.contains('find ~/.pi/agent/sessions')) {
-            return _buildExecSession(stdout: '$forkPath\n');
-          }
-          if (command.contains('__flutty_parent')) {
-            return _buildExecSession(stdout: '$retainedParentPath\n');
-          }
-          if (command.contains(forkPath)) {
-            return _buildExecSession(
-              stdout: _remoteSnapshotLine(forkPath, '''
-{"type":"session","version":3,"id":"01JYXFORK","timestamp":"2026-04-12T22:10:00.000Z","cwd":"/Users/depoll/Code/other","parentSession":"$retainedParentPath"}
-{"type":"message","message":{"role":"user","content":"Fork of the other project"}}
-''', mtime: 1777243999),
-            );
-          }
-          return _buildExecSession();
-        });
-
-        final discovery = AgentSessionDiscoveryService();
-        final session = _buildDiscoverySession(client);
-        final result = await discovery.discoverSessions(
-          session,
-          workingDirectory: '/Users/depoll/Code/flutty',
-          toolName: 'Pi',
-        );
-
-        expect(
-          result.sessions.map((info) => info.sessionId),
-          isNot(contains('01JYXFORK')),
-        );
-      },
-    );
+      expect(piPreviews, isNotEmpty);
+      expect(piPreviews.first.sessionId, '01JYX7ABCD');
+      expect(piPreviews.first.summary, 'Pi session 01JYX7ABCD');
+    });
 
     test('Hermes discovery reads the state database', () async {
       final client = _MockSshClient();
