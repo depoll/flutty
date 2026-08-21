@@ -2599,6 +2599,7 @@ class AgentSessionDiscoveryService {
           provider: _AcpSessionProvider.copilot,
           toolName: 'Copilot CLI',
           workingDirectory: workingDirectory,
+          relatedWorkingDirectories: relatedWorkingDirectories,
           max: max,
         );
         if (acpSessions != null && acpSessions.sessions.isNotEmpty) {
@@ -3490,6 +3491,12 @@ print(json.dumps(sessions))
             )
           : calculateRecentSessionMetadataReadLimit(max);
 
+      final scopedDirectoryNames = <String>{
+        if (workingDirectory != null && workingDirectory.isNotEmpty)
+          Uri.encodeComponent(workingDirectory),
+        for (final directory in relatedWorkingDirectories)
+          Uri.encodeComponent(directory),
+      }.toList(growable: false);
       String output;
       if (session.remoteIsWindows) {
         output = await _execWindowsPowerShell(
@@ -3498,15 +3505,22 @@ print(json.dumps(sessions))
             relativeRoot: '.grok/sessions',
             includeGlobs: const ['summary.json'],
             limit: scanLimit,
+            pathLikeFilters: scopedDirectoryNames
+                .map((name) => '*/$name/*')
+                .toList(growable: false),
             overrideRootEnvironmentVariable: 'GROK_HOME',
             overrideRelativeRoot: 'sessions',
           ),
         );
       } else {
+        final roots = scopedDirectoryNames
+            .map((name) => r'"$GROK_SESSIONS_ROOT"/' + _shellQuote(name))
+            .join(' ');
         output = await _exec(
           session,
           r'GROK_SESSIONS_ROOT="${GROK_HOME:-$HOME/.grok}/sessions"; '
-          r'find "$GROK_SESSIONS_ROOT" -name summary.json -type f '
+          '${roots.isEmpty ? r'find "$GROK_SESSIONS_ROOT"' : 'find $roots -maxdepth 2'} '
+          '-name summary.json -type f '
           '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
         );
       }
@@ -3892,6 +3906,7 @@ print(json.dumps(sessions))
           provider: _AcpSessionProvider.openCode,
           toolName: 'OpenCode',
           workingDirectory: workingDirectory,
+          relatedWorkingDirectories: relatedWorkingDirectories,
           max: max,
         );
         if (acpSessions != null && acpSessions.sessions.isNotEmpty) {
@@ -4332,17 +4347,24 @@ print(json.dumps(sessions))
     return output.toString();
   }
 
-  List<String?> _acpSessionListWorkingDirectories(String? workingDirectory) {
-    final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
-    if (trimmedWorkingDirectory == null) return const <String?>[null];
-
-    final normalizedWorkingDirectory = normalizeWorkingDirectoryForComparison(
-      trimmedWorkingDirectory,
-    );
-    if (normalizedWorkingDirectory == trimmedWorkingDirectory) {
-      return <String>[trimmedWorkingDirectory];
+  List<String?> _acpSessionListWorkingDirectories(
+    String? workingDirectory,
+    Iterable<String> relatedWorkingDirectories,
+  ) {
+    final directories = <String>{};
+    for (final candidate in <String?>[
+      workingDirectory,
+      ...relatedWorkingDirectories,
+    ]) {
+      final trimmed = _trimWorkingDirectory(candidate);
+      if (trimmed == null) continue;
+      directories
+        ..add(trimmed)
+        ..add(normalizeWorkingDirectoryForComparison(trimmed));
     }
-    return <String>[trimmedWorkingDirectory, normalizedWorkingDirectory];
+    return directories.isEmpty
+        ? const <String?>[null]
+        : directories.toList(growable: false);
   }
 
   String _buildAcpSessionListCommand(
@@ -4361,6 +4383,7 @@ print(json.dumps(sessions))
     required _AcpSessionProvider provider,
     required String toolName,
     required String? workingDirectory,
+    required List<String> relatedWorkingDirectories,
     required int max,
   }) async {
     if (session.remoteIsWindows) {
@@ -4374,6 +4397,7 @@ print(json.dumps(sessions))
     }
     final scopedWorkingDirectories = _acpSessionListWorkingDirectories(
       workingDirectory,
+      relatedWorkingDirectories,
     );
     try {
       return await _listAcpSessions(

@@ -90,6 +90,7 @@ SSHSession _buildAcpSessionListExecSession({
   required List<Map<String, Object?>> sessions,
   bool supportsList = true,
   bool malformedSecondPage = false,
+  List<String?>? requestedCwds,
 }) {
   final session = _MockExecSession();
   final stdoutController = StreamController<Uint8List>();
@@ -125,6 +126,10 @@ SSHSession _buildAcpSessionListExecSession({
         });
         return;
       case 'session/list':
+        final params = decoded['params'];
+        requestedCwds?.add(
+          params is Map<String, dynamic> ? params['cwd'] as String? : null,
+        );
         listRequestCount += 1;
         send({
           'jsonrpc': '2.0',
@@ -447,6 +452,53 @@ branch refs/heads/fix/session-resumption
   });
 
   group('scopeDiscoveredSessionsToWorkingDirectory', () {
+    test('keeps Git worktree sessions for every discovered agent', () {
+      const tools = <String>[
+        'Claude Code',
+        'Copilot CLI',
+        'Codex',
+        'Gemini CLI',
+        'Antigravity',
+        'Cursor Agent',
+        'OpenCode',
+        'Pi',
+        'Hermes',
+        'Grok Build',
+      ];
+      final sessions = <ToolSessionInfo>[
+        for (final tool in tools) ...[
+          ToolSessionInfo(
+            toolName: tool,
+            sessionId: '$tool-worktree',
+            workingDirectory: '/Users/depoll/worktrees/feature',
+            summary: 'worktree',
+          ),
+          ToolSessionInfo(
+            toolName: tool,
+            sessionId: '$tool-unrelated',
+            workingDirectory: '/tmp/unrelated',
+            summary: 'unrelated',
+          ),
+        ],
+      ];
+
+      final scoped = scopeDiscoveredSessionsToWorkingDirectory(
+        sessions,
+        '/Users/depoll/Code/MonkeySSH',
+        relatedWorkingDirectories: const [
+          '/Users/depoll/Code/MonkeySSH',
+          '/Users/depoll/worktrees/feature',
+        ],
+      );
+
+      expect(scoped, hasLength(tools.length));
+      expect(scoped.map((session) => session.toolName).toSet(), tools.toSet());
+      expect(
+        scoped.every((session) => session.sessionId.endsWith('-worktree')),
+        isTrue,
+      );
+    });
+
     test('keeps providers that have no matching cwd metadata', () {
       final scopedSessions = scopeDiscoveredSessionsToWorkingDirectory(
         [
@@ -1554,6 +1606,7 @@ cwd: /tmp/demo
     test('Copilot discovery uses ACP session/list when available', () async {
       final client = _MockSshClient();
       final commands = <String>[];
+      final requestedCwds = <String?>[];
       when(() => client.execute(any())).thenAnswer((invocation) async {
         final command = invocation.positionalArguments.first as String;
         commands.add(command);
@@ -1564,11 +1617,16 @@ root=/Users/depoll/Code/flutty
 worktree /Users/depoll/Code/flutty
 HEAD afdab6c
 branch refs/heads/main
+
+worktree /Users/depoll/Code/flutty.worktrees/feature
+HEAD 1234567
+branch refs/heads/feature
 ''',
           );
         }
         if (command.contains('copilot --acp')) {
           return _buildAcpSessionListExecSession(
+            requestedCwds: requestedCwds,
             sessions: const [
               {
                 'sessionId': '12345678-1234-1234-1234-1234567890ab',
@@ -1597,6 +1655,13 @@ branch refs/heads/main
         '12345678-1234-1234-1234-1234567890ab',
       );
       expect(result.sessions.single.summary, 'Fix tmux ACP discovery');
+      expect(
+        requestedCwds.toSet(),
+        containsAll(<String>{
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/feature',
+        }),
+      );
       expect(
         commands.where((command) => command.contains('copilot --acp')),
         hasLength(1),
@@ -2121,12 +2186,26 @@ branch refs/heads/main
 
     test('Grok Build discovery resolves resumable summary metadata', () async {
       final client = _MockSshClient();
+      final commands = <String>[];
       const summaryPath =
           '/Users/demo/.grok/sessions/%2FUsers%2Fdepoll%2FCode%2Fflutty/'
           '019f6cb5-f7e4-7bc1-bb25-9985af59619e/summary.json';
       const sessionId = '019f6cb5-f7e4-7bc1-bb25-9985af59619e';
       when(() => client.execute(any())).thenAnswer((invocation) async {
         final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('worktree list --porcelain')) {
+          return _buildExecSession(
+            stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD a
+
+worktree /Users/depoll/worktrees/feature
+HEAD b
+''',
+          );
+        }
         if (command.contains('GROK_SESSIONS_ROOT')) {
           return _buildExecSession(stdout: summaryPath);
         }
@@ -2153,6 +2232,7 @@ branch refs/heads/main
       final session = _buildDiscoverySession(client);
       final result = await discovery.discoverSessions(
         session,
+        workingDirectory: '/Users/depoll/Code/flutty',
         toolName: 'Grok Build',
       );
 
@@ -2163,6 +2243,11 @@ branch refs/heads/main
       expect(info.summary, 'Add Grok Build support');
       expect(info.workingDirectory, '/Users/depoll/Code/flutty');
       expect(info.lastActive, DateTime.parse('2026-08-14T20:04:00Z'));
+      final listCommand = commands.firstWhere(
+        (command) => command.contains('GROK_SESSIONS_ROOT'),
+      );
+      expect(listCommand, contains('%2FUsers%2Fdepoll%2FCode%2Fflutty'));
+      expect(listCommand, contains('%2FUsers%2Fdepoll%2Fworktrees%2Ffeature'));
       expect(
         discovery.buildResumeCommand(info),
         "cd '/Users/depoll/Code/flutty' && grok --resume '$sessionId'",
