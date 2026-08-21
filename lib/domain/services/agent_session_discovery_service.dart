@@ -1755,12 +1755,11 @@ class AgentSessionDiscoveryService {
 
     unawaited(() async {
       try {
-        final relatedWorkingDirectories = toolName == 'Pi'
-            ? const <String>[]
-            : await _resolveRelatedWorkingDirectoriesCached(
-                session,
-                workingDirectory,
-              );
+        final relatedWorkingDirectories =
+            await _resolveRelatedWorkingDirectoriesCached(
+              session,
+              workingDirectory,
+            );
         final discoveries = _startToolDiscoveries(
           session,
           workingDirectory: workingDirectory,
@@ -1959,6 +1958,7 @@ class AgentSessionDiscoveryService {
             _discoverPiSessions(
               session,
               workingDirectory,
+              relatedWorkingDirectories,
               effectiveMaxPerTool,
               previewOnly: previewOnly,
             ),
@@ -2037,7 +2037,12 @@ class AgentSessionDiscoveryService {
       relatedWorkingDirectories,
       maxPerTool,
     ),
-    'Pi' => _discoverPiSessions(session, workingDirectory, maxPerTool),
+    'Pi' => _discoverPiSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
     'Hermes' => _discoverHermesSessions(
       session,
       workingDirectory,
@@ -3597,6 +3602,7 @@ print(json.dumps(sessions))
   Future<_ToolDiscoveryResult> _discoverPiSessions(
     SshSession session,
     String? workingDirectory,
+    List<String> relatedWorkingDirectories,
     int max, {
     bool previewOnly = false,
   }) async {
@@ -3620,6 +3626,7 @@ print(json.dumps(sessions))
       final sessionPaths = await _listPiSessionPaths(
         session,
         workingDirectory,
+        relatedWorkingDirectories,
         scanLimit: scanLimit,
       );
       if (sessionPaths.isEmpty) {
@@ -3715,31 +3722,39 @@ print(json.dumps(sessions))
     }
   }
 
-  /// Lists Pi sessions from the one bucket encoded from the active pane cwd.
+  /// Lists Pi sessions from buckets for the pane cwd and its Git worktrees.
   ///
-  /// There is deliberately no worktree-family or global-history fallback here:
-  /// Pi stores cwd in both the bucket name and first record, so looking up the
-  /// pane means deriving that bucket and reading it directly.
+  /// Every bucket comes from an explicit directory returned by the repository's
+  /// `git worktree list`; there is no global session-store scan.
   Future<List<String>> _listPiSessionPaths(
     SshSession session,
-    String? workingDirectory, {
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories, {
     required int scanLimit,
   }) async {
-    final bucket = piEncodedSessionDirectoryName(workingDirectory);
-    if (bucket == null) return const <String>[];
+    final buckets = <String>{
+      ?piEncodedSessionDirectoryName(workingDirectory),
+      ...relatedWorkingDirectories
+          .map(piEncodedSessionDirectoryName)
+          .whereType<String>(),
+    }.toList(growable: false);
+    if (buckets.isEmpty) return const <String>[];
     final output = session.remoteIsWindows
         ? await _execWindowsPowerShell(
             session,
             windowsListNewestFilesScript(
-              relativeRoot: '.pi/agent/sessions/$bucket',
+              relativeRoot: '.pi/agent/sessions/${buckets.first}',
+              additionalRelativeRoots: buckets
+                  .skip(1)
+                  .map((bucket) => '.pi/agent/sessions/$bucket')
+                  .toList(growable: false),
               includeGlobs: const ['*.jsonl'],
               limit: scanLimit,
             ),
           )
         : await _exec(
             session,
-            r'{ find "$HOME"/.pi/agent/sessions/'
-            '${_shellQuote(bucket)} '
+            '{ find ${buckets.map((bucket) => '"\$HOME"/.pi/agent/sessions/${_shellQuote(bucket)}').join(' ')} '
             '-maxdepth 1 -name "*.jsonl" -type f '
             '-exec ls -1t {} + 2>/dev/null || true; } | '
             'head -n $scanLimit',

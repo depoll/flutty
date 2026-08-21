@@ -2288,7 +2288,7 @@ branch refs/heads/main
         ),
       );
       expect(commands, contains(contains(r"$SED_BIN -n '1,1p'")));
-      expect(commands, isNot(contains(contains('git -C'))));
+      expect(commands, contains(contains('git -C')));
       expect(
         discovery.buildResumeCommand(info),
         "cd '/Users/depoll/Code/flutty' && pi --session '01JYX7ABCD'",
@@ -2377,6 +2377,66 @@ branch refs/heads/main
       expect(piPreviews, isNotEmpty);
       expect(piPreviews.first.sessionId, '01JYX7ABCD');
       expect(piPreviews.first.summary, 'Pi session 01JYX7ABCD');
+    });
+
+    test('Pi discovery follows explicit Git worktree buckets', () async {
+      final client = _MockSshClient();
+      const mainPath =
+          '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-MonkeySSH--/'
+          '2026-04-12T21-07-44-781Z_MAIN.jsonl';
+      const worktreePath =
+          '/Users/demo/.pi/agent/sessions/--Users-depoll-worktrees-feature--/'
+          '2026-04-12T22-07-44-781Z_WORKTREE.jsonl';
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('worktree list --porcelain')) {
+          return _buildExecSession(
+            stdout: '''
+root=/Users/depoll/Code/MonkeySSH
+worktree /Users/depoll/Code/MonkeySSH
+HEAD a
+
+worktree /Users/depoll/worktrees/feature
+HEAD b
+''',
+          );
+        }
+        if (command.contains(r"$SED_BIN -n '1,1p'")) {
+          return _buildExecSession(
+            stdout:
+                _remoteSnapshotLine(mainPath, '''
+{"type":"session","id":"MAIN","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/MonkeySSH"}
+''') +
+                _remoteSnapshotLine(worktreePath, '''
+{"type":"session","id":"WORKTREE","timestamp":"2026-04-12T22:07:44.781Z","cwd":"/Users/depoll/worktrees/feature"}
+'''),
+          );
+        }
+        if (command.contains('--Users-depoll-Code-MonkeySSH--') &&
+            command.contains('--Users-depoll-worktrees-feature--')) {
+          return _buildExecSession(stdout: '$worktreePath\n$mainPath');
+        }
+        return _buildExecSession();
+      });
+
+      final result = await AgentSessionDiscoveryService().discoverSessions(
+        _buildDiscoverySession(client),
+        workingDirectory: '/Users/depoll/Code/MonkeySSH',
+        toolName: 'Pi',
+      );
+
+      expect(
+        result.sessions.map((session) => session.sessionId),
+        containsAll(<String>['MAIN', 'WORKTREE']),
+      );
+      final listCommand = commands.firstWhere(
+        (command) => command.contains('-maxdepth 1'),
+      );
+      expect(listCommand, contains('--Users-depoll-Code-MonkeySSH--'));
+      expect(listCommand, contains('--Users-depoll-worktrees-feature--'));
+      expect(listCommand, isNot(contains('find ~/.pi/agent/sessions')));
     });
 
     test('Hermes discovery reads the state database', () async {
