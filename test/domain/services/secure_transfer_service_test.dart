@@ -198,6 +198,51 @@ void main() {
     );
 
     test(
+      'full migration removes missing jump hosts and remains importable',
+      () async {
+        await db.customStatement('PRAGMA foreign_keys = OFF');
+        await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Production',
+                hostname: 'prod.example.com',
+                username: 'root',
+                jumpHostId: const Value(999),
+              ),
+            );
+
+        final encodedPayload = await transferService.createFullMigrationPayload(
+          transferPassphrase: '1234',
+        );
+
+        final importedDb = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(importedDb.close);
+        final importedEncryptionService = SecretEncryptionService.forTesting();
+        final importedTransferService = SecureTransferService(
+          importedDb,
+          KeyRepository(importedDb, importedEncryptionService),
+          HostRepository(importedDb, importedEncryptionService),
+        );
+        final payload = await importedTransferService.decryptPayload(
+          encodedPayload: encodedPayload,
+          transferPassphrase: '1234',
+        );
+
+        await importedTransferService.importFullMigrationPayload(
+          payload: payload,
+          mode: MigrationImportMode.replace,
+        );
+
+        final importedHost = await importedDb
+            .select(importedDb.hosts)
+            .getSingle();
+        expect(importedHost.label, 'Production');
+        expect(importedHost.jumpHostId, isNull);
+      },
+    );
+
+    test(
       'createMigrationData excludes port forwards for missing hosts',
       () async {
         final hostId = await hostRepository.insert(
@@ -730,6 +775,45 @@ void main() {
         ),
         throwsFormatException,
       );
+    });
+
+    test('removes missing jump host references during import', () async {
+      final diagnosticsLogger = _RecordingDiagnosticsLogger();
+      final service = SecureTransferService(
+        db,
+        keyRepository,
+        hostRepository,
+        diagnosticsLogger: diagnosticsLogger,
+      );
+      final payload = TransferPayload(
+        type: TransferPayloadType.fullMigration,
+        schemaVersion: 1,
+        createdAt: DateTime.now().toUtc(),
+        data: {
+          'hosts': [
+            {
+              'id': 1,
+              'label': 'Host',
+              'hostname': 'example.com',
+              'username': 'root',
+              'jumpHostId': 999,
+            },
+          ],
+        },
+      );
+
+      await service.importFullMigrationPayload(
+        payload: payload,
+        mode: MigrationImportMode.merge,
+      );
+
+      final importedHost = await db.select(db.hosts).getSingle();
+      expect(importedHost.jumpHostId, isNull);
+      final warning = diagnosticsLogger.events.singleWhere(
+        (event) =>
+            event.message == 'migration_import_jump_host_references_removed',
+      );
+      expect(warning.fields, {'removedCount': 1});
     });
 
     test(
