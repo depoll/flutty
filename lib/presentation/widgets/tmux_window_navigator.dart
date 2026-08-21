@@ -628,6 +628,83 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       ) +
       1;
 
+  List<ToolSessionInfo> _liveMonkeyMuxAgentSessions({String? toolName}) {
+    if (widget.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return const <ToolSessionInfo>[];
+    }
+
+    final sessions = <ToolSessionInfo>[];
+    for (final window in _windows ?? const <TmuxWindow>[]) {
+      final tool = window.foregroundAgentTool;
+      final discoveredToolName = tool?.discoveredSessionToolName;
+      final sessionId = window.activeAgentSessionId?.trim();
+      if (tool == null ||
+          discoveredToolName == null ||
+          window.activeAgentSessionConfidence != AgentSessionConfidence.high ||
+          sessionId == null ||
+          sessionId.isEmpty ||
+          (toolName != null && discoveredToolName != toolName)) {
+        continue;
+      }
+      final lastActivityEpochSeconds = window.lastActivityEpochSeconds;
+      sessions.add(
+        ToolSessionInfo(
+          toolName: discoveredToolName,
+          sessionId: sessionId,
+          workingDirectory: window.currentPath,
+          lastActive: lastActivityEpochSeconds == null
+              ? null
+              : DateTime.fromMillisecondsSinceEpoch(
+                  lastActivityEpochSeconds * 1000,
+                ),
+          summary:
+              window.agentSessionDisplayTitle ?? 'Active ${tool.label} session',
+        ),
+      );
+    }
+    return sessions;
+  }
+
+  DiscoveredSessionsResult _includeLiveMonkeyMuxAgentSessions(
+    DiscoveredSessionsResult result, {
+    String? toolName,
+  }) {
+    final filteredResult = toolName == null
+        ? result
+        : DiscoveredSessionsResult(
+            sessions: result.sessions.where(
+              (session) => session.toolName == toolName,
+            ),
+            failedTools: result.failedTools.where((tool) => tool == toolName),
+            attemptedTools: result.attemptedTools.where(
+              (tool) => tool == toolName,
+            ),
+          );
+    final liveSessions = _liveMonkeyMuxAgentSessions(toolName: toolName);
+    if (liveSessions.isEmpty) return filteredResult;
+
+    final sessionsByIdentity = <String, ToolSessionInfo>{
+      for (final session in liveSessions)
+        '${session.toolName}\u001f${session.sessionId}': session,
+    };
+    // Prefer file-discovered metadata when it exists because it usually has a
+    // richer title. Live MonkeyMux identity fills the gap when history scanning
+    // is empty or still in flight.
+    for (final session in filteredResult.sessions) {
+      sessionsByIdentity['${session.toolName}\u001f${session.sessionId}'] =
+          session;
+    }
+    final sessions = sessionsByIdentity.values.toList(growable: false);
+    final liveTools = liveSessions.map((session) => session.toolName).toSet();
+    return DiscoveredSessionsResult(
+      sessions: sessions,
+      failedTools: filteredResult.failedTools.where(
+        (tool) => !liveTools.contains(tool),
+      ),
+      attemptedTools: <String>{...filteredResult.attemptedTools, ...liveTools},
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -988,12 +1065,19 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
               activeWorkingDirectory: activeWindow?.currentPath,
               sessionWorkingDirectory: widget.session.workingDirectory,
             );
-        return _discovery.discoverSessionsStream(
-          widget.session,
-          workingDirectory: scopeWorkingDirectory,
-          maxPerTool: maxSessions,
-          toolName: provider.toolName,
-        );
+        return _discovery
+            .discoverSessionsStream(
+              widget.session,
+              workingDirectory: scopeWorkingDirectory,
+              maxPerTool: maxSessions,
+              toolName: provider.toolName,
+            )
+            .map(
+              (result) => _includeLiveMonkeyMuxAgentSessions(
+                result,
+                toolName: provider.toolName,
+              ),
+            );
       },
     );
     if (!mounted || selected == null) return;
@@ -1581,11 +1665,14 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
                     maxPerTool: maxSessions,
                   )
                   .map((result) {
-                    for (final toolName in result.attemptedTools) {
+                    final mergedResult = _includeLiveMonkeyMuxAgentSessions(
+                      result,
+                    );
+                    for (final toolName in mergedResult.attemptedTools) {
                       if (!loggedTools.add(toolName)) {
                         continue;
                       }
-                      final count = result.sessions
+                      final count = mergedResult.sessions
                           .where((session) => session.toolName == toolName)
                           .length;
                       unawaited(
@@ -1594,11 +1681,13 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
                             .logAgentSessionsDetected(
                               tool: _telemetryAgentToolName(toolName),
                               sessionCount: count,
-                              failed: result.failedTools.contains(toolName),
+                              failed: mergedResult.failedTools.contains(
+                                toolName,
+                              ),
                             ),
                       );
                     }
-                    return result;
+                    return mergedResult;
                   });
             },
             itemBuilder: (context, provider) =>

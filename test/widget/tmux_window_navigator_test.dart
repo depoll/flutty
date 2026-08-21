@@ -613,6 +613,101 @@ void main() {
       ).called(1);
     });
 
+    testWidgets(
+      'running Pi window remains discoverable when history scan is empty',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final presetService = _MockAgentLaunchPresetService();
+        final discoveryService = _MockAgentSessionDiscoveryService();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 1,
+          client: _MockSshClient(),
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'demo',
+          ),
+        );
+        const tmuxSessionName = 'main';
+        const piWindows = <TmuxWindow>[
+          TmuxWindow(
+            index: 0,
+            name: 'pi-live',
+            isActive: true,
+            currentCommand: 'pi',
+            currentPath: '/home/demo/project',
+            agentTool: AgentLaunchTool.pi,
+            activeAgentSessionId: 'pi-session-id',
+            activeAgentSessionConfidence: AgentSessionConfidence.high,
+            lastActivityEpochSeconds: 1787301283,
+          ),
+        ];
+
+        when(
+          () => presetService.getPresetForHost(session.hostId),
+        ).thenAnswer((_) async => null);
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{AgentLaunchTool.pi});
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => piWindows);
+        when(
+          () => discoveryService.discoverSessionsStream(
+            session,
+            workingDirectory: any(named: 'workingDirectory'),
+            maxPerTool: any(named: 'maxPerTool'),
+            toolName: any(named: 'toolName'),
+          ),
+        ).thenAnswer(
+          (invocation) => Stream<DiscoveredSessionsResult>.value(
+            DiscoveredSessionsResult(
+              sessions: const <ToolSessionInfo>[],
+              attemptedTools: invocation.namedArguments[#toolName] == null
+                  ? const <String>[]
+                  : <String>[invocation.namedArguments[#toolName] as String],
+            ),
+          ),
+        );
+
+        await _pumpNavigatorHost(
+          tester,
+          tmuxService: tmuxService,
+          presetService: presetService,
+          discoveryService: discoveryService,
+          session: session,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+
+        await tester.tap(find.text('Open'));
+        await tester.pumpAndSettle();
+        await tester.scrollUntilVisible(
+          find.text('Recent terminal sessions'),
+          160,
+          scrollable: find.byType(Scrollable).last,
+        );
+        await tester.tap(find.text('Recent terminal sessions'));
+        await tester.pumpAndSettle();
+        final piProviderTile = tester.widget<ListTile>(
+          find.ancestor(
+            of: find.text('Pi').last,
+            matching: find.byType(ListTile),
+          ),
+        );
+        expect(piProviderTile.onTap, isNotNull);
+        piProviderTile.onTap!();
+        await tester.pumpAndSettle();
+
+        expect(find.text('Active Pi session'), findsOneWidget);
+        expect(find.text('No recent sessions found.'), findsNothing);
+      },
+    );
+
     testWidgets('resumes a supported history session as native ACP', (
       tester,
     ) async {
