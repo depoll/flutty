@@ -38,6 +38,72 @@ const _remoteFileSnapshotBatchSize = 40;
 const _geminiSessionMetadataMaxBytes = 64 * 1024;
 const _grokSessionMetadataMaxBytes = 64 * 1024;
 const _openCodeStorageSessionMetadataMaxBytes = 64 * 1024;
+const _piSessionLabelExtractorScript = r'''
+const fs = require("fs");
+const readline = require("readline");
+
+function normalizedText(value) {
+  return typeof value === "string"
+    ? value.replace(/\s+/g, " ").trim()
+    : "";
+}
+
+function messageText(message) {
+  if (!message || message.role !== "user") return "";
+  if (typeof message.content === "string") {
+    return normalizedText(message.content);
+  }
+  if (!Array.isArray(message.content)) return "";
+  return normalizedText(
+    message.content
+      .filter((part) => part && part.type === "text")
+      .map((part) => typeof part.text === "string" ? part.text : "")
+      .join(" "),
+  );
+}
+
+async function emitLabel(path) {
+  let firstUserMessage = "";
+  let sessionName;
+  try {
+    const lines = readline.createInterface({
+      input: fs.createReadStream(path, { encoding: "utf8" }),
+      crlfDelay: Infinity,
+    });
+    for await (const line of lines) {
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch (_) {
+        continue;
+      }
+      if (entry && entry.type === "session_info") {
+        sessionName = normalizedText(entry.name);
+      } else if (
+        !firstUserMessage &&
+        entry &&
+        entry.type === "message"
+      ) {
+        firstUserMessage = messageText(entry.message);
+      }
+    }
+    const label = normalizedText(sessionName) || firstUserMessage;
+    if (!label) return;
+    const boundedLabel = label.slice(0, 512);
+    process.stdout.write(
+      path + "\x1f" + Buffer.from(boundedLabel).toString("base64") + "\n",
+    );
+  } catch (_) {
+    // One unreadable session must not hide metadata from the others.
+  }
+}
+
+(async () => {
+  for (const path of process.argv.slice(2)) {
+    await emitLabel(path);
+  }
+})();
+''';
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
@@ -694,11 +760,11 @@ parseGrokSessionMetadata(String raw) {
   );
 }
 
-/// Parses the first and only record Pi lookup reads.
+/// Parses the authoritative first record from a Pi session.
 ///
 /// A valid Pi session file starts with a `type=session` JSON object containing
-/// its authoritative id, cwd, and creation timestamp. No transcript records are
-/// inspected.
+/// its id, cwd, and creation timestamp. Identifiable labels are extracted by a
+/// separate bounded remote pass that never transfers full transcripts.
 @visibleForTesting
 ({String? sessionId, String? workingDirectory, DateTime? createdAt, bool valid})
 parsePiSessionHeader(String raw) {
@@ -724,6 +790,32 @@ parsePiSessionHeader(String raw) {
         workingDirectory != null &&
         workingDirectory.isNotEmpty,
   );
+}
+
+/// Parses compact Pi label records emitted by the remote metadata extractor.
+///
+/// Each line is `<session-path><US><base64-label>`. Only an explicit Pi
+/// `session_info` name or the first user text message is ever emitted; images,
+/// tool results, assistant messages, and full transcripts stay remote.
+@visibleForTesting
+Map<String, String> parsePiSessionLabelOutput(String output) {
+  final labels = <String, String>{};
+  for (final line in const LineSplitter().convert(output)) {
+    final separator = line.indexOf('\x1f');
+    if (separator <= 0 || separator == line.length - 1) continue;
+    final path = line.substring(0, separator).trim();
+    if (path.isEmpty) continue;
+    try {
+      final label = utf8
+          .decode(base64Decode(line.substring(separator + 1).trim()))
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+      if (label.isNotEmpty) labels[path] = _summarizeSessionText(label);
+    } on Object {
+      // Ignore one malformed record without hiding labels from other sessions.
+    }
+  }
+  return labels;
 }
 
 /// Encodes a working directory the way Pi names the bucket it stores that
@@ -3670,6 +3762,7 @@ print(json.dumps(sessions))
         recentSessionPaths,
         maxLines: 1,
       );
+      final labels = await _readPiSessionLabels(session, recentSessionPaths);
       final sessions = <ToolSessionInfo>[];
       var hadError = false;
 
@@ -3698,7 +3791,8 @@ print(json.dumps(sessions))
               // The header timestamp is creation time. File mtime tracks the
               // latest turn and is therefore the picker ordering authority.
               lastActive: snapshot.modifiedAt ?? header.createdAt,
-              summary: 'Pi session ${_truncateId(sessionId)}',
+              summary:
+                  labels[filePath] ?? 'Pi session ${_truncateId(sessionId)}',
             ),
           );
         } on Object {
@@ -3714,6 +3808,7 @@ print(json.dumps(sessions))
           'candidateCount': sessionPaths.length,
           'snapshotCount': snapshots.length,
           'parsedCount': sessions.length,
+          'labelCount': labels.length,
           'returnedCount': returnedSessions.length,
           'previewOnly': previewOnly,
           'hadError': hadError,
@@ -3735,6 +3830,34 @@ print(json.dumps(sessions))
         },
       );
       return const _ToolDiscoveryResult.failure('Pi');
+    }
+  }
+
+  Future<Map<String, String>> _readPiSessionLabels(
+    SshSession session,
+    List<String> sessionPaths,
+  ) async {
+    if (sessionPaths.isEmpty || session.remoteIsWindows) {
+      return const <String, String>{};
+    }
+    try {
+      final encodedScript = base64Encode(
+        utf8.encode(_piSessionLabelExtractorScript),
+      );
+      final output = await _exec(
+        session,
+        r'NODE_BIN=$(command -v node 2>/dev/null); '
+        r'[ -n "$NODE_BIN" ] || exit 0; '
+        r'"$NODE_BIN" -e '
+        '${_shellQuote('eval(Buffer.from(process.argv[1], "base64").toString("utf8"))')} '
+        '${_shellQuote(encodedScript)} '
+        '${sessionPaths.map(_shellQuote).join(' ')}',
+      );
+      return parsePiSessionLabelOutput(output);
+    } on Object {
+      // Session rows remain resumable with their id when label extraction is
+      // unavailable, so metadata polish never breaks discovery itself.
+      return const <String, String>{};
     }
   }
 

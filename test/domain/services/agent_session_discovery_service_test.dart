@@ -1177,6 +1177,31 @@ cwd: /tmp/demo
     });
   });
 
+  group('parsePiSessionLabelOutput', () {
+    test('decodes and normalizes identifiable labels', () {
+      const firstPath = '/tmp/first.jsonl';
+      const secondPath = '/tmp/second.jsonl';
+      final output =
+          '$firstPath\x1f${base64Encode(utf8.encode('Named session'))}\n'
+          '$secondPath\x1f${base64Encode(utf8.encode('  First user\nrequest  '))}\n';
+
+      expect(parsePiSessionLabelOutput(output), {
+        firstPath: 'Named session',
+        secondPath: 'First user request',
+      });
+    });
+
+    test('skips malformed records without dropping valid labels', () {
+      const path = '/tmp/valid.jsonl';
+      final output =
+          'missing-separator\n'
+          '/tmp/broken.jsonl\x1fnot-base64!\n'
+          '$path\x1f${base64Encode(utf8.encode('Useful prompt'))}\n';
+
+      expect(parsePiSessionLabelOutput(output), {path: 'Useful prompt'});
+    });
+  });
+
   group('piEncodedSessionDirectoryName', () {
     test('matches the bucket Pi stores sessions for a directory in', () {
       expect(
@@ -2001,6 +2026,10 @@ branch refs/heads/main
           output = _remoteSnapshotLine(sessionPath, '''
 {"type":"session","id":"REAL","timestamp":"2026-08-21T08:12:27.194Z","cwd":"/Users/depoll/Code/MonkeySSH"}
 ''', mtime: 1787300289);
+        } else if (command.contains('Buffer.from(process.argv[1]') &&
+            command.contains(sessionPath)) {
+          output =
+              '$sessionPath\x1f${base64Encode(utf8.encode('Fix recent Pi session discovery'))}\n';
         } else if (command.contains('--Users-depoll-Code-MonkeySSH--')) {
           output = sessionPath;
         }
@@ -2020,6 +2049,7 @@ branch refs/heads/main
           );
 
       expect(result.sessions.map((info) => info.sessionId), ['REAL']);
+      expect(result.sessions.single.summary, 'Fix recent Pi session discovery');
       expect(
         commands,
         anyElement(contains("git -C '/Users/depoll/Code/MonkeySSH'")),
