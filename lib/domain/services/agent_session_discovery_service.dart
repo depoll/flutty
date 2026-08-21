@@ -3723,6 +3723,18 @@ print(json.dumps(sessions))
         previewOnly: previewOnly,
       );
       if (sessionPaths.isEmpty) {
+        DiagnosticsLogService.instance.debug(
+          'agent.discovery',
+          'pi_complete',
+          fields: {
+            'connectionId': session.connectionId,
+            'candidateCount': 0,
+            'snapshotCount': 0,
+            'returnedCount': 0,
+            'previewOnly': previewOnly,
+            'hadError': false,
+          },
+        );
         return const _ToolDiscoveryResult.success('Pi', []);
       }
       final recentSessionPaths = sessionPaths
@@ -3780,7 +3792,11 @@ print(json.dumps(sessions))
             sessionId: resolvedId,
             workingDirectory: sessionWorkingDirectory,
             lastActive: lastActive,
-            summary: summary ?? _truncateId(resolvedId),
+            // A bounded head may end before Pi's first user message (for
+            // example when startup context or an image record is large). Keep
+            // the valid header resumable instead of letting generic summary
+            // normalization discard an ID-only row.
+            summary: summary ?? 'Pi session ${_truncateId(resolvedId)}',
           ),
         );
         sessionFilePaths.add(filePath);
@@ -3799,12 +3815,27 @@ print(json.dumps(sessions))
               caseInsensitiveBuckets: session.remoteIsWindows,
             )
           : sessions;
+      final returnedSessions = sortAndLimitDiscoveredSessions(
+        scopedSessions.isNotEmpty ? scopedSessions : sessions,
+        max,
+      );
+      DiagnosticsLogService.instance.debug(
+        'agent.discovery',
+        'pi_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'candidateCount': sessionPaths.length,
+          'snapshotCount': snapshots.length,
+          'parsedCount': sessions.length,
+          'scopedCount': scopedSessions.length,
+          'returnedCount': returnedSessions.length,
+          'previewOnly': previewOnly,
+          'hadError': hadError,
+        },
+      );
       return _ToolDiscoveryResult.success(
         'Pi',
-        sortAndLimitDiscoveredSessions(
-          scopedSessions.isNotEmpty ? scopedSessions : sessions,
-          max,
-        ),
+        returnedSessions,
         hadError: hadError,
       );
     } on Object catch (error) {

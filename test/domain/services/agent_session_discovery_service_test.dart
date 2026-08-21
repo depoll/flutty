@@ -2402,6 +2402,40 @@ branch refs/heads/main
       );
     });
 
+    test('Pi discovery keeps a scoped header-only session resumable', () async {
+      final client = _MockSshClient();
+      const sessionPath =
+          '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
+          '2026-04-12T21-07-44-781Z_01JYX7HEADER.jsonl';
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains(r'$HEAD_BIN -c') &&
+            command.contains(sessionPath)) {
+          return _buildExecSession(
+            stdout: _remoteSnapshotLine(sessionPath, '''
+{"type":"session","version":3,"id":"01JYX7HEADER","timestamp":"2026-04-12T21:07:44.781Z","cwd":"/Users/depoll/Code/flutty"}
+{"type":"model_change","modelId":"example"}
+'''),
+          );
+        }
+        if (command.contains('--Users-depoll-Code-flutty--')) {
+          return _buildExecSession(stdout: sessionPath);
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final result = await discovery.discoverSessions(
+        _buildDiscoverySession(client),
+        workingDirectory: '/Users/depoll/Code/flutty',
+        toolName: 'Pi',
+      );
+
+      expect(result.sessions, hasLength(1));
+      expect(result.sessions.single.sessionId, '01JYX7HEADER');
+      expect(result.sessions.single.summary, 'Pi session 01JYX7HEADER');
+    });
+
     test(
       'Pi provider preview prioritizes the scope over newer unrelated files',
       () async {
