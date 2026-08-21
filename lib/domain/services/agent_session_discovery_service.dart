@@ -1755,14 +1755,16 @@ class AgentSessionDiscoveryService {
 
     unawaited(() async {
       try {
+        final resolvedWorkingDirectory =
+            await _resolveRemoteHomeWorkingDirectory(session, workingDirectory);
         final relatedWorkingDirectories =
             await _resolveRelatedWorkingDirectoriesCached(
               session,
-              workingDirectory,
+              resolvedWorkingDirectory,
             );
         final discoveries = _startToolDiscoveries(
           session,
-          workingDirectory: workingDirectory,
+          workingDirectory: resolvedWorkingDirectory,
           relatedWorkingDirectories: relatedWorkingDirectories,
           maxPerTool: maxPerTool,
           toolName: toolName,
@@ -1787,7 +1789,7 @@ class AgentSessionDiscoveryService {
           if (toolName == null) {
             final previewResult = _buildToolDiscoveryPreviewResult(
               completed.result,
-              workingDirectory: workingDirectory,
+              workingDirectory: resolvedWorkingDirectory,
               relatedWorkingDirectories: relatedWorkingDirectories,
             );
             previewSnapshot = _mergeDiscoveryPreviewSnapshot(
@@ -1802,7 +1804,7 @@ class AgentSessionDiscoveryService {
 
         final latestResult = _buildDiscoveredSessionsResult(
           completedResults.whereType<_ToolDiscoveryResult>(),
-          workingDirectory: workingDirectory,
+          workingDirectory: resolvedWorkingDirectory,
           relatedWorkingDirectories: relatedWorkingDirectories,
           maxPerTool: maxPerTool,
         );
@@ -4711,6 +4713,40 @@ print(json.dumps(sessions))
   }
 
   DateTime _dateTimeFromEpoch(int epoch) => _dateTimeFromEpochValue(epoch);
+
+  /// Expands shell-home shorthand before exact session-store lookup.
+  ///
+  /// Agent stores such as Pi encode the absolute cwd in their directory name.
+  /// Quoting a host preset like `~/Code/project` for a remote command preserves
+  /// the tilde literally, producing a bucket that can never exist. Resolve only
+  /// the current user's `~` form through the remote environment; all other
+  /// paths remain untouched.
+  Future<String?> _resolveRemoteHomeWorkingDirectory(
+    SshSession session,
+    String? workingDirectory,
+  ) async {
+    final trimmed = _trimWorkingDirectory(workingDirectory);
+    if (trimmed == null || session.remoteIsWindows) return trimmed;
+    if (trimmed != '~' && !trimmed.startsWith('~/')) return trimmed;
+
+    const marker = '__monkeyssh_agent_discovery_home__:';
+    try {
+      final output = await _exec(
+        session,
+        r'''[ -n "${HOME:-}" ] && printf '__monkeyssh_agent_discovery_home__:%s\n' "$HOME"''',
+      );
+      final home = const LineSplitter()
+          .convert(output)
+          .where((line) => line.startsWith(marker))
+          .map((line) => line.substring(marker.length).trim())
+          .where((line) => line.isNotEmpty)
+          .firstOrNull;
+      if (home == null) return trimmed;
+      return trimmed == '~' ? home : '$home/${trimmed.substring(2)}';
+    } on Object {
+      return trimmed;
+    }
+  }
 
   Future<List<String>> _resolveRelatedWorkingDirectoriesCached(
     SshSession session,

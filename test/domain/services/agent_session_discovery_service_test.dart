@@ -1960,6 +1960,75 @@ branch refs/heads/main
       },
     );
 
+    test('Pi expands a tilde scope before MonkeyMux bucket lookup', () async {
+      final client = _MockSshClient();
+      final backendService = _MockTerminalConnectionBackendService();
+      final backend = _MockTerminalConnectionBackend();
+      final commands = <String>[];
+      final session = _buildDiscoverySession(client)
+        ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+        ..remoteMuxSessionName = 'MonkeySSH';
+      const sessionPath =
+          '/Users/depoll/.pi/agent/sessions/'
+          '--Users-depoll-Code-MonkeySSH--/'
+          '2026-08-21T08-10-51-425Z_REAL.jsonl';
+
+      when(() => backendService.resolve(session)).thenReturn(backend);
+      when(() => backend.capabilities).thenReturn(
+        const TerminalBackendCapabilities(
+          supportsWindows: true,
+          supportsClientCommands: true,
+          clientCommandsUseControlChannel: true,
+        ),
+      );
+      when(
+        () => backend.runClientCommand(any(), priority: any(named: 'priority')),
+      ).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        var output = '';
+        if (command.contains('__monkeyssh_agent_discovery_home__:')) {
+          output = '__monkeyssh_agent_discovery_home__:/Users/depoll\n';
+        } else if (command.contains('worktree list --porcelain')) {
+          output = '''
+root=/Users/depoll/Code/MonkeySSH
+worktree /Users/depoll/Code/MonkeySSH
+HEAD abc123
+branch refs/heads/main
+''';
+        } else if (command.contains(r"$SED_BIN -n '1,1p'") &&
+            command.contains(sessionPath)) {
+          output = _remoteSnapshotLine(sessionPath, '''
+{"type":"session","id":"REAL","timestamp":"2026-08-21T08:12:27.194Z","cwd":"/Users/depoll/Code/MonkeySSH"}
+''', mtime: 1787300289);
+        } else if (command.contains('--Users-depoll-Code-MonkeySSH--')) {
+          output = sessionPath;
+        }
+        return TerminalClientCommandResult(
+          output: _markedDiscoveryOutput(output),
+          exitCode: 0,
+        );
+      });
+
+      final result =
+          await AgentSessionDiscoveryService(
+            terminalBackendService: backendService,
+          ).discoverSessions(
+            session,
+            workingDirectory: '~/Code/MonkeySSH',
+            toolName: 'Pi',
+          );
+
+      expect(result.sessions.map((info) => info.sessionId), ['REAL']);
+      expect(
+        commands,
+        anyElement(contains("git -C '/Users/depoll/Code/MonkeySSH'")),
+      );
+      expect(commands, anyElement(contains('--Users-depoll-Code-MonkeySSH--')));
+      expect(commands, isNot(anyElement(contains('--~-Code-MonkeySSH--'))));
+      verifyNever(() => client.execute(any()));
+    });
+
     test(
       'all-provider stream emits lightweight previews before final aggregate',
       () async {
