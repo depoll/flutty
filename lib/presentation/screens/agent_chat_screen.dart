@@ -669,36 +669,29 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     ];
   }
 
-  Widget? _buildQuickConfigBar(AcpSessionState session) {
+  Widget? _buildQuickConfigControls(AcpSessionState session) {
     final selectors = _quickConfigSelectors(session);
     if (selectors.isEmpty) {
       return null;
     }
-    final scheme = Theme.of(context).colorScheme;
     return MediaQuery.withNoTextScaling(
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: scheme.surface,
-          border: Border(top: BorderSide(color: scheme.outlineVariant)),
-        ),
-        child: SizedBox(
-          height: 44,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            itemCount: selectors.length,
-            separatorBuilder: (_, _) =>
-                const SizedBox(width: FluttyTheme.spacingXs),
-            itemBuilder: (context, index) {
-              final selector = selectors[index];
-              return _AcpQuickSelector(
-                key: selector.label == 'Permission'
-                    ? const ValueKey('permission-mode-pill')
-                    : ValueKey(selector.label),
-                selector: selector,
-              );
-            },
-          ),
+      child: SizedBox(
+        key: const ValueKey('acp-composer-controls'),
+        height: 44,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: selectors.length,
+          separatorBuilder: (_, _) =>
+              const SizedBox(width: FluttyTheme.spacingXs),
+          itemBuilder: (context, index) {
+            final selector = selectors[index];
+            return _AcpQuickSelector(
+              key: selector.label == 'Permission'
+                  ? const ValueKey('permission-mode-pill')
+                  : ValueKey(selector.label),
+              selector: selector,
+            );
+          },
         ),
       ),
     );
@@ -1422,7 +1415,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     final activity = acpSessionActivityDisplay(session);
     _queuePreviewPublish(session, entries, activity);
     final prompts = _prompts(session);
-    final quickConfigBar = _buildQuickConfigBar(session);
+    final quickConfigControls = _buildQuickConfigControls(session);
 
     return Scaffold(
       appBar: widget.embedded
@@ -1593,11 +1586,11 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                           child: AcpPermissionSurface(prompts: prompts),
                         ),
                       ),
-                    ?quickConfigBar,
                     AcpComposer(
                       controller: _composer,
                       attachmentActions: _attachmentActions(session),
                       focusController: widget.composerFocusController,
+                      controls: quickConfigControls,
                       useBottomSafeArea: !widget.embedded,
                     ),
                   ],
@@ -2125,7 +2118,7 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
         child: Center(
           child: DecoratedBox(
             decoration: BoxDecoration(
-              color: scheme.surfaceContainerHigh,
+              color: scheme.surfaceContainerHighest,
               borderRadius: BorderRadius.circular(999),
               border: Border.all(color: scheme.outlineVariant),
             ),

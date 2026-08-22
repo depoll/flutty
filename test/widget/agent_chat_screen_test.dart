@@ -278,7 +278,7 @@ void main() {
     expect(find.text('google/Gemini Pro'), findsOneWidget);
   });
 
-  testWidgets('control row pins permission mode above the composer', (
+  testWidgets('composer toolbar keeps all session controls inline', (
     tester,
   ) async {
     final manager = FakeAcpSessionManager(
@@ -346,7 +346,6 @@ void main() {
     expect(find.text('Model: Sonnet'), findsOneWidget);
     expect(find.text('Effort: Medium'), findsOneWidget);
     expect(find.text('Mode: Code'), findsOneWidget);
-    expect(find.text('Fast mode: Off'), findsOneWidget);
     expect(find.text('Permission: Ask'), findsOneWidget);
     final permissionPill = find.byKey(const ValueKey('permission-mode-pill'));
     expect(tester.getSize(permissionPill).height, 44);
@@ -357,9 +356,12 @@ void main() {
     );
     final selectorContext = tester.element(find.text('Model: Sonnet'));
     expect(MediaQuery.of(selectorContext).textScaler.scale(14), 14);
+    final controls = find.byKey(const ValueKey('acp-composer-controls'));
+    final surface = find.byKey(const ValueKey('acp-composer-surface'));
+    expect(find.ancestor(of: controls, matching: surface), findsOneWidget);
     expect(
       tester.getTopLeft(find.text('Model: Sonnet')).dy,
-      lessThan(tester.getTopLeft(find.byType(AcpComposer)).dy),
+      greaterThan(tester.getTopLeft(find.byType(AcpComposer)).dy),
     );
 
     await tester.tap(find.byTooltip('Change model'));
@@ -380,6 +382,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(manager.modeSets, contains('ask'));
 
+    await tester.drag(
+      find.byKey(const ValueKey('acp-composer-controls')),
+      const Offset(-260, 0),
+    );
+    await tester.pump();
+    expect(find.text('Fast mode: Off'), findsOneWidget);
     await tester.ensureVisible(find.byTooltip('Change fast mode'));
     await tester.pump();
     await tester.tap(find.byTooltip('Change fast mode'));

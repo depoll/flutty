@@ -82,6 +82,7 @@ Future<void> _pump(
   ThemeData? theme,
   Size size = const Size(400, 800),
   VoidCallback? onOpenConfig,
+  Widget? controls,
   AcpComposerFocusController? focusController,
 }) async {
   tester.view.physicalSize = size;
@@ -100,6 +101,7 @@ Future<void> _pump(
               attachmentActions: actions,
               focusController: focusController,
               onOpenConfig: onOpenConfig,
+              controls: controls,
             ),
           ],
         ),
@@ -159,7 +161,7 @@ void main() {
     expect(manager.promptCount, 0);
   });
 
-  testWidgets('streaming keeps a fixed Stop control and disabled Queue slot', (
+  testWidgets('streaming with an empty draft uses one primary Stop control', (
     tester,
   ) async {
     final manager = _RecordingManager();
@@ -171,7 +173,7 @@ void main() {
     await _pump(tester, controller);
 
     expect(find.byTooltip('Stop active turn'), findsOneWidget);
-    expect(find.byTooltip('Queue message'), findsOneWidget);
+    expect(find.byTooltip('Queue message'), findsNothing);
     await tester.tap(find.byTooltip('Stop active turn'));
     await tester.pump();
     expect(manager.cancelCount, 1);
@@ -201,7 +203,7 @@ void main() {
 
     final size = tester.getSize(
       find.ancestor(
-        of: find.byIcon(Icons.arrow_upward),
+        of: find.byIcon(Icons.arrow_upward_rounded),
         matching: find.byType(IconButton),
       ),
     );
@@ -412,10 +414,7 @@ void main() {
 
     final field = tester.widget<TextField>(find.byType(TextField));
     expect(field.readOnly, isFalse);
-    final addButton = tester.widget<IconButton>(
-      find.widgetWithIcon(IconButton, Icons.add),
-    );
-    expect(addButton.onPressed, isNotNull);
+    expect(find.byTooltip('Add to prompt'), findsOneWidget);
     expect(find.byTooltip('Queue message'), findsOneWidget);
     expect(find.byTooltip('Stop active turn'), findsOneWidget);
   });
@@ -484,42 +483,100 @@ void main() {
     expect(find.byType(BottomSheet), findsNothing);
   });
 
-  testWidgets('input and send geometry use explicit mobile padding', (
+  testWidgets('focus promotes the unified surface border to the accent', (
+    tester,
+  ) async {
+    final controller = _makeController(_RecordingManager());
+    addTearDown(controller.dispose);
+    await _pump(tester, controller);
+
+    final surface = find.byKey(const ValueKey('acp-composer-surface'));
+    final context = tester.element(surface);
+    final scheme = Theme.of(context).colorScheme;
+    BoxDecoration decoration() =>
+        tester.widget<AnimatedContainer>(surface).decoration! as BoxDecoration;
+
+    expect(decoration().border?.top.color, scheme.outlineVariant);
+    await tester.tap(find.byType(TextField));
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(decoration().border?.top.color, scheme.primary);
+  });
+
+  testWidgets('input and actions share one upward-growing composer surface', (
     tester,
   ) async {
     final controller = _makeController(_RecordingManager())..setText('send');
     addTearDown(controller.dispose);
-    await _pump(tester, controller);
+    await _pump(
+      tester,
+      controller,
+      controls: const SizedBox(
+        key: ValueKey('test-composer-controls'),
+        height: 44,
+        child: Text('Model: Sonnet'),
+      ),
+    );
 
     final field = tester.widget<TextField>(find.byType(TextField));
-    expect(field.textAlignVertical, TextAlignVertical.center);
+    expect(field.textAlignVertical, TextAlignVertical.top);
     expect(
       field.decoration?.contentPadding,
-      const EdgeInsets.symmetric(
-        horizontal: FluttyTheme.spacingMd,
-        vertical: 13,
-      ),
+      const EdgeInsets.fromLTRB(14, 13, 14, 8),
     );
-    final send = tester.widget<IconButton>(
-      find.ancestor(
-        of: find.byIcon(Icons.arrow_upward),
-        matching: find.byType(IconButton),
-      ),
+    final sendFinder = find.ancestor(
+      of: find.byIcon(Icons.arrow_upward_rounded),
+      matching: find.byType(IconButton),
     );
+    final send = tester.widget<IconButton>(sendFinder);
     expect(send.padding, EdgeInsets.zero);
     expect(
       send.constraints,
       const BoxConstraints.tightFor(width: 44, height: 44),
     );
-    final sendFinder = find.ancestor(
-      of: find.byIcon(Icons.arrow_upward),
-      matching: find.byType(IconButton),
+
+    final surface = find.byKey(const ValueKey('acp-composer-surface'));
+    expect(surface, findsOneWidget);
+    expect(
+      find.ancestor(of: find.byType(TextField), matching: surface),
+      findsOneWidget,
     );
     expect(
-      tester.getRect(sendFinder).left -
-          tester.getRect(find.byType(TextField)).right,
-      FluttyTheme.spacingSm,
+      find.ancestor(
+        of: find.byKey(const ValueKey('test-composer-controls')),
+        matching: surface,
+      ),
+      findsOneWidget,
     );
+    expect(find.ancestor(of: sendFinder, matching: surface), findsOneWidget);
+    expect(
+      tester.getTopLeft(sendFinder).dy,
+      greaterThan(tester.getTopLeft(find.byType(TextField)).dy),
+    );
+  });
+
+  testWidgets('multiline input grows upward while toolbar stays anchored', (
+    tester,
+  ) async {
+    final controller = _makeController(_RecordingManager());
+    addTearDown(controller.dispose);
+    await _pump(tester, controller, size: const Size(360, 700));
+
+    final surface = find.byKey(const ValueKey('acp-composer-surface'));
+    final send = find.byTooltip('Send');
+    final initialSurface = tester.getRect(surface);
+    final initialSendBottom = tester.getBottomLeft(send).dy;
+
+    await tester.enterText(
+      find.byType(TextField),
+      'one\ntwo\nthree\nfour\nfive',
+    );
+    await tester.pump();
+
+    final expandedSurface = tester.getRect(surface);
+    expect(expandedSurface.height, greaterThan(initialSurface.height));
+    expect(expandedSurface.top, lessThan(initialSurface.top));
+    expect(tester.getBottomLeft(send).dy, closeTo(initialSendBottom, 0.1));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('external focus controller opens and dismisses the composer', (

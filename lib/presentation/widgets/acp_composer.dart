@@ -82,11 +82,10 @@ class AcpComposerFocusController {
 
 /// A mobile-first, keyboard- and safe-area-aware ACP prompt composer.
 ///
-/// The composer hosts a multiline text field, an ordered attachment strip, an
-/// add-attachment menu (photos/media, local files, remote SFTP files), a
-/// dynamic slash-command autocomplete, an inline error surface, and a primary
-/// action that toggles between Send and Stop as the turn streams. It draws no
-/// nested cards, uses ≥44px touch targets, and is entirely theme-driven.
+/// The composer groups multiline input, attachments, session controls, and
+/// send/stop actions into one familiar chat surface. Slash commands and errors
+/// remain immediately above it. The layout expands upward, keeps every action
+/// at least 44 logical pixels, and derives all colors from the active theme.
 class AcpComposer extends StatefulWidget {
   /// Creates a composer bound to [controller].
   const AcpComposer({
@@ -95,6 +94,7 @@ class AcpComposer extends StatefulWidget {
     this.attachmentActions = const AcpComposerAttachmentActions(),
     this.focusController,
     this.onOpenConfig,
+    this.controls,
     this.hintText = 'Message the agent',
     this.useBottomSafeArea = true,
   });
@@ -110,6 +110,9 @@ class AcpComposer extends StatefulWidget {
 
   /// Opens the session configuration surface; hidden when null.
   final VoidCallback? onOpenConfig;
+
+  /// Compact model, effort, mode, and permission controls shown in the toolbar.
+  final Widget? controls;
 
   /// Placeholder text for the empty field.
   final String hintText;
@@ -133,7 +136,8 @@ class _AcpComposerState extends State<AcpComposer> {
   void initState() {
     super.initState();
     _text = TextEditingController(text: _controller.text);
-    _focusNode = FocusNode(onKeyEvent: _handleKey);
+    _focusNode = FocusNode(onKeyEvent: _handleKey)
+      ..addListener(_onFocusChanged);
     _text.addListener(_onFieldChanged);
     _controller.addListener(_onControllerChanged);
     widget.focusController?._attach(this);
@@ -160,11 +164,16 @@ class _AcpComposerState extends State<AcpComposer> {
   void dispose() {
     widget.focusController?._detach(this);
     _text.removeListener(_onFieldChanged);
+    _focusNode.removeListener(_onFocusChanged);
     // Detach from whichever controller is currently bound.
     _controller.removeListener(_onControllerChanged);
     _text.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (mounted) setState(() {});
   }
 
   void _onFieldChanged() {
@@ -387,13 +396,17 @@ class _AcpComposerState extends State<AcpComposer> {
       animation: _controller,
       builder: (context, _) {
         _clampHighlight();
+        final busy = _controller.activity != AcpComposerActivity.idle;
+        final queueing = busy && _controller.canSend;
         return SafeArea(
           top: false,
           bottom: widget.useBottomSafeArea,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: scheme.surface,
-              border: Border(top: BorderSide(color: scheme.outlineVariant)),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              FluttyTheme.spacingSm,
+              6,
+              FluttyTheme.spacingSm,
+              FluttyTheme.spacingSm,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -403,12 +416,7 @@ class _AcpComposerState extends State<AcpComposer> {
                   KeyedSubtree(
                     key: const ValueKey('acp-slash-picker'),
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(
-                        FluttyTheme.spacingSm,
-                        FluttyTheme.spacingSm,
-                        FluttyTheme.spacingSm,
-                        0,
-                      ),
+                      padding: const EdgeInsets.only(bottom: 6),
                       child: AcpSlashCommandPicker(
                         commands: _controller.slashCommands,
                         highlightedIndex: _highlightedSlash,
@@ -421,104 +429,137 @@ class _AcpComposerState extends State<AcpComposer> {
                 if (_controller.error != null)
                   KeyedSubtree(
                     key: const ValueKey('acp-error-banner'),
-                    child: _ErrorBanner(
-                      error: _controller.error!,
-                      onDismiss: _controller.clearError,
-                      onUpload:
-                          _controller.error!.isUploadRecoverable &&
-                              _controller.attachments.isNotEmpty
-                          ? _confirmRemoteUpload
-                          : null,
-                    ),
-                  ),
-                if (_controller.attachments.isNotEmpty)
-                  KeyedSubtree(
-                    key: const ValueKey('acp-attachments'),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: FluttyTheme.spacingSm,
-                      ),
-                      child: AcpAttachmentStrip(
-                        attachments: _controller.attachments,
-                        enabled: _controller.isEditable,
-                        onRemove: _controller.removeAttachment,
-                        onRetry: _controller.retryAttachment,
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: _ErrorBanner(
+                        error: _controller.error!,
+                        onDismiss: _controller.clearError,
+                        onUpload:
+                            _controller.error!.isUploadRecoverable &&
+                                _controller.attachments.isNotEmpty
+                            ? _confirmRemoteUpload
+                            : null,
                       ),
                     ),
                   ),
-                KeyedSubtree(
-                  key: const ValueKey('acp-input-row'),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(
-                      FluttyTheme.spacingSm,
-                      FluttyTheme.spacingSm,
-                      FluttyTheme.spacingSm,
-                      FluttyTheme.spacingSm,
+                AnimatedContainer(
+                  key: const ValueKey('acp-composer-surface'),
+                  duration: const Duration(milliseconds: 120),
+                  curve: Curves.easeOutCubic,
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(FluttyTheme.radiusLg),
+                    border: Border.all(
+                      color: _focusNode.hasFocus
+                          ? scheme.primary
+                          : scheme.outlineVariant,
+                      width: _focusNode.hasFocus ? 1.5 : 1,
                     ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        _AddButton(
-                          actions: widget.attachmentActions,
-                          enabled:
-                              _controller.isEditable &&
-                              widget.attachmentActions.hasAny,
-                          attachmentsEnabled: _controller.canAddAttachment,
-                          onSelected: _handleAddAction,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (_controller.attachments.isNotEmpty)
+                        KeyedSubtree(
+                          key: const ValueKey('acp-attachments'),
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                            child: AcpAttachmentStrip(
+                              attachments: _controller.attachments,
+                              enabled: _controller.isEditable,
+                              onRemove: _controller.removeAttachment,
+                              onRetry: _controller.retryAttachment,
+                            ),
+                          ),
                         ),
-                        Expanded(
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 160),
-                            child: TextField(
-                              controller: _text,
-                              focusNode: _focusNode,
-                              readOnly: !_controller.isEditable,
-                              minLines: 1,
-                              maxLines: null,
-                              keyboardType: TextInputType.multiline,
-                              textInputAction: TextInputAction.newline,
-                              textCapitalization: TextCapitalization.sentences,
-                              textAlignVertical: TextAlignVertical.center,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: scheme.onSurface,
-                                fontSize: 14,
+                      KeyedSubtree(
+                        key: const ValueKey('acp-input-row'),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            minHeight: 52,
+                            maxHeight: 160,
+                          ),
+                          child: TextField(
+                            key: const ValueKey('acp-composer-field'),
+                            controller: _text,
+                            focusNode: _focusNode,
+                            readOnly: !_controller.isEditable,
+                            minLines: 1,
+                            maxLines: null,
+                            keyboardType: TextInputType.multiline,
+                            textInputAction: TextInputAction.newline,
+                            textCapitalization: TextCapitalization.sentences,
+                            textAlignVertical: TextAlignVertical.top,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: scheme.onSurface,
+                              fontSize: 15,
+                              height: 1.4,
+                            ),
+                            decoration: InputDecoration(
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              disabledBorder: InputBorder.none,
+                              isDense: true,
+                              filled: false,
+                              contentPadding: const EdgeInsets.fromLTRB(
+                                14,
+                                13,
+                                14,
+                                8,
                               ),
-                              decoration: InputDecoration(
-                                isDense: true,
-                                filled: false,
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: FluttyTheme.spacingMd,
-                                  vertical: 13,
-                                ),
-                                hintText: widget.hintText,
-                                hintStyle: theme.textTheme.bodyMedium?.copyWith(
-                                  color: scheme.onSurfaceVariant,
-                                  fontSize: 14,
-                                ),
+                              hintText: widget.hintText,
+                              hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 15,
+                                height: 1.4,
                               ),
                             ),
                           ),
                         ),
-                        if (widget.onOpenConfig != null)
-                          IconButton(
-                            tooltip: 'Session settings',
-                            constraints: const BoxConstraints(
-                              minWidth: 44,
-                              minHeight: 44,
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+                        child: Row(
+                          children: [
+                            _AddButton(
+                              actions: widget.attachmentActions,
+                              enabled:
+                                  _controller.isEditable &&
+                                  widget.attachmentActions.hasAny,
+                              attachmentsEnabled: _controller.canAddAttachment,
+                              onSelected: _handleAddAction,
                             ),
-                            icon: const Icon(Icons.tune),
-                            onPressed: widget.onOpenConfig,
-                          ),
-                        if (_controller.canCancel)
-                          _StopTurnButton(onPressed: _stopActiveTurn),
-                        const SizedBox(width: FluttyTheme.spacingSm),
-                        _PrimaryActionButton(
-                          activity: _controller.activity,
-                          canSend: _controller.canSend,
-                          onPressed: _handlePrimaryAction,
+                            if (widget.controls != null) ...[
+                              const SizedBox(width: 2),
+                              Expanded(child: widget.controls!),
+                              const SizedBox(width: 2),
+                            ] else
+                              const Spacer(),
+                            if (widget.onOpenConfig != null) ...[
+                              _ComposerToolbarButton(
+                                tooltip: 'Session settings',
+                                icon: Icons.tune,
+                                onPressed: widget.onOpenConfig,
+                              ),
+                              const SizedBox(width: 2),
+                            ],
+                            if (queueing) ...[
+                              _StopTurnButton(onPressed: _stopActiveTurn),
+                              const SizedBox(width: 2),
+                            ],
+                            _PrimaryActionButton(
+                              activity: _controller.activity,
+                              canSend: _controller.canSend,
+                              canCancel: _controller.canCancel,
+                              onSend: _handlePrimaryAction,
+                              onStop: _stopActiveTurn,
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -531,6 +572,41 @@ class _AcpComposerState extends State<AcpComposer> {
 }
 
 enum _AcpAddAction { photos, files, remoteFiles }
+
+class _ComposerToolbarButton extends StatelessWidget {
+  const _ComposerToolbarButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+    this.foregroundColor,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final Color? foregroundColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox.square(
+      dimension: 44,
+      child: IconButton(
+        tooltip: tooltip,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+        style: IconButton.styleFrom(
+          backgroundColor: scheme.surfaceContainerHighest,
+          foregroundColor: foregroundColor ?? scheme.onSurfaceVariant,
+          disabledBackgroundColor: scheme.surfaceContainerHighest.withAlpha(90),
+          disabledForegroundColor: scheme.onSurfaceVariant.withAlpha(90),
+        ),
+        onPressed: onPressed,
+        icon: Icon(icon, size: 22),
+      ),
+    );
+  }
+}
 
 class _AddButton extends StatelessWidget {
   const _AddButton({
@@ -547,6 +623,7 @@ class _AddButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final itemCount = [
       actions.pickPhotos,
       actions.pickFiles,
@@ -559,7 +636,7 @@ class _AddButton extends StatelessWidget {
       offset: Offset(0, -(itemCount * 48.0 + 12)),
       padding: EdgeInsets.zero,
       constraints: const BoxConstraints(minWidth: 210),
-      icon: const Icon(Icons.add),
+      onSelected: onSelected,
       itemBuilder: (context) => [
         if (actions.pickPhotos != null)
           PopupMenuItem(
@@ -592,7 +669,29 @@ class _AddButton extends StatelessWidget {
             ),
           ),
       ],
-      onSelected: onSelected,
+      child: SizedBox.square(
+        dimension: 44,
+        child: Center(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: enabled
+                  ? scheme.surfaceContainerHighest
+                  : scheme.surfaceContainerHighest.withAlpha(90),
+              shape: BoxShape.circle,
+            ),
+            child: SizedBox.square(
+              dimension: 40,
+              child: Icon(
+                Icons.add,
+                size: 24,
+                color: enabled
+                    ? scheme.onSurfaceVariant
+                    : scheme.onSurfaceVariant.withAlpha(90),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -601,30 +700,33 @@ class _PrimaryActionButton extends StatelessWidget {
   const _PrimaryActionButton({
     required this.activity,
     required this.canSend,
-    required this.onPressed,
+    required this.canCancel,
+    required this.onSend,
+    required this.onStop,
   });
 
   final AcpComposerActivity activity;
   final bool canSend;
-  final VoidCallback onPressed;
+  final bool canCancel;
+  final VoidCallback onSend;
+  final VoidCallback onStop;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final busy = activity != AcpComposerActivity.idle;
-    final queueing = busy;
-    final label = queueing ? 'Queue message' : 'Send';
-    final child = Icon(
-      queueing ? Icons.playlist_add : Icons.arrow_upward,
-      size: 22,
-    );
+    final queueing = busy && canSend;
+    final stopping = busy && !queueing;
+    final enabled = stopping ? canCancel : canSend;
+    final label = stopping
+        ? 'Stop active turn'
+        : (queueing ? 'Queue message' : 'Send');
     return Semantics(
       button: true,
-      enabled: canSend,
+      enabled: enabled,
       label: label,
-      child: SizedBox(
-        width: 44,
-        height: 44,
+      child: SizedBox.square(
+        dimension: 44,
         child: IconButton.filled(
           tooltip: label,
           padding: EdgeInsets.zero,
@@ -633,11 +735,16 @@ class _PrimaryActionButton extends StatelessWidget {
             minimumSize: const Size.square(44),
             maximumSize: const Size.square(44),
             padding: EdgeInsets.zero,
-            backgroundColor: scheme.primary,
-            foregroundColor: scheme.onPrimary,
+            backgroundColor: stopping ? scheme.onSurface : scheme.primary,
+            foregroundColor: stopping ? scheme.surface : scheme.onPrimary,
+            disabledBackgroundColor: scheme.surfaceContainerHighest,
+            disabledForegroundColor: scheme.onSurfaceVariant.withAlpha(110),
           ),
-          onPressed: canSend ? onPressed : null,
-          icon: child,
+          onPressed: enabled ? (stopping ? onStop : onSend) : null,
+          icon: Icon(
+            stopping ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+            size: stopping ? 19 : 22,
+          ),
         ),
       ),
     );
@@ -650,23 +757,12 @@ class _StopTurnButton extends StatelessWidget {
   final VoidCallback onPressed;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Semantics(
-      button: true,
-      label: 'Stop active turn',
-      child: SizedBox(
-        width: 44,
-        height: 44,
-        child: IconButton(
-          tooltip: 'Stop active turn',
-          style: IconButton.styleFrom(foregroundColor: scheme.error),
-          onPressed: onPressed,
-          icon: const Icon(Icons.stop, size: 22),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => _ComposerToolbarButton(
+    tooltip: 'Stop active turn',
+    icon: Icons.stop_rounded,
+    foregroundColor: Theme.of(context).colorScheme.error,
+    onPressed: onPressed,
+  );
 }
 
 class _ErrorBanner extends StatelessWidget {
@@ -689,7 +785,11 @@ class _ErrorBanner extends StatelessWidget {
       container: true,
       child: Container(
         width: double.infinity,
-        color: scheme.errorContainer,
+        decoration: BoxDecoration(
+          color: scheme.errorContainer,
+          borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
+          border: Border.all(color: scheme.error.withAlpha(90)),
+        ),
         padding: const EdgeInsets.fromLTRB(
           FluttyTheme.spacingMd,
           FluttyTheme.spacingSm,
