@@ -687,12 +687,11 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     return MediaQuery.withNoTextScaling(
       child: SizedBox(
         key: const ValueKey('acp-composer-controls'),
-        height: 48,
+        height: 44,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemCount: selectors.length,
-          separatorBuilder: (_, _) =>
-              const SizedBox(width: FluttyTheme.spacingXs),
+          separatorBuilder: (_, _) => const SizedBox(width: 2),
           itemBuilder: (context, index) {
             final selector = selectors[index];
             return _AcpQuickSelector(
@@ -2085,6 +2084,7 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
     return PopupMenuButton<Object>(
       key: _menuKey,
       tooltip: 'Change ${selector.label.toLowerCase()}',
+      borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
       onSelected: _onSelected,
       itemBuilder: (context) => <PopupMenuEntry<Object>>[
         if (hasScope)
@@ -2126,39 +2126,51 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
         ],
       ],
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 48),
+        constraints: const BoxConstraints(minHeight: 44, maxWidth: 148),
         child: Center(
-          child: DecoratedBox(
+          child: Ink(
             key: ValueKey('acp-quick-selector-pill-${selector.label}'),
+            height: 40,
             decoration: BoxDecoration(
               color: scheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: scheme.outlineVariant),
+              borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
             ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '${selector.label}: ${current?.label ?? selector.currentValue}',
+            padding: const EdgeInsets.only(left: 10, right: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                        fontSize: 11,
+                        height: 1.15,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      children: [
+                        TextSpan(text: '${selector.label}: '),
+                        TextSpan(
+                          text: current?.label ?? selector.currentValue,
+                          style: TextStyle(
+                            color: scheme.onSurface,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: scheme.onSurface,
-                      fontSize: 10,
-                      height: 1.2,
-                      fontWeight: FontWeight.w600,
-                    ),
                   ),
-                  const SizedBox(width: 2),
-                  Icon(
-                    Icons.arrow_drop_down,
-                    size: 14,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(width: FluttyTheme.spacingXs),
+                Icon(
+                  Icons.keyboard_arrow_down_rounded,
+                  size: 18,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ],
             ),
           ),
         ),

@@ -348,19 +348,32 @@ void main() {
     expect(find.text('Mode: Code'), findsOneWidget);
     expect(find.text('Permission: Ask'), findsOneWidget);
     final permissionPill = find.byKey(const ValueKey('permission-mode-pill'));
-    expect(tester.getSize(permissionPill).height, 48);
+    expect(tester.getSize(permissionPill).height, 44);
     final modelPill = find.byKey(
       const ValueKey('acp-quick-selector-pill-Model'),
     );
-    expect(tester.getSize(modelPill).height, lessThanOrEqualTo(20));
+    expect(tester.getSize(modelPill).height, 40);
     final selectorContext = tester.element(find.text('Model: Sonnet'));
-    final modelLabel = tester.widget<Text>(find.text('Model: Sonnet'));
+    final modelInk = tester.widget<Ink>(modelPill);
+    final modelDecoration = modelInk.decoration! as BoxDecoration;
     expect(
-      modelLabel.style?.fontFamily,
+      modelDecoration.color,
+      Theme.of(selectorContext).colorScheme.surfaceContainerHighest,
+    );
+    expect(modelDecoration.border, isNull);
+    expect(modelDecoration.borderRadius, BorderRadius.circular(12));
+    final modelLabel = tester.widget<Text>(find.text('Model: Sonnet'));
+    final labelSpan = modelLabel.textSpan! as TextSpan;
+    expect(
+      labelSpan.style?.fontFamily,
       isNot(AcpChatTypography.monoStyleOf(selectorContext).fontFamily),
     );
-    expect(modelLabel.style?.fontSize, 10);
-    expect(modelLabel.style?.height, 1.2);
+    expect(labelSpan.style?.fontSize, 11);
+    expect(labelSpan.style?.height, 1.15);
+    expect(labelSpan.style?.fontWeight, FontWeight.w500);
+    final valueSpan = labelSpan.children![1] as TextSpan;
+    expect(valueSpan.style?.fontSize, 12);
+    expect(valueSpan.style?.fontWeight, FontWeight.w600);
     expect(
       find.ancestor(of: permissionPill, matching: find.byType(ListView)),
       findsOneWidget,
