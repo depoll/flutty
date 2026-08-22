@@ -942,6 +942,83 @@ void main() {
     );
   });
 
+  testWidgets('sticky prompt tap escapes live auto-scroll', (tester) async {
+    final entries = <AcpTimelineEntry>[
+      AcpMessageEntry(
+        order: 0,
+        role: AcpMessageRole.user,
+        messageId: 'sticky-user',
+        content: const [AcpTextContent('take me back to this prompt')],
+      ),
+      AcpMessageEntry(
+        order: 1,
+        role: AcpMessageRole.agent,
+        messageId: 'long-response',
+        content: [
+          AcpTextContent(
+            List.generate(
+              24,
+              (index) => 'Response paragraph $index with enough words to wrap.',
+            ).join('\n\n'),
+          ),
+        ],
+      ),
+    ];
+    final manager = FakeAcpSessionManager(
+      sessions: [fakeAcpSession(timeline: AcpTimeline(entries: entries))],
+    );
+    await tester.pumpWidget(_wrap(manager, embedded: true));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+
+    final scrollable = find.descendant(
+      of: find.byType(AcpMessageThread),
+      matching: find.byType(Scrollable),
+    );
+    final position = tester.state<ScrollableState>(scrollable.first).position;
+    expect(position.pixels, closeTo(position.maxScrollExtent, 1));
+    position.jumpTo(100);
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('acp-sticky-user-prompt')),
+      findsOneWidget,
+    );
+    expect(
+      find.text('take me back to this prompt', skipOffstage: false),
+      findsOneWidget,
+    );
+
+    final threadContext = tester.element(find.byType(AcpMessageThread));
+    ScrollStartNotification(
+      metrics: position,
+      context: threadContext,
+      dragDetails: DragStartDetails(),
+    ).dispatch(threadContext);
+    ScrollEndNotification(
+      metrics: FixedScrollMetrics(
+        minScrollExtent: position.minScrollExtent,
+        maxScrollExtent: position.maxScrollExtent,
+        pixels: position.maxScrollExtent,
+        viewportDimension: position.viewportDimension,
+        axisDirection: AxisDirection.down,
+        devicePixelRatio: 1,
+      ),
+      context: threadContext,
+    ).dispatch(threadContext);
+    ScrollMetricsNotification(
+      metrics: position,
+      context: threadContext,
+    ).dispatch(threadContext);
+    await tester.tap(find.byKey(const ValueKey('acp-sticky-user-prompt')));
+    await tester.pumpAndSettle();
+
+    expect(position.pixels, lessThan(40));
+    expect(find.text('take me back to this prompt'), findsOneWidget);
+    expect(find.byTooltip('Jump to latest'), findsOneWidget);
+  });
+
   testWidgets('user scrolling up is not overridden by streaming updates', (
     tester,
   ) async {

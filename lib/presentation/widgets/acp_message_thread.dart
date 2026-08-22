@@ -60,6 +60,7 @@ class AcpMessageThread extends StatefulWidget {
     this.shrinkWrap = false,
     this.physics,
     this.footer,
+    this.onStickyPromptTap,
     this.imageResolver,
     this.onTapImage,
     this.onOpenResource,
@@ -87,6 +88,12 @@ class AcpMessageThread extends StatefulWidget {
 
   /// Optional live-state footer rendered after the final transcript entry.
   final Widget? footer;
+
+  /// Called synchronously before a sticky prompt starts navigating upward.
+  ///
+  /// Containers can use this to suspend live-follow behavior before the scroll
+  /// animation begins.
+  final VoidCallback? onStickyPromptTap;
 
   /// Resolver for non-inline images.
   final AcpImageResolver? imageResolver;
@@ -208,6 +215,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 
   Future<void> _scrollEntryIntoView(int entryIndex) async {
     if (!_controller.hasClients) return;
+    widget.onStickyPromptTap?.call();
     // A sticky prompt can be many screens above the viewport and therefore no
     // longer have a built element. Seek until SliverList materializes it, then
     // animate to its exact scroll offset. RenderObject.showOnScreen is not

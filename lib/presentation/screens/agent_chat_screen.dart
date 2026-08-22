@@ -580,6 +580,16 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     });
   }
 
+  void _handleStickyPromptTap() {
+    if (_autoScroll || !_showJumpToLatest) {
+      setState(() {
+        _autoScroll = false;
+        _showJumpToLatest = true;
+      });
+    }
+    _publishScrollState();
+  }
+
   void _scheduleAutoScroll() {
     if (!_autoScroll) {
       return;
@@ -1526,6 +1536,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                                 child: AcpMessageThread(
                                   entries: entries,
                                   controller: _scroll,
+                                  onStickyPromptTap: _handleStickyPromptTap,
                                   footer:
                                       session.promptStatus ==
                                           AcpPromptStatus.idle
