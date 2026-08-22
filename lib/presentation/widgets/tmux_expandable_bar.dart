@@ -164,6 +164,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
+  late final Future<Object> _agentWindowModePreferenceFuture;
   final Set<String> _seenAlertWindowKeys = <String>{};
   final Map<String, int> _seenAlertWindowIndexesByKey = <String, int>{};
   final Set<String> _closingWindowKeys = <String>{};
@@ -228,6 +229,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void initState() {
     super.initState();
     _localNotifications = widget.ref.read(localNotificationServiceProvider);
+    _agentWindowModePreferenceFuture = widget.ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(widget.session.hostId)
+        .then<Object>((preferences) => preferences.agentWindowMode)
+        .catchError((Object _) => AgentWindowModePreference.askEveryTime);
     _expanded = widget.initiallyExpanded;
     _bounceController = AnimationController(
       vsync: this,
@@ -978,7 +984,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
   }
 
-  Future<void> _resumeSession(ToolSessionInfo info) async {
+  Future<void> _resumeSession(
+    ToolSessionInfo info, {
+    bool forceModePicker = false,
+  }) async {
     final tool = AgentLaunchTool.values
         .where((candidate) => candidate.label == info.toolName)
         .firstOrNull;
@@ -989,10 +998,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (tool != null &&
         providerId != null &&
         widget.activeMuxBackend == RemoteMuxBackend.monkeyMux) {
-      final mode = await showAgentWindowModePicker(
+      final preference = await _agentWindowModePreferenceFuture;
+      if (!mounted) return;
+      final mode = await resolveAgentWindowMode(
         context: context,
         tool: tool,
         isProUser: widget.isProUser,
+        preference: normalizeAgentWindowModePreference(preference),
+        forcePicker: forceModePicker,
       );
       if (!mounted || mode == null) {
         return;
@@ -1034,6 +1047,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Future<void> _showSessionPickerForTool(
     AiSessionProviderEntry provider,
   ) async {
+    ToolSessionInfo? heldSession;
     final selected = await showAiSessionPickerDialog(
       context: context,
       toolName: provider.toolName,
@@ -1043,9 +1057,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         maxPerTool: maxSessions,
         toolName: provider.toolName,
       ),
+      onSessionLongPress: (session) => heldSession = session,
     );
-    if (!mounted || selected == null) return;
-    await _resumeSession(selected);
+    final session = heldSession ?? selected;
+    if (!mounted || session == null) return;
+    await _resumeSession(session, forceModePicker: heldSession != null);
   }
 
   Future<void> _showNewWindowPicker({BuildContext? anchorContext}) async {
@@ -1057,6 +1073,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final nativeAcpProviderIds = nativeAcpAvailable
         ? builtinNativeAcpProvidersByTool()
         : const <AgentLaunchTool, String>{};
+    final agentWindowModePreference = await _agentWindowModePreferenceFuture;
     if (!mounted || (anchorContext != null && !anchorContext.mounted)) {
       return;
     }
@@ -1077,6 +1094,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             context: context,
             isProUser: widget.isProUser,
             startClisInYoloMode: widget.startClisInYoloMode,
+            agentWindowModePreference: normalizeAgentWindowModePreference(
+              agentWindowModePreference,
+            ),
             installedToolsFuture: installedToolsFuture,
             preferredTool: _preferredLaunchTool,
             nativeAcpProviderIds: nativeAcpProviderIds,

@@ -350,5 +350,47 @@ void main() {
 
       expect(picked, selectedSession);
     });
+
+    testWidgets('reports a held session as a mode override', (tester) async {
+      const selectedSession = ToolSessionInfo(
+        toolName: 'Codex',
+        sessionId: 'session-held',
+        summary: 'Choose a native window',
+      );
+      ToolSessionInfo? tapped;
+      ToolSessionInfo? held;
+
+      await tester.pumpWidget(
+        _wrap(
+          Builder(
+            builder: (context) => TextButton(
+              onPressed: () async {
+                tapped = await showAiSessionPickerDialog(
+                  context: context,
+                  toolName: 'Codex',
+                  loadSessions: (_) => Stream<DiscoveredSessionsResult>.value(
+                    DiscoveredSessionsResult(
+                      sessions: const <ToolSessionInfo>[selectedSession],
+                      attemptedTools: const <String>{'Codex'},
+                    ),
+                  ),
+                  onSessionLongPress: (session) => held = session,
+                );
+              },
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      await tester.longPress(find.text('Choose a native window'));
+      await tester.pumpAndSettle();
+
+      expect(held, selectedSession);
+      expect(tapped, isNull);
+      expect(find.byType(AlertDialog), findsNothing);
+    });
   });
 }

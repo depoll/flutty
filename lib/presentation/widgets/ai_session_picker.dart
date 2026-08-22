@@ -393,6 +393,7 @@ Future<ToolSessionInfo?> showAiSessionPickerDialog({
   required AiSessionLoader loadSessions,
   int initialMaxSessions = 12,
   int sessionFetchStep = 12,
+  ValueChanged<ToolSessionInfo>? onSessionLongPress,
 }) => showDialog<ToolSessionInfo>(
   context: context,
   builder: (context) => AiSessionPickerDialog(
@@ -400,6 +401,7 @@ Future<ToolSessionInfo?> showAiSessionPickerDialog({
     loadSessions: loadSessions,
     initialMaxSessions: initialMaxSessions,
     sessionFetchStep: sessionFetchStep,
+    onSessionLongPress: onSessionLongPress,
   ),
 );
 
@@ -426,6 +428,7 @@ class AiSessionPickerDialog extends StatefulWidget {
     required this.loadSessions,
     this.initialMaxSessions = 12,
     this.sessionFetchStep = 12,
+    this.onSessionLongPress,
     super.key,
   });
 
@@ -440,6 +443,9 @@ class AiSessionPickerDialog extends StatefulWidget {
 
   /// Step to use when the user asks for more sessions.
   final int sessionFetchStep;
+
+  /// Called when a session is held for a one-off launch-mode choice.
+  final ValueChanged<ToolSessionInfo>? onSessionLongPress;
 
   @override
   State<AiSessionPickerDialog> createState() => _AiSessionPickerDialogState();
@@ -577,6 +583,12 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
                           session: sessions[index],
                           onTap: () =>
                               Navigator.of(context).pop(sessions[index]),
+                          onLongPress: widget.onSessionLongPress == null
+                              ? null
+                              : () {
+                                  widget.onSessionLongPress!(sessions[index]);
+                                  Navigator.of(context).pop();
+                                },
                         ),
                       ),
                     ),
@@ -649,10 +661,15 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
 }
 
 class _AiSessionPickerTile extends StatelessWidget {
-  const _AiSessionPickerTile({required this.session, required this.onTap});
+  const _AiSessionPickerTile({
+    required this.session,
+    required this.onTap,
+    this.onLongPress,
+  });
 
   final ToolSessionInfo session;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -684,6 +701,7 @@ class _AiSessionPickerTile extends StatelessWidget {
         ),
       ),
       onTap: onTap,
+      onLongPress: onLongPress,
     );
   }
 }

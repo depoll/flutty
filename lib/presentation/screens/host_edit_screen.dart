@@ -12,6 +12,7 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/port_proxy_name.dart';
 import '../../domain/models/remote_multiplexer.dart';
@@ -118,6 +119,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   bool _disableTmuxStatusBar = false;
   bool _disableAgentTmuxStatusBar = false;
   bool _startClisInYoloMode = false;
+  AgentWindowModePreference _agentWindowModePreference =
+      AgentWindowModePreference.askEveryTime;
   bool _autoForwardPorts = false;
 
   List<PortForward> _portForwards = [];
@@ -254,6 +257,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _disableTmuxStatusBar = hasTmuxDisableStatusBarCommand(tmuxExtraFlags);
       _disableAgentTmuxStatusBar = preset?.tmuxDisableStatusBar ?? false;
       _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
+      _agentWindowModePreference = cliLaunchPreferences.agentWindowMode;
       _autoForwardPorts = host.autoForwardPorts;
       _portProxyNameController.text = host.portProxyName ?? '';
       _selectedAutoConnectMode = resolveAutoConnectCommandMode(
@@ -365,6 +369,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     disableTmuxStatusBar: _disableTmuxStatusBar,
     disableAgentTmuxStatusBar: _disableAgentTmuxStatusBar,
     startClisInYoloMode: _startClisInYoloMode,
+    agentWindowModePreference: _agentWindowModePreference,
     autoForwardPorts: _autoForwardPorts,
   );
 
@@ -903,6 +908,33 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           style: theme.textTheme.bodySmall?.copyWith(
             color: colorScheme.onSurfaceVariant,
           ),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<AgentWindowModePreference>(
+          key: const Key('host-agent-window-mode-field'),
+          // ignore: deprecated_member_use
+          value: _agentWindowModePreference,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: 'Agent window mode',
+            prefixIcon: Icon(Icons.view_agenda_outlined),
+            helperText:
+                'Used when native chat and terminal are both available. Press and hold an agent to choose for one launch.',
+            helperMaxLines: _hostFieldHelperMaxLines,
+          ),
+          items: AgentWindowModePreference.values
+              .map(
+                (preference) => DropdownMenuItem<AgentWindowModePreference>(
+                  value: preference,
+                  child: Text(preference.label),
+                ),
+              )
+              .toList(growable: false),
+          onChanged: (value) {
+            if (value == null) return;
+            setState(() => _agentWindowModePreference = value);
+            _updateDirtyState();
+          },
         ),
         const SizedBox(height: 12),
         CheckboxListTile(

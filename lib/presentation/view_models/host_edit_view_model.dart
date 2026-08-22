@@ -145,6 +145,7 @@ typedef HostEditDraft = ({
   bool disableTmuxStatusBar,
   bool disableAgentTmuxStatusBar,
   bool startClisInYoloMode,
+  AgentWindowModePreference agentWindowModePreference,
   bool autoForwardPorts,
 });
 
@@ -220,6 +221,7 @@ class HostEditState {
     this.isLoading = false,
     this.existingHost,
     this.portForwards = const [],
+    this.cliLaunchPreferences = const HostCliLaunchPreferences(),
     this.initialDraft,
     this.isDirty = false,
   });
@@ -233,6 +235,9 @@ class HostEditState {
   /// Existing port forwards for the host.
   final List<PortForward> portForwards;
 
+  /// Saved host-scoped coding CLI launch preferences.
+  final HostCliLaunchPreferences cliLaunchPreferences;
+
   /// Baseline draft used by the unsaved-changes guard.
   final HostEditDraft? initialDraft;
 
@@ -244,6 +249,7 @@ class HostEditState {
     bool? isLoading,
     Object? existingHost = _sentinel,
     List<PortForward>? portForwards,
+    HostCliLaunchPreferences? cliLaunchPreferences,
     Object? initialDraft = _sentinel,
     bool? isDirty,
   }) => HostEditState(
@@ -252,6 +258,7 @@ class HostEditState {
         ? this.existingHost
         : existingHost as Host?,
     portForwards: portForwards ?? this.portForwards,
+    cliLaunchPreferences: cliLaunchPreferences ?? this.cliLaunchPreferences,
     initialDraft: identical(initialDraft, _sentinel)
         ? this.initialDraft
         : initialDraft as HostEditDraft?,
@@ -319,6 +326,7 @@ class HostEditViewModel extends Notifier<HostEditState> {
       isLoading: false,
       existingHost: host,
       portForwards: portForwards,
+      cliLaunchPreferences: cliLaunchPreferences,
     );
     return HostEditLoadResult(
       host: host,
@@ -442,11 +450,12 @@ class HostEditViewModel extends Notifier<HostEditState> {
               hasAutomationAccess: request.hasAutomationAccess,
               hasAgentPresetAccess: request.hasAgentPresetAccess,
             ),
-            cliPreferences: request.hasAgentPresetAccess
-                ? HostCliLaunchPreferences(
-                    startInYoloMode: request.draft.startClisInYoloMode,
-                  )
-                : null,
+            cliPreferences: HostCliLaunchPreferences(
+              startInYoloMode: request.hasAgentPresetAccess
+                  ? request.draft.startClisInYoloMode
+                  : state.cliLaunchPreferences.startInYoloMode,
+              agentWindowMode: request.draft.agentWindowModePreference,
+            ),
           );
 
       ref.invalidate(allHostsProvider);

@@ -34,6 +34,7 @@ import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/monkeymux_acp_bridge.dart';
 import '../../domain/models/remote_multiplexer.dart';
@@ -3971,6 +3972,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Host? _host;
   AgentLaunchPreset? _autoConnectAgentPreset;
   bool _startClisInYoloMode = false;
+  AgentWindowModePreference _agentWindowModePreference =
+      AgentWindowModePreference.askEveryTime;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
   final Object _terminalAppThemeOverrideOwner = Object();
@@ -7334,6 +7337,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .read(hostCliLaunchPreferencesServiceProvider)
         .getPreferencesForHost(widget.hostId);
     _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
+    _agentWindowModePreference = cliLaunchPreferences.agentWindowMode;
     DiagnosticsLogService.instance.info(
       'terminal.screen',
       'host_loaded',
@@ -11283,6 +11287,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         tmuxExtraFlags: _activeTmuxExtraFlags,
         isProUser: isProUser,
         startClisInYoloMode: _startClisInYoloMode,
+        agentWindowModePreference: _agentWindowModePreference,
         scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
           liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
           tmuxWorkingDirectory: _tmuxWorkingDirectory,

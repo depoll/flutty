@@ -16,10 +16,13 @@ import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/screens/host_edit_screen.dart';
 import 'package:monkeyssh/presentation/view_models/host_edit_view_model.dart';
 import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
@@ -1401,10 +1404,33 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
+        final modeFinder = find.byKey(
+          const Key('host-agent-window-mode-field'),
+        );
+        expect(modeFinder, findsOneWidget);
+        await tester.scrollUntilVisible(
+          modeFinder,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(modeFinder);
+        await tester.tap(modeFinder);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.text('Prefer native chat').last);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
         final yoloFinder = find.byKey(const Key('host-cli-yolo-mode-checkbox'));
         expect(yoloFinder, findsOneWidget);
         expect(tester.widget<CheckboxListTile>(yoloFinder).value, isFalse);
 
+        await tester.scrollUntilVisible(
+          yoloFinder,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(yoloFinder);
         await tester.tap(yoloFinder);
         await tester.pump();
 
@@ -1431,6 +1457,13 @@ void main() {
         expect(
           hostRepository.updatedHost!.autoConnectCommand,
           contains('--yolo'),
+        );
+        final savedPreferences = await HostCliLaunchPreferencesService(
+          SettingsService(database),
+        ).getPreferencesForHost(1);
+        expect(
+          savedPreferences.agentWindowMode,
+          AgentWindowModePreference.preferNative,
         );
       },
     );

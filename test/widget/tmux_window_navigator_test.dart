@@ -14,6 +14,7 @@ import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/acp_provider_service.dart';
@@ -976,6 +977,136 @@ void main() {
       expect(mapping[AgentLaunchTool.pi], AcpBuiltinProviderIds.pi);
     });
 
+    testWidgets('host preference opens native chat without prompting', (
+      tester,
+    ) async {
+      TmuxNavigatorAction? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async {
+                  result = await showTmuxNewWindowPicker(
+                    context: context,
+                    isProUser: true,
+                    startClisInYoloMode: false,
+                    agentWindowModePreference:
+                        AgentWindowModePreference.preferNative,
+                    installedToolsFuture: Future.value(const <AgentLaunchTool>{
+                      AgentLaunchTool.copilotCli,
+                    }),
+                    nativeAcpProviderIds: const <AgentLaunchTool, String>{
+                      AgentLaunchTool.copilotCli:
+                          AcpBuiltinProviderIds.copilotCli,
+                    },
+                  );
+                },
+                child: const Text('Open picker'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+      expect(find.text('native · hold'), findsOneWidget);
+
+      await tester.tap(find.text('Copilot CLI'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Terminal'), findsNothing);
+      expect(result, isA<TmuxNewAcpSessionAction>());
+    });
+
+    testWidgets('host preference opens terminal without prompting', (
+      tester,
+    ) async {
+      TmuxNavigatorAction? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async {
+                  result = await showTmuxNewWindowPicker(
+                    context: context,
+                    isProUser: true,
+                    startClisInYoloMode: false,
+                    agentWindowModePreference:
+                        AgentWindowModePreference.preferTerminal,
+                    installedToolsFuture: Future.value(const <AgentLaunchTool>{
+                      AgentLaunchTool.openCode,
+                    }),
+                    nativeAcpProviderIds: const <AgentLaunchTool, String>{
+                      AgentLaunchTool.openCode: AcpBuiltinProviderIds.openCode,
+                    },
+                  );
+                },
+                child: const Text('Open picker'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+      expect(find.text('terminal · hold'), findsOneWidget);
+
+      await tester.tap(find.text('OpenCode'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Native chat'), findsNothing);
+      expect(result, isA<TmuxNewWindowAction>());
+    });
+
+    testWidgets('long press overrides the host preference for one launch', (
+      tester,
+    ) async {
+      TmuxNavigatorAction? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async {
+                  result = await showTmuxNewWindowPicker(
+                    context: context,
+                    isProUser: true,
+                    startClisInYoloMode: false,
+                    agentWindowModePreference:
+                        AgentWindowModePreference.preferNative,
+                    installedToolsFuture: Future.value(const <AgentLaunchTool>{
+                      AgentLaunchTool.copilotCli,
+                    }),
+                    nativeAcpProviderIds: const <AgentLaunchTool, String>{
+                      AgentLaunchTool.copilotCli:
+                          AcpBuiltinProviderIds.copilotCli,
+                    },
+                  );
+                },
+                child: const Text('Open picker'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+      await tester.longPress(find.text('Copilot CLI'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Terminal'), findsOneWidget);
+      expect(find.text('Native chat'), findsOneWidget);
+
+      await tester.tap(find.text('Terminal'));
+      await tester.pumpAndSettle();
+      expect(result, isA<TmuxNewWindowAction>());
+    });
+
     testWidgets('ACP-capable tool offers a native mode to free users', (
       tester,
     ) async {
@@ -1008,7 +1139,7 @@ void main() {
 
       await tester.tap(find.text('Open picker'));
       await tester.pumpAndSettle();
-      expect(find.text('native chat'), findsOneWidget);
+      expect(find.text('choose each time'), findsOneWidget);
 
       await tester.tap(find.text('Copilot CLI'));
       await tester.pumpAndSettle();

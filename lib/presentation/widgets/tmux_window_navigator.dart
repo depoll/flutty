@@ -10,6 +10,7 @@ import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
+import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/acp_provider_service.dart';
@@ -174,6 +175,8 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   required RemoteMultiplexerService remoteMultiplexerService,
   required bool isProUser,
   required bool startClisInYoloMode,
+  AgentWindowModePreference agentWindowModePreference =
+      AgentWindowModePreference.askEveryTime,
   String? tmuxExtraFlags,
   String? scopeWorkingDirectory,
 }) => showModalBottomSheet<TmuxNavigatorAction>(
@@ -188,6 +191,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
     tmuxExtraFlags: tmuxExtraFlags,
     isProUser: isProUser,
     startClisInYoloMode: startClisInYoloMode,
+    agentWindowModePreference: agentWindowModePreference,
     scopeWorkingDirectory: scopeWorkingDirectory,
   ),
 );
@@ -197,6 +201,8 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
   required BuildContext context,
   required bool isProUser,
   required bool startClisInYoloMode,
+  AgentWindowModePreference agentWindowModePreference =
+      AgentWindowModePreference.askEveryTime,
   Future<Set<AgentLaunchTool>>? installedToolsFuture,
   AgentLaunchTool? preferredTool,
   Map<AgentLaunchTool, String> nativeAcpProviderIds = const {},
@@ -209,55 +215,81 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
     installedToolsFuture: installedToolsFuture,
     preferredTool: preferredTool,
     nativeAcpTools: nativeAcpProviderIds.keys.toSet(),
-    onToolSelected: (tool) async {
-      final providerId = nativeAcpProviderIds[tool];
-      if (providerId == null) {
-        Navigator.pop(
-          context,
-          TmuxNewWindowAction(
-            command: buildAgentToolCommand(
-              tool,
-              startInYoloMode: startClisInYoloMode,
-            ),
-            windowName: tool.commandName,
-            agentTool: tool,
-          ),
-        );
-        return;
-      }
-      final mode = await showAgentWindowModePicker(
-        context: context,
-        tool: tool,
-        isProUser: isProUser,
-      );
-      if (!context.mounted || mode == null) {
-        return;
-      }
-      switch (mode) {
-        case AgentWindowMode.terminal:
-          Navigator.pop(
-            context,
-            TmuxNewWindowAction(
-              command: buildAgentToolCommand(
-                tool,
-                startInYoloMode: startClisInYoloMode,
-              ),
-              windowName: tool.commandName,
-              agentTool: tool,
-            ),
-          );
-        case AgentWindowMode.nativeAcp:
-          Navigator.pop(
-            context,
-            TmuxNewAcpSessionAction(providerId: providerId),
-          );
-      }
-    },
+    agentWindowModePreference: agentWindowModePreference,
+    onToolSelected: (tool) => _selectAgentLaunchMode(
+      context: context,
+      tool: tool,
+      isProUser: isProUser,
+      startClisInYoloMode: startClisInYoloMode,
+      nativeAcpProviderIds: nativeAcpProviderIds,
+      preference: agentWindowModePreference,
+    ),
+    onToolLongPressed: (tool) => _selectAgentLaunchMode(
+      context: context,
+      tool: tool,
+      isProUser: isProUser,
+      startClisInYoloMode: startClisInYoloMode,
+      nativeAcpProviderIds: nativeAcpProviderIds,
+      preference: agentWindowModePreference,
+      forcePicker: true,
+    ),
     onEmptyWindow: () {
       Navigator.pop(context, const TmuxNewWindowAction());
     },
   ),
 );
+
+Future<void> _selectAgentLaunchMode({
+  required BuildContext context,
+  required AgentLaunchTool tool,
+  required bool isProUser,
+  required bool startClisInYoloMode,
+  required Map<AgentLaunchTool, String> nativeAcpProviderIds,
+  required AgentWindowModePreference preference,
+  bool forcePicker = false,
+}) async {
+  final providerId = nativeAcpProviderIds[tool];
+  if (providerId == null) {
+    Navigator.pop(
+      context,
+      TmuxNewWindowAction(
+        command: buildAgentToolCommand(
+          tool,
+          startInYoloMode: startClisInYoloMode,
+        ),
+        windowName: tool.commandName,
+        agentTool: tool,
+      ),
+    );
+    return;
+  }
+  final mode = await resolveAgentWindowMode(
+    context: context,
+    tool: tool,
+    isProUser: isProUser,
+    preference: preference,
+    forcePicker: forcePicker,
+  );
+  if (!context.mounted || mode == null) {
+    return;
+  }
+  switch (mode) {
+    case AgentWindowMode.terminal:
+      Navigator.pop(
+        context,
+        TmuxNewWindowAction(
+          command: buildAgentToolCommand(
+            tool,
+            startInYoloMode: startClisInYoloMode,
+          ),
+          windowName: tool.commandName,
+          agentTool: tool,
+        ),
+      );
+    case AgentWindowMode.nativeAcp:
+      Navigator.pop(context, TmuxNewAcpSessionAction(providerId: providerId));
+  }
+}
 
 /// Presentation mode for a supported coding-agent mux window.
 enum AgentWindowMode {
@@ -266,6 +298,39 @@ enum AgentWindowMode {
 
   /// Run the agent through its ACP-native conversation surface.
   nativeAcp,
+}
+
+/// Safely normalizes a preference loaded through an untyped widget boundary.
+AgentWindowModePreference normalizeAgentWindowModePreference(Object value) =>
+    value is AgentWindowModePreference
+    ? value
+    : AgentWindowModePreference.askEveryTime;
+
+/// Resolves the host default or presents a one-off mode chooser.
+Future<AgentWindowMode?> resolveAgentWindowMode({
+  required BuildContext context,
+  required AgentLaunchTool tool,
+  required bool isProUser,
+  required AgentWindowModePreference preference,
+  bool forcePicker = false,
+}) {
+  if (!forcePicker) {
+    switch (preference) {
+      case AgentWindowModePreference.preferNative:
+        return Future.value(AgentWindowMode.nativeAcp);
+      case AgentWindowModePreference.preferTerminal when isProUser:
+        return Future.value(AgentWindowMode.terminal);
+      case AgentWindowModePreference.preferTerminal:
+        return Future.value(AgentWindowMode.nativeAcp);
+      case AgentWindowModePreference.askEveryTime:
+        break;
+    }
+  }
+  return showAgentWindowModePicker(
+    context: context,
+    tool: tool,
+    isProUser: isProUser,
+  );
 }
 
 /// Lets the user choose Terminal CLI or Native for [tool].
@@ -595,6 +660,7 @@ class _TmuxNavigatorSheet extends ConsumerStatefulWidget {
     required this.remoteMultiplexerService,
     required this.isProUser,
     required this.startClisInYoloMode,
+    required this.agentWindowModePreference,
     this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
   });
@@ -606,6 +672,7 @@ class _TmuxNavigatorSheet extends ConsumerStatefulWidget {
   final String? tmuxExtraFlags;
   final bool isProUser;
   final bool startClisInYoloMode;
+  final AgentWindowModePreference agentWindowModePreference;
   final String? scopeWorkingDirectory;
 
   @override
@@ -1044,7 +1111,10 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     );
   }
 
-  Future<void> _resumeSession(ToolSessionInfo info) async {
+  Future<void> _resumeSession(
+    ToolSessionInfo info, {
+    bool forceModePicker = false,
+  }) async {
     final tool = AgentLaunchTool.values
         .where((candidate) => candidate.label == info.toolName)
         .firstOrNull;
@@ -1054,10 +1124,12 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     if (tool != null &&
         providerId != null &&
         widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      final mode = await showAgentWindowModePicker(
+      final mode = await resolveAgentWindowMode(
         context: context,
         tool: tool,
         isProUser: widget.isProUser,
+        preference: widget.agentWindowModePreference,
+        forcePicker: forceModePicker,
       );
       if (!mounted || mode == null) {
         return;
@@ -1095,6 +1167,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
             sessionCount: provider.sessions.length,
           ),
     );
+    ToolSessionInfo? heldSession;
     final selected = await showAiSessionPickerDialog(
       context: context,
       toolName: provider.toolName,
@@ -1122,9 +1195,11 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
               ),
             );
       },
+      onSessionLongPress: (session) => heldSession = session,
     );
-    if (!mounted || selected == null) return;
-    await _resumeSession(selected);
+    final session = heldSession ?? selected;
+    if (!mounted || session == null) return;
+    await _resumeSession(session, forceModePicker: heldSession != null);
   }
 
   Future<void> _showNewWindowPicker() async {
@@ -1160,6 +1235,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       context: context,
       isProUser: widget.isProUser,
       startClisInYoloMode: widget.startClisInYoloMode,
+      agentWindowModePreference: widget.agentWindowModePreference,
       installedToolsFuture: installedToolsFuture,
       preferredTool: _preferredLaunchTool,
       nativeAcpProviderIds: nativeAcpProviderIds,
@@ -1853,9 +1929,11 @@ class TmuxToolPickerSheet extends StatelessWidget {
     required this.isProUser,
     required this.onToolSelected,
     required this.onEmptyWindow,
+    this.onToolLongPressed,
     this.installedToolsFuture,
     this.preferredTool,
     this.nativeAcpTools = const <AgentLaunchTool>{},
+    this.agentWindowModePreference = AgentWindowModePreference.askEveryTime,
     super.key,
   });
 
@@ -1876,8 +1954,14 @@ class TmuxToolPickerSheet extends StatelessWidget {
   /// Tools that can launch either a terminal window or a native ACP session.
   final Set<AgentLaunchTool> nativeAcpTools;
 
+  /// Host default used for normal taps on ACP-capable tools.
+  final AgentWindowModePreference agentWindowModePreference;
+
   /// Called when the user selects a tool.
   final void Function(AgentLaunchTool tool) onToolSelected;
+
+  /// Called when the user holds an ACP-capable tool for a one-off choice.
+  final void Function(AgentLaunchTool tool)? onToolLongPressed;
 
   /// Called when the user selects an empty window.
   final VoidCallback onEmptyWindow;
@@ -1992,9 +2076,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
                             title: Text(tool.label),
                             trailing: nativeAcpTools.contains(tool)
                                 ? Text(
-                                    isProUser
-                                        ? 'terminal · native'
-                                        : 'native chat',
+                                    _modeHint(tool),
                                     style: theme.textTheme.labelSmall?.copyWith(
                                       color: theme.colorScheme.onSurfaceVariant,
                                     ),
@@ -2002,6 +2084,11 @@ class TmuxToolPickerSheet extends StatelessWidget {
                                 : (!isProUser ? const PremiumBadge() : null),
                             enabled: isProUser || nativeAcpTools.contains(tool),
                             onTap: () => onToolSelected(tool),
+                            onLongPress:
+                                nativeAcpTools.contains(tool) &&
+                                    onToolLongPressed != null
+                                ? () => onToolLongPressed!(tool)
+                                : null,
                           ),
                       ],
                     );
@@ -2029,6 +2116,17 @@ class TmuxToolPickerSheet extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _modeHint(AgentLaunchTool tool) {
+    if (!nativeAcpTools.contains(tool)) return '';
+    return switch (agentWindowModePreference) {
+      AgentWindowModePreference.askEveryTime => 'choose each time',
+      AgentWindowModePreference.preferNative => 'native · hold',
+      AgentWindowModePreference.preferTerminal when isProUser =>
+        'terminal · hold',
+      AgentWindowModePreference.preferTerminal => 'native · hold',
+    };
   }
 
   static Widget _iconForTool(AgentLaunchTool tool, ThemeData theme) =>
