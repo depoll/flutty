@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.166"
+	monkeyMuxVersion                  = "0.1.167"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -140,21 +140,19 @@ const (
 	maxRetainedKittyImages       = 128
 	maxRetainedKittyImageNumbers = maxRetainedKittyImages
 	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
-	// Caps for how many retained images are *replayed* on a window switch.
-	// Replaying every retained transmission makes the client decode many
-	// megabytes per switch; even with client-side downscaling and dedup, a very
-	// large burst can pressure memory on small devices, so keep this modest. The
-	// foreground app re-emits placeholder cells for the visible screen, so this
-	// only needs to cover the images currently on screen plus a little
-	// scrollback; deeper scrollback images repaint when the app redraws.
-	maxReplayedKittyImages     = 16
-	maxReplayedKittyImageBytes = 8 * 1024 * 1024
-	// A multipart transmission must fit inside the same budget that can be
-	// replayed to a client. The old 2 MiB cap silently discarded ordinary
-	// screenshots between their m=1 continuation chunks and final m=0 chunk,
-	// leaving only Unicode placeholder cells that referenced an image the
-	// server never retained.
-	maxKittyGraphicsPendingBytes = maxReplayedKittyImageBytes
+	// Initial attach/window-switch replay must stay small enough for a phone to
+	// parse before SSH/terminal readiness deadlines. Long agent sessions can
+	// retain dozens of screenshots; eagerly replaying the former 8 MiB budget
+	// made the whole connection appear timed out. Replay only the newest likely-
+	// visible roots here. Placeholder-driven missing-image requests repair other
+	// visible images after the terminal is already connected.
+	maxReplayedKittyImages     = 4
+	maxReplayedKittyImageBytes = 2 * 1024 * 1024
+	// On-demand repair and multipart capture retain the larger budget so an
+	// ordinary screenshot above 2 MiB is not dropped or permanently blank; only
+	// the synchronous initial replay is constrained to the attach-safe budget.
+	maxKittyImageRepairBytes      = 8 * 1024 * 1024
+	maxKittyGraphicsPendingBytes = maxKittyImageRepairBytes
 )
 
 const terminalParserResetSequence = "\x1b\\"
@@ -3280,6 +3278,9 @@ func readCursorChatEntries() []cursorChatEntry {
 }
 
 func readCursorChatMeta(path string, chatID string) (cursorChatEntry, bool) {
+	// Current Cursor Agent writes hasConversation=false even for the chat id
+	// owned by a live newly-started TUI. Live assignment is already constrained
+	// by exact cwd and process start time, so that advisory flag must not hide it.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return cursorChatEntry{}, false
@@ -3288,12 +3289,8 @@ func readCursorChatMeta(path string, chatID string) (cursorChatEntry, bool) {
 		Cwd             string `json:"cwd"`
 		UpdatedAtMs     int64  `json:"updatedAtMs"`
 		CreatedAtMs     int64  `json:"createdAtMs"`
-		HasConversation *bool  `json:"hasConversation"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return cursorChatEntry{}, false
-	}
-	if raw.HasConversation != nil && !*raw.HasConversation {
 		return cursorChatEntry{}, false
 	}
 	sessionID := strings.TrimSpace(chatID)
@@ -13582,8 +13579,9 @@ func (w *muxWindow) kittyImageNumberReplayLocked(id string) []byte {
 
 // kittyImageTransmissionsForLocked returns the concatenated store-only
 // transmissions of the requested image ids, in request order, skipping ids that
-// are unknown or duplicated. Missing-image repair uses the same byte and count
-// limits as ordinary replay so one request cannot monopolize an attach queue.
+// are unknown or duplicated. Missing-image repair keeps the replay count cap
+// but allows a larger byte budget because it runs after attach and targets only
+// placeholder images the visible terminal explicitly reports missing.
 func (w *muxWindow) kittyImageTransmissionsForLocked(
 	ids []string,
 ) ([]byte, []string) {
@@ -13611,8 +13609,8 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 		mappings := w.kittyImageNumberReplayLocked(id)
 		animation := w.kittyImageAnimations[id]
 		imageBytes := len(buf) + len(mappings) + len(animation)
-		if imageBytes > maxReplayedKittyImageBytes ||
-			len(out)+imageBytes > maxReplayedKittyImageBytes {
+		if imageBytes > maxKittyImageRepairBytes ||
+			len(out)+imageBytes > maxKittyImageRepairBytes {
 			continue
 		}
 		if seen == nil {
@@ -14842,6 +14840,28 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 	if command := commandNameForProcessGroup(pgrp); command != "" {
 		w.foregroundCommand = command
 	}
+	w.refreshCursorSessionMetadataLocked(pgrp)
+}
+
+func (w *muxWindow) refreshCursorSessionMetadataLocked(processID int) {
+	if w == nil || w.agentSessionID != "" ||
+		w.agentToolLocked() != "cursor-agent" || processID <= 0 {
+		return
+	}
+	processStarted := processStartedAtForMetadata(processID)
+	if processStarted.IsZero() {
+		return
+	}
+	sessionID := cursorSessionIDForWorkspace(
+		readCursorChatEntries(),
+		w.cwd,
+		processStarted,
+	)
+	if sessionID == "" {
+		return
+	}
+	w.agentSessionID = sessionID
+	w.agentSessionIdentityExact = true
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {

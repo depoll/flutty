@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../app/theme.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import 'acp_session_presentation.dart';
 import 'agent_tool_icon.dart';
 
 /// Derived UI state for a discovered-session provider row.
@@ -402,6 +403,21 @@ Future<ToolSessionInfo?> showAiSessionPickerDialog({
   ),
 );
 
+/// Builds a compact, identifiable subtitle for one recent session.
+///
+/// Pi titles commonly come from the first prompt and can repeat across
+/// worktrees/subtrees, so include the final cwd segment before recency. Other
+/// providers retain the existing time/tool fallback.
+String aiSessionSubtitle(ToolSessionInfo session) {
+  final updated = session.lastUpdatedLabel;
+  if (session.toolName == 'Pi' &&
+      (session.workingDirectory?.trim().isNotEmpty ?? false)) {
+    final directory = acpCwdSummary(session.workingDirectory);
+    return updated.isEmpty ? directory : '$directory · $updated';
+  }
+  return updated.isNotEmpty ? updated : session.toolName;
+}
+
 /// Dialog for picking one of a provider's recent sessions.
 class AiSessionPickerDialog extends StatefulWidget {
   /// Creates a new [AiSessionPickerDialog].
@@ -662,9 +678,7 @@ class _AiSessionPickerTile extends StatelessWidget {
         ),
       ),
       subtitle: Text(
-        session.lastUpdatedLabel.isNotEmpty
-            ? session.lastUpdatedLabel
-            : session.toolName,
+        aiSessionSubtitle(session),
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,
         ),

@@ -7927,6 +7927,35 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 	}
 }
 
+func TestLongAgentImageHistoryKeepsInitialAttachReplayBounded(t *testing.T) {
+	window := &muxWindow{}
+	// Mirrors the reproduced 100+ MiB Pi session: 27 retained screenshots
+	// totaling roughly 10 MiB. Initial attach must not enqueue all of them.
+	const imageCount = 27
+	payload := strings.Repeat("P", 384*1024)
+	for i := 0; i < imageCount; i++ {
+		window.observeKittyGraphicsLocked([]byte(fmt.Sprintf(
+			"\x1b_Ga=T,U=1,i=%d,f=100;%s\x1b\\",
+			i+1,
+			payload,
+		)))
+	}
+
+	replay := window.kittyImageReplayLocked(nil)
+	if len(replay) > maxReplayedKittyImageBytes {
+		t.Fatalf("long-session replay = %d bytes, limit = %d",
+			len(replay), maxReplayedKittyImageBytes)
+	}
+	if !strings.Contains(string(replay), fmt.Sprintf("i=%d,", imageCount)) {
+		t.Fatalf("newest likely-visible image missing from bounded replay")
+	}
+	// An omitted older image remains available through post-attach repair.
+	repair, served := window.kittyImageTransmissionsForLocked([]string{"1"})
+	if len(repair) == 0 || !reflect.DeepEqual(served, []string{"1"}) {
+		t.Fatalf("older image was not available for repair: served=%#v", served)
+	}
+}
+
 func TestKittyImageReplaySkipsOversizedImageAndKeepsSmallerCandidate(t *testing.T) {
 	window := &muxWindow{
 		kittyImages: map[string][]byte{
@@ -7994,7 +8023,7 @@ func TestKittyImageReplaySkipsImagesClientAlreadyHolds(t *testing.T) {
 	}
 }
 
-func TestRequestedKittyImagesRespectReplayByteLimit(t *testing.T) {
+func TestRequestedKittyImagesUsePostAttachRepairByteLimit(t *testing.T) {
 	window := &muxWindow{
 		kittyImages: map[string][]byte{
 			"1": bytes.Repeat([]byte{'a'}, 5*1024*1024),
@@ -8009,8 +8038,8 @@ func TestRequestedKittyImagesRespectReplayByteLimit(t *testing.T) {
 	if len(payload) != 5*1024*1024 {
 		t.Fatalf("requested image payload = %d bytes, want 5 MiB", len(payload))
 	}
-	if len(payload) > maxReplayedKittyImageBytes {
-		t.Fatalf("requested image payload exceeded replay limit: %d", len(payload))
+	if len(payload) > maxKittyImageRepairBytes {
+		t.Fatalf("requested image payload exceeded repair limit: %d", len(payload))
 	}
 	if !reflect.DeepEqual(served, []string{"1"}) {
 		t.Fatalf("served ids = %#v, want [1]", served)
@@ -11306,6 +11335,43 @@ func TestCursorAgentToolMapping(t *testing.T) {
 	}
 }
 
+func TestLiveCursorWindowPublishesSessionFromFalseConversationMetadata(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
+	now := time.Now()
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 201 {
+			return now.Add(-time.Second)
+		}
+		return time.Time{}
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "project", "named-subtree")
+	chatDir := filepath.Join(home, ".cursor", "chats", "workspace", "live-chat")
+	if err := os.MkdirAll(chatDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := fmt.Sprintf(
+		`{"cwd":%q,"updatedAtMs":%d,"hasConversation":false}`,
+		project,
+		now.UnixMilli(),
+	)
+	if err := os.WriteFile(filepath.Join(chatDir, "meta.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	window := &muxWindow{cwd: project, agentTool: "cursor-agent"}
+	window.refreshCursorSessionMetadataLocked(201)
+
+	if window.agentSessionID != "live-chat" {
+		t.Fatalf("live Cursor session = %q, want live-chat", window.agentSessionID)
+	}
+	if !window.agentSessionIdentityExact {
+		t.Fatalf("live Cursor identity was not marked exact")
+	}
+}
+
 func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
 	originalProcessStart := processStartedAtForMetadata
 	originalProcessTable := processTableForMetadata
@@ -11337,7 +11403,7 @@ func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		meta := fmt.Sprintf(
-			`{"title":"Chat %s","cwd":%q,"updatedAtMs":%d,"hasConversation":true}`,
+			`{"title":"Chat %s","cwd":%q,"updatedAtMs":%d,"hasConversation":false}`,
 			chatID, cwd, updatedAtMs,
 		)
 		if err := os.WriteFile(

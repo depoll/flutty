@@ -9,6 +9,23 @@ import 'package:monkeyssh/presentation/widgets/ai_session_picker.dart';
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 void main() {
+  test('Pi subtitle identifies the session directory or named subtree', () {
+    const session = ToolSessionInfo(
+      toolName: 'Pi',
+      sessionId: 'pi-session',
+      summary: 'Fix discovery',
+      workingDirectory: '/Users/demo/.local/share/pi-worktrees/named-subtree',
+    );
+
+    expect(aiSessionSubtitle(session), '…/named-subtree');
+    expect(
+      aiSessionSubtitle(
+        const ToolSessionInfo(toolName: 'Codex', sessionId: 'codex'),
+      ),
+      'Codex',
+    );
+  });
+
   group('buildAiSessionProviderEntries', () {
     test('derives loading, failure, and loaded provider states', () {
       const codexSession = ToolSessionInfo(

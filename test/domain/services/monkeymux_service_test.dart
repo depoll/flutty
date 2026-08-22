@@ -305,6 +305,25 @@ void main() {
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
     });
 
+    test('maps exact live Cursor session metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@2',
+        'index': 1,
+        'name': 'Cursor Agent',
+        'active': true,
+        'currentCommand': 'cursor-agent',
+        'panePid': 4321,
+        'agentTool': 'cursor-agent',
+        'agentSessionId': 'cursor-chat-id',
+        'agentSessionIdentityExact': true,
+      });
+
+      expect(window, isNotNull);
+      expect(window!.foregroundAgentTool, AgentLaunchTool.cursorAgent);
+      expect(window.activeAgentSessionId, 'cursor-chat-id');
+      expect(window.activeAgentSessionConfidence, AgentSessionConfidence.high);
+    });
+
     test('maps helper terminal progress metadata onto tmux windows', () {
       final window = parseMonkeyMuxWindowSnapshotForTesting({
         'id': '@1',

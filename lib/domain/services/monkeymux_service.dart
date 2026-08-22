@@ -2534,6 +2534,7 @@ TmuxWindow? _windowFromJson(Object? value) {
   final terminalBracketedPasteMode = explicitTerminalBracketedPasteMode is bool
       ? explicitTerminalBracketedPasteMode
       : _privateModeValue(privateModes, '2004');
+  final agentSessionId = _nonEmpty(value['agentSessionId'] as String?);
   // The MonkeyMux server only raises the `#` alert flag when a background
   // window emits a terminal bell (agents ring the bell when they need input),
   // and clears it as soon as the window is selected. Parsing it restores the
@@ -2550,6 +2551,11 @@ TmuxWindow? _windowFromJson(Object? value) {
     flags: _nonEmpty(value['flags'] as String?),
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
+    activeAgentSessionId: agentSessionId,
+    activeAgentSessionConfidence:
+        agentSessionId != null && value['agentSessionIdentityExact'] == true
+        ? AgentSessionConfidence.high
+        : null,
     terminalReportsMouseWheel: terminalReportsMouseWheel,
     terminalMouseReportSgr: terminalMouseReportSgr,
     terminalBracketedPasteMode: terminalBracketedPasteMode,
