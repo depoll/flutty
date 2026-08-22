@@ -258,6 +258,7 @@ void main() {
                   promptStatus: AcpPromptStatus.streaming,
                 ),
               ),
+              const AcpMuxWindowStatusBadge(fallbackLabel: 'native'),
             ],
           ),
         ),
@@ -266,6 +267,7 @@ void main() {
 
     expect(find.text('waiting'), findsOneWidget);
     expect(find.text('running'), findsOneWidget);
+    expect(find.text('native'), findsOneWidget);
     expect(find.byIcon(Icons.hourglass_bottom), findsOneWidget);
     expect(find.byIcon(Icons.play_arrow), findsOneWidget);
   });
@@ -1395,6 +1397,121 @@ void main() {
       expect(selected, isA<TmuxOpenAcpSessionAction>());
       expect((selected! as TmuxOpenAcpSessionAction).key, key);
     });
+
+    testWidgets(
+      'durable native window keeps panel title badges and progress live',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final presetService = _MockAgentLaunchPresetService();
+        final discoveryService = _MockAgentSessionDiscoveryService();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 1,
+          client: _MockSshClient(),
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'demo',
+          ),
+        );
+        const tmuxSessionName = 'main';
+        final key = fakeAcpKey();
+        final manager = FakeAcpSessionManager(
+          sessions: [
+            fakeAcpSession(
+              key: key,
+              title: 'Live panel title',
+              promptStatus: AcpPromptStatus.streaming,
+              plan: const [
+                AcpPlanEntry(
+                  content: 'done',
+                  priority: AcpPlanPriority.high,
+                  status: AcpPlanStatus.completed,
+                ),
+                AcpPlanEntry(
+                  content: 'next',
+                  priority: AcpPlanPriority.medium,
+                  status: AcpPlanStatus.inProgress,
+                ),
+              ],
+            ),
+          ],
+        );
+        final windows = [
+          TmuxWindow(
+            index: 3,
+            id: '@4',
+            name: 'Copilot CLI',
+            isActive: true,
+            currentPath: '/home/dev/project',
+            nativeAcpBridgeId: key.bridgeId,
+            nativeAcpProviderId: key.providerId,
+          ),
+        ];
+        TmuxNavigatorAction? selected;
+
+        when(
+          () => presetService.getPresetForHost(session.hostId),
+        ).thenAnswer((_) async => null);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+
+        await _pumpNavigatorHost(
+          tester,
+          tmuxService: tmuxService,
+          presetService: presetService,
+          discoveryService: discoveryService,
+          session: session,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+          acpManager: manager,
+          onActionSelected: (action) => selected = action,
+        );
+        await tester.tap(find.text('Open'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Live panel title'), findsOneWidget);
+        expect(find.text('agent windows'), findsNothing);
+        expect(
+          find.byKey(const ValueKey('native-acp-window-indicator-3')),
+          findsOneWidget,
+        );
+        expect(find.text('NATIVE'), findsOneWidget);
+        expect(find.text('running'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('native-acp-window-progress-3')),
+          findsOneWidget,
+        );
+
+        manager.emit(
+          AcpSessionManagerState(
+            sessions: [
+              fakeAcpSession(
+                key: key,
+                title: 'Synchronized panel title',
+                promptStatus: AcpPromptStatus.streaming,
+              ),
+            ],
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.text('Live panel title'), findsNothing);
+        expect(find.text('Synchronized panel title'), findsOneWidget);
+
+        await tester.tap(find.text('Synchronized panel title'));
+        await tester.pumpAndSettle();
+        expect(selected, isA<TmuxOpenAcpWindowAction>());
+        final action = selected! as TmuxOpenAcpWindowAction;
+        expect(action.windowIndex, 3);
+        expect(action.bridgeId, key.bridgeId);
+        expect(action.providerId, key.providerId);
+      },
+    );
   });
 }
 

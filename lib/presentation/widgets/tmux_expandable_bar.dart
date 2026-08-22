@@ -388,6 +388,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           )
           .firstOrNull;
 
+  TerminalProgress? _progressForWindow(TmuxWindow window) {
+    if (widget.activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return null;
+    }
+    if (window.isNativeAcp) {
+      final session = _sessionForNativeWindow(window);
+      if (session != null) {
+        return acpActivityTerminalProgress(acpSessionActivityDisplay(session));
+      }
+    }
+    return window.terminalProgress;
+  }
+
   TmuxOpenAcpWindowAction _openNativeWindowAction(TmuxWindow window) =>
       TmuxOpenAcpWindowAction(
         windowIndex: window.index,
@@ -1757,15 +1770,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final windowTool = window.isNativeAcp
         ? agentLaunchToolForAcpProviderId(window.nativeAcpProviderId!)
         : window.foregroundAgentTool;
-    final progress = widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
-        ? window.terminalProgress
+    final nativeSession = window.isNativeAcp
+        ? _sessionForNativeWindow(window)
         : null;
+    final nativeActivity = nativeSession == null
+        ? null
+        : acpSessionActivityDisplay(nativeSession);
+    final progress = _progressForWindow(window);
     final title = _redactStoreScreenshotIdentities
         ? _storeScreenshotWindowTitle(window)
-        : window.displayTitle;
-    final iconColor = isActive
-        ? theme.colorScheme.onPrimaryContainer
-        : theme.colorScheme.onSurfaceVariant;
+        : nativeSession == null
+        ? window.displayTitle
+        : acpSessionDisplayTitle(nativeSession);
+    final iconColor = nativeActivity == null
+        ? (isActive
+              ? theme.colorScheme.onPrimaryContainer
+              : theme.colorScheme.onSurfaceVariant)
+        : acpStatusColor(theme.colorScheme, nativeActivity.tone);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
@@ -1820,6 +1841,18 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                           ? Icons.smart_toy_outlined
                           : Icons.terminal,
                     ),
+                    if (window.isNativeAcp)
+                      Positioned(
+                        left: 2,
+                        top: 2,
+                        child: _NativeAgentIndicator(
+                          key: ValueKey(
+                            'monkeymux-sidebar-native-${window.index}',
+                          ),
+                          color: iconColor,
+                          size: 10,
+                        ),
+                      ),
                     Positioned(
                       right: -9,
                       bottom: -9,
@@ -2330,7 +2363,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         children: [
           Padding(
             padding: const EdgeInsets.only(right: 6),
-            child: _AcpMuxWindowStatusBadge(session: session),
+            child: AcpMuxWindowStatusBadge(session: session),
           ),
           if (session != null)
             IconButton(
@@ -2405,18 +2438,26 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final nativeSession = window.isNativeAcp
         ? _sessionForNativeWindow(window)
         : null;
+    final nativeActivity = nativeSession == null
+        ? null
+        : acpSessionActivityDisplay(nativeSession);
     final title = _redactStoreScreenshotIdentities
         ? _storeScreenshotWindowTitle(window)
-        : window.displayTitle;
+        : nativeSession == null
+        ? window.displayTitle
+        : acpSessionDisplayTitle(nativeSession);
     final secondaryTitle = _redactStoreScreenshotIdentities
         ? null
-        : window.secondaryTitle;
-    final iconColor = isActive
-        ? theme.colorScheme.primary
-        : theme.colorScheme.onSurfaceVariant;
-    final progress = widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
-        ? window.terminalProgress
-        : null;
+        : nativeSession == null
+        ? window.secondaryTitle
+        : '${nativeSession.providerLabel} · '
+              '${acpCwdSummary(nativeSession.cwd)} · ${nativeActivity!.label}';
+    final iconColor = nativeActivity == null
+        ? (isActive
+              ? theme.colorScheme.primary
+              : theme.colorScheme.onSurfaceVariant)
+        : acpStatusColor(theme.colorScheme, nativeActivity.tone);
+    final progress = _progressForWindow(window);
 
     return ListTile(
       dense: true,
@@ -2459,6 +2500,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 ? Icons.smart_toy_outlined
                 : Icons.terminal,
           ),
+          if (window.isNativeAcp) ...[
+            const SizedBox(width: 4),
+            AcpNativeBadge(
+              key: ValueKey('monkeymux-native-badge-${window.index}'),
+              color: iconColor,
+            ),
+          ],
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -2507,7 +2555,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           Padding(
             padding: const EdgeInsets.only(right: 6),
             child: window.isNativeAcp
-                ? _AcpMuxWindowStatusBadge(
+                ? AcpMuxWindowStatusBadge(
                     session: nativeSession,
                     fallbackLabel: 'native',
                   )
@@ -2547,75 +2595,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 ),
               );
             },
-    );
-  }
-}
-
-class _AcpMuxWindowStatusBadge extends StatelessWidget {
-  const _AcpMuxWindowStatusBadge({
-    required this.session,
-    this.fallbackLabel = 'recent',
-  });
-
-  final AcpSessionState? session;
-  final String fallbackLabel;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final display = session == null
-        ? AcpStatusDisplay(
-            label: fallbackLabel,
-            icon: fallbackLabel == 'native'
-                ? Icons.smart_toy_outlined
-                : Icons.history,
-            tone: AcpStatusTone.neutral,
-          )
-        : acpSessionMuxStatusDisplay(session!);
-    final (foreground, background) = switch (display.tone) {
-      AcpStatusTone.active => (
-        theme.colorScheme.onPrimaryContainer,
-        theme.colorScheme.primaryContainer,
-      ),
-      AcpStatusTone.warning => (
-        theme.colorScheme.onTertiaryContainer,
-        theme.colorScheme.tertiaryContainer,
-      ),
-      AcpStatusTone.error => (
-        theme.colorScheme.onErrorContainer,
-        theme.colorScheme.errorContainer,
-      ),
-      AcpStatusTone.neutral => (
-        theme.colorScheme.onSurfaceVariant,
-        theme.colorScheme.surfaceContainerHighest,
-      ),
-    };
-    return Semantics(
-      label: 'native agent ${display.label}',
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: background,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(display.icon, size: 12, color: foreground),
-              const SizedBox(width: 3),
-              Text(
-                display.label,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  fontSize: 10,
-                  color: foreground,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

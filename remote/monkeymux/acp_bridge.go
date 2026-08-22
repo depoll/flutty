@@ -26,18 +26,23 @@ import (
 )
 
 const (
-	acpBridgeProtocolVersion  = 1
-	acpMaxFrameBytes          = 20 * 1024 * 1024
-	acpReplayMaxEvents        = 1024
-	acpReplayMaxBytes         = 40 * 1024 * 1024
+	acpBridgeProtocolVersion    = 1
+	acpMaxFrameBytes            = 20 * 1024 * 1024
+	acpReplayEventOverheadBytes = 128
+	acpReplayMaxBytes           = 40 * 1024 * 1024
+	// Tiny streaming deltas used to hit a 1,024-event cap long before the
+	// memory budget, making ordinary sessions unreplayable after an app restart.
+	// Charge every event for its payload plus estimated object overhead so the
+	// byte budget remains the effective, bounded retention limit.
+	acpReplayMaxEvents        = acpReplayMaxBytes / acpReplayEventOverheadBytes
 	acpPendingReplayMaxEvents = 256
 	acpPendingReplayMaxBytes  = acpReplayMaxBytes
 	acpIdleTimeout            = 24 * time.Hour
 	acpProviderDrainTimeout   = 2 * time.Second
-	// The queue holds a complete bounded replay plus control frames. Attach also
-	// sizes it dynamically so priming can never block while the bridge lock is
-	// held if those bounds change independently.
-	acpClientLiveQueueCapacity = acpReplayMaxEvents + 4
+	// Keep the steady-state live queue modest; attach sizes it dynamically for
+	// the actual replay being primed so a high event-count retention bound does
+	// not preallocate a huge channel for every connected client.
+	acpClientLiveQueueCapacity = 1024 + 4
 	acpAttachQueueSafetyMargin = 4
 )
 
@@ -790,7 +795,7 @@ func (b *acpBridge) publish(
 			}
 		}
 	}
-	messageBytes := len(data) + 128
+	messageBytes := len(data) + acpReplayEventOverheadBytes
 	b.mu.Lock()
 	if pendingID != "" &&
 		(b.pendingReplayEvents >= acpPendingReplayMaxEvents ||
@@ -872,7 +877,7 @@ func (b *acpBridge) failProviderProtocol() {
 }
 
 func (b *acpBridge) appendReplayLocked(message acpWireMessage, pendingID string) {
-	size := len(message.Data) + 128
+	size := len(message.Data) + acpReplayEventOverheadBytes
 	b.replay = append(b.replay, acpReplayEvent{
 		message:   message,
 		bytes:     size,

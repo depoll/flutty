@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/theme.dart';
 import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_session_keys.dart';
+import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
@@ -22,6 +23,7 @@ import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/tmux_service.dart';
 import 'acp_mux_window_status_badge.dart';
+import 'acp_native_badge.dart';
 import 'acp_new_session_sheet.dart';
 import 'acp_session_presentation.dart';
 import 'acp_session_switcher.dart';
@@ -652,6 +654,23 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       ) +
       1;
 
+  AcpSessionManagerState get _watchedAcpManagerState {
+    final manager = ref.watch(acpSessionManagerProvider);
+    return ref.watch(acpSessionManagerStateProvider).asData?.value ??
+        manager.state;
+  }
+
+  AcpSessionState? _sessionForNativeWindow(TmuxWindow window) =>
+      _watchedAcpManagerState.sessions
+          .where(
+            (session) =>
+                session.key.hostId == widget.session.hostId &&
+                session.key.bridgeId == window.nativeAcpBridgeId &&
+                session.key.providerId == window.nativeAcpProviderId &&
+                session.isOpenMuxWindow,
+          )
+          .firstOrNull;
+
   List<ToolSessionInfo> _liveMonkeyMuxAgentSessions({String? toolName}) {
     if (widget.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
       return const <ToolSessionInfo>[];
@@ -998,11 +1017,14 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     Navigator.pop(context, TmuxSwitchWindowAction(windowIndex));
   }
 
-  Future<void> _confirmCloseWindow(TmuxWindow window) async {
+  Future<void> _confirmCloseWindow(
+    TmuxWindow window, {
+    String? displayTitle,
+  }) async {
     final confirmed = await confirmMuxWindowClose(
       context: context,
       ref: ref,
-      title: window.displayTitle,
+      title: displayTitle ?? window.displayTitle,
     );
     if (!mounted || !confirmed) {
       return;
@@ -1290,14 +1312,16 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   }
 
   Widget _buildNativeAcpSessionSection(ThemeData theme) {
-    final manager = ref.watch(acpSessionManagerProvider);
-    final managerState =
-        ref.watch(acpSessionManagerStateProvider).asData?.value ??
-        manager.state;
-    final sessions = managerState.sessions
+    final serverOwnedBridgeIds = (_windows ?? const <TmuxWindow>[])
+        .map((window) => window.nativeAcpBridgeId)
+        .whereType<String>()
+        .toSet();
+    final sessions = _watchedAcpManagerState.sessions
         .where(
           (session) =>
-              session.key.hostId == widget.session.hostId && session.isLive,
+              session.key.hostId == widget.session.hostId &&
+              session.isLive &&
+              !serverOwnedBridgeIds.contains(session.key.bridgeId),
         )
         .toList(growable: false);
     final providers =
@@ -1384,30 +1408,9 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         children: [
           AgentToolIcon(tool: agentTool, size: 17, color: activityColor),
           const SizedBox(width: 4),
-          Tooltip(
-            message: 'Native agent',
-            child: Semantics(
-              label: 'Native agent',
-              child: Container(
-                key: ValueKey('native-acp-indicator-${key.value}'),
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                decoration: BoxDecoration(
-                  color: activityColor.withAlpha(24),
-                  border: Border.all(color: activityColor.withAlpha(110)),
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                child: Text(
-                  'NATIVE',
-                  style: FluttyTheme.monoStyle.copyWith(
-                    color: activityColor,
-                    fontSize: 8,
-                    height: 1,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.4,
-                  ),
-                ),
-              ),
-            ),
+          AcpNativeBadge(
+            key: ValueKey('native-acp-indicator-${key.value}'),
+            color: activityColor,
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -1508,10 +1511,30 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   Widget _buildWindowTile(TmuxWindow window) {
     final theme = Theme.of(context);
     final isActive = window.isActive;
-    final secondaryTitle = window.secondaryTitle;
-    final iconColor = isActive
-        ? theme.colorScheme.primary
-        : theme.colorScheme.onSurfaceVariant;
+    final nativeSession = window.isNativeAcp
+        ? _sessionForNativeWindow(window)
+        : null;
+    final nativeActivity = nativeSession == null
+        ? null
+        : acpSessionActivityDisplay(nativeSession);
+    final title = nativeSession == null
+        ? window.displayTitle
+        : acpSessionDisplayTitle(nativeSession);
+    final secondaryTitle = nativeSession == null
+        ? window.secondaryTitle
+        : '${nativeSession.providerLabel} · '
+              '${acpCwdSummary(nativeSession.cwd)} · ${nativeActivity!.label}';
+    final iconColor = nativeActivity == null
+        ? (isActive
+              ? theme.colorScheme.primary
+              : theme.colorScheme.onSurfaceVariant)
+        : acpStatusColor(theme.colorScheme, nativeActivity.tone);
+    final windowTool = window.isNativeAcp
+        ? agentLaunchToolForAcpProviderId(window.nativeAcpProviderId!)
+        : window.foregroundAgentTool;
+    final progress = nativeActivity == null
+        ? null
+        : acpActivityTerminalProgress(nativeActivity);
 
     return ListTile(
       dense: true,
@@ -1547,15 +1570,24 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       title: Row(
         children: [
           AgentToolIcon(
-            tool: window.foregroundAgentTool,
+            tool: windowTool,
             size: 16,
             color: iconColor,
-            fallbackIcon: Icons.terminal,
+            fallbackIcon: window.isNativeAcp
+                ? Icons.smart_toy_outlined
+                : Icons.terminal,
           ),
+          if (window.isNativeAcp) ...[
+            const SizedBox(width: 4),
+            AcpNativeBadge(
+              key: ValueKey('native-acp-window-indicator-${window.index}'),
+              color: iconColor,
+            ),
+          ],
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              window.displayTitle,
+              title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: isActive
@@ -1567,22 +1599,46 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           ),
         ],
       ),
-      subtitle: secondaryTitle != null
-          ? Text(
-              secondaryTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            )
-          : null,
+      subtitle: secondaryTitle == null && progress == null
+          ? null
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (secondaryTitle != null)
+                  Text(
+                    secondaryTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: iconColor,
+                    ),
+                  ),
+                if (progress != null) ...[
+                  if (secondaryTitle != null) const SizedBox(height: 3),
+                  LinearProgressIndicator(
+                    key: ValueKey('native-acp-window-progress-${window.index}'),
+                    value: progress.percentage == null
+                        ? null
+                        : progress.fraction,
+                    minHeight: 3,
+                    color: iconColor,
+                    backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                  ),
+                ],
+              ],
+            ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Padding(
             padding: const EdgeInsets.only(right: 6),
-            child: TmuxWindowStatusBadge(window: window),
+            child: window.isNativeAcp
+                ? AcpMuxWindowStatusBadge(
+                    session: nativeSession,
+                    fallbackLabel: 'native',
+                  )
+                : TmuxWindowStatusBadge(window: window),
           ),
           IconButton(
             icon: const Icon(Icons.close, size: 16),
@@ -1590,12 +1646,22 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
             constraints: const BoxConstraints.tightFor(width: 44, height: 44),
             padding: EdgeInsets.zero,
             tooltip: 'Close window',
-            onPressed: () => unawaited(_confirmCloseWindow(window)),
+            onPressed: () =>
+                unawaited(_confirmCloseWindow(window, displayTitle: title)),
           ),
         ],
       ),
-      // Active window: dismiss. Other windows: switch.
-      onTap: isActive
+      onTap: window.isNativeAcp
+          ? () => Navigator.pop(
+              context,
+              TmuxOpenAcpWindowAction(
+                windowIndex: window.index,
+                bridgeId: window.nativeAcpBridgeId!,
+                providerId: window.nativeAcpProviderId!,
+                workingDirectory: nativeSession?.cwd ?? window.currentPath,
+              ),
+            )
+          : isActive
           ? () => Navigator.pop(context)
           : () => _switchToWindow(window.index),
     );

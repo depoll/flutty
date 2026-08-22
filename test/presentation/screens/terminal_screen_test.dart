@@ -18,6 +18,8 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
+import 'package:monkeyssh/domain/models/acp_session_state.dart';
+import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
@@ -27,6 +29,7 @@ import 'package:monkeyssh/domain/models/terminal_progress.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/device_debug_service.dart';
@@ -48,6 +51,8 @@ import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart'
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 import 'package:xterm/xterm.dart';
+
+import '../../support/fake_acp_session_manager.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 String _trueColorLoginShellCommand(
@@ -1447,6 +1452,7 @@ void main() {
       ActiveSessionsNotifier? activeSessions,
       TmuxService? tmuxService,
       MonkeyMuxService? monkeyMuxService,
+      AcpSessionManager? acpSessionManager,
       ShellCompletionService? shellCompletionService,
       AndroidDeviceDebugPlatform? deviceDebugPlatform,
       RemoteAdbCommandRunner? remoteAdbCommandRunner,
@@ -1471,6 +1477,8 @@ void main() {
               tmuxServiceProvider.overrideWithValue(tmuxService),
             if (monkeyMuxService != null)
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            if (acpSessionManager != null)
+              acpSessionManagerProvider.overrideWithValue(acpSessionManager),
             if (shellCompletionService != null)
               shellCompletionServiceProvider.overrideWithValue(
                 shellCompletionService,
@@ -7810,6 +7818,175 @@ void main() {
           tester.getSemantics(inactiveExpanded).label,
           contains('MonkeyMux window 1: tests, progress, indeterminate'),
         );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
+      'shows live native-session progress in its real MonkeyMux pane',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1100, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        const bridgeId = '0123456789abcdef0123456789abcdef';
+        final key = fakeAcpKey(
+          hostId: host.id,
+          providerId: AcpBuiltinProviderIds.pi,
+          bridgeId: bridgeId,
+          acpSessionId: 'native-session',
+        );
+        final workingSession = fakeAcpSession(
+          key: key,
+          providerLabel: 'Pi',
+          title: 'Live native task',
+          promptStatus: AcpPromptStatus.streaming,
+          plan: const [
+            AcpPlanEntry(
+              content: 'done',
+              priority: AcpPlanPriority.high,
+              status: AcpPlanStatus.completed,
+            ),
+            AcpPlanEntry(
+              content: 'next',
+              priority: AcpPlanPriority.medium,
+              status: AcpPlanStatus.inProgress,
+            ),
+          ],
+        );
+        final acpManager = FakeAcpSessionManager(sessions: [workingSession]);
+        addTearDown(acpManager.dispose);
+        const windows = <TmuxWindow>[
+          TmuxWindow(
+            index: 2,
+            id: '@3',
+            name: 'Pi',
+            isActive: true,
+            currentPath: '/home/dev/project',
+            nativeAcpBridgeId: bridgeId,
+            nativeAcpProviderId: AcpBuiltinProviderIds.pi,
+          ),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: 'work',
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(session, 'work'),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, 'work'),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, 'work'),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => monkeyMuxService.selectWindow(
+            session,
+            'work',
+            2,
+            extraFlags: any(named: 'extraFlags'),
+            clientImageSignatures: any(named: 'clientImageSignatures'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await pumpScreen(
+          tester,
+          tmuxService: tmuxService,
+          monkeyMuxService: monkeyMuxService,
+          acpSessionManager: acpManager,
+        );
+        await tester.pump();
+
+        const collapsedKey = ValueKey('monkeymux-sidebar-progress-2');
+        final collapsed = find.byKey(collapsedKey);
+        expect(collapsed, findsOneWidget);
+        expect(
+          tester
+              .widget<LinearProgressIndicator>(
+                find.descendant(
+                  of: collapsed,
+                  matching: find.byType(LinearProgressIndicator),
+                ),
+              )
+              .value,
+          0.5,
+        );
+        expect(find.byTooltip('Switch to Live native task'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('monkeymux-sidebar-native-2')),
+          findsOneWidget,
+        );
+
+        await tester.drag(
+          find.byKey(const ValueKey('tmux-sidebar-window-2')),
+          const Offset(80, 0),
+          kind: PointerDeviceKind.mouse,
+          touchSlopX: 0,
+        );
+        await tester.pump();
+
+        const expandedKey = ValueKey('monkeymux-window-progress-2');
+        final expanded = find.byKey(expandedKey);
+        expect(expanded, findsOneWidget);
+        expect(find.text('Live native task'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('monkeymux-native-badge-2')),
+          findsOneWidget,
+        );
+        expect(find.text('running'), findsOneWidget);
+        expect(
+          tester
+              .widget<LinearProgressIndicator>(
+                find.descendant(
+                  of: expanded,
+                  matching: find.byType(LinearProgressIndicator),
+                ),
+              )
+              .value,
+          0.5,
+        );
+
+        acpManager.emit(
+          AcpSessionManagerState(
+            sessions: [
+              fakeAcpSession(
+                key: key,
+                providerLabel: 'Pi',
+                title: 'Renamed native task',
+                promptStatus: AcpPromptStatus.streaming,
+              ),
+            ],
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.text('Live native task'), findsNothing);
+        expect(find.text('Renamed native task'), findsOneWidget);
+        expect(
+          tester
+              .widget<LinearProgressIndicator>(
+                find.descendant(
+                  of: expanded,
+                  matching: find.byType(LinearProgressIndicator),
+                ),
+              )
+              .value,
+          isNull,
+        );
+
+        acpManager.emit(
+          AcpSessionManagerState(
+            sessions: [fakeAcpSession(key: key, providerLabel: 'Pi')],
+          ),
+        );
+        await tester.pump();
+        expect(find.byKey(expandedKey), findsNothing);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

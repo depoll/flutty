@@ -82,12 +82,12 @@ enum AcpSessionErrorKind {
   /// The SSH transport failed or could not reconnect.
   transport,
 
-  /// The bridge's bounded replay buffer overflowed, so some history emitted
-  /// while the client was detached could not be replayed.
+  /// The bridge's bounded replay buffer overflowed, so some earlier history
+  /// could not be replayed.
   ///
-  /// This is a non-fatal warning: the session remains usable and can continue
-  /// or be reloaded to fetch full history from the agent. It is never a fatal
-  /// transport failure.
+  /// This is a non-fatal warning: the session remains usable and can continue,
+  /// but the missing portion cannot be restored in the current view. It is
+  /// never a fatal transport failure.
   replayOverflow,
 
   /// The ACP protocol was violated by the peer.

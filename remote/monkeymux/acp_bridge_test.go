@@ -761,12 +761,33 @@ func TestAcpReconnectReplaysAfterAck(t *testing.T) {
 	}
 }
 
+func TestAcpReplayRetainsManyTinyStreamingUpdates(t *testing.T) {
+	bridge, cleanup := startTestAcpBridge(t, "cat")
+	defer cleanup()
+	const updates = 4096
+	for range updates {
+		bridge.publish("output", json.RawMessage(`{"jsonrpc":"2.0","method":"update"}`), "", nil)
+	}
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if len(bridge.replay) != updates || bridge.replay[0].message.Sequence != 1 {
+		t.Fatalf("retained replay = %d events from %d, want %d events from 1", len(bridge.replay), bridge.replay[0].message.Sequence, updates)
+	}
+}
+
 func TestAcpReplayOverflowSignalsRetainedSequence(t *testing.T) {
 	bridge, cleanup := startTestAcpBridge(t, "cat")
 	defer cleanup()
-	for range acpReplayMaxEvents + 1 {
-		bridge.publish("output", json.RawMessage(`{"jsonrpc":"2.0","method":"update"}`), "", nil)
-	}
+	bridge.mu.Lock()
+	bridge.nextSequence = 2
+	bridge.appendReplayLocked(acpWireMessage{
+		Version:  acpBridgeProtocolVersion,
+		Type:     "output",
+		BridgeID: bridge.id,
+		Sequence: 2,
+		Data:     json.RawMessage(`{"jsonrpc":"2.0","method":"update"}`),
+	}, "")
+	bridge.mu.Unlock()
 	conn, err := dialAcpBridge(bridge.id)
 	if err != nil {
 		t.Fatal(err)
@@ -812,10 +833,13 @@ func TestAcpReplayRetainsPendingProviderRequest(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"permission-1","method":"session/request_permission"}`,
 	)
 	bridge.publish("output", permission, "", nil)
-	for range acpReplayMaxEvents + 1 {
-		bridge.publish("output", json.RawMessage(`{"jsonrpc":"2.0","method":"update"}`), "", nil)
-	}
 	bridge.mu.Lock()
+	bridge.replay = append(bridge.replay, acpReplayEvent{
+		message: acpWireMessage{Sequence: 2},
+		bytes:   acpReplayMaxBytes,
+	})
+	bridge.replayBytes += acpReplayMaxBytes
+	bridge.trimReplayLocked()
 	found := false
 	for _, event := range bridge.replay {
 		if event.pendingID == `"permission-1"` &&

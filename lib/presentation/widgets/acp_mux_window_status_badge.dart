@@ -6,18 +6,27 @@ import 'acp_session_presentation.dart';
 /// Compact waiting/running badge for a native ACP mux window.
 class AcpMuxWindowStatusBadge extends StatelessWidget {
   /// Creates a badge for a live [session], or a recent-session placeholder.
-  const AcpMuxWindowStatusBadge({this.session, super.key});
+  const AcpMuxWindowStatusBadge({
+    this.session,
+    this.fallbackLabel = 'recent',
+    super.key,
+  });
 
-  /// Live session state. Null denotes a recent, detached reference.
+  /// Live session state. Null uses [fallbackLabel].
   final AcpSessionState? session;
+
+  /// Status shown when the local ACP session has not attached yet.
+  final String fallbackLabel;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final display = session == null
-        ? const AcpStatusDisplay(
-            label: 'recent',
-            icon: Icons.history,
+        ? AcpStatusDisplay(
+            label: fallbackLabel,
+            icon: fallbackLabel == 'native'
+                ? Icons.smart_toy_outlined
+                : Icons.history,
             tone: AcpStatusTone.neutral,
           )
         : acpSessionMuxStatusDisplay(session!);

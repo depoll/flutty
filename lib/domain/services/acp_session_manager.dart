@@ -2321,19 +2321,18 @@ class _SessionController {
   }
 
   void _onTransportError(MonkeyMuxAcpBridgeException error) {
-    // A replay-buffer overflow is a non-fatal warning: history emitted while
-    // detached could not be replayed, but the session stays usable and can be
-    // reloaded. Preserve it in `warning`, distinct from a fatal `error`, and
-    // never change the connection status.
+    // A replay-buffer overflow is a non-fatal warning: older history could
+    // not be replayed, but the session remains usable. Preserve it in `warning`,
+    // distinct from a fatal `error`, and never change connection status.
     if (error.kind == MonkeyMuxAcpBridgeErrorKind.replayOverflow) {
       _update(
         (s) => s.copyWith(
           warning: const AcpSessionError(
             kind: AcpSessionErrorKind.replayOverflow,
             message:
-                'Some history from while you were disconnected could not be '
-                'replayed. The session can continue, or reload it to fetch '
-                'full history.',
+                'Some earlier history exceeds the session replay buffer. '
+                'You can continue, but the missing portion cannot be restored '
+                'in this view.',
           ),
         ),
       );
