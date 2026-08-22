@@ -1374,8 +1374,10 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.descendant(of: nativeRow, matching: find.text('NATIVE')),
-        findsOneWidget,
+        tester.getSize(
+          find.byKey(ValueKey('native-acp-indicator-${key.value}')),
+        ),
+        const Size.square(12),
       );
       expect(
         find.byKey(ValueKey('native-acp-progress-${key.value}')),
@@ -1480,7 +1482,12 @@ void main() {
           find.byKey(const ValueKey('native-acp-window-indicator-3')),
           findsOneWidget,
         );
-        expect(find.text('NATIVE'), findsOneWidget);
+        expect(
+          tester.getSize(
+            find.byKey(const ValueKey('native-acp-window-indicator-3')),
+          ),
+          const Size.square(12),
+        );
         expect(find.text('running'), findsOneWidget);
         expect(
           find.byKey(const ValueKey('native-acp-window-progress-3')),

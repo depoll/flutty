@@ -7918,9 +7918,10 @@ void main() {
           0.5,
         );
         expect(find.byTooltip('Switch to Live native task'), findsOneWidget);
-        expect(
-          find.byKey(const ValueKey('monkeymux-sidebar-native-2')),
-          findsOneWidget,
+        const collapsedBadgeKey = ValueKey('monkeymux-sidebar-native-2');
+        expect(find.byKey(collapsedBadgeKey), findsOneWidget);
+        final collapsedBadgeSize = tester.getSize(
+          find.byKey(collapsedBadgeKey),
         );
 
         await tester.drag(
@@ -7935,9 +7936,11 @@ void main() {
         final expanded = find.byKey(expandedKey);
         expect(expanded, findsOneWidget);
         expect(find.text('Live native task'), findsOneWidget);
+        const expandedBadgeKey = ValueKey('monkeymux-native-badge-2');
+        expect(find.byKey(expandedBadgeKey), findsOneWidget);
         expect(
-          find.byKey(const ValueKey('monkeymux-native-badge-2')),
-          findsOneWidget,
+          collapsedBadgeSize,
+          tester.getSize(find.byKey(expandedBadgeKey)),
         );
         expect(find.text('running'), findsOneWidget);
         expect(

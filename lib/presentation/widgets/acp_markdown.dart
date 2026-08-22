@@ -100,7 +100,7 @@ class AcpMarkdown extends StatelessWidget {
       height: 1.4,
     );
     TextStyle prose({
-      double fontSize = 14,
+      double fontSize = 15,
       FontWeight? fontWeight,
       Color? color,
       FontStyle? fontStyle,
@@ -118,7 +118,7 @@ class AcpMarkdown extends StatelessWidget {
         ? mono(color: scheme.primary, decoration: TextDecoration.underline)
         : prose(color: scheme.primary, decoration: TextDecoration.underline);
     final styleSheet = base.copyWith(
-      blockSpacing: 6,
+      blockSpacing: FluttyTheme.spacingSm,
       p: body,
       a: link.copyWith(decorationColor: scheme.primary),
       code: mono().copyWith(
@@ -153,7 +153,7 @@ class AcpMarkdown extends StatelessWidget {
       listBullet: body,
       tableBorder: TableBorder.all(color: scheme.outline),
       tableHead: mono(fontWeight: FontWeight.w600),
-      tableBody: machineContent ? mono() : prose(fontSize: 13),
+      tableBody: machineContent ? mono() : prose(fontSize: 14),
       horizontalRuleDecoration: BoxDecoration(
         border: Border(top: BorderSide(color: scheme.outline)),
       ),

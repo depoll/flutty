@@ -2,6 +2,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -14,6 +15,20 @@ import '../../domain/models/acp_updates.dart';
 import '../../domain/services/acp_attachment_service.dart';
 import '../../domain/services/acp_session_manager.dart';
 import '../models/acp_slash_command.dart';
+
+/// Minimum insertion size promoted to a compact pasted-text chip.
+const int kAcpLargePasteThresholdChars = 2000;
+
+/// Minimum line count promoted to a compact pasted-text chip.
+const int kAcpLargePasteThresholdLines = 20;
+
+int _acpComposerPasteLineCount(String text) =>
+    text.codeUnits.where((unit) => unit == 10).length + 1;
+
+/// Whether [text] is large enough to collapse out of the editable field.
+bool shouldCollapseAcpComposerPaste(String text) =>
+    text.length >= kAcpLargePasteThresholdChars ||
+    _acpComposerPasteLineCount(text) >= kAcpLargePasteThresholdLines;
 
 /// Coarse activity of the composer's primary action.
 enum AcpComposerActivity {
@@ -123,6 +138,9 @@ class AcpComposerAttachment {
 
   /// Whether this attachment resolves to an image, for thumbnail rendering.
   bool get isImage => (candidate.mimeType ?? '').startsWith('image/');
+
+  /// Whether this is full prompt text represented by a compact paste chip.
+  bool get isPastedText => candidate.isPastedText;
 
   /// Returns a copy with the provided fields replaced.
   AcpComposerAttachment copyWith({
@@ -353,6 +371,29 @@ class AcpComposerController extends ChangeNotifier {
     _error = null;
     notifyListeners();
     return true;
+  }
+
+  /// Collapses a large clipboard insertion into an attachment-like text chip.
+  bool addPastedText(String text) {
+    if (!isEditable || text.isEmpty) return false;
+    final bytes = Uint8List.fromList(utf8.encode(text));
+    if (bytes.length > limits.maxEmbeddedBytes) {
+      _setError(
+        const AcpComposerError(
+          AcpComposerErrorKind.attachment,
+          'That pasted text is too large to send.',
+        ),
+      );
+      return false;
+    }
+    final lineCount = _acpComposerPasteLineCount(text);
+    return addAttachment(
+      AcpAttachmentCandidate.memory(
+        name: lineCount == 1 ? 'Pasted text' : 'Pasted text · $lineCount lines',
+        bytes: bytes,
+        mimeType: kAcpPastedTextMimeType,
+      ),
+    );
   }
 
   /// Removes the attachment with [id].

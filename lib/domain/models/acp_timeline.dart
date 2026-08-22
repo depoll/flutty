@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 
+import 'acp_attachment.dart';
 import 'acp_content.dart';
 import 'acp_updates.dart';
 
@@ -20,8 +21,9 @@ final class AcpTimelineLimits {
   const AcpTimelineLimits({
     this.maxEntries = 500,
     this.maxEntryBytes = 512 * 1024,
-    this.maxTotalBytes = 6 * 1024 * 1024,
-  });
+    this.maxRetainedImageBytes = kAcpAttachmentImageDisplayMaxBytes,
+    this.maxTotalBytes = 16 * 1024 * 1024,
+  }) : assert(maxRetainedImageBytes >= 0);
 
   /// Maximum retained timeline entries. Oldest entries are dropped first.
   final int maxEntries;
@@ -32,6 +34,13 @@ final class AcpTimelineLimits {
   /// tool payload cannot be retained in full even when the timeline overall
   /// is otherwise small.
   final int maxEntryBytes;
+
+  /// Maximum decoded bytes of inline images protected within one message.
+  ///
+  /// Image payloads are already bounded by the attachment and decoder safety
+  /// ceiling. Keeping that separate budget prevents an ordinary pasted
+  /// screenshot from being replaced by a text-only memory marker.
+  final int maxRetainedImageBytes;
 
   /// Maximum approximate total bytes retained across the whole timeline.
   final int maxTotalBytes;
@@ -310,9 +319,19 @@ final class AcpTimeline {
 /// the truncated portion so the timeline stays within its byte budget.
 const _truncationMarkerText = '\n… (truncated to stay within memory limits)';
 
-/// Approximates the retained byte footprint of [block] using its JSON
-/// encoding. This is only used to bound memory, not for wire transfer.
+/// Approximates the retained byte footprint of [block].
+///
+/// This is only used to bound memory, not for wire transfer. Large image
+/// payloads are measured directly; other blocks use their JSON encoding.
 int approximateContentBlockBytes(AcpContentBlock block) {
+  // Base64 image data is ASCII. Avoid materializing another multi-megabyte JSON
+  // string solely to estimate memory for the images this timeline now retains.
+  if (block is AcpImageContent) {
+    return block.data.length +
+        block.mimeType.length +
+        (block.uri?.length ?? 0) +
+        256;
+  }
   try {
     return utf8.encode(jsonEncode(block.toJson())).length;
   } on Object {
@@ -610,7 +629,16 @@ class AcpTimelineBuilder {
   /// whole timeline drops its oldest entries), then truncates a single
   /// remaining oversized block as a last resort.
   AcpMessageEntry _boundedMessageEntry(AcpMessageEntry entry) {
-    if (_approximateMessageBytes(entry) <= _limits.maxEntryBytes) {
+    final protectedImages = _protectedTimelineImages(
+      entry.content,
+      _limits.maxRetainedImageBytes,
+    );
+    final imageAllowance = protectedImages.fold<int>(
+      0,
+      (sum, block) => sum + approximateContentBlockBytes(block),
+    );
+    final byteLimit = _limits.maxEntryBytes + imageAllowance;
+    if (_approximateMessageBytes(entry) <= byteLimit) {
       return entry;
     }
     _overflowed = true;
@@ -619,23 +647,61 @@ class AcpTimelineBuilder {
       0,
       (sum, block) => sum + approximateContentBlockBytes(block),
     );
-    while (content.length > 1 && total > _limits.maxEntryBytes) {
-      total -= approximateContentBlockBytes(content.removeAt(0));
-    }
-    if (content.length == 1 &&
-        approximateContentBlockBytes(content.single) > _limits.maxEntryBytes) {
-      content[0] = _truncatedContentBlock(
-        content.single,
-        _limits.maxEntryBytes,
+    while (content.isNotEmpty && total > byteLimit) {
+      final unprotected = <int>[
+        for (var index = 0; index < content.length; index++)
+          if (!protectedImages.contains(content[index])) index,
+      ];
+      if (unprotected.length > 1 || unprotected.isEmpty) {
+        final index = unprotected.isEmpty ? 0 : unprotected.first;
+        total -= approximateContentBlockBytes(content.removeAt(index));
+        continue;
+      }
+      final index = unprotected.single;
+      final otherBytes = total - approximateContentBlockBytes(content[index]);
+      content[index] = _truncatedContentBlock(
+        content[index],
+        (byteLimit - otherBytes).clamp(0, byteLimit),
       );
+      // The content-free marker can itself exceed tiny synthetic test limits;
+      // retain that final bounded explanation rather than leaving the message
+      // empty, matching the historical text-truncation contract.
+      break;
     }
     return AcpMessageEntry(
       role: entry.role,
       order: entry.order,
       messageId: entry.messageId,
       parentToolCallId: entry.parentToolCallId,
+      queued: entry.queued,
       content: content,
     );
+  }
+
+  Set<AcpImageContent> _protectedTimelineImages(
+    List<AcpContentBlock> content,
+    int decodedByteBudget,
+  ) {
+    var remaining = decodedByteBudget;
+    final protected = <AcpImageContent>{};
+    for (final block in content.reversed) {
+      if (block is! AcpImageContent || block.data.isEmpty) continue;
+      final decodedBytes = _approximateBase64DecodedBytes(block.data);
+      if (decodedBytes <= 0 || decodedBytes > remaining) continue;
+      protected.add(block);
+      remaining -= decodedBytes;
+    }
+    return protected;
+  }
+
+  int _approximateBase64DecodedBytes(String encoded) {
+    var padding = 0;
+    if (encoded.endsWith('==')) {
+      padding = 2;
+    } else if (encoded.endsWith('=')) {
+      padding = 1;
+    }
+    return ((encoded.length * 3) ~/ 4) - padding;
   }
 
   /// Truncates a merged tool-call entry so its retained payload stays under

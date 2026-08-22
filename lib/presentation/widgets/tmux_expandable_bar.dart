@@ -27,42 +27,13 @@ Widget buildNativeAcpHandleIcon({
         Positioned(
           right: 0,
           bottom: 0,
-          child: _NativeAgentIndicator(
+          child: AcpNativeBadge(
             key: const ValueKey('native-acp-handle-indicator'),
             color: color,
             size: 10,
           ),
         ),
       ],
-    ),
-  );
-}
-
-class _NativeAgentIndicator extends StatelessWidget {
-  const _NativeAgentIndicator({
-    required this.color,
-    required this.size,
-    super.key,
-  });
-
-  final Color color;
-  final double size;
-
-  @override
-  Widget build(BuildContext context) => Tooltip(
-    message: 'Native agent',
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHigh,
-        border: Border.all(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        ),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: SizedBox.square(
-        dimension: size,
-        child: Icon(Icons.chat_bubble, size: size * 0.62, color: color),
-      ),
     ),
   );
 }
@@ -1845,12 +1816,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                       Positioned(
                         left: 2,
                         top: 2,
-                        child: _NativeAgentIndicator(
+                        child: AcpNativeBadge(
                           key: ValueKey(
                             'monkeymux-sidebar-native-${window.index}',
                           ),
                           color: iconColor,
-                          size: 10,
                         ),
                       ),
                     Positioned(
@@ -1936,25 +1906,21 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     builder: (buttonContext) => Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       child: Tooltip(
-        message: 'New window',
-        child: Semantics(
-          button: true,
-          label: 'New tmux window',
-          child: InkWell(
-            key: const ValueKey('tmux-sidebar-new-window'),
-            customBorder: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            onTap: () =>
-                unawaited(_showNewWindowPicker(anchorContext: buttonContext)),
-            child: SizedBox(
-              width: 44,
-              height: 44,
-              child: Icon(
-                Icons.add_circle_outline,
-                size: 22,
-                color: theme.colorScheme.primary,
-              ),
+        message: 'New tmux window',
+        child: InkWell(
+          key: const ValueKey('tmux-sidebar-new-window'),
+          customBorder: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          onTap: () =>
+              unawaited(_showNewWindowPicker(anchorContext: buttonContext)),
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: Icon(
+              Icons.add_circle_outline,
+              size: 22,
+              color: theme.colorScheme.primary,
             ),
           ),
         ),
@@ -2207,10 +2173,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 Positioned(
                   left: 2,
                   top: 2,
-                  child: _NativeAgentIndicator(
+                  child: AcpNativeBadge(
                     key: ValueKey('monkeymux-sidebar-acp-native-${key.value}'),
                     color: activityColor,
-                    size: 10,
                   ),
                 ),
                 Positioned(
@@ -2317,10 +2282,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         children: [
           AgentToolIcon(tool: agentTool, size: 17, color: activityColor),
           const SizedBox(width: 4),
-          _NativeAgentIndicator(
+          AcpNativeBadge(
             key: ValueKey('monkeymux-acp-native-${key.value}'),
             color: activityColor,
-            size: 12,
           ),
           const SizedBox(width: 8),
           Expanded(

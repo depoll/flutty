@@ -34,6 +34,7 @@ class _RecordingManager extends AcpSessionManager {
 
   int promptCount = 0;
   int cancelCount = 0;
+  List<AcpContentBlock>? lastPrompt;
 
   @override
   Future<AcpPromptResult> prompt(
@@ -41,6 +42,7 @@ class _RecordingManager extends AcpSessionManager {
     List<AcpContentBlock> content,
   ) async {
     promptCount++;
+    lastPrompt = List<AcpContentBlock>.of(content);
     return const AcpPromptResult(stopReason: AcpStopReason.endTurn);
   }
 
@@ -296,6 +298,83 @@ void main() {
     expect(controller.text, '/debug ');
   });
 
+  testWidgets('large system paste becomes a removable text chip', (
+    tester,
+  ) async {
+    final manager = _RecordingManager();
+    final controller = _makeController(manager);
+    addTearDown(controller.dispose);
+    await _pump(tester, controller);
+    final pasted = List.generate(24, (index) => 'line $index').join('\n');
+
+    await tester.enterText(find.byType(TextField), pasted);
+    await tester.pump();
+
+    expect(controller.text, isEmpty);
+    expect(controller.attachments, hasLength(1));
+    expect(controller.attachments.single.isPastedText, isTrue);
+    expect(find.text('Pasted text · 24 lines'), findsOneWidget);
+
+    await tester.tap(find.bySemanticsLabel('Send'));
+    await tester.pumpAndSettle();
+    expect(manager.lastPrompt, hasLength(1));
+    expect(manager.lastPrompt!.single, isA<AcpTextContent>());
+    expect((manager.lastPrompt!.single as AcpTextContent).text, pasted);
+  });
+
+  testWidgets('focus controller collapses extended-keyboard large paste', (
+    tester,
+  ) async {
+    final controller = _makeController(_RecordingManager());
+    final focusController = AcpComposerFocusController();
+    addTearDown(controller.dispose);
+    await _pump(tester, controller, focusController: focusController);
+
+    focusController.pasteText('x' * kAcpLargePasteThresholdChars);
+    await tester.pump();
+
+    expect(controller.text, isEmpty);
+    expect(controller.attachments.single.isPastedText, isTrue);
+  });
+
+  testWidgets('focus controller attaches extended-keyboard clipboard image', (
+    tester,
+  ) async {
+    final controller = _makeController(_RecordingManager());
+    final focusController = AcpComposerFocusController();
+    addTearDown(controller.dispose);
+    await _pump(tester, controller, focusController: focusController);
+
+    focusController.pasteImage(Uint8List.fromList(const [137, 80, 78, 71]));
+    await tester.pump();
+
+    expect(controller.attachments, hasLength(1));
+    expect(controller.attachments.single.isImage, isTrue);
+    expect(controller.attachments.single.name, 'Pasted image.png');
+  });
+
+  testWidgets('Android keyboard rich image becomes an attachment', (
+    tester,
+  ) async {
+    final controller = _makeController(_RecordingManager());
+    addTearDown(controller.dispose);
+    await _pump(tester, controller);
+    final field = tester.widget<TextField>(find.byType(TextField));
+
+    field.contentInsertionConfiguration!.onContentInserted(
+      KeyboardInsertedContent(
+        mimeType: 'image/png',
+        uri: 'content://keyboard/image',
+        data: Uint8List.fromList(const [137, 80, 78, 71]),
+      ),
+    );
+    await tester.pump();
+
+    expect(controller.attachments, hasLength(1));
+    expect(controller.attachments.single.isImage, isTrue);
+    expect(controller.attachments.single.name, 'Pasted image.png');
+  });
+
   testWidgets('add menu adds an attachment shown in the strip', (tester) async {
     final controller = _makeController(_RecordingManager());
     addTearDown(controller.dispose);
@@ -521,7 +600,7 @@ void main() {
     expect(field.textAlignVertical, TextAlignVertical.top);
     expect(
       field.decoration?.contentPadding,
-      const EdgeInsets.fromLTRB(14, 13, 14, 8),
+      const EdgeInsets.fromLTRB(14, 14, 14, 10),
     );
     final sendFinder = find.ancestor(
       of: find.byIcon(Icons.arrow_upward_rounded),

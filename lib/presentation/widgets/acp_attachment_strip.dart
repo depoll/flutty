@@ -209,7 +209,9 @@ class _Thumbnail extends StatelessWidget {
   Widget _iconThumb(ColorScheme scheme) {
     final candidate = attachment.candidate;
     final IconData icon;
-    if (attachment.isImage) {
+    if (attachment.isPastedText) {
+      icon = Icons.notes_rounded;
+    } else if (attachment.isImage) {
       icon = Icons.image_outlined;
     } else if (candidate.sourceKind == AcpAttachmentSourceKind.remoteFile) {
       icon = Icons.cloud_outlined;

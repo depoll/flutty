@@ -677,7 +677,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     return MediaQuery.withNoTextScaling(
       child: SizedBox(
         key: const ValueKey('acp-composer-controls'),
-        height: 44,
+        height: 48,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemCount: selectors.length,
@@ -2114,7 +2114,7 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
         ],
       ],
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 44),
+        constraints: const BoxConstraints(minHeight: 48),
         child: Center(
           child: DecoratedBox(
             decoration: BoxDecoration(
@@ -2123,7 +2123,7 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
               border: Border.all(color: scheme.outlineVariant),
             ),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -2133,7 +2133,7 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
                     overflow: TextOverflow.ellipsis,
                     style: AcpChatTypography.monoStyleOf(context).copyWith(
                       color: scheme.onSurface,
-                      fontSize: 11,
+                      fontSize: 11.5,
                       fontWeight: FontWeight.w600,
                     ),
                   ),

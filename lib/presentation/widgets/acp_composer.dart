@@ -56,8 +56,16 @@ class AcpComposerFocusController {
   /// Dismisses the platform keyboard without discarding the draft.
   void dismissKeyboard() => _state?._focusNode.unfocus();
 
-  /// Inserts text at the current composer selection.
+  /// Inserts typed/snippet text at the current composer selection.
   void insertText(String text) => _state?._insertExternalText(text);
+
+  /// Pastes clipboard text, collapsing large payloads into a removable chip.
+  void pasteText(String text) =>
+      _state?._insertExternalText(text, collapseLargePaste: true);
+
+  /// Adds clipboard image bytes without opening a picker.
+  void pasteImage(Uint8List bytes, {String mimeType = 'image/png'}) =>
+      _state?._addPastedImage(bytes, mimeType: mimeType);
 
   /// Applies one special toolbar key to the composer selection.
   void sendSpecialKey(TerminalKey key) => _state?._handleExternalKey(key);
@@ -180,9 +188,46 @@ class _AcpComposerState extends State<AcpComposer> {
     if (_syncing) {
       return;
     }
+    final previous = _controller.text;
+    final next = _text.text;
+    final insertion = _largePastedInsertion(previous, next);
+    if (insertion != null) {
+      final remaining = next.replaceRange(
+        insertion.start,
+        insertion.start + insertion.text.length,
+        '',
+      );
+      _controller
+        ..setText(remaining, caret: insertion.start)
+        ..addPastedText(insertion.text);
+      return;
+    }
     final selection = _text.selection;
-    final caret = selection.isValid ? selection.baseOffset : _text.text.length;
-    _controller.setText(_text.text, caret: caret);
+    final caret = selection.isValid ? selection.baseOffset : next.length;
+    _controller.setText(next, caret: caret);
+  }
+
+  ({int start, String text})? _largePastedInsertion(
+    String previous,
+    String next,
+  ) {
+    if (next.length <= previous.length) return null;
+    var prefix = 0;
+    final prefixLimit = previous.length.clamp(0, next.length);
+    while (prefix < prefixLimit && previous[prefix] == next[prefix]) {
+      prefix++;
+    }
+    var suffix = 0;
+    while (suffix < previous.length - prefix &&
+        suffix < next.length - prefix &&
+        previous[previous.length - 1 - suffix] ==
+            next[next.length - 1 - suffix]) {
+      suffix++;
+    }
+    final inserted = next.substring(prefix, next.length - suffix);
+    return shouldCollapseAcpComposerPaste(inserted)
+        ? (start: prefix, text: inserted)
+        : null;
   }
 
   void _onControllerChanged() {
@@ -272,8 +317,13 @@ class _AcpComposerState extends State<AcpComposer> {
     _focusNode.requestFocus();
   }
 
-  void _insertExternalText(String text) {
+  void _insertExternalText(String text, {bool collapseLargePaste = false}) {
     if (!_controller.isEditable || text.isEmpty) {
+      return;
+    }
+    if (collapseLargePaste && shouldCollapseAcpComposerPaste(text)) {
+      _controller.addPastedText(text);
+      _focusNode.requestFocus();
       return;
     }
     final selection = _text.selection;
@@ -285,6 +335,34 @@ class _AcpComposerState extends State<AcpComposer> {
         : start;
     final next = _text.text.replaceRange(start, end, text);
     _controller.setText(next, caret: start + text.length);
+    _focusNode.requestFocus();
+  }
+
+  void _handleInsertedContent(KeyboardInsertedContent content) {
+    final bytes = content.data;
+    if (bytes == null ||
+        bytes.isEmpty ||
+        !content.mimeType.startsWith('image/')) {
+      return;
+    }
+    _addPastedImage(bytes, mimeType: content.mimeType);
+  }
+
+  void _addPastedImage(Uint8List bytes, {required String mimeType}) {
+    if (!_controller.isEditable || bytes.isEmpty) return;
+    final extension = switch (mimeType.toLowerCase()) {
+      'image/jpeg' || 'image/jpg' => 'jpg',
+      'image/gif' => 'gif',
+      'image/webp' => 'webp',
+      _ => 'png',
+    };
+    _controller.addAttachment(
+      AcpAttachmentCandidate.memory(
+        name: 'Pasted image.$extension',
+        bytes: bytes,
+        mimeType: mimeType,
+      ),
+    );
     _focusNode.requestFocus();
   }
 
@@ -477,8 +555,8 @@ class _AcpComposerState extends State<AcpComposer> {
                         key: const ValueKey('acp-input-row'),
                         child: ConstrainedBox(
                           constraints: const BoxConstraints(
-                            minHeight: 52,
-                            maxHeight: 160,
+                            minHeight: 56,
+                            maxHeight: 168,
                           ),
                           child: TextField(
                             key: const ValueKey('acp-composer-field'),
@@ -491,10 +569,14 @@ class _AcpComposerState extends State<AcpComposer> {
                             textInputAction: TextInputAction.newline,
                             textCapitalization: TextCapitalization.sentences,
                             textAlignVertical: TextAlignVertical.top,
+                            contentInsertionConfiguration:
+                                ContentInsertionConfiguration(
+                                  onContentInserted: _handleInsertedContent,
+                                ),
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: scheme.onSurface,
-                              fontSize: 15,
-                              height: 1.4,
+                              fontSize: 15.5,
+                              height: 1.45,
                             ),
                             decoration: InputDecoration(
                               border: InputBorder.none,
@@ -505,22 +587,22 @@ class _AcpComposerState extends State<AcpComposer> {
                               filled: false,
                               contentPadding: const EdgeInsets.fromLTRB(
                                 14,
-                                13,
                                 14,
-                                8,
+                                14,
+                                10,
                               ),
                               hintText: widget.hintText,
                               hintStyle: theme.textTheme.bodyMedium?.copyWith(
                                 color: scheme.onSurfaceVariant,
-                                fontSize: 15,
-                                height: 1.4,
+                                fontSize: 15.5,
+                                height: 1.45,
                               ),
                             ),
                           ),
                         ),
                       ),
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+                        padding: const EdgeInsets.fromLTRB(6, 1, 6, 6),
                         child: Row(
                           children: [
                             _AddButton(

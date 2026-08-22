@@ -157,12 +157,21 @@ void main() {
       tester
           .getSize(find.byKey(const ValueKey('acp-sticky-user-prompt')))
           .height,
-      36,
+      44,
     );
     expect(
-      find.bySemanticsLabel('Current user prompt: first user request'),
+      find.bySemanticsLabel(
+        'Current user prompt: first user request. Show original message.',
+      ),
       findsOneWidget,
     );
+
+    final offsetBeforeTap = controller.offset;
+    await tester.tap(find.byKey(const ValueKey('acp-sticky-user-prompt')));
+    await tester.pumpAndSettle();
+    expect(controller.offset, lessThan(offsetBeforeTap));
+    expect(find.text('first user request'), findsOneWidget);
+    expect(find.byKey(const ValueKey('acp-sticky-user-prompt')), findsNothing);
 
     await scrollUntil('second user request', -120);
     await scrollUntil('first user request', 120);

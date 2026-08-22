@@ -206,6 +206,53 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     setState(() => _stickyPromptIndex = value);
   }
 
+  Future<void> _scrollEntryIntoView(int entryIndex) async {
+    if (!_controller.hasClients) return;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      final sliver = _sliverListKey.currentContext?.findRenderObject();
+      if (sliver is! RenderSliverMultiBoxAdaptor ||
+          sliver.firstChild == null ||
+          sliver.lastChild == null) {
+        return;
+      }
+      var child = sliver.firstChild;
+      while (child != null) {
+        if (sliver.indexOf(child) == entryIndex) {
+          child.showOnScreen(
+            rect: Offset.zero & child.size,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+          );
+          return;
+        }
+        child = sliver.childAfter(child);
+      }
+
+      final first = sliver.firstChild!;
+      final last = sliver.lastChild!;
+      final firstIndex = sliver.indexOf(first);
+      final lastIndex = sliver.indexOf(last);
+      final firstOffset = sliver.childScrollOffset(first) ?? 0;
+      final lastEnd =
+          (sliver.childScrollOffset(last) ?? firstOffset) + last.size.height;
+      final averageExtent =
+          ((lastEnd - firstOffset) / (lastIndex - firstIndex + 1)).clamp(
+            44.0,
+            _controller.position.viewportDimension,
+          );
+      final estimate = firstOffset + (entryIndex - firstIndex) * averageExtent;
+      await _controller.animateTo(
+        estimate.clamp(
+          _controller.position.minScrollExtent,
+          _controller.position.maxScrollExtent,
+        ),
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+      );
+      await WidgetsBinding.instance.endOfFrame;
+    }
+  }
+
   Widget _buildEntry(BuildContext context, AcpTimelineEntry entry) {
     switch (entry) {
       case AcpUserPromptEntry():
@@ -262,7 +309,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     final entry = widget.entries[index];
     return Padding(
       key: ValueKey(entry.id),
-      padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingXs),
+      padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingSm),
       child: _buildEntry(context, entry),
     );
   }
@@ -315,6 +362,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
               right: 0,
               child: _StickyUserPromptSummary(
                 summary: acpUserPromptSummary(stickyPrompt),
+                onTap: () => _scrollEntryIntoView(stickyIndex!),
               ),
             ),
         ],
@@ -324,9 +372,10 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 }
 
 class _StickyUserPromptSummary extends StatelessWidget {
-  const _StickyUserPromptSummary({required this.summary});
+  const _StickyUserPromptSummary({required this.summary, required this.onTap});
 
   final String summary;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -335,41 +384,49 @@ class _StickyUserPromptSummary extends StatelessWidget {
     return Semantics(
       container: true,
       header: true,
-      label: 'Current user prompt: $summary',
+      button: true,
+      onTap: onTap,
+      label: 'Current user prompt: $summary. Show original message.',
       child: ExcludeSemantics(
-        child: DecoratedBox(
-          key: const ValueKey('acp-sticky-user-prompt'),
-          decoration: BoxDecoration(
-            color: scheme.surface,
-            border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
-          ),
-          child: SizedBox(
-            height: 36,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.person_outline_rounded,
-                    size: 14,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      'you · $summary',
-                      key: const ValueKey('acp-sticky-user-prompt-text'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurface,
-                        fontSize: 11.5,
-                        height: 1.2,
-                        fontWeight: FontWeight.w600,
+        child: Material(
+          color: Colors.transparent,
+          child: Ink(
+            decoration: BoxDecoration(
+              color: scheme.surface,
+              border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+            ),
+            child: InkWell(
+              onTap: onTap,
+              child: SizedBox(
+                key: const ValueKey('acp-sticky-user-prompt'),
+                height: 44,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.person_outline_rounded,
+                        size: 15,
+                        color: scheme.onSurfaceVariant,
                       ),
-                    ),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(
+                          'you · $summary',
+                          key: const ValueKey('acp-sticky-user-prompt-text'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurface,
+                            fontSize: 12.5,
+                            height: 1.25,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),

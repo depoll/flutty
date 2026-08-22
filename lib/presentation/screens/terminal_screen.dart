@@ -18719,16 +18719,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pasteClipboardIntoNativeComposer() async {
+    try {
+      final imageBytes = await Pasteboard.image;
+      if (imageBytes != null && imageBytes.isNotEmpty) {
+        if (!mounted) return;
+        _nativeComposerFocusController.pasteImage(imageBytes);
+        return;
+      }
+    } on PlatformException {
+      // Fall through to plain text when this platform cannot read image data.
+    }
+
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (!mounted) {
       return;
     }
     final text = data?.text;
     if (text == null || text.isEmpty) {
-      _showClipboardMessage('Clipboard has no text to paste.');
+      _showClipboardMessage('Clipboard has no text or image to paste.');
       return;
     }
-    _nativeComposerFocusController.insertText(text);
+    _nativeComposerFocusController.pasteText(text);
   }
 
   Future<void> _pasteSnippetIntoNativeComposer(

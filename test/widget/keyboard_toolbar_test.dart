@@ -680,9 +680,14 @@ void main() {
       expect(output, contains(_terminalShiftEnterNewlineInput));
     });
 
-    testWidgets('toolbar Alt+Enter sends meta-sends-escape CR', (tester) async {
+    testWidgets('toolbar Alt+Enter keeps enqueue encoding in Kitty mode', (
+      tester,
+    ) async {
       final output = <String>[];
-      terminal.onOutput = output.add;
+      terminal
+        ..onOutput = output.add
+        ..write('${String.fromCharCode(27)}[>1u');
+      output.clear();
 
       await tester.pumpWidget(
         MaterialApp(

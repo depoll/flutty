@@ -3,6 +3,12 @@ import 'package:flutter/foundation.dart';
 /// Maximum image payload that the ACP timeline can safely display.
 const int kAcpAttachmentImageDisplayMaxBytes = 10 * 1024 * 1024;
 
+/// Internal MIME marker for text collapsed into a composer paste chip.
+///
+/// It is converted back to ordinary ACP text before leaving the app.
+const String kAcpPastedTextMimeType =
+    'application/x-monkeyssh-composer-pasted-text';
+
 /// Opens a fresh byte stream for a local attachment.
 typedef AcpAttachmentStreamFactory = Stream<List<int>> Function();
 
@@ -58,6 +64,9 @@ sealed class AcpAttachmentCandidate {
 
   /// Picker-provided MIME type when known.
   final String? mimeType;
+
+  /// Whether this candidate represents collapsed composer text.
+  bool get isPastedText => mimeType == kAcpPastedTextMimeType;
 
   /// Attachment source category.
   AcpAttachmentSourceKind get sourceKind;

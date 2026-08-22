@@ -119,7 +119,7 @@ void main() {
       expect(output, ['\x1b[13u']);
     });
 
-    test('Kitty Alt+Enter keeps CSI-u encoding', () {
+    test('Kitty Alt+Enter keeps Pi enqueue encoding', () {
       final output = <String>[];
       final terminal = Terminal(onOutput: output.add)..write('\x1b[>1u');
 
@@ -132,7 +132,20 @@ void main() {
         ),
         isTrue,
       );
-      expect(output, ['\x1b[13;3u']);
+      expect(output, ['\x1b\r']);
+      output.clear();
+
+      expect(
+        sendTerminalEnterInput(
+          terminal,
+          shiftActive: false,
+          altActive: true,
+          ctrlActive: false,
+          type: TerminalKeyEventType.release,
+        ),
+        isTrue,
+      );
+      expect(output, isEmpty);
     });
 
     test('ignores non-press Enter events outside Kitty keyboard mode', () {

@@ -243,6 +243,69 @@ void main() {
       expect(text, contains('truncated'));
     });
 
+    test('keeps a safe pasted image instead of replacing it with a marker', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(
+          maxEntryBytes: 16,
+          maxRetainedImageBytes: 2 * 1024 * 1024,
+          maxTotalBytes: 8 * 1024 * 1024,
+        ),
+      );
+      final image = AcpImageContent(
+        data: 'A' * (1024 * 1024),
+        mimeType: 'image/png',
+      );
+
+      builder.appendLocalUserPrompt([image]);
+      final timeline = builder.snapshot();
+      final entry = timeline.entries.single as AcpMessageEntry;
+
+      expect(entry.content.single, same(image));
+      expect(timeline.overflowed, isFalse);
+    });
+
+    test('keeps an image while bounding accompanying pasted text', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(
+          maxEntryBytes: 32,
+          maxRetainedImageBytes: 2048,
+          maxTotalBytes: 8192,
+        ),
+      );
+      final image = AcpImageContent(data: 'A' * 1024, mimeType: 'image/png');
+
+      builder.appendLocalUserPrompt([image, AcpTextContent('x' * 1000)]);
+      final timeline = builder.snapshot();
+      final content = (timeline.entries.single as AcpMessageEntry).content;
+
+      expect(content.whereType<AcpImageContent>().single, same(image));
+      expect(
+        content.whereType<AcpTextContent>().single.text,
+        contains('truncated'),
+      );
+    });
+
+    test('still omits an image above the dedicated media budget', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(
+          maxEntryBytes: 32,
+          maxRetainedImageBytes: 64,
+          maxTotalBytes: 8192,
+        ),
+      );
+
+      final timeline =
+          (builder..appendLocalUserPrompt([
+                AcpImageContent(data: 'A' * 1024, mimeType: 'image/png'),
+              ]))
+              .snapshot();
+      final content = (timeline.entries.single as AcpMessageEntry).content;
+
+      expect(content.single, isA<AcpTextContent>());
+      expect((content.single as AcpTextContent).text, contains('omitted'));
+      expect(timeline.overflowed, isTrue);
+    });
+
     test('bounds a single message entry even when thousands of small chunks '
         'share the same message id', () {
       final builder = AcpTimelineBuilder(

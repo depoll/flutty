@@ -45,8 +45,8 @@ class AcpUserPromptView extends StatelessWidget {
           text,
           style: theme.textTheme.bodyMedium?.copyWith(
             color: theme.colorScheme.onSurface,
-            fontSize: 14,
-            height: 1.45,
+            fontSize: 15,
+            height: 1.5,
           ),
         );
       case AcpImagePart(:final image):
@@ -85,7 +85,7 @@ class AcpUserPromptView extends StatelessWidget {
           border: Border.all(color: scheme.outline),
         ),
         child: Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.all(14),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -126,7 +126,7 @@ class AcpUserPromptView extends StatelessWidget {
                 const SizedBox(height: FluttyTheme.spacingSm),
               ],
               for (var i = 0; i < parts.length; i++) ...[
-                if (i > 0) const SizedBox(height: 6),
+                if (i > 0) const SizedBox(height: FluttyTheme.spacingSm),
                 _buildPart(context, parts[i]),
               ],
             ],

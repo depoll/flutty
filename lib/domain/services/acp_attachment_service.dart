@@ -398,6 +398,8 @@ final class AcpAttachmentPreparationService {
 
     return switch (candidate) {
       AcpRemoteFileAttachmentCandidate() => _prepareRemote(candidate),
+      AcpMemoryAttachmentCandidate() when candidate.isPastedText =>
+        _preparePastedText(candidate),
       AcpMemoryAttachmentCandidate() => _prepareBytes(
         draft: draft,
         bytes: candidate.bytes,
@@ -421,6 +423,28 @@ final class AcpAttachmentPreparationService {
         onUploadProgress: onUploadProgress,
       ),
     };
+  }
+
+  ({AcpContentBlock block, int bytes}) _preparePastedText(
+    AcpMemoryAttachmentCandidate candidate,
+  ) {
+    if (candidate.bytes.length > limits.maxEmbeddedBytes) {
+      throw const AcpAttachmentException(
+        AcpAttachmentFailure.inlineSizeLimit,
+        'Pasted text exceeds the inline byte limit.',
+      );
+    }
+    try {
+      return (
+        block: AcpTextContent(utf8.decode(candidate.bytes)),
+        bytes: candidate.bytes.length,
+      );
+    } on FormatException {
+      throw const AcpAttachmentException(
+        AcpAttachmentFailure.invalidUtf8,
+        'Pasted text is not valid UTF-8.',
+      );
+    }
   }
 
   ({AcpContentBlock block, int bytes}) _prepareRemote(

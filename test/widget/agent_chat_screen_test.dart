@@ -348,7 +348,7 @@ void main() {
     expect(find.text('Mode: Code'), findsOneWidget);
     expect(find.text('Permission: Ask'), findsOneWidget);
     final permissionPill = find.byKey(const ValueKey('permission-mode-pill'));
-    expect(tester.getSize(permissionPill).height, 44);
+    expect(tester.getSize(permissionPill).height, 48);
     expect(
       find.ancestor(of: permissionPill, matching: find.byType(ListView)),
       findsOneWidget,
