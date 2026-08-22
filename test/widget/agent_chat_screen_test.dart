@@ -153,7 +153,8 @@ void main() {
     expect(find.textContaining('pinch to resize'), findsOneWidget);
     expect(find.textContaining('title for sessions'), findsOneWidget);
     expect(find.textContaining('windows stay in the top bar'), findsOneWidget);
-    expect(find.text('Permission: Ask'), findsOneWidget);
+    expect(find.text('Ask'), findsOneWidget);
+    expect(find.text('Permission'), findsNothing);
 
     await tester.tap(find.byTooltip('Change permission'));
     await tester.pumpAndSettle();
@@ -263,17 +264,18 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.textContaining('Model:'));
+    await tester.tap(find.byTooltip('Change model'));
     await tester.pumpAndSettle();
+    expect(find.text('Model'), findsOneWidget);
     expect(find.text('Scoped models'), findsOneWidget);
-    expect(find.text('anthropic/Claude Sonnet'), findsOneWidget);
+    expect(find.text('anthropic/Claude Sonnet'), findsNWidgets(2));
     expect(find.text('openai/GPT-5'), findsNothing);
     expect(find.text('google/Gemini Pro'), findsNothing);
 
     await tester.tap(find.text('Show all models'));
     await tester.pumpAndSettle();
     expect(find.text('All models'), findsOneWidget);
-    expect(find.text('anthropic/Claude Sonnet'), findsOneWidget);
+    expect(find.text('anthropic/Claude Sonnet'), findsNWidgets(2));
     expect(find.text('openai/GPT-5'), findsOneWidget);
     expect(find.text('google/Gemini Pro'), findsOneWidget);
   });
@@ -343,17 +345,21 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(AppBar), findsNothing);
-    expect(find.text('Model: Sonnet'), findsOneWidget);
-    expect(find.text('Effort: Medium'), findsOneWidget);
-    expect(find.text('Mode: Code'), findsOneWidget);
-    expect(find.text('Permission: Ask'), findsOneWidget);
+    expect(find.text('Sonnet'), findsOneWidget);
+    expect(find.text('Medium'), findsOneWidget);
+    expect(find.text('Code'), findsOneWidget);
+    expect(find.text('Ask'), findsOneWidget);
+    expect(find.text('Model'), findsNothing);
+    expect(find.text('Effort'), findsNothing);
+    expect(find.text('Mode'), findsNothing);
+    expect(find.text('Permission'), findsNothing);
     final permissionPill = find.byKey(const ValueKey('permission-mode-pill'));
     expect(tester.getSize(permissionPill).height, 44);
     final modelPill = find.byKey(
       const ValueKey('acp-quick-selector-pill-Model'),
     );
     expect(tester.getSize(modelPill).height, 40);
-    final selectorContext = tester.element(find.text('Model: Sonnet'));
+    final selectorContext = tester.element(find.text('Sonnet'));
     final modelInk = tester.widget<Ink>(modelPill);
     final modelDecoration = modelInk.decoration! as BoxDecoration;
     expect(
@@ -362,18 +368,14 @@ void main() {
     );
     expect(modelDecoration.border, isNull);
     expect(modelDecoration.borderRadius, BorderRadius.circular(12));
-    final modelLabel = tester.widget<Text>(find.text('Model: Sonnet'));
-    final labelSpan = modelLabel.textSpan! as TextSpan;
+    final modelLabel = tester.widget<Text>(find.text('Sonnet'));
     expect(
-      labelSpan.style?.fontFamily,
+      modelLabel.style?.fontFamily,
       isNot(AcpChatTypography.monoStyleOf(selectorContext).fontFamily),
     );
-    expect(labelSpan.style?.fontSize, 11);
-    expect(labelSpan.style?.height, 1.15);
-    expect(labelSpan.style?.fontWeight, FontWeight.w500);
-    final valueSpan = labelSpan.children![1] as TextSpan;
-    expect(valueSpan.style?.fontSize, 12);
-    expect(valueSpan.style?.fontWeight, FontWeight.w600);
+    expect(modelLabel.style?.fontSize, 12);
+    expect(modelLabel.style?.height, 1.15);
+    expect(modelLabel.style?.fontWeight, FontWeight.w600);
     expect(
       find.ancestor(of: permissionPill, matching: find.byType(ListView)),
       findsOneWidget,
@@ -384,7 +386,7 @@ void main() {
     final surface = find.byKey(const ValueKey('acp-composer-surface'));
     expect(find.ancestor(of: controls, matching: surface), findsOneWidget);
     expect(
-      tester.getTopLeft(find.text('Model: Sonnet')).dy,
+      tester.getTopLeft(find.text('Sonnet')).dy,
       greaterThan(tester.getTopLeft(find.byType(AcpComposer)).dy),
     );
 
@@ -411,7 +413,7 @@ void main() {
       const Offset(-260, 0),
     );
     await tester.pump();
-    expect(find.text('Fast mode: Off'), findsOneWidget);
+    expect(find.text('Off'), findsOneWidget);
     await tester.ensureVisible(find.byTooltip('Change fast mode'));
     await tester.pump();
     await tester.tap(find.byTooltip('Change fast mode'));
@@ -454,9 +456,11 @@ void main() {
     await tester.pumpWidget(_wrap(manager, embedded: true));
     await tester.pumpAndSettle();
 
-    expect(find.text('Permission: Ask'), findsOneWidget);
+    expect(find.text('Ask'), findsOneWidget);
+    expect(find.text('Permission'), findsNothing);
     await tester.tap(find.byTooltip('Change permission'));
     await tester.pumpAndSettle();
+    expect(find.text('Permission'), findsOneWidget);
     expect(find.text('YOLO'), findsOneWidget);
     expect(find.text('Plan only'), findsOneWidget);
     await tester.tap(find.text('Plan only'));
@@ -484,8 +488,9 @@ void main() {
     await tester.pumpWidget(_wrap(manager, embedded: true));
     await tester.pumpAndSettle();
 
-    expect(find.text('Effort: Medium'), findsOneWidget);
-    expect(find.textContaining('Mode:'), findsNothing);
+    expect(find.text('Medium'), findsOneWidget);
+    expect(find.byTooltip('Change effort'), findsOneWidget);
+    expect(find.byTooltip('Change mode'), findsNothing);
     await tester.tap(find.byTooltip('Change effort'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('High').last);
@@ -518,8 +523,9 @@ void main() {
     await tester.pumpWidget(_wrap(manager, embedded: true));
     await tester.pumpAndSettle();
 
-    expect(find.text('Effort: Medium'), findsOneWidget);
-    expect(find.textContaining('Mode:'), findsNothing);
+    expect(find.text('Medium'), findsOneWidget);
+    expect(find.byTooltip('Change effort'), findsOneWidget);
+    expect(find.byTooltip('Change mode'), findsNothing);
     await tester.tap(find.byTooltip('Change effort'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('High').last);
@@ -553,12 +559,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Mode: Default'), findsOneWidget);
-    expect(find.textContaining('Effort:'), findsNothing);
+    expect(find.text('Default'), findsOneWidget);
+    expect(find.byTooltip('Change mode'), findsOneWidget);
+    expect(find.byTooltip('Change effort'), findsNothing);
     final pillSafeAreas = tester
         .widgetList<SafeArea>(
           find.ancestor(
-            of: find.text('Mode: Default'),
+            of: find.text('Default'),
             matching: find.byType(SafeArea),
           ),
         )

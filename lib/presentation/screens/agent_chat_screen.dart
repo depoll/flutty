@@ -2087,15 +2087,26 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
       borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
       onSelected: _onSelected,
       itemBuilder: (context) => <PopupMenuEntry<Object>>[
+        PopupMenuItem<Object>(
+          enabled: false,
+          height: 36,
+          child: Text(
+            selector.label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: scheme.onSurface,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
         if (hasScope)
           PopupMenuItem<Object>(
             enabled: false,
-            height: 32,
+            height: 28,
             child: Text(
               _showAll ? 'All models' : 'Scoped models',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              style: theme.textTheme.labelSmall?.copyWith(
                 color: scheme.onSurfaceVariant,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),
@@ -2140,28 +2151,16 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Flexible(
-                  child: Text.rich(
-                    TextSpan(
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                        fontSize: 11,
-                        height: 1.15,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      children: [
-                        TextSpan(text: '${selector.label}: '),
-                        TextSpan(
-                          text: current?.label ?? selector.currentValue,
-                          style: TextStyle(
-                            color: scheme.onSurface,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
+                  child: Text(
+                    current?.label ?? selector.currentValue,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: scheme.onSurface,
+                      fontSize: 12,
+                      height: 1.15,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
                 const SizedBox(width: FluttyTheme.spacingXs),

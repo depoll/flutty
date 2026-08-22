@@ -1267,6 +1267,8 @@ class _QueuedAcpPrompt {
 /// commands, config options) that a misbehaving agent could otherwise grow
 /// without bound. Oldest entries are dropped, keeping the most recent state.
 const _maxSessionListEntries = 200;
+const _sessionUpdateTurnMaxCount = 16;
+const _sessionUpdateTurnTimeBudget = Duration(milliseconds: 4);
 
 /// Owns the normalized state and streaming lifecycle for one ACP session.
 class _SessionController {
@@ -1306,6 +1308,11 @@ class _SessionController {
   final Duration _detachedTurnPollInterval;
 
   final AcpTimelineBuilder _timelineBuilder = AcpTimelineBuilder();
+  final Queue<AcpSessionNotification> _pendingSessionUpdates =
+      Queue<AcpSessionNotification>();
+  Future<void>? _sessionUpdatePumpFuture;
+  var _sessionUpdatesEnqueued = 0;
+  var _sessionUpdatesApplied = 0;
   final Queue<_QueuedAcpPrompt> _promptQueue = Queue<_QueuedAcpPrompt>();
   var _queuedPromptBytes = 0;
   var _promptActive = false;
@@ -1419,6 +1426,7 @@ class _SessionController {
     final resolvedSessionId = reattachingActiveTurn
         ? existingSessionId
         : await _establishSession(existingSessionId, init);
+    await _waitForPendingSessionUpdates();
     _freshBridge = false;
     _key = AcpSessionKey.of(
       hostId: hostId,
@@ -1585,6 +1593,76 @@ class _SessionController {
   }
 
   void _onSessionUpdate(AcpSessionNotification notification) {
+    _pendingSessionUpdates.addLast(notification);
+    _sessionUpdatesEnqueued += 1;
+    _scheduleSessionUpdatePump();
+  }
+
+  void _scheduleSessionUpdatePump() {
+    if (_sessionUpdatePumpFuture != null || _disposed) return;
+    // Defer one microtask so a synchronous replay burst coalesces into this
+    // bounded queue instead of doing all timeline work inside the transport's
+    // stream callback.
+    _sessionUpdatePumpFuture = Future<void>.microtask(_pumpSessionUpdates);
+  }
+
+  Future<void> _pumpSessionUpdates() async {
+    // Bound this pump to the notifications present when it starts. Updates
+    // arriving from a still-running turn form the next pump, so reconnect can
+    // await its replay high-water mark without starving on live output.
+    final targetAppliedCount = _sessionUpdatesEnqueued;
+    final burst = Stopwatch()..start();
+    var updateCount = 0;
+    var yieldCount = 0;
+    try {
+      while (_sessionUpdatesApplied < targetAppliedCount &&
+          _pendingSessionUpdates.isNotEmpty &&
+          !_disposed) {
+        final turn = Stopwatch()..start();
+        var turnCount = 0;
+        do {
+          _applySessionUpdate(_pendingSessionUpdates.removeFirst());
+          _sessionUpdatesApplied += 1;
+          updateCount += 1;
+          turnCount += 1;
+        } while (_sessionUpdatesApplied < targetAppliedCount &&
+            _pendingSessionUpdates.isNotEmpty &&
+            turnCount < _sessionUpdateTurnMaxCount &&
+            turn.elapsed < _sessionUpdateTurnTimeBudget);
+        if (_sessionUpdatesApplied < targetAppliedCount) {
+          yieldCount += 1;
+          await Future<void>.delayed(Duration.zero);
+        }
+      }
+    } finally {
+      _sessionUpdatePumpFuture = null;
+      if (_pendingSessionUpdates.isNotEmpty && !_disposed) {
+        _scheduleSessionUpdatePump();
+      }
+      if (yieldCount > 0) {
+        _diagnostics.debug(
+          'acp.session',
+          'update_burst_drained',
+          fields: {
+            'updateCount': updateCount,
+            'yieldCount': yieldCount,
+            'durationMs': burst.elapsedMilliseconds,
+          },
+        );
+      }
+    }
+  }
+
+  Future<void> _waitForPendingSessionUpdates() async {
+    final targetAppliedCount = _sessionUpdatesEnqueued;
+    while (_sessionUpdatesApplied < targetAppliedCount) {
+      _scheduleSessionUpdatePump();
+      final pump = _sessionUpdatePumpFuture;
+      if (pump != null) await pump;
+    }
+  }
+
+  void _applySessionUpdate(AcpSessionNotification notification) {
     final update = notification.update;
     final timeline = _timelineBuilder.apply(update);
     _update((s) {
@@ -2139,6 +2217,7 @@ class _SessionController {
       if (!detachedTurnRunning) {
         await _establishSession(sessionId, init);
       }
+      await _waitForPendingSessionUpdates();
       _update(
         (s) => s.copyWith(
           status: AcpConnectionStatus.ready,
@@ -2393,6 +2472,12 @@ class _SessionController {
 
   Future<void> _cancelSubscriptions() async {
     await _updatesSub?.cancel();
+    _pendingSessionUpdates.clear();
+    _sessionUpdatesApplied = _sessionUpdatesEnqueued;
+    final updatePump = _sessionUpdatePumpFuture;
+    if (updatePump != null) await updatePump;
+    _pendingSessionUpdates.clear();
+    _sessionUpdatesApplied = _sessionUpdatesEnqueued;
     await _capabilityRequestsSub?.cancel();
     await _transportSub?.cancel();
     await _transportErrorSub?.cancel();

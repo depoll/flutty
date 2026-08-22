@@ -39,6 +39,8 @@ class _FakeAcpServer implements AcpTransport {
     this.newSessionErrorCode = -32000,
     this.promptErrorMessage,
     this.replayTextOnLoad,
+    this.replayUpdateCountOnLoad = 0,
+    this.onReplayQueued,
     this.permissionIdOnLoad,
     this.permissionIdOnInitialize,
     this.permissionSessionIdOnInitialize,
@@ -64,6 +66,12 @@ class _FakeAcpServer implements AcpTransport {
   /// BEFORE replying, simulating synchronous history replay during the load.
   final String? replayTextOnLoad;
 
+  /// Number of same-message content chunks synchronously replayed on load.
+  final int replayUpdateCountOnLoad;
+
+  /// Called after a synthetic replay burst is queued but before load replies.
+  final void Function()? onReplayQueued;
+
   /// When set, a `session/load` pushes a permission request with this stable
   /// JSON-RPC id before replying, simulating a replayed pending permission.
   final String? permissionIdOnLoad;
@@ -74,7 +82,7 @@ class _FakeAcpServer implements AcpTransport {
   /// Session id associated with [permissionIdOnInitialize].
   final String? permissionSessionIdOnInitialize;
 
-  final _incoming = StreamController<List<int>>();
+  final _incoming = StreamController<List<int>>(sync: true);
   final List<String> methods = <String>[];
   final List<String> newSessionCwds = <String>[];
   final List<String> cancelledSessions = <String>[];
@@ -170,6 +178,14 @@ class _FakeAcpServer implements AcpTransport {
             'content': {'type': 'text', 'text': replayTextOnLoad},
           });
         }
+        for (var index = 0; index < replayUpdateCountOnLoad; index++) {
+          pushUpdate(sessionId, {
+            'sessionUpdate': 'agent_message_chunk',
+            'messageId': 'replay-burst',
+            'content': {'type': 'text', 'text': 'chunk-$index '},
+          });
+        }
+        if (replayUpdateCountOnLoad > 0) onReplayQueued?.call();
         if (permissionIdOnLoad != null) {
           _pushPermission(permissionIdOnLoad!, sessionId, 'replay-tool');
         }
@@ -1885,6 +1901,60 @@ void main() {
         'Replayed history',
       );
     });
+
+    test(
+      'large synchronous replay yields before reconnect completes',
+      () async {
+        var reconnectCompleted = false;
+        bool? completedWhenEventLoopAdvanced;
+        final replayConnector = _FakeConnector(
+          serverFactory: (_, _) => _FakeAcpServer(
+            supportsResume: false,
+            replayUpdateCountOnLoad: 600,
+            onReplayQueued: () {
+              Timer.run(() {
+                completedWhenEventLoopAdvanced = reconnectCompleted;
+              });
+            },
+          ),
+        );
+        final replayManager = buildManagerWith(replayConnector);
+        final started = await replayManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+        await replayManager.detachSession(key);
+        replayConnector.availableBridges.remove(key.bridgeId);
+
+        final result = await replayManager
+            .reconnectSession(
+              hostId: key.hostId,
+              providerId: key.providerId,
+              bridgeId: key.bridgeId,
+              acpSessionId: key.acpSessionId,
+              cwd: '/repo',
+            )
+            .then((value) {
+              reconnectCompleted = true;
+              return value;
+            });
+
+        expect(result, isA<AcpSessionLaunchStarted>());
+        expect(completedWhenEventLoopAdvanced, isFalse);
+        final reloadedKey = (result as AcpSessionLaunchStarted).key;
+        final timeline = replayManager.state
+            .byKeyValue(reloadedKey.value)!
+            .timeline;
+        final message = timeline.entries
+            .whereType<AcpMessageEntry>()
+            .firstWhere((entry) => entry.messageId == 'replay-burst');
+        expect(message.content, hasLength(600));
+        expect((message.content.first as AcpTextContent).text, 'chunk-0 ');
+        expect((message.content.last as AcpTextContent).text, 'chunk-599 ');
+      },
+    );
 
     test(
       'deduplicates a replayed permission by request id across reconnect',
