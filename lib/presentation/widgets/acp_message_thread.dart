@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
+import 'acp_chat_typography.dart';
 import 'acp_inline_image.dart';
 import 'acp_markdown.dart';
 import 'acp_plan.dart';
@@ -12,17 +14,41 @@ import 'acp_tool_call.dart';
 import 'acp_usage.dart';
 import 'acp_user_prompt.dart';
 
+/// Builds the compact context shown when a user prompt is above the viewport.
+String acpUserPromptSummary(AcpUserPromptEntry entry) {
+  final text = entry.parts
+      .whereType<AcpTextPart>()
+      .map((part) => part.text.trim())
+      .where((part) => part.isNotEmpty)
+      .join(' ')
+      .replaceAll(RegExp(r'\s+'), ' ');
+  if (text.isNotEmpty) {
+    return text.length <= 240 ? text : '${text.substring(0, 239)}…';
+  }
+
+  final attachments = <String>[
+    for (final part in entry.parts)
+      switch (part) {
+        AcpImagePart(:final image) =>
+          (image.label?.trim().isNotEmpty ?? false)
+              ? image.label!.trim()
+              : 'Image',
+        AcpResourcePart(:final resource) => resource.displayName,
+        AcpTextPart() => '',
+      },
+  ]..removeWhere((label) => label.isEmpty);
+  if (attachments.isEmpty) return 'Your message';
+  final summary = attachments.join(' · ');
+  return summary.length <= 240 ? summary : '${summary.substring(0, 239)}…';
+}
+
 /// Renders an ordered list of [AcpTimelineEntry]s as a conversation thread.
 ///
-/// The renderer is suitable for both live streaming and replay: it is a pure
-/// function of [entries], and keys each row by its entry [AcpTimelineEntry.id]
-/// so per-entry widget state (expanded thoughts, tool-call details) and scroll
-/// position stay stable as the conversation grows.
-///
-/// It builds lazily with a [ListView.builder] to stay performant for long
-/// transcripts. Callbacks let the host wire up links, images, resources, and
-/// locations without the widgets performing any I/O themselves.
-class AcpMessageThread extends StatelessWidget {
+/// The renderer is suitable for both live streaming and replay. It stays lazy,
+/// preserves external scroll-controller behavior, and pins a one-line summary
+/// of the user prompt whose following response is currently at the viewport
+/// top. The summary disappears whenever that full prompt is itself visible.
+class AcpMessageThread extends StatefulWidget {
   /// Creates a message thread.
   const AcpMessageThread({
     required this.entries,
@@ -87,37 +113,131 @@ class AcpMessageThread extends StatelessWidget {
   /// Whether thought sections start expanded.
   final bool thoughtsInitiallyExpanded;
 
+  @override
+  State<AcpMessageThread> createState() => _AcpMessageThreadState();
+}
+
+class _AcpMessageThreadState extends State<AcpMessageThread> {
+  final GlobalKey _sliverListKey = GlobalKey();
+  ScrollController? _ownedController;
+  int? _stickyPromptIndex;
+  bool _stickyUpdateScheduled = false;
+
+  ScrollController get _controller =>
+      widget.controller ?? (_ownedController ??= ScrollController());
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_scheduleStickyUpdate);
+    _scheduleStickyUpdate();
+  }
+
+  @override
+  void didUpdateWidget(covariant AcpMessageThread oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      (oldWidget.controller ?? _ownedController)?.removeListener(
+        _scheduleStickyUpdate,
+      );
+      _controller.addListener(_scheduleStickyUpdate);
+    }
+    _scheduleStickyUpdate();
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_scheduleStickyUpdate);
+    _ownedController?.dispose();
+    super.dispose();
+  }
+
+  void _scheduleStickyUpdate() {
+    if (_stickyUpdateScheduled) return;
+    _stickyUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _stickyUpdateScheduled = false;
+      if (mounted) _updateStickyPrompt();
+    });
+  }
+
+  void _updateStickyPrompt() {
+    final renderObject = _sliverListKey.currentContext?.findRenderObject();
+    if (!_controller.hasClients ||
+        renderObject is! RenderSliverMultiBoxAdaptor ||
+        renderObject.firstChild == null ||
+        widget.entries.isEmpty) {
+      _setStickyPromptIndex(null);
+      return;
+    }
+
+    final viewportTop = renderObject.constraints.scrollOffset;
+    var child = renderObject.firstChild;
+    int? firstVisibleIndex;
+    while (child != null) {
+      final childTop = renderObject.childScrollOffset(child) ?? 0;
+      final childBottom = childTop + child.size.height;
+      if (childBottom > viewportTop + 0.5) {
+        firstVisibleIndex = renderObject.indexOf(child);
+        break;
+      }
+      child = renderObject.childAfter(child);
+    }
+    firstVisibleIndex ??= renderObject.indexOf(renderObject.lastChild!);
+    final entryIndex = firstVisibleIndex.clamp(0, widget.entries.length - 1);
+
+    int? promptIndex;
+    for (var index = entryIndex; index >= 0; index--) {
+      if (widget.entries[index] is AcpUserPromptEntry) {
+        promptIndex = index;
+        break;
+      }
+    }
+    // If the actual first visible child is the prompt row, its full card still
+    // supplies context and the compact duplicate stays detached. A footer uses
+    // an index after the entries and must not be mistaken for that prompt.
+    final promptIsVisible =
+        firstVisibleIndex < widget.entries.length &&
+        promptIndex == firstVisibleIndex;
+    _setStickyPromptIndex(promptIsVisible ? null : promptIndex);
+  }
+
+  void _setStickyPromptIndex(int? value) {
+    if (_stickyPromptIndex == value) return;
+    setState(() => _stickyPromptIndex = value);
+  }
+
   Widget _buildEntry(BuildContext context, AcpTimelineEntry entry) {
     switch (entry) {
       case AcpUserPromptEntry():
         return AcpUserPromptView(
           entry: entry,
-          imageResolver: imageResolver,
-          onTapImage: onTapImage,
-          onOpenResource: onOpenResource,
-          onCopyResource: onCopyResource,
+          imageResolver: widget.imageResolver,
+          onTapImage: widget.onTapImage,
+          onOpenResource: widget.onOpenResource,
+          onCopyResource: widget.onCopyResource,
         );
       case AcpAssistantMessageEntry():
         return _AssistantMessage(
           entry: entry,
-          onTapLink: onTapLink,
-          imageResolver: imageResolver,
-          onTapImage: onTapImage,
-          onCopyCode: onCopyCode,
+          onTapLink: widget.onTapLink,
+          imageResolver: widget.imageResolver,
+          onTapImage: widget.onTapImage,
+          onCopyCode: widget.onCopyCode,
         );
       case AcpThoughtEntry():
         return AcpThoughtView(
           entry: entry,
-          initiallyExpanded: thoughtsInitiallyExpanded,
-          onTapLink: onTapLink,
-          imageResolver: imageResolver,
+          initiallyExpanded: widget.thoughtsInitiallyExpanded,
+          onTapLink: widget.onTapLink,
+          imageResolver: widget.imageResolver,
         );
       case AcpPlanEntry():
         return AcpPlanView(plan: entry.plan);
       case AcpToolCallEntry():
         final tool = AcpToolCallView(
           toolCall: entry.toolCall,
-          onOpenLocation: onOpenLocation,
+          onOpenLocation: widget.onOpenLocation,
         );
         return entry.isSubagent ? _SubagentLaunchSurface(child: tool) : tool;
       case AcpSubagentTranscriptEntry():
@@ -132,33 +252,131 @@ class AcpMessageThread extends StatelessWidget {
     }
   }
 
+  Widget _buildListChild(BuildContext context, int index) {
+    if (index == widget.entries.length) {
+      return Padding(
+        key: const ValueKey('acp-message-thread-footer'),
+        padding: const EdgeInsets.only(top: FluttyTheme.spacingSm),
+        child: Align(alignment: Alignment.centerLeft, child: widget.footer),
+      );
+    }
+    final entry = widget.entries[index];
+    return Padding(
+      key: ValueKey(entry.id),
+      padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingXs),
+      child: _buildEntry(context, entry),
+    );
+  }
+
   @override
-  Widget build(BuildContext context) => AcpImageActions(
-    resolver: imageResolver,
-    onTap: onTapImage,
-    child: ListView.builder(
-      controller: controller,
-      padding: padding,
-      shrinkWrap: shrinkWrap,
-      physics: physics,
-      itemCount: entries.length + (footer == null ? 0 : 1),
-      itemBuilder: (context, index) {
-        if (index == entries.length) {
-          return Padding(
-            key: const ValueKey('acp-message-thread-footer'),
-            padding: const EdgeInsets.only(top: FluttyTheme.spacingSm),
-            child: Align(alignment: Alignment.centerLeft, child: footer),
-          );
-        }
-        final entry = entries[index];
-        return Padding(
-          key: ValueKey(entry.id),
-          padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingXs),
-          child: _buildEntry(context, entry),
-        );
-      },
-    ),
-  );
+  Widget build(BuildContext context) {
+    final stickyIndex = _stickyPromptIndex;
+    final stickyPrompt =
+        stickyIndex != null &&
+            stickyIndex >= 0 &&
+            stickyIndex < widget.entries.length &&
+            widget.entries[stickyIndex] is AcpUserPromptEntry
+        ? widget.entries[stickyIndex] as AcpUserPromptEntry
+        : null;
+    final childCount = widget.entries.length + (widget.footer == null ? 0 : 1);
+    return AcpImageActions(
+      resolver: widget.imageResolver,
+      onTap: widget.onTapImage,
+      child: Stack(
+        fit: StackFit.passthrough,
+        children: [
+          NotificationListener<ScrollMetricsNotification>(
+            onNotification: (_) {
+              _scheduleStickyUpdate();
+              return false;
+            },
+            child: CustomScrollView(
+              controller: _controller,
+              shrinkWrap: widget.shrinkWrap,
+              physics: widget.physics,
+              semanticChildCount: widget.entries.length,
+              slivers: [
+                SliverPadding(
+                  padding: widget.padding,
+                  sliver: SliverList(
+                    key: _sliverListKey,
+                    delegate: SliverChildBuilderDelegate(
+                      _buildListChild,
+                      childCount: childCount,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (stickyPrompt != null)
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: _StickyUserPromptSummary(
+                summary: acpUserPromptSummary(stickyPrompt),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StickyUserPromptSummary extends StatelessWidget {
+  const _StickyUserPromptSummary({required this.summary});
+
+  final String summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      container: true,
+      header: true,
+      label: 'Current user prompt: $summary',
+      child: ExcludeSemantics(
+        child: DecoratedBox(
+          key: const ValueKey('acp-sticky-user-prompt'),
+          decoration: BoxDecoration(
+            color: scheme.surface,
+            border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+          ),
+          child: SizedBox(
+            height: 36,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.person_outline_rounded,
+                    size: 14,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'you · $summary',
+                      key: const ValueKey('acp-sticky-user-prompt-text'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AcpChatTypography.monoStyleOf(context).copyWith(
+                        color: scheme.onSurface,
+                        fontSize: 11.5,
+                        height: 1.2,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _SubagentLaunchSurface extends StatelessWidget {

@@ -54,14 +54,176 @@ void main() {
     );
     await tester.pump();
 
-    final list = tester.widget<ListView>(find.byType(ListView));
+    final viewport = tester.widget<CustomScrollView>(
+      find.byType(CustomScrollView),
+    );
+    final padding = tester.widget<SliverPadding>(find.byType(SliverPadding));
+    expect(viewport.shrinkWrap, isFalse);
     expect(
-      list.padding,
+      padding.padding,
       const EdgeInsets.symmetric(
         horizontal: 12,
         vertical: FluttyTheme.spacingSm,
       ),
     );
+  });
+
+  test('user prompt summary normalizes text and attachment-only prompts', () {
+    expect(
+      acpUserPromptSummary(
+        AcpUserPromptEntry(
+          id: 'text',
+          parts: const [AcpTextPart('  first\nline  '), AcpTextPart('second')],
+        ),
+      ),
+      'first line second',
+    );
+    expect(
+      acpUserPromptSummary(
+        AcpUserPromptEntry(
+          id: 'attachments',
+          parts: [
+            AcpImagePart(AcpImageContent(bytes: _pngBytes, label: 'diagram')),
+            const AcpResourcePart(
+              AcpResourceRef(uri: 'file:///repo/lib/main.dart'),
+            ),
+          ],
+        ),
+      ),
+      'diagram · main.dart',
+    );
+  });
+
+  testWidgets('pins and swaps the user prompt governing visible responses', (
+    tester,
+  ) async {
+    final controller = ScrollController();
+    String longResponse(String label) => List.generate(
+      18,
+      (index) => '$label response paragraph $index with enough text to wrap.',
+    ).join('\n\n');
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          height: 240,
+          child: AcpMessageThread(
+            controller: controller,
+            entries: [
+              AcpUserPromptEntry(
+                id: 'u1',
+                parts: const [AcpTextPart('first user request')],
+              ),
+              AcpAssistantMessageEntry(
+                id: 'a1',
+                markdown: longResponse('first'),
+              ),
+              AcpUserPromptEntry(
+                id: 'u2',
+                parts: const [AcpTextPart('second user request')],
+              ),
+              AcpAssistantMessageEntry(
+                id: 'a2',
+                markdown: longResponse('second'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(const ValueKey('acp-sticky-user-prompt')), findsNothing);
+
+    String? stickyText() => find
+        .byKey(const ValueKey('acp-sticky-user-prompt-text'))
+        .evaluate()
+        .map((element) => (element.widget as Text).data)
+        .firstOrNull;
+
+    Future<void> scrollUntil(String expected, double delta) async {
+      for (var attempt = 0; attempt < 30; attempt++) {
+        if ((stickyText() ?? '').contains(expected)) return;
+        await tester.drag(find.byType(CustomScrollView), Offset(0, delta));
+        await tester.pump();
+      }
+      fail('Sticky prompt never became $expected; was ${stickyText()}');
+    }
+
+    await scrollUntil('first user request', -100);
+    final sticky = tester.widget<Text>(
+      find.byKey(const ValueKey('acp-sticky-user-prompt-text')),
+    );
+    expect(sticky.maxLines, 1);
+    expect(
+      tester
+          .getSize(find.byKey(const ValueKey('acp-sticky-user-prompt')))
+          .height,
+      36,
+    );
+    expect(
+      find.bySemanticsLabel('Current user prompt: first user request'),
+      findsOneWidget,
+    );
+
+    await scrollUntil('second user request', -120);
+    await scrollUntil('first user request', 120);
+
+    controller.jumpTo(0);
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('acp-sticky-user-prompt')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
+  testWidgets('keeps the last prompt pinned when the footer reaches the top', (
+    tester,
+  ) async {
+    final controller = ScrollController();
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          height: 120,
+          child: AcpMessageThread(
+            controller: controller,
+            entries: [
+              AcpUserPromptEntry(
+                id: 'u1',
+                parts: const [AcpTextPart('footer context')],
+              ),
+            ],
+            footer: const SizedBox(height: 300),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    controller.jumpTo(controller.position.maxScrollExtent);
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('you · footer context'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
+  testWidgets('keeps long transcripts lazy', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          height: 200,
+          child: AcpMessageThread(
+            entries: [
+              for (var index = 0; index < 200; index++)
+                AcpStatusEntry(id: 'status-$index', message: 'status $index'),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('status-0')), findsOneWidget);
+    expect(find.byKey(const ValueKey('status-199')), findsNothing);
   });
 
   testWidgets('preserves user prompt part order', (tester) async {
