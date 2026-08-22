@@ -212,9 +212,15 @@ void main() {
               ),
             );
 
-        final encodedPayload = await transferService.createFullMigrationPayload(
-          transferPassphrase: '1234',
+        final diagnosticsLogger = _RecordingDiagnosticsLogger();
+        final exportingService = SecureTransferService(
+          db,
+          keyRepository,
+          hostRepository,
+          diagnosticsLogger: diagnosticsLogger,
         );
+        final encodedPayload = await exportingService
+            .createFullMigrationPayload(transferPassphrase: '1234');
 
         final importedDb = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(importedDb.close);
@@ -228,6 +234,16 @@ void main() {
           encodedPayload: encodedPayload,
           transferPassphrase: '1234',
         );
+        final exportedHosts = payload.data['hosts'] as List;
+        final exportedHost = Map<String, dynamic>.from(
+          exportedHosts.single as Map,
+        );
+        expect(exportedHost['jumpHostId'], isNull);
+        final warning = diagnosticsLogger.events.singleWhere(
+          (event) =>
+              event.message == 'migration_export_jump_host_references_removed',
+        );
+        expect(warning.fields, {'removedCount': 1});
 
         await importedTransferService.importFullMigrationPayload(
           payload: payload,
