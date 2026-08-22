@@ -40,7 +40,7 @@ class _FakeAcpServer implements AcpTransport {
     this.promptErrorMessage,
     this.replayTextOnLoad,
     this.replayUpdateCountOnLoad = 0,
-    this.onReplayQueued,
+    this.loadResponseGate,
     this.permissionIdOnLoad,
     this.permissionIdOnInitialize,
     this.permissionSessionIdOnInitialize,
@@ -69,8 +69,9 @@ class _FakeAcpServer implements AcpTransport {
   /// Number of same-message content chunks synchronously replayed on load.
   final int replayUpdateCountOnLoad;
 
-  /// Called after a synthetic replay burst is queued but before load replies.
-  final void Function()? onReplayQueued;
+  /// Holds the session/load response so reconnecting-state publication can be
+  /// observed independently from provider history latency.
+  final Future<void>? loadResponseGate;
 
   /// When set, a `session/load` pushes a permission request with this stable
   /// JSON-RPC id before replying, simulating a replayed pending permission.
@@ -185,10 +186,10 @@ class _FakeAcpServer implements AcpTransport {
             'content': {'type': 'text', 'text': 'chunk-$index '},
           });
         }
-        if (replayUpdateCountOnLoad > 0) onReplayQueued?.call();
         if (permissionIdOnLoad != null) {
           _pushPermission(permissionIdOnLoad!, sessionId, 'replay-tool');
         }
+        if (loadResponseGate != null) await loadResponseGate;
         _reply(id, <String, Object?>{});
       case 'session/prompt':
         if (promptErrorMessage != null) {
@@ -1902,59 +1903,100 @@ void main() {
       );
     });
 
-    test(
-      'large synchronous replay yields before reconnect completes',
-      () async {
-        var reconnectCompleted = false;
-        bool? completedWhenEventLoopAdvanced;
-        final replayConnector = _FakeConnector(
-          serverFactory: (_, _) => _FakeAcpServer(
-            supportsResume: false,
-            replayUpdateCountOnLoad: 600,
-            onReplayQueued: () {
-              Timer.run(() {
-                completedWhenEventLoopAdvanced = reconnectCompleted;
-              });
-            },
-          ),
-        );
-        final replayManager = buildManagerWith(replayConnector);
-        final started = await replayManager.startNewSession(
-          hostId: 1,
-          providerId: AcpBuiltinProviderIds.copilotCli,
-          cwd: '/repo',
-        );
-        final key = (started as AcpSessionLaunchStarted).key;
-        await replayManager.detachSession(key);
-        replayConnector.availableBridges.remove(key.bridgeId);
+    test('failed provisional reconnect restores prior selection', () async {
+      isPro = true;
+      final selectionConnector = _FakeConnector(
+        serverFactory: (_, bridgeId) =>
+            _FakeAcpServer(rejectInitialize: bridgeId == 'failing-bridge'),
+      );
+      final selectionManager = buildManagerWith(selectionConnector);
+      final started = await selectionManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final selectedKey = (started as AcpSessionLaunchStarted).key;
+      expect(selectionManager.state.selectedKey, selectedKey.value);
+      selectionConnector.availableBridges.add('failing-bridge');
 
-        final result = await replayManager
-            .reconnectSession(
-              hostId: key.hostId,
-              providerId: key.providerId,
-              bridgeId: key.bridgeId,
-              acpSessionId: key.acpSessionId,
-              cwd: '/repo',
-            )
-            .then((value) {
-              reconnectCompleted = true;
-              return value;
-            });
+      final result = await selectionManager.reconnectSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        bridgeId: 'failing-bridge',
+        acpSessionId: 'failing-session',
+        cwd: '/repo',
+      );
 
-        expect(result, isA<AcpSessionLaunchStarted>());
-        expect(completedWhenEventLoopAdvanced, isFalse);
-        final reloadedKey = (result as AcpSessionLaunchStarted).key;
-        final timeline = replayManager.state
+      expect(result, isA<AcpSessionLaunchFailed>());
+      expect(selectionManager.state.selectedKey, selectedKey.value);
+      expect(selectionManager.state.sessions.map((session) => session.key), [
+        selectedKey,
+      ]);
+    });
+
+    test('publishes reconnecting state before a slow load completes', () async {
+      final loadGate = Completer<void>();
+      final replayConnector = _FakeConnector(
+        serverFactory: (_, _) => _FakeAcpServer(
+          supportsResume: false,
+          replayUpdateCountOnLoad: 600,
+          loadResponseGate: loadGate.future,
+        ),
+      );
+      final replayManager = buildManagerWith(replayConnector);
+      final started = await replayManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (started as AcpSessionLaunchStarted).key;
+      await replayManager.detachSession(key);
+      replayConnector.availableBridges.remove(key.bridgeId);
+
+      var reconnectCompleted = false;
+      final reconnect = replayManager
+          .reconnectSession(
+            hostId: key.hostId,
+            providerId: key.providerId,
+            bridgeId: key.bridgeId,
+            acpSessionId: key.acpSessionId,
+            cwd: '/repo',
+          )
+          .then((value) {
+            reconnectCompleted = true;
+            return value;
+          });
+
+      AcpSessionState? provisional;
+      for (var turn = 0; turn < 100 && provisional == null; turn++) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+        provisional = replayManager.state.sessions.firstOrNull;
+      }
+      expect(provisional, isNotNull);
+      expect(provisional!.status, AcpConnectionStatus.initializing);
+      expect(reconnectCompleted, isFalse);
+
+      loadGate.complete();
+      final result = await reconnect;
+      expect(result, isA<AcpSessionLaunchStarted>());
+      final reloadedKey = (result as AcpSessionLaunchStarted).key;
+      AcpMessageEntry? message;
+      for (var turn = 0; turn < 400; turn++) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        message = replayManager.state
             .byKeyValue(reloadedKey.value)!
-            .timeline;
-        final message = timeline.entries
+            .timeline
+            .entries
             .whereType<AcpMessageEntry>()
-            .firstWhere((entry) => entry.messageId == 'replay-burst');
-        expect(message.content, hasLength(600));
-        expect((message.content.first as AcpTextContent).text, 'chunk-0 ');
-        expect((message.content.last as AcpTextContent).text, 'chunk-599 ');
-      },
-    );
+            .where((entry) => entry.messageId == 'replay-burst')
+            .firstOrNull;
+        if (message?.content.length == 600) break;
+      }
+      expect(message, isNotNull);
+      expect(message!.content, hasLength(600));
+      expect((message.content.first as AcpTextContent).text, 'chunk-0 ');
+      expect((message.content.last as AcpTextContent).text, 'chunk-599 ');
+    });
 
     test(
       'deduplicates a replayed permission by request id across reconnect',

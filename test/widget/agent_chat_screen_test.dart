@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/app/theme.dart';
 import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_native_preview.dart';
@@ -53,6 +54,7 @@ Widget _wrap(
   AcpSessionKey? routeKey,
   bool hasActiveSshSession = false,
   bool embedded = false,
+  bool connectOnMount = true,
   double? preferredFontSize,
   String? preferredFontFamily,
   ValueChanged<double>? onFontSizeCommitted,
@@ -103,6 +105,7 @@ Widget _wrap(
               attachmentActionsBuilder ??
               (_, _) => const AcpComposerAttachmentActions(),
           embedded: embedded,
+          connectOnMount: connectOnMount,
           preferredFontSize: preferredFontSize,
           preferredFontFamily: preferredFontFamily,
           onFontSizeCommitted: onFontSizeCommitted,
@@ -358,7 +361,15 @@ void main() {
     final modelPill = find.byKey(
       const ValueKey('acp-quick-selector-pill-Model'),
     );
+    final effortPill = find.byKey(
+      const ValueKey('acp-quick-selector-pill-Effort'),
+    );
     expect(tester.getSize(modelPill).height, 40);
+    expect(
+      tester.getTopLeft(effortPill).dx - tester.getTopRight(modelPill).dx,
+      FluttyTheme.spacingXs,
+      reason: 'selector pills should flow without fixed-width dead space',
+    );
     final selectorContext = tester.element(find.text('Sonnet'));
     final modelInk = tester.widget<Ink>(modelPill);
     final modelDecoration = modelInk.decoration! as BoxDecoration;
@@ -651,6 +662,19 @@ void main() {
 
     expect(find.text('agent connection failed'), findsOneWidget);
     expect(find.widgetWithText(TextButton, 'Reconnect'), findsOneWidget);
+  });
+
+  testWidgets('externally owned reconnect does not launch a duplicate', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager();
+    await tester.pumpWidget(
+      _wrap(manager, embedded: true, connectOnMount: false),
+    );
+    await tester.pump();
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(manager.reconnects, isEmpty);
   });
 
   testWidgets('adopts the replacement bridge key after resuming an expired '
@@ -1125,6 +1149,34 @@ void main() {
 
     expect(position.pixels, closeTo(userPosition, 1));
     expect(find.byTooltip('Jump to latest'), findsOneWidget);
+  });
+
+  testWidgets('embedded long conversation mounts only its recent tail', (
+    tester,
+  ) async {
+    final entries = <AcpTimelineEntry>[
+      for (var index = 0; index < 200; index++)
+        AcpMessageEntry(
+          order: index,
+          role: AcpMessageRole.agent,
+          messageId: 'long-$index',
+          content: [AcpTextContent('Long conversation response $index')],
+        ),
+    ];
+    final manager = FakeAcpSessionManager(
+      sessions: [fakeAcpSession(timeline: AcpTimeline(entries: entries))],
+    );
+
+    await tester.pumpWidget(_wrap(manager, embedded: true));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final transcript = find.descendant(
+      of: find.byType(AcpMessageThread),
+      matching: find.byType(CustomScrollView),
+    );
+    expect(tester.widget<CustomScrollView>(transcript).semanticChildCount, 48);
+    expect(find.text('Long conversation response 0'), findsNothing);
   });
 
   testWidgets('embedded native chat restores scroll position after remount', (

@@ -116,6 +116,7 @@ class AgentChatScreen extends ConsumerStatefulWidget {
     this.attachmentActionsBuilder,
     this.composerFocusController,
     this.embedded = false,
+    this.connectOnMount = true,
     this.preferredFontSize,
     this.preferredFontFamily,
     this.onFontSizeCommitted,
@@ -148,6 +149,12 @@ class AgentChatScreen extends ConsumerStatefulWidget {
 
   /// Whether the conversation replaces a terminal viewport inside its shell.
   final bool embedded;
+
+  /// Whether this view owns reconnecting a session absent from manager state.
+  ///
+  /// The terminal shell disables this while it already owns the same reconnect
+  /// future, avoiding a duplicate attempt during an immediate native handoff.
+  final bool connectOnMount;
 
   /// Terminal/session font size used by the embedded conversation.
   final double? preferredFontSize;
@@ -228,7 +235,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       initialSession: manager.state.byKeyValue(_key.value),
     );
     _scroll.addListener(_onScroll);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _ensureConnected());
+    if (widget.connectOnMount) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _ensureConnected());
+    }
   }
 
   @override
@@ -691,7 +700,8 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemCount: selectors.length,
-          separatorBuilder: (_, _) => const SizedBox(width: 2),
+          separatorBuilder: (_, _) =>
+              const SizedBox(width: FluttyTheme.spacingXs),
           itemBuilder: (context, index) {
             final selector = selectors[index];
             return _AcpQuickSelector(
@@ -1535,6 +1545,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                                 child: AcpMessageThread(
                                   entries: entries,
                                   controller: _scroll,
+                                  followTail: _autoScroll,
                                   onStickyPromptTap: _handleStickyPromptTap,
                                   footer:
                                       session.promptStatus ==
@@ -2137,7 +2148,7 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
         ],
       ],
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 44, maxWidth: 148),
+        constraints: const BoxConstraints(minHeight: 44),
         child: Center(
           child: Ink(
             key: ValueKey('acp-quick-selector-pill-${selector.label}'),
@@ -2150,7 +2161,8 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Flexible(
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 110),
                   child: Text(
                     current?.label ?? selector.currentValue,
                     maxLines: 1,

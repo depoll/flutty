@@ -722,17 +722,49 @@ class AcpSessionManager {
       detachedTurnPollInterval: _detachedTurnPollInterval,
     ).._acquireLease(attachment);
 
+    final selectedKeyBeforeProvisional = _selectedKeyValue;
+    String? provisionalKeyValue;
+
+    void discardProvisionalController() {
+      final value = provisionalKeyValue;
+      if (value == null || !identical(_controllers[value], controller)) return;
+      _controllers.remove(value);
+      if (_selectedKeyValue == value) {
+        final prior = selectedKeyBeforeProvisional;
+        _selectedKeyValue =
+            prior != null && (_controllers[prior]?.state.isLive ?? false)
+            ? prior
+            : null;
+      }
+      _emit();
+    }
+
     try {
-      final key = await controller.open(
+      final openFuture = controller.open(
         hostId: hostId,
         providerId: launch.providerId,
         bridgeId: bridgeId,
         existingSessionId: existingSessionId,
         liveBridge: liveBridge,
       );
+      if (existingSessionId != null) {
+        // The reconnect identity is already stable. Publish its connecting
+        // state before session/load replays history so the real conversation
+        // shell can replace the terminal immediately and update progressively.
+        provisionalKeyValue = controller.state.key.value;
+        _controllers[provisionalKeyValue] = controller;
+        _select(provisionalKeyValue);
+      }
+      final key = await openFuture;
+      final previousPublishedKey = provisionalKeyValue;
+      if (previousPublishedKey != null &&
+          previousPublishedKey != key.value &&
+          identical(_controllers[previousPublishedKey], controller)) {
+        _controllers.remove(previousPublishedKey);
+      }
       _controllers[key.value] = controller;
+      provisionalKeyValue = key.value;
       _select(key.value);
-      _emit();
       await _recordRecent(controller.state);
       _diagnostics.info(
         'acp.manager',
@@ -751,6 +783,7 @@ class AcpSessionManager {
       );
       return AcpSessionLaunchStarted(key);
     } on _LaunchException catch (error) {
+      discardProvisionalController();
       await controller.disposeLocal();
       await _maybeStopOrphanBridge(
         startedBridge: startedBridge,
@@ -760,6 +793,7 @@ class AcpSessionManager {
       _telemetry.failure(category: error.error.kind.name);
       return AcpSessionLaunchFailed(error.key, error.error);
     } on Object catch (error) {
+      discardProvisionalController();
       await controller.disposeLocal();
       final mapped = _mapBridgeError(error);
       await _maybeStopOrphanBridge(
@@ -1426,7 +1460,6 @@ class _SessionController {
     final resolvedSessionId = reattachingActiveTurn
         ? existingSessionId
         : await _establishSession(existingSessionId, init);
-    await _waitForPendingSessionUpdates();
     _freshBridge = false;
     _key = AcpSessionKey.of(
       hostId: hostId,
@@ -1650,15 +1683,6 @@ class _SessionController {
           },
         );
       }
-    }
-  }
-
-  Future<void> _waitForPendingSessionUpdates() async {
-    final targetAppliedCount = _sessionUpdatesEnqueued;
-    while (_sessionUpdatesApplied < targetAppliedCount) {
-      _scheduleSessionUpdatePump();
-      final pump = _sessionUpdatePumpFuture;
-      if (pump != null) await pump;
     }
   }
 
@@ -2217,7 +2241,6 @@ class _SessionController {
       if (!detachedTurnRunning) {
         await _establishSession(sessionId, init);
       }
-      await _waitForPendingSessionUpdates();
       _update(
         (s) => s.copyWith(
           status: AcpConnectionStatus.ready,

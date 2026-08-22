@@ -3770,6 +3770,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   AcpSessionKey? _activeNativeAcpSessionKey;
   String? _autoOpenedNativeAcpBridgeId;
   String? _openingNativeAcpBridgeId;
+  String? _nativeAcpReconnectOwnedKeyValue;
   Future<void>? _openingNativeAcpWindow;
   _NativeAcpLaunchState? _nativeAcpLaunchState;
   var _nativeAcpLaunchGeneration = 0;
@@ -11849,9 +11850,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String providerId,
     String? workingDirectory,
   }) async {
-    await _switchTmuxWindow(sshSession, windowIndex);
-    if (!mounted) return;
-
     final manager = ref.read(acpSessionManagerProvider);
     final tracked = manager.state.sessions
         .where(
@@ -11862,7 +11860,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         )
         .firstOrNull;
     if (tracked != null && tracked.isLive) {
-      _openNativeAcpSession(tracked.key);
+      await _switchTmuxWindow(
+        sshSession,
+        windowIndex,
+        suppressTerminalReplay: true,
+      );
+      if (mounted) _openNativeAcpSession(tracked.key);
       return;
     }
 
@@ -11902,6 +11905,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    await _switchTmuxWindow(
+      sshSession,
+      windowIndex,
+      suppressTerminalReplay: true,
+    );
+    if (!mounted) return;
+
     final cwd = bridge.cwd?.trim().isNotEmpty ?? false
         ? bridge.cwd!.trim()
         : (workingDirectory?.trim().isNotEmpty ?? false)
@@ -11920,49 +11930,98 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       replace: replace,
     );
 
-    var result = await reconnect();
-    if (result is AcpSessionLaunchBlocked && mounted) {
-      final choice = await showAcpConcurrencyChoice(
-        context,
-        decision: result.decision,
-        managerState: manager.state,
-      );
-      if (!mounted || choice == null) return;
-      switch (choice) {
-        case AcpConcurrencyChoice.stopAndContinue:
-          final blocking = [
-            for (final value in result.decision.blockingSessionKeys)
-              manager.state.byKeyValue(value)?.key,
-          ].whereType<AcpSessionKey>().toList(growable: false);
-          result = await reconnect(replace: blocking);
-        case AcpConcurrencyChoice.upgrade:
-          await context.push<void>(
-            Uri(
-              path: '/upgrade',
-              queryParameters: {
-                'feature': MonetizationFeature.concurrentAcpSessions.name,
-              },
-            ).toString(),
-          );
-          if (!mounted ||
-              !ref
-                  .read(monetizationServiceProvider)
-                  .currentState
-                  .isProUnlocked) {
-            return;
-          }
-          result = await reconnect();
+    final provisionalKey = AcpSessionKey.of(
+      hostId: sshSession.hostId,
+      providerId: providerId,
+      bridgeId: bridgeId,
+      acpSessionId: acpSessionId,
+    );
+    _nativeAcpReconnectOwnedKeyValue = provisionalKey.value;
+    _openNativeAcpSession(provisionalKey);
+    DiagnosticsLogService.instance.info(
+      'acp.window',
+      'native_shell_opened',
+      fields: {'hostId': sshSession.hostId},
+    );
+
+    Future<void> restoreTerminalAfterFailedHandoff() async {
+      if (!mounted || _activeNativeAcpSessionKey != provisionalKey) return;
+      try {
+        // The native selection suppressed its hidden placeholder replay. Before
+        // exposing the terminal again, select normally so MonkeyMux sends a
+        // coherent frame instead of leaving the previous window frozen.
+        await _switchTmuxWindow(sshSession, windowIndex);
+      } on Object catch (error) {
+        DiagnosticsLogService.instance.debug(
+          'acp.window',
+          'terminal_replay_restore_failed',
+          fields: {'hostId': sshSession.hostId, 'errorType': error.runtimeType},
+        );
+      }
+      if (mounted && _activeNativeAcpSessionKey == provisionalKey) {
+        _showTerminalViewport();
       }
     }
-    if (!mounted) return;
-    switch (result) {
-      case AcpSessionLaunchStarted(:final key):
-        _openNativeAcpSession(key);
-      case AcpSessionLaunchFailed(:final error):
-        ScaffoldMessenger.of(
+
+    try {
+      var result = await reconnect();
+      if (result is AcpSessionLaunchBlocked && mounted) {
+        final choice = await showAcpConcurrencyChoice(
           context,
-        ).showSnackBar(SnackBar(content: Text(error.message)));
-      case AcpSessionLaunchBlocked():
+          decision: result.decision,
+          managerState: manager.state,
+        );
+        if (!mounted || choice == null) {
+          await restoreTerminalAfterFailedHandoff();
+          return;
+        }
+        switch (choice) {
+          case AcpConcurrencyChoice.stopAndContinue:
+            final blocking = [
+              for (final value in result.decision.blockingSessionKeys)
+                manager.state.byKeyValue(value)?.key,
+            ].whereType<AcpSessionKey>().toList(growable: false);
+            result = await reconnect(replace: blocking);
+          case AcpConcurrencyChoice.upgrade:
+            await context.push<void>(
+              Uri(
+                path: '/upgrade',
+                queryParameters: {
+                  'feature': MonetizationFeature.concurrentAcpSessions.name,
+                },
+              ).toString(),
+            );
+            if (!mounted) return;
+            if (!ref
+                .read(monetizationServiceProvider)
+                .currentState
+                .isProUnlocked) {
+              await restoreTerminalAfterFailedHandoff();
+              return;
+            }
+            result = await reconnect();
+        }
+      }
+      if (!mounted) return;
+      switch (result) {
+        case AcpSessionLaunchStarted(:final key):
+          if (_activeNativeAcpSessionKey == provisionalKey &&
+              key != provisionalKey) {
+            _openNativeAcpSession(key);
+          }
+        case AcpSessionLaunchFailed(:final error):
+          await restoreTerminalAfterFailedHandoff();
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(error.message)));
+        case AcpSessionLaunchBlocked():
+          await restoreTerminalAfterFailedHandoff();
+      }
+    } finally {
+      if (_nativeAcpReconnectOwnedKeyValue == provisionalKey.value) {
+        _nativeAcpReconnectOwnedKeyValue = null;
+      }
     }
   }
 
@@ -12142,6 +12201,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       bridgeId: key.bridgeId,
       acpSessionId: key.acpSessionId,
       embedded: true,
+      connectOnMount: _nativeAcpReconnectOwnedKeyValue != key.value,
       composerFocusController: _nativeComposerFocusController,
       preferredFontSize: fontSize,
       preferredFontFamily: fontFamily,
@@ -12251,6 +12311,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String? windowId,
     bool forceVisibleTmux = false,
     bool deferPostSwitchExec = true,
+    bool suppressTerminalReplay = false,
   }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
@@ -12270,12 +12331,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await backend.selectWindow(
         windowIndex,
         clientImageSignatures: _terminal.heldImageSignatures(),
+        suppressReplay: suppressTerminalReplay,
       );
     } else {
       await backend.selectWindow(
         windowIndex,
         windowId: targetWindowId,
         clientImageSignatures: _terminal.heldImageSignatures(),
+        suppressReplay: suppressTerminalReplay,
       );
     }
     final activeTool =

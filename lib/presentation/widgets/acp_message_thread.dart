@@ -104,6 +104,9 @@ final Expando<List<String>> _assistantMarkdownChunks = Expando<List<String>>(
 final Expando<List<List<AcpPromptPart>>> _userPromptSegments =
     Expando<List<List<AcpPromptPart>>>('ACP virtual user prompt segments');
 
+const int _initialTailWindowChildren = 48;
+const int _earlierTranscriptPageChildren = 48;
+
 final class _AcpThreadChild {
   const _AcpThreadChild({
     required this.entry,
@@ -225,6 +228,7 @@ class AcpMessageThread extends StatefulWidget {
     this.onCopyCode,
     this.onOpenLocation,
     this.thoughtsInitiallyExpanded = false,
+    this.followTail = false,
   });
 
   /// The ordered timeline entries to render.
@@ -275,6 +279,10 @@ class AcpMessageThread extends StatefulWidget {
   /// Whether thought sections start expanded.
   final bool thoughtsInitiallyExpanded;
 
+  /// Keeps only a bounded tail mounted while the conversation follows live
+  /// output. Older children are revealed in pages when the user scrolls up.
+  final bool followTail;
+
   @override
   State<AcpMessageThread> createState() => _AcpMessageThreadState();
 }
@@ -286,6 +294,8 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   List<_AcpThreadChild> _threadChildren = const [];
   Map<int, int> _firstChildIndexByEntry = const {};
   Map<String, int> _childIndexByKey = const {};
+  int _renderStartChildIndex = 0;
+  bool _earlierTranscriptLoadScheduled = false;
   int? _stickyPromptIndex;
   int? _firstVisibleEntryIndex;
   Timer? _promptNavigationHideTimer;
@@ -307,7 +317,9 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   @override
   void didUpdateWidget(covariant AcpMessageThread oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _syncThreadChildren();
+    _syncThreadChildren(
+      forceWindowSync: oldWidget.followTail != widget.followTail,
+    );
     if (oldWidget.controller != widget.controller) {
       (oldWidget.controller ?? _ownedController)?.removeListener(
         _scheduleStickyUpdate,
@@ -325,22 +337,35 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     super.dispose();
   }
 
-  void _syncThreadChildren() {
-    if (identical(_threadEntries, widget.entries)) return;
-    _threadEntries = widget.entries;
-    _threadChildren = _buildThreadChildren(widget.entries);
-    final firstChildIndexByEntry = <int, int>{};
-    for (var index = 0; index < _threadChildren.length; index++) {
-      firstChildIndexByEntry.putIfAbsent(
-        _threadChildren[index].entryIndex,
-        () => index,
-      );
+  void _syncThreadChildren({bool forceWindowSync = false}) {
+    final entriesChanged = !identical(_threadEntries, widget.entries);
+    if (!entriesChanged && !forceWindowSync) return;
+    if (entriesChanged) {
+      _threadEntries = widget.entries;
+      _threadChildren = _buildThreadChildren(widget.entries);
+      final firstChildIndexByEntry = <int, int>{};
+      for (var index = 0; index < _threadChildren.length; index++) {
+        firstChildIndexByEntry.putIfAbsent(
+          _threadChildren[index].entryIndex,
+          () => index,
+        );
+      }
+      _firstChildIndexByEntry = firstChildIndexByEntry;
+      _childIndexByKey = <String, int>{
+        for (var index = 0; index < _threadChildren.length; index++)
+          _threadChildren[index].keyValue: index,
+      };
     }
-    _firstChildIndexByEntry = firstChildIndexByEntry;
-    _childIndexByKey = <String, int>{
-      for (var index = 0; index < _threadChildren.length; index++)
-        _threadChildren[index].keyValue: index,
-    };
+    if (widget.followTail) {
+      _renderStartChildIndex =
+          (_threadChildren.length - _initialTailWindowChildren).clamp(
+            0,
+            _threadChildren.length,
+          );
+    } else {
+      final maxStart = _threadChildren.isEmpty ? 0 : _threadChildren.length - 1;
+      _renderStartChildIndex = _renderStartChildIndex.clamp(0, maxStart);
+    }
   }
 
   void _scheduleStickyUpdate() {
@@ -379,10 +404,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       child = renderObject.childAfter(child);
     }
     firstVisibleChildIndex ??= renderObject.indexOf(renderObject.lastChild!);
-    final threadChildIndex = firstVisibleChildIndex.clamp(
-      0,
-      _threadChildren.length - 1,
-    );
+    final threadChildIndex = _absoluteChildIndex(firstVisibleChildIndex);
     final entryIndex = _threadChildren[threadChildIndex].entryIndex;
 
     int? promptIndex;
@@ -392,8 +414,13 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
         break;
       }
     }
+    final firstVisibleIsTranscript =
+        firstVisibleChildIndex >= _leadingWindowChildCount &&
+        firstVisibleChildIndex <
+            _leadingWindowChildCount +
+                (_threadChildren.length - _renderStartChildIndex);
     final promptIsVisible =
-        firstVisibleChildIndex < _threadChildren.length &&
+        firstVisibleIsTranscript &&
         promptIndex == entryIndex &&
         _threadChildren[threadChildIndex].entry is AcpUserPromptEntry;
     _setViewportContext(
@@ -424,8 +451,11 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 
   int? _previousUserPromptIndex() {
     final firstVisible = _firstVisibleEntryIndex;
-    if (firstVisible == null) return null;
-    final start = _stickyPromptIndex ?? firstVisible - 1;
+    if (firstVisible == null || widget.entries.isEmpty) return null;
+    final start = (_stickyPromptIndex ?? firstVisible - 1).clamp(
+      0,
+      widget.entries.length - 1,
+    );
     for (var index = start; index >= 0; index--) {
       if (widget.entries[index] is AcpUserPromptEntry) return index;
     }
@@ -434,12 +464,60 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 
   int? _nextUserPromptIndex() {
     final firstVisible = _firstVisibleEntryIndex;
-    if (firstVisible == null) return null;
+    if (firstVisible == null || widget.entries.isEmpty) return null;
     final start = (_stickyPromptIndex ?? firstVisible) + 1;
-    for (var index = start; index < widget.entries.length; index++) {
+    if (start >= widget.entries.length) return null;
+    for (
+      var index = start.clamp(0, widget.entries.length - 1);
+      index < widget.entries.length;
+      index++
+    ) {
       if (widget.entries[index] is AcpUserPromptEntry) return index;
     }
     return null;
+  }
+
+  bool get _hasEarlierTranscript => _renderStartChildIndex > 0;
+
+  int get _leadingWindowChildCount => _hasEarlierTranscript ? 1 : 0;
+
+  int _absoluteChildIndex(int sliverChildIndex) =>
+      (sliverChildIndex - _leadingWindowChildCount + _renderStartChildIndex)
+          .clamp(_renderStartChildIndex, _threadChildren.length - 1);
+
+  void _scheduleEarlierTranscriptPage({bool force = false}) {
+    if (!_hasEarlierTranscript ||
+        _earlierTranscriptLoadScheduled ||
+        (widget.followTail && !force)) {
+      return;
+    }
+    _earlierTranscriptLoadScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _earlierTranscriptLoadScheduled = false;
+      if (!mounted || !_controller.hasClients || !_hasEarlierTranscript) return;
+      final position = _controller.position;
+      final oldPixels = position.pixels;
+      final oldMaxExtent = position.maxScrollExtent;
+      setState(() {
+        _renderStartChildIndex =
+            (_renderStartChildIndex - _earlierTranscriptPageChildren).clamp(
+              0,
+              _threadChildren.length,
+            );
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_controller.hasClients) return;
+        final next = _controller.position;
+        final insertedExtent = next.maxScrollExtent - oldMaxExtent;
+        next.jumpTo(
+          (oldPixels + insertedExtent).clamp(
+            next.minScrollExtent,
+            next.maxScrollExtent,
+          ),
+        );
+        _scheduleStickyUpdate();
+      });
+    });
   }
 
   void _showPromptNavigation() {
@@ -466,7 +544,13 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
             notification.dragDetails != null ||
         notification is UserScrollNotification &&
             notification.direction != ScrollDirection.idle;
-    if (userInitiated) _showPromptNavigation();
+    if (userInitiated) {
+      _showPromptNavigation();
+      if (notification.metrics.pixels <=
+          notification.metrics.minScrollExtent + 64) {
+        _scheduleEarlierTranscriptPage();
+      }
+    }
     return false;
   }
 
@@ -480,6 +564,13 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     if (!_controller.hasClients) return;
     _showPromptNavigation();
     widget.onStickyPromptTap?.call();
+    if (_hasEarlierTranscript) {
+      setState(() => _renderStartChildIndex = 0);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scrollToTop();
+      });
+      return;
+    }
     final position = _controller.position;
     final destination = position.minScrollExtent;
     if (MediaQuery.maybeOf(context)?.disableAnimations ?? false) {
@@ -497,9 +588,18 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 
   Future<void> _scrollEntryIntoView(int entryIndex) async {
     if (!_controller.hasClients) return;
-    final targetChildIndex = _firstChildIndexByEntry[entryIndex];
-    if (targetChildIndex == null) return;
+    final absoluteTargetChildIndex = _firstChildIndexByEntry[entryIndex];
+    if (absoluteTargetChildIndex == null) return;
     widget.onStickyPromptTap?.call();
+    if (absoluteTargetChildIndex < _renderStartChildIndex) {
+      setState(() => _renderStartChildIndex = absoluteTargetChildIndex);
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || !_controller.hasClients) return;
+    }
+    final targetChildIndex =
+        absoluteTargetChildIndex -
+        _renderStartChildIndex +
+        _leadingWindowChildCount;
     // A sticky prompt can be many screens above the viewport and therefore no
     // longer have a built element. Seek until SliverList materializes it, then
     // animate to its exact scroll offset. RenderObject.showOnScreen is not
@@ -626,14 +726,32 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   }
 
   Widget _buildListChild(BuildContext context, int index) {
-    if (index == _threadChildren.length) {
+    if (_hasEarlierTranscript && index == 0) {
+      return SizedBox(
+        key: const ValueKey('acp-earlier-transcript'),
+        height: 44,
+        child: Center(
+          child: TextButton.icon(
+            onPressed: () {
+              widget.onStickyPromptTap?.call();
+              _scheduleEarlierTranscriptPage(force: true);
+            },
+            icon: const Icon(Icons.expand_less_rounded, size: 18),
+            label: const Text('Earlier messages'),
+          ),
+        ),
+      );
+    }
+    final absoluteIndex =
+        index - _leadingWindowChildCount + _renderStartChildIndex;
+    if (absoluteIndex == _threadChildren.length) {
       return Padding(
         key: const ValueKey('acp-message-thread-footer'),
         padding: const EdgeInsets.only(top: FluttyTheme.spacingSm),
         child: Align(alignment: Alignment.centerLeft, child: widget.footer),
       );
     }
-    final threadChild = _threadChildren[index];
+    final threadChild = _threadChildren[absoluteIndex];
     final entry = threadChild.entry;
     final Widget content;
     if (entry is AcpUserPromptEntry && threadChild.userParts != null) {
@@ -665,7 +783,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     return Padding(
       key: ValueKey(threadChild.keyValue),
       padding: EdgeInsets.only(
-        top: index == 0 || threadChild.isEntryContinuation
+        top: absoluteIndex == 0 || threadChild.isEntryContinuation
             ? 0
             : FluttyTheme.spacingSm,
       ),
@@ -689,7 +807,12 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     final userPromptCount = widget.entries
         .whereType<AcpUserPromptEntry>()
         .length;
-    final childCount = _threadChildren.length + (widget.footer == null ? 0 : 1);
+    final visibleTranscriptChildCount =
+        _threadChildren.length - _renderStartChildIndex;
+    final childCount =
+        visibleTranscriptChildCount +
+        _leadingWindowChildCount +
+        (widget.footer == null ? 0 : 1);
     return AcpImageActions(
       resolver: widget.imageResolver,
       onTap: widget.onTapImage,
@@ -707,7 +830,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
                 controller: _controller,
                 shrinkWrap: widget.shrinkWrap,
                 physics: widget.physics,
-                semanticChildCount: _threadChildren.length,
+                semanticChildCount: visibleTranscriptChildCount,
                 slivers: [
                   SliverPadding(
                     padding: widget.padding,
@@ -716,9 +839,31 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
                       delegate: SliverChildBuilderDelegate(
                         _buildListChild,
                         childCount: childCount,
-                        findChildIndexCallback: (key) => key is ValueKey<String>
-                            ? _childIndexByKey[key.value]
-                            : null,
+                        findChildIndexCallback: (key) {
+                          if (key ==
+                              const ValueKey<String>(
+                                'acp-earlier-transcript',
+                              )) {
+                            return _hasEarlierTranscript ? 0 : null;
+                          }
+                          if (key ==
+                              const ValueKey<String>(
+                                'acp-message-thread-footer',
+                              )) {
+                            return widget.footer == null
+                                ? null
+                                : childCount - 1;
+                          }
+                          if (key is! ValueKey<String>) return null;
+                          final absoluteIndex = _childIndexByKey[key.value];
+                          if (absoluteIndex == null ||
+                              absoluteIndex < _renderStartChildIndex) {
+                            return null;
+                          }
+                          return absoluteIndex -
+                              _renderStartChildIndex +
+                              _leadingWindowChildCount;
+                        },
                       ),
                     ),
                   ),

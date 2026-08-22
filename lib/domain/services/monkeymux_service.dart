@@ -665,6 +665,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String? windowId,
     String? extraFlags,
     Map<int, int>? clientImageSignatures,
+    bool suppressReplay = false,
   }) async {
     if (isAppReviewDemoSession(session)) {
       final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
@@ -681,6 +682,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         'windowId': windowId.trim()
       else
         'windowIndex': windowIndex,
+      if (suppressReplay) 'suppressReplay': true,
       if (clientImageSignatures != null && clientImageSignatures.isNotEmpty)
         'haveImageSignatures': {
           for (final entry in clientImageSignatures.entries)

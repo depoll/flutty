@@ -280,6 +280,72 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('windows live-follow transcripts to the recent tail', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          height: 200,
+          child: AcpMessageThread(
+            followTail: true,
+            entries: [
+              for (var index = 0; index < 200; index++)
+                AcpStatusEntry(
+                  id: 'tail-status-$index',
+                  message: 'status $index',
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .semanticChildCount,
+      48,
+    );
+    expect(find.byKey(const ValueKey('tail-status-0')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('acp-earlier-transcript')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Earlier messages'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .semanticChildCount,
+      96,
+    );
+
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          height: 200,
+          child: AcpMessageThread(
+            entries: [
+              for (var index = 0; index < 10; index++)
+                AcpStatusEntry(
+                  id: 'short-status-$index',
+                  message: 'short $index',
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('keeps long transcripts lazy', (tester) async {
     await tester.pumpWidget(
       wrap(

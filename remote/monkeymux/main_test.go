@@ -4423,6 +4423,54 @@ func TestWindowSelectionPromotesRequestingClient(t *testing.T) {
 	}
 }
 
+func TestNativeWindowSelectionSuppressesTerminalReplay(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, history: []byte("visible terminal"), lastActivity: time.Now()},
+		{
+			id:                  "@2",
+			index:               1,
+			history:             []byte("native placeholder replay"),
+			nativeAcpBridgeID:   "0123456789abcdef0123456789abcdef",
+			nativeAcpProviderID: "pi",
+			alert:               true,
+			lastActivity:        time.Now(),
+		},
+	}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	registerTestAttachClient(t, server, conn, "native-client", 120, 40)
+	conn.Reset()
+
+	windowIndex := 1
+	server.handleControlRequest(
+		newControlClient(nil),
+		controlMessage{
+			Type:           "select_window",
+			ClientID:       "native-client",
+			WindowIndex:    &windowIndex,
+			SuppressReplay: true,
+		},
+	)
+
+	server.mu.Lock()
+	activeID := server.activeID
+	lastActiveID := server.lastActiveID
+	alert := server.windows[1].alert
+	server.mu.Unlock()
+	if activeID != "@2" || lastActiveID != "@1" || alert {
+		t.Fatalf(
+			"selection state = active %q, last %q, alert %v; want @2, @1, false",
+			activeID,
+			lastActiveID,
+			alert,
+		)
+	}
+	if got := conn.String(); got != "" {
+		t.Fatalf("suppressed native selection wrote terminal replay %q", got)
+	}
+}
+
 func TestMostRecentlyFocusedRemainingClientTakesOverAfterDetach(t *testing.T) {
 	server := newMuxServerWithSize("test", 160, 60)
 	first := registerTestAttachClient(

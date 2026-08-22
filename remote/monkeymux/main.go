@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.171"
+	monkeyMuxVersion                  = "0.1.172"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -497,6 +497,9 @@ type controlMessage struct {
 	Redraw         bool   `json:"redraw,omitempty"`
 	NoPrefix       bool   `json:"noPrefix,omitempty"`
 	ClipViewport   bool   `json:"clipViewport,omitempty"`
+	// SuppressReplay selects a native ACP placeholder without redrawing it into
+	// the attached terminal because the app replaces that viewport natively.
+	SuppressReplay bool `json:"suppressReplay,omitempty"`
 	// HaveImageSignatures maps a Kitty protocol image id (as a string) to the
 	// FNV-1a-32 signature of the base64-decoded payload the client already
 	// holds. Sent with select_window so the replay can skip re-transmitting
@@ -8699,7 +8702,13 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		if !s.canUseClientImageSignatures(request.ClientID) {
 			clientImages = nil
 		}
-		if err := s.selectWindowWithSkip(id, clientImages); err != nil {
+		var err error
+		if request.SuppressReplay {
+			err = s.selectWindowWithoutReplay(id)
+		} else {
+			err = s.selectWindowWithSkip(id, clientImages)
+		}
+		if err != nil {
 			client.sendError(request, err)
 			return
 		}
@@ -9348,6 +9357,30 @@ func (o *boundedCommandOutput) exceeded() bool {
 
 func (s *muxServer) selectWindow(windowID string) error {
 	return s.selectWindowWithSkip(windowID, nil)
+}
+
+// selectWindowWithoutReplay updates server/window focus without writing the
+// placeholder's terminal snapshot. Native ACP clients replace the terminal
+// viewport, so replaying and redrawing that hidden pseudo-pane only delays the
+// handoff and can apply backpressure behind a large prior terminal frame.
+func (s *muxServer) selectWindowWithoutReplay(windowID string) error {
+	s.attachMu.Lock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return fmt.Errorf("window %q not found", windowID)
+	}
+	if s.activeID != windowID {
+		s.lastActiveID = s.activeID
+		s.activeID = windowID
+	}
+	window.alert = false
+	s.mu.Unlock()
+	s.attachMu.Unlock()
+	s.broadcastWindowList("active_window_changed")
+	return nil
 }
 
 // replayRequestedImages re-sends specific retained Kitty image transmissions to
