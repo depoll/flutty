@@ -2071,7 +2071,8 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final allChoices = <_AcpQuickChoice>[
       ...selector.choices,
       ...selector.hiddenChoices,
@@ -2128,13 +2129,14 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
         constraints: const BoxConstraints(minHeight: 48),
         child: Center(
           child: DecoratedBox(
+            key: ValueKey('acp-quick-selector-pill-${selector.label}'),
             decoration: BoxDecoration(
               color: scheme.surfaceContainerHighest,
               borderRadius: BorderRadius.circular(999),
               border: Border.all(color: scheme.outlineVariant),
             ),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -2142,16 +2144,17 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
                     '${selector.label}: ${current?.label ?? selector.currentValue}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: AcpChatTypography.monoStyleOf(context).copyWith(
+                    style: theme.textTheme.labelSmall?.copyWith(
                       color: scheme.onSurface,
-                      fontSize: 11.5,
+                      fontSize: 10,
+                      height: 1.2,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  const SizedBox(width: 3),
+                  const SizedBox(width: 2),
                   Icon(
                     Icons.arrow_drop_down,
-                    size: 18,
+                    size: 14,
                     color: scheme.onSurfaceVariant,
                   ),
                 ],

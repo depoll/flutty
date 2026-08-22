@@ -349,12 +349,23 @@ void main() {
     expect(find.text('Permission: Ask'), findsOneWidget);
     final permissionPill = find.byKey(const ValueKey('permission-mode-pill'));
     expect(tester.getSize(permissionPill).height, 48);
+    final modelPill = find.byKey(
+      const ValueKey('acp-quick-selector-pill-Model'),
+    );
+    expect(tester.getSize(modelPill).height, lessThanOrEqualTo(20));
+    final selectorContext = tester.element(find.text('Model: Sonnet'));
+    final modelLabel = tester.widget<Text>(find.text('Model: Sonnet'));
+    expect(
+      modelLabel.style?.fontFamily,
+      isNot(AcpChatTypography.monoStyleOf(selectorContext).fontFamily),
+    );
+    expect(modelLabel.style?.fontSize, 10);
+    expect(modelLabel.style?.height, 1.2);
     expect(
       find.ancestor(of: permissionPill, matching: find.byType(ListView)),
       findsOneWidget,
       reason: 'permission belongs in the same scrolling row as every selector',
     );
-    final selectorContext = tester.element(find.text('Model: Sonnet'));
     expect(MediaQuery.of(selectorContext).textScaler.scale(14), 14);
     final controls = find.byKey(const ValueKey('acp-composer-controls'));
     final surface = find.byKey(const ValueKey('acp-composer-surface'));
