@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/app/theme.dart';
 import 'package:monkeyssh/presentation/models/acp_timeline.dart';
 import 'package:monkeyssh/presentation/widgets/acp_inline_image.dart';
+import 'package:monkeyssh/presentation/widgets/acp_markdown_virtualization.dart';
 import 'package:monkeyssh/presentation/widgets/acp_message_thread.dart';
 import 'package:monkeyssh/presentation/widgets/acp_plan.dart';
 import 'package:monkeyssh/presentation/widgets/acp_resource_chip.dart';
@@ -287,6 +288,123 @@ void main() {
 
     expect(find.byKey(const ValueKey('status-0')), findsOneWidget);
     expect(find.byKey(const ValueKey('status-199')), findsNothing);
+  });
+
+  testWidgets('virtualizes one oversized assistant response', (tester) async {
+    final markdown = List.generate(
+      6000,
+      (index) =>
+          'Paragraph **$index** with enough content to resemble a long response.',
+    ).join('\n\n');
+    final chunks = splitAcpMarkdownForVirtualization(markdown);
+
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          height: 240,
+          child: AcpMessageThread(
+            entries: [
+              AcpAssistantMessageEntry(id: 'long-response', markdown: markdown),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('long-response')), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('long-response-markdown-part-${chunks.length - 1}')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('reveals fading chevrons that jump between user messages', (
+    tester,
+  ) async {
+    final controller = ScrollController();
+    String response(String label) => List.generate(
+      50,
+      (index) => '$label response paragraph $index with enough text to wrap.',
+    ).join('\n\n');
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          width: 320,
+          height: 240,
+          child: AcpMessageThread(
+            controller: controller,
+            entries: [
+              AcpUserPromptEntry(
+                id: 'prompt-1',
+                parts: const [AcpTextPart('first prompt')],
+              ),
+              AcpAssistantMessageEntry(
+                id: 'answer-1',
+                markdown: response('first'),
+              ),
+              AcpUserPromptEntry(
+                id: 'prompt-2',
+                parts: const [AcpTextPart('second prompt')],
+              ),
+              AcpAssistantMessageEntry(
+                id: 'answer-2',
+                markdown: response('second'),
+              ),
+              AcpUserPromptEntry(
+                id: 'prompt-3',
+                parts: const [AcpTextPart('third prompt')],
+              ),
+              AcpAssistantMessageEntry(
+                id: 'answer-3',
+                markdown: response('third'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    AnimatedOpacity navigation() => tester.widget<AnimatedOpacity>(
+      find.byKey(const ValueKey('acp-user-prompt-navigation')),
+    );
+    expect(navigation().opacity, 0);
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
+    await tester.pump();
+    await tester.pump();
+    expect(navigation().opacity, 1);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('acp-next-user-message'))),
+      const Size(48, 48),
+    );
+    expect(
+      tester
+          .widget<IconButton>(
+            find.byKey(const ValueKey('acp-next-user-message')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('acp-next-user-message')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('prompt-2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('acp-next-user-message')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('prompt-3')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('acp-previous-user-message')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('prompt-2')), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 4));
+    expect(navigation().opacity, 0);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
   });
 
   testWidgets('preserves user prompt part order', (tester) async {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -6,6 +8,7 @@ import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
 import 'acp_inline_image.dart';
 import 'acp_markdown.dart';
+import 'acp_markdown_virtualization.dart';
 import 'acp_plan.dart';
 import 'acp_status_entry.dart';
 import 'acp_thought.dart';
@@ -39,6 +42,62 @@ String acpUserPromptSummary(AcpUserPromptEntry entry) {
   if (attachments.isEmpty) return 'Your message';
   final summary = attachments.join(' · ');
   return summary.length <= 240 ? summary : '${summary.substring(0, 239)}…';
+}
+
+final Expando<List<String>> _assistantMarkdownChunks = Expando<List<String>>(
+  'ACP virtual Markdown segments',
+);
+
+final class _AcpThreadChild {
+  const _AcpThreadChild({
+    required this.entry,
+    required this.entryIndex,
+    this.markdown,
+    this.markdownPartIndex,
+    this.markdownPartCount,
+  });
+
+  final AcpTimelineEntry entry;
+  final int entryIndex;
+  final String? markdown;
+  final int? markdownPartIndex;
+  final int? markdownPartCount;
+
+  bool get isMarkdownContinuation => (markdownPartIndex ?? 0) > 0;
+
+  String get keyValue {
+    final part = markdownPartIndex;
+    return part == null || part == 0
+        ? entry.id
+        : '${entry.id}-markdown-part-$part';
+  }
+}
+
+List<_AcpThreadChild> _buildThreadChildren(List<AcpTimelineEntry> entries) {
+  final children = <_AcpThreadChild>[];
+  for (var entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+    final entry = entries[entryIndex];
+    if (entry case AcpAssistantMessageEntry(
+      :final markdown,
+    ) when markdown.length > kAcpMarkdownVirtualChunkChars) {
+      final chunks = _assistantMarkdownChunks[entry] ??=
+          splitAcpMarkdownForVirtualization(markdown);
+      for (var partIndex = 0; partIndex < chunks.length; partIndex++) {
+        children.add(
+          _AcpThreadChild(
+            entry: entry,
+            entryIndex: entryIndex,
+            markdown: chunks[partIndex],
+            markdownPartIndex: partIndex,
+            markdownPartCount: chunks.length,
+          ),
+        );
+      }
+      continue;
+    }
+    children.add(_AcpThreadChild(entry: entry, entryIndex: entryIndex));
+  }
+  return children;
 }
 
 /// Renders an ordered list of [AcpTimelineEntry]s as a conversation thread.
@@ -126,7 +185,14 @@ class AcpMessageThread extends StatefulWidget {
 class _AcpMessageThreadState extends State<AcpMessageThread> {
   final GlobalKey _sliverListKey = GlobalKey();
   ScrollController? _ownedController;
+  List<AcpTimelineEntry>? _threadEntries;
+  List<_AcpThreadChild> _threadChildren = const [];
+  Map<int, int> _firstChildIndexByEntry = const {};
+  Map<String, int> _childIndexByKey = const {};
   int? _stickyPromptIndex;
+  int? _firstVisibleEntryIndex;
+  Timer? _promptNavigationHideTimer;
+  bool _promptNavigationVisible = false;
   bool _stickyUpdateScheduled = false;
 
   ScrollController get _controller =>
@@ -135,6 +201,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   @override
   void initState() {
     super.initState();
+    _syncThreadChildren();
     _controller.addListener(_scheduleStickyUpdate);
     _scheduleStickyUpdate();
   }
@@ -142,6 +209,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   @override
   void didUpdateWidget(covariant AcpMessageThread oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _syncThreadChildren();
     if (oldWidget.controller != widget.controller) {
       (oldWidget.controller ?? _ownedController)?.removeListener(
         _scheduleStickyUpdate,
@@ -153,9 +221,28 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 
   @override
   void dispose() {
+    _promptNavigationHideTimer?.cancel();
     _controller.removeListener(_scheduleStickyUpdate);
     _ownedController?.dispose();
     super.dispose();
+  }
+
+  void _syncThreadChildren() {
+    if (identical(_threadEntries, widget.entries)) return;
+    _threadEntries = widget.entries;
+    _threadChildren = _buildThreadChildren(widget.entries);
+    final firstChildIndexByEntry = <int, int>{};
+    for (var index = 0; index < _threadChildren.length; index++) {
+      firstChildIndexByEntry.putIfAbsent(
+        _threadChildren[index].entryIndex,
+        () => index,
+      );
+    }
+    _firstChildIndexByEntry = firstChildIndexByEntry;
+    _childIndexByKey = <String, int>{
+      for (var index = 0; index < _threadChildren.length; index++)
+        _threadChildren[index].keyValue: index,
+    };
   }
 
   void _scheduleStickyUpdate() {
@@ -172,25 +259,29 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     if (!_controller.hasClients ||
         renderObject is! RenderSliverMultiBoxAdaptor ||
         renderObject.firstChild == null ||
-        widget.entries.isEmpty) {
-      _setStickyPromptIndex(null);
+        _threadChildren.isEmpty) {
+      _setViewportContext(stickyPromptIndex: null, firstEntryIndex: null);
       return;
     }
 
     final viewportTop = renderObject.constraints.scrollOffset;
     var child = renderObject.firstChild;
-    int? firstVisibleIndex;
+    int? firstVisibleChildIndex;
     while (child != null) {
       final childTop = renderObject.childScrollOffset(child) ?? 0;
       final childBottom = childTop + child.size.height;
       if (childBottom > viewportTop + 0.5) {
-        firstVisibleIndex = renderObject.indexOf(child);
+        firstVisibleChildIndex = renderObject.indexOf(child);
         break;
       }
       child = renderObject.childAfter(child);
     }
-    firstVisibleIndex ??= renderObject.indexOf(renderObject.lastChild!);
-    final entryIndex = firstVisibleIndex.clamp(0, widget.entries.length - 1);
+    firstVisibleChildIndex ??= renderObject.indexOf(renderObject.lastChild!);
+    final threadChildIndex = firstVisibleChildIndex.clamp(
+      0,
+      _threadChildren.length - 1,
+    );
+    final entryIndex = _threadChildren[threadChildIndex].entryIndex;
 
     int? promptIndex;
     for (var index = entryIndex; index >= 0; index--) {
@@ -199,22 +290,88 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
         break;
       }
     }
-    // If the actual first visible child is the prompt row, its full card still
-    // supplies context and the compact duplicate stays detached. A footer uses
-    // an index after the entries and must not be mistaken for that prompt.
     final promptIsVisible =
-        firstVisibleIndex < widget.entries.length &&
-        promptIndex == firstVisibleIndex;
-    _setStickyPromptIndex(promptIsVisible ? null : promptIndex);
+        firstVisibleChildIndex < _threadChildren.length &&
+        promptIndex == entryIndex &&
+        _threadChildren[threadChildIndex].entry is AcpUserPromptEntry;
+    _setViewportContext(
+      stickyPromptIndex: promptIsVisible ? null : promptIndex,
+      firstEntryIndex: entryIndex,
+    );
   }
 
-  void _setStickyPromptIndex(int? value) {
-    if (_stickyPromptIndex == value) return;
-    setState(() => _stickyPromptIndex = value);
+  void _setViewportContext({
+    required int? stickyPromptIndex,
+    required int? firstEntryIndex,
+  }) {
+    if (_stickyPromptIndex == stickyPromptIndex &&
+        _firstVisibleEntryIndex == firstEntryIndex) {
+      return;
+    }
+    setState(() {
+      _stickyPromptIndex = stickyPromptIndex;
+      _firstVisibleEntryIndex = firstEntryIndex;
+    });
+  }
+
+  int? _previousUserPromptIndex() {
+    final firstVisible = _firstVisibleEntryIndex;
+    if (firstVisible == null) return null;
+    final start = _stickyPromptIndex ?? firstVisible - 1;
+    for (var index = start; index >= 0; index--) {
+      if (widget.entries[index] is AcpUserPromptEntry) return index;
+    }
+    return null;
+  }
+
+  int? _nextUserPromptIndex() {
+    final firstVisible = _firstVisibleEntryIndex;
+    if (firstVisible == null) return null;
+    final start = (_stickyPromptIndex ?? firstVisible) + 1;
+    for (var index = start; index < widget.entries.length; index++) {
+      if (widget.entries[index] is AcpUserPromptEntry) return index;
+    }
+    return null;
+  }
+
+  void _showPromptNavigation() {
+    if (widget.entries.whereType<AcpUserPromptEntry>().length < 2) return;
+    _promptNavigationHideTimer?.cancel();
+    if (!_promptNavigationVisible && mounted) {
+      setState(() => _promptNavigationVisible = true);
+    }
+    _promptNavigationHideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && _promptNavigationVisible) {
+        setState(() => _promptNavigationVisible = false);
+      }
+    });
+  }
+
+  bool _handleThreadScroll(ScrollNotification notification) {
+    if (notification.depth != 0 || notification.metrics.axis != Axis.vertical) {
+      return false;
+    }
+    final userInitiated =
+        notification is ScrollStartNotification &&
+            notification.dragDetails != null ||
+        notification is ScrollUpdateNotification &&
+            notification.dragDetails != null ||
+        notification is UserScrollNotification &&
+            notification.direction != ScrollDirection.idle;
+    if (userInitiated) _showPromptNavigation();
+    return false;
+  }
+
+  void _navigateToPrompt(int? entryIndex) {
+    if (entryIndex == null) return;
+    _showPromptNavigation();
+    unawaited(_scrollEntryIntoView(entryIndex));
   }
 
   Future<void> _scrollEntryIntoView(int entryIndex) async {
     if (!_controller.hasClients) return;
+    final targetChildIndex = _firstChildIndexByEntry[entryIndex];
+    if (targetChildIndex == null) return;
     widget.onStickyPromptTap?.call();
     // A sticky prompt can be many screens above the viewport and therefore no
     // longer have a built element. Seek until SliverList materializes it, then
@@ -233,7 +390,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       final sliverOrigin = position.pixels - sliver.constraints.scrollOffset;
       var child = sliver.firstChild;
       while (child != null) {
-        if (sliver.indexOf(child) == entryIndex) {
+        if (sliver.indexOf(child) == targetChildIndex) {
           final childOffset = sliver.childScrollOffset(child);
           if (childOffset == null) return;
           await _controller.animateTo(
@@ -260,13 +417,14 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
         44.0,
         position.viewportDimension * 2,
       );
-      final estimate = entryIndex < firstIndex
+      final estimate = targetChildIndex < firstIndex
           ? sliverOrigin +
                 firstOffset -
-                (firstIndex - entryIndex) * averageExtent
+                (firstIndex - targetChildIndex) * averageExtent
           : sliverOrigin +
                 lastOffset +
-                (entryIndex - lastIndex) * averageExtent;
+                last.size.height +
+                (targetChildIndex - lastIndex - 1) * averageExtent;
       final destination = estimate.clamp(
         position.minScrollExtent,
         position.maxScrollExtent,
@@ -323,23 +481,42 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   }
 
   Widget _buildListChild(BuildContext context, int index) {
-    if (index == widget.entries.length) {
+    if (index == _threadChildren.length) {
       return Padding(
         key: const ValueKey('acp-message-thread-footer'),
         padding: const EdgeInsets.only(top: FluttyTheme.spacingSm),
         child: Align(alignment: Alignment.centerLeft, child: widget.footer),
       );
     }
-    final entry = widget.entries[index];
+    final threadChild = _threadChildren[index];
+    final entry = threadChild.entry;
+    final content =
+        entry is AcpAssistantMessageEntry && threadChild.markdown != null
+        ? _AssistantMessage(
+            entry: entry,
+            markdown: threadChild.markdown,
+            partIndex: threadChild.markdownPartIndex,
+            partCount: threadChild.markdownPartCount,
+            onTapLink: widget.onTapLink,
+            imageResolver: widget.imageResolver,
+            onTapImage: widget.onTapImage,
+            onCopyCode: widget.onCopyCode,
+          )
+        : _buildEntry(context, entry);
     return Padding(
-      key: ValueKey(entry.id),
-      padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingSm),
-      child: _buildEntry(context, entry),
+      key: ValueKey(threadChild.keyValue),
+      padding: EdgeInsets.only(
+        top: index == 0 || threadChild.isMarkdownContinuation
+            ? 0
+            : FluttyTheme.spacingSm,
+      ),
+      child: content,
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    _syncThreadChildren();
     final stickyIndex = _stickyPromptIndex;
     final stickyPrompt =
         stickyIndex != null &&
@@ -348,35 +525,46 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
             widget.entries[stickyIndex] is AcpUserPromptEntry
         ? widget.entries[stickyIndex] as AcpUserPromptEntry
         : null;
-    final childCount = widget.entries.length + (widget.footer == null ? 0 : 1);
+    final previousPromptIndex = _previousUserPromptIndex();
+    final nextPromptIndex = _nextUserPromptIndex();
+    final userPromptCount = widget.entries
+        .whereType<AcpUserPromptEntry>()
+        .length;
+    final childCount = _threadChildren.length + (widget.footer == null ? 0 : 1);
     return AcpImageActions(
       resolver: widget.imageResolver,
       onTap: widget.onTapImage,
       child: Stack(
         fit: StackFit.passthrough,
         children: [
-          NotificationListener<ScrollMetricsNotification>(
-            onNotification: (_) {
-              _scheduleStickyUpdate();
-              return false;
-            },
-            child: CustomScrollView(
-              controller: _controller,
-              shrinkWrap: widget.shrinkWrap,
-              physics: widget.physics,
-              semanticChildCount: widget.entries.length,
-              slivers: [
-                SliverPadding(
-                  padding: widget.padding,
-                  sliver: SliverList(
-                    key: _sliverListKey,
-                    delegate: SliverChildBuilderDelegate(
-                      _buildListChild,
-                      childCount: childCount,
+          NotificationListener<ScrollNotification>(
+            onNotification: _handleThreadScroll,
+            child: NotificationListener<ScrollMetricsNotification>(
+              onNotification: (_) {
+                _scheduleStickyUpdate();
+                return false;
+              },
+              child: CustomScrollView(
+                controller: _controller,
+                shrinkWrap: widget.shrinkWrap,
+                physics: widget.physics,
+                semanticChildCount: _threadChildren.length,
+                slivers: [
+                  SliverPadding(
+                    padding: widget.padding,
+                    sliver: SliverList(
+                      key: _sliverListKey,
+                      delegate: SliverChildBuilderDelegate(
+                        _buildListChild,
+                        childCount: childCount,
+                        findChildIndexCallback: (key) => key is ValueKey<String>
+                            ? _childIndexByKey[key.value]
+                            : null,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
           if (stickyPrompt != null)
@@ -386,10 +574,102 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
               right: 0,
               child: _StickyUserPromptSummary(
                 summary: acpUserPromptSummary(stickyPrompt),
-                onTap: () => _scrollEntryIntoView(stickyIndex!),
+                onTap: () => _navigateToPrompt(stickyIndex),
+              ),
+            ),
+          if (userPromptCount > 1)
+            Positioned.fill(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: FluttyTheme.spacingSm),
+                  child: _UserPromptNavigation(
+                    visible: _promptNavigationVisible,
+                    previousEnabled: previousPromptIndex != null,
+                    nextEnabled: nextPromptIndex != null,
+                    onPrevious: () => _navigateToPrompt(previousPromptIndex),
+                    onNext: () => _navigateToPrompt(nextPromptIndex),
+                  ),
+                ),
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _UserPromptNavigation extends StatelessWidget {
+  const _UserPromptNavigation({
+    required this.visible,
+    required this.previousEnabled,
+    required this.nextEnabled,
+    required this.onPrevious,
+    required this.onNext,
+  });
+
+  final bool visible;
+  final bool previousEnabled;
+  final bool nextEnabled;
+  final VoidCallback onPrevious;
+  final VoidCallback onNext;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    return AnimatedOpacity(
+      key: const ValueKey('acp-user-prompt-navigation'),
+      opacity: visible ? 1 : 0,
+      duration: reduceMotion
+          ? Duration.zero
+          : const Duration(milliseconds: 160),
+      curve: Curves.easeOutCubic,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: ExcludeSemantics(
+          excluding: !visible,
+          child: Material(
+            color: scheme.surfaceContainerHigh.withValues(alpha: 0.96),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(FluttyTheme.radiusLg),
+              side: BorderSide(color: scheme.outlineVariant),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  key: const ValueKey('acp-previous-user-message'),
+                  tooltip: 'Previous user message',
+                  onPressed: previousEnabled ? onPrevious : null,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 48,
+                    height: 48,
+                  ),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 20),
+                ),
+                SizedBox(
+                  width: 28,
+                  child: Divider(height: 1, color: scheme.outlineVariant),
+                ),
+                IconButton(
+                  key: const ValueKey('acp-next-user-message'),
+                  tooltip: 'Next user message',
+                  onPressed: nextEnabled ? onNext : null,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 48,
+                    height: 48,
+                  ),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -554,6 +834,9 @@ class _SubagentTranscriptSurface extends StatelessWidget {
 class _AssistantMessage extends StatelessWidget {
   const _AssistantMessage({
     required this.entry,
+    this.markdown,
+    this.partIndex,
+    this.partCount,
     this.onTapLink,
     this.imageResolver,
     this.onTapImage,
@@ -561,6 +844,9 @@ class _AssistantMessage extends StatelessWidget {
   });
 
   final AcpAssistantMessageEntry entry;
+  final String? markdown;
+  final int? partIndex;
+  final int? partCount;
   final MarkdownTapLinkCallback? onTapLink;
   final AcpImageResolver? imageResolver;
   final ValueChanged<AcpImageContent>? onTapImage;
@@ -569,18 +855,26 @@ class _AssistantMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final streaming = entry.status == AcpStreamStatus.streaming;
-    final markdown = AcpMarkdown(
-      data: entry.markdown,
+    final markdownView = AcpMarkdown(
+      data: markdown ?? entry.markdown,
       onTapLink: onTapLink,
       imageResolver: imageResolver,
       onTapImage: onTapImage,
       onCopyCode: onCopyCode,
     );
+    final part = partIndex;
+    final count = partCount;
+    final partDescription = part != null && count != null
+        ? ', part ${part + 1} of $count'
+        : '';
+    final isFinalPart = part == null || count == null || part == count - 1;
     return Semantics(
       container: true,
-      liveRegion: !streaming,
-      label: streaming ? 'Agent response streaming' : 'Agent response complete',
-      child: markdown,
+      liveRegion: !streaming && isFinalPart,
+      label: streaming
+          ? 'Agent response streaming$partDescription'
+          : 'Agent response complete$partDescription',
+      child: markdownView,
     );
   }
 }

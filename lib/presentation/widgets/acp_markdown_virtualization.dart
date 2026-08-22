@@ -1,0 +1,152 @@
+import 'package:flutter/foundation.dart';
+
+/// Target source size for one lazily rendered Markdown segment.
+///
+/// `MarkdownBody` eagerly parses and lays out its complete source. Keeping each
+/// segment small lets the surrounding sliver dispose distant parts of a long
+/// response instead of blocking the UI isolate on the whole document.
+const int kAcpMarkdownVirtualChunkChars = 8 * 1024;
+
+/// Splits a large Markdown document into independently renderable segments.
+///
+/// Short documents retain their original identity. Long documents prefer
+/// blank-line boundaries and preserve fenced code validity by closing and
+/// reopening a fence when a segment boundary falls inside it. Exceptionally
+/// long lines are split near whitespace so provider output cannot bypass the
+/// rendering bound with one giant paragraph.
+List<String> splitAcpMarkdownForVirtualization(
+  String source, {
+  int targetChars = kAcpMarkdownVirtualChunkChars,
+}) {
+  assert(targetChars > 0);
+  if (source.length <= targetChars) return <String>[source];
+
+  final lines = _markdownLines(source);
+  final chunks = <String>[];
+  var current = StringBuffer();
+  String? fenceMarker;
+  String? fenceOpening;
+
+  void flush({bool reopenFence = false}) {
+    if (current.isEmpty) return;
+    if (fenceMarker != null) {
+      final separator = current.toString().endsWith('\n') ? '' : '\n';
+      current
+        ..write(separator)
+        ..write('$fenceMarker\n');
+    }
+    chunks.add(current.toString());
+    current = StringBuffer();
+    if (reopenFence && fenceOpening != null) {
+      current
+        ..write(fenceOpening)
+        ..write('\n');
+    }
+  }
+
+  for (final originalLine in lines) {
+    var line = originalLine;
+    while (line.isNotEmpty) {
+      final remaining = targetChars - current.length;
+      if (remaining <= 0) {
+        flush(reopenFence: fenceMarker != null);
+        continue;
+      }
+
+      if (line.length > remaining && current.isNotEmpty) {
+        // Prefer a natural Markdown block boundary. A fence is made valid on
+        // both sides by [flush], so code remains code rather than leaking into
+        // the rest of the conversation.
+        flush(reopenFence: fenceMarker != null);
+        continue;
+      }
+
+      if (line.length > targetChars) {
+        final splitAt = _safeLineSplit(line, remaining);
+        final part = line.substring(0, splitAt);
+        current.write(part);
+        line = line.substring(splitAt);
+        flush(reopenFence: fenceMarker != null);
+        continue;
+      }
+
+      current.write(line);
+      _updateFenceState(
+        line,
+        currentFence: fenceMarker,
+        onOpen: (marker, opening) {
+          fenceMarker = marker;
+          fenceOpening = opening;
+        },
+        onClose: () {
+          fenceMarker = null;
+          fenceOpening = null;
+        },
+      );
+      line = '';
+
+      if (current.length >= targetChars && fenceMarker == null) {
+        flush();
+      }
+    }
+  }
+  flush();
+  return List<String>.unmodifiable(chunks);
+}
+
+List<String> _markdownLines(String source) {
+  final lines = <String>[];
+  var start = 0;
+  while (start < source.length) {
+    final newline = source.indexOf('\n', start);
+    if (newline < 0) {
+      lines.add(source.substring(start));
+      break;
+    }
+    lines.add(source.substring(start, newline + 1));
+    start = newline + 1;
+  }
+  return lines;
+}
+
+int _safeLineSplit(String line, int preferred) {
+  final limit = preferred.clamp(1, line.length);
+  final searchStart = (limit ~/ 2).clamp(1, limit);
+  for (var index = limit; index >= searchStart; index--) {
+    if (_isWhitespace(line.codeUnitAt(index - 1))) return index;
+  }
+  // Avoid separating a UTF-16 surrogate pair at an emergency hard boundary.
+  if (limit < line.length && _isHighSurrogate(line.codeUnitAt(limit - 1))) {
+    return limit - 1;
+  }
+  return limit;
+}
+
+bool _isWhitespace(int codeUnit) =>
+    codeUnit == 0x20 ||
+    codeUnit == 0x09 ||
+    codeUnit == 0x0A ||
+    codeUnit == 0x0D;
+
+bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
+
+void _updateFenceState(
+  String line, {
+  required String? currentFence,
+  required void Function(String marker, String opening) onOpen,
+  required VoidCallback onClose,
+}) {
+  final trimmed = line.trimLeft().trimRight();
+  if (trimmed.isEmpty) return;
+  if (currentFence != null) {
+    if (trimmed.startsWith(currentFence) &&
+        trimmed.substring(currentFence.length).trim().isEmpty) {
+      onClose();
+    }
+    return;
+  }
+  final match = RegExp('^(`{3,}|~{3,})').firstMatch(trimmed);
+  if (match == null) return;
+  final marker = match.group(1)!;
+  onOpen(marker, trimmed);
+}
