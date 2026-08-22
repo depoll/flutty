@@ -219,6 +219,36 @@ void main() {
     expect(tool.toolCall.rawOutput, isNot(contains(imageData)));
   });
 
+  test('promotes textual unified diff output to a rich diff model', () {
+    final timeline = AcpTimeline(
+      entries: [
+        AcpToolCallEntry(
+          toolCallId: 'diff',
+          order: 0,
+          status: AcpToolStatus.completed,
+          content: const [
+            AcpToolContentBlock(
+              content: AcpTextContent(
+                '--- a/lib/a.dart\n'
+                '+++ b/lib/a.dart\n'
+                '@@ -1 +1 @@\n'
+                '-old\n'
+                '+new',
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+
+    final tool =
+        mapAcpSessionTimeline(_state(timeline: timeline)).single
+            as p.AcpToolCallEntry;
+    expect(tool.toolCall.diffs.single.path, 'lib/a.dart');
+    expect(tool.toolCall.diffs.single.unifiedDiff, contains('+new'));
+    expect(tool.toolCall.rawOutput, isNull);
+  });
+
   test('renders a small unified hunk for a one-line edit', () {
     final oldLines = [
       for (var index = 1; index <= 1000; index++) 'line $index',
@@ -326,6 +356,102 @@ void main() {
     final image = (user.parts.single as p.AcpImagePart).image;
     expect(image.uri, 'file:///pic.png');
     expect(image.bytes, isNull);
+  });
+
+  test('prefers streamed tool content over raw Fabric trace envelopes', () {
+    final timeline = AcpTimeline(
+      entries: [
+        AcpToolCallEntry(
+          toolCallId: 'fabric',
+          order: 0,
+          status: AcpToolStatus.inProgress,
+          content: const [
+            AcpToolContentBlock(content: AcpTextContent('matches: 3')),
+          ],
+          rawOutput: const {
+            'calls': [
+              {
+                'id': 'internal-call-id',
+                'status': 'completed',
+                'args': {'pattern': 'needle'},
+              },
+            ],
+            'phases': <Object?>[],
+          },
+        ),
+      ],
+    );
+
+    final tool =
+        mapAcpSessionTimeline(_state(timeline: timeline)).single
+            as p.AcpToolCallEntry;
+    expect(tool.toolCall.rawOutput, 'matches: 3');
+    expect(tool.toolCall.rawOutput, isNot(contains('internal-call-id')));
+    expect(tool.toolCall.rawOutput, isNot(contains('phases')));
+  });
+
+  test('reuses unchanged mapped entries during streamed tool updates', () {
+    final message = AcpMessageEntry(
+      role: AcpMessageRole.user,
+      order: 0,
+      content: const [AcpTextContent('prompt')],
+    );
+    final runningTool = AcpToolCallEntry(
+      toolCallId: 'tool',
+      order: 1,
+      status: AcpToolStatus.inProgress,
+      rawOutput: const {'matches': 1},
+    );
+    final completedTool = AcpToolCallEntry(
+      toolCallId: 'tool',
+      order: 1,
+      status: AcpToolStatus.completed,
+      rawOutput: const {'matches': 2},
+    );
+    final cache = AcpTimelineMapperCache();
+
+    final first = cache.map(
+      _state(timeline: AcpTimeline(entries: [message, runningTool])),
+    );
+    final second = cache.map(
+      _state(timeline: AcpTimeline(entries: [message, completedTool])),
+    );
+
+    expect(identical(first.first, second.first), isTrue);
+    expect(identical(first.last, second.last), isFalse);
+    final mappedTool = (second.last as p.AcpToolCallEntry).toolCall;
+    expect(mappedTool.rawOutput, 'matches: 2');
+    expect(mappedTool.rawOutputIsStructured, isTrue);
+  });
+
+  test('distills batched Fabric progress instead of dumping trace JSON', () {
+    final formatted = formatAcpToolPayload({
+      'calls': [
+        {
+          'id': 'internal-call-id',
+          'kind': 'tool',
+          'label': 'grep',
+          'toolName': 'grep',
+          'status': 'completed',
+          'args': {'pattern': 'needle', 'path': 'lib'},
+          'text': '{"pattern":"needle","path":"lib"}',
+          'result': {
+            'content': [
+              {'type': 'text', 'text': '3 matches'},
+            ],
+          },
+        },
+      ],
+      'phases': <Object?>[],
+    });
+
+    expect(formatted, contains('tool: grep'));
+    expect(formatted, contains('status: completed'));
+    expect(formatted, contains('pattern: needle'));
+    expect(formatted, contains('result: 3 matches'));
+    expect(formatted, isNot(contains('internal-call-id')));
+    expect(formatted, isNot(contains('text:')));
+    expect(formatted, isNot(contains('phases')));
   });
 
   test('formats structured tool payloads as YAML-like progress text', () {

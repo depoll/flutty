@@ -197,9 +197,10 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   final AcpTimelineMapperCache _timelineMapperCache = AcpTimelineMapperCache();
   final AcpSftpClientCache _sftpCache = AcpSftpClientCache();
   Timer? _previewPublishTimer;
-  String? _pendingPreview;
+  AcpSessionState? _pendingPreviewSession;
+  List<ui.AcpTimelineEntry>? _pendingPreviewEntries;
+  AcpStatusDisplay? _pendingPreviewActivity;
   String? _lastPublishedPreview;
-  AcpNativePreviewSnapshot? _pendingNativePreview;
   AcpNativePreviewSnapshot? _lastPublishedNativePreview;
   String? _piModelScopeIdentity;
   List<String>? _piEnabledModelPatterns;
@@ -244,31 +245,47 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
   }
 
   void _queuePreviewPublish(
-    String? preview,
-    AcpNativePreviewSnapshot? nativePreview,
+    AcpSessionState session,
+    List<ui.AcpTimelineEntry> entries,
+    AcpStatusDisplay activity,
   ) {
-    final textChanged =
-        preview != _pendingPreview && preview != _lastPublishedPreview;
-    final nativeChanged =
-        nativePreview != _pendingNativePreview &&
-        nativePreview != _lastPublishedNativePreview;
-    if (!textChanged && !nativeChanged && _previewPublishTimer == null) return;
-    _pendingPreview = preview;
-    _pendingNativePreview = nativePreview;
+    if (widget.onPreviewChanged == null &&
+        widget.onNativePreviewChanged == null) {
+      return;
+    }
+    // Keep only immutable references during high-frequency tool streaming.
+    // Building both previews walks the transcript, so do that work once at the
+    // throttle boundary rather than synchronously for every incoming chunk.
+    _pendingPreviewSession = session;
+    _pendingPreviewEntries = entries;
+    _pendingPreviewActivity = activity;
     _previewPublishTimer ??= Timer(const Duration(milliseconds: 250), () {
       _previewPublishTimer = null;
-      final nextText = _pendingPreview;
-      final nextNative = _pendingNativePreview;
-      _pendingPreview = null;
-      _pendingNativePreview = null;
-      if (!mounted) return;
-      if (nextText != _lastPublishedPreview) {
-        _lastPublishedPreview = nextText;
-        widget.onPreviewChanged?.call(_key, nextText);
+      final nextSession = _pendingPreviewSession;
+      final nextEntries = _pendingPreviewEntries;
+      final nextActivity = _pendingPreviewActivity;
+      _pendingPreviewSession = null;
+      _pendingPreviewEntries = null;
+      _pendingPreviewActivity = null;
+      if (!mounted ||
+          nextSession == null ||
+          nextEntries == null ||
+          nextActivity == null) {
+        return;
       }
-      if (nextNative != _lastPublishedNativePreview) {
-        _lastPublishedNativePreview = nextNative;
-        widget.onNativePreviewChanged?.call(_key, nextNative);
+      if (widget.onPreviewChanged != null) {
+        final nextText = _timelineMapperCache.preview(nextSession);
+        if (nextText != _lastPublishedPreview) {
+          _lastPublishedPreview = nextText;
+          widget.onPreviewChanged?.call(_key, nextText);
+        }
+      }
+      if (widget.onNativePreviewChanged != null) {
+        final nextNative = _buildNativePreview(nextEntries, nextActivity);
+        if (nextNative != _lastPublishedNativePreview) {
+          _lastPublishedNativePreview = nextNative;
+          widget.onNativePreviewChanged?.call(_key, nextNative);
+        }
       }
     });
   }
@@ -1430,10 +1447,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     _ensurePiModelScope(session);
     final entries = _timelineMapperCache.map(session);
     final activity = acpSessionActivityDisplay(session);
-    _queuePreviewPublish(
-      _timelineMapperCache.preview(session),
-      _buildNativePreview(entries, activity),
-    );
+    _queuePreviewPublish(session, entries, activity);
     final prompts = _prompts(session);
     final quickConfigBar = _buildQuickConfigBar(
       session,

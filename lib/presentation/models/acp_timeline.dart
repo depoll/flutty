@@ -482,6 +482,7 @@ class AcpToolCall extends Equatable {
     this.status = AcpToolStatus.pending,
     this.rawInput,
     this.rawOutput,
+    this.rawOutputIsStructured = false,
     List<AcpToolLocation> locations = const [],
     List<AcpDiff> diffs = const [],
     List<AcpImageContent> images = const [],
@@ -507,6 +508,9 @@ class AcpToolCall extends Equatable {
   /// The tool output, pre-formatted for display (never logged).
   final String? rawOutput;
 
+  /// Whether [rawOutput] is structured YAML-like data rather than Markdown.
+  final bool rawOutputIsStructured;
+
   /// File locations touched by the tool call.
   final List<AcpToolLocation> locations;
 
@@ -524,6 +528,7 @@ class AcpToolCall extends Equatable {
     status,
     rawInput,
     rawOutput,
+    rawOutputIsStructured,
     locations,
     diffs,
     images,

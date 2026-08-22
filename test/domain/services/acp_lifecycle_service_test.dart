@@ -26,10 +26,10 @@ import 'package:monkeyssh/domain/services/settings_service.dart';
 /// A minimal fake ACP agent transport: enough to open sessions, push
 /// permission requests, and complete prompt turns.
 class _FakeAcpServer implements AcpTransport {
-  _FakeAcpServer({this.failResume = false});
+  _FakeAcpServer({this.failInitialize = false});
 
-  /// When true, `session/resume` fails so a reconnect can be forced to fail.
-  bool failResume;
+  /// When true, `initialize` fails so a reconnect can be forced to fail.
+  bool failInitialize;
 
   final _incoming = StreamController<List<int>>();
   int _sessionCounter = 0;
@@ -49,6 +49,10 @@ class _FakeAcpServer implements AcpTransport {
 
     switch (method) {
       case 'initialize':
+        if (failInitialize) {
+          _replyError(id, -32602, 'Invalid params');
+          break;
+        }
         _reply(id, {
           'protocolVersion': 1,
           'agentCapabilities': {
@@ -59,11 +63,7 @@ class _FakeAcpServer implements AcpTransport {
       case 'session/new':
         _reply(id, {'sessionId': 'session-${++_sessionCounter}'});
       case 'session/resume':
-        if (failResume) {
-          _replyError(id, -32001, 'Cannot resume');
-        } else {
-          _reply(id, <String, Object?>{});
-        }
+        _reply(id, <String, Object?>{});
       case 'session/prompt':
         _reply(id, {'stopReason': 'end_turn'});
       default:
@@ -381,9 +381,13 @@ void main() {
 
     test('isolates a failed reconnect for one host from a healthy reconnect '
         'on another host', () async {
+      final connectionCounts = <int, int>{};
       final failingConnector = _FakeConnector(
-        serverFactory: (hostId, bridgeId) =>
-            _FakeAcpServer(failResume: hostId == 1),
+        serverFactory: (hostId, bridgeId) {
+          final count = (connectionCounts[hostId] ?? 0) + 1;
+          connectionCounts[hostId] = count;
+          return _FakeAcpServer(failInitialize: hostId == 1 && count > 1);
+        },
       );
       final failingManager = AcpSessionManager(
         connector: failingConnector,
@@ -421,8 +425,8 @@ void main() {
       await _pump();
       await _pump();
 
-      // Host 1's reconnect fails (session/resume errors), but host 2's
-      // still succeeds: one bad reconnect never blocks the other.
+      // Host 1's new attachment fails initialization, but host 2 still
+      // succeeds: one bad reconnect never blocks the other.
       expect(
         failingManager.state.byKeyValue(firstKey.value)!.status,
         isNot(AcpConnectionStatus.ready),

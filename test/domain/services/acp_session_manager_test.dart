@@ -35,12 +35,13 @@ class _FakeAcpServer implements AcpTransport {
     this.supportsLoad = true,
     this.authMethods = const <Map<String, Object?>>[],
     this.failNewSession = false,
-    this.failEstablish = false,
     this.rejectInitialize = false,
     this.newSessionErrorCode = -32000,
     this.promptErrorMessage,
     this.replayTextOnLoad,
     this.permissionIdOnLoad,
+    this.permissionIdOnInitialize,
+    this.permissionSessionIdOnInitialize,
   });
 
   final bool supportsResume;
@@ -49,9 +50,6 @@ class _FakeAcpServer implements AcpTransport {
 
   /// When true, `session/new` replies with a JSON-RPC error.
   final bool failNewSession;
-
-  /// When true, `session/resume` and `session/load` reply with an error.
-  final bool failEstablish;
 
   /// When true, `initialize` rejects the client metadata.
   final bool rejectInitialize;
@@ -69,6 +67,12 @@ class _FakeAcpServer implements AcpTransport {
   /// When set, a `session/load` pushes a permission request with this stable
   /// JSON-RPC id before replying, simulating a replayed pending permission.
   final String? permissionIdOnLoad;
+
+  /// Stable request replayed immediately after initialize on a live attach.
+  final String? permissionIdOnInitialize;
+
+  /// Session id associated with [permissionIdOnInitialize].
+  final String? permissionSessionIdOnInitialize;
 
   final _incoming = StreamController<List<int>>();
   final List<String> methods = <String>[];
@@ -125,6 +129,14 @@ class _FakeAcpServer implements AcpTransport {
           },
           if (authMethods.isNotEmpty) 'authMethods': authMethods,
         });
+        if (permissionIdOnInitialize != null &&
+            permissionSessionIdOnInitialize != null) {
+          _pushPermission(
+            permissionIdOnInitialize!,
+            permissionSessionIdOnInitialize!,
+            'replayed-tool',
+          );
+        }
       case 'session/new':
         final params = (message['params']! as Map).cast<String, Object?>();
         newSessionCwds.add(params['cwd']! as String);
@@ -137,16 +149,17 @@ class _FakeAcpServer implements AcpTransport {
         final sessionId = 'fork-${++_sessionCounter}';
         _reply(id, {'sessionId': sessionId});
       case 'session/resume':
-        if (failEstablish) {
-          _replyError(id, -32001, 'Cannot resume');
-        } else {
-          _reply(id, <String, Object?>{});
-        }
+        _reply(id, {
+          'configOptions': [
+            {
+              'type': 'boolean',
+              'id': 'reasoning',
+              'name': 'Reasoning',
+              'value': true,
+            },
+          ],
+        });
       case 'session/load':
-        if (failEstablish) {
-          _replyError(id, -32001, 'Cannot load');
-          break;
-        }
         final params = (message['params']! as Map).cast<String, Object?>();
         final sessionId = params['sessionId'] as String? ?? '';
         // Emit synchronous replay BEFORE replying to the load request.
@@ -350,6 +363,7 @@ class _FakeConnector implements AcpBridgeConnector {
   MonkeyMuxInstallConfirmation? lastListConfirmInstall;
   Exception? startError;
   int _bridgeCounter = 0;
+  int bridgeStatusInFlightTurnCount = 0;
 
   @override
   Future<MonkeyMuxAcpBridgeStartResult> startBridge({
@@ -385,7 +399,7 @@ class _FakeConnector implements AcpBridgeConnector {
           state: MonkeyMuxAcpProviderState.running,
           clientCount: 0,
           pendingRequestCount: 0,
-          inFlightTurnCount: 0,
+          inFlightTurnCount: bridgeStatusInFlightTurnCount,
           lastActivity: DateTime.now(),
           startedAt: DateTime.now(),
           nextSequence: 1,
@@ -419,7 +433,7 @@ class _FakeConnector implements AcpBridgeConnector {
     state: MonkeyMuxAcpProviderState.running,
     clientCount: 0,
     pendingRequestCount: 0,
-    inFlightTurnCount: 0,
+    inFlightTurnCount: bridgeStatusInFlightTurnCount,
     lastActivity: DateTime.now(),
     startedAt: DateTime.now(),
     nextSequence: 1,
@@ -484,6 +498,7 @@ void main() {
     recentSessions: recentSessions,
     isProUnlocked: () => isPro,
     diagnostics: const NoopDiagnosticsLogger(),
+    detachedTurnPollInterval: const Duration(milliseconds: 10),
   );
 
   AcpSessionManager buildManagerWith(
@@ -497,6 +512,7 @@ void main() {
       isProUnlocked: () => isPro,
       diagnostics: const NoopDiagnosticsLogger(),
       telemetry: telemetry,
+      detachedTurnPollInterval: const Duration(milliseconds: 10),
     );
     addTearDown(built.dispose);
     return built;
@@ -960,6 +976,52 @@ void main() {
       expect(server.permissionResponses[requestId], isNull);
     });
 
+    test(
+      'live attach mirrors a permission replayed during initialize',
+      () async {
+        var connectionCount = 0;
+        String? replaySessionId;
+        final replayConnector = _FakeConnector(
+          serverFactory: (_, _) {
+            connectionCount++;
+            return _FakeAcpServer(
+              permissionIdOnInitialize: connectionCount > 1
+                  ? 'replayed-on-attach'
+                  : null,
+              permissionSessionIdOnInitialize: connectionCount > 1
+                  ? replaySessionId
+                  : null,
+            );
+          },
+        );
+        final replayManager = buildManagerWith(replayConnector);
+        final started = await replayManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+        replaySessionId = key.acpSessionId;
+
+        await replayManager.detachSession(key);
+        final result = await replayManager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
+        expect(result, isA<AcpSessionLaunchStarted>());
+        await _pump();
+
+        final pending = replayManager.state
+            .byKeyValue(key.value)!
+            .pendingPermissions;
+        expect(pending, hasLength(1));
+        expect(pending.single.toolCallId, 'replayed-tool');
+      },
+    );
+
     test('explicit stop cancels an unanswered pending permission because no '
         'one will ever answer it', () async {
       final key = await startCopilot();
@@ -1006,9 +1068,9 @@ void main() {
       expect(reconnectResult, isA<AcpSessionLaunchStarted>());
       await _pump();
 
-      // The fake agent never replayed the permission after reconnecting
-      // (only `session/resume` was called); the pending permission is
-      // still visible here purely because the capability registry was
+      // A live bridge reattach intentionally calls neither session/resume nor
+      // session/load. The pending permission is still visible here purely
+      // because the capability registry was
       // carried over into the new attachment, not recreated empty.
       final pendingAfter = manager.state
           .byKeyValue(key.value)!
@@ -1292,7 +1354,7 @@ void main() {
       expect(manager.state.byKeyValue(key.value), isNull);
     });
 
-    test('reconnect resumes an existing bridge session', () async {
+    test('idle reconnect refreshes session setup safely', () async {
       final key = await startCopilot();
       await manager.detachSession(key);
       final result = await manager.reconnectSession(
@@ -1306,7 +1368,166 @@ void main() {
       final state = manager.state.byKeyValue(key.value)!;
       expect(state.status, AcpConnectionStatus.ready);
       expect(state.isLive, isTrue);
+      final attachedServer = connector.servers[key.bridgeId]!;
+      expect(attachedServer.methods, contains('session/resume'));
+      expect(attachedServer.methods, isNot(contains('session/load')));
     });
+
+    test(
+      'detach during a turn reattaches without resume and keeps progress live',
+      () async {
+        final key = await startCopilot();
+        final originalServer = connector.servers[key.bridgeId]!
+          ..holdPrompts = true;
+        Object? detachedPromptError;
+        unawaited(
+          manager
+              .prompt(key, const [AcpTextContent('keep working')])
+              .then<void>(
+                (_) {},
+                onError: (error) => detachedPromptError = error,
+              ),
+        );
+        await _pump();
+        originalServer.pushUpdate(key.acpSessionId, {
+          'sessionUpdate': 'tool_call',
+          'toolCallId': 'live-tool',
+          'title': 'Search',
+          'status': 'in_progress',
+          'rawInput': {'query': 'needle'},
+        });
+        await _pump();
+        connector.bridgeStatusInFlightTurnCount = 1;
+
+        await manager.detachSession(key);
+        await _pump();
+        final detached = manager.state.byKeyValue(key.value)!;
+        expect(detached.promptStatus, AcpPromptStatus.streaming);
+        expect(detached.error, isNull);
+        expect(
+          detached.timeline.entries.whereType<AcpMessageEntry>(),
+          isNotEmpty,
+        );
+        expect(detachedPromptError, isNotNull);
+
+        final result = await manager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
+        expect(result, isA<AcpSessionLaunchStarted>());
+        final attachedServer = connector.servers[key.bridgeId]!;
+        expect(attachedServer.methods, contains('initialize'));
+        expect(attachedServer.methods, isNot(contains('session/resume')));
+        expect(attachedServer.methods, isNot(contains('session/load')));
+        expect(
+          manager.state.byKeyValue(key.value)!.promptStatus,
+          AcpPromptStatus.streaming,
+        );
+
+        attachedServer.holdPrompts = true;
+        final followUp = manager.prompt(key, const [
+          AcpTextContent('follow up'),
+        ]);
+        await _pump();
+        expect(attachedServer.heldPromptCount, 0);
+        final queuedUser = manager.state
+            .byKeyValue(key.value)!
+            .timeline
+            .entries
+            .whereType<AcpMessageEntry>()
+            .last;
+        expect(queuedUser.queued, isTrue);
+
+        attachedServer.pushUpdate(key.acpSessionId, {
+          'sessionUpdate': 'tool_call_update',
+          'toolCallId': 'live-tool',
+          'status': 'completed',
+          'content': [
+            {
+              'type': 'content',
+              'content': {'type': 'text', 'text': '3 matches'},
+            },
+          ],
+        });
+        await _pump();
+        final progressed = manager.state.byKeyValue(key.value)!;
+        expect(
+          progressed.timeline.entries
+              .whereType<AcpToolCallEntry>()
+              .single
+              .status
+              ?.value,
+          'completed',
+        );
+        expect(progressed.promptStatus, AcpPromptStatus.streaming);
+
+        connector.bridgeStatusInFlightTurnCount = 0;
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(attachedServer.methods, contains('session/resume'));
+        expect(manager.state.byKeyValue(key.value)!.configOptions, isNotEmpty);
+        expect(attachedServer.heldPromptCount, 1);
+        attachedServer.completeNextPrompt();
+        await followUp;
+        expect(
+          manager.state.byKeyValue(key.value)!.promptStatus,
+          AcpPromptStatus.idle,
+        );
+      },
+    );
+
+    test(
+      'app teardown leaves a live remote turn attachable without resume',
+      () async {
+        final key = await startCopilot();
+        connector.bridgeStatusInFlightTurnCount = 1;
+        final now = DateTime.now();
+        connector.remoteMetadata = [
+          MonkeyMuxAcpBridgeMetadata(
+            id: key.bridgeId,
+            providerId: key.providerId,
+            sessionId: key.acpSessionId,
+            cwd: '/repo',
+            provider: 'Copilot CLI',
+            commandHash: 'hash',
+            state: MonkeyMuxAcpProviderState.running,
+            clientCount: 0,
+            pendingRequestCount: 0,
+            inFlightTurnCount: 1,
+            lastActivity: now,
+            startedAt: now,
+            nextSequence: 5,
+          ),
+        ];
+
+        await manager.dispose();
+        expect(connector.stoppedBridges, isEmpty);
+        expect(connector.availableBridges, contains(key.bridgeId));
+
+        final restoredManager = buildManagerWith(connector);
+        final recents = await restoredManager.loadRecentSessions();
+        expect(recents.map((recent) => recent.key), contains(key));
+        final result = await restoredManager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
+
+        expect(result, isA<AcpSessionLaunchStarted>());
+        final attachedServer = connector.servers[key.bridgeId]!;
+        expect(attachedServer.methods, contains('initialize'));
+        expect(attachedServer.methods, isNot(contains('session/resume')));
+        expect(attachedServer.methods, isNot(contains('session/load')));
+        expect(
+          restoredManager.state.byKeyValue(key.value)!.promptStatus,
+          AcpPromptStatus.streaming,
+        );
+      },
+    );
 
     test(
       'resume after helper upgrade recreates an expired bridge and keeps the ACP session id',
@@ -1543,9 +1764,10 @@ void main() {
     test(
       'repeated reconnect failures return typed errors and then recover',
       () async {
-        var failEstablish = true;
+        var rejectReconnectInitialize = false;
         final flakyConnector = _FakeConnector(
-          serverFactory: (_, _) => _FakeAcpServer(failEstablish: failEstablish),
+          serverFactory: (_, _) =>
+              _FakeAcpServer(rejectInitialize: rejectReconnectInitialize),
         );
         final flakyManager = buildManagerWith(flakyConnector);
         final started = await flakyManager.startNewSession(
@@ -1554,6 +1776,7 @@ void main() {
           cwd: '/repo',
         );
         final key = (started as AcpSessionLaunchStarted).key;
+        rejectReconnectInitialize = true;
 
         Future<AcpSessionLaunchResult> reconnect() async {
           await flakyManager.detachSession(key);
@@ -1582,7 +1805,7 @@ void main() {
 
         // Leases stayed balanced across repeated failures: once the agent
         // recovers, a fresh reconnect succeeds and the session is live again.
-        failEstablish = false;
+        rejectReconnectInitialize = false;
         final third = await reconnect();
         expect(third, isA<AcpSessionLaunchStarted>());
         final state = flakyManager.state.byKeyValue(key.value)!;
@@ -1608,6 +1831,7 @@ void main() {
       );
       final key = (started as AcpSessionLaunchStarted).key;
       await replayManager.detachSession(key);
+      replayConnector.availableBridges.remove(key.bridgeId);
       final result = await replayManager.reconnectSession(
         hostId: key.hostId,
         providerId: key.providerId,
@@ -1616,8 +1840,11 @@ void main() {
         cwd: '/repo',
       );
       expect(result, isA<AcpSessionLaunchStarted>());
+      final reloadedKey = (result as AcpSessionLaunchStarted).key;
       await _pump();
-      final timeline = replayManager.state.byKeyValue(key.value)!.timeline;
+      final timeline = replayManager.state
+          .byKeyValue(reloadedKey.value)!
+          .timeline;
       final message = timeline.entries.whereType<AcpMessageEntry>().firstWhere(
         (e) => e.messageId == 'replay',
       );
@@ -1642,21 +1869,23 @@ void main() {
           providerId: AcpBuiltinProviderIds.copilotCli,
           cwd: '/repo',
         );
-        final key = (started as AcpSessionLaunchStarted).key;
+        var key = (started as AcpSessionLaunchStarted).key;
 
-        Future<void> reconnect() async {
+        Future<void> reloadExpiredBridge() async {
           await permManager.detachSession(key);
-          await permManager.reconnectSession(
+          permConnector.availableBridges.remove(key.bridgeId);
+          final result = await permManager.reconnectSession(
             hostId: key.hostId,
             providerId: key.providerId,
             bridgeId: key.bridgeId,
             acpSessionId: key.acpSessionId,
             cwd: '/repo',
           );
+          key = (result as AcpSessionLaunchStarted).key;
           await _pump();
         }
 
-        await reconnect();
+        await reloadExpiredBridge();
         expect(
           permManager.state.byKeyValue(key.value)!.pendingPermissions,
           hasLength(1),
@@ -1664,7 +1893,7 @@ void main() {
 
         // Reconnect again: the same JSON-RPC id is replayed and must rebind the
         // responder without appending a second pending UI entry.
-        await reconnect();
+        await reloadExpiredBridge();
         final pending = permManager.state
             .byKeyValue(key.value)!
             .pendingPermissions;

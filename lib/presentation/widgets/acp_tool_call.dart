@@ -5,6 +5,7 @@ import '../models/acp_timeline.dart';
 import 'acp_chat_typography.dart';
 import 'acp_diff.dart';
 import 'acp_inline_image.dart';
+import 'acp_markdown.dart';
 
 /// Presentation helpers for [AcpToolStatus].
 extension AcpToolStatusPresentation on AcpToolStatus {
@@ -282,11 +283,32 @@ class _ToolCallDetails extends StatelessWidget {
     final active =
         toolCall.status == AcpToolStatus.pending ||
         toolCall.status == AcpToolStatus.running;
+    final hasOutput = output?.isNotEmpty ?? false;
+    final richOutput =
+        hasOutput &&
+        !toolCall.rawOutputIsStructured &&
+        _looksLikeRichToolOutput(output!);
     if ((input?.isNotEmpty ?? false) ||
-        (output?.isNotEmpty ?? false) ||
-        active) {
+        (hasOutput && !richOutput) ||
+        (active && !hasOutput)) {
       children.add(
-        _ToolPayloadStream(input: input, output: output, active: active),
+        _ToolPayloadStream(
+          input: input,
+          output: richOutput ? null : output,
+          active: active,
+        ),
+      );
+    }
+    if (richOutput) {
+      children.add(
+        _RichToolResult(
+          markdown: active
+              ? _ToolPayloadStream._boundedLiveValue(
+                  output,
+                  keepTail: !output.contains('```'),
+                )
+              : output,
+        ),
       );
     }
     if (toolCall.locations.isNotEmpty) {
@@ -313,6 +335,47 @@ class _ToolCallDetails extends StatelessWidget {
   }
 }
 
+bool _looksLikeRichToolOutput(String value) {
+  final text = value.trimLeft();
+  return RegExp('^```', multiLine: true).hasMatch(text) ||
+      RegExp(r'^#{1,6}\s', multiLine: true).hasMatch(text) ||
+      RegExp(r'^>\s', multiLine: true).hasMatch(text) ||
+      RegExp(r'^\s*(?:[-*+]|\d+\.)\s+', multiLine: true).hasMatch(text) ||
+      RegExp(r'\[[^\]]+\]\([^)]+\)').hasMatch(text) ||
+      RegExp('`[^`]+`').hasMatch(text) ||
+      text.contains('**') ||
+      RegExp(r'^\|.+\|$', multiLine: true).hasMatch(text);
+}
+
+class _RichToolResult extends StatelessWidget {
+  const _RichToolResult({required this.markdown});
+
+  final String markdown;
+
+  @override
+  Widget build(BuildContext context) {
+    final imageActions = AcpImageActions.maybeOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          'result',
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: FluttyTheme.spacingXs),
+        AcpMarkdown(
+          data: markdown,
+          imageResolver: imageActions?.resolver,
+          onTapImage: imageActions?.onTap,
+        ),
+      ],
+    );
+  }
+}
+
 class _ToolPayloadStream extends StatelessWidget {
   const _ToolPayloadStream({
     required this.input,
@@ -328,15 +391,49 @@ class _ToolPayloadStream extends StatelessWidget {
     final sections = <String>[];
     final input = this.input;
     if (input != null && input.isNotEmpty) {
-      sections.add(_section('input', input));
+      sections.add(
+        _section(
+          'input',
+          active ? _boundedLiveValue(input, keepTail: false) : input,
+        ),
+      );
     }
     final output = this.output;
     if (output != null && output.isNotEmpty) {
-      sections.add(_section('result', output));
+      sections.add(
+        _section(
+          'result',
+          active ? _boundedLiveValue(output, keepTail: true) : output,
+        ),
+      );
     } else if (active) {
       sections.add('result: …');
     }
     return sections.join('\n');
+  }
+
+  static String _boundedLiveValue(String value, {required bool keepTail}) {
+    const maxChars = 4096;
+    const maxLines = 48;
+    var bounded = value;
+    var clipped = false;
+    if (bounded.length > maxChars) {
+      bounded = keepTail
+          ? bounded.substring(bounded.length - maxChars)
+          : bounded.substring(0, maxChars);
+      clipped = true;
+    }
+    final lines = bounded.split('\n');
+    if (lines.length > maxLines) {
+      bounded =
+          (keepTail
+                  ? lines.sublist(lines.length - maxLines)
+                  : lines.sublist(0, maxLines))
+              .join('\n');
+      clipped = true;
+    }
+    if (!clipped) return bounded;
+    return keepTail ? '…\n$bounded' : '$bounded\n…';
   }
 
   static String _section(String label, String value) {

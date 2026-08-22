@@ -7,8 +7,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/app/theme.dart';
 import 'package:monkeyssh/presentation/models/acp_timeline.dart';
+import 'package:monkeyssh/presentation/widgets/acp_code_block.dart';
 import 'package:monkeyssh/presentation/widgets/acp_diff.dart';
 import 'package:monkeyssh/presentation/widgets/acp_inline_image.dart';
+import 'package:monkeyssh/presentation/widgets/acp_markdown.dart';
 import 'package:monkeyssh/presentation/widgets/acp_resource_chip.dart';
 import 'package:monkeyssh/presentation/widgets/acp_thought.dart';
 import 'package:monkeyssh/presentation/widgets/acp_tool_call.dart';
@@ -193,6 +195,37 @@ void main() {
       expect(find.textContaining('matches: 3'), findsOneWidget);
     });
 
+    testWidgets('bounds live output to a recent repaint window', (
+      tester,
+    ) async {
+      final output = List.generate(
+        200,
+        (index) => 'line $index ${'x' * 80}',
+      ).join('\n');
+      await tester.pumpWidget(
+        wrap(
+          AcpToolCallView(
+            toolCall: AcpToolCall(
+              id: 'stream',
+              title: 'Long-running command',
+              status: AcpToolStatus.running,
+              rawOutput: output,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final streamText = tester
+          .widgetList<SelectableText>(find.byType(SelectableText))
+          .single
+          .data!;
+      expect(streamText.length, lessThan(5000));
+      expect(streamText, startsWith('result:\n  …'));
+      expect(streamText, contains('line 199'));
+      expect(streamText, isNot(contains('line 0 ')));
+    });
+
     testWidgets('renders locations and fires open callback', (tester) async {
       AcpToolLocation? opened;
       await tester.pumpWidget(
@@ -216,6 +249,61 @@ void main() {
       await tester.tap(find.text('lib/main.dart:42'));
       expect(opened?.path, 'lib/main.dart');
       expect(opened?.line, 42);
+    });
+
+    testWidgets('keeps YAML list output monospaced instead of Markdown', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(
+          AcpToolCallView(
+            initiallyExpanded: true,
+            toolCall: AcpToolCall(
+              id: 'yaml',
+              title: 'Batch',
+              status: AcpToolStatus.completed,
+              rawOutput: 'calls:\n  - tool: grep\n    status: completed',
+              rawOutputIsStructured: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byType(AcpMarkdown), findsNothing);
+      expect(find.textContaining('tool: grep'), findsOneWidget);
+    });
+
+    testWidgets('renders rich Markdown and fenced code tool results', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(
+          AcpToolCallView(
+            initiallyExpanded: true,
+            toolCall: AcpToolCall(
+              id: 'rich',
+              title: 'Analyze',
+              status: AcpToolStatus.completed,
+              rawOutput:
+                  '''
+**Summary**
+
+```dart
+void main() {}
+```
+'''
+                      .trim(),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byType(AcpMarkdown), findsOneWidget);
+      expect(find.byType(AcpCodeBlock), findsOneWidget);
+      expect(find.text('Summary'), findsOneWidget);
+      expect(find.textContaining('void main()'), findsOneWidget);
     });
 
     testWidgets('renders a unified diff inside a tool call', (tester) async {

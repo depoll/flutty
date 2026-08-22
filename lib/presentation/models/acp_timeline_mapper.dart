@@ -37,6 +37,16 @@ final Expando<List<AcpTimelineEntry>> _sharedTimelineMappings =
     Expando<List<AcpTimelineEntry>>('ACP presentation timeline');
 final Expando<_CachedTimelinePreview> _sharedTimelinePreviews =
     Expando<_CachedTimelinePreview>('ACP connection preview');
+final Expando<_CachedMappedEntry> _sharedStableEntryMappings =
+    Expando<_CachedMappedEntry>('ACP stable timeline entry');
+final Expando<_CachedMappedEntry> _sharedStreamingEntryMappings =
+    Expando<_CachedMappedEntry>('ACP streaming timeline entry');
+
+final class _CachedMappedEntry {
+  const _CachedMappedEntry(this.value);
+
+  final AcpTimelineEntry? value;
+}
 
 final class _CachedTimelinePreview {
   const _CachedTimelinePreview(this.value);
@@ -150,18 +160,11 @@ List<AcpTimelineEntry> mapAcpSessionTimeline(d.AcpSessionState state) {
   final streamingTailOrder = _streamingTailOrder(state, domainEntries);
 
   for (final entry in domainEntries) {
-    switch (entry) {
-      case d.AcpMessageEntry():
-        final mapped = _mapMessage(
-          entry,
-          streaming: entry.order == streamingTailOrder,
-        );
-        if (mapped != null) {
-          entries.add(mapped);
-        }
-      case d.AcpToolCallEntry():
-        entries.add(_mapToolCall(entry));
-    }
+    final mapped = _mapTimelineEntryCached(
+      entry,
+      streaming: entry.order == streamingTailOrder,
+    );
+    if (mapped != null) entries.add(mapped);
   }
 
   final nestedConversation = _nestSubagentEntries(entries);
@@ -182,6 +185,24 @@ List<AcpTimelineEntry> mapAcpSessionTimeline(d.AcpSessionState state) {
   entries.addAll(_mapStatuses(state));
 
   return List<AcpTimelineEntry>.unmodifiable(entries);
+}
+
+AcpTimelineEntry? _mapTimelineEntryCached(
+  d.AcpTimelineEntry entry, {
+  required bool streaming,
+}) {
+  final mappings = streaming
+      ? _sharedStreamingEntryMappings
+      : _sharedStableEntryMappings;
+  final cached = mappings[entry];
+  if (cached != null) return cached.value;
+
+  final mapped = switch (entry) {
+    d.AcpMessageEntry() => _mapMessage(entry, streaming: streaming),
+    d.AcpToolCallEntry() => _mapToolCall(entry),
+  };
+  mappings[entry] = _CachedMappedEntry(mapped);
+  return mapped;
 }
 
 List<AcpTimelineEntry> _nestSubagentEntries(List<AcpTimelineEntry> source) {
@@ -481,11 +502,16 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
     }
   }
 
-  final rawInput = formatAcpToolPayload(entry.rawInput);
+  final rawInput = formatAcpToolPayload(
+    entry.rawInput,
+    simplifyProgress: false,
+  );
+  final contentOutputIsStructured = outputBlocks.any(_toolPayloadIsStructured);
   final visibleOutputBlocks = outputBlocks
       .where(
         (text) => images.isEmpty || !_looksLikeSerializedImagePayload(text),
       )
+      .map((text) => formatAcpToolPayload(text) ?? text)
       .toList(growable: true);
   if (images.isNotEmpty) {
     for (final text in _textFromRawToolOutput(entry.rawOutput)) {
@@ -494,13 +520,20 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
       }
     }
   }
-  var rawOutput = images.isEmpty ? formatAcpToolPayload(entry.rawOutput) : null;
-  if (rawOutput == null && visibleOutputBlocks.isNotEmpty) {
-    rawOutput = _bound(
-      visibleOutputBlocks.join('\n\n'),
-      kAcpMapperMaxToolTextChars,
-    );
-  }
+  // ACP content blocks are the adapter's user-facing result stream. Prefer
+  // them over rawOutput, which may be a very large provider/Fabric tracing
+  // envelope containing duplicated args, call ids, phases, and results.
+  final selectedRawOutput = visibleOutputBlocks.isEmpty
+      ? (images.isEmpty ? formatAcpToolPayload(entry.rawOutput) : null)
+      : _bound(visibleOutputBlocks.join('\n\n'), kAcpMapperMaxToolTextChars);
+  final rawOutputIsStructured = visibleOutputBlocks.isEmpty
+      ? _toolPayloadIsStructured(entry.rawOutput)
+      : contentOutputIsStructured;
+  final textualDiff = diffs.isEmpty && selectedRawOutput != null
+      ? _diffFromToolOutput(selectedRawOutput)
+      : null;
+  if (textualDiff != null) diffs.add(textualDiff);
+  final rawOutput = textualDiff == null ? selectedRawOutput : null;
 
   return AcpToolCallEntry(
     id: 'tool-${entry.toolCallId}',
@@ -515,6 +548,7 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
       status: _mapToolStatus(entry.status),
       rawInput: rawInput,
       rawOutput: rawOutput,
+      rawOutputIsStructured: textualDiff == null && rawOutputIsStructured,
       locations: [
         for (final location in entry.locations)
           AcpToolLocation(path: location.path, line: location.line),
@@ -663,12 +697,28 @@ AcpToolStatus _mapToolStatus(d.AcpToolStatus? status) =>
       _ => AcpToolStatus.pending,
     };
 
+bool _toolPayloadIsStructured(Object? payload) {
+  if (payload is Map || payload is Iterable && payload is! String) return true;
+  if (payload is! String || payload.length > 256 * 1024) return false;
+  final trimmed = payload.trim();
+  if (!((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']')))) {
+    return false;
+  }
+  try {
+    final decoded = jsonDecode(trimmed);
+    return decoded is Map || decoded is List;
+  } on FormatException {
+    return false;
+  }
+}
+
 /// Formats opaque ACP tool input/output as a bounded, YAML-like stream.
 ///
 /// Providers may send structured maps/lists or JSON encoded inside a string.
 /// The result favors line-by-line scanability while preserving scalar types,
 /// multiline text, insertion order, and strict memory/display bounds.
-String? formatAcpToolPayload(Object? payload) {
+String? formatAcpToolPayload(Object? payload, {bool simplifyProgress = true}) {
   if (payload == null) return null;
 
   Object? value = payload;
@@ -690,7 +740,100 @@ String? formatAcpToolPayload(Object? payload) {
     }
   }
 
+  if (simplifyProgress) value = _simplifyToolProgressPayload(value);
   return _YamlLikeToolPayloadWriter(kAcpMapperMaxToolTextChars).format(value);
+}
+
+Object? _simplifyToolProgressPayload(Object? payload) {
+  Iterable<Object?>? calls;
+  if (payload is Map) {
+    for (final key in const ['calls', 'audits', 'operations']) {
+      final candidate = payload[key];
+      if (candidate is Iterable) {
+        final values = candidate.cast<Object?>();
+        if (values.any(_looksLikeToolProgressCall)) {
+          calls = values;
+          break;
+        }
+      }
+    }
+  } else if (payload is Iterable && payload.any(_looksLikeToolProgressCall)) {
+    calls = payload.cast<Object?>();
+  }
+  if (calls == null) return payload;
+
+  return <String, Object?>{
+    'calls': [
+      for (final value in calls)
+        if (value is Map && _looksLikeToolProgressCall(value))
+          _simplifyToolProgressCall(value),
+    ],
+    if (payload is Map && payload['error'] != null) 'error': payload['error'],
+    if (payload is Map && payload['message'] != null)
+      'message': payload['message'],
+  };
+}
+
+bool _looksLikeToolProgressCall(Object? value) {
+  if (value is! Map) return false;
+  return value.containsKey('toolName') ||
+      value.containsKey('label') && value.containsKey('args') ||
+      value.containsKey('action') && value.containsKey('outcome') ||
+      value.containsKey('tool') && value.containsKey('result');
+}
+
+Map<String, Object?> _simplifyToolProgressCall(Map call) {
+  Object? first(Iterable<String> keys) {
+    for (final key in keys) {
+      final value = call[key];
+      if (value != null && value.toString().trim().isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  final name = first(const ['toolName', 'label', 'action', 'tool', 'ref']);
+  final status =
+      first(const ['status', 'outcome']) ??
+      (call['success'] is bool
+          ? (call['success'] == true ? 'completed' : 'failed')
+          : null);
+  final result = _toolProgressResult(call);
+  final simplified = <String, Object?>{};
+  if (name != null) simplified['tool'] = name;
+  if (status != null) simplified['status'] = status;
+  if (call['args'] case final input?) simplified['input'] = input;
+  if (result != null) simplified['result'] = result;
+  return simplified;
+}
+
+Object? _toolProgressResult(Map call) {
+  Object? textFromContent(Object? content) {
+    if (content is! Iterable) return null;
+    final texts = <String>[];
+    for (final block in content) {
+      if (block is Map && block['type'] == 'text' && block['text'] is String) {
+        final text = (block['text'] as String).trim();
+        if (text.isNotEmpty) texts.add(text);
+      }
+    }
+    return texts.isEmpty ? null : texts.join('\n');
+  }
+
+  final directContent = textFromContent(call['content']);
+  if (directContent != null) return directContent;
+  final result = call['result'];
+  if (result is Map) {
+    final content = textFromContent(result['content']);
+    if (content != null) return content;
+    for (final key in const ['output', 'stdout', 'stderr', 'message']) {
+      final value = result[key];
+      if (value is String && value.trim().isNotEmpty) return value;
+    }
+    if (result['ok'] is bool) return <String, Object?>{'ok': result['ok']};
+    return null;
+  }
+  if (result is String || result is num || result is bool) return result;
+  return null;
 }
 
 final class _YamlLikeToolPayloadWriter {
@@ -750,6 +893,24 @@ final class _YamlLikeToolPayloadWriter {
   void _writeListItem(Object? value, int indent) {
     if (!_visit()) return;
     final prefix = '${' ' * indent}-';
+    if (value is Map && value.isNotEmpty) {
+      final entries = value.entries.iterator..moveNext();
+      final first = entries.current;
+      final firstValue = first.value;
+      if (!_isNonEmptyCollection(firstValue) &&
+          !_isEmptyCollection(firstValue)) {
+        _writeScalar(
+          firstValue,
+          indent + 2,
+          prefix: '$prefix ${_key(first.key.toString())}:',
+        );
+        while (!_truncated && entries.moveNext()) {
+          final entry = entries.current;
+          _writeEntry(entry.key.toString(), entry.value, indent + 2);
+        }
+        return;
+      }
+    }
     if (_isNonEmptyCollection(value)) {
       _line(prefix);
       _writeChildren(value, indent + 2);
@@ -851,6 +1012,25 @@ final class _YamlLikeToolPayloadWriter {
     }
     return text;
   }
+}
+
+AcpDiff? _diffFromToolOutput(String output) {
+  if (!RegExp(r'^@@\s', multiLine: true).hasMatch(output) ||
+      !RegExp(r'^---\s', multiLine: true).hasMatch(output) ||
+      !RegExp(r'^\+\+\+\s', multiLine: true).hasMatch(output)) {
+    return null;
+  }
+  String? path;
+  final newFile = RegExp(
+    r'^\+\+\+\s+(?:b/)?(.+)$',
+    multiLine: true,
+  ).firstMatch(output)?.group(1)?.trim();
+  if (newFile != null && newFile != '/dev/null') path = newFile;
+  path ??= RegExp(
+    r'^diff --git\s+a/(.+?)\s+b/',
+    multiLine: true,
+  ).firstMatch(output)?.group(1)?.trim();
+  return AcpDiff(path: path ?? 'changes', unifiedDiff: output);
 }
 
 String _buildUnifiedDiff({

@@ -143,6 +143,7 @@ class AcpSessionManager {
     DiagnosticsLogger? diagnostics,
     AcpTelemetrySink telemetry = const NoopAcpTelemetrySink(),
     DateTime Function() clock = DateTime.now,
+    Duration detachedTurnPollInterval = const Duration(seconds: 3),
   }) : _connector = connector,
        _providerService = providerService,
        _recentSessions = recentSessions,
@@ -150,7 +151,8 @@ class AcpSessionManager {
        _policy = concurrencyPolicy,
        _diagnostics = diagnostics ?? DiagnosticsLogService.instance,
        _telemetry = telemetry,
-       _clock = clock;
+       _clock = clock,
+       _detachedTurnPollInterval = detachedTurnPollInterval;
 
   final AcpBridgeConnector _connector;
   final AcpProviderService _providerService;
@@ -160,6 +162,7 @@ class AcpSessionManager {
   final DiagnosticsLogger _diagnostics;
   final AcpTelemetrySink _telemetry;
   final DateTime Function() _clock;
+  final Duration _detachedTurnPollInterval;
 
   final Map<String, _SessionController> _controllers =
       <String, _SessionController>{};
@@ -390,7 +393,7 @@ class AcpSessionManager {
     if (existing != null) {
       existing.updateWorkingDirectory(resolvedCwd);
       try {
-        await existing.reconnect();
+        await existing.reconnect(remoteBridge: remoteBridge);
       } on _LaunchException catch (error) {
         _emit();
         return AcpSessionLaunchFailed(error.key ?? key, error.error);
@@ -408,6 +411,7 @@ class AcpSessionManager {
       existingSessionId: acpSessionId,
       confirmInstall: null,
       autoApprovePermissions: autoApprovePermissions,
+      liveBridge: remoteBridge,
     );
   });
 
@@ -611,7 +615,9 @@ class AcpSessionManager {
     final controllers = _controllers.values.toList(growable: false);
     _controllers.clear();
     for (final controller in controllers) {
-      await controller.disposeLocal();
+      // App/provider teardown is a local detach, not an explicit user stop.
+      // Leave MonkeyMux and any in-flight agent turn running remotely.
+      await controller.disposeLocal(permanent: false);
     }
     final attachments = _attachments.values.toList(growable: false);
     _attachments.clear();
@@ -671,6 +677,7 @@ class AcpSessionManager {
     required String? existingSessionId,
     required MonkeyMuxInstallConfirmation? confirmInstall,
     required bool autoApprovePermissions,
+    MonkeyMuxAcpBridgeMetadata? liveBridge,
     bool startedBridge = false,
     DateTime? bridgeStartedAt,
   }) async {
@@ -706,6 +713,7 @@ class AcpSessionManager {
       diagnostics: _diagnostics,
       autoApprovePermissions: autoApprovePermissions,
       freshBridge: startedBridge,
+      detachedTurnPollInterval: _detachedTurnPollInterval,
     ).._acquireLease(attachment);
 
     try {
@@ -714,6 +722,7 @@ class AcpSessionManager {
         providerId: launch.providerId,
         bridgeId: bridgeId,
         existingSessionId: existingSessionId,
+        liveBridge: liveBridge,
       );
       _controllers[key.value] = controller;
       _select(key.value);
@@ -1262,6 +1271,7 @@ class _SessionController {
     required DiagnosticsLogger diagnostics,
     required bool autoApprovePermissions,
     required bool freshBridge,
+    required Duration detachedTurnPollInterval,
   }) : _manager = manager,
        _providerLabel = providerLabel,
        _isCustomProvider = isCustomProvider,
@@ -1269,7 +1279,8 @@ class _SessionController {
        _clock = clock,
        _diagnostics = diagnostics,
        _autoApprovePermissions = autoApprovePermissions,
-       _freshBridge = freshBridge;
+       _freshBridge = freshBridge,
+       _detachedTurnPollInterval = detachedTurnPollInterval;
 
   final AcpSessionManager _manager;
 
@@ -1283,11 +1294,15 @@ class _SessionController {
   final DiagnosticsLogger _diagnostics;
   final bool _autoApprovePermissions;
   bool _freshBridge;
+  final Duration _detachedTurnPollInterval;
 
   final AcpTimelineBuilder _timelineBuilder = AcpTimelineBuilder();
   final Queue<_QueuedAcpPrompt> _promptQueue = Queue<_QueuedAcpPrompt>();
   var _queuedPromptBytes = 0;
   var _promptActive = false;
+  var _detachedTurnInFlight = false;
+  Timer? _detachedTurnStatusTimer;
+  var _detachedTurnMonitorGeneration = 0;
 
   StreamSubscription<AcpSessionNotification>? _updatesSub;
   StreamSubscription<List<cap.AcpPendingClientRequest>>? _capabilityRequestsSub;
@@ -1339,6 +1354,7 @@ class _SessionController {
     required String providerId,
     required String bridgeId,
     required String? existingSessionId,
+    MonkeyMuxAcpBridgeMetadata? liveBridge,
   }) async {
     final now = _clock();
     // Provisional key until the real session id is known.
@@ -1359,6 +1375,15 @@ class _SessionController {
     );
 
     _subscribeTransport();
+    final reattachingLiveBridge =
+        existingSessionId != null && liveBridge != null;
+    final reattachingActiveTurn =
+        reattachingLiveBridge && liveBridge.inFlightTurnCount > 0;
+    if (reattachingLiveBridge) {
+      // The MonkeyMux writer handshake can immediately replay notifications.
+      // Subscribe before initialize so process-restart reattachment loses none.
+      _subscribeSessionNotifications();
+    }
 
     AcpInitializeResult init;
     try {
@@ -1371,16 +1396,19 @@ class _SessionController {
     _update(
       (s) => s.copyWith(initialization: init, authMethods: init.authMethods),
     );
+    if (reattachingLiveBridge) _subscribeCapabilityRequests();
 
     // For an existing session, the id is already known, so subscribe to session
     // updates BEFORE issuing session/load or session/resume. History replay is
     // emitted while the load RPC is still in flight; subscribing first ensures
     // those replayed updates are retained rather than dropped.
-    if (existingSessionId != null) {
+    if (existingSessionId != null && !reattachingLiveBridge) {
       _subscribeSessionStreams();
     }
 
-    final resolvedSessionId = await _establishSession(existingSessionId, init);
+    final resolvedSessionId = reattachingActiveTurn
+        ? existingSessionId
+        : await _establishSession(existingSessionId, init);
     _freshBridge = false;
     _key = AcpSessionKey.of(
       hostId: hostId,
@@ -1391,6 +1419,9 @@ class _SessionController {
     _update(
       (s) => s.copyWith(
         status: AcpConnectionStatus.ready,
+        promptStatus: reattachingActiveTurn
+            ? AcpPromptStatus.streaming
+            : AcpPromptStatus.idle,
         lastActivityAt: _clock(),
       ),
       key: _key,
@@ -1401,6 +1432,7 @@ class _SessionController {
     if (existingSessionId == null) {
       _subscribeSessionStreams();
     }
+    if (reattachingActiveTurn) _startDetachedTurnMonitor();
     return _key;
   }
 
@@ -1511,11 +1543,19 @@ class _SessionController {
   }
 
   void _subscribeSessionStreams() {
+    _subscribeSessionNotifications();
+    _subscribeCapabilityRequests();
+  }
+
+  void _subscribeSessionNotifications() {
     _updatesSub?.cancel();
-    _capabilityRequestsSub?.cancel();
     _updatesSub = attachment.notifications
         .where((notification) => notification.sessionId == _key.acpSessionId)
         .listen(_onSessionUpdate);
+  }
+
+  void _subscribeCapabilityRequests() {
+    _capabilityRequestsSub?.cancel();
     // The capability service (not this controller) is the sole subscriber of
     // `serverRequests`: it is the only place that answers fs/terminal/
     // permission requests, so there is exactly one responder per request.
@@ -1696,13 +1736,15 @@ class _SessionController {
     final encodedBytes = utf8
         .encode(jsonEncode(snapshot.map((block) => block.toJson()).toList()))
         .length;
-    final pendingCount = _promptQueue.length + (_promptActive ? 1 : 0);
+    final pendingCount =
+        _promptQueue.length + (_promptActive || _detachedTurnInFlight ? 1 : 0);
     if (pendingCount >= acpPromptQueueMaxCount ||
         _queuedPromptBytes + encodedBytes > acpPromptQueueMaxBytes) {
       return Future<AcpPromptResult>.error(const AcpPromptQueueFullException());
     }
 
-    final queuedBehindTurn = _promptActive || _promptQueue.isNotEmpty;
+    final queuedBehindTurn =
+        _promptActive || _detachedTurnInFlight || _promptQueue.isNotEmpty;
     final localMessageId = _timelineBuilder.appendLocalUserPrompt(
       snapshot,
       queued: queuedBehindTurn,
@@ -1726,12 +1768,16 @@ class _SessionController {
   }
 
   Future<void> _drainPromptQueue() async {
-    if (_promptActive || _disposed) {
+    if (_promptActive || _detachedTurnInFlight || _disposed) {
       return;
     }
     _promptActive = true;
     try {
-      while (_promptQueue.isNotEmpty && !_disposed) {
+      while (_promptQueue.isNotEmpty &&
+          !_disposed &&
+          !_detachedTurnInFlight &&
+          _holdsAttachment &&
+          _state.attached) {
         final queued = _promptQueue.removeFirst();
         _queuedPromptBytes -= queued.encodedBytes;
         final dispatchedTimeline = _timelineBuilder
@@ -1744,8 +1790,9 @@ class _SessionController {
             timeline: dispatchedTimeline,
           ),
         );
+        final promptAttachment = attachment;
         try {
-          final result = await attachment.client.prompt(
+          final result = await promptAttachment.client.prompt(
             sessionId: _key.acpSessionId,
             content: queued.content,
           );
@@ -1760,6 +1807,22 @@ class _SessionController {
             queued.completer.complete(result);
           }
         } on Object catch (error, stackTrace) {
+          final detachedInFlight =
+              !identical(attachment, promptAttachment) ||
+              !_holdsAttachment ||
+              !_state.attached ||
+              _state.status == AcpConnectionStatus.detached;
+          if (detachedInFlight) {
+            _diagnostics.info(
+              'acp.session',
+              'prompt_detached_in_flight',
+              fields: {'queuedPromptCount': _promptQueue.length},
+            );
+            if (!queued.completer.isCompleted) {
+              queued.completer.completeError(error, stackTrace);
+            }
+            continue;
+          }
           final rolledBackTimeline = _timelineBuilder.removeLocalUserPrompt(
             queued.localMessageId,
           );
@@ -1886,6 +1949,7 @@ class _SessionController {
         diagnostics: _diagnostics,
         autoApprovePermissions: _autoApprovePermissions,
         freshBridge: false,
+        detachedTurnPollInterval: _detachedTurnPollInterval,
       ).._acquireLease(attachment);
       final key = await forkController.adoptForked(
         hostId: _key.hostId,
@@ -1953,6 +2017,7 @@ class _SessionController {
   /// stop a bridge still used by a fork.
   Future<void> detach() async {
     if (!_holdsAttachment) return;
+    _stopDetachedTurnMonitor();
     _update(
       (s) => s.copyWith(status: AcpConnectionStatus.detached, attached: false),
     );
@@ -1971,7 +2036,11 @@ class _SessionController {
   /// cancels any stale subscriptions before resubscribing, balances the
   /// attachment lease, and surfaces failures as a typed [_LaunchException]
   /// after recording safe error state — it never throws a raw error.
-  Future<void> reconnect() async {
+  Future<void> reconnect({
+    required MonkeyMuxAcpBridgeMetadata remoteBridge,
+  }) async {
+    final wasDetached = _state.status == AcpConnectionStatus.detached;
+    _stopDetachedTurnMonitor();
     // Captured before this controller's own lease is released: a solo
     // (non-forked) session's soft detach closes its bridge attachment, which
     // only *stops routing* new server requests locally (see
@@ -2034,10 +2103,27 @@ class _SessionController {
       _subscribeTransport();
       final init = await attachment.ensureInitialized();
       _update((s) => s.copyWith(initialization: init));
-      // Subscribe before load/resume so replayed history is retained.
+      // Subscribe before any replay so detached notifications are retained.
       _subscribeSessionStreams();
-      await _establishSession(sessionId, init);
-      _update((s) => s.copyWith(status: AcpConnectionStatus.ready));
+      final detachedTurnRunning =
+          wasDetached && remoteBridge.inFlightTurnCount > 0;
+      if (!detachedTurnRunning) {
+        await _establishSession(sessionId, init);
+      }
+      _update(
+        (s) => s.copyWith(
+          status: AcpConnectionStatus.ready,
+          promptStatus: detachedTurnRunning
+              ? AcpPromptStatus.streaming
+              : AcpPromptStatus.idle,
+          clearError: true,
+        ),
+      );
+      if (detachedTurnRunning) {
+        _startDetachedTurnMonitor();
+      } else {
+        unawaited(_drainPromptQueue());
+      }
       _manager._telemetry.reconnectOutcome(succeeded: true);
     } on Object catch (error) {
       final mapped = error is _LaunchException
@@ -2050,6 +2136,7 @@ class _SessionController {
           error: mapped,
         ),
       );
+      _stopDetachedTurnMonitor();
       await _cancelSubscriptions();
       await _releaseLease();
       _manager._telemetry.reconnectOutcome(
@@ -2058,6 +2145,88 @@ class _SessionController {
       );
       throw _LaunchException(_key, mapped);
     }
+  }
+
+  void _startDetachedTurnMonitor() {
+    _stopDetachedTurnMonitor();
+    _detachedTurnInFlight = true;
+    final generation = _detachedTurnMonitorGeneration;
+    _scheduleDetachedTurnStatusPoll(generation);
+  }
+
+  void _scheduleDetachedTurnStatusPoll(int generation) {
+    if (_disposed ||
+        generation != _detachedTurnMonitorGeneration ||
+        !_holdsAttachment ||
+        !_state.attached) {
+      return;
+    }
+    _detachedTurnStatusTimer = Timer(
+      _detachedTurnPollInterval,
+      () => unawaited(_pollDetachedTurnStatus(generation)),
+    );
+  }
+
+  Future<void> _pollDetachedTurnStatus(int generation) async {
+    if (_disposed ||
+        generation != _detachedTurnMonitorGeneration ||
+        !_holdsAttachment ||
+        !_state.attached) {
+      return;
+    }
+    try {
+      final status = await _manager._connector.bridgeStatus(
+        _key.hostId,
+        _key.bridgeId,
+      );
+      if (_disposed || generation != _detachedTurnMonitorGeneration) return;
+      if (status.inFlightTurnCount > 0) {
+        _scheduleDetachedTurnStatusPoll(generation);
+        return;
+      }
+      final init = attachment.initialization;
+      if (init != null) {
+        try {
+          await _establishSession(_key.acpSessionId, init);
+        } on Object catch (error) {
+          // The remote turn is already complete and the session is usable.
+          // Missing setup controls are preferable to disrupting or failing it.
+          _diagnostics.debug(
+            'acp.session',
+            'detached_setup_refresh_failed',
+            fields: {'errorType': error.runtimeType},
+          );
+        }
+      }
+      if (_disposed || generation != _detachedTurnMonitorGeneration) return;
+      _stopDetachedTurnMonitor();
+      _update(
+        (s) => s.copyWith(
+          promptStatus: AcpPromptStatus.idle,
+          lastActivityAt: _clock(),
+        ),
+      );
+      _diagnostics.info(
+        'acp.session',
+        'detached_turn_complete',
+        fields: {'queuedPromptCount': _promptQueue.length},
+      );
+      unawaited(_drainPromptQueue());
+    } on Object catch (error) {
+      _diagnostics.debug(
+        'acp.session',
+        'detached_turn_status_retry',
+        fields: {'errorType': error.runtimeType},
+      );
+      _scheduleDetachedTurnStatusPoll(generation);
+    }
+  }
+
+  void _stopDetachedTurnMonitor() {
+    _detachedTurnInFlight = false;
+    _detachedTurnMonitorGeneration++;
+    _detachedTurnStatusTimer?.cancel();
+    _detachedTurnStatusTimer = null;
   }
 
   void _onTransportState(MonkeyMuxAcpTransportState transportState) {
@@ -2120,6 +2289,7 @@ class _SessionController {
   }
 
   Future<void> _cleanUpAfterTerminalTransport() async {
+    _stopDetachedTurnMonitor();
     await _cancelSubscriptions();
     await _releaseLease();
   }
@@ -2168,9 +2338,10 @@ class _SessionController {
     );
   }
 
-  Future<void> disposeLocal() async {
+  Future<void> disposeLocal({bool permanent = true}) async {
     if (_disposed) return;
     _disposed = true;
+    _stopDetachedTurnMonitor();
     while (_promptQueue.isNotEmpty) {
       final queued = _promptQueue.removeFirst();
       if (!queued.completer.isCompleted) {
@@ -2180,10 +2351,10 @@ class _SessionController {
     _queuedPromptBytes = 0;
     await _cancelSubscriptions();
     // Release the local lease exactly once (a no-op if already detached).
-    // Permanent: this session is being explicitly stopped, deleted, or torn
-    // down with the app, so the capability service's registry is cancelled
-    // when this was the attachment's last lease rather than left pending.
-    await _releaseLease(permanent: true);
+    // Explicit stop/delete uses permanent cleanup and answers pending requests;
+    // app/provider teardown uses soft cleanup so MonkeyMux keeps the remote
+    // session and in-flight turn alive for the next process attachment.
+    await _releaseLease(permanent: permanent);
     if (_state.status != AcpConnectionStatus.detached) {
       _state = _state.copyWith(
         status: AcpConnectionStatus.closed,
