@@ -220,7 +220,10 @@ final class MonkeyMuxAcpBridgeService {
           'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
         },
       );
-      return MonkeyMuxAcpBridgeStartResult(bridgeId: bridgeId);
+      return MonkeyMuxAcpBridgeStartResult(
+        bridgeId: bridgeId,
+        windowId: _readOptionalWindowId(message['windowId']),
+      );
     } on Object catch (error, stackTrace) {
       _diagnostics.error(
         'acp.bridge',
@@ -1418,6 +1421,17 @@ String _readBridgeId(Object? value) {
     throw const MonkeyMuxAcpBridgeException(
       MonkeyMuxAcpBridgeErrorKind.invalidBridgeId,
       'The helper returned an invalid ACP bridge identifier.',
+    );
+  }
+  return value;
+}
+
+String? _readOptionalWindowId(Object? value) {
+  if (value == null || value == '') return null;
+  if (value is! String || !RegExp(r'^@[1-9][0-9]*$').hasMatch(value)) {
+    throw const MonkeyMuxAcpBridgeException(
+      MonkeyMuxAcpBridgeErrorKind.invalidMetadata,
+      'The helper returned an invalid MonkeyMux window identifier.',
     );
   }
   return value;

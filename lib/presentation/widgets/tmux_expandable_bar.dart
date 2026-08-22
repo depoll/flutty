@@ -357,15 +357,44 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (activeKey == null) {
       return null;
     }
-    return _nativeAcpEntries
-        .where((entry) => entry.keyValue == activeKey.value)
-        .firstOrNull;
+    return buildAcpMuxWindowEntries(
+      _nativeAcpSessions,
+    ).where((entry) => entry.keyValue == activeKey.value).firstOrNull;
   }
 
-  List<AcpSwitcherEntry> get _nativeAcpEntries =>
-      widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
-      ? buildAcpMuxWindowEntries(_nativeAcpSessions)
-      : const <AcpSwitcherEntry>[];
+  List<AcpSwitcherEntry> get _nativeAcpEntries {
+    if (widget.activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return const <AcpSwitcherEntry>[];
+    }
+    final serverOwnedBridgeIds = (_windows ?? const <TmuxWindow>[])
+        .map((window) => window.nativeAcpBridgeId)
+        .whereType<String>()
+        .toSet();
+    return buildAcpMuxWindowEntries(_nativeAcpSessions)
+        .where(
+          (entry) => !serverOwnedBridgeIds.contains(
+            entry.session?.key.bridgeId ?? entry.recent?.key.bridgeId,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  AcpSessionState? _sessionForNativeWindow(TmuxWindow window) =>
+      _nativeAcpSessions
+          .where(
+            (session) =>
+                session.key.bridgeId == window.nativeAcpBridgeId &&
+                session.key.providerId == window.nativeAcpProviderId,
+          )
+          .firstOrNull;
+
+  TmuxOpenAcpWindowAction _openNativeWindowAction(TmuxWindow window) =>
+      TmuxOpenAcpWindowAction(
+        windowIndex: window.index,
+        bridgeId: window.nativeAcpBridgeId!,
+        providerId: window.nativeAcpProviderId!,
+        workingDirectory: window.currentPath,
+      );
 
   int _nativeAcpWindowIndex(AcpSwitcherEntry entry) {
     final terminalMax = (_displayedWindows ?? const <TmuxWindow>[]).fold<int>(
@@ -1721,10 +1750,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     ThemeData theme,
     TmuxWindow window,
   ) {
-    // Native ACP is a peer mux window: the server-active terminal is
-    // visually unselected while ACP owns the viewport.
-    final isActive =
-        window.isActive && widget.activeNativeAcpSessionKey == null;
+    final activeNativeKey = widget.activeNativeAcpSessionKey;
+    final isActive = window.isNativeAcp
+        ? activeNativeKey?.bridgeId == window.nativeAcpBridgeId
+        : window.isActive && activeNativeKey == null;
+    final windowTool = window.isNativeAcp
+        ? agentLaunchToolForAcpProviderId(window.nativeAcpProviderId!)
+        : window.foregroundAgentTool;
     final progress = widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
         ? window.terminalProgress
         : null;
@@ -1757,7 +1789,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                     });
                     _startPendingSelectionTimer(window.index);
                     unawaited(
-                      widget.onAction(TmuxSwitchWindowAction(window.index)),
+                      widget.onAction(
+                        window.isNativeAcp
+                            ? _openNativeWindowAction(window)
+                            : TmuxSwitchWindowAction(window.index),
+                      ),
                     );
                   },
             child: Ink(
@@ -1778,9 +1814,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                   alignment: Alignment.center,
                   children: [
                     AgentToolIcon(
-                      tool: window.foregroundAgentTool,
+                      tool: windowTool,
                       color: iconColor,
-                      fallbackIcon: Icons.terminal,
+                      fallbackIcon: window.isNativeAcp
+                          ? Icons.smart_toy_outlined
+                          : Icons.terminal,
                     ),
                     Positioned(
                       right: -9,
@@ -2357,10 +2395,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
-    // Native ACP is a peer mux window: the server-active terminal is
-    // visually unselected while ACP owns the viewport.
-    final isActive =
-        window.isActive && widget.activeNativeAcpSessionKey == null;
+    final activeNativeKey = widget.activeNativeAcpSessionKey;
+    final isActive = window.isNativeAcp
+        ? activeNativeKey?.bridgeId == window.nativeAcpBridgeId
+        : window.isActive && activeNativeKey == null;
+    final windowTool = window.isNativeAcp
+        ? agentLaunchToolForAcpProviderId(window.nativeAcpProviderId!)
+        : window.foregroundAgentTool;
+    final nativeSession = window.isNativeAcp
+        ? _sessionForNativeWindow(window)
+        : null;
     final title = _redactStoreScreenshotIdentities
         ? _storeScreenshotWindowTitle(window)
         : window.displayTitle;
@@ -2408,10 +2452,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       title: Row(
         children: [
           AgentToolIcon(
-            tool: window.foregroundAgentTool,
+            tool: windowTool,
             size: 16,
             color: iconColor,
-            fallbackIcon: Icons.terminal,
+            fallbackIcon: window.isNativeAcp
+                ? Icons.smart_toy_outlined
+                : Icons.terminal,
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -2460,7 +2506,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         children: [
           Padding(
             padding: const EdgeInsets.only(right: 6),
-            child: TmuxWindowStatusBadge(window: window),
+            child: window.isNativeAcp
+                ? _AcpMuxWindowStatusBadge(
+                    session: nativeSession,
+                    fallbackLabel: 'native',
+                  )
+                : TmuxWindowStatusBadge(window: window),
           ),
           IconButton(
             icon: const Icon(Icons.close, size: 16),
@@ -2488,24 +2539,36 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               });
               widget.onExpandedChanged(false);
               _startPendingSelectionTimer(window.index);
-              unawaited(widget.onAction(TmuxSwitchWindowAction(window.index)));
+              unawaited(
+                widget.onAction(
+                  window.isNativeAcp
+                      ? _openNativeWindowAction(window)
+                      : TmuxSwitchWindowAction(window.index),
+                ),
+              );
             },
     );
   }
 }
 
 class _AcpMuxWindowStatusBadge extends StatelessWidget {
-  const _AcpMuxWindowStatusBadge({required this.session});
+  const _AcpMuxWindowStatusBadge({
+    required this.session,
+    this.fallbackLabel = 'recent',
+  });
 
   final AcpSessionState? session;
+  final String fallbackLabel;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final display = session == null
-        ? const AcpStatusDisplay(
-            label: 'recent',
-            icon: Icons.history,
+        ? AcpStatusDisplay(
+            label: fallbackLabel,
+            icon: fallbackLabel == 'native'
+                ? Icons.smart_toy_outlined
+                : Icons.history,
             tone: AcpStatusTone.neutral,
           )
         : acpSessionMuxStatusDisplay(session!);

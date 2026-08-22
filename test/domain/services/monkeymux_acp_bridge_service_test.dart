@@ -248,6 +248,7 @@ void main() {
             'version': 1,
             'type': 'started',
             'bridgeId': _bridgeId,
+            'windowId': '@7',
           }),
         ),
       );
@@ -313,6 +314,7 @@ void main() {
           cwd: '/home/demo/project',
         );
         expect(result.bridgeId, _bridgeId);
+        expect(result.windowId, '@7');
       }
 
       for (final launch in launches) {

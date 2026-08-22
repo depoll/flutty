@@ -305,6 +305,24 @@ void main() {
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
     });
 
+    test('maps server-owned native ACP identity onto real windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@7',
+        'index': 6,
+        'name': 'Pi',
+        'active': true,
+        'currentPath': '/home/demo/project',
+        'nativeAcpBridgeId': '0123456789abcdef0123456789abcdef',
+        'nativeAcpProviderId': 'builtin:pi-acp',
+      });
+
+      expect(window, isNotNull);
+      expect(window!.isNativeAcp, isTrue);
+      expect(window.nativeAcpBridgeId, '0123456789abcdef0123456789abcdef');
+      expect(window.nativeAcpProviderId, 'builtin:pi-acp');
+      expect(window.copyWith(isActive: false).isNativeAcp, isTrue);
+    });
+
     test('maps exact live Cursor session metadata onto tmux windows', () {
       final window = parseMonkeyMuxWindowSnapshotForTesting({
         'id': '@2',

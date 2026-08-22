@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.167"
+	monkeyMuxVersion                  = "0.1.168"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -151,7 +151,7 @@ const (
 	// On-demand repair and multipart capture retain the larger budget so an
 	// ordinary screenshot above 2 MiB is not dropped or permanently blank; only
 	// the synchronous initial replay is constrained to the attach-safe budget.
-	maxKittyImageRepairBytes      = 8 * 1024 * 1024
+	maxKittyImageRepairBytes     = 8 * 1024 * 1024
 	maxKittyGraphicsPendingBytes = maxKittyImageRepairBytes
 )
 
@@ -253,6 +253,7 @@ var capabilities = []string{
 	"acp-bridge-v1",
 	"acp-bridge-replay-v1",
 	"acp-bridge-control-start-v1",
+	"acp-window-v1",
 }
 
 var (
@@ -262,6 +263,14 @@ var (
 	errRunCommandTimeout      = errors.New("command timed out")
 	errServerClosed           = errors.New("server is closed")
 )
+
+var nativeAcpWindowArguments = func(bridgeID string) ([]string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return []string{exe, "acp", "wait", bridgeID}, nil
+}
 
 var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
@@ -534,6 +543,8 @@ type windowSnapshot struct {
 	AgentSessionDir           string                    `json:"agentSessionDir,omitempty"`
 	AgentSessionPath          string                    `json:"agentSessionPath,omitempty"`
 	AgentSessionIdentityExact bool                      `json:"agentSessionIdentityExact,omitempty"`
+	NativeAcpBridgeID         string                    `json:"nativeAcpBridgeId,omitempty"`
+	NativeAcpProviderID       string                    `json:"nativeAcpProviderId,omitempty"`
 	LastActivityEpochSeconds  int64                     `json:"lastActivityEpochSeconds,omitempty"`
 	TerminalReportsMouseWheel bool                      `json:"terminalReportsMouseWheel,omitempty"`
 	TerminalMouseReportSgr    bool                      `json:"terminalMouseReportSgr,omitempty"`
@@ -567,6 +578,8 @@ type restoreWindowState struct {
 	AgentSessionDir           string                    `json:"agentSessionDir,omitempty"`
 	AgentSessionPath          string                    `json:"agentSessionPath,omitempty"`
 	AgentSessionIdentityExact bool                      `json:"agentSessionIdentityExact,omitempty"`
+	NativeAcpBridgeID         string                    `json:"nativeAcpBridgeId,omitempty"`
+	NativeAcpProviderID       string                    `json:"nativeAcpProviderId,omitempty"`
 	LastActivityEpochSeconds  int64                     `json:"lastActivityEpochSeconds,omitempty"`
 	HistoryBase64             string                    `json:"historyBase64,omitempty"`
 	HistoryStartsAtGround     bool                      `json:"historyStartsAtGround,omitempty"`
@@ -666,6 +679,8 @@ type muxWindow struct {
 	agentSessionDir             string
 	agentSessionPath            string
 	agentSessionIdentityExact   bool
+	nativeAcpBridgeID           string
+	nativeAcpProviderID         string
 	foregroundPid               int
 	foregroundCommand           string
 	paneTitle                   string
@@ -1983,6 +1998,15 @@ func prepareRunningServerReplacement(
 		)
 		return nil, nil
 	}
+	if restoreHasNativeAcpWindows(restore) {
+		fmt.Fprintf(
+			os.Stderr,
+			"monkeymux: session %q has live native agent windows; keeping helper %s\r\n",
+			session,
+			status.displayVersion(),
+		)
+		return nil, nil
+	}
 	oldPID, _ := sessionServerOwner(session)
 	if status.supportsCapability("shutdown") {
 		requestServerShutdown(session)
@@ -2754,6 +2778,8 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 			AgentSessionDir:           window.AgentSessionDir,
 			AgentSessionPath:          window.AgentSessionPath,
 			AgentSessionIdentityExact: window.AgentSessionIdentityExact,
+			NativeAcpBridgeID:         window.NativeAcpBridgeID,
+			NativeAcpProviderID:       window.NativeAcpProviderID,
 			LastActivityEpochSeconds:  window.LastActivityEpochSeconds,
 			PrivateModes:              privateModesFromWindowSnapshot(window),
 			TerminalProgress:          copyTerminalProgressSnapshot(window.TerminalProgress),
@@ -2803,6 +2829,18 @@ func enrichRestoreWithCapturedShellHistory(session string, restore *serverRestor
 		}
 		restore.Windows[i].HistoryBase64 = base64.StdEncoding.EncodeToString(history)
 	}
+}
+
+func restoreHasNativeAcpWindows(restore *serverRestore) bool {
+	if restore == nil {
+		return false
+	}
+	for _, window := range restore.Windows {
+		if window.NativeAcpBridgeID != "" && window.NativeAcpProviderID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func restoreNeedsShellHistory(restore *serverRestore) bool {
@@ -3286,9 +3324,9 @@ func readCursorChatMeta(path string, chatID string) (cursorChatEntry, bool) {
 		return cursorChatEntry{}, false
 	}
 	var raw struct {
-		Cwd             string `json:"cwd"`
-		UpdatedAtMs     int64  `json:"updatedAtMs"`
-		CreatedAtMs     int64  `json:"createdAtMs"`
+		Cwd         string `json:"cwd"`
+		UpdatedAtMs int64  `json:"updatedAtMs"`
+		CreatedAtMs int64  `json:"createdAtMs"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return cursorChatEntry{}, false
@@ -6198,6 +6236,8 @@ type createWindowOptions struct {
 	agentSessionDir           string
 	agentSessionPath          string
 	agentSessionIdentityExact bool
+	nativeAcpBridgeID         string
+	nativeAcpProviderID       string
 	cursorVisible             bool
 	cursorVisibilityKnown     bool
 	privateModes              map[string]bool
@@ -6308,6 +6348,8 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		agentSessionDir:           options.agentSessionDir,
 		agentSessionPath:          options.agentSessionPath,
 		agentSessionIdentityExact: options.agentSessionIdentityExact,
+		nativeAcpBridgeID:         options.nativeAcpBridgeID,
+		nativeAcpProviderID:       options.nativeAcpProviderID,
 		foregroundPid:             proc.Pid(),
 		foregroundCommand:         filepath.Base(cmd.Path),
 		paneTitle:                 paneTitle,
@@ -6662,6 +6704,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var redrew bool
 	var shouldShutdown bool
 	var windowPty muxPty
+	var nativeAcpBridgeID string
 	var resetViewportParser bool
 
 	s.attachMu.Lock()
@@ -6686,6 +6729,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	// pipe is drained by readWindow -> handleWindowOutput, and that reader needs
 	// s.mu. Closing under the lock would deadlock the whole server.
 	windowPty = window.pty
+	nativeAcpBridgeID = window.nativeAcpBridgeID
 	s.reindexWindowsLocked()
 	if s.activeID == windowID {
 		resetViewportParser =
@@ -6734,6 +6778,9 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	// so it must happen after unlocking.
 	if windowPty != nil {
 		_ = window.closePty(windowPty)
+	}
+	if nativeAcpBridgeID != "" {
+		_ = requestAcpBridgeStop(nativeAcpBridgeID)
 	}
 
 	s.broadcast(controlResponse{
@@ -8934,10 +8981,29 @@ func (c *controlClient) startAcpBridgeAsync(s *muxServer, request controlMessage
 			c.sendError(request, err)
 			return
 		}
+		windowArgs, err := nativeAcpWindowArguments(bridgeID)
+		if err != nil {
+			_ = requestAcpBridgeStop(bridgeID)
+			c.sendError(request, errors.New("unable to create native agent window"))
+			return
+		}
+		window, err := s.createWindow(createWindowOptions{
+			name:                request.Provider,
+			cwd:                 request.Cwd,
+			args:                windowArgs,
+			nativeAcpBridgeID:   bridgeID,
+			nativeAcpProviderID: request.ProviderID,
+		})
+		if err != nil {
+			_ = requestAcpBridgeStop(bridgeID)
+			c.sendError(request, errors.New("unable to create native agent window"))
+			return
+		}
 		frame, err := json.Marshal(acpWireMessage{
 			Version:  acpBridgeProtocolVersion,
 			Type:     "started",
 			BridgeID: bridgeID,
+			WindowID: window.id,
 		})
 		if err != nil {
 			c.sendError(request, errors.New("unable to encode ACP bridge response"))
@@ -9051,6 +9117,8 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			AgentSessionDir:           window.agentSessionDir,
 			AgentSessionPath:          window.agentSessionPath,
 			AgentSessionIdentityExact: window.agentSessionIdentityExact,
+			NativeAcpBridgeID:         window.nativeAcpBridgeID,
+			NativeAcpProviderID:       window.nativeAcpProviderID,
 			LastActivityEpochSeconds:  window.lastActivity.Unix(),
 			CursorVisible:             window.cursorVisible,
 			CursorVisibilityKnown:     window.cursorVisibilityKnown,
@@ -9103,6 +9171,8 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		AgentSessionDir:           window.agentSessionDir,
 		AgentSessionPath:          window.agentSessionPath,
 		AgentSessionIdentityExact: window.agentSessionIdentityExact,
+		NativeAcpBridgeID:         window.nativeAcpBridgeID,
+		NativeAcpProviderID:       window.nativeAcpProviderID,
 		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
 		TerminalMouseReportSgr:    window.mouseTrackingActiveLocked() && window.privateModes["1006"],
@@ -9381,6 +9451,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var shouldShutdown bool
 	var process muxProcess
 	var windowPty muxPty
+	var nativeAcpBridgeID string
 	var snapshots []windowSnapshot
 	var resetViewportParser bool
 	var targetWidth int
@@ -9449,6 +9520,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	}
 	process = window.proc
 	windowPty = window.pty
+	nativeAcpBridgeID = window.nativeAcpBridgeID
 	s.reindexWindowsLocked()
 	snapshots = s.snapshotsLocked()
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
@@ -9490,6 +9562,9 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	}
 	if windowPty != nil {
 		_ = window.closePty(windowPty)
+	}
+	if nativeAcpBridgeID != "" {
+		_ = requestAcpBridgeStop(nativeAcpBridgeID)
 	}
 	return shouldShutdown, nil
 }
@@ -16249,6 +16324,9 @@ func (s *muxServer) close() {
 		}
 		if window.pty != nil {
 			_ = window.closePty(window.pty)
+		}
+		if window.nativeAcpBridgeID != "" {
+			_ = requestAcpBridgeStop(window.nativeAcpBridgeID)
 		}
 	}
 	// Closing the ptys ends the reader goroutines and the hangup above ends the

@@ -27,8 +27,8 @@ func TestStartAcpBridgeInProcessHostsProviderInServer(t *testing.T) {
 
 	id, err := startAcpBridgeInProcess(
 		ctx,
-		"builtin:cursor-agent-acp",
-		"Cursor Agent",
+		"test:cat-acp",
+		"Test Agent",
 		"cat",
 		".",
 	)
@@ -39,7 +39,7 @@ func TestStartAcpBridgeInProcessHostsProviderInServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.ProviderID != "builtin:cursor-agent-acp" || info.State != "running" {
+	if info.ProviderID != "test:cat-acp" || info.State != "running" {
 		t.Fatalf("unexpected bridge metadata: %+v", info)
 	}
 

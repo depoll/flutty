@@ -91,10 +91,13 @@ final class MonkeyMuxAcpBridgeMetadata {
 @immutable
 final class MonkeyMuxAcpBridgeStartResult {
   /// Creates a bridge start result.
-  const MonkeyMuxAcpBridgeStartResult({required this.bridgeId});
+  const MonkeyMuxAcpBridgeStartResult({required this.bridgeId, this.windowId});
 
   /// Opaque identifier allocated by MonkeyMux.
   final String bridgeId;
+
+  /// Real MonkeyMux window that owns this bridge, when created in a workspace.
+  final String? windowId;
 }
 
 /// Connection lifecycle exposed separately from raw ACP bytes.

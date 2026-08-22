@@ -2556,6 +2556,8 @@ TmuxWindow? _windowFromJson(Object? value) {
         agentSessionId != null && value['agentSessionIdentityExact'] == true
         ? AgentSessionConfidence.high
         : null,
+    nativeAcpBridgeId: _nonEmpty(value['nativeAcpBridgeId'] as String?),
+    nativeAcpProviderId: _nonEmpty(value['nativeAcpProviderId'] as String?),
     terminalReportsMouseWheel: terminalReportsMouseWheel,
     terminalMouseReportSgr: terminalMouseReportSgr,
     terminalBracketedPasteMode: terminalBracketedPasteMode,

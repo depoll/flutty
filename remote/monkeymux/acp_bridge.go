@@ -50,6 +50,7 @@ type acpWireMessage struct {
 	Version       int             `json:"version,omitempty"`
 	Type          string          `json:"type"`
 	BridgeID      string          `json:"bridgeId,omitempty"`
+	WindowID      string          `json:"windowId,omitempty"`
 	ClientID      string          `json:"clientId,omitempty"`
 	Sequence      uint64          `json:"sequence,omitempty"`
 	Ack           uint64          `json:"ack,omitempty"`
@@ -167,6 +168,8 @@ func acpCommand(args []string) {
 		acpListCommand()
 	case "status":
 		acpStatusCommand(args[1:])
+	case "wait":
+		acpWaitCommand(args[1:])
 	case "stop":
 		acpStopCommand(args[1:])
 	case "gc":
@@ -179,7 +182,7 @@ func acpCommand(args []string) {
 }
 
 func acpUsageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux acp start --provider LABEL --command COMMAND --cwd DIR | attach <bridge-id> | connect <bridge-id> | list | status <bridge-id> | stop <bridge-id> | gc")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux acp start --provider LABEL --command COMMAND --cwd DIR | attach <bridge-id> | connect <bridge-id> | list | status <bridge-id> | wait <bridge-id> | stop <bridge-id> | gc")
 	os.Exit(2)
 }
 
@@ -322,20 +325,46 @@ func acpStatusCommand(args []string) {
 	})
 }
 
+func acpWaitCommand(args []string) {
+	if len(args) != 1 || !validAcpBridgeID(args[0]) {
+		acpUsageAndExit()
+	}
+	id := args[0]
+	info, err := acpBridgeStatus(id)
+	if err != nil {
+		fatal(errors.New("ACP bridge is not running"))
+	}
+	fmt.Printf("Native agent window: %s\r\n", info.Provider)
+	fmt.Print("Open this MonkeyMux window in MonkeySSH for the native interface.\r\n")
+	fmt.Print("The agent keeps running when this terminal disconnects.\r\n")
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		info, err := acpBridgeStatus(id)
+		if err != nil || (info.State != "starting" && info.State != "running") {
+			return
+		}
+	}
+}
+
+func requestAcpBridgeStop(id string) error {
+	conn, err := dialAcpBridge(id)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return writeAcpWireFrame(conn, acpWireMessage{
+		Version: acpBridgeProtocolVersion,
+		Type:    "command",
+		Command: "stop",
+	})
+}
+
 func acpStopCommand(args []string) {
 	if len(args) != 1 || !validAcpBridgeID(args[0]) {
 		acpUsageAndExit()
 	}
-	conn, err := dialAcpBridge(args[0])
-	if err != nil {
-		fatal(errors.New("ACP bridge is not running"))
-	}
-	defer conn.Close()
-	if err := writeAcpWireFrame(conn, acpWireMessage{
-		Version: acpBridgeProtocolVersion,
-		Type:    "command",
-		Command: "stop",
-	}); err != nil {
+	if err := requestAcpBridgeStop(args[0]); err != nil {
 		fatal(errors.New("unable to stop ACP bridge"))
 	}
 	printAcpJSON(acpWireMessage{

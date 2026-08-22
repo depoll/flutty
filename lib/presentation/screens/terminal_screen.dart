@@ -35,6 +35,7 @@ import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/monkeymux_acp_bridge.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_capability_hint.dart';
 import '../../domain/models/terminal_progress.dart';
@@ -3735,6 +3736,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxBarExpanded = false;
   double _tmuxSidebarDragOffset = 0;
   AcpSessionKey? _activeNativeAcpSessionKey;
+  String? _autoOpenedNativeAcpBridgeId;
   _NativeAcpLaunchState? _nativeAcpLaunchState;
   var _nativeAcpLaunchGeneration = 0;
   final Map<String, AcpChatScrollState> _nativeAcpScrollStates = {};
@@ -11076,6 +11078,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             _monkeyMuxAttachEstablished = true;
           }
           _syncTerminalProgressFromActiveMonkeyMuxWindow(session, windows);
+          _syncActiveNativeAcpMuxWindow(session, windows);
         }
         _syncAutomaticPortForwardProcessRoots(
           session,
@@ -11094,6 +11097,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
         tmuxWorkingDirectory: _tmuxWorkingDirectory,
         sessionWorkingDirectory: session.workingDirectory,
+      ),
+    );
+  }
+
+  void _syncActiveNativeAcpMuxWindow(
+    SshSession session,
+    List<TmuxWindow> windows,
+  ) {
+    final active = windows.where((window) => window.isActive).firstOrNull;
+    final bridgeId = active?.nativeAcpBridgeId;
+    final providerId = active?.nativeAcpProviderId;
+    if (active == null || bridgeId == null || providerId == null) {
+      _autoOpenedNativeAcpBridgeId = null;
+      return;
+    }
+    if (_nativeAcpLaunchState != null ||
+        _activeNativeAcpSessionKey?.bridgeId == bridgeId ||
+        _autoOpenedNativeAcpBridgeId == bridgeId) {
+      return;
+    }
+    _autoOpenedNativeAcpBridgeId = bridgeId;
+    unawaited(
+      _openServerOwnedNativeAcpWindow(
+        session,
+        windowIndex: active.index,
+        bridgeId: bridgeId,
+        providerId: providerId,
+        workingDirectory: active.currentPath,
       ),
     );
   }
@@ -11303,6 +11334,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
         case TmuxOpenAcpSessionAction(:final key):
           _openNativeAcpSession(key);
+        case TmuxOpenAcpWindowAction(
+          :final windowIndex,
+          :final bridgeId,
+          :final providerId,
+          :final workingDirectory,
+        ):
+          await _openServerOwnedNativeAcpWindow(
+            session,
+            windowIndex: windowIndex,
+            bridgeId: bridgeId,
+            providerId: providerId,
+            workingDirectory: workingDirectory,
+          );
         case TmuxCloseAcpSessionAction(:final key):
           await ref.read(acpSessionManagerProvider).stopSession(key);
           _nativeAcpScrollStates.remove(key.value);
@@ -11676,6 +11720,130 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ),
           ),
         );
+      case AcpSessionLaunchBlocked():
+    }
+  }
+
+  Future<void> _openServerOwnedNativeAcpWindow(
+    SshSession sshSession, {
+    required int windowIndex,
+    required String bridgeId,
+    required String providerId,
+    String? workingDirectory,
+  }) async {
+    await _switchTmuxWindow(sshSession, windowIndex);
+    if (!mounted) return;
+
+    final manager = ref.read(acpSessionManagerProvider);
+    final tracked = manager.state.sessions
+        .where(
+          (session) =>
+              session.key.hostId == sshSession.hostId &&
+              session.key.bridgeId == bridgeId &&
+              session.key.providerId == providerId,
+        )
+        .firstOrNull;
+    if (tracked != null && tracked.isLive) {
+      _openNativeAcpSession(tracked.key);
+      return;
+    }
+
+    final List<MonkeyMuxAcpBridgeMetadata> bridges;
+    try {
+      bridges = await manager.listRemoteBridges(sshSession.hostId);
+    } on Object catch (error) {
+      if (!mounted) return;
+      DiagnosticsLogService.instance.warning(
+        'acp.window',
+        'remote_lookup_failed',
+        fields: {'hostId': sshSession.hostId, 'errorType': error.runtimeType},
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('The native agent window is unavailable.'),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+    final bridge = bridges
+        .where((candidate) => candidate.id == bridgeId)
+        .firstOrNull;
+    final acpSessionId = bridge?.sessionId?.trim();
+    if (bridge == null ||
+        bridge.state == MonkeyMuxAcpProviderState.exited ||
+        bridge.state == MonkeyMuxAcpProviderState.stopped ||
+        bridge.state == MonkeyMuxAcpProviderState.protocolError ||
+        acpSessionId == null ||
+        acpSessionId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('The native agent window is no longer running.'),
+        ),
+      );
+      return;
+    }
+
+    final cwd = bridge.cwd?.trim().isNotEmpty ?? false
+        ? bridge.cwd!.trim()
+        : (workingDirectory?.trim().isNotEmpty ?? false)
+        ? workingDirectory!.trim()
+        : (_workingDirectoryPath ?? _host?.tmuxWorkingDirectory ?? '~');
+    Future<AcpSessionLaunchResult> reconnect({
+      List<AcpSessionKey> replace = const <AcpSessionKey>[],
+    }) => manager.reconnectSession(
+      hostId: sshSession.hostId,
+      providerId: providerId,
+      bridgeId: bridgeId,
+      acpSessionId: acpSessionId,
+      cwd: cwd,
+      confirmInstall: (request) => confirmAcpMonkeyMuxInstall(context, request),
+      autoApprovePermissions: _startClisInYoloMode,
+      replace: replace,
+    );
+
+    var result = await reconnect();
+    if (result is AcpSessionLaunchBlocked && mounted) {
+      final choice = await showAcpConcurrencyChoice(
+        context,
+        decision: result.decision,
+        managerState: manager.state,
+      );
+      if (!mounted || choice == null) return;
+      switch (choice) {
+        case AcpConcurrencyChoice.stopAndContinue:
+          final blocking = [
+            for (final value in result.decision.blockingSessionKeys)
+              manager.state.byKeyValue(value)?.key,
+          ].whereType<AcpSessionKey>().toList(growable: false);
+          result = await reconnect(replace: blocking);
+        case AcpConcurrencyChoice.upgrade:
+          await context.push<void>(
+            Uri(
+              path: '/upgrade',
+              queryParameters: {
+                'feature': MonetizationFeature.concurrentAcpSessions.name,
+              },
+            ).toString(),
+          );
+          if (!mounted ||
+              !ref
+                  .read(monetizationServiceProvider)
+                  .currentState
+                  .isProUnlocked) {
+            return;
+          }
+          result = await reconnect();
+      }
+    }
+    if (!mounted) return;
+    switch (result) {
+      case AcpSessionLaunchStarted(:final key):
+        _openNativeAcpSession(key);
+      case AcpSessionLaunchFailed(:final error):
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message)));
       case AcpSessionLaunchBlocked():
     }
   }

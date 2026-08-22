@@ -502,6 +502,29 @@ class TmuxOpenAcpSessionAction extends TmuxNavigatorAction {
   final AcpSessionKey key;
 }
 
+/// Open a server-owned native ACP MonkeyMux window.
+class TmuxOpenAcpWindowAction extends TmuxNavigatorAction {
+  /// Creates an action that selects and reconnects a durable native window.
+  const TmuxOpenAcpWindowAction({
+    required this.windowIndex,
+    required this.bridgeId,
+    required this.providerId,
+    this.workingDirectory,
+  });
+
+  /// Real MonkeyMux window index to select before opening the native viewport.
+  final int windowIndex;
+
+  /// Persistent remote bridge owned by the window.
+  final String bridgeId;
+
+  /// Stable ACP provider identifier.
+  final String providerId;
+
+  /// Remote working directory retained by the window.
+  final String? workingDirectory;
+}
+
 /// Stop a tracked native ACP session from the MonkeyMux window navigator.
 class TmuxCloseAcpSessionAction extends TmuxNavigatorAction {
   /// Creates a close-native-session action.
@@ -558,6 +581,7 @@ String diagnosticTmuxNavigatorActionKind(TmuxNavigatorAction action) =>
       TmuxNewWindowAction() => 'new_window',
       TmuxNewAcpSessionAction() => 'new_acp_session',
       TmuxOpenAcpSessionAction() => 'open_acp_session',
+      TmuxOpenAcpWindowAction() => 'open_acp_window',
       TmuxCloseAcpSessionAction() => 'close_acp_session',
       TmuxResumeAcpSessionAction() => 'resume_acp_session',
       TmuxResumeSessionAction() => 'resume_session',

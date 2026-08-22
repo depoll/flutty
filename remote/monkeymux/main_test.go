@@ -9543,6 +9543,30 @@ func TestMouseTrackingProcessIDClearsWhenModesDisabled(t *testing.T) {
 	}
 }
 
+func TestRestorePreservesNativeAcpOwnershipForUpgradeDeferral(t *testing.T) {
+	restore := restoreFromWindowSnapshots([]windowSnapshot{{
+		ID:                  "@7",
+		Index:               6,
+		Name:                "Pi",
+		NativeAcpBridgeID:   "0123456789abcdef0123456789abcdef",
+		NativeAcpProviderID: "builtin:pi-acp",
+	}})
+	if restore == nil || len(restore.Windows) != 1 {
+		t.Fatalf("restore windows = %#v, want one window", restore)
+	}
+	window := restore.Windows[0]
+	if window.NativeAcpBridgeID != "0123456789abcdef0123456789abcdef" ||
+		window.NativeAcpProviderID != "builtin:pi-acp" {
+		t.Fatalf("native ACP restore window = %#v", window)
+	}
+	if !restoreHasNativeAcpWindows(restore) {
+		t.Fatal("native ACP restore did not defer helper replacement")
+	}
+	if restoreHasNativeAcpWindows(&serverRestore{Windows: []restoreWindowState{{Name: "shell"}}}) {
+		t.Fatal("plain terminal restore incorrectly deferred helper replacement")
+	}
+}
+
 func TestRestoreFromSnapshotPreservesMouseDragMode(t *testing.T) {
 	restore := restoreFromWindowSnapshots([]windowSnapshot{
 		{
@@ -12580,6 +12604,9 @@ func TestControlStartAcpBridgeHostsProviderInServer(t *testing.T) {
 	dir := testAcpRuntimeDirectory(t)
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	t.Setenv("SHELL", "/bin/sh")
+	originalWindowArguments := nativeAcpWindowArguments
+	nativeAcpWindowArguments = func(string) ([]string, error) { return nil, nil }
+	t.Cleanup(func() { nativeAcpWindowArguments = originalWindowArguments })
 	server := newMuxServer("test")
 	serverConn, clientConn := net.Pipe()
 	done := make(chan struct{})
@@ -12606,26 +12633,35 @@ func TestControlStartAcpBridgeHostsProviderInServer(t *testing.T) {
 		t.Fatalf("second response type = %q, want window_list", response.Type)
 	}
 	request := controlMessage{
-		ID:         "cursor-start",
+		ID:         "agent-start",
 		Type:       "start_acp_bridge",
-		ProviderID: "builtin:cursor-agent-acp",
-		Provider:   "Cursor Agent",
+		ProviderID: "test:cat-acp",
+		Provider:   "Test Agent",
 		Command:    "cat",
 		Cwd:        ".",
 	}
 	if err := json.NewEncoder(clientConn).Encode(request); err != nil {
 		t.Fatal(err)
 	}
-	response := readResponse()
-	if response.ID != request.ID || response.Type != "acp_bridge_started" {
+	var response controlResponse
+	for response.ID != request.ID {
+		response = readResponse()
+	}
+	if response.Type != "acp_bridge_started" {
 		t.Fatalf("start response = %#v", response)
 	}
 	var frame acpWireMessage
 	if err := json.Unmarshal([]byte(response.Data), &frame); err != nil {
 		t.Fatal(err)
 	}
-	if frame.Type != "started" || !validAcpBridgeID(frame.BridgeID) {
+	if frame.Type != "started" || !validAcpBridgeID(frame.BridgeID) || frame.WindowID == "" {
 		t.Fatalf("started frame = %#v", frame)
+	}
+	windows := server.snapshots()
+	if len(windows) != 1 || windows[0].ID != frame.WindowID ||
+		windows[0].NativeAcpBridgeID != frame.BridgeID ||
+		windows[0].NativeAcpProviderID != request.ProviderID {
+		t.Fatalf("native ACP windows = %#v", windows)
 	}
 	info, err := acpBridgeStatus(frame.BridgeID)
 	if err != nil {
@@ -12635,21 +12671,46 @@ func TestControlStartAcpBridgeHostsProviderInServer(t *testing.T) {
 		t.Fatalf("bridge status = %#v", info)
 	}
 
-	conn, err := dialAcpBridge(frame.BridgeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = writeAcpWireFrame(conn, acpWireMessage{
-		Version: acpBridgeProtocolVersion,
-		Type:    "command",
-		Command: "stop",
-	})
-	_ = conn.Close()
 	_ = clientConn.Close()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("control handler did not stop")
+		t.Fatal("first control handler did not stop")
+	}
+	if _, err := acpBridgeStatus(frame.BridgeID); err != nil {
+		t.Fatalf("bridge stopped after client disconnect: %v", err)
+	}
+
+	serverConn2, clientConn2 := net.Pipe()
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		server.handleControl(serverConn2, bufio.NewReader(serverConn2))
+	}()
+	decoder2 := json.NewDecoder(clientConn2)
+	var hello, windowList controlResponse
+	if err := decoder2.Decode(&hello); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoder2.Decode(&windowList); err != nil {
+		t.Fatal(err)
+	}
+	if hello.Type != "hello" || windowList.Type != "window_list" ||
+		len(windowList.Windows) != 1 ||
+		windowList.Windows[0].NativeAcpBridgeID != frame.BridgeID ||
+		windowList.Windows[0].NativeAcpProviderID != request.ProviderID {
+		t.Fatalf("reconnected control state = %#v / %#v", hello, windowList)
+	}
+
+	server.close()
+	_ = clientConn2.Close()
+	select {
+	case <-done2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second control handler did not stop")
+	}
+	if _, err := acpBridgeStatus(frame.BridgeID); err == nil {
+		t.Fatal("bridge survived owning workspace shutdown")
 	}
 }
 
