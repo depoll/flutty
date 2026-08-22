@@ -93,6 +93,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
   reconnects = [];
 
   final List<(String, Object)> configOptionSets = <(String, Object)>[];
+  final List<bool> autoApprovePermissionSets = <bool>[];
   final List<String> modeSets = <String>[];
   final List<String> modelSets = <String>[];
 
@@ -235,6 +236,14 @@ class FakeAcpSessionManager extends AcpSessionManager {
     required Object value,
   }) async {
     configOptionSets.add((configId, value));
+  }
+
+  @override
+  Future<void> setAutoApprovePermissions(
+    AcpSessionKey key, {
+    required bool enabled,
+  }) async {
+    autoApprovePermissionSets.add(enabled);
   }
 
   @override

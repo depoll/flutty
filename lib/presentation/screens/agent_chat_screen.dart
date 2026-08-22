@@ -715,18 +715,19 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     ];
   }
 
-  Widget? _buildQuickConfigBar(
-    AcpSessionState session, {
-    required bool useBottomSafeArea,
-  }) {
+  Widget? _buildQuickConfigBar(AcpSessionState session) {
     final selectors = _quickConfigSelectors(session);
     if (selectors.isEmpty) {
       return null;
     }
+    final permission = selectors
+        .where((selector) => selector.label == 'Permission')
+        .firstOrNull;
+    final secondary = selectors
+        .where((selector) => selector.label != 'Permission')
+        .toList(growable: false);
     final scheme = Theme.of(context).colorScheme;
-    return SafeArea(
-      top: false,
-      bottom: useBottomSafeArea,
+    return MediaQuery.withNoTextScaling(
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: scheme.surface,
@@ -734,19 +735,34 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         ),
         child: SizedBox(
           height: 44,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(
-              horizontal: FluttyTheme.spacingSm,
-              vertical: 5,
-            ),
-            itemCount: selectors.length,
-            separatorBuilder: (_, _) =>
-                const SizedBox(width: FluttyTheme.spacingXs),
-            itemBuilder: (context, index) => _AcpQuickSelector(
-              key: ValueKey(selectors[index].label),
-              selector: selectors[index],
-            ),
+          child: Row(
+            children: [
+              if (permission != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8, right: 4),
+                  child: _AcpQuickSelector(
+                    key: const ValueKey('permission-mode-pill'),
+                    selector: permission,
+                  ),
+                ),
+              if (secondary.isNotEmpty)
+                Expanded(
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: EdgeInsets.only(
+                      left: permission == null ? 8 : 0,
+                      right: 8,
+                    ),
+                    itemCount: secondary.length,
+                    separatorBuilder: (_, _) =>
+                        const SizedBox(width: FluttyTheme.spacingXs),
+                    itemBuilder: (context, index) => _AcpQuickSelector(
+                      key: ValueKey(secondary[index].label),
+                      selector: secondary[index],
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),
@@ -881,12 +897,12 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       }
     }
 
-    addGeneric('Permissions', permissionOption);
+    addGeneric('Permission', permissionOption);
     if (permissionOption == null && permissionToggle != null) {
       displayedOptionIds.add(permissionToggle.id);
       selectors.add(
         _AcpQuickSelectorData(
-          label: 'Permissions',
+          label: 'Permission',
           currentValue: permissionToggle.currentValue ? 'true' : 'false',
           choices: const [
             _AcpQuickChoice(
@@ -896,8 +912,8 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             ),
             _AcpQuickChoice(
               value: 'true',
-              label: 'Auto-approve',
-              description: 'Approve supported actions automatically.',
+              label: 'YOLO',
+              description: 'Auto-approve supported actions for this session.',
             ),
           ],
           onSelected: (value) => manager.setConfigOption(
@@ -905,6 +921,28 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
             configId: permissionToggle.id,
             value: value == 'true',
           ),
+        ),
+      );
+    }
+    if (permissionOption == null && permissionToggle == null) {
+      selectors.add(
+        _AcpQuickSelectorData(
+          label: 'Permission',
+          currentValue: session.autoApprovePermissions ? 'true' : 'false',
+          choices: const [
+            _AcpQuickChoice(
+              value: 'false',
+              label: 'Ask',
+              description: 'Ask before protected actions.',
+            ),
+            _AcpQuickChoice(
+              value: 'true',
+              label: 'YOLO',
+              description: 'Auto-approve supported actions for this session.',
+            ),
+          ],
+          onSelected: (value) =>
+              manager.setAutoApprovePermissions(_key, enabled: value == 'true'),
         ),
       );
     }
@@ -1449,10 +1487,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     final activity = acpSessionActivityDisplay(session);
     _queuePreviewPublish(session, entries, activity);
     final prompts = _prompts(session);
-    final quickConfigBar = _buildQuickConfigBar(
-      session,
-      useBottomSafeArea: !widget.embedded,
-    );
+    final quickConfigBar = _buildQuickConfigBar(session);
 
     return Scaffold(
       appBar: widget.embedded
@@ -1460,44 +1495,47 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
           : AppBar(
               automaticallyImplyLeading: showBack,
               titleSpacing: 0,
-              title: InkWell(
-                onTap: widget.embedded
-                    ? null
-                    : () => showAcpSessionSwitcher(context, currentKey: _key),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: FluttyTheme.spacingSm,
-                    vertical: FluttyTheme.spacingXs,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Flexible(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              acpSessionDisplayTitle(session),
-                              style: FluttyTheme.displayMono(fontSize: 16),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            Text(
-                              '${session.providerLabel} · '
-                              '${acpCwdSummary(session.cwd)} · '
-                              '${activity.label}',
-                              style: FluttyTheme.monoStyle.copyWith(
-                                color: colorScheme.onSurfaceVariant,
-                                fontSize: 12,
+              title: Tooltip(
+                message: 'Switch agent session',
+                child: InkWell(
+                  onTap: widget.embedded
+                      ? null
+                      : () => showAcpSessionSwitcher(context, currentKey: _key),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: FluttyTheme.spacingSm,
+                      vertical: FluttyTheme.spacingXs,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                acpSessionDisplayTitle(session),
+                                style: FluttyTheme.displayMono(fontSize: 16),
+                                overflow: TextOverflow.ellipsis,
                               ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
+                              Text(
+                                '${session.providerLabel} · '
+                                '${acpCwdSummary(session.cwd)} · '
+                                '${activity.label}',
+                                style: FluttyTheme.monoStyle.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                  fontSize: 12,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                      if (!widget.embedded)
-                        const Icon(Icons.expand_more, size: 20),
-                    ],
+                        if (!widget.embedded)
+                          const Icon(Icons.expand_more, size: 20),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1620,6 +1658,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
                           child: AcpPermissionSurface(prompts: prompts),
                         ),
                       ),
+                    ?quickConfigBar,
                     AcpComposer(
                       controller: _composer,
                       attachmentActions: _attachmentActions(session),
@@ -1631,7 +1670,6 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
               ),
             ),
           ),
-          ?quickConfigBar,
         ],
       ),
     );
@@ -2147,34 +2185,39 @@ class _AcpQuickSelectorState extends State<_AcpQuickSelector> {
           ),
         ],
       ],
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: scheme.outlineVariant),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '${selector.label}: ${current?.label ?? selector.currentValue}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AcpChatTypography.monoStyleOf(context).copyWith(
-                  color: scheme.onSurface,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 44),
+        child: Center(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: scheme.outlineVariant),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${selector.label}: ${current?.label ?? selector.currentValue}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AcpChatTypography.monoStyleOf(context).copyWith(
+                      color: scheme.onSurface,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                  Icon(
+                    Icons.arrow_drop_down,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
               ),
-              const SizedBox(width: 3),
-              Icon(
-                Icons.arrow_drop_down,
-                size: 18,
-                color: scheme.onSurfaceVariant,
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -2310,7 +2353,16 @@ class _AcpEmptyConversation extends StatelessWidget {
             ),
             const SizedBox(height: FluttyTheme.spacingSm),
             Text(
-              'Type / to see agent commands.',
+              'Type / for commands · Ctrl/⌘ + Enter to send · pinch to resize.',
+              textAlign: TextAlign.center,
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: FluttyTheme.spacingXs),
+            Text(
+              'Tap the title for sessions; windows stay in the top bar.',
+              textAlign: TextAlign.center,
               style: Theme.of(
                 context,
               ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),

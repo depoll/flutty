@@ -128,6 +128,47 @@ void main() {
       },
     );
 
+    test('runtime YOLO overrides stay scoped to one shared session', () async {
+      service.setSessionAutoApprovePermissions('session-1', enabled: true);
+      transport
+        ..sendRequest('permission-yolo-1', 'session/request_permission', {
+          'sessionId': 'session-1',
+          'toolCall': {'toolCallId': 'call-1'},
+          'options': [
+            {'optionId': 'once-1', 'name': 'Allow once', 'kind': 'allow_once'},
+          ],
+        })
+        ..sendRequest('permission-ask-2', 'session/request_permission', {
+          'sessionId': 'session-2',
+          'toolCall': {'toolCallId': 'call-2'},
+          'options': [
+            {'optionId': 'once-2', 'name': 'Allow once', 'kind': 'allow_once'},
+          ],
+        });
+      await _settle();
+
+      expect(transport.responseFor('permission-yolo-1')['result'], {
+        'outcome': {'outcome': 'selected', 'optionId': 'once-1'},
+      });
+      expect(registry.requests.map((request) => request.sessionId), [
+        'session-2',
+      ]);
+
+      service.setSessionAutoApprovePermissions('session-1', enabled: false);
+      transport.sendRequest('permission-ask-1', 'session/request_permission', {
+        'sessionId': 'session-1',
+        'toolCall': {'toolCallId': 'call-3'},
+        'options': [
+          {'optionId': 'once-3', 'name': 'Allow once', 'kind': 'allow_once'},
+        ],
+      });
+      await _settle();
+      expect(registry.requests.map((request) => request.sessionId).toSet(), {
+        'session-1',
+        'session-2',
+      });
+    });
+
     test(
       'preserves a pending permission over detach and reconnect replay',
       () async {

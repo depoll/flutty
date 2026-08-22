@@ -470,6 +470,12 @@ class AcpSessionManager {
   }) =>
       _requireController(key).setConfigOption(configId: configId, value: value);
 
+  /// Changes MonkeySSH's Ask/YOLO behavior for one live session.
+  Future<void> setAutoApprovePermissions(
+    AcpSessionKey key, {
+    required bool enabled,
+  }) => _requireController(key).setAutoApprovePermissions(enabled: enabled);
+
   /// Sets the legacy session mode.
   Future<void> setMode(AcpSessionKey key, String modeId) =>
       _requireController(key).setMode(modeId);
@@ -1292,7 +1298,7 @@ class _SessionController {
   String _cwd;
   final DateTime Function() _clock;
   final DiagnosticsLogger _diagnostics;
-  final bool _autoApprovePermissions;
+  bool _autoApprovePermissions;
   bool _freshBridge;
   final Duration _detachedTurnPollInterval;
 
@@ -1370,6 +1376,7 @@ class _SessionController {
       isCustomProvider: _isCustomProvider,
       cwd: _cwd,
       status: AcpConnectionStatus.connecting,
+      autoApprovePermissions: _autoApprovePermissions,
       createdAt: now,
       lastActivityAt: now,
     );
@@ -1415,6 +1422,10 @@ class _SessionController {
       providerId: providerId,
       bridgeId: bridgeId,
       acpSessionId: resolvedSessionId,
+    );
+    attachment.capabilityService?.setSessionAutoApprovePermissions(
+      resolvedSessionId,
+      enabled: _autoApprovePermissions,
     );
     _update(
       (s) => s.copyWith(
@@ -1854,6 +1865,16 @@ class _SessionController {
     await attachment.client.cancel(_key.acpSessionId);
   }
 
+  Future<void> setAutoApprovePermissions({required bool enabled}) async {
+    if (_autoApprovePermissions == enabled) return;
+    _autoApprovePermissions = enabled;
+    attachment.capabilityService?.setSessionAutoApprovePermissions(
+      _key.acpSessionId,
+      enabled: enabled,
+    );
+    _update((state) => state.copyWith(autoApprovePermissions: enabled));
+  }
+
   Future<void> setConfigOption({
     required String configId,
     required Object value,
@@ -1998,10 +2019,15 @@ class _SessionController {
       isCustomProvider: _isCustomProvider,
       cwd: _cwd,
       status: AcpConnectionStatus.ready,
+      autoApprovePermissions: _autoApprovePermissions,
       createdAt: now,
       lastActivityAt: now,
       initialization: attachment.initialization,
       authMethods: attachment.initialization?.authMethods ?? const [],
+    );
+    attachment.capabilityService?.setSessionAutoApprovePermissions(
+      acpSessionId,
+      enabled: _autoApprovePermissions,
     );
     _applySetupResult(setupResult);
     _subscribeTransport();

@@ -172,8 +172,9 @@ void main() {
       );
 
       await tester.pumpWidget(build(AcpToolStatus.running));
-      expect(find.textContaining('query: TODO'), findsOneWidget);
-      expect(find.textContaining('command: flutter test'), findsOneWidget);
+      // Active tools show a compact header preview plus their expanded payload.
+      expect(find.textContaining('query: TODO'), findsNWidgets(2));
+      expect(find.textContaining('command: flutter test'), findsNWidgets(2));
       expect(find.textContaining('result: …'), findsNWidgets(2));
 
       await tester.pumpWidget(
@@ -188,7 +189,8 @@ void main() {
       );
       await tester.pump();
       expect(find.textContaining('matches: 3'), findsNothing);
-      expect(find.textContaining('command: flutter test'), findsOneWidget);
+      expect(find.textContaining('query: TODO'), findsOneWidget);
+      expect(find.textContaining('command: flutter test'), findsNWidgets(2));
 
       await tester.tap(find.text('Search files'));
       await tester.pump();
@@ -245,8 +247,10 @@ void main() {
         ),
       );
       await tester.pump();
-      expect(find.text('lib/main.dart:42'), findsOneWidget);
-      await tester.tap(find.text('lib/main.dart:42'));
+      // The collapsed-density preview and expanded location row share the
+      // same useful target text; the latter remains independently tappable.
+      expect(find.text('lib/main.dart:42'), findsNWidgets(2));
+      await tester.tap(find.text('lib/main.dart:42').last);
       expect(opened?.path, 'lib/main.dart');
       expect(opened?.line, 42);
     });

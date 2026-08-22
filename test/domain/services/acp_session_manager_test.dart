@@ -552,6 +552,38 @@ void main() {
     expect(manager.state.selectedKey, key.value);
   });
 
+  test('toggles native YOLO for one live session at runtime', () async {
+    final key = await startCopilot();
+    final server = connector.servers[key.bridgeId]!;
+
+    expect(
+      manager.state.byKeyValue(key.value)!.autoApprovePermissions,
+      isFalse,
+    );
+    await manager.setAutoApprovePermissions(key, enabled: true);
+    expect(manager.state.byKeyValue(key.value)!.autoApprovePermissions, isTrue);
+
+    final approvedId = server.requestPermission(
+      key.acpSessionId,
+      'auto-approved-tool',
+    );
+    await _pump();
+    expect(server.permissionResponses[approvedId], isNotNull);
+    expect(manager.state.byKeyValue(key.value)!.pendingPermissions, isEmpty);
+
+    await manager.setAutoApprovePermissions(key, enabled: false);
+    expect(
+      manager.state.byKeyValue(key.value)!.autoApprovePermissions,
+      isFalse,
+    );
+    server.requestPermission(key.acpSessionId, 'ask-first-tool');
+    await _pump();
+    expect(
+      manager.state.byKeyValue(key.value)!.pendingPermissions,
+      hasLength(1),
+    );
+  });
+
   test('uses selected profile in the native session title', () async {
     final result = await manager.startNewSession(
       hostId: 1,

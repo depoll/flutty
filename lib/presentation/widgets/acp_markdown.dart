@@ -50,6 +50,7 @@ class AcpMarkdown extends StatelessWidget {
     this.onTapImage,
     this.onCopyCode,
     this.syntaxTheme,
+    this.machineContent = false,
   });
 
   /// The Markdown source to render.
@@ -73,6 +74,12 @@ class AcpMarkdown extends StatelessWidget {
   /// Optional highlight.js theme map for code blocks.
   final Map<String, TextStyle>? syntaxTheme;
 
+  /// Keeps prose in the terminal monospace face for literal tool output.
+  ///
+  /// Assistant explanations default to the proportional UI body face while
+  /// code, headings, paths, and explicitly machine-authored content stay mono.
+  final bool machineContent;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -92,13 +99,28 @@ class AcpMarkdown extends StatelessWidget {
       decoration: decoration,
       height: 1.4,
     );
+    TextStyle prose({
+      double fontSize = 14,
+      FontWeight? fontWeight,
+      Color? color,
+      FontStyle? fontStyle,
+      TextDecoration? decoration,
+    }) => (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      color: color ?? scheme.onSurface,
+      fontStyle: fontStyle,
+      decoration: decoration,
+      height: 1.45,
+    );
+    final body = machineContent ? mono() : prose();
+    final link = machineContent
+        ? mono(color: scheme.primary, decoration: TextDecoration.underline)
+        : prose(color: scheme.primary, decoration: TextDecoration.underline);
     final styleSheet = base.copyWith(
-      blockSpacing: FluttyTheme.spacingSm,
-      p: mono(),
-      a: mono(
-        color: scheme.primary,
-        decoration: TextDecoration.underline,
-      ).copyWith(decorationColor: scheme.primary),
+      blockSpacing: 6,
+      p: body,
+      a: link.copyWith(decorationColor: scheme.primary),
       code: mono().copyWith(
         color: scheme.onSurface,
         backgroundColor: scheme.surfaceContainerHighest,
@@ -109,21 +131,29 @@ class AcpMarkdown extends StatelessWidget {
       h4: mono(fontWeight: FontWeight.w600),
       h5: mono(fontWeight: FontWeight.w600),
       h6: mono(fontWeight: FontWeight.w600),
-      em: mono(fontStyle: FontStyle.italic),
-      strong: mono(fontWeight: FontWeight.w700),
-      del: mono(decoration: TextDecoration.lineThrough),
-      blockquote: mono(color: scheme.onSurfaceVariant),
-      img: mono(),
-      checkbox: mono(color: scheme.primary),
+      em: machineContent
+          ? mono(fontStyle: FontStyle.italic)
+          : prose(fontStyle: FontStyle.italic),
+      strong: machineContent
+          ? mono(fontWeight: FontWeight.w700)
+          : prose(fontWeight: FontWeight.w700),
+      del: machineContent
+          ? mono(decoration: TextDecoration.lineThrough)
+          : prose(decoration: TextDecoration.lineThrough),
+      blockquote: machineContent
+          ? mono(color: scheme.onSurfaceVariant)
+          : prose(color: scheme.onSurfaceVariant),
+      img: body,
+      checkbox: body.copyWith(color: scheme.primary),
       blockquoteDecoration: BoxDecoration(
         color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
       ),
       blockquotePadding: const EdgeInsets.all(FluttyTheme.spacingSm),
-      listBullet: mono(),
+      listBullet: body,
       tableBorder: TableBorder.all(color: scheme.outline),
       tableHead: mono(fontWeight: FontWeight.w600),
-      tableBody: mono(),
+      tableBody: machineContent ? mono() : prose(fontSize: 13),
       horizontalRuleDecoration: BoxDecoration(
         border: Border(top: BorderSide(color: scheme.outline)),
       ),

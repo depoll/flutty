@@ -407,6 +407,20 @@ final class AcpClientCapabilityService {
   /// file writes still pass all normal path and size validation before writing.
   final bool autoApprovePermissions;
 
+  final Map<String, bool> _sessionAutoApprovePermissions = <String, bool>{};
+
+  /// Overrides Ask/YOLO behavior for one ACP session sharing this bridge.
+  void setSessionAutoApprovePermissions(
+    String sessionId, {
+    required bool enabled,
+  }) {
+    if (sessionId.isEmpty) return;
+    _sessionAutoApprovePermissions[sessionId] = enabled;
+  }
+
+  bool _autoApproveForSession(String sessionId) =>
+      _sessionAutoApprovePermissions[sessionId] ?? autoApprovePermissions;
+
   /// Resource limits for this service.
   final AcpClientCapabilityLimits limits;
 
@@ -461,6 +475,7 @@ final class AcpClientCapabilityService {
       _terminals.values.map((terminal) => terminal.release()),
     );
     _terminals.clear();
+    _sessionAutoApprovePermissions.clear();
     await registry.close();
   }
 
@@ -472,8 +487,10 @@ final class AcpClientCapabilityService {
   /// other live sessions still use: closing the whole capability service
   /// with [close] would incorrectly cancel those other sessions' pending
   /// requests too and stop routing their `fs`/`terminal` requests.
-  Future<void> closeSession(String sessionId) =>
-      registry.cancelForSession(sessionId);
+  Future<void> closeSession(String sessionId) async {
+    _sessionAutoApprovePermissions.remove(sessionId);
+    await registry.cancelForSession(sessionId);
+  }
 
   /// Returns a pending write body for explicit in-memory review only.
   String? pendingWriteContent(String requestId) {
@@ -599,7 +616,7 @@ final class AcpClientCapabilityService {
     if (permission.sessionId.isEmpty || permission.options.isEmpty) {
       throw const AcpClientCapabilityException('Invalid permission request');
     }
-    if (autoApprovePermissions) {
+    if (_autoApproveForSession(permission.sessionId)) {
       final option = permission.options
           .where(
             (candidate) => candidate.kind == AcpPermissionOptionKind.allowOnce,
@@ -678,7 +695,7 @@ final class AcpClientCapabilityService {
         'Write exceeds the configured limit',
       );
     }
-    if (autoApprovePermissions) {
+    if (_autoApproveForSession(sessionId)) {
       await _writeFile(path, content);
       await request.respond();
       _diagnostics.info('acp.capability', 'write_auto_approved');

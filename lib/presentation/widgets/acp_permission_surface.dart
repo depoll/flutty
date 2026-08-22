@@ -244,7 +244,7 @@ class _PermissionCard extends StatelessWidget {
           border: Border.all(color: scheme.outlineVariant),
         ),
         child: Padding(
-          padding: const EdgeInsets.all(FluttyTheme.spacingMd),
+          padding: const EdgeInsets.all(12),
           child: switch (prompt) {
             AcpToolPermissionPrompt() => _buildTool(
               context,
@@ -318,13 +318,28 @@ class _PermissionCard extends StatelessWidget {
     required AcpPermissionOption option,
     required VoidCallback? onPressed,
   }) {
-    final allow =
-        option.kind == AcpPermissionOptionKind.allowOnce ||
-        option.kind == AcpPermissionOptionKind.allowAlways;
     final label = Text(option.name.isEmpty ? option.id : option.name);
-    return allow
-        ? FilledButton(onPressed: onPressed, child: label)
-        : OutlinedButton(onPressed: onPressed, child: label);
+    if (option.kind == AcpPermissionOptionKind.allowOnce) {
+      return FilledButton(onPressed: onPressed, child: label);
+    }
+    if (option.kind == AcpPermissionOptionKind.allowAlways) {
+      return OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: const Icon(Icons.all_inclusive, size: 16),
+        label: label,
+      );
+    }
+    if (option.kind == AcpPermissionOptionKind.rejectOnce ||
+        option.kind == AcpPermissionOptionKind.rejectAlways) {
+      return TextButton(
+        style: TextButton.styleFrom(
+          foregroundColor: Theme.of(context).colorScheme.error,
+        ),
+        onPressed: onPressed,
+        child: label,
+      );
+    }
+    return OutlinedButton(onPressed: onPressed, child: label);
   }
 
   Widget _buildWrite(BuildContext context, AcpWritePermissionPrompt prompt) {
@@ -366,9 +381,13 @@ class _PermissionCard extends StatelessWidget {
               onPressed: busy ? null : () => onResolve(prompt.onApprove),
               child: const Text('Approve write'),
             ),
-            OutlinedButton(
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                foregroundColor: theme.colorScheme.error,
+              ),
               onPressed: busy ? null : () => onResolve(prompt.onReject),
-              child: const Text('Reject write'),
+              icon: const Icon(Icons.close, size: 16),
+              label: const Text('Reject write'),
             ),
           ],
         ),

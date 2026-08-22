@@ -28,7 +28,10 @@ class AcpMessageThread extends StatelessWidget {
     required this.entries,
     super.key,
     this.controller,
-    this.padding = const EdgeInsets.all(FluttyTheme.spacingMd),
+    this.padding = const EdgeInsets.symmetric(
+      horizontal: 12,
+      vertical: FluttyTheme.spacingSm,
+    ),
     this.shrinkWrap = false,
     this.physics,
     this.footer,
@@ -150,7 +153,7 @@ class AcpMessageThread extends StatelessWidget {
         final entry = entries[index];
         return Padding(
           key: ValueKey(entry.id),
-          padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingSm),
+          padding: EdgeInsets.only(top: index == 0 ? 0 : FluttyTheme.spacingXs),
           child: _buildEntry(context, entry),
         );
       },

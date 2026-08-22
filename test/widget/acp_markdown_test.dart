@@ -49,31 +49,47 @@ void main() {
     expect(find.byType(Table), findsOneWidget);
   });
 
-  testWidgets('uses compact native paragraph rhythm', (tester) async {
+  testWidgets('uses readable proportional paragraph rhythm', (tester) async {
     await tester.pumpWidget(
       wrap(const AcpMarkdown(data: 'First paragraph.\n\nSecond paragraph.')),
     );
     await tester.pump();
 
     final markdown = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
-    expect(markdown.styleSheet?.p?.fontSize, 13);
-    expect(markdown.styleSheet?.p?.height, 1.4);
-    expect(markdown.styleSheet?.blockSpacing, FluttyTheme.spacingSm);
+    expect(markdown.styleSheet?.p?.fontSize, 14);
+    expect(markdown.styleSheet?.p?.height, 1.45);
+    expect(markdown.styleSheet?.blockSpacing, 6);
+    expect(
+      markdown.styleSheet?.p?.fontFamily,
+      isNot(FluttyTheme.monoStyle.fontFamily),
+    );
+    expect(
+      markdown.styleSheet?.code?.fontFamily,
+      FluttyTheme.monoStyle.fontFamily,
+    );
   });
 
-  testWidgets('renders selectable markdown text', (tester) async {
+  testWidgets('keeps headings and explicit machine content monospaced', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       wrap(const AcpMarkdown(data: '# Heading\n\nhello world')),
     );
     await tester.pump();
-    final body = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+    var body = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
     expect(body.selectable, isTrue);
-    expect(body.styleSheet?.p?.fontFamily, FluttyTheme.monoStyle.fontFamily);
     expect(body.styleSheet?.h1?.fontFamily, FluttyTheme.monoStyle.fontFamily);
     expect(
-      body.styleSheet?.tableBody?.fontFamily,
+      body.styleSheet?.tableHead?.fontFamily,
       FluttyTheme.monoStyle.fontFamily,
     );
+
+    await tester.pumpWidget(
+      wrap(const AcpMarkdown(data: 'literal output', machineContent: true)),
+    );
+    await tester.pump();
+    body = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+    expect(body.styleSheet?.p?.fontFamily, FluttyTheme.monoStyle.fontFamily);
   });
 
   testWidgets('renders a syntax-highlighted code block from markdown', (

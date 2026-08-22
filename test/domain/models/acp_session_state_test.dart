@@ -104,6 +104,15 @@ void main() {
       expect(next.status, AcpConnectionStatus.failed);
     });
 
+    test('copies session-local permission mode', () {
+      final ask = base();
+      final yolo = ask.copyWith(autoApprovePermissions: true);
+
+      expect(ask.autoApprovePermissions, isFalse);
+      expect(yolo.autoApprovePermissions, isTrue);
+      expect(yolo, isNot(ask));
+    });
+
     test('tracks warning independently of error', () {
       const warning = AcpSessionError(
         kind: AcpSessionErrorKind.replayOverflow,

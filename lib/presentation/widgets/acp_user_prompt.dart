@@ -84,7 +84,7 @@ class AcpUserPromptView extends StatelessWidget {
           border: Border.all(color: scheme.outline),
         ),
         child: Padding(
-          padding: const EdgeInsets.all(FluttyTheme.spacingMd),
+          padding: const EdgeInsets.all(12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -125,7 +125,7 @@ class AcpUserPromptView extends StatelessWidget {
                 const SizedBox(height: FluttyTheme.spacingSm),
               ],
               for (var i = 0; i < parts.length; i++) ...[
-                if (i > 0) const SizedBox(height: FluttyTheme.spacingSm),
+                if (i > 0) const SizedBox(height: 6),
                 _buildPart(context, parts[i]),
               ],
             ],

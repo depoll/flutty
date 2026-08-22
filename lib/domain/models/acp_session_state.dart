@@ -263,6 +263,7 @@ final class AcpSessionState {
     this.modelState,
     List<AcpSessionConfigOption> configOptions =
         const <AcpSessionConfigOption>[],
+    this.autoApprovePermissions = false,
     List<AcpAvailableCommand> availableCommands = const <AcpAvailableCommand>[],
     List<AcpPlanEntry> plan = const <AcpPlanEntry>[],
     this.usage,
@@ -330,6 +331,9 @@ final class AcpSessionState {
 
   /// Latest generic session configuration options.
   final List<AcpSessionConfigOption> configOptions;
+
+  /// Whether MonkeySSH auto-approves supported requests for this session.
+  final bool autoApprovePermissions;
 
   /// Latest available slash commands.
   final List<AcpAvailableCommand> availableCommands;
@@ -438,6 +442,7 @@ final class AcpSessionState {
     AcpModelState? modelState,
     bool clearModelState = false,
     List<AcpSessionConfigOption>? configOptions,
+    bool? autoApprovePermissions,
     List<AcpAvailableCommand>? availableCommands,
     List<AcpPlanEntry>? plan,
     AcpUsageUpdate? usage,
@@ -470,6 +475,8 @@ final class AcpSessionState {
     modeState: clearModeState ? null : (modeState ?? this.modeState),
     modelState: clearModelState ? null : (modelState ?? this.modelState),
     configOptions: configOptions ?? this.configOptions,
+    autoApprovePermissions:
+        autoApprovePermissions ?? this.autoApprovePermissions,
     availableCommands: availableCommands ?? this.availableCommands,
     plan: plan ?? this.plan,
     usage: clearUsage ? null : (usage ?? this.usage),
@@ -504,6 +511,7 @@ final class AcpSessionState {
           pendingAuthentication == other.pendingAuthentication &&
           modeState == other.modeState &&
           modelState == other.modelState &&
+          autoApprovePermissions == other.autoApprovePermissions &&
           usage == other.usage &&
           lastStopReason == other.lastStopReason &&
           promptStatus == other.promptStatus &&
@@ -545,6 +553,7 @@ final class AcpSessionState {
     lastActivityAt,
     initialization,
     pendingAuthentication,
+    autoApprovePermissions,
     promptStatus,
     usage,
     lastStopReason,

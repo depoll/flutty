@@ -33,6 +33,11 @@ void main() {
           kind: AcpPermissionOptionKind.allowOnce,
         ),
         AcpPermissionOption(
+          id: 'opt-always',
+          name: 'Always allow',
+          kind: AcpPermissionOptionKind.allowAlways,
+        ),
+        AcpPermissionOption(
           id: 'opt-reject',
           name: 'Reject',
           kind: AcpPermissionOptionKind.rejectOnce,
@@ -47,7 +52,26 @@ void main() {
     await _pump(tester, [prompt]);
 
     expect(find.text('Allow'), findsOneWidget);
+    expect(find.text('Always allow'), findsOneWidget);
     expect(find.text('Reject'), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.text('Allow'),
+        matching: find.byType(FilledButton),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(
+        of: find.text('Always allow'),
+        matching: find.byType(OutlinedButton),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(of: find.text('Reject'), matching: find.byType(TextButton)),
+      findsOneWidget,
+    );
 
     await tester.tap(find.text('Allow'));
     await tester.pump();
@@ -76,6 +100,20 @@ void main() {
 
     expect(find.text('Write to main.dart'), findsOneWidget);
     expect(find.text('42 bytes'), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.text('Approve write'),
+        matching: find.byType(FilledButton),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(
+        of: find.text('Reject write'),
+        matching: find.byType(TextButton),
+      ),
+      findsOneWidget,
+    );
     // Content is not displayed until explicitly revealed.
     expect(find.text('secret body'), findsNothing);
 

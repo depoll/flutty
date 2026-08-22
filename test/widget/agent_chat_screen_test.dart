@@ -140,6 +140,28 @@ void main() {
     expect(find.text('Session settings'), findsOneWidget);
   });
 
+  testWidgets('empty state exposes accelerators and fallback YOLO mode', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager(sessions: [fakeAcpSession()]);
+    await tester.pumpWidget(_wrap(manager));
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('Switch agent session'), findsOneWidget);
+    expect(find.textContaining('Type / for commands'), findsOneWidget);
+    expect(find.textContaining('Ctrl/⌘ + Enter'), findsOneWidget);
+    expect(find.textContaining('pinch to resize'), findsOneWidget);
+    expect(find.textContaining('title for sessions'), findsOneWidget);
+    expect(find.textContaining('windows stay in the top bar'), findsOneWidget);
+    expect(find.text('Permission: Ask'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Change permission'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('YOLO').last);
+    await tester.pumpAndSettle();
+    expect(manager.autoApprovePermissionSets, [true]);
+  });
+
   testWidgets('publishes a throttled native connection preview', (
     tester,
   ) async {
@@ -256,7 +278,7 @@ void main() {
     expect(find.text('google/Gemini Pro'), findsOneWidget);
   });
 
-  testWidgets('top bar changes model, effort, and mode directly', (
+  testWidgets('control row pins permission mode above the composer', (
     tester,
   ) async {
     final manager = FakeAcpSessionManager(
@@ -311,7 +333,12 @@ void main() {
       ],
     );
     await tester.pumpWidget(
-      _wrap(manager, embedded: true, preferredFontSize: 20),
+      _wrap(
+        manager,
+        size: const Size(320, 640),
+        embedded: true,
+        preferredFontSize: 20,
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -320,12 +347,16 @@ void main() {
     expect(find.text('Effort: Medium'), findsOneWidget);
     expect(find.text('Mode: Code'), findsOneWidget);
     expect(find.text('Fast mode: Off'), findsOneWidget);
-    expect(find.text('Permissions: Ask'), findsOneWidget);
+    expect(find.text('Permission: Ask'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('permission-mode-pill'))).height,
+      44,
+    );
     final selectorContext = tester.element(find.text('Model: Sonnet'));
     expect(MediaQuery.of(selectorContext).textScaler.scale(14), 14);
     expect(
       tester.getTopLeft(find.text('Model: Sonnet')).dy,
-      greaterThanOrEqualTo(tester.getBottomLeft(find.byType(AcpComposer)).dy),
+      lessThan(tester.getTopLeft(find.byType(AcpComposer)).dy),
     );
 
     await tester.tap(find.byTooltip('Change model'));
@@ -354,13 +385,46 @@ void main() {
     await tester.pumpAndSettle();
     expect(manager.configOptionSets, contains(('fast-mode', 'on')));
 
-    await tester.ensureVisible(find.byTooltip('Change permissions'));
-    await tester.pump();
-    await tester.tap(find.byTooltip('Change permissions'));
+    await tester.tap(find.byTooltip('Change permission'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Auto-approve').last);
+    await tester.tap(find.text('YOLO').last);
     await tester.pumpAndSettle();
     expect(manager.configOptionSets, contains(('yolo', true)));
+  });
+
+  testWidgets('permission pill preserves provider-supported modes', (
+    tester,
+  ) async {
+    final manager = FakeAcpSessionManager(
+      sessions: [
+        fakeAcpSession(
+          configOptions: const [
+            AcpSelectConfigOption(
+              id: 'approval-mode',
+              name: 'Approval mode',
+              category: 'permission',
+              currentValue: 'ask',
+              options: [
+                AcpConfigValue(value: 'ask', name: 'Ask'),
+                AcpConfigValue(value: 'auto', name: 'YOLO'),
+                AcpConfigValue(value: 'plan', name: 'Plan only'),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+    await tester.pumpWidget(_wrap(manager, embedded: true));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Permission: Ask'), findsOneWidget);
+    await tester.tap(find.byTooltip('Change permission'));
+    await tester.pumpAndSettle();
+    expect(find.text('YOLO'), findsOneWidget);
+    expect(find.text('Plan only'), findsOneWidget);
+    await tester.tap(find.text('Plan only'));
+    await tester.pumpAndSettle();
+    expect(manager.configOptionSets, contains(('approval-mode', 'plan')));
   });
 
   testWidgets('legacy thinking levels render as Effort, not Mode', (

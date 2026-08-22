@@ -91,6 +91,23 @@ class _AcpToolCallViewState extends State<AcpToolCallView> {
         call.diffs.isNotEmpty;
   }
 
+  String? get _headerPreview {
+    final call = widget.toolCall;
+    if (call.locations.isNotEmpty) {
+      final location = call.locations.first;
+      return location.line == null
+          ? location.path
+          : '${location.path}:${location.line}';
+    }
+    final input = call.rawInput?.trim();
+    if (input == null || input.isEmpty) {
+      return null;
+    }
+    final line = input.split('\n').firstWhere((line) => line.trim().isNotEmpty);
+    final compact = line.trim().replaceAll(RegExp(r'\s+'), ' ');
+    return compact.length <= 96 ? compact : '${compact.substring(0, 95)}…';
+  }
+
   ({IconData icon, Color color, bool spinning}) _statusVisual(
     ColorScheme scheme,
   ) => switch (widget.toolCall.status) {
@@ -144,21 +161,38 @@ class _AcpToolCallViewState extends State<AcpToolCallView> {
           child: Row(
             children: [
               Icon(call.kind.icon, size: 17, color: scheme.onSurfaceVariant),
-              const SizedBox(width: FluttyTheme.spacingSm),
+              const SizedBox(width: 6),
               Expanded(
-                child: Text(
-                  call.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AcpChatTypography.monoStyleOf(context).copyWith(
-                    color: scheme.onSurface,
-                    fontSize: 13,
-                    height: 1.25,
-                    fontWeight: FontWeight.w500,
-                  ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      call.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AcpChatTypography.monoStyleOf(context).copyWith(
+                        color: scheme.onSurface,
+                        fontSize: 12.5,
+                        height: 1.15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (_headerPreview case final preview?)
+                      Text(
+                        preview,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AcpChatTypography.monoStyleOf(context).copyWith(
+                          color: scheme.onSurfaceVariant,
+                          fontSize: 10.5,
+                          height: 1.15,
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              const SizedBox(width: FluttyTheme.spacingSm),
+              const SizedBox(width: 6),
               _StatusBadge(
                 icon: visual.icon,
                 color: visual.color,
@@ -220,7 +254,7 @@ class _AcpToolCallViewState extends State<AcpToolCallView> {
                 FluttyTheme.spacingSm,
                 0,
                 FluttyTheme.spacingSm,
-                FluttyTheme.spacingSm,
+                6,
               ),
               child: _ToolCallDetails(
                 toolCall: call,
@@ -258,7 +292,7 @@ class _StatusBadge extends StatelessWidget {
         )
       else
         Icon(icon, size: 14, color: color),
-      const SizedBox(width: FluttyTheme.spacingXs),
+      const SizedBox(width: 2),
       Text(
         label,
         style: AcpChatTypography.monoStyleOf(
@@ -327,7 +361,7 @@ class _ToolCallDetails extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         for (var i = 0; i < children.length; i++) ...[
-          if (i > 0) const SizedBox(height: FluttyTheme.spacingSm),
+          if (i > 0) const SizedBox(height: 6),
           children[i],
         ],
       ],
@@ -365,9 +399,10 @@ class _RichToolResult extends StatelessWidget {
             color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        const SizedBox(height: FluttyTheme.spacingXs),
+        const SizedBox(height: 2),
         AcpMarkdown(
           data: markdown,
+          machineContent: true,
           imageResolver: imageActions?.resolver,
           onTapImage: imageActions?.onTap,
         ),
@@ -451,14 +486,14 @@ class _ToolPayloadStream extends StatelessWidget {
         border: Border.all(color: scheme.outlineVariant),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(FluttyTheme.spacingSm),
+        padding: const EdgeInsets.all(6),
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: SelectableText(
             _text,
             style: AcpChatTypography.monoStyleOf(
               context,
-            ).copyWith(fontSize: 12, color: scheme.onSurface, height: 1.45),
+            ).copyWith(fontSize: 11.5, color: scheme.onSurface, height: 1.35),
           ),
         ),
       ),

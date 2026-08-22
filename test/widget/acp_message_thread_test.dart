@@ -44,6 +44,26 @@ void main() {
   setUp(() => FluttyTheme.debugUseSystemFonts = true);
   tearDown(() => FluttyTheme.debugUseSystemFonts = false);
 
+  testWidgets('uses a dense native transcript viewport', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        const AcpMessageThread(
+          entries: [AcpAssistantMessageEntry(id: 'a1', markdown: 'hello')],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final list = tester.widget<ListView>(find.byType(ListView));
+    expect(
+      list.padding,
+      const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: FluttyTheme.spacingSm,
+      ),
+    );
+  });
+
   testWidgets('preserves user prompt part order', (tester) async {
     await tester.pumpWidget(
       wrap(
