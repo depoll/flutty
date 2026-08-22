@@ -3497,9 +3497,11 @@ print(json.dumps(sessions))
             if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
               hadError = true;
             }
-            if (!metadata.hasConversation) {
-              continue;
-            }
+            // Current Cursor Agent persists the active resumable chat id with
+            // hasConversation=false, including after the TUI has created its
+            // workspace chat. The parent directory remains the authoritative
+            // --resume id, so keep metadata-only records instead of returning
+            // an empty picker.
             summary = metadata.summary;
             sessionWorkingDirectory = metadata.workingDirectory;
             lastActive = metadata.updatedAt;
@@ -3515,7 +3517,7 @@ print(json.dumps(sessions))
             sessionId: chatId,
             workingDirectory: sessionWorkingDirectory,
             lastActive: lastActive,
-            summary: summary ?? _truncateId(chatId),
+            summary: summary ?? 'Cursor session ${_truncateId(chatId)}',
           ),
         );
       }

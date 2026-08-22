@@ -2283,6 +2283,43 @@ branch refs/heads/main
       );
     });
 
+    test(
+      'Cursor discovery keeps current metadata-only chats resumable',
+      () async {
+        final client = _MockSshClient();
+        const metaPath =
+            '/Users/demo/.cursor/chats/workspace/'
+            'bfc1447e-9184-4dcb-ad28-130dd28177d3/meta.json';
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          if (command.contains('find ~/.cursor/chats')) {
+            return _buildExecSession(stdout: metaPath);
+          }
+          if (command.contains(metaPath)) {
+            return _buildExecSession(
+              stdout: _remoteSnapshotLine(metaPath, '''
+{"schemaVersion":1,"createdAtMs":1787302131000,"hasConversation":false,"updatedAtMs":1787302132665,"cwd":"/Users/depoll/Code/MonkeySSH"}
+'''),
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final result = await AgentSessionDiscoveryService().discoverSessions(
+          _buildDiscoverySession(client),
+          workingDirectory: '/Users/depoll/Code/MonkeySSH',
+          toolName: 'Cursor Agent',
+        );
+
+        expect(result.sessions, hasLength(1));
+        expect(
+          result.sessions.single.sessionId,
+          'bfc1447e-9184-4dcb-ad28-130dd28177d3',
+        );
+        expect(result.sessions.single.summary, 'Cursor session bfc1447e…');
+      },
+    );
+
     test('Grok Build discovery resolves resumable summary metadata', () async {
       final client = _MockSshClient();
       final commands = <String>[];
