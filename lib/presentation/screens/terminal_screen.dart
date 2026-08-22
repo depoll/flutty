@@ -3769,6 +3769,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   double _tmuxSidebarDragOffset = 0;
   AcpSessionKey? _activeNativeAcpSessionKey;
   String? _autoOpenedNativeAcpBridgeId;
+  String? _openingNativeAcpBridgeId;
+  Future<void>? _openingNativeAcpWindow;
   _NativeAcpLaunchState? _nativeAcpLaunchState;
   var _nativeAcpLaunchGeneration = 0;
   final Map<String, AcpChatScrollState> _nativeAcpScrollStates = {};
@@ -3972,8 +3974,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Host? _host;
   AgentLaunchPreset? _autoConnectAgentPreset;
   bool _startClisInYoloMode = false;
-  AgentWindowModePreference _agentWindowModePreference =
-      AgentWindowModePreference.askEveryTime;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
   final Object _terminalAppThemeOverrideOwner = Object();
@@ -7337,7 +7337,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .read(hostCliLaunchPreferencesServiceProvider)
         .getPreferencesForHost(widget.hostId);
     _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
-    _agentWindowModePreference = cliLaunchPreferences.agentWindowMode;
     DiagnosticsLogService.instance.info(
       'terminal.screen',
       'host_loaded',
@@ -11268,6 +11267,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final isProUser = monetizationState.allowsFeature(
         MonetizationFeature.agentLaunchPresets,
       );
+      final agentWindowModePreference = await ref
+          .read(agentWindowModePreferenceNotifierProvider.notifier)
+          .initializedValue();
+      if (!mounted) return;
       final currentWindowCount = _currentTmuxWindowsSnapshot?.length ?? 0;
       unawaited(
         ref
@@ -11287,7 +11290,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         tmuxExtraFlags: _activeTmuxExtraFlags,
         isProUser: isProUser,
         startClisInYoloMode: _startClisInYoloMode,
-        agentWindowModePreference: _agentWindowModePreference,
+        agentWindowModePreference: agentWindowModePreference,
         scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
           liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
           tmuxWorkingDirectory: _tmuxWorkingDirectory,
@@ -11777,6 +11780,69 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _openServerOwnedNativeAcpWindow(
+    SshSession sshSession, {
+    required int windowIndex,
+    required String bridgeId,
+    required String providerId,
+    String? workingDirectory,
+  }) {
+    final opening = _openingNativeAcpWindow;
+    if (opening != null) {
+      if (_openingNativeAcpBridgeId == bridgeId) return opening;
+      return opening.then(
+        (_) => _openServerOwnedNativeAcpWindow(
+          sshSession,
+          windowIndex: windowIndex,
+          bridgeId: bridgeId,
+          providerId: providerId,
+          workingDirectory: workingDirectory,
+        ),
+      );
+    }
+
+    final completer = Completer<void>();
+    _openingNativeAcpBridgeId = bridgeId;
+    _openingNativeAcpWindow = completer.future;
+    _autoOpenedNativeAcpBridgeId = bridgeId;
+    final provider = acpBuiltinProviders
+        .where((candidate) => candidate.id == providerId)
+        .firstOrNull;
+    final generation = ++_nativeAcpLaunchGeneration;
+    _beginNativeAcpLaunch(
+      sshSession,
+      _NativeAcpLaunchState(
+        generation: generation,
+        providerId: providerId,
+        providerLabel: provider?.label ?? 'Native agent',
+        phase: _NativeAcpLaunchPhase.startingSession,
+        resuming: true,
+        startedAt: DateTime.now(),
+      ),
+    );
+    unawaited(() async {
+      try {
+        await _performOpenServerOwnedNativeAcpWindow(
+          sshSession,
+          windowIndex: windowIndex,
+          bridgeId: bridgeId,
+          providerId: providerId,
+          workingDirectory: workingDirectory,
+        );
+        completer.complete();
+      } on Object catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      } finally {
+        if (identical(_openingNativeAcpWindow, completer.future)) {
+          _openingNativeAcpWindow = null;
+          _openingNativeAcpBridgeId = null;
+        }
+        _finishNativeAcpLaunch(sshSession, generation);
+      }
+    }());
+    return completer.future;
+  }
+
+  Future<void> _performOpenServerOwnedNativeAcpWindow(
     SshSession sshSession, {
     required int windowIndex,
     required String bridgeId,

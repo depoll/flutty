@@ -9,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../app/app_metadata.dart';
 import '../../app/routes.dart';
 import '../../app/theme.dart';
+import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
@@ -678,6 +679,9 @@ class _TerminalSection extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final agentWindowMode = ref.watch(
+      agentWindowModePreferenceNotifierProvider,
+    );
     final fontSize = ref.watch(fontSizeNotifierProvider);
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
@@ -724,6 +728,14 @@ class _TerminalSection extends ConsumerWidget {
         const _SectionHeader(
           title: 'terminal',
           subtitle: 'Themes, fonts, links, keyboard, and clipboard behavior',
+        ),
+        ListTile(
+          key: const ValueKey('settings-agent-window-mode'),
+          leading: const Icon(Icons.view_agenda_outlined),
+          title: const Text('Agent window mode'),
+          subtitle: Text(agentWindowMode.label),
+          onTap: () =>
+              _showAgentWindowModeDialog(context, ref, agentWindowMode),
         ),
         ListTile(
           leading: const Icon(Icons.palette_outlined),
@@ -922,6 +934,41 @@ class _TerminalSection extends ConsumerWidget {
           },
         ),
       ],
+    );
+  }
+
+  void _showAgentWindowModeDialog(
+    BuildContext context,
+    WidgetRef ref,
+    AgentWindowModePreference current,
+  ) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Agent window mode'),
+        content: RadioGroup<AgentWindowModePreference>(
+          groupValue: current,
+          onChanged: (value) {
+            if (value == null) return;
+            unawaited(
+              ref
+                  .read(agentWindowModePreferenceNotifierProvider.notifier)
+                  .setPreference(value),
+            );
+            Navigator.pop(context);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final preference in AgentWindowModePreference.values)
+                RadioListTile<AgentWindowModePreference>(
+                  title: Text(preference.label),
+                  value: preference,
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

@@ -435,7 +435,19 @@ void main() {
           .onPressed,
       isNotNull,
     );
+    expect(
+      tester.getSize(find.byKey(const ValueKey('acp-scroll-to-top'))),
+      const Size(48, 48),
+    );
 
+    await tester.tap(find.byKey(const ValueKey('acp-scroll-to-top')));
+    await tester.pumpAndSettle();
+    expect(controller.offset, controller.position.minScrollExtent);
+    expect(find.byKey(const ValueKey('prompt-1')), findsOneWidget);
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
+    await tester.pump();
+    await tester.pump();
     await tester.tap(find.byKey(const ValueKey('acp-next-user-message')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('prompt-2')), findsOneWidget);

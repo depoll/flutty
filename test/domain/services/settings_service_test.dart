@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 
@@ -215,6 +216,36 @@ void main() {
       expect(SettingKeys.defaultUsername, 'default_username');
       expect(SettingKeys.autoLockTimeout, 'auto_lock_timeout');
     });
+  });
+
+  test('app-wide agent window mode loads and persists', () async {
+    await service.setString(
+      SettingKeys.agentWindowModePreference,
+      AgentWindowModePreference.preferTerminal.storageValue,
+    );
+    final container = ProviderContainer(
+      overrides: [settingsServiceProvider.overrideWithValue(service)],
+    );
+    addTearDown(container.dispose);
+
+    final notifier = container.read(
+      agentWindowModePreferenceNotifierProvider.notifier,
+    );
+    expect(
+      await notifier.initializedValue(),
+      AgentWindowModePreference.preferTerminal,
+    );
+
+    await notifier.setPreference(AgentWindowModePreference.preferNative);
+
+    expect(
+      container.read(agentWindowModePreferenceNotifierProvider),
+      AgentWindowModePreference.preferNative,
+    );
+    expect(
+      await service.getString(SettingKeys.agentWindowModePreference),
+      'native',
+    );
   });
 
   group('Settings Providers', () {

@@ -203,6 +203,34 @@ void main() {
       );
     });
 
+    testWidgets('sets the app-wide agent window mode', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+      final tile = find.byKey(const ValueKey('settings-agent-window-mode'));
+      await tester.scrollUntilVisible(
+        tile,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ask every time'), findsOneWidget);
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Prefer native chat').last);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Prefer native chat'), findsOneWidget);
+      expect(
+        await SettingsService(
+          db,
+        ).getString(SettingKeys.agentWindowModePreference),
+        'native',
+      );
+    });
+
     testWidgets('toggles shell completion popups from terminal settings', (
       tester,
     ) async {

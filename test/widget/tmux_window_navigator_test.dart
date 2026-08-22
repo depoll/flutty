@@ -977,7 +977,7 @@ void main() {
       expect(mapping[AgentLaunchTool.pi], AcpBuiltinProviderIds.pi);
     });
 
-    testWidgets('host preference opens native chat without prompting', (
+    testWidgets('app preference opens native chat without prompting', (
       tester,
     ) async {
       TmuxNavigatorAction? result;
@@ -1020,7 +1020,7 @@ void main() {
       expect(result, isA<TmuxNewAcpSessionAction>());
     });
 
-    testWidgets('host preference opens terminal without prompting', (
+    testWidgets('app preference opens terminal without prompting', (
       tester,
     ) async {
       TmuxNavigatorAction? result;
@@ -1062,7 +1062,7 @@ void main() {
       expect(result, isA<TmuxNewWindowAction>());
     });
 
-    testWidgets('long press overrides the host preference for one launch', (
+    testWidgets('long press overrides the app preference for one launch', (
       tester,
     ) async {
       TmuxNavigatorAction? result;
@@ -1101,10 +1101,71 @@ void main() {
 
       expect(find.text('Terminal'), findsOneWidget);
       expect(find.text('Native chat'), findsOneWidget);
+      expect(find.text('Remember this choice'), findsOneWidget);
 
       await tester.tap(find.text('Terminal'));
       await tester.pumpAndSettle();
       expect(result, isA<TmuxNewWindowAction>());
+    });
+
+    testWidgets('ellipsis chooses a mode and remembers it app-wide', (
+      tester,
+    ) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(database.close);
+      TmuxNavigatorAction? result;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(database)],
+          child: MaterialApp(
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () async {
+                    result = await showTmuxNewWindowPicker(
+                      context: context,
+                      isProUser: true,
+                      startClisInYoloMode: false,
+                      agentWindowModePreference:
+                          AgentWindowModePreference.preferTerminal,
+                      installedToolsFuture: Future.value(
+                        const <AgentLaunchTool>{AgentLaunchTool.copilotCli},
+                      ),
+                      nativeAcpProviderIds: const <AgentLaunchTool, String>{
+                        AgentLaunchTool.copilotCli:
+                            AcpBuiltinProviderIds.copilotCli,
+                      },
+                    );
+                  },
+                  child: const Text('Open picker'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('agent-window-mode-options-copilotCli')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Terminal'), findsOneWidget);
+      expect(find.text('Native chat'), findsOneWidget);
+      await tester.tap(find.text('Remember this choice'));
+      await tester.pump();
+      await tester.tap(find.text('Native chat'));
+      await tester.pumpAndSettle();
+
+      expect(result, isA<TmuxNewAcpSessionAction>());
+      expect(
+        await SettingsService(
+          database,
+        ).getString(SettingKeys.agentWindowModePreference),
+        'native',
+      );
     });
 
     testWidgets('ACP-capable tool offers a native mode to free users', (

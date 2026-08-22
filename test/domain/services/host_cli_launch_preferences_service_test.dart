@@ -21,16 +21,12 @@ void main() {
   });
 
   test('stores and loads host CLI launch preferences', () async {
-    const preferences = HostCliLaunchPreferences(
-      startInYoloMode: true,
-      agentWindowMode: AgentWindowModePreference.preferNative,
-    );
+    const preferences = HostCliLaunchPreferences(startInYoloMode: true);
 
     await service.setPreferencesForHost(42, preferences);
     final loaded = await service.getPreferencesForHost(42);
 
     expect(loaded.startInYoloMode, isTrue);
-    expect(loaded.agentWindowMode, AgentWindowModePreference.preferNative);
   });
 
   test(
@@ -39,18 +35,9 @@ void main() {
       final loaded = await service.getPreferencesForHost(7);
 
       expect(loaded.startInYoloMode, isFalse);
-      expect(loaded.agentWindowMode, AgentWindowModePreference.askEveryTime);
       expect(loaded.isEmpty, isTrue);
     },
   );
-
-  test('preserves unknown launch modes as ask every time', () {
-    final preferences = HostCliLaunchPreferences.fromJson(const {
-      'agentWindowMode': 'future-mode',
-    });
-
-    expect(preferences.agentWindowMode, AgentWindowModePreference.askEveryTime);
-  });
 
   test('deletes stored preferences when saved settings are empty', () async {
     await service.setPreferencesForHost(

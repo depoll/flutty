@@ -305,7 +305,7 @@ AgentWindowModePreference normalizeAgentWindowModePreference(Object value) =>
     ? value
     : AgentWindowModePreference.askEveryTime;
 
-/// Resolves the host default or presents a one-off mode chooser.
+/// Resolves the app-wide default or presents a one-off mode chooser.
 Future<AgentWindowMode?> resolveAgentWindowMode({
   required BuildContext context,
   required AgentLaunchTool tool,
@@ -343,7 +343,46 @@ Future<AgentWindowMode?> showAgentWindowModePicker({
   showDragHandle: true,
   isScrollControlled: true,
   requestFocus: terminalOverlayRouteRequestFocus(context),
-  builder: (context) {
+  builder: (context) =>
+      _AgentWindowModePickerSheet(tool: tool, isProUser: isProUser),
+);
+
+class _AgentWindowModePickerSheet extends StatefulWidget {
+  const _AgentWindowModePickerSheet({
+    required this.tool,
+    required this.isProUser,
+  });
+
+  final AgentLaunchTool tool;
+  final bool isProUser;
+
+  @override
+  State<_AgentWindowModePickerSheet> createState() =>
+      _AgentWindowModePickerSheetState();
+}
+
+class _AgentWindowModePickerSheetState
+    extends State<_AgentWindowModePickerSheet> {
+  var _rememberChoice = false;
+  var _saving = false;
+
+  Future<void> _choose(AgentWindowMode mode) async {
+    if (_saving) return;
+    if (_rememberChoice) {
+      setState(() => _saving = true);
+      final preference = switch (mode) {
+        AgentWindowMode.terminal => AgentWindowModePreference.preferTerminal,
+        AgentWindowMode.nativeAcp => AgentWindowModePreference.preferNative,
+      };
+      await ProviderScope.containerOf(context)
+          .read(agentWindowModePreferenceNotifierProvider.notifier)
+          .setPreference(preference);
+    }
+    if (mounted) Navigator.pop(context, mode);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final mediaQuery = MediaQuery.of(context);
     final keyboardInset = mediaQuery.viewInsets.bottom;
@@ -366,11 +405,11 @@ Future<AgentWindowMode?> showAgentWindowModePicker({
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: Row(
                     children: [
-                      TmuxToolPickerSheet._iconForTool(tool, theme),
+                      TmuxToolPickerSheet._iconForTool(widget.tool, theme),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          tool.label,
+                          widget.tool.label,
                           style: FluttyTheme.displayMono(
                             fontSize: 18,
                             color: theme.colorScheme.onSurface,
@@ -385,10 +424,10 @@ Future<AgentWindowMode?> showAgentWindowModePicker({
                   leading: const Icon(Icons.terminal_outlined),
                   title: const Text('Terminal'),
                   subtitle: const Text('Run the full CLI in MonkeyMux'),
-                  trailing: isProUser ? null : const PremiumBadge(),
-                  enabled: isProUser,
-                  onTap: isProUser
-                      ? () => Navigator.pop(context, AgentWindowMode.terminal)
+                  trailing: widget.isProUser ? null : const PremiumBadge(),
+                  enabled: widget.isProUser && !_saving,
+                  onTap: widget.isProUser && !_saving
+                      ? () => unawaited(_choose(AgentWindowMode.terminal))
                       : null,
                 ),
                 ListTile(
@@ -399,8 +438,22 @@ Future<AgentWindowMode?> showAgentWindowModePicker({
                   ),
                   title: const Text('Native chat'),
                   subtitle: const Text('Chat, tools, and permissions'),
-                  onTap: () =>
-                      Navigator.pop(context, AgentWindowMode.nativeAcp),
+                  enabled: !_saving,
+                  onTap: _saving
+                      ? null
+                      : () => unawaited(_choose(AgentWindowMode.nativeAcp)),
+                ),
+                const Divider(height: 1),
+                CheckboxListTile(
+                  key: const ValueKey('remember-agent-window-mode'),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('Remember this choice'),
+                  subtitle: const Text('Use it for future agent windows'),
+                  value: _rememberChoice,
+                  onChanged: _saving
+                      ? null
+                      : (value) =>
+                            setState(() => _rememberChoice = value ?? false),
                 ),
               ],
             ),
@@ -408,8 +461,8 @@ Future<AgentWindowMode?> showAgentWindowModePicker({
         ),
       ),
     );
-  },
-);
+  }
+}
 
 /// Shows the tmux new-window picker as a menu next to [anchorContext].
 Future<TmuxNewWindowAction?> showTmuxNewWindowContextMenu({
@@ -2070,15 +2123,22 @@ class TmuxToolPickerSheet extends StatelessWidget {
                             ),
                             title: Text(tool.label),
                             trailing: nativeAcpTools.contains(tool)
-                                ? Icon(
-                                    Icons.more_horiz_rounded,
+                                ? IconButton(
                                     key: ValueKey(
                                       'agent-window-mode-options-${tool.name}',
                                     ),
-                                    size: 18,
+                                    tooltip: 'Choose window mode',
+                                    onPressed: onToolLongPressed == null
+                                        ? null
+                                        : () => onToolLongPressed!(tool),
+                                    constraints: const BoxConstraints.tightFor(
+                                      width: 36,
+                                      height: 36,
+                                    ),
+                                    padding: EdgeInsets.zero,
+                                    iconSize: 18,
                                     color: theme.colorScheme.primary,
-                                    semanticLabel:
-                                        'Press and hold to choose window mode',
+                                    icon: const Icon(Icons.more_horiz_rounded),
                                   )
                                 : (!isProUser ? const PremiumBadge() : null),
                             enabled: isProUser || nativeAcpTools.contains(tool),

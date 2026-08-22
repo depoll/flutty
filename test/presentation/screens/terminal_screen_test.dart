@@ -24,6 +24,7 @@ import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/models/monkeymux_acp_bridge.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_progress.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
@@ -8045,6 +8046,128 @@ void main() {
 
         closeWindowCompleter.complete();
         await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
+      'opens an existing Codex native window once behind a responsive loader',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1100, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const bridgeId = '0123456789abcdef0123456789abcdef';
+        final key = fakeAcpKey(
+          hostId: host.id,
+          providerId: AcpBuiltinProviderIds.codex,
+          bridgeId: bridgeId,
+          acpSessionId: 'codex-session',
+        );
+        final reconnectCompleter = Completer<AcpSessionLaunchResult>();
+        final acpManager = FakeAcpSessionManager()
+          ..remoteBridges = [
+            MonkeyMuxAcpBridgeMetadata(
+              id: bridgeId,
+              providerId: AcpBuiltinProviderIds.codex,
+              sessionId: key.acpSessionId,
+              cwd: '/home/dev/project',
+              provider: 'Codex',
+              commandHash: 'hash',
+              state: MonkeyMuxAcpProviderState.running,
+              clientCount: 0,
+              pendingRequestCount: 0,
+              inFlightTurnCount: 0,
+              lastActivity: DateTime(2026),
+              startedAt: DateTime(2026),
+              nextSequence: 1,
+            ),
+          ]
+          ..reconnectSessionFuture = reconnectCompleter.future
+          ..reconnectSessionState = fakeAcpSession(
+            key: key,
+            providerLabel: 'Codex',
+          );
+        addTearDown(acpManager.dispose);
+        var windows = const <TmuxWindow>[
+          TmuxWindow(index: 0, id: '@1', name: 'shell', isActive: true),
+          TmuxWindow(
+            index: 2,
+            id: '@3',
+            name: 'Codex',
+            isActive: false,
+            currentPath: '/home/dev/project',
+            nativeAcpBridgeId: bridgeId,
+            nativeAcpProviderId: AcpBuiltinProviderIds.codex,
+          ),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: 'work',
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(session, 'work'),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, 'work'),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, 'work'),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.selectWindow(
+            session,
+            'work',
+            2,
+            extraFlags: any(named: 'extraFlags'),
+            clientImageSignatures: any(named: 'clientImageSignatures'),
+          ),
+        ).thenAnswer((_) async {
+          windows = const <TmuxWindow>[
+            TmuxWindow(index: 0, id: '@1', name: 'shell', isActive: false),
+            TmuxWindow(
+              index: 2,
+              id: '@3',
+              name: 'Codex',
+              isActive: true,
+              currentPath: '/home/dev/project',
+              nativeAcpBridgeId: bridgeId,
+              nativeAcpProviderId: AcpBuiltinProviderIds.codex,
+            ),
+          ];
+          windowEvents
+            ..add(TmuxWindowSnapshotEvent(windows.first))
+            ..add(TmuxWindowSnapshotEvent(windows.last));
+        });
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await pumpScreen(
+          tester,
+          tmuxService: tmuxService,
+          monkeyMuxService: monkeyMuxService,
+          acpSessionManager: acpManager,
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+
+        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
+        await tester.pump();
+        expect(find.text('opening persistent agent session…'), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(acpManager.reconnects, hasLength(1));
+
+        windowEvents.add(TmuxWindowSnapshotEvent(windows.last));
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(acpManager.reconnects, hasLength(1));
+
+        reconnectCompleter.complete(AcpSessionLaunchStarted(key));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.text('opening persistent agent session…'), findsNothing);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

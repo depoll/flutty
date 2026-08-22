@@ -803,6 +803,88 @@ void main() {
     expect(transport.lastDeliveredSequence, 5);
   });
 
+  test('large replay yields while preserving every ordered frame', () async {
+    const outputCount = 600;
+    late _TestChannel channel;
+    channel = _TestChannel(
+      onWrite: (value) {
+        final message = jsonDecode(value) as Map<String, dynamic>;
+        if (message['type'] != 'hello') return;
+        final replay = StringBuffer()
+          ..write(
+            _frame({
+              'version': 1,
+              'type': 'hello',
+              'bridgeId': _bridgeId,
+              'clientId': _otherBridgeId,
+              'canSend': true,
+              'bridge': _metadata(nextSequence: outputCount),
+            }),
+          )
+          ..write(
+            _frame({
+              'version': 1,
+              'type': 'overflow',
+              'bridgeId': _bridgeId,
+              'retainedFrom': 1,
+            }),
+          );
+        for (var sequence = 1; sequence <= outputCount; sequence++) {
+          replay.write(
+            _frame({
+              'version': 1,
+              'type': 'output',
+              'bridgeId': _bridgeId,
+              'sequence': sequence,
+              'data': {'jsonrpc': '2.0', 'method': 'event/$sequence'},
+            }),
+          );
+        }
+        channel.addText(replay.toString());
+      },
+    );
+    final client = _MockSshClient();
+    when(
+      () => client.execute(any(), pty: any(named: 'pty')),
+    ).thenAnswer((_) async => channel.session);
+    final transport =
+        MonkeyMuxAcpBridgeService(
+          installer: _FakeInstaller(
+            const MonkeyMuxInstallation(
+              executablePath: '/helper',
+              platform: 'linux-amd64',
+              version: 'test',
+            ),
+          ),
+        ).connect(
+          sessionProvider: () async => _sshSession(client),
+          bridgeId: _bridgeId,
+          providerId: 'copilot',
+        );
+    addTearDown(transport.close);
+
+    final methods = <String>[];
+    var eventLoopYielded = false;
+    final replayComplete = Completer<void>();
+    final subscription = transport.incoming.listen((bytes) {
+      final message = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+      methods.add(message['method']! as String);
+      if (methods.length == 1) {
+        Timer.run(() => eventLoopYielded = true);
+      }
+      if (methods.length == outputCount) replayComplete.complete();
+    });
+    addTearDown(subscription.cancel);
+
+    await replayComplete.future;
+
+    expect(eventLoopYielded, isTrue);
+    expect(methods, hasLength(outputCount));
+    expect(methods.first, 'event/1');
+    expect(methods.last, 'event/$outputCount');
+    expect(transport.lastDeliveredSequence, outputCount);
+  });
+
   test(
     'accepts interior replay gaps through the hello high-water mark',
     () async {

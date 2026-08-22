@@ -16,7 +16,6 @@ import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
-import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
@@ -542,60 +541,18 @@ void main() {
       expect(find.text('Automatic windows'), findsNothing);
     });
 
-    testWidgets('shows agent window mode only below MonkeyMux configs', (
+    testWidgets('keeps app-wide agent window mode out of host settings', (
       tester,
     ) async {
       await _pumpHostCreateScreen(tester, hasPro: true);
       final modeField = find.byKey(const Key('host-agent-window-mode-field'));
 
       expect(modeField, findsNothing);
-
       await _selectStartupMode(tester, 'MonkeyMux');
-      expect(modeField, findsOneWidget);
-      await tester.scrollUntilVisible(
-        modeField,
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      expect(
-        tester.getTopLeft(modeField).dy,
-        greaterThan(
-          tester
-              .getBottomLeft(find.byKey(const Key('host-startup-mode-field')))
-              .dy,
-        ),
-      );
-
+      expect(modeField, findsNothing);
       await _selectStartupMode(tester, 'tmux');
       expect(modeField, findsNothing);
-
       await _selectStartupMode(tester, 'Launch coding agent');
-      expect(modeField, findsNothing);
-
-      final backendField = find.byKey(
-        const Key('host-agent-mux-backend-field'),
-      );
-      await tester.scrollUntilVisible(
-        backendField,
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.ensureVisible(backendField);
-      await tester.tap(backendField);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.text('MonkeyMux').last);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      expect(modeField, findsOneWidget);
-
-      await tester.ensureVisible(backendField);
-      await tester.tap(backendField);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.text('tmux').last);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
       expect(modeField, findsNothing);
     });
 
@@ -1461,22 +1418,10 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
-        final modeFinder = find.byKey(
-          const Key('host-agent-window-mode-field'),
+        expect(
+          find.byKey(const Key('host-agent-window-mode-field')),
+          findsNothing,
         );
-        expect(modeFinder, findsOneWidget);
-        await tester.scrollUntilVisible(
-          modeFinder,
-          200,
-          scrollable: find.byType(Scrollable).first,
-        );
-        await tester.ensureVisible(modeFinder);
-        await tester.tap(modeFinder);
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
-        await tester.tap(find.text('Prefer native chat').last);
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
 
         final yoloFinder = find.byKey(const Key('host-cli-yolo-mode-checkbox'));
         expect(yoloFinder, findsOneWidget);
@@ -1518,10 +1463,7 @@ void main() {
         final savedPreferences = await HostCliLaunchPreferencesService(
           SettingsService(database),
         ).getPreferencesForHost(1);
-        expect(
-          savedPreferences.agentWindowMode,
-          AgentWindowModePreference.preferNative,
-        );
+        expect(savedPreferences.startInYoloMode, isTrue);
       },
     );
 

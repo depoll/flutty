@@ -20,6 +20,8 @@ import 'windows_remote_powershell.dart';
 const _metadataMaxBytes = 64 * 1024;
 const _maxBridgeListEntries = 1024;
 const _helperTimeout = Duration(seconds: 15);
+const _wireInputByteBudget = 32 * 1024;
+const _wireInputTimeBudget = Duration(milliseconds: 4);
 const _cursorKeychainLockedError = 'Cursor Agent login keychain is locked';
 const _profileSourcingPrefix =
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
@@ -496,6 +498,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     sync: true,
   );
   final _wireFrame = <int>[];
+  final _wireInputChunks = Queue<({int generation, Uint8List bytes})>();
   final _outgoingFrame = <int>[];
   final _pendingInputFrames = Queue<Uint8List>();
 
@@ -515,6 +518,12 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   int? _handshakeHighWaterSequence;
   int? _replayWindowRetainedFrom;
   int? _replayWindowHighWaterSequence;
+  Uint8List? _activeWireInputChunk;
+  var _activeWireInputOffset = 0;
+  var _wireInputPumpActive = false;
+  var _wireInputPumpYieldCount = 0;
+  var _wireInputPumpByteCount = 0;
+  Stopwatch? _wireInputPumpStopwatch;
 
   /// Typed connection lifecycle updates.
   Stream<MonkeyMuxAcpTransportState> get states => _states.stream;
@@ -633,27 +642,101 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
 
   void _handleWireBytes(Uint8List bytes, int generation) {
     if (generation != _generation || _closed || _terminalFailure) return;
-    for (final byte in bytes) {
-      if (byte == 0x0a) {
-        final frame = List<int>.of(_wireFrame);
-        _wireFrame.clear();
-        if (frame.isNotEmpty && frame.last == 0x0d) frame.removeLast();
-        if (frame.isNotEmpty) _handleWireFrame(frame);
-        if (_closed || _terminalFailure) return;
-        continue;
+    _wireInputChunks.add((generation: generation, bytes: bytes));
+    _wireInputPumpStopwatch ??= Stopwatch()..start();
+    _wireInputPumpByteCount += bytes.length;
+    if (_wireInputPumpActive) return;
+    _wireInputPumpActive = true;
+    unawaited(_pumpWireInput());
+  }
+
+  Future<void> _pumpWireInput() async {
+    try {
+      while (!_closed && !_terminalFailure) {
+        final turn = Stopwatch()..start();
+        var processedBytes = 0;
+        while (processedBytes < _wireInputByteBudget) {
+          var chunk = _activeWireInputChunk;
+          if (chunk == null || _activeWireInputOffset >= chunk.length) {
+            _activeWireInputChunk = null;
+            _activeWireInputOffset = 0;
+            if (_wireInputChunks.isEmpty) {
+              _logWireInputBurst();
+              return;
+            }
+            final pending = _wireInputChunks.removeFirst();
+            if (pending.generation != _generation) continue;
+            chunk = pending.bytes;
+            _activeWireInputChunk = chunk;
+          }
+
+          final byte = chunk[_activeWireInputOffset++];
+          processedBytes += 1;
+          if (byte == 0x0a) {
+            final frame = List<int>.of(_wireFrame);
+            _wireFrame.clear();
+            if (frame.isNotEmpty && frame.last == 0x0d) frame.removeLast();
+            if (frame.isNotEmpty) _handleWireFrame(frame);
+            if (_closed || _terminalFailure) return;
+            if (turn.elapsed >= _wireInputTimeBudget) break;
+            continue;
+          }
+          _wireFrame.add(byte);
+          if (_wireFrame.length > monkeyMuxAcpBridgeMaxFrameBytes) {
+            _wireFrame.clear();
+            _failTerminal(
+              const MonkeyMuxAcpBridgeException(
+                MonkeyMuxAcpBridgeErrorKind.frameTooLarge,
+                'A bridge frame exceeded the protocol limit.',
+              ),
+            );
+            return;
+          }
+          if ((processedBytes & 0x7ff) == 0 &&
+              turn.elapsed >= _wireInputTimeBudget) {
+            break;
+          }
+        }
+        _wireInputPumpYieldCount += 1;
+        await Future<void>.delayed(Duration.zero);
       }
-      _wireFrame.add(byte);
-      if (_wireFrame.length > monkeyMuxAcpBridgeMaxFrameBytes) {
-        _wireFrame.clear();
-        _failTerminal(
-          const MonkeyMuxAcpBridgeException(
-            MonkeyMuxAcpBridgeErrorKind.frameTooLarge,
-            'A bridge frame exceeded the protocol limit.',
-          ),
-        );
-        return;
+    } finally {
+      _wireInputPumpActive = false;
+      if (!_closed &&
+          !_terminalFailure &&
+          (_activeWireInputChunk != null || _wireInputChunks.isNotEmpty)) {
+        _wireInputPumpActive = true;
+        unawaited(_pumpWireInput());
       }
     }
+  }
+
+  void _logWireInputBurst() {
+    final stopwatch = _wireInputPumpStopwatch;
+    if (_wireInputPumpYieldCount > 0 && stopwatch != null) {
+      _diagnostics.debug(
+        'acp.transport',
+        'input_burst_drained',
+        fields: {
+          'byteCount': _wireInputPumpByteCount,
+          'yieldCount': _wireInputPumpYieldCount,
+          'durationMs': stopwatch.elapsedMilliseconds,
+        },
+      );
+    }
+    _wireInputPumpStopwatch = null;
+    _wireInputPumpYieldCount = 0;
+    _wireInputPumpByteCount = 0;
+  }
+
+  void _discardWireInput() {
+    _wireFrame.clear();
+    _wireInputChunks.clear();
+    _activeWireInputChunk = null;
+    _activeWireInputOffset = 0;
+    _wireInputPumpStopwatch = null;
+    _wireInputPumpYieldCount = 0;
+    _wireInputPumpByteCount = 0;
   }
 
   void _handleWireFrame(List<int> bytes) {
@@ -1095,6 +1178,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   void _handleChannelLoss(int generation, Object? error) {
     if (generation != _generation || _closed || _terminalFailure) return;
     _connected = false;
+    _discardWireInput();
     _handshakeHighWaterSequence = null;
     _replayWindowRetainedFrom = null;
     _replayWindowHighWaterSequence = null;
@@ -1211,7 +1295,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     final channel = _channel;
     _channel = null;
     channel?.close();
-    _wireFrame.clear();
+    _discardWireInput();
     _outgoingFrame.clear();
     _pendingInputFrames.clear();
     if (closeStreams) {

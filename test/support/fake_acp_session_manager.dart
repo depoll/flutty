@@ -11,6 +11,7 @@ import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_timeline.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
+import 'package:monkeyssh/domain/models/monkeymux_acp_bridge.dart';
 import 'package:monkeyssh/domain/services/acp_bridge_connector.dart';
 import 'package:monkeyssh/domain/services/acp_provider_service.dart';
 import 'package:monkeyssh/domain/services/acp_recent_sessions_service.dart';
@@ -77,9 +78,15 @@ class FakeAcpSessionManager extends AcpSessionManager {
     AcpSessionError(kind: AcpSessionErrorKind.unknown, message: 'No resume.'),
   );
 
+  /// Optional asynchronous reconnect result used to hold loading-state tests.
+  Future<AcpSessionLaunchResult>? reconnectSessionFuture;
+
   /// Optional manager state installed immediately before a successful resume
   /// result is returned.
   AcpSessionState? reconnectSessionState;
+
+  /// Remote bridges returned by [listRemoteBridges].
+  List<MonkeyMuxAcpBridgeMetadata> remoteBridges = const [];
 
   final List<
     ({
@@ -113,6 +120,11 @@ class FakeAcpSessionManager extends AcpSessionManager {
 
   @override
   Future<List<AcpRecentSessionRef>> loadRecentSessions() async => recents;
+
+  @override
+  Future<List<MonkeyMuxAcpBridgeMetadata>> listRemoteBridges(
+    int hostId,
+  ) async => remoteBridges;
 
   @override
   Future<List<AcpRecentSessionRef>> loadNavigableSessions(int hostId) async =>
@@ -222,11 +234,14 @@ class FakeAcpSessionManager extends AcpSessionManager {
       acpSessionId: acpSessionId,
       cwd: cwd,
     ));
+    final result = reconnectSessionFuture == null
+        ? reconnectSessionResult
+        : await reconnectSessionFuture!;
     final resumedState = reconnectSessionState;
-    if (resumedState != null) {
+    if (resumedState != null && result is AcpSessionLaunchStarted) {
       emit(AcpSessionManagerState(sessions: [resumedState]));
     }
-    return reconnectSessionResult;
+    return result;
   }
 
   @override

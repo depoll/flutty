@@ -164,7 +164,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
-  late final Future<Object> _agentWindowModePreferenceFuture;
   final Set<String> _seenAlertWindowKeys = <String>{};
   final Map<String, int> _seenAlertWindowIndexesByKey = <String, int>{};
   final Set<String> _closingWindowKeys = <String>{};
@@ -229,11 +228,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void initState() {
     super.initState();
     _localNotifications = widget.ref.read(localNotificationServiceProvider);
-    _agentWindowModePreferenceFuture = widget.ref
-        .read(hostCliLaunchPreferencesServiceProvider)
-        .getPreferencesForHost(widget.session.hostId)
-        .then<Object>((preferences) => preferences.agentWindowMode)
-        .catchError((Object _) => AgentWindowModePreference.askEveryTime);
     _expanded = widget.initiallyExpanded;
     _bounceController = AnimationController(
       vsync: this,
@@ -984,6 +978,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
   }
 
+  Future<AgentWindowModePreference> _loadAgentWindowModePreference() => widget
+      .ref
+      .read(agentWindowModePreferenceNotifierProvider.notifier)
+      .initializedValue();
+
   Future<void> _resumeSession(
     ToolSessionInfo info, {
     bool forceModePicker = false,
@@ -998,13 +997,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (tool != null &&
         providerId != null &&
         widget.activeMuxBackend == RemoteMuxBackend.monkeyMux) {
-      final preference = await _agentWindowModePreferenceFuture;
+      final preference = await _loadAgentWindowModePreference();
       if (!mounted) return;
       final mode = await resolveAgentWindowMode(
         context: context,
         tool: tool,
         isProUser: widget.isProUser,
-        preference: normalizeAgentWindowModePreference(preference),
+        preference: preference,
         forcePicker: forceModePicker,
       );
       if (!mounted || mode == null) {
@@ -1073,7 +1072,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final nativeAcpProviderIds = nativeAcpAvailable
         ? builtinNativeAcpProvidersByTool()
         : const <AgentLaunchTool, String>{};
-    final agentWindowModePreference = await _agentWindowModePreferenceFuture;
+    final agentWindowModePreference = await _loadAgentWindowModePreference();
     if (!mounted || (anchorContext != null && !anchorContext.mounted)) {
       return;
     }
@@ -1094,9 +1093,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             context: context,
             isProUser: widget.isProUser,
             startClisInYoloMode: widget.startClisInYoloMode,
-            agentWindowModePreference: normalizeAgentWindowModePreference(
-              agentWindowModePreference,
-            ),
+            agentWindowModePreference: agentWindowModePreference,
             installedToolsFuture: installedToolsFuture,
             preferredTool: _preferredLaunchTool,
             nativeAcpProviderIds: nativeAcpProviderIds,

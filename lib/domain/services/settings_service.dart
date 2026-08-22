@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
+import '../models/host_cli_launch_preferences.dart';
 import '../models/terminal_theme.dart';
 import '../models/terminal_themes.dart';
 
@@ -109,6 +110,9 @@ abstract final class SettingKeys {
 
   /// Saved host-scoped coding CLI launch preferences.
   static const hostCliLaunchPreferences = 'host_cli_launch_preferences';
+
+  /// App-wide default for ACP-capable agent windows.
+  static const agentWindowModePreference = 'agent_window_mode_preference';
 
   /// Saved user-defined ACP provider definitions (JSON array).
   static const acpCustomProviders = 'acp_custom_providers';
@@ -282,6 +286,36 @@ abstract class _AsyncSettingsNotifier<T> extends Notifier<T> {
     state = value;
   }
 }
+
+/// Notifier for the app-wide coding-agent window default.
+class AgentWindowModePreferenceNotifier
+    extends _AsyncSettingsNotifier<AgentWindowModePreference> {
+  @override
+  AgentWindowModePreference get _defaultValue =>
+      AgentWindowModePreference.askEveryTime;
+
+  @override
+  Future<AgentWindowModePreference> _loadValue() async =>
+      AgentWindowModePreferencePresentation.fromStorageValue(
+        await _settingsService.getString(SettingKeys.agentWindowModePreference),
+      );
+
+  /// Persists the default used by ordinary taps on ACP-capable agents.
+  Future<void> setPreference(AgentWindowModePreference preference) async {
+    await _settingsService.setString(
+      SettingKeys.agentWindowModePreference,
+      preference.storageValue,
+    );
+    _setPersistedState(preference);
+  }
+}
+
+/// App-wide coding-agent window default with write capability.
+final agentWindowModePreferenceNotifierProvider =
+    NotifierProvider<
+      AgentWindowModePreferenceNotifier,
+      AgentWindowModePreference
+    >(AgentWindowModePreferenceNotifier.new);
 
 /// Provider for theme mode setting.
 final themeModeProvider = FutureProvider<String>((ref) async {

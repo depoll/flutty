@@ -454,7 +454,6 @@ class HostEditViewModel extends Notifier<HostEditState> {
               startInYoloMode: request.hasAgentPresetAccess
                   ? request.draft.startClisInYoloMode
                   : state.cliLaunchPreferences.startInYoloMode,
-              agentWindowMode: request.draft.agentWindowModePreference,
             ),
           );
 

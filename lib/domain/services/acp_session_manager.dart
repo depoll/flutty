@@ -1032,7 +1032,10 @@ class AcpSessionManager {
     _emit();
   }
 
-  void _onControllerChanged() => _emit();
+  void _onControllerChanged(_SessionController controller) {
+    if (!_controllers.containsValue(controller)) return;
+    _emit();
+  }
 
   void _emit() {
     if (_disposed) return;
@@ -2409,7 +2412,7 @@ class _SessionController {
     if (key != null && key != _state.key) {
       _state = _state.copyWith(key: key);
     }
-    _manager._onControllerChanged();
+    _manager._onControllerChanged(this);
   }
 
   AcpSessionError _mapClientError(Object error) => switch (error) {

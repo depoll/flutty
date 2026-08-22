@@ -290,6 +290,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   int? _firstVisibleEntryIndex;
   Timer? _promptNavigationHideTimer;
   bool _promptNavigationVisible = false;
+  bool _awayFromTop = false;
   bool _stickyUpdateScheduled = false;
 
   ScrollController get _controller =>
@@ -357,7 +358,11 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
         renderObject is! RenderSliverMultiBoxAdaptor ||
         renderObject.firstChild == null ||
         _threadChildren.isEmpty) {
-      _setViewportContext(stickyPromptIndex: null, firstEntryIndex: null);
+      _setViewportContext(
+        stickyPromptIndex: null,
+        firstEntryIndex: null,
+        awayFromTop: false,
+      );
       return;
     }
 
@@ -394,20 +399,26 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     _setViewportContext(
       stickyPromptIndex: promptIsVisible ? null : promptIndex,
       firstEntryIndex: entryIndex,
+      awayFromTop:
+          _controller.position.pixels >
+          _controller.position.minScrollExtent + 1,
     );
   }
 
   void _setViewportContext({
     required int? stickyPromptIndex,
     required int? firstEntryIndex,
+    required bool awayFromTop,
   }) {
     if (_stickyPromptIndex == stickyPromptIndex &&
-        _firstVisibleEntryIndex == firstEntryIndex) {
+        _firstVisibleEntryIndex == firstEntryIndex &&
+        _awayFromTop == awayFromTop) {
       return;
     }
     setState(() {
       _stickyPromptIndex = stickyPromptIndex;
       _firstVisibleEntryIndex = firstEntryIndex;
+      _awayFromTop = awayFromTop;
     });
   }
 
@@ -432,7 +443,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   }
 
   void _showPromptNavigation() {
-    if (widget.entries.whereType<AcpUserPromptEntry>().length < 2) return;
+    if (widget.entries.isEmpty) return;
     _promptNavigationHideTimer?.cancel();
     if (!_promptNavigationVisible && mounted) {
       setState(() => _promptNavigationVisible = true);
@@ -463,6 +474,25 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     if (entryIndex == null) return;
     _showPromptNavigation();
     unawaited(_scrollEntryIntoView(entryIndex));
+  }
+
+  void _scrollToTop() {
+    if (!_controller.hasClients) return;
+    _showPromptNavigation();
+    widget.onStickyPromptTap?.call();
+    final position = _controller.position;
+    final destination = position.minScrollExtent;
+    if (MediaQuery.maybeOf(context)?.disableAnimations ?? false) {
+      _controller.jumpTo(destination);
+      return;
+    }
+    unawaited(
+      _controller.animateTo(
+        destination,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      ),
+    );
   }
 
   Future<void> _scrollEntryIntoView(int entryIndex) async {
@@ -706,7 +736,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
                 onTap: () => _navigateToPrompt(stickyIndex),
               ),
             ),
-          if (userPromptCount > 1)
+          if (userPromptCount > 1 || _awayFromTop)
             Positioned.fill(
               child: Align(
                 alignment: Alignment.centerRight,
@@ -714,8 +744,10 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
                   padding: const EdgeInsets.only(right: FluttyTheme.spacingSm),
                   child: _UserPromptNavigation(
                     visible: _promptNavigationVisible,
+                    topEnabled: _awayFromTop,
                     previousEnabled: previousPromptIndex != null,
                     nextEnabled: nextPromptIndex != null,
+                    onTop: _scrollToTop,
                     onPrevious: () => _navigateToPrompt(previousPromptIndex),
                     onNext: () => _navigateToPrompt(nextPromptIndex),
                   ),
@@ -731,15 +763,19 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 class _UserPromptNavigation extends StatelessWidget {
   const _UserPromptNavigation({
     required this.visible,
+    required this.topEnabled,
     required this.previousEnabled,
     required this.nextEnabled,
+    required this.onTop,
     required this.onPrevious,
     required this.onNext,
   });
 
   final bool visible;
+  final bool topEnabled;
   final bool previousEnabled;
   final bool nextEnabled;
+  final VoidCallback onTop;
   final VoidCallback onPrevious;
   final VoidCallback onNext;
 
@@ -769,6 +805,21 @@ class _UserPromptNavigation extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                IconButton(
+                  key: const ValueKey('acp-scroll-to-top'),
+                  tooltip: 'Scroll to top',
+                  onPressed: topEnabled ? onTop : null,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 48,
+                    height: 48,
+                  ),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.vertical_align_top_rounded, size: 19),
+                ),
+                SizedBox(
+                  width: 28,
+                  child: Divider(height: 1, color: scheme.outlineVariant),
+                ),
                 IconButton(
                   key: const ValueKey('acp-previous-user-message'),
                   tooltip: 'Previous user message',
