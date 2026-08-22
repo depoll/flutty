@@ -33,10 +33,11 @@ Widget wrap(
   Widget child, {
   Brightness brightness = Brightness.dark,
   Size size = const Size(400, 800),
+  bool disableAnimations = true,
 }) => MaterialApp(
   theme: brightness == Brightness.dark ? FluttyTheme.dark : FluttyTheme.light,
   home: MediaQuery(
-    data: MediaQueryData(size: size, disableAnimations: true),
+    data: MediaQueryData(size: size, disableAnimations: disableAnimations),
     child: Scaffold(body: child),
   ),
 );
@@ -79,6 +80,15 @@ void main() {
       ),
       'first line second',
     );
+    final hugeSummary = acpUserPromptSummary(
+      AcpUserPromptEntry(
+        id: 'huge-text',
+        parts: [AcpTextPart(List.filled(50000, 'diagnostic').join(' '))],
+      ),
+    );
+    expect(hugeSummary, hasLength(240));
+    expect(hugeSummary, endsWith('…'));
+
     expect(
       acpUserPromptSummary(
         AcpUserPromptEntry(
@@ -319,10 +329,48 @@ void main() {
     );
   });
 
+  testWidgets('virtualizes one full-screen user diagnostics prompt', (
+    tester,
+  ) async {
+    final diagnostics = List.generate(
+      9000,
+      (index) => 'diagnostic line $index: state and timing details',
+    ).join('\n');
+    final chunks = splitAcpTextForVirtualization(diagnostics);
+
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          width: 320,
+          height: 240,
+          child: AcpMessageThread(
+            entries: [
+              AcpUserPromptEntry(
+                id: 'long-user-prompt',
+                parts: [AcpTextPart(diagnostics)],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('long-user-prompt')), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('long-user-prompt-user-part-${chunks.length - 1}')),
+      findsNothing,
+    );
+  });
+
   testWidgets('reveals fading chevrons that jump between user messages', (
     tester,
   ) async {
     final controller = ScrollController();
+    final diagnostics = List.generate(
+      600,
+      (index) => 'diagnostic line $index: state and timing details',
+    ).join('\n');
     String response(String label) => List.generate(
       50,
       (index) => '$label response paragraph $index with enough text to wrap.',
@@ -337,7 +385,7 @@ void main() {
             entries: [
               AcpUserPromptEntry(
                 id: 'prompt-1',
-                parts: const [AcpTextPart('first prompt')],
+                parts: [AcpTextPart(diagnostics)],
               ),
               AcpAssistantMessageEntry(
                 id: 'answer-1',
@@ -392,6 +440,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('prompt-2')), findsOneWidget);
 
+    await tester.tap(find.byKey(const ValueKey('acp-previous-user-message')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('prompt-1')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('acp-next-user-message')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('prompt-2')), findsOneWidget);
+
     await tester.tap(find.byKey(const ValueKey('acp-next-user-message')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('prompt-3')), findsOneWidget);
@@ -402,6 +458,62 @@ void main() {
 
     await tester.pump(const Duration(seconds: 4));
     expect(navigation().opacity, 0);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
+  testWidgets('animates prompt jumps in their scroll direction', (
+    tester,
+  ) async {
+    final controller = ScrollController();
+    final response = List.generate(
+      90,
+      (index) => 'Response paragraph $index with enough text to wrap.',
+    ).join('\n\n');
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          width: 320,
+          height: 240,
+          child: AcpMessageThread(
+            controller: controller,
+            entries: [
+              AcpUserPromptEntry(
+                id: 'motion-prompt-1',
+                parts: const [AcpTextPart('first motion prompt')],
+              ),
+              AcpAssistantMessageEntry(id: 'motion-answer', markdown: response),
+              AcpUserPromptEntry(
+                id: 'motion-prompt-2',
+                parts: const [AcpTextPart('second motion prompt')],
+              ),
+            ],
+          ),
+        ),
+        disableAnimations: false,
+      ),
+    );
+    await tester.pump();
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -300));
+    await tester.pump();
+    await tester.pump();
+
+    final downwardStart = controller.offset;
+    await tester.tap(find.byKey(const ValueKey('acp-next-user-message')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(controller.offset, greaterThan(downwardStart));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('motion-prompt-2')), findsOneWidget);
+
+    final upwardStart = controller.offset;
+    await tester.tap(find.byKey(const ValueKey('acp-previous-user-message')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(controller.offset, lessThan(upwardStart));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('motion-prompt-1')), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();

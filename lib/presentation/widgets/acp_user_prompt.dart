@@ -20,6 +20,9 @@ class AcpUserPromptView extends StatelessWidget {
     this.onTapImage,
     this.onOpenResource,
     this.onCopyResource,
+    this.parts,
+    this.segmentIndex,
+    this.segmentCount,
   });
 
   /// The prompt entry to render.
@@ -36,6 +39,15 @@ class AcpUserPromptView extends StatelessWidget {
 
   /// Called when a resource part is copied.
   final ValueChanged<AcpResourceRef>? onCopyResource;
+
+  /// Ordered content rendered by this virtual segment.
+  final List<AcpPromptPart>? parts;
+
+  /// Zero-based virtual segment index, when this prompt is split.
+  final int? segmentIndex;
+
+  /// Total virtual segment count, when this prompt is split.
+  final int? segmentCount;
 
   Widget _buildPart(BuildContext context, AcpPromptPart part) {
     switch (part) {
@@ -73,24 +85,42 @@ class AcpUserPromptView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final parts = entry.parts;
+    final visibleParts = parts ?? entry.parts;
+    final index = segmentIndex;
+    final count = segmentCount;
+    final isFirstSegment = index == null || index == 0;
+    final isLastSegment = index == null || count == null || index == count - 1;
+    const radius = Radius.circular(FluttyTheme.radiusMd);
+    final segmentDescription = index != null && count != null
+        ? ', part ${index + 1} of $count'
+        : '';
 
     return Semantics(
       container: true,
-      label: entry.queued ? 'Your message, queued' : 'Your message',
+      label: entry.queued && isFirstSegment
+          ? 'Your message, queued$segmentDescription'
+          : 'Your message$segmentDescription',
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: scheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
+          borderRadius: BorderRadius.vertical(
+            top: isFirstSegment ? radius : Radius.zero,
+            bottom: isLastSegment ? radius : Radius.zero,
+          ),
           border: Border.all(color: scheme.outline),
         ),
         child: Padding(
-          padding: const EdgeInsets.all(14),
+          padding: EdgeInsets.fromLTRB(
+            14,
+            isFirstSegment ? 14 : FluttyTheme.spacingSm,
+            14,
+            isLastSegment ? 14 : FluttyTheme.spacingSm,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (entry.queued) ...[
+              if (entry.queued && isFirstSegment) ...[
                 DecoratedBox(
                   decoration: BoxDecoration(
                     color: scheme.primaryContainer,
@@ -125,9 +155,9 @@ class AcpUserPromptView extends StatelessWidget {
                 ),
                 const SizedBox(height: FluttyTheme.spacingSm),
               ],
-              for (var i = 0; i < parts.length; i++) ...[
+              for (var i = 0; i < visibleParts.length; i++) ...[
                 if (i > 0) const SizedBox(height: FluttyTheme.spacingSm),
-                _buildPart(context, parts[i]),
+                _buildPart(context, visibleParts[i]),
               ],
             ],
           ),

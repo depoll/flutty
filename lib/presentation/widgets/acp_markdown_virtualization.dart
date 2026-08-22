@@ -7,6 +7,9 @@ import 'package:flutter/foundation.dart';
 /// response instead of blocking the UI isolate on the whole document.
 const int kAcpMarkdownVirtualChunkChars = 8 * 1024;
 
+/// Smaller bound for literal user text, whose long wrapped lines are costly.
+const int kAcpTextVirtualChunkChars = 2 * 1024;
+
 /// Splits a large Markdown document into independently renderable segments.
 ///
 /// Short documents retain their original identity. Long documents prefer
@@ -88,6 +91,53 @@ List<String> splitAcpMarkdownForVirtualization(
       if (current.length >= targetChars && fenceMarker == null) {
         flush();
       }
+    }
+  }
+  flush();
+  return List<String>.unmodifiable(chunks);
+}
+
+/// Splits large literal user text into bounded, lossless render segments.
+///
+/// Unlike Markdown segmentation this never inserts formatting delimiters: a
+/// pasted diagnostics payload must copy back byte-for-byte in the same order.
+List<String> splitAcpTextForVirtualization(
+  String source, {
+  int targetChars = kAcpTextVirtualChunkChars,
+}) {
+  assert(targetChars > 0);
+  if (source.length <= targetChars) return <String>[source];
+
+  final chunks = <String>[];
+  var current = StringBuffer();
+
+  void flush() {
+    if (current.isEmpty) return;
+    chunks.add(current.toString());
+    current = StringBuffer();
+  }
+
+  for (final originalLine in _markdownLines(source)) {
+    var line = originalLine;
+    while (line.isNotEmpty) {
+      final remaining = targetChars - current.length;
+      if (remaining <= 0) {
+        flush();
+        continue;
+      }
+      if (line.length <= remaining) {
+        current.write(line);
+        line = '';
+        continue;
+      }
+      if (current.isNotEmpty) {
+        flush();
+        continue;
+      }
+      final splitAt = _safeLineSplit(line, targetChars);
+      current.write(line.substring(0, splitAt));
+      line = line.substring(splitAt);
+      flush();
     }
   }
   flush();

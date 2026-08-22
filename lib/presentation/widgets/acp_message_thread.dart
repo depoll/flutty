@@ -16,16 +16,46 @@ import 'acp_tool_call.dart';
 import 'acp_usage.dart';
 import 'acp_user_prompt.dart';
 
+final Expando<String> _userPromptSummaryCache = Expando<String>(
+  'ACP user prompt summary',
+);
+
 /// Builds the compact context shown when a user prompt is above the viewport.
 String acpUserPromptSummary(AcpUserPromptEntry entry) {
-  final text = entry.parts
-      .whereType<AcpTextPart>()
-      .map((part) => part.text.trim())
-      .where((part) => part.isNotEmpty)
-      .join(' ')
-      .replaceAll(RegExp(r'\s+'), ' ');
+  final cached = _userPromptSummaryCache[entry];
+  if (cached != null) return cached;
+  final summary = _buildAcpUserPromptSummary(entry);
+  _userPromptSummaryCache[entry] = summary;
+  return summary;
+}
+
+String _buildAcpUserPromptSummary(AcpUserPromptEntry entry) {
+  const maxLength = 240;
+  final text = StringBuffer();
+  var pendingSpace = false;
+  var truncated = false;
+  outer:
+  for (final part in entry.parts.whereType<AcpTextPart>()) {
+    for (final rune in part.text.runes) {
+      if (_isPromptSummaryWhitespace(rune)) {
+        pendingSpace = text.isNotEmpty;
+        continue;
+      }
+      if (pendingSpace && text.length < maxLength) text.write(' ');
+      pendingSpace = false;
+      if (text.length >= maxLength) {
+        truncated = true;
+        break outer;
+      }
+      text.writeCharCode(rune);
+    }
+    pendingSpace = text.isNotEmpty;
+  }
   if (text.isNotEmpty) {
-    return text.length <= 240 ? text : '${text.substring(0, 239)}…';
+    final value = text.toString();
+    return truncated && value.length >= maxLength
+        ? '${value.substring(0, maxLength - 1)}…'
+        : value;
   }
 
   final attachments = <String>[
@@ -44,9 +74,35 @@ String acpUserPromptSummary(AcpUserPromptEntry entry) {
   return summary.length <= 240 ? summary : '${summary.substring(0, 239)}…';
 }
 
+bool _isPromptSummaryWhitespace(int rune) =>
+    rune <= 0x20 ||
+    const <int>{
+      0x0085,
+      0x00A0,
+      0x1680,
+      0x2000,
+      0x2001,
+      0x2002,
+      0x2003,
+      0x2004,
+      0x2005,
+      0x2006,
+      0x2007,
+      0x2008,
+      0x2009,
+      0x200A,
+      0x2028,
+      0x2029,
+      0x202F,
+      0x205F,
+      0x3000,
+    }.contains(rune);
+
 final Expando<List<String>> _assistantMarkdownChunks = Expando<List<String>>(
   'ACP virtual Markdown segments',
 );
+final Expando<List<List<AcpPromptPart>>> _userPromptSegments =
+    Expando<List<List<AcpPromptPart>>>('ACP virtual user prompt segments');
 
 final class _AcpThreadChild {
   const _AcpThreadChild({
@@ -55,6 +111,9 @@ final class _AcpThreadChild {
     this.markdown,
     this.markdownPartIndex,
     this.markdownPartCount,
+    this.userParts,
+    this.userPartIndex,
+    this.userPartCount,
   });
 
   final AcpTimelineEntry entry;
@@ -62,14 +121,23 @@ final class _AcpThreadChild {
   final String? markdown;
   final int? markdownPartIndex;
   final int? markdownPartCount;
+  final List<AcpPromptPart>? userParts;
+  final int? userPartIndex;
+  final int? userPartCount;
 
-  bool get isMarkdownContinuation => (markdownPartIndex ?? 0) > 0;
+  bool get isEntryContinuation =>
+      (markdownPartIndex ?? 0) > 0 || (userPartIndex ?? 0) > 0;
 
   String get keyValue {
-    final part = markdownPartIndex;
-    return part == null || part == 0
-        ? entry.id
-        : '${entry.id}-markdown-part-$part';
+    final markdownPart = markdownPartIndex;
+    if (markdownPart != null && markdownPart > 0) {
+      return '${entry.id}-markdown-part-$markdownPart';
+    }
+    final userPart = userPartIndex;
+    if (userPart != null && userPart > 0) {
+      return '${entry.id}-user-part-$userPart';
+    }
+    return entry.id;
   }
 }
 
@@ -77,6 +145,35 @@ List<_AcpThreadChild> _buildThreadChildren(List<AcpTimelineEntry> entries) {
   final children = <_AcpThreadChild>[];
   for (var entryIndex = 0; entryIndex < entries.length; entryIndex++) {
     final entry = entries[entryIndex];
+    if (entry case AcpUserPromptEntry(:final parts)
+        when parts.any(
+          (part) =>
+              part is AcpTextPart &&
+              part.text.length > kAcpTextVirtualChunkChars,
+        )) {
+      final segments = _userPromptSegments[entry] ??= <List<AcpPromptPart>>[
+        for (final part in parts)
+          if (part case AcpTextPart(
+            :final text,
+          ) when text.length > kAcpTextVirtualChunkChars)
+            for (final chunk in splitAcpTextForVirtualization(text))
+              <AcpPromptPart>[AcpTextPart(chunk)]
+          else
+            <AcpPromptPart>[part],
+      ];
+      for (var partIndex = 0; partIndex < segments.length; partIndex++) {
+        children.add(
+          _AcpThreadChild(
+            entry: entry,
+            entryIndex: entryIndex,
+            userParts: segments[partIndex],
+            userPartIndex: partIndex,
+            userPartCount: segments.length,
+          ),
+        );
+      }
+      continue;
+    }
     if (entry case AcpAssistantMessageEntry(
       :final markdown,
     ) when markdown.length > kAcpMarkdownVirtualChunkChars) {
@@ -378,7 +475,9 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     // animate to its exact scroll offset. RenderObject.showOnScreen is not
     // reliable here because a cached off-screen child may be considered
     // revealed without moving the outer CustomScrollView to its beginning.
-    for (var attempt = 0; attempt < 16; attempt++) {
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    for (var attempt = 0; attempt < 12; attempt++) {
       if (!mounted || !_controller.hasClients) return;
       final sliver = _sliverListKey.currentContext?.findRenderObject();
       if (sliver is! RenderSliverMultiBoxAdaptor ||
@@ -393,14 +492,19 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
         if (sliver.indexOf(child) == targetChildIndex) {
           final childOffset = sliver.childScrollOffset(child);
           if (childOffset == null) return;
-          await _controller.animateTo(
-            (sliverOrigin + childOffset).clamp(
-              position.minScrollExtent,
-              position.maxScrollExtent,
-            ),
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
+          final destination = (sliverOrigin + childOffset).clamp(
+            position.minScrollExtent,
+            position.maxScrollExtent,
           );
+          if (reduceMotion) {
+            _controller.jumpTo(destination);
+          } else {
+            await _controller.animateTo(
+              destination,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOutCubic,
+            );
+          }
           return;
         }
         child = sliver.childAfter(child);
@@ -415,7 +519,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       final visibleSpan = (lastOffset + last.size.height - firstOffset).abs();
       final averageExtent = (visibleSpan / (lastIndex - firstIndex + 1)).clamp(
         44.0,
-        position.viewportDimension * 2,
+        position.viewportDimension * 24,
       );
       final estimate = targetChildIndex < firstIndex
           ? sliverOrigin +
@@ -430,7 +534,18 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
         position.maxScrollExtent,
       );
       if ((destination - position.pixels).abs() < 1) return;
-      _controller.jumpTo(destination);
+      if (reduceMotion) {
+        _controller.jumpTo(destination);
+      } else {
+        final screens =
+            ((destination - position.pixels).abs() / position.viewportDimension)
+                .clamp(0, 6);
+        await _controller.animateTo(
+          destination,
+          duration: Duration(milliseconds: 140 + (screens * 20).round()),
+          curve: Curves.easeInOutCubic,
+        );
+      }
       await WidgetsBinding.instance.endOfFrame;
     }
   }
@@ -490,23 +605,37 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     }
     final threadChild = _threadChildren[index];
     final entry = threadChild.entry;
-    final content =
-        entry is AcpAssistantMessageEntry && threadChild.markdown != null
-        ? _AssistantMessage(
-            entry: entry,
-            markdown: threadChild.markdown,
-            partIndex: threadChild.markdownPartIndex,
-            partCount: threadChild.markdownPartCount,
-            onTapLink: widget.onTapLink,
-            imageResolver: widget.imageResolver,
-            onTapImage: widget.onTapImage,
-            onCopyCode: widget.onCopyCode,
-          )
-        : _buildEntry(context, entry);
+    final Widget content;
+    if (entry is AcpUserPromptEntry && threadChild.userParts != null) {
+      content = AcpUserPromptView(
+        entry: entry,
+        parts: threadChild.userParts,
+        segmentIndex: threadChild.userPartIndex,
+        segmentCount: threadChild.userPartCount,
+        imageResolver: widget.imageResolver,
+        onTapImage: widget.onTapImage,
+        onOpenResource: widget.onOpenResource,
+        onCopyResource: widget.onCopyResource,
+      );
+    } else if (entry is AcpAssistantMessageEntry &&
+        threadChild.markdown != null) {
+      content = _AssistantMessage(
+        entry: entry,
+        markdown: threadChild.markdown,
+        partIndex: threadChild.markdownPartIndex,
+        partCount: threadChild.markdownPartCount,
+        onTapLink: widget.onTapLink,
+        imageResolver: widget.imageResolver,
+        onTapImage: widget.onTapImage,
+        onCopyCode: widget.onCopyCode,
+      );
+    } else {
+      content = _buildEntry(context, entry);
+    }
     return Padding(
       key: ValueKey(threadChild.keyValue),
       padding: EdgeInsets.only(
-        top: index == 0 || threadChild.isMarkdownContinuation
+        top: index == 0 || threadChild.isEntryContinuation
             ? 0
             : FluttyTheme.spacingSm,
       ),

@@ -28,6 +28,22 @@ void main() {
     expect(chunks.join(), source);
   });
 
+  test('bounds long literal text without changing pasted diagnostics', () {
+    final source = List.generate(
+      1200,
+      (index) => 'diagnostic $index: state, timing, and stack details',
+    ).join('\n');
+
+    final chunks = splitAcpTextForVirtualization(source);
+
+    expect(chunks.length, greaterThan(1));
+    expect(
+      chunks.every((chunk) => chunk.length <= kAcpTextVirtualChunkChars),
+      isTrue,
+    );
+    expect(chunks.join(), source);
+  });
+
   test('closes and reopens fenced code across segment boundaries', () {
     final source =
         '```dart\n${List.generate(1200, (index) => 'print($index);').join('\n')}\n```\n';
