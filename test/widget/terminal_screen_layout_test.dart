@@ -716,6 +716,41 @@ void main() {
       );
     });
 
+    test('reopens only an established lost MonkeyMux attach', () {
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.monkeyMux,
+          attachEstablished: true,
+          hasForegroundClient: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.monkeyMux,
+          attachEstablished: false,
+          hasForegroundClient: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.tmux,
+          attachEstablished: true,
+          hasForegroundClient: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.monkeyMux,
+          attachEstablished: true,
+          hasForegroundClient: true,
+        ),
+        isFalse,
+      );
+    });
+
     test('reattaches tmux window actions only when tmux lost foreground', () {
       expect(
         shouldReattachTmuxAfterWindowAction(

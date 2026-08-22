@@ -26,6 +26,7 @@ import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/acp_mux_window_status_badge.dart';
+import 'package:monkeyssh/presentation/widgets/acp_native_badge.dart';
 import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 import 'package:monkeyssh/presentation/widgets/premium_badge.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_navigator.dart';
@@ -1482,11 +1483,16 @@ void main() {
           find.byKey(const ValueKey('native-acp-window-indicator-3')),
           findsOneWidget,
         );
+        final nativeBadge = find.byKey(
+          const ValueKey('native-acp-window-indicator-3'),
+        );
+        expect(tester.getSize(nativeBadge), const Size.square(12));
         expect(
-          tester.getSize(
-            find.byKey(const ValueKey('native-acp-window-indicator-3')),
+          find.ancestor(
+            of: nativeBadge,
+            matching: find.byType(AcpNativeBadgeOverlay),
           ),
-          const Size.square(12),
+          findsOneWidget,
         );
         expect(find.text('running'), findsOneWidget);
         expect(

@@ -166,6 +166,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   AgentLaunchTool? _preferredLaunchTool;
   final Set<String> _seenAlertWindowKeys = <String>{};
   final Map<String, int> _seenAlertWindowIndexesByKey = <String, int>{};
+  final Set<String> _closingWindowKeys = <String>{};
   late bool _expanded;
   bool _isLoading = true;
   bool _showSessions = false;
@@ -209,10 +210,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   AgentSessionDiscoveryService get _discovery =>
       widget.ref.read(agentSessionDiscoveryServiceProvider);
 
-  List<TmuxWindow>? get _displayedWindows => resolveTmuxBarDisplayedWindows(
-    _windows,
-    pendingSelectedWindowIndex: _pendingSelectedWindowIndex,
-  );
+  List<TmuxWindow>? get _displayedWindows {
+    final visibleWindows = _windows
+        ?.where(
+          (window) => !_closingWindowKeys.contains(_windowCloseKey(window)),
+        )
+        .toList(growable: false);
+    return resolveTmuxBarDisplayedWindows(
+      visibleWindows,
+      pendingSelectedWindowIndex: _pendingSelectedWindowIndex,
+    );
+  }
+
+  String _windowCloseKey(TmuxWindow window) => window.id ?? '#${window.index}';
 
   @override
   void initState() {
@@ -269,6 +279,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
     final wasExpanded = _expanded;
     _clearPendingSelectedWindow(notify: false);
+    _closingWindowKeys.clear();
     _resetWindowReloadRecovery();
     if (!shouldPreserveTmuxBarSnapshotOnUpdate(
       sessionChanged: sessionChanged,
@@ -2273,11 +2284,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       ),
       title: Row(
         children: [
-          AgentToolIcon(tool: agentTool, size: 17, color: activityColor),
-          const SizedBox(width: 4),
-          AcpNativeBadge(
-            key: ValueKey('monkeymux-acp-native-${key.value}'),
+          AcpNativeBadgeOverlay(
             color: activityColor,
+            badgeKey: ValueKey('monkeymux-acp-native-${key.value}'),
+            child: AgentToolIcon(
+              tool: agentTool,
+              size: 17,
+              color: activityColor,
+            ),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -2370,17 +2384,31 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (!mounted || !confirmed) {
       return;
     }
-    await widget.onAction(TmuxCloseWindowAction(window.index));
-    if (!mounted) {
-      return;
-    }
+    final closeKey = _windowCloseKey(window);
     setState(() {
-      _windows = _windows?.where((w) => w.index != window.index).toList();
+      _closingWindowKeys.add(closeKey);
       if (_pendingSelectedWindowIndex == window.index) {
         _pendingSelectedWindowIndex = null;
         _pendingSelectionTimer?.cancel();
         _pendingSelectionTimer = null;
       }
+    });
+    try {
+      await widget.onAction(TmuxCloseWindowAction(window.index));
+    } on Object {
+      if (mounted) {
+        setState(() => _closingWindowKeys.remove(closeKey));
+      }
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _closingWindowKeys.remove(closeKey);
+      _windows = _windows
+          ?.where((candidate) => _windowCloseKey(candidate) != closeKey)
+          .toList();
     });
   }
 
@@ -2449,21 +2477,24 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       ),
       title: Row(
         children: [
-          AgentToolIcon(
-            tool: windowTool,
-            size: 16,
-            color: iconColor,
-            fallbackIcon: window.isNativeAcp
-                ? Icons.smart_toy_outlined
-                : Icons.terminal,
-          ),
-          if (window.isNativeAcp) ...[
-            const SizedBox(width: 4),
-            AcpNativeBadge(
-              key: ValueKey('monkeymux-native-badge-${window.index}'),
+          if (window.isNativeAcp)
+            AcpNativeBadgeOverlay(
+              size: 16,
               color: iconColor,
+              badgeKey: ValueKey('monkeymux-native-badge-${window.index}'),
+              child: AgentToolIcon(
+                tool: windowTool,
+                size: 16,
+                color: iconColor,
+              ),
+            )
+          else
+            AgentToolIcon(
+              tool: windowTool,
+              size: 16,
+              color: iconColor,
+              fallbackIcon: Icons.terminal,
             ),
-          ],
           const SizedBox(width: 8),
           Expanded(
             child: Text(

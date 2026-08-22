@@ -1,5 +1,50 @@
 import 'package:flutter/material.dart';
 
+/// Places the compact native identity badge over an agent icon.
+class AcpNativeBadgeOverlay extends StatelessWidget {
+  /// Creates an overlaid native badge matching the MonkeyMux handle treatment.
+  const AcpNativeBadgeOverlay({
+    required this.child,
+    required this.color,
+    required this.badgeKey,
+    this.size = 17,
+    this.badgeSize = 12,
+    super.key,
+  });
+
+  /// Agent icon receiving the native badge.
+  final Widget child;
+
+  /// Live activity color used by the badge.
+  final Color color;
+
+  /// Stable key for the overlaid badge.
+  final Key badgeKey;
+
+  /// Square icon slot dimension.
+  final double size;
+
+  /// Square badge dimension.
+  final double badgeSize;
+
+  @override
+  Widget build(BuildContext context) => SizedBox.square(
+    dimension: size,
+    child: Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.center,
+      children: [
+        child,
+        Positioned(
+          right: -badgeSize * 0.25,
+          bottom: -badgeSize * 0.25,
+          child: AcpNativeBadge(key: badgeKey, color: color, size: badgeSize),
+        ),
+      ],
+    ),
+  );
+}
+
 /// Compact identity badge distinguishing native ACP windows from terminals.
 class AcpNativeBadge extends StatelessWidget {
   /// Creates a native-agent identity badge using [color] for its accent.

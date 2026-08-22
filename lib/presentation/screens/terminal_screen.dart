@@ -574,6 +574,18 @@ bool shouldReattachTmuxAfterWindowAction({
   return shellStatus == TerminalShellStatus.prompt;
 }
 
+/// Whether a previously established MonkeyMux attach should be replaced
+/// directly after its foreground client disappears.
+@visibleForTesting
+bool shouldReopenLostMonkeyMuxAttach({
+  required RemoteMuxBackend backend,
+  required bool attachEstablished,
+  required bool hasForegroundClient,
+}) =>
+    backend == RemoteMuxBackend.monkeyMux &&
+    attachEstablished &&
+    !hasForegroundClient;
+
 /// Returns whether shell-command review warnings should be shown for text
 /// inserted into the active terminal context.
 ///
@@ -11414,6 +11426,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
           );
         case TmuxCloseWindowAction(:final windowIndex):
+          final closingWindow = _resolveTmuxWindowByTarget(windowIndex);
+          final closesFocusedNativeWindow =
+              closingWindow != null &&
+              closingWindow.isNativeAcp &&
+              _activeNativeAcpSessionKey?.bridgeId ==
+                  closingWindow.nativeAcpBridgeId;
+          if (closesFocusedNativeWindow) {
+            _showTerminalViewport();
+          }
           await _closeTmuxWindow(session, windowIndex);
       }
     } on Exception catch (error) {
@@ -11427,6 +11448,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         },
       );
       _showTmuxActionFailure(error, action);
+      if (action is TmuxCloseWindowAction) {
+        rethrow;
+      }
     }
   }
 
@@ -12630,7 +12654,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       hasForegroundClient: hasForegroundClient,
       shellStatus: _shellStatus,
     );
-    if (!canReattachInCurrentShell && !forceVisibleTmux) {
+    final shouldReopenLostMonkeyMux = shouldReopenLostMonkeyMuxAttach(
+      backend: _activeMuxBackend,
+      attachEstablished: _monkeyMuxAttachEstablished,
+      hasForegroundClient: hasForegroundClient,
+    );
+    if (!canReattachInCurrentShell &&
+        !forceVisibleTmux &&
+        !shouldReopenLostMonkeyMux) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -12677,24 +12708,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       reattachBackend = attachCommand.backend;
       reattachCommand = attachCommand.command;
     }
-    final requiresRawMonkeyMuxAttach =
-        session.remoteIsWindows &&
-        reattachBackend == RemoteMuxBackend.monkeyMux;
+    final shouldRunMonkeyMuxAttachDirectly =
+        reattachBackend == RemoteMuxBackend.monkeyMux &&
+        (session.remoteIsWindows || shouldReopenLostMonkeyMux);
     final mustReopenShell =
-        requiresRawMonkeyMuxAttach ||
+        shouldRunMonkeyMuxAttachDirectly ||
         (forceVisibleTmux && !canReattachInCurrentShell);
+    final requestPty =
+        !shouldRunMonkeyMuxAttachDirectly || !session.remoteIsWindows;
     final shell = mustReopenShell
         ? await _reopenShellForVisibleTmux(
             session,
-            command: requiresRawMonkeyMuxAttach ? reattachCommand : null,
-            requestPty: !requiresRawMonkeyMuxAttach,
+            command: shouldRunMonkeyMuxAttachDirectly ? reattachCommand : null,
+            requestPty: requestPty,
           )
         : _shell;
     if (shell == null) {
       return;
     }
 
-    if (!requiresRawMonkeyMuxAttach) {
+    if (!shouldRunMonkeyMuxAttachDirectly) {
       session.writeToShell(formatAutoConnectCommandForShell(reattachCommand));
     }
     DiagnosticsLogService.instance.info(
@@ -12702,7 +12735,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       'reattach_command_sent',
       fields: {
         'connectionId': session.connectionId,
-        'requestedPty': !requiresRawMonkeyMuxAttach,
+        'requestedPty': requestPty,
+        'directMonkeyMuxAttach': shouldRunMonkeyMuxAttachDirectly,
       },
     );
   }

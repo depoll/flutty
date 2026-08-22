@@ -45,6 +45,7 @@ import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/screens/port_forward_browser_screen.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:monkeyssh/presentation/widgets/acp_native_badge.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
@@ -4616,6 +4617,11 @@ void main() {
         await tester.pump();
         await tester.pump();
 
+        expect(
+          find.text('logs'),
+          findsNothing,
+          reason: 'a confirmed close disappears before remote teardown settles',
+        );
         verify(
           () => monkeyMuxService.killWindow(
             session,
@@ -7856,6 +7862,7 @@ void main() {
           ],
         );
         final acpManager = FakeAcpSessionManager(sessions: [workingSession]);
+        final closeWindowCompleter = Completer<void>();
         addTearDown(acpManager.dispose);
         const windows = <TmuxWindow>[
           TmuxWindow(
@@ -7891,6 +7898,14 @@ void main() {
             clientImageSignatures: any(named: 'clientImageSignatures'),
           ),
         ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.killWindow(
+            session,
+            'work',
+            2,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => closeWindowCompleter.future);
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
@@ -7942,6 +7957,18 @@ void main() {
           collapsedBadgeSize,
           tester.getSize(find.byKey(expandedBadgeKey)),
         );
+        final expandedIcon = find.ancestor(
+          of: find.byKey(expandedBadgeKey),
+          matching: find.byType(AcpNativeBadgeOverlay),
+        );
+        expect(expandedIcon, findsOneWidget);
+        expect(
+          tester
+              .getRect(expandedIcon)
+              .overlaps(tester.getRect(find.byKey(expandedBadgeKey))),
+          isTrue,
+          reason: 'the native badge overlays the agent icon',
+        );
         expect(find.text('running'), findsOneWidget);
         expect(
           tester
@@ -7990,6 +8017,34 @@ void main() {
         );
         await tester.pump();
         expect(find.byKey(expandedKey), findsNothing);
+
+        await tester.tap(find.byTooltip('Close window'));
+        await tester.pumpAndSettle();
+        if (find.text('Close window?').evaluate().isNotEmpty) {
+          await tester.tap(find.widgetWithText(FilledButton, 'Close window'));
+          await tester.pump();
+        }
+        await tester.pump();
+        expect(find.text('Renamed native task'), findsNothing);
+
+        acpManager.emit(
+          AcpSessionManagerState(
+            sessions: [
+              fakeAcpSession(
+                key: key,
+                providerLabel: 'Pi',
+                title: 'Closing native task',
+                status: AcpConnectionStatus.reconnecting,
+              ),
+            ],
+          ),
+        );
+        await tester.pump();
+        expect(find.text('Closing native task'), findsNothing);
+        expect(find.textContaining('reconnecting'), findsNothing);
+
+        closeWindowCompleter.complete();
+        await tester.pump();
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

@@ -1397,11 +1397,14 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       ),
       title: Row(
         children: [
-          AgentToolIcon(tool: agentTool, size: 17, color: activityColor),
-          const SizedBox(width: 4),
-          AcpNativeBadge(
-            key: ValueKey('native-acp-indicator-${key.value}'),
+          AcpNativeBadgeOverlay(
             color: activityColor,
+            badgeKey: ValueKey('native-acp-indicator-${key.value}'),
+            child: AgentToolIcon(
+              tool: agentTool,
+              size: 17,
+              color: activityColor,
+            ),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -1560,21 +1563,24 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       ),
       title: Row(
         children: [
-          AgentToolIcon(
-            tool: windowTool,
-            size: 16,
-            color: iconColor,
-            fallbackIcon: window.isNativeAcp
-                ? Icons.smart_toy_outlined
-                : Icons.terminal,
-          ),
-          if (window.isNativeAcp) ...[
-            const SizedBox(width: 4),
-            AcpNativeBadge(
-              key: ValueKey('native-acp-window-indicator-${window.index}'),
+          if (window.isNativeAcp)
+            AcpNativeBadgeOverlay(
+              size: 16,
               color: iconColor,
+              badgeKey: ValueKey('native-acp-window-indicator-${window.index}'),
+              child: AgentToolIcon(
+                tool: windowTool,
+                size: 16,
+                color: iconColor,
+              ),
+            )
+          else
+            AgentToolIcon(
+              tool: windowTool,
+              size: 16,
+              color: iconColor,
+              fallbackIcon: Icons.terminal,
             ),
-          ],
           const SizedBox(width: 8),
           Expanded(
             child: Text(
