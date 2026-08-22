@@ -328,6 +328,44 @@ void main() {
     expect(image.bytes, isNull);
   });
 
+  test('formats structured tool payloads as YAML-like progress text', () {
+    final formatted = formatAcpToolPayload({
+      'path': 'lib/main.dart',
+      'options': ['recursive', 3, true],
+      'message': 'line one\nline two',
+      'nested': {'empty': <Object?>[]},
+    });
+
+    expect(
+      formatted,
+      '''
+path: lib/main.dart
+options:
+  - recursive
+  - 3
+  - true
+message: |
+  line one
+  line two
+nested:
+  empty: []
+'''
+          .trim(),
+    );
+  });
+
+  test('decodes JSON-string tool payloads before formatting', () {
+    expect(
+      formatAcpToolPayload('{"query":"status: open","limit":5,"hidden":false}'),
+      '''
+query: "status: open"
+limit: 5
+hidden: false
+'''
+          .trim(),
+    );
+  });
+
   test('bounds oversized tool input text', () {
     final huge = 'x' * (kAcpMapperMaxToolTextChars + 100);
     final timeline = AcpTimeline(

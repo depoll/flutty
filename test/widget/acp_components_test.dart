@@ -101,10 +101,14 @@ void main() {
         await tester.pump();
         expect(find.text(entry.value.$1), findsOneWidget);
         expect(find.byIcon(entry.value.$2), findsOneWidget);
-        expect(
-          tester.getSize(find.byType(AcpToolCallView)).height,
-          closeTo(44, 0.1),
-        );
+        final height = tester.getSize(find.byType(AcpToolCallView)).height;
+        if (entry.key == AcpToolStatus.pending ||
+            entry.key == AcpToolStatus.running) {
+          expect(find.textContaining('result: …'), findsOneWidget);
+          expect(height, greaterThan(44));
+        } else {
+          expect(height, closeTo(44, 0.1));
+        }
       }
     });
 
@@ -124,14 +128,69 @@ void main() {
       );
       await tester.pump();
       // Collapsed initially.
-      expect(find.text('path: pubspec.yaml'), findsNothing);
+      expect(find.textContaining('input:'), findsNothing);
 
       await tester.tap(find.text('Read file'));
       await tester.pump();
-      expect(find.text('Input'), findsOneWidget);
-      expect(find.text('path: pubspec.yaml'), findsOneWidget);
-      expect(find.text('Output'), findsOneWidget);
-      expect(find.text('name: monkeyssh'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'input:\n  path: pubspec.yaml\nresult:\n  name: monkeyssh',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('streams active calls and collapses each one as it finishes', (
+      tester,
+    ) async {
+      Widget build(AcpToolStatus firstStatus, {String? firstOutput}) => wrap(
+        Column(
+          children: [
+            AcpToolCallView(
+              key: const ValueKey('first-tool'),
+              toolCall: AcpToolCall(
+                id: 'first',
+                title: 'Search files',
+                status: firstStatus,
+                rawInput: 'query: TODO',
+                rawOutput: firstOutput,
+              ),
+            ),
+            AcpToolCallView(
+              key: const ValueKey('second-tool'),
+              toolCall: AcpToolCall(
+                id: 'second',
+                title: 'Run tests',
+                status: AcpToolStatus.running,
+                rawInput: 'command: flutter test',
+              ),
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(build(AcpToolStatus.running));
+      expect(find.textContaining('query: TODO'), findsOneWidget);
+      expect(find.textContaining('command: flutter test'), findsOneWidget);
+      expect(find.textContaining('result: …'), findsNWidgets(2));
+
+      await tester.pumpWidget(
+        build(AcpToolStatus.running, firstOutput: 'matches: 3'),
+      );
+      await tester.pump();
+      expect(find.textContaining('matches: 3'), findsOneWidget);
+      expect(find.textContaining('result: …'), findsOneWidget);
+
+      await tester.pumpWidget(
+        build(AcpToolStatus.completed, firstOutput: 'matches: 3'),
+      );
+      await tester.pump();
+      expect(find.textContaining('matches: 3'), findsNothing);
+      expect(find.textContaining('command: flutter test'), findsOneWidget);
+
+      await tester.tap(find.text('Search files'));
+      await tester.pump();
+      expect(find.textContaining('matches: 3'), findsOneWidget);
     });
 
     testWidgets('renders locations and fires open callback', (tester) async {

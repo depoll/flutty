@@ -481,7 +481,7 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
     }
   }
 
-  final rawInput = _formatToolPayload(entry.rawInput);
+  final rawInput = formatAcpToolPayload(entry.rawInput);
   final visibleOutputBlocks = outputBlocks
       .where(
         (text) => images.isEmpty || !_looksLikeSerializedImagePayload(text),
@@ -494,7 +494,7 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
       }
     }
   }
-  var rawOutput = images.isEmpty ? _formatToolPayload(entry.rawOutput) : null;
+  var rawOutput = images.isEmpty ? formatAcpToolPayload(entry.rawOutput) : null;
   if (rawOutput == null && visibleOutputBlocks.isNotEmpty) {
     rawOutput = _bound(
       visibleOutputBlocks.join('\n\n'),
@@ -663,35 +663,194 @@ AcpToolStatus _mapToolStatus(d.AcpToolStatus? status) =>
       _ => AcpToolStatus.pending,
     };
 
-String? _formatToolPayload(Object? payload) {
-  if (payload == null) {
-    return null;
+/// Formats opaque ACP tool input/output as a bounded, YAML-like stream.
+///
+/// Providers may send structured maps/lists or JSON encoded inside a string.
+/// The result favors line-by-line scanability while preserving scalar types,
+/// multiline text, insertion order, and strict memory/display bounds.
+String? formatAcpToolPayload(Object? payload) {
+  if (payload == null) return null;
+
+  Object? value = payload;
+  if (payload case final String text) {
+    if (text.isEmpty) return null;
+    final trimmed = text.trim();
+    if (trimmed.length <= 256 * 1024 &&
+        ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+            (trimmed.startsWith('[') && trimmed.endsWith(']')))) {
+      try {
+        final decoded = jsonDecode(trimmed);
+        if (decoded is Map || decoded is List) value = decoded;
+      } on FormatException {
+        // Plain command output can resemble JSON; preserve it verbatim.
+      }
+    }
+    if (identical(value, payload)) {
+      return _bound(text, kAcpMapperMaxToolTextChars);
+    }
   }
-  if (payload is String) {
-    return payload.isEmpty ? null : _bound(payload, kAcpMapperMaxToolTextChars);
-  }
-  final encoded = const JsonEncoder.withIndent(
-    '  ',
-  ).convert(_jsonSafe(payload));
-  return _bound(encoded, kAcpMapperMaxToolTextChars);
+
+  return _YamlLikeToolPayloadWriter(kAcpMapperMaxToolTextChars).format(value);
 }
 
-/// Recursively coerces [value] into JSON-encodable data, stringifying any
-/// value the encoder cannot represent so formatting never throws.
-Object? _jsonSafe(Object? value) {
-  if (value == null || value is num || value is bool || value is String) {
-    return value;
+final class _YamlLikeToolPayloadWriter {
+  _YamlLikeToolPayloadWriter(this.maxChars);
+
+  final int maxChars;
+  final StringBuffer _buffer = StringBuffer();
+  var _nodes = 0;
+  var _truncated = false;
+
+  String format(Object? value) {
+    _writeRoot(value);
+    var result = _buffer.toString().trimRight();
+    if (_truncated) result = '$result\n…';
+    return result;
   }
-  if (value is Map) {
-    return <String, Object?>{
-      for (final entry in value.entries)
-        entry.key.toString(): _jsonSafe(entry.value),
-    };
+
+  void _writeRoot(Object? value) {
+    if (value is Map) {
+      if (value.isEmpty) {
+        _line('{}');
+      } else {
+        for (final entry in value.entries) {
+          _writeEntry(entry.key.toString(), entry.value, 0);
+          if (_truncated) break;
+        }
+      }
+      return;
+    }
+    if (value is Iterable) {
+      if (value.isEmpty) {
+        _line('[]');
+      } else {
+        for (final child in value) {
+          _writeListItem(child, 0);
+          if (_truncated) break;
+        }
+      }
+      return;
+    }
+    _writeScalar(value, 0, prefix: '');
   }
-  if (value is Iterable) {
-    return [for (final element in value) _jsonSafe(element)];
+
+  void _writeEntry(String key, Object? value, int indent) {
+    if (!_visit()) return;
+    final prefix = '${' ' * indent}${_key(key)}:';
+    if (_isNonEmptyCollection(value)) {
+      _line(prefix);
+      _writeChildren(value, indent + 2);
+    } else if (_isEmptyCollection(value)) {
+      _line('$prefix ${value is Map ? '{}' : '[]'}');
+    } else {
+      _writeScalar(value, indent, prefix: prefix);
+    }
   }
-  return value.toString();
+
+  void _writeListItem(Object? value, int indent) {
+    if (!_visit()) return;
+    final prefix = '${' ' * indent}-';
+    if (_isNonEmptyCollection(value)) {
+      _line(prefix);
+      _writeChildren(value, indent + 2);
+    } else if (_isEmptyCollection(value)) {
+      _line('$prefix ${value is Map ? '{}' : '[]'}');
+    } else {
+      _writeScalar(value, indent, prefix: prefix);
+    }
+  }
+
+  void _writeChildren(Object? value, int indent) {
+    if (indent > 16) {
+      _line('${' ' * indent}…');
+      return;
+    }
+    if (value is Map) {
+      for (final entry in value.entries) {
+        _writeEntry(entry.key.toString(), entry.value, indent);
+        if (_truncated) break;
+      }
+    } else if (value is Iterable) {
+      for (final child in value) {
+        _writeListItem(child, indent);
+        if (_truncated) break;
+      }
+    }
+  }
+
+  void _writeScalar(Object? value, int indent, {required String prefix}) {
+    final text = value is String ? value : null;
+    final boundedText = text != null && text.length > maxChars
+        ? text.substring(0, maxChars)
+        : text;
+    final clipped = boundedText != text;
+    if (boundedText != null && boundedText.contains('\n')) {
+      _line('$prefix |');
+      for (final line in boundedText.split('\n')) {
+        _line('${' ' * (indent + 2)}$line');
+        if (_truncated) break;
+      }
+      if (clipped) _truncated = true;
+      return;
+    }
+    _line('$prefix ${_scalar(boundedText ?? value)}'.trimRight());
+    if (clipped) _truncated = true;
+  }
+
+  bool _visit() {
+    if (_truncated) return false;
+    _nodes++;
+    if (_nodes <= 512) return true;
+    _truncated = true;
+    return false;
+  }
+
+  void _line(String line) {
+    if (_truncated) return;
+    final suffix = _buffer.isEmpty ? '' : '\n';
+    final remaining = maxChars - 2 - _buffer.length;
+    if (remaining <= 0) {
+      _truncated = true;
+      return;
+    }
+    final value = '$suffix$line';
+    if (value.length <= remaining) {
+      _buffer.write(value);
+    } else {
+      _buffer.write(value.substring(0, remaining));
+      _truncated = true;
+    }
+  }
+
+  static bool _isNonEmptyCollection(Object? value) =>
+      (value is Map && value.isNotEmpty) ||
+      (value is Iterable && value.isNotEmpty);
+
+  static bool _isEmptyCollection(Object? value) =>
+      (value is Map && value.isEmpty) || (value is Iterable && value.isEmpty);
+
+  static String _key(String value) =>
+      RegExp(r'^[A-Za-z_][A-Za-z0-9_.-]*$').hasMatch(value)
+      ? value
+      : jsonEncode(value);
+
+  static String _scalar(Object? value) {
+    if (value == null) return 'null';
+    if (value is num || value is bool) return value.toString();
+    final text = value.toString();
+    if (text.isEmpty ||
+        text.trim() != text ||
+        RegExp(
+          r'^(?:null|true|false|~|[-+]?\d+(?:\.\d+)?)$',
+          caseSensitive: false,
+        ).hasMatch(text) ||
+        RegExp(r'''^[\-?:,\[\]{}#&*!|>'"%@`]''').hasMatch(text) ||
+        text.contains(': ') ||
+        text.contains(' #')) {
+      return jsonEncode(text);
+    }
+    return text;
+  }
 }
 
 String _buildUnifiedDiff({

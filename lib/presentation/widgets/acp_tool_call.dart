@@ -37,10 +37,11 @@ extension AcpToolKindPresentation on AcpToolKind {
 /// Renders a single tool call as a compact, expandable status row.
 ///
 /// The row shows a kind icon, title, and a status badge conveyed with both an
-/// icon and text (never colour alone). Expanding reveals input, output, file
-/// locations, and unified diffs. It uses no nested cards and no coloured side
-/// stripes; detail sections use tonal tints. The row is stateless in look but
-/// tracks its own expansion state.
+/// icon and text (never colour alone). Active calls expand automatically so
+/// YAML-like input and result updates remain visible, then collapse
+/// independently when each call reaches a terminal state. Completed details
+/// remain available
+/// on tap.
 class AcpToolCallView extends StatefulWidget {
   /// Creates a tool call view.
   const AcpToolCallView({
@@ -64,11 +65,26 @@ class AcpToolCallView extends StatefulWidget {
 }
 
 class _AcpToolCallViewState extends State<AcpToolCallView> {
-  late bool _expanded = widget.initiallyExpanded;
+  late bool _expanded = widget.initiallyExpanded || _isActive(widget.toolCall);
+
+  static bool _isActive(AcpToolCall call) =>
+      call.status == AcpToolStatus.pending ||
+      call.status == AcpToolStatus.running;
+
+  @override
+  void didUpdateWidget(covariant AcpToolCallView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final wasActive = _isActive(oldWidget.toolCall);
+    final isActive = _isActive(widget.toolCall);
+    if (wasActive != isActive) {
+      _expanded = isActive;
+    }
+  }
 
   bool get _hasDetails {
     final call = widget.toolCall;
-    return (call.rawInput?.isNotEmpty ?? false) ||
+    return _isActive(call) ||
+        (call.rawInput?.isNotEmpty ?? false) ||
         (call.rawOutput?.isNotEmpty ?? false) ||
         call.locations.isNotEmpty ||
         call.diffs.isNotEmpty;
@@ -262,8 +278,16 @@ class _ToolCallDetails extends StatelessWidget {
   Widget build(BuildContext context) {
     final children = <Widget>[];
     final input = toolCall.rawInput;
-    if (input != null && input.isNotEmpty) {
-      children.add(_LabeledMonoBlock(label: 'Input', text: input));
+    final output = toolCall.rawOutput;
+    final active =
+        toolCall.status == AcpToolStatus.pending ||
+        toolCall.status == AcpToolStatus.running;
+    if ((input?.isNotEmpty ?? false) ||
+        (output?.isNotEmpty ?? false) ||
+        active) {
+      children.add(
+        _ToolPayloadStream(input: input, output: output, active: active),
+      );
     }
     if (toolCall.locations.isNotEmpty) {
       children.add(
@@ -276,11 +300,6 @@ class _ToolCallDetails extends StatelessWidget {
     for (final diff in toolCall.diffs) {
       children.add(AcpDiffView(diff: diff));
     }
-    final output = toolCall.rawOutput;
-    if (output != null && output.isNotEmpty) {
-      children.add(_LabeledMonoBlock(label: 'Output', text: output));
-    }
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -294,46 +313,58 @@ class _ToolCallDetails extends StatelessWidget {
   }
 }
 
-class _LabeledMonoBlock extends StatelessWidget {
-  const _LabeledMonoBlock({required this.label, required this.text});
+class _ToolPayloadStream extends StatelessWidget {
+  const _ToolPayloadStream({
+    required this.input,
+    required this.output,
+    required this.active,
+  });
 
-  final String label;
-  final String text;
+  final String? input;
+  final String? output;
+  final bool active;
+
+  String get _text {
+    final sections = <String>[];
+    final input = this.input;
+    if (input != null && input.isNotEmpty) {
+      sections.add(_section('input', input));
+    }
+    final output = this.output;
+    if (output != null && output.isNotEmpty) {
+      sections.add(_section('result', output));
+    } else if (active) {
+      sections.add('result: …');
+    }
+    return sections.join('\n');
+  }
+
+  static String _section(String label, String value) {
+    final indented = value.split('\n').map((line) => '  $line').join('\n');
+    return '$label:\n$indented';
+  }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          label,
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: scheme.onSurfaceVariant,
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(FluttyTheme.spacingSm),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SelectableText(
+            _text,
+            style: AcpChatTypography.monoStyleOf(
+              context,
+            ).copyWith(fontSize: 12, color: scheme.onSurface, height: 1.45),
           ),
         ),
-        const SizedBox(height: FluttyTheme.spacingXs),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(FluttyTheme.spacingSm),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SelectableText(
-                text,
-                style: AcpChatTypography.monoStyleOf(
-                  context,
-                ).copyWith(fontSize: 12, color: scheme.onSurface, height: 1.4),
-              ),
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 }
