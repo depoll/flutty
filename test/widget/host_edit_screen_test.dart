@@ -282,7 +282,7 @@ Future<void> _selectStartupMode(WidgetTester tester, String label) async {
     scrollable: formScroll,
   );
   await tester.ensureVisible(startupModeField);
-  await tester.tap(find.text('Do nothing'), warnIfMissed: false);
+  await tester.tap(startupModeField);
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 300));
   await tester.tap(find.text(label).last, warnIfMissed: false);
@@ -540,6 +540,63 @@ void main() {
       expect(find.text('MonkeyMux'), findsOneWidget);
       expect(find.text('tmux'), findsOneWidget);
       expect(find.text('Automatic windows'), findsNothing);
+    });
+
+    testWidgets('shows agent window mode only below MonkeyMux configs', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester, hasPro: true);
+      final modeField = find.byKey(const Key('host-agent-window-mode-field'));
+
+      expect(modeField, findsNothing);
+
+      await _selectStartupMode(tester, 'MonkeyMux');
+      expect(modeField, findsOneWidget);
+      await tester.scrollUntilVisible(
+        modeField,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        tester.getTopLeft(modeField).dy,
+        greaterThan(
+          tester
+              .getBottomLeft(find.byKey(const Key('host-startup-mode-field')))
+              .dy,
+        ),
+      );
+
+      await _selectStartupMode(tester, 'tmux');
+      expect(modeField, findsNothing);
+
+      await _selectStartupMode(tester, 'Launch coding agent');
+      expect(modeField, findsNothing);
+
+      final backendField = find.byKey(
+        const Key('host-agent-mux-backend-field'),
+      );
+      await tester.scrollUntilVisible(
+        backendField,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(backendField);
+      await tester.tap(backendField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('MonkeyMux').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(modeField, findsOneWidget);
+
+      await tester.ensureVisible(backendField);
+      await tester.tap(backendField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('tmux').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(modeField, findsNothing);
     });
 
     testWidgets('retains tmux session config when switching to coding agent', (

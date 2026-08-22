@@ -215,7 +215,6 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
     installedToolsFuture: installedToolsFuture,
     preferredTool: preferredTool,
     nativeAcpTools: nativeAcpProviderIds.keys.toSet(),
-    agentWindowModePreference: agentWindowModePreference,
     onToolSelected: (tool) => _selectAgentLaunchMode(
       context: context,
       tool: tool,
@@ -1933,7 +1932,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
     this.installedToolsFuture,
     this.preferredTool,
     this.nativeAcpTools = const <AgentLaunchTool>{},
-    this.agentWindowModePreference = AgentWindowModePreference.askEveryTime,
     super.key,
   });
 
@@ -1953,9 +1951,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
 
   /// Tools that can launch either a terminal window or a native ACP session.
   final Set<AgentLaunchTool> nativeAcpTools;
-
-  /// Host default used for normal taps on ACP-capable tools.
-  final AgentWindowModePreference agentWindowModePreference;
 
   /// Called when the user selects a tool.
   final void Function(AgentLaunchTool tool) onToolSelected;
@@ -2075,11 +2070,15 @@ class TmuxToolPickerSheet extends StatelessWidget {
                             ),
                             title: Text(tool.label),
                             trailing: nativeAcpTools.contains(tool)
-                                ? Text(
-                                    _modeHint(tool),
-                                    style: theme.textTheme.labelSmall?.copyWith(
-                                      color: theme.colorScheme.onSurfaceVariant,
+                                ? Icon(
+                                    Icons.more_horiz_rounded,
+                                    key: ValueKey(
+                                      'agent-window-mode-options-${tool.name}',
                                     ),
+                                    size: 18,
+                                    color: theme.colorScheme.primary,
+                                    semanticLabel:
+                                        'Press and hold to choose window mode',
                                   )
                                 : (!isProUser ? const PremiumBadge() : null),
                             enabled: isProUser || nativeAcpTools.contains(tool),
@@ -2116,17 +2115,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  String _modeHint(AgentLaunchTool tool) {
-    if (!nativeAcpTools.contains(tool)) return '';
-    return switch (agentWindowModePreference) {
-      AgentWindowModePreference.askEveryTime => 'choose each time',
-      AgentWindowModePreference.preferNative => 'native · hold',
-      AgentWindowModePreference.preferTerminal when isProUser =>
-        'terminal · hold',
-      AgentWindowModePreference.preferTerminal => 'native · hold',
-    };
   }
 
   static Widget _iconForTool(AgentLaunchTool tool, ThemeData theme) =>

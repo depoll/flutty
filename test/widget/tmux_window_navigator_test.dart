@@ -1011,7 +1011,7 @@ void main() {
 
       await tester.tap(find.text('Open picker'));
       await tester.pumpAndSettle();
-      expect(find.text('native · hold'), findsOneWidget);
+      expect(find.byIcon(Icons.more_horiz_rounded), findsOneWidget);
 
       await tester.tap(find.text('Copilot CLI'));
       await tester.pumpAndSettle();
@@ -1053,7 +1053,7 @@ void main() {
 
       await tester.tap(find.text('Open picker'));
       await tester.pumpAndSettle();
-      expect(find.text('terminal · hold'), findsOneWidget);
+      expect(find.byIcon(Icons.more_horiz_rounded), findsOneWidget);
 
       await tester.tap(find.text('OpenCode'));
       await tester.pumpAndSettle();
@@ -1139,7 +1139,7 @@ void main() {
 
       await tester.tap(find.text('Open picker'));
       await tester.pumpAndSettle();
-      expect(find.text('choose each time'), findsOneWidget);
+      expect(find.byIcon(Icons.more_horiz_rounded), findsOneWidget);
 
       await tester.tap(find.text('Copilot CLI'));
       await tester.pumpAndSettle();

@@ -910,33 +910,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ),
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<AgentWindowModePreference>(
-          key: const Key('host-agent-window-mode-field'),
-          // ignore: deprecated_member_use
-          value: _agentWindowModePreference,
-          isExpanded: true,
-          decoration: const InputDecoration(
-            labelText: 'Agent window mode',
-            prefixIcon: Icon(Icons.view_agenda_outlined),
-            helperText:
-                'Used when native chat and terminal are both available. Press and hold an agent to choose for one launch.',
-            helperMaxLines: _hostFieldHelperMaxLines,
-          ),
-          items: AgentWindowModePreference.values
-              .map(
-                (preference) => DropdownMenuItem<AgentWindowModePreference>(
-                  value: preference,
-                  child: Text(preference.label),
-                ),
-              )
-              .toList(growable: false),
-          onChanged: (value) {
-            if (value == null) return;
-            setState(() => _agentWindowModePreference = value);
-            _updateDirtyState();
-          },
-        ),
-        const SizedBox(height: 12),
         CheckboxListTile(
           key: const Key('host-cli-yolo-mode-checkbox'),
           value: _startClisInYoloMode,
@@ -1002,9 +975,43 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             hasAutomationAccess: hasAutomationAccess,
           ),
         },
+        if (_selectedStartupMode == HostStartupMode.monkeyMux ||
+            (_selectedStartupMode == HostStartupMode.agent &&
+                _selectedAgentMuxBackend == RemoteMuxBackend.monkeyMux)) ...[
+          const SizedBox(height: 12),
+          _buildAgentWindowModeField(),
+        ],
       ],
     );
   }
+
+  Widget _buildAgentWindowModeField() =>
+      DropdownButtonFormField<AgentWindowModePreference>(
+        key: const Key('host-agent-window-mode-field'),
+        // ignore: deprecated_member_use
+        value: _agentWindowModePreference,
+        isExpanded: true,
+        decoration: const InputDecoration(
+          labelText: 'Agent window mode',
+          prefixIcon: Icon(Icons.view_agenda_outlined),
+          helperText:
+              'Used when native chat and terminal are both available. Press and hold an agent to choose for one launch.',
+          helperMaxLines: _hostFieldHelperMaxLines,
+        ),
+        items: AgentWindowModePreference.values
+            .map(
+              (preference) => DropdownMenuItem<AgentWindowModePreference>(
+                value: preference,
+                child: Text(preference.label),
+              ),
+            )
+            .toList(growable: false),
+        onChanged: (value) {
+          if (value == null) return;
+          setState(() => _agentWindowModePreference = value);
+          _updateDirtyState();
+        },
+      );
 
   Widget _buildMuxStartupFields(BuildContext context) {
     final isTmuxMode = _selectedStartupMode == HostStartupMode.tmux;
