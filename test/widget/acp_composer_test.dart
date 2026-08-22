@@ -461,48 +461,20 @@ void main() {
     await _pump(
       tester,
       controller,
-      actions: AcpComposerAttachmentActions(
-        pickSnippet: (_) async => 'echo hi',
-        pickFiles: (_) async => const [],
-      ),
+      actions: AcpComposerAttachmentActions(pickFiles: (_) async => const []),
     );
 
     final addButton = find.byTooltip('Add to prompt');
     await tester.tap(addButton);
     await tester.pumpAndSettle();
 
-    expect(find.text('Snippet'), findsOneWidget);
+    expect(find.text('Snippet'), findsNothing);
     expect(find.text('Choose file'), findsOneWidget);
     expect(
       tester.getBottomLeft(find.text('Choose file')).dy,
       lessThan(tester.getTopLeft(addButton).dy),
     );
     expect(find.byType(BottomSheet), findsNothing);
-  });
-
-  testWidgets('snippet inserts at the tracked caret and restores focus', (
-    tester,
-  ) async {
-    final controller = _makeController(_RecordingManager())
-      ..setText('hello world', caret: 5);
-    addTearDown(controller.dispose);
-    await _pump(
-      tester,
-      controller,
-      actions: AcpComposerAttachmentActions(pickSnippet: (_) async => ' brave'),
-    );
-
-    await tester.tap(find.byTooltip('Add to prompt'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Snippet'));
-    await tester.pumpAndSettle();
-
-    expect(controller.text, 'hello brave world');
-    expect(controller.caret, 11);
-    expect(
-      tester.widget<TextField>(find.byType(TextField)).focusNode?.hasFocus,
-      isTrue,
-    );
   });
 
   testWidgets('input and send geometry use explicit mobile padding', (

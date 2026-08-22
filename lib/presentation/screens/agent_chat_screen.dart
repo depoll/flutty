@@ -25,7 +25,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/theme.dart';
-import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/acp_attachment.dart';
 import '../../domain/models/acp_native_preview.dart';
 import '../../domain/models/acp_protocol.dart';
@@ -619,56 +618,11 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
       return builder(widget.hostId, connectionId);
     }
     return AcpComposerAttachmentActions(
-      pickSnippet: _pickSnippet,
       pickPhotos: _pickPhotos,
       pickFiles: _pickFiles,
       pickRemoteFiles: (context) =>
           _pickRemoteFiles(context, connectionId, session.cwd),
     );
-  }
-
-  Future<String?> _pickSnippet(BuildContext context) async {
-    final repository = ref.read(snippetRepositoryProvider);
-    final snippets = await repository.getAll();
-    if (!context.mounted) {
-      return null;
-    }
-    if (snippets.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('No snippets available.')));
-      return null;
-    }
-    final selected = await showModalBottomSheet<({int id, String command})>(
-      context: context,
-      useSafeArea: true,
-      showDragHandle: true,
-      builder: (context) => ListView.builder(
-        shrinkWrap: true,
-        itemCount: snippets.length,
-        itemBuilder: (context, index) {
-          final snippet = snippets[index];
-          return ListTile(
-            leading: const Icon(Icons.code_rounded),
-            title: Text(snippet.name),
-            subtitle: Text(
-              snippet.command.replaceAll('\n', ' '),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: AcpChatTypography.monoStyleOf(context),
-            ),
-            onTap: () => Navigator.of(
-              context,
-            ).pop((id: snippet.id, command: snippet.command)),
-          );
-        },
-      ),
-    );
-    if (selected == null) {
-      return null;
-    }
-    unawaited(repository.incrementUsage(selected.id));
-    return selected.command;
   }
 
   Future<List<AcpAttachmentCandidate>> _pickPhotos(BuildContext context) async {

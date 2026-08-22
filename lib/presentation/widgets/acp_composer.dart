@@ -16,9 +16,6 @@ import 'acp_slash_command_picker.dart';
 typedef AcpAttachmentPick =
     Future<List<AcpAttachmentCandidate>> Function(BuildContext context);
 
-/// Opens the app's snippet picker and returns text to insert at the caret.
-typedef AcpSnippetPick = Future<String?> Function(BuildContext context);
-
 /// The injectable attachment-picker entry points offered by the add menu.
 ///
 /// Each entry is optional; only the provided sources appear in the menu. All
@@ -28,14 +25,10 @@ typedef AcpSnippetPick = Future<String?> Function(BuildContext context);
 class AcpComposerAttachmentActions {
   /// Creates attachment actions.
   const AcpComposerAttachmentActions({
-    this.pickSnippet,
     this.pickPhotos,
     this.pickFiles,
     this.pickRemoteFiles,
   });
-
-  /// Picks a saved command snippet to insert into the prompt.
-  final AcpSnippetPick? pickSnippet;
 
   /// Picks photos or media from the device gallery/camera.
   final AcpAttachmentPick? pickPhotos;
@@ -48,10 +41,7 @@ class AcpComposerAttachmentActions {
 
   /// Whether at least one source is available.
   bool get hasAny =>
-      pickSnippet != null ||
-      pickPhotos != null ||
-      pickFiles != null ||
-      pickRemoteFiles != null;
+      pickPhotos != null || pickFiles != null || pickRemoteFiles != null;
 }
 
 /// Controls the native composer focus from the persistent terminal shell.
@@ -323,15 +313,6 @@ class _AcpComposerState extends State<AcpComposer> {
   Future<void> _handleAddAction(_AcpAddAction action) async {
     final actions = widget.attachmentActions;
     switch (action) {
-      case _AcpAddAction.snippet:
-        final snippet = await actions.pickSnippet?.call(context);
-        if (!mounted || snippet == null || snippet.isEmpty) {
-          return;
-        }
-        final caret = _controller.caret.clamp(0, _controller.text.length);
-        final next = _controller.text.replaceRange(caret, caret, snippet);
-        _controller.setText(next, caret: caret + snippet.length);
-        _focusNode.requestFocus();
       case _AcpAddAction.photos:
         await _addAttachments(actions.pickPhotos);
       case _AcpAddAction.files:
@@ -552,7 +533,7 @@ class _AcpComposerState extends State<AcpComposer> {
   }
 }
 
-enum _AcpAddAction { snippet, photos, files, remoteFiles }
+enum _AcpAddAction { photos, files, remoteFiles }
 
 class _AddButton extends StatelessWidget {
   const _AddButton({
@@ -570,7 +551,6 @@ class _AddButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final itemCount = [
-      actions.pickSnippet,
       actions.pickPhotos,
       actions.pickFiles,
       actions.pickRemoteFiles,
@@ -584,15 +564,6 @@ class _AddButton extends StatelessWidget {
       constraints: const BoxConstraints(minWidth: 210),
       icon: const Icon(Icons.add),
       itemBuilder: (context) => [
-        if (actions.pickSnippet != null)
-          const PopupMenuItem(
-            value: _AcpAddAction.snippet,
-            child: ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.code_rounded),
-              title: Text('Snippet'),
-            ),
-          ),
         if (actions.pickPhotos != null)
           PopupMenuItem(
             value: _AcpAddAction.photos,
