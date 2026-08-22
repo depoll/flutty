@@ -483,16 +483,13 @@ class TmuxNewWindowAction extends TmuxNavigatorAction {
   final AgentLaunchTool? agentTool;
 }
 
-/// Resume an AI tool session in a new tmux window.
+/// Start a native ACP session in a new MonkeyMux window.
 class TmuxNewAcpSessionAction extends TmuxNavigatorAction {
   /// Creates a native ACP session for a provider supported by MonkeyMux.
-  const TmuxNewAcpSessionAction({this.providerId, this.workingDirectory});
+  const TmuxNewAcpSessionAction({this.providerId});
 
   /// Stable ACP provider identifier selected for launch, or null to choose one.
   final String? providerId;
-
-  /// Working directory inherited from the current MonkeyMux window context.
-  final String? workingDirectory;
 }
 
 /// Open an existing native ACP session from the MonkeyMux window navigator.
@@ -1182,13 +1179,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           agentTool: agentTool,
         );
       case TmuxNewAcpSessionAction(:final providerId):
-        Navigator.pop(
-          context,
-          TmuxNewAcpSessionAction(
-            providerId: providerId,
-            workingDirectory: widget.scopeWorkingDirectory,
-          ),
-        );
+        Navigator.pop(context, TmuxNewAcpSessionAction(providerId: providerId));
       default:
         throw StateError('Unexpected new-window picker action');
     }

@@ -1073,14 +1073,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (!mounted || action == null) {
       return;
     }
-    final scopedAction = switch (action) {
-      TmuxNewAcpSessionAction(:final providerId) => TmuxNewAcpSessionAction(
-        providerId: providerId,
-        workingDirectory: widget.scopeWorkingDirectory,
-      ),
-      _ => action,
-    };
-    await widget.onAction(scopedAction);
+    await widget.onAction(action);
   }
 
   int _tmuxAlertNotificationId(

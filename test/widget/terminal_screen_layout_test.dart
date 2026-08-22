@@ -638,6 +638,31 @@ void main() {
       );
     });
 
+    test('new native windows use the host connection directory', () {
+      expect(
+        resolveNativeAcpNewWindowWorkingDirectory(
+          connectionWorkingDirectory: ' /host/connection ',
+          launchWorkingDirectory: '/host/launch',
+          hostWorkingDirectory: '/host/configured',
+        ),
+        '/host/connection',
+      );
+      expect(
+        resolveNativeAcpNewWindowWorkingDirectory(
+          launchWorkingDirectory: '/host/launch',
+          hostWorkingDirectory: '/host/configured',
+        ),
+        '/host/launch',
+      );
+      expect(
+        resolveNativeAcpNewWindowWorkingDirectory(
+          hostWorkingDirectory: '/host/configured',
+        ),
+        '/host/configured',
+      );
+      expect(resolveNativeAcpNewWindowWorkingDirectory(), '~');
+    });
+
     test('falls back through launch, active, and observed directories', () {
       expect(
         resolveTmuxWindowWorkingDirectory(

@@ -515,6 +515,23 @@ String? resolveTmuxWindowWorkingDirectory({
   observedWorkingDirectory,
 ]);
 
+/// Resolves the stable host connection directory for a new native window.
+///
+/// Active-window context is intentionally absent: opening a native window is a
+/// host-level action and must not inherit whichever MonkeyMux pane is selected.
+@visibleForTesting
+String resolveNativeAcpNewWindowWorkingDirectory({
+  String? connectionWorkingDirectory,
+  String? launchWorkingDirectory,
+  String? hostWorkingDirectory,
+}) =>
+    _firstNonEmptyWorkingDirectory([
+      connectionWorkingDirectory,
+      launchWorkingDirectory,
+      hostWorkingDirectory,
+    ]) ??
+    '~';
+
 /// Resolves the host-configured directory for the active multiplexer session.
 @visibleForTesting
 String? resolveConfiguredMuxWorkingDirectory({
@@ -11328,14 +11345,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   hasCommand: launchCommand?.trim().isNotEmpty ?? false,
                 ),
           );
-        case TmuxNewAcpSessionAction(
-          :final providerId,
-          :final workingDirectory,
-        ):
+        case TmuxNewAcpSessionAction(:final providerId):
           await _startNativeAcpSession(
             session,
             providerId: providerId,
-            workingDirectory: workingDirectory,
+            workingDirectory: resolveNativeAcpNewWindowWorkingDirectory(
+              connectionWorkingDirectory: _connectionOpenedWorkingDirectory,
+              launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
+              hostWorkingDirectory: _host?.tmuxWorkingDirectory,
+            ),
           );
         case TmuxOpenAcpSessionAction(:final key):
           _openNativeAcpSession(key);
