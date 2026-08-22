@@ -259,10 +259,16 @@ void main() {
     expect(image, lessThan(secondText));
     expect(secondText, lessThan(chip));
     expect(find.text('main.dart'), findsOneWidget);
-    final promptText = tester.widget<SelectableText>(
-      find.widgetWithText(SelectableText, 'first'),
+    final promptTextFinder = find.widgetWithText(SelectableText, 'first');
+    final promptText = tester.widget<SelectableText>(promptTextFinder);
+    final bodyFamily = Theme.of(
+      tester.element(promptTextFinder),
+    ).textTheme.bodyMedium?.fontFamily;
+    expect(promptText.style?.fontFamily, bodyFamily);
+    expect(
+      promptText.style?.fontFamily,
+      isNot(FluttyTheme.monoStyle.fontFamily),
     );
-    expect(promptText.style?.fontFamily, FluttyTheme.monoStyle.fontFamily);
   });
 
   testWidgets('shows queued prompt status visibly and semantically', (

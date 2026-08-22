@@ -9,7 +9,6 @@ import '../../domain/models/acp_attachment.dart';
 import '../../domain/models/acp_updates.dart';
 import '../controllers/acp_composer_controller.dart';
 import 'acp_attachment_strip.dart';
-import 'acp_chat_typography.dart';
 import 'acp_slash_command_picker.dart';
 
 /// Opens an attachment picker and returns the selected candidates.
@@ -480,9 +479,10 @@ class _AcpComposerState extends State<AcpComposer> {
                               textInputAction: TextInputAction.newline,
                               textCapitalization: TextCapitalization.sentences,
                               textAlignVertical: TextAlignVertical.center,
-                              style: AcpChatTypography.monoStyleOf(
-                                context,
-                              ).copyWith(color: scheme.onSurface, fontSize: 14),
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: scheme.onSurface,
+                                fontSize: 14,
+                              ),
                               decoration: InputDecoration(
                                 isDense: true,
                                 filled: false,
@@ -491,13 +491,10 @@ class _AcpComposerState extends State<AcpComposer> {
                                   vertical: 13,
                                 ),
                                 hintText: widget.hintText,
-                                hintStyle:
-                                    AcpChatTypography.monoStyleOf(
-                                      context,
-                                    ).copyWith(
-                                      color: scheme.onSurfaceVariant,
-                                      fontSize: 14,
-                                    ),
+                                hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                                  color: scheme.onSurfaceVariant,
+                                  fontSize: 14,
+                                ),
                               ),
                             ),
                           ),

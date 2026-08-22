@@ -4,7 +4,6 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
-import 'acp_chat_typography.dart';
 import 'acp_inline_image.dart';
 import 'acp_markdown.dart';
 import 'acp_plan.dart';
@@ -331,7 +330,8 @@ class _StickyUserPromptSummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return Semantics(
       container: true,
       header: true,
@@ -361,7 +361,7 @@ class _StickyUserPromptSummary extends StatelessWidget {
                       key: const ValueKey('acp-sticky-user-prompt-text'),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: AcpChatTypography.monoStyleOf(context).copyWith(
+                      style: theme.textTheme.bodySmall?.copyWith(
                         color: scheme.onSurface,
                         fontSize: 11.5,
                         height: 1.2,

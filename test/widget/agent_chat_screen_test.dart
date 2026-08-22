@@ -348,9 +348,12 @@ void main() {
     expect(find.text('Mode: Code'), findsOneWidget);
     expect(find.text('Fast mode: Off'), findsOneWidget);
     expect(find.text('Permission: Ask'), findsOneWidget);
+    final permissionPill = find.byKey(const ValueKey('permission-mode-pill'));
+    expect(tester.getSize(permissionPill).height, 44);
     expect(
-      tester.getSize(find.byKey(const ValueKey('permission-mode-pill'))).height,
-      44,
+      find.ancestor(of: permissionPill, matching: find.byType(ListView)),
+      findsOneWidget,
+      reason: 'permission belongs in the same scrolling row as every selector',
     );
     final selectorContext = tester.element(find.text('Model: Sonnet'));
     expect(MediaQuery.of(selectorContext).textScaler.scale(14), 14);
@@ -385,6 +388,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(manager.configOptionSets, contains(('fast-mode', 'on')));
 
+    await tester.ensureVisible(find.byTooltip('Change permission'));
+    await tester.pump();
     await tester.tap(find.byTooltip('Change permission'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('YOLO').last);
@@ -810,7 +815,7 @@ void main() {
   });
 
   testWidgets(
-    'embedded native chat uses terminal typography without a second session rail',
+    'embedded native chat keeps prose proportional and machine text configured',
     (tester) async {
       final session = fakeAcpSession(
         timeline: fakeAcpTimeline('Scaled native response'),
@@ -837,6 +842,11 @@ void main() {
       expect(
         AcpChatTypography.monoStyleOf(threadContext).fontFamily,
         contains('RobotoMono'),
+      );
+      expect(
+        Theme.of(threadContext).textTheme.bodyMedium?.fontFamily,
+        isNot(contains('RobotoMono')),
+        reason: 'terminal font settings must not replace proportional prose',
       );
     },
   );

@@ -253,13 +253,20 @@ void main() {
     expect(find.text('Deploy the build'), findsNothing);
   });
 
-  testWidgets('uses the app monospace style for prompt input', (tester) async {
+  testWidgets('uses the proportional body style for prompt input', (
+    tester,
+  ) async {
     final controller = _makeController(_RecordingManager());
     addTearDown(controller.dispose);
     await _pump(tester, controller);
 
-    final field = tester.widget<TextField>(find.byType(TextField));
-    expect(field.style?.fontFamily, FluttyTheme.monoStyle.fontFamily);
+    final fieldFinder = find.byType(TextField);
+    final field = tester.widget<TextField>(fieldFinder);
+    final bodyFamily = Theme.of(
+      tester.element(fieldFinder),
+    ).textTheme.bodyMedium?.fontFamily;
+    expect(field.style?.fontFamily, bodyFamily);
+    expect(field.style?.fontFamily, isNot(FluttyTheme.monoStyle.fontFamily));
   });
 
   testWidgets('keyboard arrow + enter selects a slash command', (tester) async {

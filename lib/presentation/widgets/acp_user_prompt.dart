@@ -40,10 +40,11 @@ class AcpUserPromptView extends StatelessWidget {
   Widget _buildPart(BuildContext context, AcpPromptPart part) {
     switch (part) {
       case AcpTextPart(:final text):
+        final theme = Theme.of(context);
         return SelectableText(
           text,
-          style: AcpChatTypography.monoStyleOf(context).copyWith(
-            color: Theme.of(context).colorScheme.onSurface,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface,
             fontSize: 14,
             height: 1.45,
           ),

@@ -674,12 +674,6 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     if (selectors.isEmpty) {
       return null;
     }
-    final permission = selectors
-        .where((selector) => selector.label == 'Permission')
-        .firstOrNull;
-    final secondary = selectors
-        .where((selector) => selector.label != 'Permission')
-        .toList(growable: false);
     final scheme = Theme.of(context).colorScheme;
     return MediaQuery.withNoTextScaling(
       child: DecoratedBox(
@@ -689,34 +683,21 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         ),
         child: SizedBox(
           height: 44,
-          child: Row(
-            children: [
-              if (permission != null)
-                Padding(
-                  padding: const EdgeInsets.only(left: 8, right: 4),
-                  child: _AcpQuickSelector(
-                    key: const ValueKey('permission-mode-pill'),
-                    selector: permission,
-                  ),
-                ),
-              if (secondary.isNotEmpty)
-                Expanded(
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    padding: EdgeInsets.only(
-                      left: permission == null ? 8 : 0,
-                      right: 8,
-                    ),
-                    itemCount: secondary.length,
-                    separatorBuilder: (_, _) =>
-                        const SizedBox(width: FluttyTheme.spacingXs),
-                    itemBuilder: (context, index) => _AcpQuickSelector(
-                      key: ValueKey(secondary[index].label),
-                      selector: secondary[index],
-                    ),
-                  ),
-                ),
-            ],
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            itemCount: selectors.length,
+            separatorBuilder: (_, _) =>
+                const SizedBox(width: FluttyTheme.spacingXs),
+            itemBuilder: (context, index) {
+              final selector = selectors[index];
+              return _AcpQuickSelector(
+                key: selector.label == 'Permission'
+                    ? const ValueKey('permission-mode-pill')
+                    : ValueKey(selector.label),
+                selector: selector,
+              );
+            },
           ),
         ),
       ),
@@ -2404,19 +2385,9 @@ class _AgentChatZoomSurfaceState extends State<_AgentChatZoomSurface> {
       platform: theme.platform,
     );
     final monoStyle = FluttyTheme.monoStyle.merge(configuredMono);
-    final scaledTheme = theme.copyWith(
-      textTheme: theme.textTheme.apply(fontFamily: configuredMono.fontFamily),
-      primaryTextTheme: theme.primaryTextTheme.apply(
-        fontFamily: configuredMono.fontFamily,
-      ),
-    );
-
     Widget child = MediaQuery(
       data: mediaQuery.copyWith(textScaler: textScaler),
-      child: Theme(
-        data: scaledTheme,
-        child: AcpChatTypography(monoStyle: monoStyle, child: widget.child),
-      ),
+      child: AcpChatTypography(monoStyle: monoStyle, child: widget.child),
     );
     if (_isPinching) {
       child = Stack(

@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
 
-/// Supplies the monospace face used by the native agent conversation surface.
+/// Supplies the monospace face used by native-agent machine content.
 ///
-/// ACP widgets keep their own semantic sizes and weights, while inheriting the
-/// same configured font face as the terminal. Outside an agent conversation,
-/// they retain the app's default monospace style.
+/// Code, diffs, paths, tool output, and status labels inherit the configured
+/// terminal face. Conversation prose and prompt input retain the app's
+/// proportional body typography.
 class AcpChatTypography extends InheritedWidget {
   /// Creates an ACP typography scope.
   const AcpChatTypography({
@@ -15,10 +15,10 @@ class AcpChatTypography extends InheritedWidget {
     super.key,
   });
 
-  /// Base monospace style for agent content.
+  /// Base monospace style for machine-authored agent content.
   final TextStyle monoStyle;
 
-  /// Resolves the scoped native-agent monospace style.
+  /// Resolves the scoped native-agent machine-content style.
   static TextStyle monoStyleOf(BuildContext context) =>
       context
           .dependOnInheritedWidgetOfExactType<AcpChatTypography>()
