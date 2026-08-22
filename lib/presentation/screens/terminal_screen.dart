@@ -9542,26 +9542,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     final bundledVersionIsNewer =
         versionComparison != null && versionComparison > 0;
-    if (bundledVersionIsNewer && status.hasNativeAcpWindows) {
-      DiagnosticsLogService.instance.info(
-        'monkeymux.install',
-        'upgrade_restore_deferred_native_acp',
-        fields: {
-          'connectionId': session.connectionId,
-          'nativeWindowCount': status.nativeAcpWindowCount,
-          'supportsShutdown': status.supportsShutdown,
-          'installedDuringCall': installation.installedDuringCall,
-        },
-      );
-      _showMonkeyMuxNativeUpdateDeferredNotice(
-        connectionId: session.connectionId,
-        sessionName: sessionName,
-        runningVersion: status.version,
-        bundledVersion: bundledVersion,
-        nativeWindowCount: status.nativeAcpWindowCount,
-      );
-      return MonkeyMuxServerUpdatePolicy.never;
-    }
     if (bundledVersionIsNewer) {
       final updatePolicy =
           preferredUpdatePolicy ??
@@ -9614,7 +9594,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final currentVersionLabel = runningVersion == null || runningVersion.isEmpty
         ? 'current version'
         : runningVersion;
-    final warning = status.supportsShutdown
+    final warning = status.hasNativeAcpWindows
+        ? 'Native agent windows stay connected to their running sessions while '
+              'MonkeySSH recreates the terminal windows in the new helper.'
+        : status.supportsShutdown
         ? 'Updating may briefly interrupt running programs. Some restored '
               'sessions may not resume exactly where they left off.'
         : 'The running helper cannot stop itself cleanly. Updating may '
@@ -9749,37 +9732,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _showMonkeyMuxNativeUpdateDeferredNotice({
-    required int connectionId,
-    required String sessionName,
-    required String? runningVersion,
-    required String bundledVersion,
-    required int nativeWindowCount,
-  }) {
-    if (!mounted) return;
-    final runningLabel = runningVersion?.trim();
-    final noticeKey =
-        '$connectionId:$sessionName:native:$runningLabel:$bundledVersion';
-    if (_lastMonkeyMuxUpgradeDeferredNotice == noticeKey) return;
-    _lastMonkeyMuxUpgradeDeferredNotice = noticeKey;
-    final windowLabel = nativeWindowCount == 1
-        ? 'native agent window'
-        : 'native agent windows';
-    final currentVersion = runningLabel == null || runningLabel.isEmpty
-        ? 'the current MonkeyMux helper'
-        : 'MonkeyMux $runningLabel';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(seconds: 10),
-        content: Text(
-          'Keeping $currentVersion because $nativeWindowCount active '
-          '$windowLabel cannot yet be moved safely to helper $bundledVersion. '
-          'Close the native windows, then reconnect to update.',
-        ),
-      ),
-    );
-  }
-
   Future<({bool install, MonkeyMuxServerUpdatePolicy? updatePolicy})>
   _confirmMonkeyMuxInstall(
     MonkeyMuxInstallRequest request, {
@@ -9805,9 +9757,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     final bundledVersionIsNewer =
         versionComparison != null && versionComparison > 0;
-    if (updateStatus != null &&
-        bundledVersionIsNewer &&
-        !updateStatus.hasNativeAcpWindows) {
+    if (updateStatus != null && bundledVersionIsNewer) {
       final updatePolicy = await _confirmMonkeyMuxRunningServerUpdate(
         status: updateStatus,
         bundledVersion: request.version,
@@ -9828,16 +9778,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       explanation =
           'MonkeySSH needs to upload its bundled MonkeyMux helper before using '
           'MonkeyMux on this connected host.';
-    } else if (updateStatus.hasNativeAcpWindows) {
-      final nativeWindowCount = updateStatus.nativeAcpWindowCount;
-      final windowLabel = nativeWindowCount == 1
-          ? 'native agent window'
-          : 'native agent windows';
-      explanation =
-          'This workspace has $nativeWindowCount active $windowLabel. '
-          'MonkeySSH can install helper ${request.version}, but it will keep '
-          'the running server so those sessions are not interrupted. Close '
-          'the native windows and reconnect when you are ready to update.';
     } else if (versionComparison != null && versionComparison < 0) {
       explanation =
           'This workspace is running helper ${runningVersionLabel ?? 'unknown'}, '

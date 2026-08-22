@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.170"
+	monkeyMuxVersion                  = "0.1.171"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -254,17 +254,18 @@ var capabilities = []string{
 	"acp-bridge-replay-v1",
 	"acp-bridge-control-start-v1",
 	"acp-window-v1",
+	"native-acp-upgrade-handoff-v1",
 }
 
 var (
-	errRunCommandCanceled     = errors.New("command canceled")
-	errRunCommandClientClosed = errors.New("control client closed")
-	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
-	errRunCommandTimeout      = errors.New("command timed out")
-	errServerClosed           = errors.New("server is closed")
-	errServerUpdateNoSnapshot = errors.New("MonkeyMux update could not snapshot the running workspace; the existing helper was kept")
-	errServerUpdateNativeACP  = errors.New("MonkeyMux update was deferred because native agent windows are active; close them and reconnect to update")
-	errServerUpdateStillAlive = errors.New("MonkeyMux update could not stop the running workspace; the existing helper was kept")
+	errRunCommandCanceled           = errors.New("command canceled")
+	errRunCommandClientClosed       = errors.New("control client closed")
+	errRunCommandOutputLimit        = errors.New("command output limit exceeded")
+	errRunCommandTimeout            = errors.New("command timed out")
+	errServerClosed                 = errors.New("server is closed")
+	errServerUpdateNoSnapshot       = errors.New("MonkeyMux update could not snapshot the running workspace; the existing helper was kept")
+	errServerUpdateNativeAcpHandoff = errors.New("MonkeyMux update could not preserve the running native agent windows; the existing helper was kept")
+	errServerUpdateStillAlive       = errors.New("MonkeyMux update could not stop the running workspace; the existing helper was kept")
 )
 
 var nativeAcpWindowArguments = func(bridgeID string) ([]string, error) {
@@ -1755,9 +1756,10 @@ func removeAbandonedStagingFile(path string) {
 }
 
 type ensureServerReplacement struct {
-	restore       *serverRestore
-	oldPID        pidRecord
-	legacyHandoff bool
+	restore        *serverRestore
+	oldPID         pidRecord
+	legacyHandoff  bool
+	keepOldProcess bool
 }
 
 func ensureServer(
@@ -1860,7 +1862,9 @@ func ensureServer(
 	var previousPID pidRecord
 	if replacement != nil {
 		restore = replacement.restore
-		previousPID = replacement.oldPID
+		if !replacement.keepOldProcess {
+			previousPID = replacement.oldPID
+		}
 	}
 	if restore != nil && len(restore.Windows) > 0 {
 		path, err := writeRestoreFile(session, restore)
@@ -1946,9 +1950,8 @@ func ensureServer(
 
 	deadline := time.Now().Add(socketTimeout)
 	for time.Now().Before(deadline) {
-		conn, err := dialSession(session)
-		if err == nil {
-			_ = conn.Close()
+		status, err := queryRunningServerStatus(session)
+		if err == nil && status.version == monkeyMuxVersion {
 			// Only signal a process still proven to be the previous server.
 			// The old pid may have been recycled while it shut down — possibly
 			// onto the replacement that just answered this dial.
@@ -2001,16 +2004,34 @@ func prepareRunningServerReplacement(
 		)
 		return nil, errServerUpdateNoSnapshot
 	}
+	oldPID, _ := sessionServerOwner(session)
 	if restoreHasNativeAcpWindows(restore) {
+		// Native ACP bridges live inside the outgoing helper. Keep that process
+		// as a private bridge host, but close its terminal windows now that their
+		// restore state is captured. The replacement recreates every window and
+		// points native placeholders at the same live bridge sockets.
+		if err := requestNativeAcpUpgradeHandoff(session, restore); err != nil {
+			fmt.Fprintf(
+				os.Stderr,
+				"monkeymux: could not preserve native agent windows for session %q; keeping helper %s\r\n",
+				session,
+				status.displayVersion(),
+			)
+			return nil, fmt.Errorf("%w: %v", errServerUpdateNativeAcpHandoff, err)
+		}
 		fmt.Fprintf(
 			os.Stderr,
-			"monkeymux: session %q has live native agent windows; keeping helper %s\r\n",
-			session,
+			"monkeymux: handing live native agent windows from helper %s to helper %s\r\n",
 			status.displayVersion(),
+			monkeyMuxVersion,
 		)
-		return nil, errServerUpdateNativeACP
+		return &ensureServerReplacement{
+			restore:        restore,
+			oldPID:         oldPID,
+			legacyHandoff:  true,
+			keepOldProcess: true,
+		}, nil
 	}
-	oldPID, _ := sessionServerOwner(session)
 	if status.supportsCapability("shutdown") {
 		requestServerShutdown(session)
 		if !waitForServerProcessExit(session, oldPID, serverExitWaitTimeout) {
@@ -5831,14 +5852,24 @@ func serveSession(
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return err
 	}
-	// Refuse to steal a socket that is still accepting connections. ensureServer
-	// already gates this; the check here covers direct `serve` invocations and
-	// races where another helper rebound the path first.
-	if _, err := queryRunningServerStatus(session); err == nil {
+	// Refuse to steal a socket for a fresh direct `serve` invocation. A
+	// restore process is an already-approved replacement: the outgoing native
+	// bridge host can republish its old socket during process startup, so remove
+	// that race winner and retry the bind instead of silently attaching the old
+	// bridge-only workspace.
+	replacing := restore != nil && len(restore.Windows) > 0
+	if _, err := queryRunningServerStatus(session); err == nil && !replacing {
 		return fmt.Errorf("MonkeyMux session %q is already running", session)
 	}
-	_ = os.Remove(socket)
-	listener, err := net.Listen("unix", socket)
+	var listener net.Listener
+	for attempt := 0; attempt < 5; attempt++ {
+		_ = os.Remove(socket)
+		listener, err = net.Listen("unix", socket)
+		if err == nil || !replacing {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		return err
 	}
@@ -6153,6 +6184,23 @@ func createWindowOptionsForRestore(
 	state restoreWindowState,
 	startInYoloMode bool,
 ) createWindowOptions {
+	if validAcpBridgeID(state.NativeAcpBridgeID) &&
+		validateAcpProviderID(state.NativeAcpProviderID) == nil {
+		args, _ := nativeAcpWindowArguments(state.NativeAcpBridgeID)
+		return createWindowOptions{
+			name:                  firstNonEmptyString(state.Name, state.PaneTitle, "Native agent"),
+			cwd:                   state.Cwd,
+			args:                  args,
+			paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
+			agentTool:             state.AgentTool,
+			nativeAcpBridgeID:     state.NativeAcpBridgeID,
+			nativeAcpProviderID:   state.NativeAcpProviderID,
+			cursorVisible:         state.CursorVisible,
+			cursorVisibilityKnown: state.CursorVisibilityKnown,
+			privateModes:          privateModesForRestore(state.PrivateModes),
+			terminalProgress:      copyTerminalProgressSnapshot(state.TerminalProgress),
+		}
+	}
 	agentTool := agentToolForRestore(state)
 	command := ""
 	if agentTool != "" {
@@ -16577,6 +16625,93 @@ func queryRunningServerStatus(session string) (runningServerStatus, error) {
 		version:      hello.Version,
 		capabilities: hello.Capabilities,
 	}, nil
+}
+
+// terminalWindowIDsForNativeAcpHandoff selects only windows whose terminal
+// processes must be recreated by the replacement helper.
+func terminalWindowIDsForNativeAcpHandoff(
+	restore *serverRestore,
+) ([]string, error) {
+	terminalWindowIDs := make([]string, 0, len(restore.Windows))
+	for _, window := range restore.Windows {
+		if window.NativeAcpBridgeID != "" && window.NativeAcpProviderID != "" {
+			continue
+		}
+		if window.ID == "" {
+			return nil, errors.New("terminal restore window is missing its id")
+		}
+		terminalWindowIDs = append(terminalWindowIDs, window.ID)
+	}
+	return terminalWindowIDs, nil
+}
+
+// requestNativeAcpUpgradeHandoff reduces the outgoing workspace to its
+// native ACP windows. Their in-process bridges remain alive while the new
+// helper recreates terminal windows and starts placeholders that wait on those
+// same bridge sockets. The outgoing helper exits naturally after its last
+// native bridge/window closes.
+func requestNativeAcpUpgradeHandoff(
+	session string,
+	restore *serverRestore,
+) error {
+	terminalWindowIDs, err := terminalWindowIDsForNativeAcpHandoff(restore)
+	if err != nil {
+		return err
+	}
+	if len(terminalWindowIDs) == 0 {
+		return nil
+	}
+
+	conn, err := dialSession(session)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+	return closeOutgoingTerminalWindows(conn, session, terminalWindowIDs)
+}
+
+func closeOutgoingTerminalWindows(
+	conn net.Conn,
+	session string,
+	windowIDs []string,
+) error {
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return err
+	}
+	if _, err := readControlHello(dec); err != nil {
+		return err
+	}
+	for index, windowID := range windowIDs {
+		requestID := fmt.Sprintf("native-handoff-%d-%d", time.Now().UnixNano(), index)
+		if err := enc.Encode(controlMessage{
+			ID:       requestID,
+			Type:     "close_window",
+			Session:  session,
+			WindowID: windowID,
+		}); err != nil {
+			return err
+		}
+		for {
+			var response controlResponse
+			if err := dec.Decode(&response); err != nil {
+				return err
+			}
+			if response.ID != requestID {
+				continue
+			}
+			if response.Status == "error" || response.Type == "error" {
+				return errors.New(firstNonEmptyString(response.Error, "unable to close outgoing terminal window"))
+			}
+			if response.Type != "window_closed" {
+				return errors.New("unexpected terminal-window handoff response")
+			}
+			break
+		}
+	}
+	return nil
 }
 
 func requestServerShutdown(session string) {

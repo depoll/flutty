@@ -9543,27 +9543,120 @@ func TestMouseTrackingProcessIDClearsWhenModesDisabled(t *testing.T) {
 	}
 }
 
-func TestRestorePreservesNativeAcpOwnershipForUpgradeDeferral(t *testing.T) {
+func TestRestorePreservesNativeAcpOwnershipAcrossUpgrade(t *testing.T) {
+	const bridgeID = "0123456789abcdef0123456789abcdef"
 	restore := restoreFromWindowSnapshots([]windowSnapshot{{
 		ID:                  "@7",
 		Index:               6,
 		Name:                "Pi",
-		NativeAcpBridgeID:   "0123456789abcdef0123456789abcdef",
+		CurrentPath:         "/repo",
+		AgentTool:           "pi",
+		NativeAcpBridgeID:   bridgeID,
 		NativeAcpProviderID: "builtin:pi-acp",
 	}})
 	if restore == nil || len(restore.Windows) != 1 {
 		t.Fatalf("restore windows = %#v, want one window", restore)
 	}
 	window := restore.Windows[0]
-	if window.NativeAcpBridgeID != "0123456789abcdef0123456789abcdef" ||
+	if window.NativeAcpBridgeID != bridgeID ||
 		window.NativeAcpProviderID != "builtin:pi-acp" {
 		t.Fatalf("native ACP restore window = %#v", window)
 	}
 	if !restoreHasNativeAcpWindows(restore) {
-		t.Fatal("native ACP restore did not defer helper replacement")
+		t.Fatal("native ACP restore did not request a bridge handoff")
 	}
 	if restoreHasNativeAcpWindows(&serverRestore{Windows: []restoreWindowState{{Name: "shell"}}}) {
-		t.Fatal("plain terminal restore incorrectly deferred helper replacement")
+		t.Fatal("plain terminal restore incorrectly requested a bridge handoff")
+	}
+
+	originalArguments := nativeAcpWindowArguments
+	nativeAcpWindowArguments = func(id string) ([]string, error) {
+		return []string{"monkeymux-new", "acp", "wait", id}, nil
+	}
+	t.Cleanup(func() { nativeAcpWindowArguments = originalArguments })
+	options := createWindowOptionsForRestore(window, false)
+	if !reflect.DeepEqual(options.args, []string{"monkeymux-new", "acp", "wait", bridgeID}) {
+		t.Fatalf("native restore args = %#v", options.args)
+	}
+	if options.command != "" || options.nativeAcpBridgeID != bridgeID ||
+		options.nativeAcpProviderID != "builtin:pi-acp" || options.cwd != "/repo" {
+		t.Fatalf("native restore options = %#v", options)
+	}
+}
+
+func TestNativeAcpUpgradeHandoffClosesOnlyTerminalWindows(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	serverDone := make(chan error, 1)
+	go func() {
+		defer serverConn.Close()
+		dec := json.NewDecoder(serverConn)
+		enc := json.NewEncoder(serverConn)
+		var hello controlMessage
+		if err := dec.Decode(&hello); err != nil {
+			serverDone <- err
+			return
+		}
+		if hello.Role != "control" || hello.Session != "workspace" {
+			serverDone <- fmt.Errorf("hello = %#v", hello)
+			return
+		}
+		if err := enc.Encode(controlResponse{Type: "hello", Status: "ok"}); err != nil {
+			serverDone <- err
+			return
+		}
+		for _, expectedID := range []string{"@1", "@3"} {
+			var request controlMessage
+			if err := dec.Decode(&request); err != nil {
+				serverDone <- err
+				return
+			}
+			if request.Type != "close_window" || request.WindowID != expectedID {
+				serverDone <- fmt.Errorf("handoff request = %#v, want close %s", request, expectedID)
+				return
+			}
+			// Real servers can interleave broadcasts with the command response.
+			if err := enc.Encode(controlResponse{Type: "window_removed"}); err != nil {
+				serverDone <- err
+				return
+			}
+			if err := enc.Encode(controlResponse{
+				ID: request.ID, Type: "window_closed", Status: "ok",
+			}); err != nil {
+				serverDone <- err
+				return
+			}
+		}
+		serverDone <- nil
+	}()
+
+	windowIDs, err := terminalWindowIDsForNativeAcpHandoff(&serverRestore{
+		Windows: []restoreWindowState{
+			{ID: "@1", Name: "shell"},
+			{
+				ID:                  "@2",
+				Name:                "Pi",
+				NativeAcpBridgeID:   "0123456789abcdef0123456789abcdef",
+				NativeAcpProviderID: "builtin:pi-acp",
+			},
+			{ID: "@3", Name: "Codex"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(windowIDs, []string{"@1", "@3"}) {
+		t.Fatalf("terminal handoff ids = %#v", windowIDs)
+	}
+	if err := closeOutgoingTerminalWindows(
+		clientConn,
+		"workspace",
+		windowIDs,
+	); err != nil {
+		t.Fatalf("closeOutgoingTerminalWindows: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
 	}
 }
 

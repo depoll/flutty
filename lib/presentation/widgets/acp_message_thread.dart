@@ -208,19 +208,32 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 
   Future<void> _scrollEntryIntoView(int entryIndex) async {
     if (!_controller.hasClients) return;
-    for (var attempt = 0; attempt < 4; attempt++) {
+    // A sticky prompt can be many screens above the viewport and therefore no
+    // longer have a built element. Seek until SliverList materializes it, then
+    // animate to its exact scroll offset. RenderObject.showOnScreen is not
+    // reliable here because a cached off-screen child may be considered
+    // revealed without moving the outer CustomScrollView to its beginning.
+    for (var attempt = 0; attempt < 16; attempt++) {
+      if (!mounted || !_controller.hasClients) return;
       final sliver = _sliverListKey.currentContext?.findRenderObject();
       if (sliver is! RenderSliverMultiBoxAdaptor ||
           sliver.firstChild == null ||
           sliver.lastChild == null) {
         return;
       }
+      final position = _controller.position;
+      final sliverOrigin = position.pixels - sliver.constraints.scrollOffset;
       var child = sliver.firstChild;
       while (child != null) {
         if (sliver.indexOf(child) == entryIndex) {
-          child.showOnScreen(
-            rect: Offset.zero & child.size,
-            duration: const Duration(milliseconds: 180),
+          final childOffset = sliver.childScrollOffset(child);
+          if (childOffset == null) return;
+          await _controller.animateTo(
+            (sliverOrigin + childOffset).clamp(
+              position.minScrollExtent,
+              position.maxScrollExtent,
+            ),
+            duration: const Duration(milliseconds: 220),
             curve: Curves.easeOutCubic,
           );
           return;
@@ -233,22 +246,25 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       final firstIndex = sliver.indexOf(first);
       final lastIndex = sliver.indexOf(last);
       final firstOffset = sliver.childScrollOffset(first) ?? 0;
-      final lastEnd =
-          (sliver.childScrollOffset(last) ?? firstOffset) + last.size.height;
-      final averageExtent =
-          ((lastEnd - firstOffset) / (lastIndex - firstIndex + 1)).clamp(
-            44.0,
-            _controller.position.viewportDimension,
-          );
-      final estimate = firstOffset + (entryIndex - firstIndex) * averageExtent;
-      await _controller.animateTo(
-        estimate.clamp(
-          _controller.position.minScrollExtent,
-          _controller.position.maxScrollExtent,
-        ),
-        duration: const Duration(milliseconds: 160),
-        curve: Curves.easeOutCubic,
+      final lastOffset = sliver.childScrollOffset(last) ?? firstOffset;
+      final visibleSpan = (lastOffset + last.size.height - firstOffset).abs();
+      final averageExtent = (visibleSpan / (lastIndex - firstIndex + 1)).clamp(
+        44.0,
+        position.viewportDimension * 2,
       );
+      final estimate = entryIndex < firstIndex
+          ? sliverOrigin +
+                firstOffset -
+                (firstIndex - entryIndex) * averageExtent
+          : sliverOrigin +
+                lastOffset +
+                (entryIndex - lastIndex) * averageExtent;
+      final destination = estimate.clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      if ((destination - position.pixels).abs() < 1) return;
+      _controller.jumpTo(destination);
       await WidgetsBinding.instance.endOfFrame;
     }
   }

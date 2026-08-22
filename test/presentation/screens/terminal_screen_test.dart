@@ -8934,20 +8934,20 @@ void main() {
         notice: null,
       ),
       (
-        name: 'installs but defers updates while native agents are active',
+        name: 'updates and restores while native agents are active',
         runningVersion: '0.1.13',
-        dialogTitle: 'Install bundled MonkeyMux helper?',
-        confirmLabel: 'Install',
-        dialogMessage: '2 active native agent windows',
+        dialogTitle: 'Update running MonkeyMux?',
+        confirmLabel: 'Update and restore',
+        dialogMessage:
+            'MonkeySSH will upload helper 0.1.14. It can then restart this '
+            'workspace',
         capabilities: {'shutdown', 'acp-window-v1'},
         nativeAcpWindowCount: 2,
-        showsUpgradeDecision: false,
-        warningMessage: null,
-        updatePolicy: MonkeyMuxServerUpdatePolicy.never,
-        notice:
-            'Keeping MonkeyMux 0.1.13 because 2 active native agent windows '
-            'cannot yet be moved safely to helper 0.1.14. Close the native '
-            'windows, then reconnect to update.',
+        showsUpgradeDecision: true,
+        warningMessage:
+            'Native agent windows stay connected to their running sessions',
+        updatePolicy: MonkeyMuxServerUpdatePolicy.always,
+        notice: null,
       ),
       (
         name: 'keeps a newer MonkeyMux server without downgrade guidance',

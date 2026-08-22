@@ -184,6 +184,60 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets(
+    'sticky prompt finds its disposed message above a long response',
+    (tester) async {
+      final controller = ScrollController();
+      await tester.pumpWidget(
+        wrap(
+          SizedBox(
+            height: 240,
+            child: AcpMessageThread(
+              controller: controller,
+              entries: [
+                AcpUserPromptEntry(
+                  id: 'far-prompt',
+                  parts: const [AcpTextPart('take me back to the original')],
+                ),
+                AcpAssistantMessageEntry(
+                  id: 'very-long-response',
+                  markdown: List.generate(
+                    300,
+                    (index) =>
+                        'Response paragraph $index with enough words to wrap.',
+                  ).join('\n\n'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      controller.jumpTo(controller.position.maxScrollExtent);
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey('acp-sticky-user-prompt')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('far-prompt')), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('acp-sticky-user-prompt')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('far-prompt')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('acp-sticky-user-prompt')),
+        findsNothing,
+      );
+      expect(controller.offset, lessThan(40));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
   testWidgets('keeps the last prompt pinned when the footer reaches the top', (
     tester,
   ) async {
