@@ -290,100 +290,6 @@ func TestAcpBridgeCapturesSessionIdentityForDurableListing(t *testing.T) {
 	}
 }
 
-func TestPiCompactionSummaryRestoresActiveHistoryBeforeAdapterTail(t *testing.T) {
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	sessionID := "session-7"
-	sessionDir := filepath.Join(homeDir, ".pi", "agent", "sessions", "--repo--")
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	sessionFile := filepath.Join(sessionDir, "2026-08-22_session-7.jsonl")
-	entries := []string{
-		`{"type":"session","id":"session-7","cwd":"/repo"}`,
-		`{"type":"message","id":"m1","parentId":null}`,
-		`{"type":"compaction","id":"active-summary","parentId":"m1","summary":"Earlier active work"}`,
-		`{"type":"message","id":"m2","parentId":"active-summary"}`,
-		`{"type":"compaction","id":"abandoned-summary","parentId":"m1","summary":"Abandoned branch"}`,
-		`{"type":"message","id":"m3","parentId":"m2"}`,
-	}
-	if err := os.WriteFile(sessionFile, []byte(strings.Join(entries, "\n")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// A compromised/stale adapter map must not escape Pi's session store. The
-	// verified filename fallback still finds the legitimate session.
-	outsideFile := filepath.Join(homeDir, "outside.jsonl")
-	if err := os.WriteFile(
-		outsideFile,
-		[]byte(`{"type":"session","id":"session-7"}`+"\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	mapDir := filepath.Join(homeDir, ".pi", "pi-acp")
-	if err := os.MkdirAll(mapDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	mapping, err := json.Marshal(map[string]any{
-		"version": 1,
-		"sessions": map[string]any{
-			sessionID: map[string]any{"sessionFile": outsideFile},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(mapDir, "session-map.json"), mapping, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	notification, err := piCompactionSummaryNotification(homeDir, sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var envelope struct {
-		Method string `json:"method"`
-		Params struct {
-			SessionID string `json:"sessionId"`
-			Update    struct {
-				SessionUpdate string         `json:"sessionUpdate"`
-				MessageID     string         `json:"messageId"`
-				Content       map[string]any `json:"content"`
-			} `json:"update"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(notification, &envelope); err != nil {
-		t.Fatal(err)
-	}
-	text, _ := envelope.Params.Update.Content["text"].(string)
-	if envelope.Method != "session/update" || envelope.Params.SessionID != sessionID ||
-		envelope.Params.Update.SessionUpdate != "agent_message_chunk" ||
-		envelope.Params.Update.MessageID == "" ||
-		!strings.Contains(text, "Earlier active work") ||
-		strings.Contains(text, "Abandoned branch") {
-		t.Fatalf("unexpected Pi summary notification: %s", notification)
-	}
-
-	bridge := newOrderingTestBridge()
-	bridge.providerID = piAcpProviderID
-	loadRequest := json.RawMessage(
-		`{"jsonrpc":"2.0","id":7,"method":"session/load","params":{"sessionId":"session-7","cwd":"/repo"}}`,
-	)
-	if got := bridge.piCompactionSummary(loadRequest); !bytes.Equal(got, notification) {
-		t.Fatalf("Pi load summary = %s, want %s", got, notification)
-	}
-	if got := bridge.piCompactionSummary(json.RawMessage(
-		`{"jsonrpc":"2.0","id":8,"method":"session/resume","params":{"sessionId":"session-7"}}`,
-	)); len(got) != 0 {
-		t.Fatalf("session/resume unexpectedly synthesized history: %s", got)
-	}
-	bridge.providerID = "builtin:codex-acp"
-	if got := bridge.piCompactionSummary(loadRequest); len(got) != 0 {
-		t.Fatalf("non-Pi provider unexpectedly synthesized history: %s", got)
-	}
-}
-
 func TestAcpProviderExitWaitsForFinalOutputDrain(t *testing.T) {
 	cmd := newAcpProviderCommand("exit 0")
 	if err := cmd.Start(); err != nil {
@@ -714,7 +620,7 @@ func TestAcpConcurrentStopAndProviderWrite(t *testing.T) {
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
-		_ = bridge.writeProvider(payload, nil)
+		_ = bridge.writeProvider(payload)
 	}()
 
 	// net.Pipe writes block until the peer reads, deterministically overlapping

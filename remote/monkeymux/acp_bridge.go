@@ -223,7 +223,7 @@ func acpStartCommand(args []string) {
 	}
 	buildCommand := func() (*exec.Cmd, io.WriteCloser, error) {
 		// #nosec G204 -- exe is os.Executable(), never provider or user input.
-		cmd := exec.Command(exe, "acp", "serve", "--id", id) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+		cmd := exec.Command(exe, "acp", "serve", "--id", id)
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			return nil, nil, err
@@ -1084,12 +1084,7 @@ func (b *acpBridge) handleAttach(
 				})
 				continue
 			}
-			piSummary := b.piCompactionSummary(message.Data)
-			if err := b.writeProvider(message.Data, func() {
-				if len(piSummary) != 0 {
-					b.publish("output", piSummary, "", nil)
-				}
-			}); err != nil {
+			if err := b.writeProvider(message.Data); err != nil {
 				b.enqueue(client, acpWireMessage{
 					Version: acpBridgeProtocolVersion,
 					Type:    "error",
@@ -1222,7 +1217,7 @@ func (b *acpBridge) recordAck(clientID string, sequence uint64) {
 	}
 }
 
-func (b *acpBridge) writeProvider(data json.RawMessage, beforeNewline func()) error {
+func (b *acpBridge) writeProvider(data json.RawMessage) error {
 	b.stdinMu.Lock()
 	defer b.stdinMu.Unlock()
 	if b.stdin == nil {
@@ -1230,12 +1225,6 @@ func (b *acpBridge) writeProvider(data json.RawMessage, beforeNewline func()) er
 	}
 	if _, err := b.stdin.Write(data); err != nil {
 		return err
-	}
-	// The provider cannot answer until it receives the newline. Publish any
-	// recovered history after the request bytes are accepted, but before the
-	// adapter can stream its compacted tail, for deterministic transcript order.
-	if beforeNewline != nil {
-		beforeNewline()
 	}
 	_, err := b.stdin.Write([]byte{'\n'})
 	return err
@@ -1270,6 +1259,22 @@ func (b *acpBridge) shouldIdleShutdown(now time.Time) bool {
 	defer b.mu.Unlock()
 	return len(b.clients) == 0 && len(b.pendingRequests) == 0 &&
 		len(b.inFlightTurns) == 0 && now.Sub(b.lastActivity) >= acpIdleTimeout
+}
+
+func (b *acpBridge) watchIdle() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if b.shouldIdleShutdown(time.Now()) {
+				b.stop()
+				return
+			}
+		case <-b.done:
+			return
+		}
+	}
 }
 
 func (b *acpBridge) stop() {
