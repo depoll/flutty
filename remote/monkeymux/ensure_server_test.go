@@ -367,8 +367,12 @@ func TestPrepareRunningServerReplacementKeepsServerWithoutSnapshot(
 		serverUpdatePolicyAlways,
 		false,
 	)
-	if err != nil {
-		t.Fatalf("prepareRunningServerReplacement: %v", err)
+	if !errors.Is(err, errServerUpdateNoSnapshot) {
+		t.Fatalf(
+			"prepareRunningServerReplacement error = %v, want %v",
+			err,
+			errServerUpdateNoSnapshot,
+		)
 	}
 	if outcome != nil {
 		t.Fatalf("replacement = %#v, want nil when snapshot fails", outcome)

@@ -83,6 +83,7 @@ class MonkeyMuxServerStatus {
   const MonkeyMuxServerStatus({
     required this.version,
     required this.capabilities,
+    this.nativeAcpWindowCount = 0,
   });
 
   /// Running helper version reported by the server.
@@ -90,6 +91,12 @@ class MonkeyMuxServerStatus {
 
   /// Capability strings reported by the server.
   final Set<String> capabilities;
+
+  /// Number of live native ACP windows reported by the initial window list.
+  final int nativeAcpWindowCount;
+
+  /// Whether replacing this server would interrupt a native agent session.
+  bool get hasNativeAcpWindows => nativeAcpWindowCount > 0;
 
   /// Whether the server can be shut down through the control channel.
   bool get supportsShutdown => capabilities.contains('shutdown');
@@ -1478,6 +1485,7 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
   String command,
 ) async {
   final execSession = await session.execute(command);
+  MonkeyMuxServerStatus? status;
   try {
     execSession.stderr.drain<void>().ignore();
     await for (final line
@@ -1487,16 +1495,36 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
             .transform(const LineSplitter())
             .timeout(const Duration(seconds: 5))) {
       final response = _MonkeyMuxControlResponse.tryParse(line);
-      if (response == null || response.type != 'hello') {
+      if (response == null) {
         continue;
       }
-      return MonkeyMuxServerStatus(
-        version: response.version,
-        capabilities: response.capabilities.toSet(),
-      );
+      if (response.type == 'hello') {
+        status = MonkeyMuxServerStatus(
+          version: response.version,
+          capabilities: response.capabilities.toSet(),
+        );
+        // Helpers without native ACP window support cannot own an in-process
+        // bridge, so their hello is already a complete update-safety answer.
+        if (!status.capabilities.contains('acp-window-v1')) {
+          return status;
+        }
+        continue;
+      }
+      if (response.type == 'window_list' && status != null) {
+        return MonkeyMuxServerStatus(
+          version: status.version,
+          capabilities: status.capabilities,
+          nativeAcpWindowCount: response.windows
+              .where((window) => window.nativeAcpBridgeId?.isNotEmpty ?? false)
+              .length,
+        );
+      }
     }
   } on TimeoutException {
-    return null;
+    // A transitional helper may advertise ACP support but omit its initial
+    // window list. Keep the version answer without claiming an unsafe update
+    // is blocked; the helper's own replacement guard remains authoritative.
+    return status;
   } finally {
     await _closeMonkeyMuxExecSession(
       execSession,
@@ -1504,7 +1532,7 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
       operation: 'server_status',
     );
   }
-  return null;
+  return status;
 }
 
 /// Matches the `major.minor.patch` line `monkeymux version` prints, allowing an

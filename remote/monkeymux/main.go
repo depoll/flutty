@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.169"
+	monkeyMuxVersion                  = "0.1.170"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -262,6 +262,9 @@ var (
 	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
 	errRunCommandTimeout      = errors.New("command timed out")
 	errServerClosed           = errors.New("server is closed")
+	errServerUpdateNoSnapshot = errors.New("MonkeyMux update could not snapshot the running workspace; the existing helper was kept")
+	errServerUpdateNativeACP  = errors.New("MonkeyMux update was deferred because native agent windows are active; close them and reconnect to update")
+	errServerUpdateStillAlive = errors.New("MonkeyMux update could not stop the running workspace; the existing helper was kept")
 )
 
 var nativeAcpWindowArguments = func(bridgeID string) ([]string, error) {
@@ -1996,7 +1999,7 @@ func prepareRunningServerReplacement(
 			session,
 			status.displayVersion(),
 		)
-		return nil, nil
+		return nil, errServerUpdateNoSnapshot
 	}
 	if restoreHasNativeAcpWindows(restore) {
 		fmt.Fprintf(
@@ -2005,7 +2008,7 @@ func prepareRunningServerReplacement(
 			session,
 			status.displayVersion(),
 		)
-		return nil, nil
+		return nil, errServerUpdateNativeACP
 	}
 	oldPID, _ := sessionServerOwner(session)
 	if status.supportsCapability("shutdown") {
@@ -2016,7 +2019,7 @@ func prepareRunningServerReplacement(
 				"monkeymux: running session did not exit; continuing with helper %s\r\n",
 				status.displayVersion(),
 			)
-			return nil, nil
+			return nil, errServerUpdateStillAlive
 		}
 	} else {
 		fmt.Fprintf(

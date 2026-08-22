@@ -188,6 +188,8 @@ void main() {
       );
 
       expect(status.supportsShutdown, isTrue);
+      expect(status.hasNativeAcpWindows, isFalse);
+      expect(status.nativeAcpWindowCount, 0);
       expect(status.supportsViewportClipping, isTrue);
       expect(status.supportsBracketedPasteControlInput, isTrue);
       expect(status.needsUpdate('0.1.13'), isFalse);
@@ -1042,6 +1044,35 @@ void main() {
         "'/home/tester/.monkeyssh/bin/monkeymux' control --json 'work'",
       );
     });
+
+    test(
+      'counts native ACP windows from the initial control snapshot',
+      () async {
+        final client = _MockSshClient();
+        final installer = _MockMonkeyMuxInstaller();
+        final session = _buildSession(client, connectionId: 917);
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (_) async => _buildOutputSession(
+            '{"type":"hello","status":"ok","version":"0.2.4",'
+            '"capabilities":["shutdown","acp-window-v1"]}\n'
+            '{"type":"window_list","status":"ok","windows":['
+            '{"id":"@1","index":0,"name":"Pi","active":true,'
+            '"nativeAcpBridgeId":"0123456789abcdef0123456789abcdef",'
+            '"nativeAcpProviderId":"builtin:pi-acp"},'
+            '{"id":"@2","index":1,"name":"shell","active":false}]}\n',
+          ),
+        );
+
+        final status = await MonkeyMuxService(
+          installer: installer,
+        ).runningServerStatus(session, _fakeInstallation, 'work');
+
+        expect(status, isNotNull);
+        expect(status!.version, '0.2.4');
+        expect(status.hasNativeAcpWindows, isTrue);
+        expect(status.nativeAcpWindowCount, 1);
+      },
+    );
   });
 
   group('MonkeyMuxService.installedHelperVersion', () {

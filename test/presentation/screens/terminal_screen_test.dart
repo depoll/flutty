@@ -8909,6 +8909,7 @@ void main() {
             'MonkeySSH will upload helper 0.1.14. It can then restart this '
             'workspace',
         capabilities: <String>{},
+        nativeAcpWindowCount: 0,
         showsUpgradeDecision: true,
         warningMessage: 'The running helper cannot stop itself cleanly',
         updatePolicy: MonkeyMuxServerUpdatePolicy.always,
@@ -8923,10 +8924,27 @@ void main() {
             'MonkeySSH will upload helper 0.1.14. It can then restart this '
             'workspace',
         capabilities: {'shutdown'},
+        nativeAcpWindowCount: 0,
         showsUpgradeDecision: true,
         warningMessage: 'Updating may briefly interrupt running programs',
         updatePolicy: MonkeyMuxServerUpdatePolicy.never,
         notice: null,
+      ),
+      (
+        name: 'installs but defers updates while native agents are active',
+        runningVersion: '0.1.13',
+        dialogTitle: 'Install bundled MonkeyMux helper?',
+        confirmLabel: 'Install',
+        dialogMessage: '2 active native agent windows',
+        capabilities: {'shutdown', 'acp-window-v1'},
+        nativeAcpWindowCount: 2,
+        showsUpgradeDecision: false,
+        warningMessage: null,
+        updatePolicy: MonkeyMuxServerUpdatePolicy.never,
+        notice:
+            'Keeping MonkeyMux 0.1.13 because 2 active native agent windows '
+            'cannot yet be moved safely to helper 0.1.14. Close the native '
+            'windows, then reconnect to update.',
       ),
       (
         name: 'keeps a newer MonkeyMux server without downgrade guidance',
@@ -8935,6 +8953,7 @@ void main() {
         confirmLabel: 'Install',
         dialogMessage: 'newer than bundled 0.1.14',
         capabilities: {'shutdown'},
+        nativeAcpWindowCount: 0,
         showsUpgradeDecision: false,
         warningMessage: null,
         updatePolicy: MonkeyMuxServerUpdatePolicy.never,
@@ -8949,6 +8968,7 @@ void main() {
         confirmLabel: 'Install',
         dialogMessage: 'running a different MonkeyMux version',
         capabilities: {'shutdown'},
+        nativeAcpWindowCount: 0,
         showsUpgradeDecision: false,
         warningMessage: null,
         updatePolicy: MonkeyMuxServerUpdatePolicy.never,
@@ -8969,10 +8989,12 @@ void main() {
           ..installedHelpersStatus = MonkeyMuxServerStatus(
             version: testCase.runningVersion,
             capabilities: testCase.capabilities,
+            nativeAcpWindowCount: testCase.nativeAcpWindowCount,
           )
           ..runningStatus = MonkeyMuxServerStatus(
             version: testCase.runningVersion,
             capabilities: testCase.capabilities,
+            nativeAcpWindowCount: testCase.nativeAcpWindowCount,
           );
         final tmuxService = _MockTmuxService();
         const sessionName = 'work';
@@ -9076,10 +9098,12 @@ void main() {
 
         expect(find.text(testCase.dialogTitle), findsNothing);
         expect(find.text('Update running MonkeyMux?'), findsNothing);
-        expect(executedCommands, hasLength(1));
-        final startupCommand = executedCommands.single;
+        final attachCommands = executedCommands
+            .where((command) => command.contains(' attach'))
+            .toList(growable: false);
+        expect(attachCommands, hasLength(1));
+        final startupCommand = attachCommands.single;
         expect(startupCommand, contains('/tmp/monkeymux'));
-        expect(startupCommand, contains(' attach'));
         expect(
           startupCommand,
           contains('--update-policy ${testCase.updatePolicy.cliValue}'),
