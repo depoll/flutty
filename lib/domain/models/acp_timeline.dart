@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import 'acp_attachment.dart';
 import 'acp_content.dart';
+import 'acp_json.dart';
 import 'acp_updates.dart';
 
 /// Bounds applied to a single session's in-memory [AcpTimeline].
@@ -53,7 +54,11 @@ String? _claudeParentToolUseId(Map<String, Object?> meta) {
     return null;
   }
   final value = claude['parentToolUseId'];
-  return value is String && value.isNotEmpty ? value : null;
+  return value is String &&
+          value.isNotEmpty &&
+          value.length <= acpMaxIdentifierCharacters
+      ? value
+      : null;
 }
 
 bool _claudeSubagent(Map<String, Object?> meta) {
@@ -370,12 +375,17 @@ int _approximateJsonBytes(Object? value) {
   }
 }
 
-int _approximateMessageBytes(AcpMessageEntry entry) => entry.content.fold<int>(
-  0,
-  (total, block) => total + approximateContentBlockBytes(block),
-);
+int _approximateMessageBytes(AcpMessageEntry entry) =>
+    (entry.messageId?.length ?? 0) +
+    (entry.parentToolCallId?.length ?? 0) +
+    entry.content.fold<int>(
+      0,
+      (total, block) => total + approximateContentBlockBytes(block),
+    );
 
 int _approximateToolCallBytes(AcpToolCallEntry entry) =>
+    entry.toolCallId.length +
+    (entry.parentToolCallId?.length ?? 0) +
     (entry.title?.length ?? 0) +
     entry.content.fold<int>(
       0,

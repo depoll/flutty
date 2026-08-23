@@ -32,6 +32,7 @@ Future<AcpConcurrencyChoice?> showAcpConcurrencyChoice(
   BuildContext context, {
   required AcpConcurrencyRequiresChoice decision,
   required AcpSessionManagerState managerState,
+  bool allowStopAndContinue = true,
 }) {
   final blocking = decision.blockingSessionKeys
       .map(managerState.byKeyValue)
@@ -46,6 +47,7 @@ Future<AcpConcurrencyChoice?> showAcpConcurrencyChoice(
       feature: decision.requiredFeature,
       blocking: blocking,
       blockingCount: decision.blockingSessionKeys.length,
+      allowStopAndContinue: allowStopAndContinue,
     ),
   );
 }
@@ -55,11 +57,13 @@ class _ConcurrencyChoiceSheet extends StatelessWidget {
     required this.feature,
     required this.blocking,
     required this.blockingCount,
+    required this.allowStopAndContinue,
   });
 
   final MonetizationFeature feature;
   final List<AcpSessionState> blocking;
   final int blockingCount;
+  final bool allowStopAndContinue;
 
   @override
   Widget build(BuildContext context) {
@@ -86,9 +90,12 @@ class _ConcurrencyChoiceSheet extends StatelessWidget {
           ),
           const SizedBox(height: FluttyTheme.spacingSm),
           Text(
-            'You already have $blockingCount live agent $label. Free keeps one '
-            'running at a time — stop it to continue, or unlock Pro to keep '
-            'them all live and switch instantly.',
+            allowStopAndContinue
+                ? 'You already have $blockingCount live agent $label. Free '
+                      'keeps one running at a time — stop it to continue, or '
+                      'unlock Pro to keep them all live and switch instantly.'
+                : 'Free keeps one live agent session at a time. Forking must '
+                      'keep the parent alive, so unlock Pro to create a child.',
             style: textTheme.bodyMedium?.copyWith(
               color: colorScheme.onSurfaceVariant,
             ),
@@ -123,13 +130,16 @@ class _ConcurrencyChoiceSheet extends StatelessWidget {
               ),
           ],
           const SizedBox(height: FluttyTheme.spacingLg),
-          FilledButton.icon(
-            onPressed: () =>
-                Navigator.of(context).pop(AcpConcurrencyChoice.stopAndContinue),
-            icon: const Icon(Icons.stop_circle_outlined),
-            label: const Text('Stop and continue free'),
-          ),
-          const SizedBox(height: FluttyTheme.spacingSm),
+          if (allowStopAndContinue) ...[
+            FilledButton.icon(
+              onPressed: () => Navigator.of(
+                context,
+              ).pop(AcpConcurrencyChoice.stopAndContinue),
+              icon: const Icon(Icons.stop_circle_outlined),
+              label: const Text('Stop and continue free'),
+            ),
+            const SizedBox(height: FluttyTheme.spacingSm),
+          ],
           OutlinedButton.icon(
             onPressed: () =>
                 Navigator.of(context).pop(AcpConcurrencyChoice.upgrade),

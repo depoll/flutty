@@ -253,6 +253,25 @@ void main() {
     expect(result.modes?.availableModes.first.description, contains('quality'));
   });
 
+  test('bounds provider plan entry count and content', () {
+    final update =
+        AcpSessionUpdate.fromJson({
+              'sessionUpdate': 'plan',
+              'entries': [
+                for (var index = 0; index < acpMaxPlanEntries + 5; index++)
+                  {
+                    'content': 'x' * (acpMaxPlanEntryCharacters + 10),
+                    'priority': 'medium',
+                    'status': 'pending',
+                  },
+              ],
+            })
+            as AcpPlanUpdate;
+
+    expect(update.entries, hasLength(acpMaxPlanEntries));
+    expect(update.entries.first.content, hasLength(acpMaxPlanEntryCharacters));
+  });
+
   test('parses permissions and forward-compatible stop reasons', () {
     final permission = AcpPermissionRequest.fromJson({
       'sessionId': 'session-1',

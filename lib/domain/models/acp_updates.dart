@@ -49,7 +49,7 @@ final class AcpContentChunkUpdate extends AcpSessionUpdate {
     return AcpContentChunkUpdate(
       kind: AcpJson.string(json, 'sessionUpdate') ?? 'unknown',
       content: AcpContentBlock.fromJson(content),
-      messageId: AcpJson.string(json, 'messageId'),
+      messageId: AcpJson.identifier(json, 'messageId'),
       meta: AcpJson.meta(json),
       extensions: AcpJson.extensions(json, const [
         'sessionUpdate',
@@ -99,6 +99,12 @@ extension type const AcpPlanStatus(String value) {
   static const completed = AcpPlanStatus('completed');
 }
 
+/// Maximum entries retained from one provider plan update.
+const acpMaxPlanEntries = 200;
+
+/// Maximum characters retained for one provider plan entry.
+const acpMaxPlanEntryCharacters = 4096;
+
 /// One task in an ACP execution plan.
 final class AcpPlanEntry implements AcpExtensible {
   /// Creates a plan entry.
@@ -111,17 +117,22 @@ final class AcpPlanEntry implements AcpExtensible {
   });
 
   /// Parses a plan entry.
-  factory AcpPlanEntry.fromJson(AcpJsonMap json) => AcpPlanEntry(
-    content: AcpJson.string(json, 'content') ?? '',
-    priority: AcpPlanPriority(AcpJson.string(json, 'priority') ?? 'medium'),
-    status: AcpPlanStatus(AcpJson.string(json, 'status') ?? 'pending'),
-    meta: AcpJson.meta(json),
-    extensions: AcpJson.extensions(json, const [
-      'content',
-      'priority',
-      'status',
-    ]),
-  );
+  factory AcpPlanEntry.fromJson(AcpJsonMap json) {
+    final content = AcpJson.string(json, 'content') ?? '';
+    return AcpPlanEntry(
+      content: content.length <= acpMaxPlanEntryCharacters
+          ? content
+          : content.substring(0, acpMaxPlanEntryCharacters),
+      priority: AcpPlanPriority(AcpJson.string(json, 'priority') ?? 'medium'),
+      status: AcpPlanStatus(AcpJson.string(json, 'status') ?? 'pending'),
+      meta: AcpJson.meta(json),
+      extensions: AcpJson.extensions(json, const [
+        'content',
+        'priority',
+        'status',
+      ]),
+    );
+  }
 
   /// Human-readable task content.
   final String content;
@@ -154,6 +165,7 @@ final class AcpPlanUpdate extends AcpSessionUpdate {
     for (final item in AcpJson.listField(json, 'entries') ?? const []) {
       final entry = AcpJson.object(item);
       if (entry != null) entries.add(AcpPlanEntry.fromJson(entry));
+      if (entries.length >= acpMaxPlanEntries) break;
     }
     return AcpPlanUpdate(
       entries: List<AcpPlanEntry>.unmodifiable(entries),
@@ -370,7 +382,7 @@ final class AcpToolTerminal extends AcpToolContent {
 
   /// Parses terminal tool content.
   factory AcpToolTerminal.fromJson(AcpJsonMap json) => AcpToolTerminal(
-    terminalId: AcpJson.string(json, 'terminalId') ?? '',
+    terminalId: AcpJson.identifier(json, 'terminalId') ?? '',
     meta: AcpJson.meta(json),
     extensions: AcpJson.extensions(json, const ['type', 'terminalId']),
   );
@@ -465,7 +477,7 @@ final class AcpToolCallUpdate extends AcpSessionUpdate {
     final toolKind = AcpJson.string(json, 'kind');
     final status = AcpJson.string(json, 'status');
     return AcpToolCallUpdate(
-      toolCallId: AcpJson.string(json, 'toolCallId') ?? '',
+      toolCallId: AcpJson.identifier(json, 'toolCallId') ?? '',
       isInitial: isInitial,
       title: AcpJson.string(json, 'title'),
       toolKind: toolKind == null ? null : AcpToolKind(toolKind),
@@ -655,8 +667,8 @@ final class AcpCurrentModeUpdate extends AcpSessionUpdate {
   factory AcpCurrentModeUpdate.fromJson(AcpJsonMap json) =>
       AcpCurrentModeUpdate(
         modeId:
-            AcpJson.string(json, 'currentModeId') ??
-            AcpJson.string(json, 'modeId') ??
+            AcpJson.identifier(json, 'currentModeId') ??
+            AcpJson.identifier(json, 'modeId') ??
             '',
         meta: AcpJson.meta(json),
         extensions: AcpJson.extensions(json, const [
@@ -692,8 +704,8 @@ final class AcpCurrentModelUpdate extends AcpSessionUpdate {
   factory AcpCurrentModelUpdate.fromJson(AcpJsonMap json) =>
       AcpCurrentModelUpdate(
         modelId:
-            AcpJson.string(json, 'currentModelId') ??
-            AcpJson.string(json, 'modelId') ??
+            AcpJson.identifier(json, 'currentModelId') ??
+            AcpJson.identifier(json, 'modelId') ??
             '',
         meta: AcpJson.meta(json),
         extensions: AcpJson.extensions(json, const [
@@ -932,7 +944,7 @@ final class AcpSessionNotification implements AcpExtensible {
         AcpJson.objectField(json, 'update') ??
         const <String, Object?>{'sessionUpdate': 'unknown'};
     return AcpSessionNotification(
-      sessionId: AcpJson.string(json, 'sessionId') ?? '',
+      sessionId: AcpJson.identifier(json, 'sessionId') ?? '',
       update: AcpSessionUpdate.fromJson(update),
       meta: AcpJson.meta(json),
       extensions: AcpJson.extensions(json, const ['sessionId', 'update']),
@@ -980,7 +992,7 @@ final class AcpPermissionOption implements AcpExtensible {
 
   /// Parses a permission option.
   factory AcpPermissionOption.fromJson(AcpJsonMap json) => AcpPermissionOption(
-    id: AcpJson.string(json, 'optionId') ?? '',
+    id: AcpJson.identifier(json, 'optionId') ?? '',
     name: AcpJson.string(json, 'name') ?? '',
     kind: AcpPermissionOptionKind(
       AcpJson.string(json, 'kind') ?? 'reject_once',
@@ -1027,7 +1039,7 @@ final class AcpPermissionRequest implements AcpExtensible {
       if (option != null) options.add(AcpPermissionOption.fromJson(option));
     }
     return AcpPermissionRequest(
-      sessionId: AcpJson.string(json, 'sessionId') ?? '',
+      sessionId: AcpJson.identifier(json, 'sessionId') ?? '',
       toolCall: AcpToolCallUpdate.fromJson(toolCall),
       options: List<AcpPermissionOption>.unmodifiable(options),
       meta: AcpJson.meta(json),

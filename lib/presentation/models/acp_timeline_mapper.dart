@@ -1339,8 +1339,8 @@ AcpUsage? _mapUsage(d.AcpUsageUpdate? usage) {
   if (usage == null) {
     return null;
   }
-  final window = usage.size > 0 ? usage.size : null;
-  final used = usage.used > 0 ? usage.used : null;
+  final window = usage.size >= 0 ? usage.size : null;
+  final used = usage.used >= 0 ? usage.used : null;
   if (window == null && used == null) {
     return null;
   }

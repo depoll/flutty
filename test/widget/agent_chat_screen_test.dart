@@ -877,6 +877,40 @@ void main() {
     expect(find.text('Retry failed.'), findsOneWidget);
   });
 
+  testWidgets('a free fork never offers to stop its own parent session', (
+    tester,
+  ) async {
+    final currentKey = fakeAcpKey();
+    final manager =
+        FakeAcpSessionManager(
+            sessions: [
+              fakeAcpSession(
+                key: currentKey,
+                capabilities: fakeAcpForkCapabilities(),
+              ),
+            ],
+          )
+          ..forkResults.add(
+            AcpSessionLaunchBlocked(
+              AcpConcurrencyRequiresChoice(
+                blockingSessionKeys: [currentKey.value],
+              ),
+            ),
+          );
+    await tester.pumpWidget(_wrap(manager));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Fork session'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Stop and continue free'), findsNothing);
+    expect(find.text('Unlock Pro to keep both'), findsOneWidget);
+    expect(find.textContaining('keep the parent alive'), findsOneWidget);
+    expect(manager.stopped, isEmpty);
+  });
+
   testWidgets(
     'embedded native chat keeps prose proportional and machine text configured',
     (tester) async {

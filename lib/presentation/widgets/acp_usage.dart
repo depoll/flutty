@@ -47,6 +47,15 @@ class AcpUsageView extends StatelessWidget {
     if (usage.totalTokens != null) {
       stats.add('Σ ${_formatTokens(usage.totalTokens!)}');
     }
+    if (stats.isEmpty && usage.contextUsedTokens != null) {
+      final used = usage.contextUsedTokens!;
+      final window = usage.contextWindow;
+      stats.add(
+        window != null && window > 0
+            ? '${_formatTokens(used)} / ${_formatTokens(window)} context'
+            : '${_formatTokens(used)} context tokens',
+      );
+    }
     final fraction = usage.contextFraction;
 
     return Semantics(

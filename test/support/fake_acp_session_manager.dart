@@ -59,6 +59,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
   final List<String> cancelledPermissions = <String>[];
   final List<String> approvedWrites = <String>[];
   final List<String> rejectedWrites = <String>[];
+  final List<({int hostId, String bridgeId})> releasedMuxBridges = [];
   final Map<String, String> pendingWriteContents = <String, String>{};
 
   /// Results returned by successive [forkSession] calls, consumed FIFO. When
@@ -136,6 +137,14 @@ class FakeAcpSessionManager extends AcpSessionManager {
   @override
   Future<void> selectSession(AcpSessionKey key) async {
     selected.add(key.value);
+  }
+
+  @override
+  Future<void> releaseSessionsForClosingMuxWindow({
+    required int hostId,
+    required String bridgeId,
+  }) async {
+    releasedMuxBridges.add((hostId: hostId, bridgeId: bridgeId));
   }
 
   @override

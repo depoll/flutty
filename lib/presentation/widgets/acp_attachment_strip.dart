@@ -189,6 +189,9 @@ class _Thumbnail extends StatelessWidget {
     final candidate = attachment.candidate;
     Widget child;
     if (candidate is AcpMemoryAttachmentCandidate && attachment.isImage) {
+      final cacheSize = (40 * MediaQuery.devicePixelRatioOf(context))
+          .ceil()
+          .clamp(40, 256);
       child = ClipRRect(
         borderRadius: BorderRadius.circular(FluttyTheme.radiusSm - 2),
         child: Image.memory(
@@ -196,6 +199,8 @@ class _Thumbnail extends StatelessWidget {
           width: 40,
           height: 40,
           fit: BoxFit.cover,
+          cacheWidth: cacheSize,
+          cacheHeight: cacheSize,
           gaplessPlayback: true,
           errorBuilder: (_, _, _) => _iconThumb(scheme),
         ),

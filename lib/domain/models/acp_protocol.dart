@@ -388,7 +388,7 @@ final class AcpAuthMethod implements AcpExtensible {
 
   /// Parses an authentication method.
   factory AcpAuthMethod.fromJson(AcpJsonMap json) => AcpAuthMethod(
-    id: AcpJson.string(json, 'id') ?? '',
+    id: AcpJson.identifier(json, 'id') ?? '',
     name: AcpJson.string(json, 'name') ?? '',
     type: AcpJson.string(json, 'type') ?? 'agent',
     description: AcpJson.string(json, 'description'),
@@ -492,7 +492,7 @@ final class AcpSessionInfo implements AcpExtensible {
 
   /// Parses session information.
   factory AcpSessionInfo.fromJson(AcpJsonMap json) => AcpSessionInfo(
-    sessionId: AcpJson.string(json, 'sessionId') ?? '',
+    sessionId: AcpJson.identifier(json, 'sessionId') ?? '',
     cwd:
         AcpJson.string(json, 'cwd') ??
         AcpJson.string(json, 'workingDirectory') ??
@@ -557,7 +557,7 @@ final class AcpSessionMode implements AcpExtensible {
 
   /// Parses a session mode.
   factory AcpSessionMode.fromJson(AcpJsonMap json) => AcpSessionMode(
-    id: AcpJson.string(json, 'id') ?? '',
+    id: AcpJson.identifier(json, 'id') ?? '',
     name: AcpJson.string(json, 'name') ?? '',
     description: AcpJson.string(json, 'description'),
     meta: AcpJson.meta(json),
@@ -598,7 +598,7 @@ final class AcpSessionModeState implements AcpExtensible {
       if (mode != null) modes.add(AcpSessionMode.fromJson(mode));
     }
     return AcpSessionModeState(
-      currentModeId: AcpJson.string(json, 'currentModeId') ?? '',
+      currentModeId: AcpJson.identifier(json, 'currentModeId') ?? '',
       availableModes: List<AcpSessionMode>.unmodifiable(modes),
       meta: AcpJson.meta(json),
       extensions: AcpJson.extensions(json, const [
@@ -635,9 +635,9 @@ final class AcpModelInfo implements AcpExtensible {
   /// Parses model information.
   factory AcpModelInfo.fromJson(AcpJsonMap json) => AcpModelInfo(
     id:
-        AcpJson.string(json, 'id') ??
-        AcpJson.string(json, 'modelId') ??
-        AcpJson.string(json, 'value') ??
+        AcpJson.identifier(json, 'id') ??
+        AcpJson.identifier(json, 'modelId') ??
+        AcpJson.identifier(json, 'value') ??
         '',
     name: AcpJson.string(json, 'name') ?? AcpJson.string(json, 'title') ?? '',
     description: AcpJson.string(json, 'description'),
@@ -691,8 +691,8 @@ final class AcpModelState implements AcpExtensible {
     }
     return AcpModelState(
       currentModelId:
-          AcpJson.string(json, 'currentModelId') ??
-          AcpJson.string(json, 'modelId') ??
+          AcpJson.identifier(json, 'currentModelId') ??
+          AcpJson.identifier(json, 'modelId') ??
           '',
       availableModels: List<AcpModelInfo>.unmodifiable(models),
       meta: AcpJson.meta(json),
@@ -731,7 +731,7 @@ final class AcpConfigValue implements AcpExtensible {
 
   /// Parses a configuration value.
   factory AcpConfigValue.fromJson(AcpJsonMap json) => AcpConfigValue(
-    value: AcpJson.string(json, 'value') ?? '',
+    value: AcpJson.identifier(json, 'value') ?? '',
     name: AcpJson.string(json, 'name') ?? '',
     description: AcpJson.string(json, 'description'),
     meta: AcpJson.meta(json),
@@ -777,7 +777,7 @@ final class AcpConfigValueGroup implements AcpExtensible {
       if (option != null) options.add(AcpConfigValue.fromJson(option));
     }
     return AcpConfigValueGroup(
-      id: AcpJson.string(json, 'group') ?? '',
+      id: AcpJson.identifier(json, 'group') ?? '',
       name: AcpJson.string(json, 'name') ?? '',
       options: List<AcpConfigValue>.unmodifiable(options),
       meta: AcpJson.meta(json),
@@ -858,9 +858,9 @@ final class AcpSelectConfigOption extends AcpSessionConfigOption {
       }
     }
     return AcpSelectConfigOption(
-      id: AcpJson.string(json, 'id') ?? '',
+      id: AcpJson.identifier(json, 'id') ?? '',
       name: AcpJson.string(json, 'name') ?? '',
-      currentValue: AcpJson.string(json, 'currentValue') ?? '',
+      currentValue: AcpJson.identifier(json, 'currentValue') ?? '',
       options: List<AcpConfigValue>.unmodifiable(options),
       groups: List<AcpConfigValueGroup>.unmodifiable(groups),
       description: AcpJson.string(json, 'description'),
@@ -925,7 +925,7 @@ final class AcpBooleanConfigOption extends AcpSessionConfigOption {
   /// Parses a boolean configuration option.
   factory AcpBooleanConfigOption.fromJson(AcpJsonMap json) =>
       AcpBooleanConfigOption(
-        id: AcpJson.string(json, 'id') ?? '',
+        id: AcpJson.identifier(json, 'id') ?? '',
         name: AcpJson.string(json, 'name') ?? '',
         currentValue: AcpJson.boolean(json, 'currentValue') ?? false,
         description: AcpJson.string(json, 'description'),
@@ -983,7 +983,7 @@ final class AcpUnknownConfigOption extends AcpSessionConfigOption {
   /// Parses an unknown configuration option.
   factory AcpUnknownConfigOption.fromJson(AcpJsonMap json) =>
       AcpUnknownConfigOption(
-        id: AcpJson.string(json, 'id') ?? '',
+        id: AcpJson.identifier(json, 'id') ?? '',
         name: AcpJson.string(json, 'name') ?? '',
         type: AcpJson.string(json, 'type') ?? 'unknown',
         raw: AcpJson.immutableObject(json),
@@ -1100,7 +1100,7 @@ final class AcpSessionSetupResult implements AcpExtensible {
       }
     }
     return AcpSessionSetupResult(
-      sessionId: AcpJson.string(json, 'sessionId'),
+      sessionId: AcpJson.identifier(json, 'sessionId'),
       modes: modes == null
           ? _modeStateFromProviderMeta(meta)
           : AcpSessionModeState.fromJson(modes),
@@ -1157,7 +1157,7 @@ final class AcpSessionListResult implements AcpExtensible {
     }
     return AcpSessionListResult(
       sessions: List<AcpSessionInfo>.unmodifiable(sessions),
-      nextCursor: AcpJson.string(json, 'nextCursor'),
+      nextCursor: AcpJson.identifier(json, 'nextCursor'),
       meta: AcpJson.meta(json),
       extensions: AcpJson.extensions(json, const ['sessions', 'nextCursor']),
     );

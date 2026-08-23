@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/acp_json.dart';
 import '../models/acp_recent_session.dart';
 import '../models/acp_session_keys.dart';
 import 'settings_service.dart';
@@ -161,10 +162,13 @@ class AcpRecentSessionsService {
     if (hostId is! int ||
         providerId is! String ||
         providerId.isEmpty ||
+        providerId.length > acpMaxIdentifierCharacters ||
         bridgeId is! String ||
         bridgeId.isEmpty ||
+        bridgeId.length > acpMaxIdentifierCharacters ||
         acpSessionId is! String ||
-        acpSessionId.isEmpty) {
+        acpSessionId.isEmpty ||
+        acpSessionId.length > acpMaxIdentifierCharacters) {
       return null;
     }
     return AcpSessionKey.of(

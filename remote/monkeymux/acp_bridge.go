@@ -988,24 +988,38 @@ func (b *acpBridge) appendReplayLocked(message acpWireMessage, pendingID string)
 }
 
 func (b *acpBridge) trimReplayLocked() {
-	for len(b.replay) > acpReplayMaxEvents ||
-		(b.replayBytes > acpReplayMaxBytes && len(b.replay) > 1) {
-		index := -1
-		for i, event := range b.replay {
-			if event.pendingID == "" {
-				index = i
-				break
-			}
+	remainingEvents := len(b.replay)
+	remainingBytes := b.replayBytes
+	remove := make([]bool, len(b.replay))
+	removed := 0
+	for index, event := range b.replay {
+		overLimit := remainingEvents > acpReplayMaxEvents ||
+			(remainingBytes > acpReplayMaxBytes && remainingEvents > 1)
+		if !overLimit {
+			break
 		}
-		if index < 0 {
-			// Active provider requests (notably permissions) have to survive
-			// detachment verbatim. They are still memory-only and are released
-			// as soon as the app sends the matching response.
-			return
+		if event.pendingID != "" {
+			continue
 		}
-		b.replayBytes -= b.replay[index].bytes
-		b.replay = append(b.replay[:index], b.replay[index+1:]...)
+		remove[index] = true
+		removed++
+		remainingEvents--
+		remainingBytes -= event.bytes
 	}
+	if removed == 0 {
+		// Active provider requests (notably permissions) have to survive
+		// detachment verbatim. They are still memory-only and are released
+		// as soon as the app sends the matching response.
+		return
+	}
+	kept := make([]acpReplayEvent, 0, remainingEvents)
+	for index, event := range b.replay {
+		if !remove[index] {
+			kept = append(kept, event)
+		}
+	}
+	b.replay = kept
+	b.replayBytes = remainingBytes
 }
 
 func (b *acpBridge) releasePendingReplayLocked(id string) {

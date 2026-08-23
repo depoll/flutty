@@ -1887,6 +1887,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         context,
         decision: decision,
         managerState: manager.state,
+        allowStopAndContinue: !decision.blockingSessionKeys.contains(
+          _key.value,
+        ),
       );
       if (choice == null || !mounted) {
         return;

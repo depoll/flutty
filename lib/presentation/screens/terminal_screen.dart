@@ -11729,29 +11729,37 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
         case TmuxCloseWindowAction(:final windowIndex):
           final closingWindow = _resolveTmuxWindowByTarget(windowIndex);
-          if (closingWindow?.isNativeAcp ?? false) {
-            final bridgeId = closingWindow!.nativeAcpBridgeId!;
-            final manager = ref.read(acpSessionManagerProvider);
-            final closingKeys = manager.state.sessions
-                .where(
-                  (nativeSession) =>
-                      nativeSession.key.hostId == session.hostId &&
-                      nativeSession.key.bridgeId == bridgeId,
-                )
-                .map((nativeSession) => nativeSession.key)
-                .toList(growable: false);
-            if (_activeNativeAcpSessionKey?.bridgeId == bridgeId) {
-              _showTerminalViewport();
-            }
-            await manager.releaseSessionsForClosingMuxWindow(
-              hostId: session.hostId,
-              bridgeId: bridgeId,
-            );
-            for (final key in closingKeys) {
-              _nativeAcpScrollStates.remove(key.value);
-            }
+          if (!(closingWindow?.isNativeAcp ?? false)) {
+            await _closeTmuxWindow(session, windowIndex);
+            break;
           }
+
+          final bridgeId = closingWindow!.nativeAcpBridgeId!;
+          final manager = ref.read(acpSessionManagerProvider);
+          final closingKeys = manager.state.sessions
+              .where(
+                (nativeSession) =>
+                    nativeSession.key.hostId == session.hostId &&
+                    nativeSession.key.bridgeId == bridgeId,
+              )
+              .map((nativeSession) => nativeSession.key)
+              .toList(growable: false);
+
+          // The mux close owns remote bridge termination. Keep every local
+          // controller and concurrency lease until that close is confirmed so
+          // a transport/control failure leaves a retryable, still-accounted
+          // native window instead of an untracked provider.
           await _closeTmuxWindow(session, windowIndex);
+          if (_activeNativeAcpSessionKey?.bridgeId == bridgeId) {
+            _showTerminalViewport();
+          }
+          await manager.releaseSessionsForClosingMuxWindow(
+            hostId: session.hostId,
+            bridgeId: bridgeId,
+          );
+          for (final key in closingKeys) {
+            _nativeAcpScrollStates.remove(key.value);
+          }
       }
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(

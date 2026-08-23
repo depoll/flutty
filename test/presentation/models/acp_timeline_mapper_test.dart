@@ -162,6 +162,20 @@ void main() {
     expect(usage.contextWindow, 100);
   });
 
+  test('preserves a reported zero usage update', () {
+    final entries = mapAcpSessionTimeline(
+      _state(
+        timeline: AcpTimeline(),
+        usage: const AcpUsageUpdate(used: 0, size: 0),
+      ),
+    );
+
+    final usage = entries.whereType<p.AcpUsageEntry>().single.usage;
+    expect(usage.contextUsedTokens, 0);
+    expect(usage.contextWindow, 0);
+    expect(usage.hasData, isTrue);
+  });
+
   test('groups Claude parent-linked updates under the launching subagent', () {
     final timeline = AcpTimeline(
       entries: [

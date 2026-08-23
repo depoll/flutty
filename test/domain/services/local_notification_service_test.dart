@@ -207,6 +207,10 @@ void main() {
         acpNotificationIdFor(write),
         inInclusiveRange(0x40000000, 0x7fffffff),
       );
+      expect(
+        buildTerminalNotificationId(3, identifier: 'session-2'),
+        inInclusiveRange(0, 0x3fffffff),
+      );
     });
 
     test('ignores malformed and unrelated payloads', () {

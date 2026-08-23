@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'acp_json.dart';
 import 'acp_session_keys.dart';
 
 /// Maximum persisted provider-title characters for one recent session.
@@ -156,7 +157,9 @@ final class AcpRecentSessionRef {
   static String? _readNonEmptyString(Object? value) {
     if (value is! String) return null;
     final trimmed = value.trim();
-    return trimmed.isEmpty ? null : trimmed;
+    return trimmed.isEmpty || trimmed.length > acpMaxIdentifierCharacters
+        ? null
+        : trimmed;
   }
 
   static String? _readOptionalString(Object? value, int maxCharacters) {

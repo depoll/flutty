@@ -25,6 +25,14 @@ void main() {
     );
   });
 
+  test('rejects provider identifiers above the retained-state bound', () {
+    final maximum = 'x' * acpMaxIdentifierCharacters;
+    final oversized = '$maximum!';
+
+    expect(AcpJson.identifier({'id': maximum}, 'id'), maximum);
+    expect(AcpJson.identifier({'id': oversized}, 'id'), isNull);
+  });
+
   test('meta and extensions recursively freeze unknown data', () {
     final input = <String, Object?>{
       '_meta': <String, Object?>{

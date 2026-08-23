@@ -4219,9 +4219,20 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
               child: AcpMuxWindowStatusBadge(session: session),
             ),
             GestureDetector(
-              onTap: () => unawaited(
-                ref.read(acpSessionManagerProvider).stopSession(key),
-              ),
+              onTap: () async {
+                try {
+                  await ref.read(acpSessionManagerProvider).stopSession(key);
+                } on Object {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Could not stop the native session. Try again.',
+                      ),
+                    ),
+                  );
+                }
+              },
               child: Icon(
                 Icons.close,
                 size: 14,

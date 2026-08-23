@@ -1288,7 +1288,7 @@ void main() {
     ]);
   });
 
-  test('reports overflow without mixing it into ACP bytes', () async {
+  test('reports overflow and accepts the first post-snapshot event', () async {
     late _TestChannel channel;
     channel = _TestChannel(
       onWrite: (value) {
@@ -1310,7 +1310,7 @@ void main() {
               'version': 1,
               'type': 'overflow',
               'bridgeId': _bridgeId,
-              'retainedFrom': 5,
+              'retainedFrom': 3,
             }),
           )
           ..addText(
@@ -1318,8 +1318,17 @@ void main() {
               'version': 1,
               'type': 'output',
               'bridgeId': _bridgeId,
-              'sequence': 5,
+              'sequence': 3,
               'data': {'jsonrpc': '2.0', 'method': 'retained'},
+            }),
+          )
+          ..addText(
+            _frame({
+              'version': 1,
+              'type': 'output',
+              'bridgeId': _bridgeId,
+              'sequence': 6,
+              'data': {'jsonrpc': '2.0', 'method': 'live'},
             }),
           );
       },
@@ -1345,15 +1354,78 @@ void main() {
     addTearDown(transport.close);
     final errorFuture = transport.errors.first;
 
-    final bytes = await transport.incoming.first;
+    final bytes = await transport.incoming.take(2).toList();
 
     expect(
       (await errorFuture).kind,
       MonkeyMuxAcpBridgeErrorKind.replayOverflow,
     );
-    expect(jsonDecode(utf8.decode(bytes)), containsPair('method', 'retained'));
-    expect(transport.lastDeliveredSequence, 5);
+    expect(
+      bytes.map(
+        (frame) =>
+            (jsonDecode(utf8.decode(frame)) as Map<String, dynamic>)['method'],
+      ),
+      ['retained', 'live'],
+    );
+    expect(transport.lastDeliveredSequence, 6);
   });
+
+  test(
+    'malformed live status metadata fails the transport terminally',
+    () async {
+      late _TestChannel channel;
+      channel = _TestChannel(
+        onWrite: (value) {
+          final message = jsonDecode(value) as Map<String, dynamic>;
+          if (message['type'] != 'hello') return;
+          channel
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'hello',
+                'bridgeId': _bridgeId,
+                'clientId': _otherBridgeId,
+                'canSend': true,
+                'bridge': _metadata(),
+              }),
+            )
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'status',
+                'bridgeId': _bridgeId,
+                'bridge': 'invalid',
+              }),
+            );
+        },
+      );
+      final client = _MockSshClient();
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => channel.session);
+      final transport =
+          MonkeyMuxAcpBridgeService(
+            installer: _FakeInstaller(
+              const MonkeyMuxInstallation(
+                executablePath: '/helper',
+                platform: 'linux-amd64',
+                version: 'test',
+              ),
+            ),
+          ).connect(
+            sessionProvider: () async => _sshSession(client),
+            bridgeId: _bridgeId,
+            providerId: 'copilot',
+          );
+      addTearDown(transport.close);
+
+      expect(
+        (await transport.errors.first).kind,
+        MonkeyMuxAcpBridgeErrorKind.invalidMetadata,
+      );
+      await expectLater(transport.incoming, emitsDone);
+    },
+  );
 
   test('large replay yields while preserving every ordered frame', () async {
     const outputCount = 600;

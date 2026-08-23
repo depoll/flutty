@@ -11,6 +11,9 @@ final class _ServerTransport implements AcpTransport {
   final _incoming = StreamController<List<int>>();
   final requests = <Map<String, Object?>>[];
   bool closed = false;
+  bool advertiseLoad = false;
+  bool holdLoad = false;
+  Object? heldLoadRequestId;
 
   @override
   Stream<List<int>> get incoming => _incoming.stream;
@@ -46,6 +49,7 @@ final class _ServerTransport implements AcpTransport {
           'result': {
             'protocolVersion': 1,
             'agentCapabilities': {
+              'loadSession': advertiseLoad,
               'sessionCapabilities': {
                 'list': <String, Object?>{},
                 'fork': <String, Object?>{},
@@ -55,6 +59,16 @@ final class _ServerTransport implements AcpTransport {
               },
             },
           },
+        });
+      case 'session/load':
+        if (holdLoad) {
+          heldLoadRequestId = id;
+          return;
+        }
+        send({
+          'jsonrpc': '2.0',
+          'id': id,
+          'result': {'sessionId': 'session-1'},
         });
       case 'session/list':
         final params = request['params'] as Map;
@@ -86,6 +100,14 @@ final class _ServerTransport implements AcpTransport {
       default:
         send({'jsonrpc': '2.0', 'id': id, 'result': <String, Object?>{}});
     }
+  }
+
+  void completeHeldLoad() {
+    send({
+      'jsonrpc': '2.0',
+      'id': heldLoadRequestId,
+      'result': {'sessionId': 'session-1'},
+    });
   }
 
   @override
@@ -208,6 +230,34 @@ void main() {
         (request as AcpPermissionServerRequest).raw.id,
         'early-permission',
       );
+      await client.close();
+    },
+  );
+
+  test(
+    'load replay is not limited by the connection default timeout',
+    () async {
+      final transport = _ServerTransport()..advertiseLoad = true;
+      final connection = AcpJsonRpcConnection(
+        transport: transport,
+        defaultRequestTimeout: const Duration(milliseconds: 5),
+      );
+      final client = AcpClient(connection);
+      await client.initialize();
+      transport.holdLoad = true;
+
+      var completed = false;
+      final load = client
+          .loadSession(sessionId: 'session-1', cwd: '/repo')
+          .then((value) {
+            completed = true;
+            return value;
+          });
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(completed, isFalse);
+
+      transport.completeHeldLoad();
+      expect((await load).sessionId, 'session-1');
       await client.close();
     },
   );

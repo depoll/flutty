@@ -8108,9 +8108,18 @@ void main() {
         await tester.pump();
         expect(find.text('Closing native task'), findsNothing);
         expect(find.textContaining('reconnecting'), findsNothing);
+        expect(
+          acpManager.releasedMuxBridges,
+          isEmpty,
+          reason: 'local ownership stays until remote close succeeds',
+        );
 
         closeWindowCompleter.complete();
         await tester.pump();
+        await tester.pump();
+        expect(acpManager.releasedMuxBridges, [
+          (hostId: host.id, bridgeId: bridgeId),
+        ]);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

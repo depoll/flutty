@@ -1,3 +1,9 @@
+/// Maximum UTF-16 code units accepted for provider-controlled identifiers.
+///
+/// Identifiers are retained in maps and rendered as widget keys, so they must
+/// not be allowed to bypass the normal timeline memory budget.
+const acpMaxIdentifierCharacters = 4096;
+
 /// A JSON object used by the Agent Client Protocol.
 typedef AcpJsonMap = Map<String, Object?>;
 
@@ -24,6 +30,15 @@ abstract final class AcpJson {
   static String? string(AcpJsonMap json, String key) {
     final value = json[key];
     return value is String ? value : null;
+  }
+
+  /// Returns a bounded provider-controlled identifier field.
+  static String? identifier(AcpJsonMap json, String key) {
+    final value = string(json, key);
+    if (value == null || value.length > acpMaxIdentifierCharacters) {
+      return null;
+    }
+    return value;
   }
 
   /// Returns a JSON boolean field.

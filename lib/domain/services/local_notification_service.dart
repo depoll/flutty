@@ -327,7 +327,7 @@ class TerminalNotificationPayload {
 /// Kitty's protocol identifier makes create/update/close actions address the
 /// same local notification without exposing that user-controlled string.
 int buildTerminalNotificationId(int connectionId, {String? identifier}) =>
-    Object.hash('terminal-notification', connectionId, identifier) & 0x7fffffff;
+    Object.hash('terminal-notification', connectionId, identifier) & 0x3fffffff;
 
 /// Builds the terminal route location for a terminal notification tap.
 String buildTerminalNotificationLocation(TerminalNotificationPayload payload) =>

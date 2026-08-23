@@ -61,6 +61,21 @@ class _RecordingManager extends AcpSessionManager {
   }
 }
 
+class _ThrowingUploader implements AcpAttachmentUploader {
+  @override
+  Future<AcpUploadedAttachment> upload({
+    required String originalName,
+    required String mimeType,
+    required Stream<List<int>> stream,
+    required int? totalBytes,
+    required int maxBytes,
+    required int attachmentIndex,
+    required int attachmentCount,
+    required AcpAttachmentCancellationToken cancellationToken,
+    void Function(AcpAttachmentUploadProgress progress)? onProgress,
+  }) => throw StateError('unexpected uploader failure');
+}
+
 class _GatedUploader implements AcpAttachmentUploader {
   _GatedUploader({this.gate});
 
@@ -217,6 +232,34 @@ void main() {
     expect(content[1], isA<AcpImageContent>());
     gate.complete();
     await Future<void>.delayed(Duration.zero);
+  });
+
+  test('unexpected preparation failure preserves an editable draft', () async {
+    final manager = _RecordingManager();
+    final controller = _controller(
+      manager,
+      uploaderBuilder: _ThrowingUploader.new,
+    )..setText('keep this draft');
+    addTearDown(controller.dispose);
+    controller
+      ..addAttachment(
+        AcpAttachmentCandidate.memory(
+          name: 'shot.png',
+          bytes: _png(),
+          mimeType: 'image/png',
+        ),
+      )
+      ..setAttachmentFallback(
+        controller.attachments.single.id,
+        AcpAttachmentFallback.remoteUpload,
+      );
+
+    expect(await controller.send(), isFalse);
+    expect(controller.text, 'keep this draft');
+    expect(controller.attachments, hasLength(1));
+    expect(controller.isEditable, isTrue);
+    expect(controller.error?.message, contains('could not be prepared'));
+    expect(manager.prompts, isEmpty);
   });
 
   test('preserves mixed attachment ordering in the prepared content', () async {

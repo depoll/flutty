@@ -816,36 +816,40 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
-    switch (type) {
-      case 'hello':
-        _handleHello(message);
-      case 'output':
-        _handleOutput(message);
-      case 'pending':
-        _handlePending(message);
-      case 'replay_end':
-        _handleReplayEnd(message);
-      case 'state':
-        _handleProviderState(message);
-      case 'overflow':
-        _handleOverflow(message);
-      case 'status':
-        final metadata = _parseBridgeMetadata(message['bridge']);
-        _emitState(
-          _connected
-              ? MonkeyMuxAcpTransportStatus.connected
-              : MonkeyMuxAcpTransportStatus.connecting,
-          providerState: metadata.state,
-        );
-      case 'error':
-        _handleBridgeError(message);
-      default:
-        _failTerminal(
-          const MonkeyMuxAcpBridgeException(
-            MonkeyMuxAcpBridgeErrorKind.invalidFrame,
-            'The helper returned an unknown bridge frame type.',
-          ),
-        );
+    try {
+      switch (type) {
+        case 'hello':
+          _handleHello(message);
+        case 'output':
+          _handleOutput(message);
+        case 'pending':
+          _handlePending(message);
+        case 'replay_end':
+          _handleReplayEnd(message);
+        case 'state':
+          _handleProviderState(message);
+        case 'overflow':
+          _handleOverflow(message);
+        case 'status':
+          final metadata = _parseBridgeMetadata(message['bridge']);
+          _emitState(
+            _connected
+                ? MonkeyMuxAcpTransportStatus.connected
+                : MonkeyMuxAcpTransportStatus.connecting,
+            providerState: metadata.state,
+          );
+        case 'error':
+          _handleBridgeError(message);
+        default:
+          _failTerminal(
+            const MonkeyMuxAcpBridgeException(
+              MonkeyMuxAcpBridgeErrorKind.invalidFrame,
+              'The helper returned an unknown bridge frame type.',
+            ),
+          );
+      }
+    } on MonkeyMuxAcpBridgeException catch (error) {
+      _failTerminal(error);
     }
   }
 
@@ -1290,6 +1294,15 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     final replayHighWater = _replayWindowHighWaterSequence;
     if (replayHighWater != null) {
       final retainedFrom = _replayWindowRetainedFrom!;
+      if (sequence == replayHighWater + 1) {
+        // Overflow already disclosed that the replay is incomplete. The
+        // snapshot high-water may itself be one of the omitted events, so the
+        // first atomically queued live event commits that disclosed baseline.
+        _lastDeliveredSequence = replayHighWater;
+        _replayWindowRetainedFrom = null;
+        _replayWindowHighWaterSequence = null;
+        return true;
+      }
       if (sequence <= _lastDeliveredSequence ||
           sequence < retainedFrom ||
           sequence > replayHighWater) {

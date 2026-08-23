@@ -241,14 +241,19 @@ final class AcpClient {
       'session/load',
       _initialization?.agentCapabilities.loadSession ?? true,
     );
-    return _sessionSetupRequest('session/load', <String, Object?>{
-      'sessionId': sessionId,
-      'cwd': cwd,
-      'mcpServers': mcpServers,
-      if (additionalDirectories.isNotEmpty)
-        'additionalDirectories': additionalDirectories,
-      if (meta.isNotEmpty) '_meta': meta,
-    }, timeout);
+    return _sessionSetupRequest(
+      'session/load',
+      <String, Object?>{
+        'sessionId': sessionId,
+        'cwd': cwd,
+        'mcpServers': mcpServers,
+        if (additionalDirectories.isNotEmpty)
+          'additionalDirectories': additionalDirectories,
+        if (meta.isNotEmpty) '_meta': meta,
+      },
+      timeout,
+      noTimeout: timeout == null,
+    );
   }
 
   /// Resumes a stored ACP session without requiring history replay.
@@ -264,14 +269,19 @@ final class AcpClient {
       'session/resume',
       _initialization?.agentCapabilities.session.resume ?? true,
     );
-    return _sessionSetupRequest('session/resume', <String, Object?>{
-      'sessionId': sessionId,
-      'cwd': cwd,
-      'mcpServers': mcpServers,
-      if (additionalDirectories.isNotEmpty)
-        'additionalDirectories': additionalDirectories,
-      if (meta.isNotEmpty) '_meta': meta,
-    }, timeout);
+    return _sessionSetupRequest(
+      'session/resume',
+      <String, Object?>{
+        'sessionId': sessionId,
+        'cwd': cwd,
+        'mcpServers': mcpServers,
+        if (additionalDirectories.isNotEmpty)
+          'additionalDirectories': additionalDirectories,
+        if (meta.isNotEmpty) '_meta': meta,
+      },
+      timeout,
+      noTimeout: timeout == null,
+    );
   }
 
   /// Forks a session using the unstable ACP v1 extension.
@@ -417,12 +427,14 @@ final class AcpClient {
   Future<AcpSessionSetupResult> _sessionSetupRequest(
     String method,
     AcpJsonMap params,
-    Duration? timeout,
-  ) async {
+    Duration? timeout, {
+    bool noTimeout = false,
+  }) async {
     final result = await connection.request(
       method,
       params: params,
       timeout: timeout,
+      noTimeout: noTimeout,
     );
     return AcpSessionSetupResult.fromJson(_requireObject(result));
   }

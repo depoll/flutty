@@ -538,6 +538,21 @@ class AcpComposerController extends ChangeNotifier {
       _applyAttachmentFailure(exception);
       notifyListeners();
       return false;
+    } on Object {
+      if (_isStale(generation)) {
+        return false;
+      }
+      _cancellation = null;
+      _sendState = _SendState.idle;
+      _markAttachments(AcpComposerAttachmentStatus.ready, clearProgress: true);
+      _setError(
+        const AcpComposerError(
+          AcpComposerErrorKind.send,
+          'Your message could not be prepared. Try again.',
+        ),
+      );
+      notifyListeners();
+      return false;
     }
 
     if (_isStale(generation)) {
