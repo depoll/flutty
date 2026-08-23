@@ -501,6 +501,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   final _wireInputChunks = Queue<({int generation, Uint8List bytes})>();
   final _outgoingFrame = <int>[];
   final _pendingInputFrames = Queue<Uint8List>();
+  final _pendingReplayFrames = Queue<Uint8List>();
 
   SSHSession? _channel;
   StreamSubscription<Uint8List>? _stdoutSubscription;
@@ -512,10 +513,15 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   var _generation = 0;
   var _reconnectAttempt = 0;
   var _lastDeliveredSequence = 0;
+  var _freshBaselineEstablished = false;
+  var _skippedHistoricalReplay = false;
+  var _pendingOnlyHandshakeRequested = false;
+  var _acceptsPendingFrames = false;
   var _connected = false;
   var _closed = false;
   var _terminalFailure = false;
   int? _handshakeHighWaterSequence;
+  var _pendingHandshakeRequestCount = 0;
   int? _replayWindowRetainedFrom;
   int? _replayWindowHighWaterSequence;
   Uint8List? _activeWireInputChunk;
@@ -539,6 +545,9 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
 
   /// Whether the writer handshake completed.
   bool get isConnected => _connected;
+
+  /// Whether the first handshake deliberately skipped superseded replay.
+  bool didSkipHistoricalReplay() => _skippedHistoricalReplay;
 
   @override
   Stream<List<int>> get incoming => _incoming.stream;
@@ -615,11 +624,15 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
           TimeoutException('ACP bridge handshake timed out'),
         ),
       );
+      _pendingOnlyHandshakeRequested =
+          !_freshBaselineEstablished && _lastDeliveredSequence == 0;
+      _acceptsPendingFrames = false;
       _sendWire({
         'version': monkeyMuxAcpBridgeProtocolVersion,
         'type': 'hello',
         'bridgeId': _bridgeId,
         'lastAck': _lastDeliveredSequence,
+        if (_pendingOnlyHandshakeRequested) 'replayMode': 'pending',
       });
       _diagnostics.debug(
         'acp.transport',
@@ -732,6 +745,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   void _discardWireInput() {
     _wireFrame.clear();
     _wireInputChunks.clear();
+    _pendingReplayFrames.clear();
     _activeWireInputChunk = null;
     _activeWireInputOffset = 0;
     _wireInputPumpStopwatch = null;
@@ -784,6 +798,10 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
         _handleHello(message);
       case 'output':
         _handleOutput(message);
+      case 'pending':
+        _handlePending(message);
+      case 'replay_end':
+        _handleReplayEnd(message);
       case 'state':
         _handleProviderState(message);
       case 'overflow':
@@ -851,6 +869,26 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
+    final replayMode = message['replayMode'];
+    if (replayMode != null && replayMode != 'pending') {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.invalidFrame,
+          'The helper returned an invalid replay mode.',
+        ),
+      );
+      return;
+    }
+    final pendingOnly =
+        _pendingOnlyHandshakeRequested && replayMode == 'pending';
+    _acceptsPendingFrames = pendingOnly;
+    _pendingHandshakeRequestCount = pendingOnly
+        ? metadata.pendingRequestCount
+        : 0;
+    if (!pendingOnly) {
+      _freshBaselineEstablished = true;
+      _pendingOnlyHandshakeRequested = false;
+    }
     _handshakeHighWaterSequence = metadata.nextSequence;
     _replayWindowRetainedFrom = null;
     _replayWindowHighWaterSequence = null;
@@ -873,6 +911,51 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       MonkeyMuxAcpTransportStatus.connected,
       providerState: metadata.state,
     );
+    if (!pendingOnly) _flushPendingInput();
+  }
+
+  void _handleReplayEnd(Map<String, Object?> message) {
+    if (!_matchesCurrentBridge(message)) return;
+    if (!_connected ||
+        !_acceptsPendingFrames ||
+        message['replayMode'] != 'pending') {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.invalidFrame,
+          'The helper ended pending replay outside its negotiated handshake.',
+        ),
+      );
+      return;
+    }
+    final highWater = _handshakeHighWaterSequence;
+    if (highWater == null || highWater < _lastDeliveredSequence) {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.sequenceGap,
+          'The pending replay baseline regressed.',
+        ),
+      );
+      return;
+    }
+    final skippedSequenceCount = highWater - _lastDeliveredSequence;
+    _lastDeliveredSequence = highWater;
+    _skippedHistoricalReplay = true;
+    _freshBaselineEstablished = true;
+    _pendingOnlyHandshakeRequested = false;
+    _acceptsPendingFrames = false;
+    if (_lastDeliveredSequence > 0) _sendAck(_lastDeliveredSequence);
+    _diagnostics.info(
+      'acp.transport',
+      'fresh_replay_baseline',
+      fields: {
+        'skippedSequenceCount': skippedSequenceCount,
+        'pendingRequestCount': _pendingHandshakeRequestCount,
+      },
+    );
+    _pendingHandshakeRequestCount = 0;
+    while (_pendingReplayFrames.isNotEmpty && !_closed && !_terminalFailure) {
+      _incoming.add(_pendingReplayFrames.removeFirst());
+    }
     _flushPendingInput();
   }
 
@@ -921,6 +1004,44 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     _commitSequence(sequence);
     _incoming.add(encoded);
     _sendAck(sequence);
+  }
+
+  void _handlePending(Map<String, Object?> message) {
+    if (!_matchesCurrentBridge(message)) return;
+    if (!_connected || !_acceptsPendingFrames) {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.invalidFrame,
+          'Pending ACP output arrived outside a fresh bridge handshake.',
+        ),
+      );
+      return;
+    }
+    final data = message['data'];
+    if (data is! Map) {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.invalidFrame,
+          'The pending bridge output did not contain an ACP JSON object.',
+        ),
+      );
+      return;
+    }
+    final encoded = utf8.encode('${jsonEncode(data)}\n');
+    if (encoded.length > monkeyMuxAcpBridgeMaxFrameBytes) {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.frameTooLarge,
+          'The unwrapped pending ACP frame exceeded the protocol limit.',
+        ),
+      );
+      return;
+    }
+    // Do not expose a request until replay_end has committed the sequence
+    // baseline. Otherwise an automatic response could release it remotely,
+    // followed by a channel loss that leaves the client at ACK 0 with nothing
+    // left for the helper to replay.
+    _pendingReplayFrames.add(Uint8List.fromList(encoded));
   }
 
   void _handleProviderState(Map<String, Object?> message) {

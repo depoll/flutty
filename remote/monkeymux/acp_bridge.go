@@ -69,6 +69,7 @@ type acpWireMessage struct {
 	Bridge        *acpBridgeInfo  `json:"bridge,omitempty"`
 	Bridges       []acpBridgeInfo `json:"bridges,omitempty"`
 	ProviderState string          `json:"providerState,omitempty"`
+	ReplayMode    string          `json:"replayMode,omitempty"`
 	ExitCode      *int            `json:"exitCode,omitempty"`
 }
 
@@ -1009,25 +1010,58 @@ func (b *acpBridge) handleAttach(
 	}
 	snapshot := b.snapshotLocked()
 	snapshot.ClientCount++
-	primed := []acpWireMessage{{
-		Version:  acpBridgeProtocolVersion,
-		Type:     "hello",
-		BridgeID: b.id,
-		ClientID: clientID,
-		CanSend:  canSend,
-		Bridge:   &snapshot,
-	}}
-	if hello.LastAck+1 < retainedFrom || replayHasGap(replay, hello.LastAck) {
-		primed = append(primed, acpWireMessage{
-			Version:      acpBridgeProtocolVersion,
-			Type:         "overflow",
-			BridgeID:     b.id,
-			RetainedFrom: retainedFrom,
-		})
+	pendingOnly := hello.ReplayMode == "pending" && hello.LastAck == 0
+	replayMode := ""
+	if pendingOnly {
+		replayMode = "pending"
 	}
-	for _, event := range replay {
-		if event.message.Sequence > hello.LastAck {
-			primed = append(primed, event.message)
+	primed := []acpWireMessage{{
+		Version:    acpBridgeProtocolVersion,
+		Type:       "hello",
+		BridgeID:   b.id,
+		ClientID:   clientID,
+		CanSend:    canSend,
+		Bridge:     &snapshot,
+		ReplayMode: replayMode,
+	}}
+	if pendingOnly {
+		// A fresh native view rebuilds transcript history with session/load.
+		// Replaying up to 40 MiB of superseded responses first delays that
+		// request behind stale bytes. Preserve only unresolved provider requests
+		// (notably permissions), delivered outside the live sequence baseline.
+		for _, event := range replay {
+			if event.pendingID == "" || event.message.Type != "output" {
+				continue
+			}
+			primed = append(primed, acpWireMessage{
+				Version:  acpBridgeProtocolVersion,
+				Type:     "pending",
+				BridgeID: b.id,
+				Data:     event.message.Data,
+			})
+		}
+		// The client commits and ACKs the high-water baseline only after this
+		// marker. A disconnect before it causes a new pending-only attach, so no
+		// unresolved request can disappear between hello and delivery.
+		primed = append(primed, acpWireMessage{
+			Version:    acpBridgeProtocolVersion,
+			Type:       "replay_end",
+			BridgeID:   b.id,
+			ReplayMode: "pending",
+		})
+	} else {
+		if hello.LastAck+1 < retainedFrom || replayHasGap(replay, hello.LastAck) {
+			primed = append(primed, acpWireMessage{
+				Version:      acpBridgeProtocolVersion,
+				Type:         "overflow",
+				BridgeID:     b.id,
+				RetainedFrom: retainedFrom,
+			})
+		}
+		for _, event := range replay {
+			if event.message.Sequence > hello.LastAck {
+				primed = append(primed, event.message)
+			}
 		}
 	}
 	client := &acpBridgeClient{

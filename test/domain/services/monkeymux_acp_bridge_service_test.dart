@@ -663,6 +663,214 @@ void main() {
     expect(channel.writes.map(_decodeFrame), contains(containsPair('ack', 1)));
   });
 
+  test(
+    'fresh attach baselines history but preserves pending requests',
+    () async {
+      late _TestChannel channel;
+      channel = _TestChannel(
+        onWrite: (value) {
+          final message = jsonDecode(value) as Map<String, dynamic>;
+          if (message['type'] != 'hello') return;
+          expect(message['lastAck'], 0);
+          expect(message['replayMode'], 'pending');
+          channel
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'hello',
+                'bridgeId': _bridgeId,
+                'clientId': _otherBridgeId,
+                'canSend': true,
+                'replayMode': 'pending',
+                'bridge': _metadata(nextSequence: 40000),
+              }),
+            )
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'pending',
+                'bridgeId': _bridgeId,
+                'data': {
+                  'jsonrpc': '2.0',
+                  'id': 'permission-1',
+                  'method': 'session/request_permission',
+                },
+              }),
+            )
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'replay_end',
+                'bridgeId': _bridgeId,
+                'replayMode': 'pending',
+              }),
+            )
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'output',
+                'bridgeId': _bridgeId,
+                'sequence': 40001,
+                'data': {'jsonrpc': '2.0', 'method': 'live'},
+              }),
+            );
+        },
+      );
+      final client = _MockSshClient();
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => channel.session);
+      final transport =
+          MonkeyMuxAcpBridgeService(
+            installer: _FakeInstaller(
+              const MonkeyMuxInstallation(
+                executablePath: '/helper',
+                platform: 'linux-amd64',
+                version: 'test',
+              ),
+            ),
+          ).connect(
+            sessionProvider: () async => _sshSession(client),
+            bridgeId: _bridgeId,
+            providerId: 'copilot',
+          );
+      addTearDown(transport.close);
+
+      final incoming = await transport.incoming
+          .take(2)
+          .map(
+            (bytes) => jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>,
+          )
+          .toList();
+
+      expect(incoming.map((message) => message['method']), [
+        'session/request_permission',
+        'live',
+      ]);
+      expect(transport.lastDeliveredSequence, 40001);
+      await _waitUntil(
+        () => channel.writes
+            .map(_decodeFrame)
+            .any((message) => message['ack'] == 40001),
+      );
+      final acknowledgements = channel.writes
+          .map(_decodeFrame)
+          .where((message) => message['type'] == 'ack')
+          .map((message) => message['ack']);
+      expect(acknowledgements, containsAllInOrder([40000, 40001]));
+    },
+  );
+
+  test(
+    'retries pending replay when the channel drops before replay end',
+    () async {
+      final channels = <_TestChannel>[];
+      var opens = 0;
+      final client = _MockSshClient();
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        opens += 1;
+        late _TestChannel channel;
+        channel = _TestChannel(
+          onWrite: (value) {
+            final message = jsonDecode(value) as Map<String, dynamic>;
+            if (message['type'] != 'hello') return;
+            expect(message['lastAck'], 0);
+            expect(message['replayMode'], 'pending');
+            channel
+              ..addText(
+                _frame({
+                  'version': 1,
+                  'type': 'hello',
+                  'bridgeId': _bridgeId,
+                  'clientId': _otherBridgeId,
+                  'canSend': true,
+                  'replayMode': 'pending',
+                  'bridge': _metadata(nextSequence: 5),
+                }),
+              )
+              ..addText(
+                _frame({
+                  'version': 1,
+                  'type': 'pending',
+                  'bridgeId': _bridgeId,
+                  'data': {
+                    'jsonrpc': '2.0',
+                    'id': 'permission-retried',
+                    'method': 'session/request_permission',
+                  },
+                }),
+              );
+            if (opens == 1) {
+              unawaited(channel.remoteClose());
+              return;
+            }
+            channel
+              ..addText(
+                _frame({
+                  'version': 1,
+                  'type': 'replay_end',
+                  'bridgeId': _bridgeId,
+                  'replayMode': 'pending',
+                }),
+              )
+              ..addText(
+                _frame({
+                  'version': 1,
+                  'type': 'output',
+                  'bridgeId': _bridgeId,
+                  'sequence': 6,
+                  'data': {'jsonrpc': '2.0', 'method': 'live-after-retry'},
+                }),
+              );
+          },
+        );
+        channels.add(channel);
+        return channel.session;
+      });
+      final transport =
+          MonkeyMuxAcpBridgeService(
+            installer: _FakeInstaller(
+              const MonkeyMuxInstallation(
+                executablePath: '/helper',
+                platform: 'linux-amd64',
+                version: 'test',
+              ),
+            ),
+          ).connect(
+            sessionProvider: () async => _sshSession(client),
+            bridgeId: _bridgeId,
+            providerId: 'copilot',
+            reconnectBackoff: const [Duration(milliseconds: 1)],
+          );
+      addTearDown(transport.close);
+
+      final incoming = await transport.incoming
+          .take(2)
+          .map(
+            (bytes) => jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>,
+          )
+          .toList();
+
+      expect(channels, hasLength(2));
+      expect(incoming.map((message) => message['method']), [
+        'session/request_permission',
+        'live-after-retry',
+      ]);
+      expect(transport.lastDeliveredSequence, 6);
+      await _waitUntil(
+        () => channels[1].writes
+            .map(_decodeFrame)
+            .any((message) => message['ack'] == 6),
+      );
+      expect(
+        channels[1].writes.map(_decodeFrame),
+        containsAll([containsPair('ack', 5), containsPair('ack', 6)]),
+      );
+    },
+  );
+
   test('reconnects and resumes replay from the last ACK', () async {
     final channels = <_TestChannel>[];
     var opens = 0;

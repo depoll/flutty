@@ -388,6 +388,7 @@ class _FakeConnector implements AcpBridgeConnector {
   Exception? startError;
   int _bridgeCounter = 0;
   int bridgeStatusInFlightTurnCount = 0;
+  bool skippedHistoricalReplay = false;
 
   @override
   Future<MonkeyMuxAcpBridgeStartResult> startBridge({
@@ -493,6 +494,7 @@ class _FakeConnector implements AcpBridgeConnector {
       client: client,
       transportStates: states.stream,
       transportErrors: errors.stream,
+      skippedHistoricalReplay: () => skippedHistoricalReplay,
       onClose: () async {
         await client.close();
         await states.close();
@@ -1427,6 +1429,29 @@ void main() {
       final attachedServer = connector.servers[key.bridgeId]!;
       expect(attachedServer.methods, contains('session/resume'));
       expect(attachedServer.methods, isNot(contains('session/load')));
+    });
+
+    test('compact-baseline reconnect loads durable history', () async {
+      final key = await startCopilot();
+      await manager.detachSession(key);
+      connector.skippedHistoricalReplay = true;
+
+      final result = await manager.reconnectSession(
+        hostId: key.hostId,
+        providerId: key.providerId,
+        bridgeId: key.bridgeId,
+        acpSessionId: key.acpSessionId,
+        cwd: '/repo',
+      );
+
+      expect(result, isA<AcpSessionLaunchStarted>());
+      final attachedServer = connector.servers[key.bridgeId]!;
+      expect(attachedServer.methods, contains('session/load'));
+      expect(attachedServer.methods, isNot(contains('session/resume')));
+      expect(
+        manager.state.byKeyValue(key.value)!.status,
+        AcpConnectionStatus.ready,
+      );
     });
 
     test(

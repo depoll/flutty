@@ -48,7 +48,9 @@ final class AcpBridgeSession {
     required this.transportStates,
     required this.transportErrors,
     required Future<void> Function() onClose,
-  }) : _onClose = onClose;
+    bool Function()? skippedHistoricalReplay,
+  }) : _onClose = onClose,
+       _skippedHistoricalReplay = skippedHistoricalReplay;
 
   /// Typed ACP client bound to the bridge transport.
   final AcpClient client;
@@ -58,6 +60,12 @@ final class AcpBridgeSession {
 
   /// Typed bridge/transport errors, kept separate from ACP payloads.
   final Stream<MonkeyMuxAcpBridgeException> transportErrors;
+
+  final bool Function()? _skippedHistoricalReplay;
+
+  /// Whether fresh transport attach established a remote high-water baseline
+  /// instead of downloading historical bridge output.
+  bool get skippedHistoricalReplay => _skippedHistoricalReplay?.call() ?? false;
 
   final Future<void> Function() _onClose;
   Future<void>? _closeFuture;
@@ -238,6 +246,7 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
       client: client,
       transportStates: transport.states,
       transportErrors: transport.errors,
+      skippedHistoricalReplay: transport.didSkipHistoricalReplay,
       onClose: client.close,
     );
   }

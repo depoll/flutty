@@ -153,6 +153,124 @@ func TestAcpAttachQueuesReplayBeforeConcurrentLiveEvent(t *testing.T) {
 	}
 }
 
+func TestAcpFreshAttachSkipsHistoricalReplayButKeepsPending(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	bridge.publish(
+		"output",
+		json.RawMessage(`{"jsonrpc":"2.0","method":"historical"}`),
+		"",
+		nil,
+	)
+	bridge.publish(
+		"output",
+		json.RawMessage(`{"jsonrpc":"2.0","id":"permission-1","method":"session/request_permission"}`),
+		"",
+		nil,
+	)
+
+	server, peer := net.Pipe()
+	primed := make(chan struct{})
+	release := make(chan struct{})
+	bridge.beforeClientVisible = func() {
+		close(primed)
+		<-release
+	}
+	attachDone := make(chan struct{})
+	go func() {
+		defer close(attachDone)
+		bridge.handleAttach(
+			server,
+			bufio.NewReader(server),
+			acpWireMessage{
+				Version:    acpBridgeProtocolVersion,
+				Type:       "hello",
+				ReplayMode: "pending",
+			},
+		)
+	}()
+	defer finishPrimedTestAttach(t, peer, release, attachDone)
+	<-primed
+	close(release)
+
+	bridge.publish(
+		"output",
+		json.RawMessage(`{"jsonrpc":"2.0","method":"live"}`),
+		"",
+		nil,
+	)
+
+	reader := bufio.NewReader(peer)
+	hello := readTestAcpFrame(t, reader, peer)
+	pending := readTestAcpFrame(t, reader, peer)
+	replayEnd := readTestAcpFrame(t, reader, peer)
+	live := readTestAcpFrame(t, reader, peer)
+	if hello.Type != "hello" || hello.ReplayMode != "pending" ||
+		hello.Bridge == nil || hello.Bridge.NextSequence != 2 {
+		t.Fatalf("fresh attach hello = %#v", hello)
+	}
+	if pending.Type != "pending" || pending.Sequence != 0 ||
+		!bytes.Contains(pending.Data, []byte("session/request_permission")) {
+		t.Fatalf("fresh attach pending frame = %#v", pending)
+	}
+	if replayEnd.Type != "replay_end" || replayEnd.ReplayMode != "pending" {
+		t.Fatalf("fresh attach replay end = %#v", replayEnd)
+	}
+	if live.Type != "output" || live.Sequence != 3 ||
+		!bytes.Contains(live.Data, []byte("live")) {
+		t.Fatalf("fresh attach live frame = %#v", live)
+	}
+}
+
+func TestAcpPendingReplayModeRequiresFreshAck(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	bridge.publish(
+		"output",
+		json.RawMessage(`{"jsonrpc":"2.0","method":"one"}`),
+		"",
+		nil,
+	)
+	bridge.publish(
+		"output",
+		json.RawMessage(`{"jsonrpc":"2.0","method":"two"}`),
+		"",
+		nil,
+	)
+
+	server, peer := net.Pipe()
+	attachDone := make(chan struct{})
+	go func() {
+		defer close(attachDone)
+		bridge.handleAttach(
+			server,
+			bufio.NewReader(server),
+			acpWireMessage{
+				Version:    acpBridgeProtocolVersion,
+				Type:       "hello",
+				LastAck:    1,
+				ReplayMode: "pending",
+			},
+		)
+	}()
+	defer func() {
+		_ = peer.Close()
+		select {
+		case <-attachDone:
+		case <-time.After(time.Second):
+			t.Error("non-fresh attach did not stop")
+		}
+	}()
+
+	reader := bufio.NewReader(peer)
+	hello := readTestAcpFrame(t, reader, peer)
+	replayed := readTestAcpFrame(t, reader, peer)
+	if hello.Type != "hello" || hello.ReplayMode != "" {
+		t.Fatalf("non-fresh hello = %#v, want ordinary replay", hello)
+	}
+	if replayed.Type != "output" || replayed.Sequence != 2 {
+		t.Fatalf("non-fresh replay = %#v, want sequence 2", replayed)
+	}
+}
+
 func TestAcpAttachPrimesMaximumPinnedReplay(t *testing.T) {
 	bridge := newOrderingTestBridge()
 	pinnedCount := acpPendingReplayMaxEvents

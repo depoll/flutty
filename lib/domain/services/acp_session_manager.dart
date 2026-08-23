@@ -1204,6 +1204,7 @@ class _BridgeAttachment {
   Stream<MonkeyMuxAcpBridgeException> get transportErrors =>
       _session.transportErrors;
   AcpInitializeResult? get initialization => _initialization;
+  bool get skippedHistoricalReplay => _session.skippedHistoricalReplay;
 
   /// The capability service bound to this attachment's client, or `null` when
   /// no same-host filesystem/terminal binding was available at initialize
@@ -1540,12 +1541,23 @@ class _SessionController {
       // store. `session/resume` is for a session already owned by the live ACP
       // process and can acknowledge without loading CLI history (observed with
       // Claude and Codex adapters), which looks like a successful fresh chat.
-      if (_freshBridge && caps.loadSession) {
+      if ((_freshBridge || attachment.skippedHistoricalReplay) &&
+          caps.loadSession) {
+        final historyLoad = Stopwatch()..start();
         final result = await attachment.client.loadSession(
           sessionId: existingSessionId,
           cwd: _cwd,
         );
         _applySetupResult(result);
+        _diagnostics.info(
+          'acp.session',
+          'history_load_complete',
+          fields: {
+            'durationMs': historyLoad.elapsedMilliseconds,
+            'freshBridge': _freshBridge,
+            'skippedBridgeReplay': attachment.skippedHistoricalReplay,
+          },
+        );
         return existingSessionId;
       }
       if (caps.session.resume) {
