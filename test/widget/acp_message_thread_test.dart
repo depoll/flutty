@@ -332,7 +332,7 @@ void main() {
       tester
           .widget<CustomScrollView>(find.byType(CustomScrollView))
           .semanticChildCount,
-      96,
+      56,
     );
 
     await tester.pumpWidget(
@@ -499,8 +499,15 @@ void main() {
     );
     expect(controller.offset, greaterThan(0));
 
-    controller.jumpTo(controller.position.minScrollExtent);
-    await tester.pump();
+    for (var page = 0; page < 8; page++) {
+      controller.jumpTo(controller.position.minScrollExtent);
+      await tester.pump();
+      if (find.byKey(const ValueKey('paged-older')).evaluate().isNotEmpty) {
+        break;
+      }
+      await tester.tap(find.text('Earlier messages'));
+      await tester.pumpAndSettle();
+    }
     expect(find.byKey(const ValueKey('paged-older')), findsOneWidget);
     expect(find.byKey(const ValueKey('paged-large')), findsOneWidget);
   });

@@ -107,7 +107,7 @@ final Expando<List<List<AcpPromptPart>>> _userPromptSegments =
 
 const int _maxInitialTailChildren = 48;
 const int _maxInitialTailSourceChars = 16 * 1024;
-const int _earlierTranscriptPageChildren = 48;
+const int _earlierTranscriptPageChildren = 8;
 
 final class _AcpThreadChild {
   const _AcpThreadChild({
@@ -615,11 +615,14 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       (sliverChildIndex - _leadingWindowChildCount + _renderStartChildIndex)
           .clamp(_renderStartChildIndex, _threadChildren.length - 1);
 
-  void _revealEarlierTranscriptPage({bool all = false}) {
+  void _revealEarlierTranscriptPage({
+    bool all = false,
+    int pageChildren = _earlierTranscriptPageChildren,
+  }) {
     final currentVisible = _threadChildren.length - _renderStartChildIndex;
     final desiredVisible = all
         ? _threadChildren.length + _loadedStartEntryIndex
-        : currentVisible + _earlierTranscriptPageChildren;
+        : currentVisible + pageChildren;
     final prefix = <_AcpThreadChild>[];
     while (_loadedStartEntryIndex > 0 &&
         (all || _threadChildren.length + prefix.length < desiredVisible)) {
@@ -659,10 +662,13 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     // paging trigger, leaving the transcript apparently stuck on that image.
     // Materialize one earlier page while preserving the tail anchor so the
     // user immediately has real content to scroll into.
-    _scheduleEarlierTranscriptPage(force: true);
+    _scheduleEarlierTranscriptPage(force: true, pageChildren: 1);
   }
 
-  void _scheduleEarlierTranscriptPage({bool force = false}) {
+  void _scheduleEarlierTranscriptPage({
+    bool force = false,
+    int pageChildren = _earlierTranscriptPageChildren,
+  }) {
     if (!_hasEarlierTranscript ||
         _earlierTranscriptLoadScheduled ||
         (widget.followTail && !force)) {
@@ -677,7 +683,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       }
       final position = _controller.position;
       final distanceFromBottom = position.maxScrollExtent - position.pixels;
-      setState(_revealEarlierTranscriptPage);
+      setState(() => _revealEarlierTranscriptPage(pageChildren: pageChildren));
       _settleEarlierTranscriptAnchor(
         generation: generation,
         distanceFromBottom: distanceFromBottom,
@@ -774,7 +780,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     _showPromptNavigation();
     widget.onStickyPromptTap?.call();
     if (_hasEarlierTranscript) {
-      setState(() => _revealEarlierTranscriptPage(all: true));
+      setState(_revealEarlierTranscriptPage);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _scrollToTop();
       });
