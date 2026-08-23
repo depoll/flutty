@@ -1405,11 +1405,12 @@ void main() {
       expect(connector.stoppedBridges, isEmpty);
     });
 
-    test('keeps same-host agent windows attached while switching', () async {
+    test('background reconnect keeps same-host selection stable', () async {
       isPro = true;
       final first = await startCopilot();
       final firstTransport = connector.servers[first.bridgeId]!;
       final second = await startCopilot();
+      expect(manager.state.selectedKey, second.value);
       final secondTransport = connector.servers[second.bridgeId]!;
 
       expect(manager.state.byKeyValue(first.value)!.isLive, isTrue);
@@ -1424,9 +1425,11 @@ void main() {
         bridgeId: first.bridgeId,
         acpSessionId: first.acpSessionId,
         cwd: '/repo',
+        selectOnSuccess: false,
       );
 
       expect(reopened, isA<AcpSessionLaunchStarted>());
+      expect(manager.state.selectedKey, second.value);
       expect(manager.state.byKeyValue(first.value)!.isLive, isTrue);
       expect(manager.state.byKeyValue(second.value)!.isLive, isTrue);
       expect(firstTransport.closed, isFalse);
@@ -1434,6 +1437,40 @@ void main() {
       expect(connector.stoppedBridges, isEmpty);
       expect(connector.availableBridges, {first.bridgeId, second.bridgeId});
     });
+
+    test(
+      'background attachment publishes without changing selection',
+      () async {
+        isPro = true;
+        final first = await startCopilot();
+        await manager.dispose();
+
+        final restored = buildManagerWith(connector);
+        final secondResult = await restored.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final second = (secondResult as AcpSessionLaunchStarted).key;
+        final bridge = (await restored.listRemoteBridges(
+          1,
+        )).where((candidate) => candidate.id == first.bridgeId).single;
+
+        final result = await restored.reconnectSession(
+          hostId: first.hostId,
+          providerId: first.providerId,
+          bridgeId: first.bridgeId,
+          acpSessionId: first.acpSessionId,
+          cwd: '/repo',
+          selectOnSuccess: false,
+          knownRemoteBridge: bridge,
+        );
+
+        expect(result, isA<AcpSessionLaunchStarted>());
+        expect(restored.state.selectedKey, second.value);
+        expect(restored.liveSessionKeyValues, {first.value, second.value});
+      },
+    );
 
     test('keeps attachments on separate SSH hosts live', () async {
       isPro = true;

@@ -55,6 +55,9 @@ class FakeAcpSessionManager extends AcpSessionManager {
   final List<bool> startAutoApprovePermissions = <bool>[];
   final List<AcpLaunchCommand?> reconnectLaunchOverrides =
       <AcpLaunchCommand?>[];
+  final List<bool> reconnectSelectOnSuccess = <bool>[];
+  final List<MonkeyMuxAcpBridgeMetadata?> reconnectKnownBridges =
+      <MonkeyMuxAcpBridgeMetadata?>[];
   final List<(String, String)> permissionResponses = <(String, String)>[];
   final List<String> cancelledPermissions = <String>[];
   final List<String> approvedWrites = <String>[];
@@ -81,6 +84,9 @@ class FakeAcpSessionManager extends AcpSessionManager {
 
   /// Optional asynchronous reconnect result used to hold loading-state tests.
   Future<AcpSessionLaunchResult>? reconnectSessionFuture;
+
+  /// Optional provisional state published while a reconnect is pending.
+  AcpSessionState? reconnectSessionPendingState;
 
   /// Optional manager state installed immediately before a successful resume
   /// result is returned.
@@ -233,9 +239,13 @@ class FakeAcpSessionManager extends AcpSessionManager {
     AcpLaunchCommand? launchCommandOverride,
     String? providerLabelOverride,
     bool autoApprovePermissions = false,
+    bool selectOnSuccess = true,
+    MonkeyMuxAcpBridgeMetadata? knownRemoteBridge,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) async {
     reconnectLaunchOverrides.add(launchCommandOverride);
+    reconnectSelectOnSuccess.add(selectOnSuccess);
+    reconnectKnownBridges.add(knownRemoteBridge);
     reconnects.add((
       hostId: hostId,
       providerId: providerId,
@@ -243,6 +253,20 @@ class FakeAcpSessionManager extends AcpSessionManager {
       acpSessionId: acpSessionId,
       cwd: cwd,
     ));
+    final pendingState = reconnectSessionPendingState;
+    if (pendingState != null) {
+      emit(
+        AcpSessionManagerState(
+          sessions: [
+            ..._current.sessions.where(
+              (session) => session.key != pendingState.key,
+            ),
+            pendingState,
+          ],
+          selectedKey: _current.selectedKey,
+        ),
+      );
+    }
     final result = reconnectSessionFuture == null
         ? reconnectSessionResult
         : await reconnectSessionFuture!;

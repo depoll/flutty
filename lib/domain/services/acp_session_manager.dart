@@ -295,7 +295,8 @@ class AcpSessionManager {
   /// Reconnects to an existing remote bridge and resumes/loads its ACP session.
   ///
   /// Used on app restart, host reconnect, and when opening a recent session.
-  /// If the session is already live and attached, it is simply selected.
+  /// If the session is already live and attached, it is simply selected unless
+  /// [selectOnSuccess] is false for a background preload.
   Future<AcpSessionLaunchResult> reconnectSession({
     required int hostId,
     required String providerId,
@@ -306,9 +307,11 @@ class AcpSessionManager {
     AcpLaunchCommand? launchCommandOverride,
     String? providerLabelOverride,
     bool autoApprovePermissions = false,
+    bool selectOnSuccess = true,
+    MonkeyMuxAcpBridgeMetadata? knownRemoteBridge,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
   }) => _serialize(() async {
-    _telemetry.featureOpened();
+    if (selectOnSuccess) _telemetry.featureOpened();
     final key = AcpSessionKey.of(
       hostId: hostId,
       providerId: providerId,
@@ -317,7 +320,7 @@ class AcpSessionManager {
     );
     final existing = _controllers[key.value];
     if (existing != null && existing.state.isLive) {
-      _select(key.value);
+      if (selectOnSuccess) _select(key.value);
       return AcpSessionLaunchStarted(key);
     }
 
@@ -349,24 +352,38 @@ class AcpSessionManager {
       return AcpSessionLaunchBlocked(decision);
     }
 
-    final List<MonkeyMuxAcpBridgeMetadata> remoteBridges;
-    try {
-      remoteBridges = await _connector.listBridges(
-        hostId,
-        confirmInstall: confirmInstall,
+    MonkeyMuxAcpBridgeMetadata? remoteBridge;
+    if (knownRemoteBridge?.id == bridgeId) {
+      remoteBridge = knownRemoteBridge;
+    } else {
+      final List<MonkeyMuxAcpBridgeMetadata> remoteBridges;
+      try {
+        remoteBridges = await _connector.listBridges(
+          hostId,
+          confirmInstall: confirmInstall,
+        );
+      } on Object catch (error) {
+        return AcpSessionLaunchFailed(key, _mapBridgeError(error));
+      }
+      remoteBridge = remoteBridges.firstWhereOrNull(
+        (bridge) => bridge.id == bridgeId,
       );
-    } on Object catch (error) {
-      return AcpSessionLaunchFailed(key, _mapBridgeError(error));
     }
-    final remoteBridge = remoteBridges.firstWhereOrNull(
-      (bridge) => bridge.id == bridgeId,
-    );
     final bridgeCanResume =
         remoteBridge != null &&
         remoteBridge.state != MonkeyMuxAcpProviderState.exited &&
         remoteBridge.state != MonkeyMuxAcpProviderState.stopped &&
         remoteBridge.state != MonkeyMuxAcpProviderState.protocolError;
     if (!bridgeCanResume) {
+      if (!selectOnSuccess) {
+        return AcpSessionLaunchFailed(
+          key,
+          const AcpSessionError(
+            kind: AcpSessionErrorKind.bridgeExpired,
+            message: 'The remote native agent window is no longer available.',
+          ),
+        );
+      }
       if (existing != null) {
         _controllers.remove(key.value);
         await existing.disposeLocal();
@@ -400,8 +417,12 @@ class AcpSessionManager {
         _emit();
         return AcpSessionLaunchFailed(error.key ?? key, error.error);
       }
-      _select(key.value);
-      await _recordRecent(existing.state);
+      if (selectOnSuccess) {
+        _select(key.value);
+      } else {
+        _emit();
+      }
+      if (selectOnSuccess) await _recordRecent(existing.state);
       return AcpSessionLaunchStarted(key);
     }
 
@@ -414,6 +435,7 @@ class AcpSessionManager {
       confirmInstall: null,
       autoApprovePermissions: autoApprovePermissions,
       liveBridge: remoteBridge,
+      selectOnSuccess: selectOnSuccess,
     );
   });
 
@@ -711,6 +733,7 @@ class AcpSessionManager {
     required MonkeyMuxInstallConfirmation? confirmInstall,
     required bool autoApprovePermissions,
     MonkeyMuxAcpBridgeMetadata? liveBridge,
+    bool selectOnSuccess = true,
     bool startedBridge = false,
     DateTime? bridgeStartedAt,
   }) async {
@@ -782,7 +805,11 @@ class AcpSessionManager {
         provisionalKeyValue = controller.state.key.value;
         controller._commitPublishedState();
         _controllers[provisionalKeyValue] = controller;
-        _select(provisionalKeyValue);
+        if (selectOnSuccess) {
+          _select(provisionalKeyValue);
+        } else {
+          _emit();
+        }
       }
       final key = await openFuture;
       final previousPublishedKey = provisionalKeyValue;
@@ -793,8 +820,12 @@ class AcpSessionManager {
       }
       _controllers[key.value] = controller;
       provisionalKeyValue = key.value;
-      _select(key.value);
-      await _recordRecent(controller.state);
+      if (selectOnSuccess) {
+        _select(key.value);
+      } else {
+        _emit();
+      }
+      if (selectOnSuccess) await _recordRecent(controller.state);
       _diagnostics.info(
         'acp.manager',
         'session_open',
@@ -806,10 +837,12 @@ class AcpSessionManager {
             'startMs': _clock().difference(bridgeStartedAt).inMilliseconds,
         },
       );
-      _telemetry.sessionOpened(
-        providerCategory: launch.providerId,
-        isReconnect: existingSessionId != null,
-      );
+      if (selectOnSuccess) {
+        _telemetry.sessionOpened(
+          providerCategory: launch.providerId,
+          isReconnect: existingSessionId != null,
+        );
+      }
       return AcpSessionLaunchStarted(key);
     } on _LaunchException catch (error) {
       discardProvisionalController();

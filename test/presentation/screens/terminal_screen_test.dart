@@ -8125,7 +8125,7 @@ void main() {
     );
 
     testWidgets(
-      'opens an existing Codex native window exactly once',
+      'preloads an inactive Codex native window and opens it exactly once',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 800));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -8160,6 +8160,11 @@ void main() {
             ),
           ]
           ..reconnectSessionFuture = reconnectCompleter.future
+          ..reconnectSessionPendingState = fakeAcpSession(
+            key: key,
+            providerLabel: 'Codex',
+            status: AcpConnectionStatus.connecting,
+          )
           ..reconnectSessionState = fakeAcpSession(
             key: key,
             providerLabel: 'Codex',
@@ -8228,9 +8233,6 @@ void main() {
           monkeyMuxService: monkeyMuxService,
           acpSessionManager: acpManager,
         );
-        await tester.pump(const Duration(milliseconds: 100));
-
-        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
         for (
           var attempt = 0;
           attempt < 10 && acpManager.reconnects.isEmpty;
@@ -8238,6 +8240,16 @@ void main() {
         ) {
           await tester.pump(const Duration(milliseconds: 50));
         }
+        expect(acpManager.reconnects, hasLength(1));
+        expect(acpManager.reconnectSelectOnSuccess, [isFalse]);
+        expect(acpManager.reconnectKnownBridges.single?.id, bridgeId);
+        expect(
+          acpManager.state.sessions.single.status,
+          AcpConnectionStatus.connecting,
+        );
+
+        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
+        await tester.pump(const Duration(milliseconds: 100));
         expect(acpManager.reconnects, hasLength(1));
 
         windowEvents.add(TmuxWindowSnapshotEvent(windows.last));
