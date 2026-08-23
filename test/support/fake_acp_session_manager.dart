@@ -76,7 +76,10 @@ class FakeAcpSessionManager extends AcpSessionManager {
     AcpSessionError(kind: AcpSessionErrorKind.unknown, message: 'No launch.'),
   );
 
-  /// Result returned by [reconnectSession]; defaults to a safe failure.
+  /// FIFO reconnect results consumed before the fallback result/future.
+  final List<AcpSessionLaunchResult> reconnectSessionResults = [];
+
+  /// Fallback returned by [reconnectSession]; defaults to a safe failure.
   AcpSessionLaunchResult reconnectSessionResult = const AcpSessionLaunchFailed(
     null,
     AcpSessionError(kind: AcpSessionErrorKind.unknown, message: 'No resume.'),
@@ -267,7 +270,9 @@ class FakeAcpSessionManager extends AcpSessionManager {
         ),
       );
     }
-    final result = reconnectSessionFuture == null
+    final result = reconnectSessionResults.isNotEmpty
+        ? reconnectSessionResults.removeAt(0)
+        : reconnectSessionFuture == null
         ? reconnectSessionResult
         : await reconnectSessionFuture!;
     final resumedState = reconnectSessionState;

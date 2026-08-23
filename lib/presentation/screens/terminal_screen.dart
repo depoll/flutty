@@ -3835,6 +3835,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   AcpSessionKey? _activeNativeAcpSessionKey;
   String? _autoOpenedNativeAcpBridgeId;
   String? _backgroundNativeAcpWarmupSignature;
+  int? _nativeAcpBackgroundWarmupConnectionId;
   final Map<String, Future<AcpSessionLaunchResult>>
   _backgroundNativeAcpWarmups = {};
   String? _openingNativeAcpBridgeId;
@@ -11497,6 +11498,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session,
     List<TmuxWindow> windows,
   ) {
+    if (_nativeAcpBackgroundWarmupConnectionId != session.connectionId) return;
     final hasParallelNativeChats = ref
         .read(monetizationServiceProvider)
         .currentState
@@ -11667,6 +11669,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           return;
       }
     }
+  }
+
+  void _armNativeAcpBackgroundWarmup(SshSession session) {
+    if (_nativeAcpBackgroundWarmupConnectionId == session.connectionId) return;
+    _nativeAcpBackgroundWarmupConnectionId = session.connectionId;
+    final windows = _currentTmuxWindowsSnapshot?.toList(growable: false);
+    if (windows == null || windows.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _warmInactiveNativeAcpMuxWindows(session, windows);
+    });
   }
 
   void _handleTmuxBarExpandedChanged(bool expanded) {
@@ -12172,6 +12184,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         lockHost: true,
       );
       if (mounted && key != null) {
+        _armNativeAcpBackgroundWarmup(session);
         _openNativeAcpSession(key);
       }
       return;
@@ -12280,6 +12293,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     switch (result) {
       case AcpSessionLaunchStarted(:final key):
+        _armNativeAcpBackgroundWarmup(session);
         _openNativeAcpSession(key);
       case AcpSessionLaunchFailed(:final error):
         final authCommand = acpTerminalAuthCommandFor(providerId);
@@ -12405,6 +12419,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             )
             .firstOrNull;
         if (warmed != null) {
+          _armNativeAcpBackgroundWarmup(sshSession);
           await _switchTmuxWindow(
             sshSession,
             windowIndex,
@@ -12424,6 +12439,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         )
         .firstOrNull;
     if (tracked != null && tracked.isLive) {
+      _armNativeAcpBackgroundWarmup(sshSession);
       await _switchTmuxWindow(
         sshSession,
         windowIndex,
@@ -12494,6 +12510,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       replace: replace,
     );
 
+    Future<AcpSessionLaunchResult> reconnectWithTransportRetry({
+      List<AcpSessionKey> replace = const <AcpSessionKey>[],
+    }) async {
+      var result = await reconnect(replace: replace);
+      if (result case AcpSessionLaunchFailed(
+        error: AcpSessionError(kind: AcpSessionErrorKind.transport),
+      )) {
+        DiagnosticsLogService.instance.info(
+          'acp.window',
+          'foreground_transport_retry',
+          fields: {'hostId': sshSession.hostId, 'bridgeId': bridgeId},
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        if (mounted) result = await reconnect(replace: replace);
+      }
+      return result;
+    }
+
     final provisionalKey = AcpSessionKey.of(
       hostId: sshSession.hostId,
       providerId: providerId,
@@ -12528,7 +12562,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     try {
-      var result = await reconnect();
+      var result = await reconnectWithTransportRetry();
       if (result is AcpSessionLaunchBlocked && mounted) {
         final choice = await showAcpConcurrencyChoice(
           context,
@@ -12545,7 +12579,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               for (final value in result.decision.blockingSessionKeys)
                 manager.state.byKeyValue(value)?.key,
             ].whereType<AcpSessionKey>().toList(growable: false);
-            result = await reconnect(replace: blocking);
+            result = await reconnectWithTransportRetry(replace: blocking);
           case AcpConcurrencyChoice.upgrade:
             await context.push<void>(
               Uri(
@@ -12563,12 +12597,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               await restoreTerminalAfterFailedHandoff();
               return;
             }
-            result = await reconnect();
+            result = await reconnectWithTransportRetry();
         }
       }
       if (!mounted) return;
       switch (result) {
         case AcpSessionLaunchStarted(:final key):
+          _armNativeAcpBackgroundWarmup(sshSession);
           if (_activeNativeAcpSessionKey == provisionalKey &&
               key != provisionalKey) {
             _openNativeAcpSession(key);

@@ -8131,7 +8131,7 @@ void main() {
     );
 
     testWidgets(
-      'preloads an inactive Codex native window and opens it exactly once',
+      'arms preload only after a successful foreground native open',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 800));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -8153,13 +8153,13 @@ void main() {
         final windowEvents = StreamController<TmuxWindowChangeEvent>();
         addTearDown(windowEvents.close);
         const bridgeId = '0123456789abcdef0123456789abcdef';
+        const siblingBridgeId = 'abcdef0123456789abcdef0123456789';
         final key = fakeAcpKey(
           hostId: host.id,
           providerId: AcpBuiltinProviderIds.codex,
           bridgeId: bridgeId,
           acpSessionId: 'codex-session',
         );
-        final reconnectCompleter = Completer<AcpSessionLaunchResult>();
         final acpManager = FakeAcpSessionManager()
           ..remoteBridges = [
             MonkeyMuxAcpBridgeMetadata(
@@ -8177,8 +8177,32 @@ void main() {
               startedAt: DateTime(2026),
               nextSequence: 1,
             ),
+            MonkeyMuxAcpBridgeMetadata(
+              id: siblingBridgeId,
+              providerId: AcpBuiltinProviderIds.pi,
+              sessionId: 'pi-session',
+              cwd: '/home/dev/project',
+              provider: 'Pi',
+              commandHash: 'hash',
+              state: MonkeyMuxAcpProviderState.running,
+              clientCount: 0,
+              pendingRequestCount: 0,
+              inFlightTurnCount: 0,
+              lastActivity: DateTime(2026),
+              startedAt: DateTime(2026),
+              nextSequence: 1,
+            ),
           ]
-          ..reconnectSessionFuture = reconnectCompleter.future
+          ..reconnectSessionResults.addAll([
+            const AcpSessionLaunchFailed(
+              null,
+              AcpSessionError(
+                kind: AcpSessionErrorKind.transport,
+                message: 'The agent connection closed.',
+              ),
+            ),
+            AcpSessionLaunchStarted(key),
+          ])
           ..reconnectSessionPendingState = fakeAcpSession(
             key: key,
             providerLabel: 'Codex',
@@ -8199,6 +8223,15 @@ void main() {
             currentPath: '/home/dev/project',
             nativeAcpBridgeId: bridgeId,
             nativeAcpProviderId: AcpBuiltinProviderIds.codex,
+          ),
+          TmuxWindow(
+            index: 3,
+            id: '@4',
+            name: 'Pi',
+            isActive: false,
+            currentPath: '/home/dev/project',
+            nativeAcpBridgeId: siblingBridgeId,
+            nativeAcpProviderId: AcpBuiltinProviderIds.pi,
           ),
         ];
         host = _buildHost(
@@ -8237,10 +8270,19 @@ void main() {
               nativeAcpBridgeId: bridgeId,
               nativeAcpProviderId: AcpBuiltinProviderIds.codex,
             ),
+            TmuxWindow(
+              index: 3,
+              id: '@4',
+              name: 'Pi',
+              isActive: false,
+              currentPath: '/home/dev/project',
+              nativeAcpBridgeId: siblingBridgeId,
+              nativeAcpProviderId: AcpBuiltinProviderIds.pi,
+            ),
           ];
-          windowEvents
-            ..add(TmuxWindowSnapshotEvent(windows.first))
-            ..add(TmuxWindowSnapshotEvent(windows.last));
+          for (final window in windows) {
+            windowEvents.add(TmuxWindowSnapshotEvent(window));
+          }
         });
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
@@ -8257,37 +8299,41 @@ void main() {
         expect(
           acpManager.reconnects,
           isEmpty,
-          reason: 'preload must not compete with non-idle app work',
+          reason: 'startup must not speculatively attach native bridges',
         );
-        expect(scheduledIdleTasks, hasLength(1));
-        unawaited(scheduledIdleTasks.removeAt(0)());
+        expect(scheduledIdleTasks, isEmpty);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
         for (
           var attempt = 0;
-          attempt < 10 && acpManager.reconnects.isEmpty;
+          attempt < 10 && acpManager.reconnects.length < 2;
           attempt++
         ) {
           await tester.pump(const Duration(milliseconds: 50));
         }
-        expect(acpManager.reconnects, hasLength(1));
-        expect(acpManager.reconnectSelectOnSuccess, [isFalse]);
-        expect(acpManager.reconnectKnownBridges.single?.id, bridgeId);
+        expect(acpManager.reconnects, hasLength(2));
+        expect(acpManager.reconnectSelectOnSuccess, [true, true]);
+        expect(acpManager.reconnectKnownBridges, [isNull, isNull]);
         expect(
           acpManager.state.sessions.single.status,
-          AcpConnectionStatus.connecting,
+          AcpConnectionStatus.ready,
         );
 
-        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
-        await tester.pump(const Duration(milliseconds: 100));
-        expect(acpManager.reconnects, hasLength(1));
-
-        windowEvents.add(TmuxWindowSnapshotEvent(windows.last));
-        await tester.pump(const Duration(milliseconds: 100));
-        expect(acpManager.reconnects, hasLength(1));
-
-        reconnectCompleter.complete(AcpSessionLaunchStarted(key));
-        await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
         expect(find.text('opening persistent agent session…'), findsNothing);
+        expect(scheduledIdleTasks, hasLength(1));
+
+        unawaited(scheduledIdleTasks.removeAt(0)());
+        for (
+          var attempt = 0;
+          attempt < 10 && acpManager.reconnects.length < 3;
+          attempt++
+        ) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(acpManager.reconnects, hasLength(3));
+        expect(acpManager.reconnectSelectOnSuccess, [true, true, false]);
+        expect(acpManager.reconnectKnownBridges.last?.id, siblingBridgeId);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

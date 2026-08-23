@@ -1180,14 +1180,28 @@ if(!$__flResolved){$__flResolved='cmd'}
       return;
     }
     _terminalParsingPaused = paused;
-    if (!paused) {
-      _lastTerminalParseNotifyAtMs = null;
-      _terminal?.notifyListeners();
+    if (paused) {
+      _terminalParsePumpTimer?.cancel();
+      _terminalParsePumpTimer = null;
+      // The native viewport has no use for hidden terminal replay. A coherent
+      // MonkeyMux redraw is requested when terminal mode returns, so retaining
+      // megabytes here only competes with native scrolling and risks a large
+      // catch-up drain.
+      _terminalParseBacklog = '';
+      _terminalParseOffset = 0;
+      return;
     }
+    _lastTerminalParseNotifyAtMs = null;
+    final terminal = _terminal;
+    if (terminal != null &&
+        _terminalParseOffset < _terminalParseBacklog.length) {
+      _pumpTerminalParse(terminal);
+    }
+    terminal?.notifyListeners();
   }
 
   void _enqueueTerminalParse(Terminal terminal, String data) {
-    if (data.isEmpty) {
+    if (_terminalParsingPaused || data.isEmpty) {
       return;
     }
     // Drop already-consumed prefix before appending so the backing string does
@@ -1199,12 +1213,13 @@ if(!$__flResolved){$__flResolved='cmd'}
       _terminalParseOffset = 0;
     }
     _terminalParseBacklog += data;
-    _pumpTerminalParse(terminal);
+    if (!_terminalParsingPaused) _pumpTerminalParse(terminal);
   }
 
   void _pumpTerminalParse(Terminal terminal) {
     _terminalParsePumpTimer?.cancel();
     _terminalParsePumpTimer = null;
+    if (_terminalParsingPaused) return;
     if (!identical(_terminal, terminal)) {
       _terminalParseBacklog = '';
       _terminalParseOffset = 0;
@@ -1235,6 +1250,7 @@ if(!$__flResolved){$__flResolved='cmd'}
       }
     }
 
+    final processedChars = _terminalParseOffset - startOffset;
     final remaining = _terminalParseBacklog.length - _terminalParseOffset;
     if (remaining > 0) {
       _scheduleTerminalParsePump(terminal);
@@ -1252,7 +1268,7 @@ if(!$__flResolved){$__flResolved='cmd'}
           fields: {
             'connectionId': _session.connectionId,
             'slices': sliceCount,
-            'chars': _terminalParseOffset - startOffset,
+            'chars': processedChars,
             'durationMs': stopwatch.elapsedMilliseconds,
             'worstSliceMs': (worstSliceMicros / 1000).round(),
             'remainingChars': remaining,

@@ -3820,6 +3820,35 @@ LISTEN ::1:4201
       expect(terminalNotifications, 1);
     });
 
+    test(
+      'native viewport drops hidden terminal replay until restored',
+      () async {
+        final shell = await openShell();
+        final session = shell.session
+          ..debugTerminalOutputFlushInterval = const Duration(minutes: 5)
+          ..setTerminalParsingPaused(paused: true);
+        final terminal = session.terminal!;
+
+        shell.stdout.add(
+          Uint8List.fromList(utf8.encode('hidden terminal replay')),
+        );
+        await pumpEventQueue();
+        session.debugFlushPendingTerminalOutput();
+        await pumpEventQueue();
+        expect(firstLineText(terminal), isEmpty);
+
+        session.setTerminalParsingPaused(paused: false);
+        shell.stdout.add(
+          Uint8List.fromList(utf8.encode('visible after restore')),
+        );
+        await pumpEventQueue();
+        session.debugFlushPendingTerminalOutput();
+        await pumpEventQueue();
+
+        expect(firstLineText(terminal), 'visible after restore');
+      },
+    );
+
     test('coalesces split MonkeyMux active-window replay chunks', () async {
       final shell = await openShell();
       final session = shell.session;
