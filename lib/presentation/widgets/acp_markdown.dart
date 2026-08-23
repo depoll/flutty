@@ -40,7 +40,7 @@ Future<void> launchAcpLink(String? href) async {
 /// active (including terminal-driven) palette. Code blocks reuse the shared
 /// highlight utilities via [AcpCodeBlock]. Links are opened through
 /// [launchAcpLink] unless a custom [onTapLink] is supplied.
-class AcpMarkdown extends StatelessWidget {
+class AcpMarkdown extends StatefulWidget {
   /// Creates a Markdown renderer.
   const AcpMarkdown({
     required this.data,
@@ -82,7 +82,45 @@ class AcpMarkdown extends StatelessWidget {
   final bool machineContent;
 
   @override
-  Widget build(BuildContext context) {
+  State<AcpMarkdown> createState() => _AcpMarkdownState();
+}
+
+class _AcpMarkdownState extends State<AcpMarkdown> {
+  late String _normalizedData;
+  late Widget _body;
+
+  @override
+  void initState() {
+    super.initState();
+    _normalizedData = normalizeAcpMarkdownDataImages(widget.data);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _body = _buildMarkdownBody(context);
+  }
+
+  @override
+  void didUpdateWidget(AcpMarkdown oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.data != widget.data) {
+      _normalizedData = normalizeAcpMarkdownDataImages(widget.data);
+    }
+    if (oldWidget.data != widget.data ||
+        oldWidget.selectable != widget.selectable ||
+        oldWidget.onTapLink != widget.onTapLink ||
+        oldWidget.imageResolver != widget.imageResolver ||
+        oldWidget.onTapImage != widget.onTapImage ||
+        oldWidget.onCopyCode != widget.onCopyCode ||
+        oldWidget.syntaxTheme != widget.syntaxTheme ||
+        oldWidget.machineContent != widget.machineContent) {
+      _body = _buildMarkdownBody(context);
+    }
+  }
+
+  Widget _buildMarkdownBody(BuildContext context) {
+    final machineContent = widget.machineContent;
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final base = MarkdownStyleSheet.fromTheme(theme);
@@ -161,20 +199,23 @@ class AcpMarkdown extends StatelessWidget {
     );
 
     return MarkdownBody(
-      data: normalizeAcpMarkdownDataImages(data),
-      selectable: selectable,
+      data: _normalizedData,
+      selectable: widget.selectable,
       styleSheet: styleSheet,
       softLineBreak: true,
-      onTapLink: onTapLink ?? _defaultOnTapLink,
+      onTapLink: widget.onTapLink ?? _defaultOnTapLink,
       imageBuilder: _buildImage,
       builders: {
         'pre': _AcpCodeBlockBuilder(
-          syntaxTheme: syntaxTheme,
-          onCopy: onCopyCode,
+          syntaxTheme: widget.syntaxTheme,
+          onCopy: widget.onCopyCode,
         ),
       },
     );
   }
+
+  @override
+  Widget build(BuildContext context) => _body;
 
   void _defaultOnTapLink(String text, String? href, String title) {
     unawaited(launchAcpLink(href));
@@ -184,8 +225,8 @@ class AcpMarkdown extends StatelessWidget {
     padding: const EdgeInsets.symmetric(vertical: FluttyTheme.spacingSm),
     child: AcpInlineImage(
       image: AcpImageContent(uri: uri.toString(), label: alt ?? title),
-      resolver: imageResolver,
-      onTap: onTapImage,
+      resolver: widget.imageResolver,
+      onTap: widget.onTapImage,
     ),
   );
 }

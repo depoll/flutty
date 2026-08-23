@@ -21,7 +21,10 @@ Widget wrap(Widget child) => MaterialApp(
 );
 
 void main() {
-  setUp(() => FluttyTheme.debugUseSystemFonts = true);
+  setUp(() {
+    FluttyTheme.debugUseSystemFonts = true;
+    clearAcpInlineDataImageCache();
+  });
   tearDown(() => FluttyTheme.debugUseSystemFonts = false);
 
   testWidgets('renders tables, lists and quotes without error', (tester) async {
@@ -169,6 +172,56 @@ void main() {
     );
     await tester.pump();
     expect(find.byType(AcpInlineImage), findsOneWidget);
+  });
+
+  testWidgets('keeps parsed Markdown stable across parent rebuilds', (
+    tester,
+  ) async {
+    const dataUri =
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+        'AAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    late StateSetter rebuildParent;
+    await tester.pumpWidget(
+      wrap(
+        StatefulBuilder(
+          builder: (context, setState) {
+            rebuildParent = setState;
+            return const AcpMarkdown(data: '![diagram]($dataUri)');
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final before = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+
+    rebuildParent(() {});
+    await tester.pump();
+    final after = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+
+    expect(identical(after, before), isTrue);
+    expect(identical(after.data, before.data), isTrue);
+  });
+
+  testWidgets('reuses data-image decode across remounts', (tester) async {
+    const dataUri =
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+        'AAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    final image = AcpImageContent(uri: dataUri, label: 'diagram');
+
+    await tester.pumpWidget(wrap(AcpInlineImage(image: image)));
+    await tester.pumpAndSettle();
+    expect(acpInlineDataImageDecodeCount, 1);
+    expect(acpInlineDataImageCacheEntryCount, 1);
+
+    await tester.pumpWidget(wrap(const SizedBox.shrink()));
+    await tester.pump();
+    await tester.pumpWidget(wrap(AcpInlineImage(image: image)));
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byType(Image), findsOneWidget);
+    await tester.pumpAndSettle();
+
+    expect(acpInlineDataImageDecodeCount, 1);
+    expect(acpInlineDataImageCacheEntryCount, 1);
   });
 
   testWidgets('renders a provider-wrapped inline data image', (tester) async {

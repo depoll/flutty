@@ -56,6 +56,10 @@ String normalizeAcpMarkdownDataImages(String source) {
 
     final raw = source.substring(destinationStart, destinationEnd);
     final compact = _withoutAsciiWhitespace(raw);
+    if (identical(compact, raw)) {
+      searchFrom = destinationEnd + 1;
+      continue;
+    }
     if (!_isBase64ImageDataUri(compact)) {
       searchFrom = destinationEnd + 1;
       continue;

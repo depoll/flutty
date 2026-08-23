@@ -50,6 +50,13 @@ void main() {
     expect(chunks.join(), endsWith('after'));
   });
 
+  test('returns normalized data-image Markdown by identity', () {
+    final payload = List.filled(9000, 'A').join();
+    final source = '![diagram](data:image/png;base64,$payload)';
+
+    expect(identical(normalizeAcpMarkdownDataImages(source), source), isTrue);
+  });
+
   test('leaves wrapped data-image syntax unchanged inside code fences', () {
     const source =
         '```text\n'
