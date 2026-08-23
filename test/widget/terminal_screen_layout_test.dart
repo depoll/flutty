@@ -6,6 +6,7 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:monkeyssh/presentation/widgets/system_bottom_inset.dart';
 
 void main() {
   group('terminal layout helpers', () {
@@ -389,7 +390,15 @@ void main() {
         size: Size(390, 844),
         padding: EdgeInsets.only(bottom: 34),
       );
+      // The scaffold lifts the body above the keyboard and strips the bottom
+      // view inset from it, leaving only the already-zeroed bottom padding.
       const portraitKeyboardMediaQuery = MediaQueryData(
+        size: Size(390, 844),
+        viewPadding: EdgeInsets.only(bottom: 34),
+      );
+      // A bottom view inset that survives into the body means the layout was
+      // never lifted for it, so the navigation bar is still on screen.
+      const portraitStaleInsetMediaQuery = MediaQueryData(
         size: Size(390, 844),
         viewPadding: EdgeInsets.only(bottom: 34),
         viewInsets: EdgeInsets.only(bottom: 320),
@@ -406,6 +415,10 @@ void main() {
       expect(
         resolveTmuxBarSafeInsets(portraitKeyboardMediaQuery),
         EdgeInsets.zero,
+      );
+      expect(
+        resolveTmuxBarSafeInsets(portraitStaleInsetMediaQuery),
+        const EdgeInsets.only(bottom: 34),
       );
       expect(
         resolveTmuxBarSafeInsets(landscapeMediaQuery),
@@ -1416,9 +1429,10 @@ void main() {
                 builder: (outerContext) => Column(
                   children: [
                     Expanded(
-                      child: MediaQuery.removePadding(
-                        context: outerContext,
-                        removeBottom: true,
+                      child: MediaQuery(
+                        data: removeSystemBottomInset(
+                          MediaQuery.of(outerContext),
+                        ),
                         child: Builder(
                           builder: (innerContext) {
                             strippedMediaQuery = MediaQuery.of(innerContext);
@@ -1450,6 +1464,48 @@ void main() {
         );
       },
     );
+
+    testWidgets('collapses to zero for a stale unlifted bottom inset', (
+      tester,
+    ) async {
+      late MediaQueryData strippedMediaQuery;
+      await tester.pumpWidget(
+        MediaQuery(
+          // The keyboard is closed but the platform still reports its inset,
+          // so the scaffold never lifted the body and the keyboard toolbar
+          // below absorbs the navigation-bar inset itself.
+          data: const MediaQueryData(
+            viewPadding: EdgeInsets.only(bottom: 34),
+            viewInsets: EdgeInsets.only(bottom: 320),
+          ),
+          child: Directionality(
+            textDirection: TextDirection.ltr,
+            child: Builder(
+              builder: (outerContext) => Column(
+                children: [
+                  Expanded(
+                    child: MediaQuery(
+                      data: removeSystemBottomInset(
+                        MediaQuery.of(outerContext),
+                      ),
+                      child: Builder(
+                        builder: (innerContext) {
+                          strippedMediaQuery = MediaQuery.of(innerContext);
+                          return const SizedBox.expand();
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 118),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(resolveTmuxBarSafeInsets(strippedMediaQuery).bottom, 0);
+    });
   });
 }
 

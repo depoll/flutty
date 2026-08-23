@@ -41,6 +41,7 @@ void main() {
     const mediaQuery = MediaQueryData(
       size: Size(390, 844),
       padding: EdgeInsets.only(bottom: 34),
+      viewPadding: EdgeInsets.only(bottom: 34),
     );
 
     expect(shouldUseSingleRowKeyboardToolbar(mediaQuery), isFalse);
@@ -704,18 +705,71 @@ void main() {
     });
 
     test('keeps bottom safe-area padding when keyboard is closed', () {
-      const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
+      const mediaQuery = MediaQueryData(
+        padding: EdgeInsets.only(bottom: 34),
+        viewPadding: EdgeInsets.only(bottom: 34),
+      );
 
-      expect(shouldKeepToolbarBottomSafeArea(mediaQuery), isTrue);
+      expect(resolveKeyboardToolbarBottomInset(mediaQuery), 34);
     });
 
     test('drops bottom safe-area padding when keyboard is open', () {
+      // The scaffold lifts the body above the keyboard and strips the bottom
+      // view inset from it, so only the (already zeroed) padding remains.
       const mediaQuery = MediaQueryData(
-        padding: EdgeInsets.only(bottom: 34),
+        viewPadding: EdgeInsets.only(bottom: 34),
+      );
+
+      expect(resolveKeyboardToolbarBottomInset(mediaQuery), 0);
+    });
+
+    test('keeps bottom safe-area padding for an unlifted bottom inset', () {
+      // A bottom view inset that survives into the body means the layout was
+      // never lifted for it (stale platform inset, or
+      // `resizeToAvoidBottomInset: false`), so the navigation bar is still on
+      // screen even though `padding.bottom` reads zero.
+      const mediaQuery = MediaQueryData(
+        viewPadding: EdgeInsets.only(bottom: 34),
         viewInsets: EdgeInsets.only(bottom: 320),
       );
 
-      expect(shouldKeepToolbarBottomSafeArea(mediaQuery), isFalse);
+      expect(resolveKeyboardToolbarBottomInset(mediaQuery), 34);
+      expect(resolveKeyboardToolbarHeight(mediaQuery), 118);
+    });
+
+    testWidgets('stays above the navigation bar for a stale bottom inset', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            // The keyboard is closed but the platform still reports its inset,
+            // so the scaffold never lifted the body: the toolbar has to clear
+            // the navigation bar itself.
+            builder: (context) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                padding: EdgeInsets.zero,
+                viewPadding: const EdgeInsets.only(bottom: 34),
+                viewInsets: const EdgeInsets.only(bottom: 320),
+              ),
+              child: Scaffold(
+                resizeToAvoidBottomInset: false,
+                body: Column(
+                  children: [
+                    const Expanded(child: SizedBox.expand()),
+                    KeyboardToolbar(terminal: terminal),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final bodyBottom = tester.getRect(find.byType(Scaffold)).bottom;
+      final lastRowBottom = tester.getRect(find.byTooltip('Enter')).bottom;
+
+      expect(bodyBottom - lastRowBottom, 34);
     });
 
     testWidgets('arrow keys repeat while held', (tester) async {

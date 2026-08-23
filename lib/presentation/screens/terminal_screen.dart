@@ -92,6 +92,7 @@ import '../widgets/device_debug_sheet.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
+import '../widgets/system_bottom_inset.dart';
 import '../widgets/terminal_menu_style.dart';
 import '../widgets/terminal_overlay_focus.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
@@ -872,7 +873,7 @@ EdgeInsets resolveTmuxBarSafeInsets(MediaQueryData mediaQuery) {
   return EdgeInsets.only(
     left: horizontalInsets.left,
     right: horizontalInsets.right,
-    bottom: mediaQuery.padding.bottom,
+    bottom: resolveSystemBottomInset(mediaQuery),
   );
 }
 
@@ -14459,12 +14460,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               children: [
                 Expanded(
                   // The KeyboardToolbar below already absorbs the bottom
-                  // safe-area inset via its own SafeArea, so strip it here to
-                  // prevent the tmux bar from floating above the toolbar.
+                  // system inset, so strip it here to prevent the tmux bar
+                  // from reserving that space a second time.
                   child: showsKeyboardToolbar
-                      ? MediaQuery.removePadding(
-                          context: bodyContext,
-                          removeBottom: true,
+                      ? MediaQuery(
+                          data: removeSystemBottomInset(
+                            MediaQuery.of(bodyContext),
+                          ),
                           child: terminalArea,
                         )
                       : terminalArea,
