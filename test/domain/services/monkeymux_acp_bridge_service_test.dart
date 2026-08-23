@@ -124,6 +124,7 @@ Map<String, Object?> _metadata({
   String id = _bridgeId,
   String state = 'running',
   int nextSequence = 0,
+  int pendingRequestCount = 1,
 }) => {
   'id': id,
   'providerId': 'builtin:copilot-cli',
@@ -133,7 +134,7 @@ Map<String, Object?> _metadata({
   'commandHash': _commandHash,
   'state': state,
   'clientCount': 1,
-  'pendingRequestCount': 0,
+  'pendingRequestCount': pendingRequestCount,
   'inFlightTurnCount': 0,
   'lastActivityUnix': 1700000000,
   'startedAtUnix': 1699999990,
@@ -661,6 +662,90 @@ void main() {
           .any((message) => message['type'] == 'ack'),
     );
     expect(channel.writes.map(_decodeFrame), contains(containsPair('ack', 1)));
+  });
+
+  test('legacy bridge with no pending requests skips queued replay', () async {
+    final channels = <_TestChannel>[];
+    var opens = 0;
+    final client = _MockSshClient();
+    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+      _,
+    ) async {
+      opens += 1;
+      late _TestChannel channel;
+      channel = _TestChannel(
+        onWrite: (value) {
+          final message = jsonDecode(value) as Map<String, dynamic>;
+          if (message['type'] != 'hello') return;
+          if (opens == 1) {
+            expect(message['lastAck'], 0);
+            expect(message['replayMode'], 'pending');
+            channel.addText(
+              '${_frame({'version': 1, 'type': 'hello', 'bridgeId': _bridgeId, 'clientId': _otherBridgeId, 'canSend': true, 'bridge': _metadata(nextSequence: 40000, pendingRequestCount: 0)})}${_frame({
+                'version': 1,
+                'type': 'output',
+                'bridgeId': _bridgeId,
+                'sequence': 1,
+                'data': {'jsonrpc': '2.0', 'method': 'stale-history'},
+              })}',
+            );
+            return;
+          }
+          expect(message['lastAck'], 40000);
+          expect(message, isNot(contains('replayMode')));
+          channel
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'hello',
+                'bridgeId': _bridgeId,
+                'clientId': _otherBridgeId,
+                'canSend': true,
+                'bridge': _metadata(
+                  nextSequence: 40000,
+                  pendingRequestCount: 0,
+                ),
+              }),
+            )
+            ..addText(
+              _frame({
+                'version': 1,
+                'type': 'output',
+                'bridgeId': _bridgeId,
+                'sequence': 40001,
+                'data': {'jsonrpc': '2.0', 'method': 'live'},
+              }),
+            );
+        },
+      );
+      channels.add(channel);
+      return channel.session;
+    });
+    final transport =
+        MonkeyMuxAcpBridgeService(
+          installer: _FakeInstaller(
+            const MonkeyMuxInstallation(
+              executablePath: '/helper',
+              platform: 'linux-amd64',
+              version: 'test',
+            ),
+          ),
+        ).connect(
+          sessionProvider: () async => _sshSession(client),
+          bridgeId: _bridgeId,
+          providerId: 'copilot',
+          reconnectBackoff: const [Duration(milliseconds: 1)],
+        );
+    addTearDown(transport.close);
+
+    final incoming =
+        jsonDecode(utf8.decode(await transport.incoming.first))
+            as Map<String, dynamic>;
+
+    expect(channels, hasLength(2));
+    expect(incoming['method'], 'live');
+    expect(transport.lastDeliveredSequence, 40001);
+    expect(transport.didSkipHistoricalReplay(), isTrue);
   });
 
   test(

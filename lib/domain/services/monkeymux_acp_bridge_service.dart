@@ -879,6 +879,35 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
+    final legacyEmptyPendingBaseline =
+        _pendingOnlyHandshakeRequested &&
+        replayMode == null &&
+        metadata.pendingRequestCount == 0;
+    if (legacyEmptyPendingBaseline) {
+      final skippedSequenceCount =
+          metadata.nextSequence - _lastDeliveredSequence;
+      _lastDeliveredSequence = metadata.nextSequence;
+      _skippedHistoricalReplay = true;
+      _freshBaselineEstablished = true;
+      _pendingOnlyHandshakeRequested = false;
+      _acceptsPendingFrames = false;
+      _diagnostics.info(
+        'acp.transport',
+        'fresh_replay_baseline',
+        fields: {
+          'skippedSequenceCount': skippedSequenceCount,
+          'pendingRequestCount': 0,
+          'legacyBridge': true,
+        },
+      );
+      if (_lastDeliveredSequence > 0) {
+        // An older, already-running bridge daemon cannot negotiate pending-only
+        // mode. Its full replay is already queued, so close this channel before
+        // draining it and reconnect from the safe no-pending high-water mark.
+        _handleChannelLoss(_generation, null);
+        return;
+      }
+    }
     final pendingOnly =
         _pendingOnlyHandshakeRequested && replayMode == 'pending';
     _acceptsPendingFrames = pendingOnly;
