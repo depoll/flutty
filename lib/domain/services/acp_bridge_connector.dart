@@ -49,8 +49,10 @@ final class AcpBridgeSession {
     required this.transportErrors,
     required Future<void> Function() onClose,
     bool Function()? skippedHistoricalReplay,
+    int Function()? lastDeliveredSequence,
   }) : _onClose = onClose,
-       _skippedHistoricalReplay = skippedHistoricalReplay;
+       _skippedHistoricalReplay = skippedHistoricalReplay,
+       _lastDeliveredSequence = lastDeliveredSequence;
 
   /// Typed ACP client bound to the bridge transport.
   final AcpClient client;
@@ -62,6 +64,10 @@ final class AcpBridgeSession {
   final Stream<MonkeyMuxAcpBridgeException> transportErrors;
 
   final bool Function()? _skippedHistoricalReplay;
+  final int Function()? _lastDeliveredSequence;
+
+  /// Latest bridge output sequence delivered by this logical attachment.
+  int get lastDeliveredSequence => _lastDeliveredSequence?.call() ?? 0;
 
   /// Whether fresh transport attach established a remote high-water baseline
   /// instead of downloading historical bridge output.
@@ -117,6 +123,7 @@ abstract interface class AcpBridgeConnector {
     required int hostId,
     required String bridgeId,
     required String providerId,
+    int lastAcknowledgedSequence = 0,
   });
 
   /// Resolves the same-host filesystem/terminal binding used to answer ACP
@@ -231,11 +238,13 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
     required int hostId,
     required String bridgeId,
     required String providerId,
+    int lastAcknowledgedSequence = 0,
   }) {
     final transport = _bridgeService.connect(
       sessionProvider: () => _sessionResolver(hostId),
       bridgeId: bridgeId,
       providerId: providerId,
+      lastAcknowledgedSequence: lastAcknowledgedSequence,
     );
     final connection = AcpJsonRpcConnection(
       transport: transport,
@@ -247,6 +256,7 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
       transportStates: transport.states,
       transportErrors: transport.errors,
       skippedHistoricalReplay: transport.didSkipHistoricalReplay,
+      lastDeliveredSequence: () => transport.lastDeliveredSequence,
       onClose: client.close,
     );
   }

@@ -401,8 +401,16 @@ final class MonkeyMuxAcpBridgeService {
       Duration(seconds: 4),
     ],
     Duration handshakeTimeout = const Duration(seconds: 10),
+    int lastAcknowledgedSequence = 0,
   }) {
     _validateBridgeId(bridgeId);
+    if (lastAcknowledgedSequence < 0) {
+      throw ArgumentError.value(
+        lastAcknowledgedSequence,
+        'lastAcknowledgedSequence',
+        'must not be negative',
+      );
+    }
     return MonkeyMuxAcpTransport._(
       installer: _installer,
       sessionProvider: sessionProvider,
@@ -411,6 +419,7 @@ final class MonkeyMuxAcpBridgeService {
       diagnostics: _diagnostics,
       reconnectBackoff: reconnectBackoff,
       handshakeTimeout: handshakeTimeout,
+      lastAcknowledgedSequence: lastAcknowledgedSequence,
     );
   }
 
@@ -470,13 +479,16 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     required DiagnosticsLogger diagnostics,
     required List<Duration> reconnectBackoff,
     required Duration handshakeTimeout,
+    required int lastAcknowledgedSequence,
   }) : _installer = installer,
        _sessionProvider = sessionProvider,
        _bridgeId = bridgeId,
        _providerHash = providerHash,
        _diagnostics = diagnostics,
        _reconnectBackoff = List.unmodifiable(reconnectBackoff),
-       _handshakeTimeout = handshakeTimeout {
+       _handshakeTimeout = handshakeTimeout,
+       _lastDeliveredSequence = lastAcknowledgedSequence,
+       _freshBaselineEstablished = lastAcknowledgedSequence > 0 {
     scheduleMicrotask(() {
       _emitState(MonkeyMuxAcpTransportStatus.connecting);
       unawaited(_openChannel());
@@ -512,8 +524,8 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   Future<void>? _releaseFuture;
   var _generation = 0;
   var _reconnectAttempt = 0;
-  var _lastDeliveredSequence = 0;
-  var _freshBaselineEstablished = false;
+  late int _lastDeliveredSequence;
+  late bool _freshBaselineEstablished;
   var _skippedHistoricalReplay = false;
   var _pendingOnlyHandshakeRequested = false;
   var _acceptsPendingFrames = false;

@@ -664,6 +664,52 @@ void main() {
     expect(channel.writes.map(_decodeFrame), contains(containsPair('ack', 1)));
   });
 
+  test('replacement transport resumes from the supplied bridge ACK', () async {
+    late _TestChannel channel;
+    channel = _TestChannel(
+      onWrite: (value) {
+        final message = jsonDecode(value) as Map<String, dynamic>;
+        if (message['type'] != 'hello') return;
+        expect(message['lastAck'], 23);
+        expect(message, isNot(contains('replayMode')));
+        channel.addText(
+          _frame({
+            'version': 1,
+            'type': 'hello',
+            'bridgeId': _bridgeId,
+            'clientId': _otherBridgeId,
+            'canSend': true,
+            'bridge': _metadata(nextSequence: 23),
+          }),
+        );
+      },
+    );
+    final client = _MockSshClient();
+    when(
+      () => client.execute(any(), pty: any(named: 'pty')),
+    ).thenAnswer((_) async => channel.session);
+    final transport =
+        MonkeyMuxAcpBridgeService(
+          installer: _FakeInstaller(
+            const MonkeyMuxInstallation(
+              executablePath: '/helper',
+              platform: 'linux-amd64',
+              version: 'test',
+            ),
+          ),
+        ).connect(
+          sessionProvider: () async => _sshSession(client),
+          bridgeId: _bridgeId,
+          providerId: 'copilot',
+          lastAcknowledgedSequence: 23,
+        );
+    addTearDown(transport.close);
+
+    await _waitUntil(() => transport.isConnected);
+    expect(transport.lastDeliveredSequence, 23);
+    expect(transport.didSkipHistoricalReplay(), isFalse);
+  });
+
   test('safe short direct replay holds client input until high-water', () async {
     late _TestChannel channel;
     channel = _TestChannel(

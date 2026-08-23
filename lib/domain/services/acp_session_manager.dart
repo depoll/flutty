@@ -515,6 +515,25 @@ class AcpSessionManager {
   Future<void> stopSession(AcpSessionKey key) =>
       _serialize(() => _stopAll([key]));
 
+  /// Releases every local session owned by a MonkeyMux window that is about to
+  /// be closed. The mux close command owns remote bridge termination; tearing
+  /// down locally first prevents its expected socket closure from entering the
+  /// transport reconnect backoff.
+  Future<void> releaseSessionsForClosingMuxWindow({
+    required int hostId,
+    required String bridgeId,
+  }) => _serialize(() {
+    final keys = _controllers.values
+        .where(
+          (controller) =>
+              controller.state.key.hostId == hostId &&
+              controller.state.key.bridgeId == bridgeId,
+        )
+        .map((controller) => controller.state.key)
+        .toList(growable: false);
+    return _stopAll(keys, stopRemoteBridges: false);
+  });
+
   /// Closes the ACP session on the agent (when supported) and stops the bridge.
   Future<void> closeSession(AcpSessionKey key) => _serialize(() async {
     final controller = _controllers[key.value];
@@ -862,7 +881,10 @@ class AcpSessionManager {
     );
   }
 
-  Future<void> _stopAll(List<AcpSessionKey> keys) async {
+  Future<void> _stopAll(
+    List<AcpSessionKey> keys, {
+    bool stopRemoteBridges = true,
+  }) async {
     for (final key in keys) {
       final controller = _controllers.remove(key.value);
       if (controller == null) continue;
@@ -886,7 +908,7 @@ class AcpSessionManager {
       final bridgeStillUsed = _controllers.values.any(
         (other) => other.bridgeKey == key.bridge,
       );
-      if (bridgeStillUsed) continue;
+      if (bridgeStillUsed || !stopRemoteBridges) continue;
       try {
         await _connector.stopBridge(hostId, bridgeId);
       } on Object catch (error) {
@@ -1205,6 +1227,7 @@ class _BridgeAttachment {
       _session.transportErrors;
   AcpInitializeResult? get initialization => _initialization;
   bool get skippedHistoricalReplay => _session.skippedHistoricalReplay;
+  int get lastDeliveredSequence => _session.lastDeliveredSequence;
 
   /// The capability service bound to this attachment's client, or `null` when
   /// no same-host filesystem/terminal binding was available at initialize
@@ -1363,6 +1386,7 @@ class _SessionController {
   var _detachedTurnInFlight = false;
   Timer? _detachedTurnStatusTimer;
   var _detachedTurnMonitorGeneration = 0;
+  var _lastAcknowledgedBridgeSequence = 0;
 
   StreamSubscription<AcpSessionNotification>? _updatesSub;
   StreamSubscription<List<cap.AcpPendingClientRequest>>? _capabilityRequestsSub;
@@ -1409,6 +1433,10 @@ class _SessionController {
   /// [_BridgeAttachment.release] for the meaning of [permanent].
   Future<bool> _releaseLease({bool permanent = false}) async {
     if (!_holdsAttachment) return false;
+    final deliveredSequence = attachment.lastDeliveredSequence;
+    if (deliveredSequence > _lastAcknowledgedBridgeSequence) {
+      _lastAcknowledgedBridgeSequence = deliveredSequence;
+    }
     _holdsAttachment = false;
     return _manager._releaseAttachment(attachment, permanent: permanent);
   }
@@ -2386,6 +2414,7 @@ class _SessionController {
           hostId: hostId,
           bridgeId: bridgeId,
           providerId: providerId,
+          lastAcknowledgedSequence: _lastAcknowledgedBridgeSequence,
         ),
         capabilityServiceFactory: _manager._capabilityServiceFactory(
           hostId: hostId,

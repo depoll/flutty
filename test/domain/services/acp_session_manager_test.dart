@@ -389,6 +389,9 @@ class _FakeConnector implements AcpBridgeConnector {
   int _bridgeCounter = 0;
   int bridgeStatusInFlightTurnCount = 0;
   bool skippedHistoricalReplay = false;
+  final Map<String, int> lastDeliveredSequences = <String, int>{};
+  final Map<String, List<int>> connectionAcknowledgements =
+      <String, List<int>>{};
 
   @override
   Future<MonkeyMuxAcpBridgeStartResult> startBridge({
@@ -481,7 +484,11 @@ class _FakeConnector implements AcpBridgeConnector {
     required int hostId,
     required String bridgeId,
     required String providerId,
+    int lastAcknowledgedSequence = 0,
   }) {
+    connectionAcknowledgements
+        .putIfAbsent(bridgeId, () => <int>[])
+        .add(lastAcknowledgedSequence);
     final server = serverFactory?.call(hostId, bridgeId) ?? _FakeAcpServer();
     servers[bridgeId] = server;
     final states = StreamController<MonkeyMuxAcpTransportState>.broadcast();
@@ -495,6 +502,7 @@ class _FakeConnector implements AcpBridgeConnector {
       transportStates: states.stream,
       transportErrors: errors.stream,
       skippedHistoricalReplay: () => skippedHistoricalReplay,
+      lastDeliveredSequence: () => lastDeliveredSequences[bridgeId] ?? 0,
       onClose: () async {
         await client.close();
         await states.close();
@@ -1776,6 +1784,26 @@ void main() {
       },
     );
 
+    test(
+      'soft reattach resumes from the last rendered bridge sequence',
+      () async {
+        final key = await startCopilot();
+        connector.lastDeliveredSequences[key.bridgeId] = 23;
+
+        await manager.detachSession(key);
+        final result = await manager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
+
+        expect(result, isA<AcpSessionLaunchStarted>());
+        expect(connector.connectionAcknowledgements[key.bridgeId], [0, 23]);
+      },
+    );
+
     test('reconnects without resume/load by reusing the session id', () async {
       final plainConnector = _FakeConnector(
         serverFactory: (_, _) =>
@@ -1804,6 +1832,21 @@ void main() {
   });
 
   group('attachment lease', () {
+    test(
+      'window close releases local sessions without a duplicate stop',
+      () async {
+        final key = await startCopilot();
+
+        await manager.releaseSessionsForClosingMuxWindow(
+          hostId: key.hostId,
+          bridgeId: key.bridgeId,
+        );
+
+        expect(manager.state.byKeyValue(key.value), isNull);
+        expect(connector.stoppedBridges, isEmpty);
+      },
+    );
+
     test('detach is idempotent and never double-releases', () async {
       final key = await startCopilot();
       await manager.detachSession(key);

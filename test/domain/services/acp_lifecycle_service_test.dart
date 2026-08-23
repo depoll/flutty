@@ -187,6 +187,7 @@ class _FakeConnector implements AcpBridgeConnector {
     required int hostId,
     required String bridgeId,
     required String providerId,
+    int lastAcknowledgedSequence = 0,
   }) {
     final server = serverFactory?.call(hostId, bridgeId) ?? _FakeAcpServer();
     servers[bridgeId] = server;

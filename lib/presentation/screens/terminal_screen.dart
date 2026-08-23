@@ -11684,13 +11684,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
         case TmuxCloseWindowAction(:final windowIndex):
           final closingWindow = _resolveTmuxWindowByTarget(windowIndex);
-          final closesFocusedNativeWindow =
-              closingWindow != null &&
-              closingWindow.isNativeAcp &&
-              _activeNativeAcpSessionKey?.bridgeId ==
-                  closingWindow.nativeAcpBridgeId;
-          if (closesFocusedNativeWindow) {
-            _showTerminalViewport();
+          if (closingWindow?.isNativeAcp ?? false) {
+            final bridgeId = closingWindow!.nativeAcpBridgeId!;
+            final manager = ref.read(acpSessionManagerProvider);
+            final closingKeys = manager.state.sessions
+                .where(
+                  (nativeSession) =>
+                      nativeSession.key.hostId == session.hostId &&
+                      nativeSession.key.bridgeId == bridgeId,
+                )
+                .map((nativeSession) => nativeSession.key)
+                .toList(growable: false);
+            if (_activeNativeAcpSessionKey?.bridgeId == bridgeId) {
+              _showTerminalViewport();
+            }
+            await manager.releaseSessionsForClosingMuxWindow(
+              hostId: session.hostId,
+              bridgeId: bridgeId,
+            );
+            for (final key in closingKeys) {
+              _nativeAcpScrollStates.remove(key.value);
+            }
           }
           await _closeTmuxWindow(session, windowIndex);
       }
