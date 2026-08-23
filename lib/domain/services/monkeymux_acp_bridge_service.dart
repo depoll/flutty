@@ -517,6 +517,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   var _skippedHistoricalReplay = false;
   var _pendingOnlyHandshakeRequested = false;
   var _acceptsPendingFrames = false;
+  var _directReplayInProgress = false;
   var _connected = false;
   var _closed = false;
   var _terminalFailure = false;
@@ -632,7 +633,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
         'type': 'hello',
         'bridgeId': _bridgeId,
         'lastAck': _lastDeliveredSequence,
-        if (_pendingOnlyHandshakeRequested) 'replayMode': 'pending',
+        if (_pendingOnlyHandshakeRequested) 'replayMode': 'adaptive',
       });
       _diagnostics.debug(
         'acp.transport',
@@ -870,7 +871,9 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       return;
     }
     final replayMode = message['replayMode'];
-    if (replayMode != null && replayMode != 'pending') {
+    if (replayMode != null &&
+        replayMode != 'pending' &&
+        replayMode != 'direct') {
       _failTerminal(
         const MonkeyMuxAcpBridgeException(
           MonkeyMuxAcpBridgeErrorKind.invalidFrame,
@@ -910,6 +913,18 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     }
     final pendingOnly =
         _pendingOnlyHandshakeRequested && replayMode == 'pending';
+    final directReplay =
+        _pendingOnlyHandshakeRequested && replayMode == 'direct';
+    if (replayMode == 'direct' && !directReplay) {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.invalidFrame,
+          'The helper started direct replay outside a fresh handshake.',
+        ),
+      );
+      return;
+    }
+    if (directReplay) _directReplayInProgress = true;
     _acceptsPendingFrames = pendingOnly;
     _pendingHandshakeRequestCount = pendingOnly
         ? metadata.pendingRequestCount
@@ -940,7 +955,21 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       MonkeyMuxAcpTransportStatus.connected,
       providerState: metadata.state,
     );
-    if (!pendingOnly) _flushPendingInput();
+    if (directReplay) _finishDirectReplayIfComplete();
+    if (!pendingOnly && !directReplay) _flushPendingInput();
+  }
+
+  void _finishDirectReplayIfComplete() {
+    if (!_directReplayInProgress) return;
+    final highWater = _handshakeHighWaterSequence;
+    if (highWater == null || _lastDeliveredSequence != highWater) return;
+    _directReplayInProgress = false;
+    _diagnostics.info(
+      'acp.transport',
+      'fresh_replay_direct',
+      fields: {'replayedSequenceCount': highWater},
+    );
+    _flushPendingInput();
   }
 
   void _handleReplayEnd(Map<String, Object?> message) {
@@ -1033,6 +1062,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     _commitSequence(sequence);
     _incoming.add(encoded);
     _sendAck(sequence);
+    _finishDirectReplayIfComplete();
   }
 
   void _handlePending(Map<String, Object?> message) {
@@ -1134,10 +1164,20 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       providerState: state,
       exitCode: exitCode,
     );
+    _finishDirectReplayIfComplete();
   }
 
   void _handleOverflow(Map<String, Object?> message) {
     if (!_matchesCurrentBridge(message)) return;
+    if (_directReplayInProgress) {
+      _failTerminal(
+        const MonkeyMuxAcpBridgeException(
+          MonkeyMuxAcpBridgeErrorKind.sequenceGap,
+          'The helper marked an incomplete replay as direct.',
+        ),
+      );
+      return;
+    }
     final retainedFrom = _readNonNegativeInt(message['retainedFrom']);
     if (retainedFrom == null || retainedFrom == 0) {
       _failTerminal(
@@ -1290,7 +1330,13 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   }
 
   void _flushPendingInput() {
-    if (!_connected || _channel == null || _closed || _terminalFailure) return;
+    if (_directReplayInProgress ||
+        !_connected ||
+        _channel == null ||
+        _closed ||
+        _terminalFailure) {
+      return;
+    }
     while (_pendingInputFrames.isNotEmpty && _connected) {
       final frame = _pendingInputFrames.removeFirst();
       try {

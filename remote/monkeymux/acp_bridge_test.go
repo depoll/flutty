@@ -79,6 +79,61 @@ func TestAcpWireFramingRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAcpAdaptiveReplayPolicy(t *testing.T) {
+	tests := []struct {
+		name                  string
+		mode                  string
+		lastAck               uint64
+		replayBytes           int
+		replayIncomplete      bool
+		containsClientRequest bool
+		want                  string
+	}{
+		{name: "short complete replay stays direct", mode: "adaptive", replayBytes: acpAdaptiveReplayMaxBytes, want: "direct"},
+		{name: "large replay becomes pending-only", mode: "adaptive", replayBytes: acpAdaptiveReplayMaxBytes + 1, want: "pending"},
+		{name: "incomplete replay becomes pending-only", mode: "adaptive", replayIncomplete: true, want: "pending"},
+		{name: "historical client request becomes pending-only", mode: "adaptive", containsClientRequest: true, want: "pending"},
+		{name: "explicit pending remains supported", mode: "pending", replayBytes: 1, want: "pending"},
+		{name: "nonzero ack always resumes strictly", mode: "adaptive", lastAck: 1, replayBytes: acpReplayMaxBytes, want: ""},
+		{name: "unknown mode stays ordinary", mode: "unknown", replayBytes: acpReplayMaxBytes, want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hello := acpWireMessage{ReplayMode: test.mode, LastAck: test.lastAck}
+			got := replayModeForAttach(
+				hello,
+				test.replayBytes,
+				test.replayIncomplete,
+				test.containsClientRequest,
+			)
+			if got != test.want {
+				t.Fatalf("replayModeForAttach() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAcpResolvedClientRequestRemainsUnsafeForDirectReplay(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	bridge.publish(
+		"output",
+		json.RawMessage(`{"jsonrpc":"2.0","id":"permission-1","method":"session/request_permission"}`),
+		"",
+		nil,
+	)
+	bridge.mu.Lock()
+	bridge.releasePendingReplayLocked(`"permission-1"`)
+	replay := append([]acpReplayEvent(nil), bridge.replay...)
+	bridge.mu.Unlock()
+
+	if len(replay) != 1 || replay[0].pendingID != "" {
+		t.Fatalf("resolved replay = %#v, want retained non-pending event", replay)
+	}
+	if !replayContainsClientRequest(replay) {
+		t.Fatal("resolved client request was incorrectly marked safe for direct replay")
+	}
+}
+
 func TestAcpAttachQueuesHelloBeforeConcurrentLiveEvent(t *testing.T) {
 	bridge := newOrderingTestBridge()
 	peer, primed, release, attachDone := startPrimedTestAttach(t, bridge)
@@ -150,6 +205,48 @@ func TestAcpAttachQueuesReplayBeforeConcurrentLiveEvent(t *testing.T) {
 				sequence,
 			)
 		}
+	}
+}
+
+func TestAcpAdaptiveAttachEchoesDirectForSafeShortReplay(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	bridge.publish(
+		"output",
+		json.RawMessage(`{"jsonrpc":"2.0","method":"session/update"}`),
+		"",
+		nil,
+	)
+	server, peer := net.Pipe()
+	attachDone := make(chan struct{})
+	go func() {
+		defer close(attachDone)
+		bridge.handleAttach(
+			server,
+			bufio.NewReader(server),
+			acpWireMessage{
+				Version:    acpBridgeProtocolVersion,
+				Type:       "hello",
+				ReplayMode: "adaptive",
+			},
+		)
+	}()
+	defer func() {
+		_ = peer.Close()
+		select {
+		case <-attachDone:
+		case <-time.After(time.Second):
+			t.Error("adaptive direct attach did not stop")
+		}
+	}()
+
+	reader := bufio.NewReader(peer)
+	hello := readTestAcpFrame(t, reader, peer)
+	replayed := readTestAcpFrame(t, reader, peer)
+	if hello.Type != "hello" || hello.ReplayMode != "direct" {
+		t.Fatalf("adaptive hello = %#v, want direct replay", hello)
+	}
+	if replayed.Type != "output" || replayed.Sequence != 1 {
+		t.Fatalf("adaptive direct replay = %#v, want output sequence 1", replayed)
 	}
 }
 

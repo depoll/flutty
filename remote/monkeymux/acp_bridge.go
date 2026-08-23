@@ -30,6 +30,7 @@ const (
 	acpMaxFrameBytes            = 20 * 1024 * 1024
 	acpReplayEventOverheadBytes = 128
 	acpReplayMaxBytes           = 40 * 1024 * 1024
+	acpAdaptiveReplayMaxBytes   = 1 * 1024 * 1024
 	// Tiny streaming deltas used to hit a 1,024-event cap long before the
 	// memory budget, making ordinary sessions unreplayable after an app restart.
 	// Charge every event for its payload plus estimated object overhead so the
@@ -102,9 +103,10 @@ type acpLaunchConfig struct {
 }
 
 type acpReplayEvent struct {
-	message   acpWireMessage
-	bytes     int
-	pendingID string
+	message       acpWireMessage
+	bytes         int
+	pendingID     string
+	clientRequest bool
 }
 
 type acpBridgeClient struct {
@@ -880,9 +882,10 @@ func (b *acpBridge) failProviderProtocol() {
 func (b *acpBridge) appendReplayLocked(message acpWireMessage, pendingID string) {
 	size := len(message.Data) + acpReplayEventOverheadBytes
 	b.replay = append(b.replay, acpReplayEvent{
-		message:   message,
-		bytes:     size,
-		pendingID: pendingID,
+		message:       message,
+		bytes:         size,
+		pendingID:     pendingID,
+		clientRequest: pendingID != "",
 	})
 	b.replayBytes += size
 	if pendingID != "" {
@@ -1010,11 +1013,14 @@ func (b *acpBridge) handleAttach(
 	}
 	snapshot := b.snapshotLocked()
 	snapshot.ClientCount++
-	pendingOnly := hello.ReplayMode == "pending" && hello.LastAck == 0
-	replayMode := ""
-	if pendingOnly {
-		replayMode = "pending"
-	}
+	replayIncomplete := hello.LastAck+1 < retainedFrom || replayHasGap(replay, hello.LastAck)
+	replayMode := replayModeForAttach(
+		hello,
+		b.replayBytes,
+		replayIncomplete,
+		replayContainsClientRequest(replay),
+	)
+	pendingOnly := replayMode == "pending"
 	primed := []acpWireMessage{{
 		Version:    acpBridgeProtocolVersion,
 		Type:       "hello",
@@ -1050,7 +1056,7 @@ func (b *acpBridge) handleAttach(
 			ReplayMode: "pending",
 		})
 	} else {
-		if hello.LastAck+1 < retainedFrom || replayHasGap(replay, hello.LastAck) {
+		if replayIncomplete {
 			primed = append(primed, acpWireMessage{
 				Version:      acpBridgeProtocolVersion,
 				Type:         "overflow",
@@ -1150,6 +1156,36 @@ func acpClientQueueCapacityFor(primedCount int) int {
 		capacity = required
 	}
 	return capacity
+}
+
+func replayModeForAttach(
+	hello acpWireMessage,
+	replayBytes int,
+	replayIncomplete bool,
+	containsClientRequest bool,
+) string {
+	if hello.LastAck != 0 {
+		return ""
+	}
+	if hello.ReplayMode == "pending" {
+		return "pending"
+	}
+	if hello.ReplayMode != "adaptive" {
+		return ""
+	}
+	if replayBytes > acpAdaptiveReplayMaxBytes || replayIncomplete || containsClientRequest {
+		return "pending"
+	}
+	return "direct"
+}
+
+func replayContainsClientRequest(replay []acpReplayEvent) bool {
+	for _, event := range replay {
+		if event.clientRequest {
+			return true
+		}
+	}
+	return false
 }
 
 func replayHasGap(replay []acpReplayEvent, after uint64) bool {
@@ -1293,22 +1329,6 @@ func (b *acpBridge) shouldIdleShutdown(now time.Time) bool {
 	defer b.mu.Unlock()
 	return len(b.clients) == 0 && len(b.pendingRequests) == 0 &&
 		len(b.inFlightTurns) == 0 && now.Sub(b.lastActivity) >= acpIdleTimeout
-}
-
-func (b *acpBridge) watchIdle() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if b.shouldIdleShutdown(time.Now()) {
-				b.stop()
-				return
-			}
-		case <-b.done:
-			return
-		}
-	}
 }
 
 func (b *acpBridge) stop() {

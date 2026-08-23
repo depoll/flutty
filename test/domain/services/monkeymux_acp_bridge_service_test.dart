@@ -664,6 +664,194 @@ void main() {
     expect(channel.writes.map(_decodeFrame), contains(containsPair('ack', 1)));
   });
 
+  test('safe short direct replay holds client input until high-water', () async {
+    late _TestChannel channel;
+    channel = _TestChannel(
+      onWrite: (value) {
+        final message = jsonDecode(value) as Map<String, dynamic>;
+        if (message['type'] != 'hello') return;
+        expect(message['lastAck'], 0);
+        expect(message['replayMode'], 'adaptive');
+        channel
+          ..addText(
+            _frame({
+              'version': 1,
+              'type': 'hello',
+              'bridgeId': _bridgeId,
+              'clientId': _otherBridgeId,
+              'canSend': true,
+              'replayMode': 'direct',
+              'bridge': _metadata(nextSequence: 2, pendingRequestCount: 0),
+            }),
+          )
+          ..addText(
+            _frame({
+              'version': 1,
+              'type': 'output',
+              'bridgeId': _bridgeId,
+              'sequence': 1,
+              'data': {'jsonrpc': '2.0', 'method': 'short-history/1'},
+            }),
+          );
+      },
+    );
+    final client = _MockSshClient();
+    when(
+      () => client.execute(any(), pty: any(named: 'pty')),
+    ).thenAnswer((_) async => channel.session);
+    final transport =
+        MonkeyMuxAcpBridgeService(
+          installer: _FakeInstaller(
+            const MonkeyMuxInstallation(
+              executablePath: '/helper',
+              platform: 'linux-amd64',
+              version: 'test',
+            ),
+          ),
+        ).connect(
+          sessionProvider: () async => _sshSession(client),
+          bridgeId: _bridgeId,
+          providerId: 'copilot',
+        );
+    addTearDown(transport.close);
+    final incoming = StreamIterator<List<int>>(transport.incoming);
+    addTearDown(incoming.cancel);
+
+    expect(await incoming.moveNext(), isTrue);
+    expect(
+      (jsonDecode(utf8.decode(incoming.current)) as Map)['method'],
+      'short-history/1',
+    );
+    await transport.write(
+      utf8.encode(
+        '${jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'})}\n',
+      ),
+    );
+    expect(
+      channel.writes.map(_decodeFrame),
+      isNot(contains(containsPair('type', 'input'))),
+    );
+
+    channel.addText(
+      _frame({
+        'version': 1,
+        'type': 'output',
+        'bridgeId': _bridgeId,
+        'sequence': 2,
+        'data': {'jsonrpc': '2.0', 'method': 'short-history/2'},
+      }),
+    );
+    expect(await incoming.moveNext(), isTrue);
+    await _waitUntil(
+      () => channel.writes
+          .map(_decodeFrame)
+          .any((message) => message['type'] == 'input'),
+    );
+
+    expect(transport.lastDeliveredSequence, 2);
+    expect(transport.didSkipHistoricalReplay(), isFalse);
+  });
+
+  test('direct replay resumes before flushing input after channel loss', () async {
+    final channels = <_TestChannel>[];
+    var opens = 0;
+    final releaseSecondReplay = Completer<void>();
+    final client = _MockSshClient();
+    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+      _,
+    ) async {
+      opens += 1;
+      late _TestChannel channel;
+      channel = _TestChannel(
+        onWrite: (value) {
+          final message = jsonDecode(value) as Map<String, dynamic>;
+          if (message['type'] != 'hello') return;
+          if (opens == 1) {
+            expect(message['lastAck'], 0);
+            expect(message['replayMode'], 'adaptive');
+            channel.addText(
+              '${_frame({'version': 1, 'type': 'hello', 'bridgeId': _bridgeId, 'clientId': _otherBridgeId, 'canSend': true, 'replayMode': 'direct', 'bridge': _metadata(nextSequence: 2)})}${_frame({
+                'version': 1,
+                'type': 'output',
+                'bridgeId': _bridgeId,
+                'sequence': 1,
+                'data': {'jsonrpc': '2.0', 'method': 'direct/1'},
+              })}',
+            );
+            unawaited(channel.remoteClose());
+            return;
+          }
+          expect(message['lastAck'], 1);
+          expect(message, isNot(contains('replayMode')));
+          channel.addText(
+            _frame({
+              'version': 1,
+              'type': 'hello',
+              'bridgeId': _bridgeId,
+              'clientId': _otherBridgeId,
+              'canSend': true,
+              'bridge': _metadata(nextSequence: 2),
+            }),
+          );
+          unawaited(
+            releaseSecondReplay.future.then(
+              (_) => channel.addText(
+                _frame({
+                  'version': 1,
+                  'type': 'output',
+                  'bridgeId': _bridgeId,
+                  'sequence': 2,
+                  'data': {'jsonrpc': '2.0', 'method': 'direct/2'},
+                }),
+              ),
+            ),
+          );
+        },
+      );
+      channels.add(channel);
+      return channel.session;
+    });
+    final transport =
+        MonkeyMuxAcpBridgeService(
+          installer: _FakeInstaller(
+            const MonkeyMuxInstallation(
+              executablePath: '/helper',
+              platform: 'linux-amd64',
+              version: 'test',
+            ),
+          ),
+        ).connect(
+          sessionProvider: () async => _sshSession(client),
+          bridgeId: _bridgeId,
+          providerId: 'copilot',
+          reconnectBackoff: const [Duration(milliseconds: 1)],
+        );
+    addTearDown(transport.close);
+    final incoming = StreamIterator<List<int>>(transport.incoming);
+    addTearDown(incoming.cancel);
+
+    expect(await incoming.moveNext(), isTrue);
+    await transport.write(
+      utf8.encode(
+        '${jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'})}\n',
+      ),
+    );
+    await _waitUntil(() => channels.length == 2);
+    expect(
+      channels.expand((channel) => channel.writes).map(_decodeFrame),
+      isNot(contains(containsPair('type', 'input'))),
+    );
+
+    releaseSecondReplay.complete();
+    expect(await incoming.moveNext(), isTrue);
+    await _waitUntil(
+      () => channels[1].writes
+          .map(_decodeFrame)
+          .any((message) => message['type'] == 'input'),
+    );
+    expect(transport.lastDeliveredSequence, 2);
+  });
+
   test('legacy bridge with no pending requests skips queued replay', () async {
     final channels = <_TestChannel>[];
     var opens = 0;
@@ -679,7 +867,7 @@ void main() {
           if (message['type'] != 'hello') return;
           if (opens == 1) {
             expect(message['lastAck'], 0);
-            expect(message['replayMode'], 'pending');
+            expect(message['replayMode'], 'adaptive');
             channel.addText(
               '${_frame({'version': 1, 'type': 'hello', 'bridgeId': _bridgeId, 'clientId': _otherBridgeId, 'canSend': true, 'bridge': _metadata(nextSequence: 40000, pendingRequestCount: 0)})}${_frame({
                 'version': 1,
@@ -757,7 +945,7 @@ void main() {
           final message = jsonDecode(value) as Map<String, dynamic>;
           if (message['type'] != 'hello') return;
           expect(message['lastAck'], 0);
-          expect(message['replayMode'], 'pending');
+          expect(message['replayMode'], 'adaptive');
           channel
             ..addText(
               _frame({
@@ -862,7 +1050,7 @@ void main() {
             final message = jsonDecode(value) as Map<String, dynamic>;
             if (message['type'] != 'hello') return;
             expect(message['lastAck'], 0);
-            expect(message['replayMode'], 'pending');
+            expect(message['replayMode'], 'adaptive');
             channel
               ..addText(
                 _frame({

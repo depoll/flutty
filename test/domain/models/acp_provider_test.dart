@@ -379,6 +379,7 @@ void main() {
       expect(acpAntigravityProvider.launchCommand.argv, [
         'npx',
         '--yes',
+        '--prefer-offline',
         'agy-acp@0.5.2',
       ]);
       expect(

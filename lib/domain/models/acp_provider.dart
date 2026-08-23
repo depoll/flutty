@@ -672,7 +672,7 @@ final acpAntigravityProvider = AcpBuiltinProvider(
   label: 'Antigravity',
   launchCommand: AcpLaunchCommand(
     executable: 'npx',
-    arguments: const ['--yes', 'agy-acp@0.5.2'],
+    arguments: const ['--yes', '--prefer-offline', 'agy-acp@0.5.2'],
   ),
   executableProbe: AcpExecutableProbe(
     candidateExecutableNames: const ['agy-acp', 'antigravity-acp', 'npx'],
@@ -680,7 +680,7 @@ final acpAntigravityProvider = AcpBuiltinProvider(
   terminalAuthCommand: AcpLaunchCommand(executable: 'agy'),
   adapterFallbackCommand: AcpLaunchCommand(
     executable: 'npx',
-    arguments: const ['--yes', 'agy-acp@0.5.2'],
+    arguments: const ['--yes', '--prefer-offline', 'agy-acp@0.5.2'],
   ),
 );
 

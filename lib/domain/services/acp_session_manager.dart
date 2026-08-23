@@ -1455,6 +1455,7 @@ class _SessionController {
     }
 
     AcpInitializeResult init;
+    final initialize = Stopwatch()..start();
     try {
       _update((s) => s.copyWith(status: AcpConnectionStatus.initializing));
       init = await attachment.ensureInitialized();
@@ -1463,6 +1464,14 @@ class _SessionController {
       throw _LaunchException(_key, _mapClientError(error));
     }
 
+    _diagnostics.info(
+      'acp.session',
+      'initialize_complete',
+      fields: {
+        'durationMs': initialize.elapsedMilliseconds,
+        'reconnect': existingSessionId != null,
+      },
+    );
     _update(
       (s) => s.copyWith(initialization: init, authMethods: init.authMethods),
     );
@@ -1523,8 +1532,14 @@ class _SessionController {
     final caps = init.agentCapabilities;
     try {
       if (existingSessionId == null) {
+        final sessionNew = Stopwatch()..start();
         final result = await attachment.client.newSession(cwd: _cwd);
         _applySetupResult(result);
+        _diagnostics.info(
+          'acp.session',
+          'new_session_complete',
+          fields: {'durationMs': sessionNew.elapsedMilliseconds},
+        );
         final id = result.sessionId;
         if (id == null || id.isEmpty) {
           throw _LaunchException(
