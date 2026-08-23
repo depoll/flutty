@@ -4,16 +4,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
+import 'system_bottom_inset.dart';
 import 'terminal_key_input.dart';
 import 'terminal_menu_style.dart';
 
-/// Whether the toolbar should keep the bottom safe-area inset.
+/// Resolves the bottom inset the toolbar reserves below its last key row.
 ///
-/// When the system keyboard is visible, the toolbar is already lifted above the
-/// obscured region by the viewport inset. In that state, keeping the bottom
-/// safe-area inset just adds unnecessary extra gap above the keyboard.
-bool shouldKeepToolbarBottomSafeArea(MediaQueryData mediaQuery) =>
-    mediaQuery.viewInsets.bottom == 0;
+/// The toolbar is the bottom-most chrome in the terminal body, so it owns the
+/// gesture handle / navigation bar inset. When the system keyboard lifts the
+/// layout above that bar the inset resolves to zero, which avoids an extra gap
+/// above the keyboard.
+double resolveKeyboardToolbarBottomInset(MediaQueryData mediaQuery) =>
+    resolveSystemBottomInset(mediaQuery);
 
 /// Whether the extra-keys toolbar should collapse to a single row.
 ///
@@ -27,10 +29,8 @@ bool shouldUseSingleRowKeyboardToolbar(MediaQueryData mediaQuery) =>
 /// Resolves the total rendered height of the keyboard toolbar.
 double resolveKeyboardToolbarHeight(MediaQueryData mediaQuery) {
   final rowCount = shouldUseSingleRowKeyboardToolbar(mediaQuery) ? 1 : 2;
-  final bottomInset = shouldKeepToolbarBottomSafeArea(mediaQuery)
-      ? mediaQuery.padding.bottom
-      : 0.0;
-  return rowCount * _KeyRow.height + bottomInset;
+  return rowCount * _KeyRow.height +
+      resolveKeyboardToolbarBottomInset(mediaQuery);
 }
 
 /// Resolves the terminal output sequence for a Tab action.
@@ -343,7 +343,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     final mediaQuery = MediaQuery.of(context);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final keepBottomSafeArea = shouldKeepToolbarBottomSafeArea(mediaQuery);
+    final bottomInset = resolveKeyboardToolbarBottomInset(mediaQuery);
     final useSingleRow = shouldUseSingleRowKeyboardToolbar(mediaQuery);
 
     return DecoratedBox(
@@ -353,13 +353,16 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       ),
       child: SafeArea(
         top: false,
-        bottom: keepBottomSafeArea,
-        child: useSingleRow
-            ? _buildLandscapeRow()
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [_buildModifierRow(), _buildNavigationRow()],
-              ),
+        bottom: false,
+        child: Padding(
+          padding: EdgeInsets.only(bottom: bottomInset),
+          child: useSingleRow
+              ? _buildLandscapeRow()
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [_buildModifierRow(), _buildNavigationRow()],
+                ),
+        ),
       ),
     );
   }
