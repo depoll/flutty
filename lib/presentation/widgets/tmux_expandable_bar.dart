@@ -1,5 +1,8 @@
 part of '../screens/terminal_screen.dart';
 
+Color _muxWindowIdentityColor(ThemeData theme, {required bool isActive}) =>
+    isActive ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant;
+
 /// Builds the compact native-agent identity used by collapsed mux handles.
 ///
 /// The provider mark identifies the agent and the chat badge distinguishes a
@@ -1765,20 +1768,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final nativeSession = window.isNativeAcp
         ? _sessionForNativeWindow(window)
         : null;
-    final nativeActivity = nativeSession == null
-        ? null
-        : acpSessionActivityDisplay(nativeSession);
     final progress = _progressForWindow(window);
     final title = _redactStoreScreenshotIdentities
         ? _storeScreenshotWindowTitle(window)
         : nativeSession == null
         ? window.displayTitle
         : acpSessionDisplayTitle(nativeSession);
-    final iconColor = nativeActivity == null
-        ? (isActive
-              ? theme.colorScheme.onPrimaryContainer
-              : theme.colorScheme.onSurfaceVariant)
-        : acpStatusColor(theme.colorScheme, nativeActivity.tone);
+    final iconColor = _muxWindowIdentityColor(theme, isActive: isActive);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
@@ -2150,6 +2146,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final activity = entry.session == null
         ? null
         : acpSessionActivityDisplay(entry.session!);
+    final identityColor = _muxWindowIdentityColor(theme, isActive: isActive);
     final activityColor = activity == null
         ? theme.colorScheme.onSurfaceVariant
         : acpStatusColor(theme.colorScheme, activity.tone);
@@ -2184,19 +2181,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             child: Stack(
               alignment: Alignment.center,
               children: [
-                AgentToolIcon(
-                  tool: agentTool,
-                  size: 22,
-                  color: isActive
-                      ? theme.colorScheme.onPrimaryContainer
-                      : theme.colorScheme.onSurfaceVariant,
-                ),
+                AgentToolIcon(tool: agentTool, size: 22, color: identityColor),
                 Positioned(
                   left: 2,
                   top: 2,
                   child: AcpNativeBadge(
                     key: ValueKey('monkeymux-sidebar-acp-native-${key.value}'),
-                    color: activityColor,
+                    color: identityColor,
                   ),
                 ),
                 Positioned(
@@ -2219,7 +2210,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                         child: Text(
                           '$windowIndex',
                           style: theme.textTheme.labelSmall?.copyWith(
-                            color: activityColor,
+                            color: identityColor,
                             fontSize: 9,
                             fontWeight: FontWeight.w700,
                           ),
@@ -2266,13 +2257,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final activity = session == null
         ? null
         : acpSessionActivityDisplay(session);
-    final activityColor = activity == null
-        ? theme.colorScheme.onSurfaceVariant
-        : acpStatusColor(theme.colorScheme, activity.tone);
+    final isActive = widget.activeNativeAcpSessionKey == key;
+    final identityColor = _muxWindowIdentityColor(theme, isActive: isActive);
     final progress = activity == null
         ? null
         : acpActivityTerminalProgress(activity);
-    final isActive = widget.activeNativeAcpSessionKey == key;
     return ListTile(
       key: ValueKey('monkeymux-acp-${key.value}'),
       dense: true,
@@ -2294,7 +2283,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         child: Text(
           '$windowIndex',
           style: theme.textTheme.labelMedium?.copyWith(
-            color: activityColor,
+            color: identityColor,
             fontWeight: FontWeight.w700,
           ),
         ),
@@ -2302,12 +2291,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       title: Row(
         children: [
           AcpNativeBadgeOverlay(
-            color: activityColor,
+            color: identityColor,
             badgeKey: ValueKey('monkeymux-acp-native-${key.value}'),
             child: AgentToolIcon(
+              key: ValueKey('monkeymux-acp-agent-icon-${key.value}'),
               tool: agentTool,
               size: 17,
-              color: activityColor,
+              color: identityColor,
             ),
           ),
           const SizedBox(width: 8),
@@ -2334,7 +2324,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             '${activity?.label ?? 'recent'}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(color: activityColor),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
           if (progress != null) ...[
             const SizedBox(height: 3),
@@ -2454,14 +2446,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ? window.secondaryTitle
         : '${nativeSession.providerLabel} · '
               '${acpCwdSummary(nativeSession.cwd)} · ${nativeActivity!.label}';
-    final iconColor = nativeActivity == null
-        ? (isActive
-              ? theme.colorScheme.primary
-              : theme.colorScheme.onSurfaceVariant)
-        : acpStatusColor(theme.colorScheme, nativeActivity.tone);
+    final iconColor = _muxWindowIdentityColor(theme, isActive: isActive);
     final progress = _progressForWindow(window);
 
     return ListTile(
+      key: ValueKey('monkeymux-window-${window.index}'),
       dense: true,
       visualDensity: _denseTileVisualDensity,
       minVerticalPadding: 2,
@@ -2500,6 +2489,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               color: iconColor,
               badgeKey: ValueKey('monkeymux-native-badge-${window.index}'),
               child: AgentToolIcon(
+                key: ValueKey('monkeymux-window-agent-icon-${window.index}'),
                 tool: windowTool,
                 size: 16,
                 color: iconColor,
@@ -2507,6 +2497,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             )
           else
             AgentToolIcon(
+              key: ValueKey('monkeymux-window-agent-icon-${window.index}'),
               tool: windowTool,
               size: 16,
               color: iconColor,

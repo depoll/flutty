@@ -48,6 +48,7 @@ import 'package:monkeyssh/presentation/controllers/system_keyboard_visibility_co
 import 'package:monkeyssh/presentation/screens/port_forward_browser_screen.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/acp_native_badge.dart';
+import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
@@ -7892,10 +7893,25 @@ void main() {
         addTearDown(acpManager.dispose);
         const windows = <TmuxWindow>[
           TmuxWindow(
+            index: 0,
+            id: '@1',
+            name: 'shell',
+            isActive: true,
+            currentCommand: 'zsh',
+          ),
+          TmuxWindow(
+            index: 1,
+            id: '@2',
+            name: 'Terminal Pi',
+            isActive: false,
+            currentCommand: 'pi',
+            agentTool: AgentLaunchTool.pi,
+          ),
+          TmuxWindow(
             index: 2,
             id: '@3',
             name: 'Pi',
-            isActive: true,
+            isActive: false,
             currentPath: '/home/dev/project',
             nativeAcpBridgeId: bridgeId,
             nativeAcpProviderId: AcpBuiltinProviderIds.pi,
@@ -7997,7 +8013,24 @@ void main() {
           isTrue,
           reason: 'the native badge overlays the agent icon',
         );
-        expect(find.text('running'), findsOneWidget);
+        final nativeRow = find.byKey(const ValueKey('monkeymux-window-2'));
+        expect(
+          find.descendant(of: nativeRow, matching: find.text('running')),
+          findsOneWidget,
+        );
+        final nativeAgentIcon = tester.widget<AgentToolIcon>(
+          find.byKey(const ValueKey('monkeymux-window-agent-icon-2')),
+        );
+        final terminalAgentIcon = tester.widget<AgentToolIcon>(
+          find.byKey(const ValueKey('monkeymux-window-agent-icon-1')),
+        );
+        final scheme = Theme.of(tester.element(nativeRow)).colorScheme;
+        expect(nativeAgentIcon.color, scheme.onSurfaceVariant);
+        expect(terminalAgentIcon.color, nativeAgentIcon.color);
+        expect(
+          tester.widget<AcpNativeBadge>(find.byKey(expandedBadgeKey)).color,
+          nativeAgentIcon.color,
+        );
         expect(
           tester
               .widget<LinearProgressIndicator>(
@@ -8046,7 +8079,12 @@ void main() {
         await tester.pump();
         expect(find.byKey(expandedKey), findsNothing);
 
-        await tester.tap(find.byTooltip('Close window'));
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(const ValueKey('monkeymux-window-2')),
+            matching: find.byTooltip('Close window'),
+          ),
+        );
         await tester.pumpAndSettle();
         if (find.text('Close window?').evaluate().isNotEmpty) {
           await tester.tap(find.widgetWithText(FilledButton, 'Close window'));

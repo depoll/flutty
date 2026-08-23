@@ -71,10 +71,11 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        clipboardMethodChannel = MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            clipboardChannel,
-        )
+        clipboardMethodChannel =
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                clipboardChannel,
+            )
         clipboardMethodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "readContentUri" -> {
@@ -93,41 +94,53 @@ class MainActivity : FlutterFragmentActivity() {
                         )
                     }
                 }
-                else -> result.notImplemented()
+
+                else -> {
+                    result.notImplemented()
+                }
             }
         }
 
-        transferMethodChannel = MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            transferChannel,
-        )
+        transferMethodChannel =
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                transferChannel,
+            )
         transferMethodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "consumeIncomingTransferPayload" -> {
                     result.success(pendingTransferPayload)
                     pendingTransferPayload = null
                 }
-                else -> result.notImplemented()
+
+                else -> {
+                    result.notImplemented()
+                }
             }
         }
 
-        terminalImeKeyMethodChannel = MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            TERMINAL_IME_KEY_CHANNEL,
-        )
+        terminalImeKeyMethodChannel =
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                TERMINAL_IME_KEY_CHANNEL,
+            )
         terminalImeKeyMethodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "setInterceptionEnabled" -> {
                     terminalImeKeyInterceptionEnabled = call.arguments == true
                     result.success(null)
                 }
-                else -> result.notImplemented()
+
+                else -> {
+                    result.notImplemented()
+                }
             }
         }
-        keyboardVisibilityMethodChannel = MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            KEYBOARD_VISIBILITY_CHANNEL,
-        )
+        keyboardVisibilityMethodChannel =
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                KEYBOARD_VISIBILITY_CHANNEL,
+            )
         keyboardVisibilityMethodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getVisibility" -> result.success(keyboardVisible)
@@ -163,12 +176,13 @@ class MainActivity : FlutterFragmentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val channel = terminalImeKeyMethodChannel
         val key = terminalImeKeyName(event)
-        val type = when {
-            event.action == KeyEvent.ACTION_UP -> "release"
-            event.action == KeyEvent.ACTION_DOWN && event.repeatCount > 0 -> "repeat"
-            event.action == KeyEvent.ACTION_DOWN -> "press"
-            else -> null
-        }
+        val type =
+            when {
+                event.action == KeyEvent.ACTION_UP -> "release"
+                event.action == KeyEvent.ACTION_DOWN && event.repeatCount > 0 -> "repeat"
+                event.action == KeyEvent.ACTION_DOWN -> "press"
+                else -> null
+            }
         if (
             terminalImeKeyInterceptionEnabled &&
             channel != null &&
@@ -241,12 +255,13 @@ class MainActivity : FlutterFragmentActivity() {
         super.onDestroy()
     }
 
-    private fun terminalImeKeyName(event: KeyEvent): String? = when (event.keyCode) {
-        KeyEvent.KEYCODE_SHIFT_LEFT -> "shiftLeft"
-        KeyEvent.KEYCODE_SHIFT_RIGHT -> "shiftRight"
-        KeyEvent.KEYCODE_DEL -> "backspace"
-        else -> null
-    }
+    private fun terminalImeKeyName(event: KeyEvent): String? =
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_SHIFT_LEFT -> "shiftLeft"
+            KeyEvent.KEYCODE_SHIFT_RIGHT -> "shiftRight"
+            KeyEvent.KEYCODE_DEL -> "backspace"
+            else -> null
+        }
 
     private fun isVirtualKeyboardEvent(event: KeyEvent): Boolean =
         event.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD ||
@@ -255,7 +270,7 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
-        grantResults: IntArray
+        grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (
@@ -273,7 +288,7 @@ class MainActivity : FlutterFragmentActivity() {
         if (
             ContextCompat.checkSelfPermission(
                 this,
-                Manifest.permission.POST_NOTIFICATIONS
+                Manifest.permission.POST_NOTIFICATIONS,
             ) == PackageManager.PERMISSION_GRANTED
         ) {
             return
@@ -284,7 +299,7 @@ class MainActivity : FlutterFragmentActivity() {
         hasRequestedNotificationPermission = true
         requestPermissions(
             arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-            NOTIFICATION_PERMISSION_REQUEST_CODE
+            NOTIFICATION_PERMISSION_REQUEST_CODE,
         )
     }
 
@@ -296,20 +311,21 @@ class MainActivity : FlutterFragmentActivity() {
         val transferIntent = intent ?: return
         val sourceUri = transferIntent.data ?: return
         try {
-            pendingTransferPayload = contentResolver.openInputStream(sourceUri)?.use { stream ->
-                val buffer = ByteArray(8192)
-                val output = ByteArrayOutputStream()
-                var bytesRead: Int
-                var totalBytes = 0
-                while (stream.read(buffer).also { bytesRead = it } != -1) {
-                    totalBytes += bytesRead
-                    if (totalBytes > maxTransferPayloadBytes) {
-                        return@use null
+            pendingTransferPayload =
+                contentResolver.openInputStream(sourceUri)?.use { stream ->
+                    val buffer = ByteArray(8192)
+                    val output = ByteArrayOutputStream()
+                    var bytesRead: Int
+                    var totalBytes = 0
+                    while (stream.read(buffer).also { bytesRead = it } != -1) {
+                        totalBytes += bytesRead
+                        if (totalBytes > maxTransferPayloadBytes) {
+                            return@use null
+                        }
+                        output.write(buffer, 0, bytesRead)
                     }
-                    output.write(buffer, 0, bytesRead)
+                    output.toString(Charsets.UTF_8.name())
                 }
-                output.toString(Charsets.UTF_8.name())
-            }
             notifyIncomingTransferPayload()
         } catch (_: Exception) {
             pendingTransferPayload = null
@@ -355,8 +371,10 @@ class MainActivity : FlutterFragmentActivity() {
         if (lastPathSegment?.endsWith(MONKEYSSH_TRANSFER_EXTENSION) == true) {
             return true
         }
-        val displayName = runCatching { resolveContentDisplayName(sourceUri) }.getOrNull()
-            ?.lowercase(Locale.ROOT)
+        val displayName =
+            runCatching { resolveContentDisplayName(sourceUri) }
+                .getOrNull()
+                ?.lowercase(Locale.ROOT)
         return displayName == null || displayName.endsWith(MONKEYSSH_TRANSFER_EXTENSION)
     }
 
@@ -368,22 +386,23 @@ class MainActivity : FlutterFragmentActivity() {
                 "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit",
             )
         }
-        val bytes = contentResolver.openInputStream(uri)?.use { stream ->
-            val buffer = ByteArray(8192)
-            val output = ByteArrayOutputStream()
-            var bytesRead: Int
-            var totalBytes = 0
-            while (stream.read(buffer).also { bytesRead = it } != -1) {
-                totalBytes += bytesRead
-                if (totalBytes > MAX_CLIPBOARD_CONTENT_URI_BYTES) {
-                    throw IllegalStateException(
-                        "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit",
-                    )
+        val bytes =
+            contentResolver.openInputStream(uri)?.use { stream ->
+                val buffer = ByteArray(8192)
+                val output = ByteArrayOutputStream()
+                var bytesRead: Int
+                var totalBytes = 0
+                while (stream.read(buffer).also { bytesRead = it } != -1) {
+                    totalBytes += bytesRead
+                    if (totalBytes > MAX_CLIPBOARD_CONTENT_URI_BYTES) {
+                        throw IllegalStateException(
+                            "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit",
+                        )
+                    }
+                    output.write(buffer, 0, bytesRead)
                 }
-                output.write(buffer, 0, bytesRead)
-            }
-            output.toByteArray()
-        } ?: throw IllegalStateException("Could not open clipboard URI")
+                output.toByteArray()
+            } ?: throw IllegalStateException("Could not open clipboard URI")
         return mapOf(
             "name" to displayName,
             "bytes" to bytes,
@@ -392,18 +411,19 @@ class MainActivity : FlutterFragmentActivity() {
 
     private fun resolveContentLength(uri: Uri): Long? {
         if (uri.scheme == "content") {
-            contentResolver.query(
-                uri,
-                arrayOf(OpenableColumns.SIZE),
-                null,
-                null,
-                null,
-            )?.use { cursor ->
-                val columnIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                if (columnIndex >= 0 && cursor.moveToFirst() && !cursor.isNull(columnIndex)) {
-                    return cursor.getLong(columnIndex)
+            contentResolver
+                .query(
+                    uri,
+                    arrayOf(OpenableColumns.SIZE),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor ->
+                    val columnIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (columnIndex >= 0 && cursor.moveToFirst() && !cursor.isNull(columnIndex)) {
+                        return cursor.getLong(columnIndex)
+                    }
                 }
-            }
         }
         return null
     }
@@ -418,18 +438,19 @@ class MainActivity : FlutterFragmentActivity() {
 
     private fun resolveContentDisplayName(uri: Uri): String? {
         if (uri.scheme == "content") {
-            contentResolver.query(
-                uri,
-                arrayOf(OpenableColumns.DISPLAY_NAME),
-                null,
-                null,
-                null,
-            )?.use { cursor ->
-                val columnIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (columnIndex >= 0 && cursor.moveToFirst()) {
-                    return cursor.getString(columnIndex)
+            contentResolver
+                .query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor ->
+                    val columnIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (columnIndex >= 0 && cursor.moveToFirst()) {
+                        return cursor.getString(columnIndex)
+                    }
                 }
-            }
         }
         return null
     }
