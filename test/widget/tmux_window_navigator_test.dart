@@ -29,6 +29,7 @@ import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/acp_mux_window_status_badge.dart';
 import 'package:monkeyssh/presentation/widgets/acp_native_badge.dart';
 import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
+import 'package:monkeyssh/presentation/widgets/mux_window_status_badge.dart';
 import 'package:monkeyssh/presentation/widgets/premium_badge.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_navigator.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_status_badge.dart';
@@ -267,6 +268,7 @@ void main() {
       ),
     );
 
+    expect(find.byType(MuxWindowStatusBadge), findsNWidgets(3));
     expect(find.text('waiting'), findsOneWidget);
     expect(find.text('running'), findsOneWidget);
     expect(find.text('native'), findsOneWidget);
@@ -1558,10 +1560,21 @@ void main() {
         ),
         findsNothing,
       );
+      final scheme = Theme.of(tester.element(nativeRow)).colorScheme;
+      final tile = tester.widget<ListTile>(nativeRow);
+      expect(tile.dense, isTrue);
+      expect(tile.visualDensity, const VisualDensity(vertical: -2));
+      expect(tester.getSize(numberSlot), const Size.square(24));
       final agentIcon = tester.widget<AgentToolIcon>(
         find.descendant(of: nativeRow, matching: find.byType(AgentToolIcon)),
       );
       expect(agentIcon.tool, AgentLaunchTool.copilotCli);
+      expect(agentIcon.size, 16);
+      expect(agentIcon.color, scheme.onSurfaceVariant);
+      final subtitle = tester.widget<Text>(
+        find.byKey(ValueKey('native-acp-subtitle-${key.value}')),
+      );
+      expect(subtitle.style?.color, scheme.onSurfaceVariant);
       expect(
         find.byKey(ValueKey('native-acp-indicator-${key.value}')),
         findsOneWidget,
@@ -1690,6 +1703,44 @@ void main() {
         expect(
           find.byKey(const ValueKey('native-acp-window-progress-3')),
           findsOneWidget,
+        );
+
+        manager.emit(
+          AcpSessionManagerState(
+            sessions: [
+              fakeAcpSession(
+                key: key,
+                title: 'Live panel title',
+                status: AcpConnectionStatus.reconnecting,
+              ),
+            ],
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        final nativeIcon = tester.widget<AgentToolIcon>(
+          find.byKey(const ValueKey('tmux-window-agent-icon-3')),
+        );
+        final nativeSubtitle = tester.widget<Text>(
+          find.byKey(const ValueKey('tmux-window-subtitle-3')),
+        );
+        final scheme = Theme.of(
+          tester.element(find.byKey(const ValueKey('tmux-window-3'))),
+        ).colorScheme;
+        expect(nativeIcon.color, scheme.primary);
+        expect(nativeSubtitle.style?.color, scheme.primary);
+        expect(
+          tester
+              .widget<AcpNativeBadge>(
+                find.byKey(const ValueKey('native-acp-window-indicator-3')),
+              )
+              .color,
+          scheme.primary,
+        );
+        expect(find.text('reconnecting'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('native-acp-window-progress-3')),
+          findsNothing,
         );
 
         manager.emit(

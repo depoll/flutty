@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../domain/models/acp_session_state.dart';
 import 'acp_session_presentation.dart';
+import 'mux_window_status_badge.dart';
 
 /// Compact waiting/running badge for a native ACP mux window.
 class AcpMuxWindowStatusBadge extends StatelessWidget {
@@ -49,32 +50,12 @@ class AcpMuxWindowStatusBadge extends StatelessWidget {
       ),
     };
 
-    return Semantics(
-      label: 'native agent ${display.label}',
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: background,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(display.icon, size: 12, color: foreground),
-              const SizedBox(width: 3),
-              Text(
-                display.label,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  fontSize: 10,
-                  color: foreground,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return MuxWindowStatusBadge(
+      semanticsLabel: 'native agent ${display.label}',
+      label: display.label,
+      icon: display.icon,
+      foregroundColor: foreground,
+      backgroundColor: background,
     );
   }
 }

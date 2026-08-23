@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../domain/models/tmux_state.dart';
+import 'mux_window_status_badge.dart';
 
 /// Compact status badge for a tmux window.
 class TmuxWindowStatusBadge extends StatefulWidget {
@@ -84,29 +85,12 @@ class _TmuxWindowStatusBadgeState extends State<TmuxWindowStatusBadge> {
     final theme = Theme.of(context);
     final visual = TmuxWindowStatusBadge._statusVisual(theme, widget.window);
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: visual.backgroundColor,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(visual.icon, size: 12, color: visual.foregroundColor),
-            const SizedBox(width: 3),
-            Text(
-              widget.window.statusLabel,
-              style: theme.textTheme.labelSmall?.copyWith(
-                fontSize: 10,
-                color: visual.foregroundColor,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-      ),
+    return MuxWindowStatusBadge(
+      semanticsLabel: 'terminal window ${widget.window.statusLabel}',
+      label: widget.window.statusLabel,
+      icon: visual.icon,
+      foregroundColor: visual.foregroundColor,
+      backgroundColor: visual.backgroundColor,
     );
   }
 }
