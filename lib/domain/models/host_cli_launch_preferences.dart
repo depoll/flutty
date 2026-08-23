@@ -26,6 +26,16 @@ extension AgentWindowModePreferencePresentation on AgentWindowModePreference {
     AgentWindowModePreference.preferTerminal => 'Prefer terminal',
   };
 
+  /// Explains what selecting this default does for supported agents.
+  String get explanation => switch (this) {
+    AgentWindowModePreference.askEveryTime =>
+      'Choose Terminal or Native chat for each new agent window.',
+    AgentWindowModePreference.preferNative =>
+      'Open the focused chat, tools, and permissions interface.',
+    AgentWindowModePreference.preferTerminal =>
+      'Open the agent’s full terminal CLI.',
+  };
+
   /// Parses a stored preference, falling back safely for old or unknown data.
   static AgentWindowModePreference fromStorageValue(Object? value) =>
       switch (value) {

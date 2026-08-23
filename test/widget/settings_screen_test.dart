@@ -216,13 +216,35 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Ask every time'), findsOneWidget);
+      expect(find.textContaining('Ask every time'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Choose Terminal or Native chat for each new agent window.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester.getTopLeft(tile).dy,
+        greaterThan(tester.getTopLeft(find.text('Font family')).dy),
+      );
+
       await tester.tap(tile);
       await tester.pumpAndSettle();
+      expect(
+        find.textContaining(
+          'Choose the default for agents that support both experiences.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Open the focused chat, tools, and permissions interface.'),
+        findsOneWidget,
+      );
+      expect(find.text('Open the agent’s full terminal CLI.'), findsOneWidget);
       await tester.tap(find.text('Prefer native chat').last);
       await tester.pumpAndSettle();
 
-      expect(find.text('Prefer native chat'), findsOneWidget);
+      expect(find.textContaining('Prefer native chat'), findsOneWidget);
       expect(
         await SettingsService(
           db,

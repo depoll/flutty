@@ -727,15 +727,8 @@ class _TerminalSection extends ConsumerWidget {
       children: [
         const _SectionHeader(
           title: 'terminal',
-          subtitle: 'Themes, fonts, links, keyboard, and clipboard behavior',
-        ),
-        ListTile(
-          key: const ValueKey('settings-agent-window-mode'),
-          leading: const Icon(Icons.view_agenda_outlined),
-          title: const Text('Agent window mode'),
-          subtitle: Text(agentWindowMode.label),
-          onTap: () =>
-              _showAgentWindowModeDialog(context, ref, agentWindowMode),
+          subtitle:
+              'Themes, fonts, agent windows, links, keyboard, and clipboard behavior',
         ),
         ListTile(
           leading: const Icon(Icons.palette_outlined),
@@ -760,6 +753,17 @@ class _TerminalSection extends ConsumerWidget {
           title: const Text('Font family'),
           subtitle: Text(_fontFamilyLabel(fontFamily)),
           onTap: () => _showFontFamilyDialog(context, ref, fontFamily),
+        ),
+        ListTile(
+          key: const ValueKey('settings-agent-window-mode'),
+          leading: const Icon(Icons.view_agenda_outlined),
+          title: const Text('Agent window mode'),
+          subtitle: Text(
+            '${agentWindowMode.label}\n${agentWindowMode.explanation}',
+            maxLines: 3,
+          ),
+          onTap: () =>
+              _showAgentWindowModeDialog(context, ref, agentWindowMode),
         ),
         ListTile(
           leading: const Icon(Icons.text_fields),
@@ -946,27 +950,39 @@ class _TerminalSection extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Agent window mode'),
-        content: RadioGroup<AgentWindowModePreference>(
-          groupValue: current,
-          onChanged: (value) {
-            if (value == null) return;
-            unawaited(
-              ref
-                  .read(agentWindowModePreferenceNotifierProvider.notifier)
-                  .setPreference(value),
-            );
-            Navigator.pop(context);
-          },
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final preference in AgentWindowModePreference.values)
-                RadioListTile<AgentWindowModePreference>(
-                  title: Text(preference.label),
-                  value: preference,
-                ),
-            ],
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Choose the default for agents that support both experiences. '
+              'You can still pick a different mode from the window menu.',
+            ),
+            const SizedBox(height: FluttyTheme.spacingMd),
+            RadioGroup<AgentWindowModePreference>(
+              groupValue: current,
+              onChanged: (value) {
+                if (value == null) return;
+                unawaited(
+                  ref
+                      .read(agentWindowModePreferenceNotifierProvider.notifier)
+                      .setPreference(value),
+                );
+                Navigator.pop(context);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final preference in AgentWindowModePreference.values)
+                    RadioListTile<AgentWindowModePreference>(
+                      title: Text(preference.label),
+                      subtitle: Text(preference.explanation),
+                      value: preference,
+                    ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
