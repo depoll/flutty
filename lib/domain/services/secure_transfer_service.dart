@@ -279,6 +279,25 @@ class SecureTransferService {
             .get();
     final rawPortForwards = await _db.select(_db.portForwards).get();
     final exportedHostIds = hosts.map((host) => host.id).toSet();
+    var removedJumpHostReferenceCount = 0;
+    final exportedHosts = hosts
+        .map((host) {
+          final hostData = Map<String, dynamic>.from(host.toJson());
+          final jumpHostId = host.jumpHostId;
+          if (jumpHostId != null && !exportedHostIds.contains(jumpHostId)) {
+            hostData['jumpHostId'] = null;
+            removedJumpHostReferenceCount += 1;
+          }
+          return hostData;
+        })
+        .toList(growable: false);
+    if (removedJumpHostReferenceCount > 0) {
+      _diagnosticsLogger.warning(
+        'secure_transfer',
+        'migration_export_jump_host_references_removed',
+        fields: {'removedCount': removedJumpHostReferenceCount},
+      );
+    }
     final portForwards = rawPortForwards
         .where((portForward) => exportedHostIds.contains(portForward.hostId))
         .toList(growable: false);
@@ -303,7 +322,7 @@ class SecureTransferService {
       'settings': filteredSettings,
       'groups': _sortedJsonRecords(groups.map((item) => item.toJson())),
       'keys': _sortedJsonRecords(keys.map((item) => item.toJson())),
-      'hosts': _sortedJsonRecords(hosts.map((item) => item.toJson())),
+      'hosts': _sortedJsonRecords(exportedHosts),
       'snippetFolders': _sortedJsonRecords(
         snippetFolders.map((item) => item.toJson()),
       ),
@@ -937,6 +956,7 @@ class SecureTransferService {
   }) async {
     final idMapping = <int, int>{};
     final jumpMapping = <int, int?>{};
+    var removedJumpHostReferenceCount = 0;
 
     for (final item in rawHosts) {
       final oldId = _optionalInt(item['id']);
@@ -1036,12 +1056,18 @@ class SecureTransferService {
       }
       final mappedJumpId = idMapping[oldJumpId];
       if (mappedJumpId == null) {
-        throw const FormatException(
-          'Invalid jump host reference in migration payload',
-        );
+        removedJumpHostReferenceCount += 1;
+        continue;
       }
       await (_db.update(_db.hosts)..where((tbl) => tbl.id.equals(newHostId)))
           .write(HostsCompanion(jumpHostId: Value(mappedJumpId)));
+    }
+    if (removedJumpHostReferenceCount > 0) {
+      _diagnosticsLogger.warning(
+        'secure_transfer',
+        'migration_import_jump_host_references_removed',
+        fields: {'removedCount': removedJumpHostReferenceCount},
+      );
     }
 
     return idMapping;
