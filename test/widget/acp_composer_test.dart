@@ -575,7 +575,11 @@ void main() {
     await _pump(
       tester,
       controller,
-      actions: AcpComposerAttachmentActions(pickFiles: (_) async => const []),
+      actions: AcpComposerAttachmentActions(
+        pickPhotos: (_) async => const [],
+        pickFiles: (_) async => const [],
+        pickRemoteFiles: (_) async => const [],
+      ),
     );
 
     final addButton = find.byTooltip('Add to prompt');
@@ -583,11 +587,21 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Snippet'), findsNothing);
+    expect(find.text('Photo or video'), findsOneWidget);
     expect(find.text('Choose file'), findsOneWidget);
-    expect(
-      tester.getBottomLeft(find.text('Choose file')).dy,
-      lessThan(tester.getTopLeft(addButton).dy),
+    expect(find.text('Remote file (SFTP)'), findsOneWidget);
+
+    final buttonRect = tester.getRect(
+      find.ancestor(
+        of: find.byKey(const ValueKey('acp-add-button-visual')),
+        matching: find.byType(IconButton),
+      ),
     );
+    final menuRect = tester.getRect(
+      find.widgetWithText(MenuItemButton, 'Remote file (SFTP)'),
+    );
+    expect(buttonRect.top - menuRect.bottom, closeTo(8, 0.1));
+    expect(menuRect.left, closeTo(buttonRect.left, 0.1));
     expect(find.byType(BottomSheet), findsNothing);
   });
 

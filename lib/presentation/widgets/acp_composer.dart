@@ -10,6 +10,7 @@ import '../../domain/models/acp_updates.dart';
 import '../controllers/acp_composer_controller.dart';
 import 'acp_attachment_strip.dart';
 import 'acp_slash_command_picker.dart';
+import 'terminal_menu_style.dart';
 
 /// Opens an attachment picker and returns the selected candidates.
 typedef AcpAttachmentPick =
@@ -719,70 +720,80 @@ class _AddButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final itemCount = [
-      actions.pickPhotos,
-      actions.pickFiles,
-      actions.pickRemoteFiles,
-    ].where((action) => action != null).length;
-    return PopupMenuButton<_AcpAddAction>(
-      enabled: enabled,
-      tooltip: 'Add to prompt',
-      position: PopupMenuPosition.over,
-      offset: Offset(0, -(itemCount * 48.0 + 12)),
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints(minWidth: 210),
-      onSelected: onSelected,
-      itemBuilder: (context) => [
+    final itemStyle = TerminalMenuStyles.itemButtonStyle(context);
+    return MenuAnchor(
+      animated: true,
+      alignmentOffset: const Offset(0, TerminalMenuStyles.cascadeGap),
+      style: TerminalMenuStyles.menuStyle(
+        context,
+        minimumSize: const Size(210, 0),
+      ).copyWith(alignment: AlignmentDirectional.bottomStart),
+      menuChildren: [
         if (actions.pickPhotos != null)
-          PopupMenuItem(
-            value: _AcpAddAction.photos,
-            enabled: attachmentsEnabled,
-            child: const ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.photo_library_outlined),
-              title: Text('Photo or video'),
-            ),
+          MenuItemButton(
+            style: itemStyle,
+            leadingIcon: const Icon(Icons.photo_library_outlined),
+            onPressed: attachmentsEnabled
+                ? () => onSelected(_AcpAddAction.photos)
+                : null,
+            child: const Text('Photo or video'),
           ),
         if (actions.pickFiles != null)
-          PopupMenuItem(
-            value: _AcpAddAction.files,
-            enabled: attachmentsEnabled,
-            child: const ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.attach_file),
-              title: Text('Choose file'),
-            ),
+          MenuItemButton(
+            style: itemStyle,
+            leadingIcon: const Icon(Icons.attach_file),
+            onPressed: attachmentsEnabled
+                ? () => onSelected(_AcpAddAction.files)
+                : null,
+            child: const Text('Choose file'),
           ),
         if (actions.pickRemoteFiles != null)
-          PopupMenuItem(
-            value: _AcpAddAction.remoteFiles,
-            enabled: attachmentsEnabled,
-            child: const ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.cloud_outlined),
-              title: Text('Remote file (SFTP)'),
-            ),
+          MenuItemButton(
+            style: itemStyle,
+            leadingIcon: const Icon(Icons.cloud_outlined),
+            onPressed: attachmentsEnabled
+                ? () => onSelected(_AcpAddAction.remoteFiles)
+                : null,
+            child: const Text('Remote file (SFTP)'),
           ),
       ],
-      child: SizedBox.square(
+      builder: (context, menuController, _) => SizedBox.square(
         dimension: _composerControlTapDimension,
         child: Center(
-          child: DecoratedBox(
-            key: const ValueKey('acp-add-button-visual'),
-            decoration: BoxDecoration(
-              color: enabled
-                  ? scheme.surfaceContainerHighest
-                  : scheme.surfaceContainerHighest.withAlpha(90),
-              shape: BoxShape.circle,
+          child: IconButton(
+            tooltip: 'Add to prompt',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(
+              width: _composerControlVisualDimension,
+              height: _composerControlVisualDimension,
             ),
-            child: SizedBox.square(
-              dimension: _composerControlVisualDimension,
-              child: Icon(
-                Icons.add,
-                size: 22,
+            style: IconButton.styleFrom(
+              minimumSize: const Size.square(_composerControlVisualDimension),
+              maximumSize: const Size.square(_composerControlVisualDimension),
+              padding: EdgeInsets.zero,
+            ),
+            onPressed: enabled
+                ? () => menuController.isOpen
+                      ? menuController.close()
+                      : menuController.open()
+                : null,
+            icon: DecoratedBox(
+              key: const ValueKey('acp-add-button-visual'),
+              decoration: BoxDecoration(
                 color: enabled
-                    ? scheme.onSurfaceVariant
-                    : scheme.onSurfaceVariant.withAlpha(90),
+                    ? scheme.surfaceContainerHighest
+                    : scheme.surfaceContainerHighest.withAlpha(90),
+                shape: BoxShape.circle,
+              ),
+              child: SizedBox.square(
+                dimension: _composerControlVisualDimension,
+                child: Icon(
+                  Icons.add,
+                  size: 22,
+                  color: enabled
+                      ? scheme.onSurfaceVariant
+                      : scheme.onSurfaceVariant.withAlpha(90),
+                ),
               ),
             ),
           ),
