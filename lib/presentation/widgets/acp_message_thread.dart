@@ -104,7 +104,8 @@ final Expando<List<String>> _assistantMarkdownChunks = Expando<List<String>>(
 final Expando<List<List<AcpPromptPart>>> _userPromptSegments =
     Expando<List<List<AcpPromptPart>>>('ACP virtual user prompt segments');
 
-const int _initialTailWindowChildren = 48;
+const int _maxInitialTailChildren = 48;
+const int _maxInitialTailSourceChars = 16 * 1024;
 const int _earlierTranscriptPageChildren = 48;
 
 final class _AcpThreadChild {
@@ -144,9 +145,14 @@ final class _AcpThreadChild {
   }
 }
 
-List<_AcpThreadChild> _buildThreadChildren(List<AcpTimelineEntry> entries) {
+List<_AcpThreadChild> _buildThreadChildren(
+  List<AcpTimelineEntry> entries, {
+  required int startEntryIndex,
+  int? endEntryIndex,
+}) {
   final children = <_AcpThreadChild>[];
-  for (var entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+  final end = endEntryIndex ?? entries.length;
+  for (var entryIndex = startEntryIndex; entryIndex < end; entryIndex++) {
     final entry = entries[entryIndex];
     if (entry case AcpUserPromptEntry(:final parts)
         when parts.any(
@@ -198,6 +204,56 @@ List<_AcpThreadChild> _buildThreadChildren(List<AcpTimelineEntry> entries) {
     children.add(_AcpThreadChild(entry: entry, entryIndex: entryIndex));
   }
   return children;
+}
+
+({
+  int startEntryIndex,
+  List<_AcpThreadChild> children,
+  int initialVisibleChildren,
+})
+_buildTailThreadChildren(List<AcpTimelineEntry> entries) {
+  var startEntryIndex = entries.length;
+  var initialVisibleChildren = 0;
+  var sourceChars = 0;
+  final children = <_AcpThreadChild>[];
+  while (startEntryIndex > 0 &&
+      initialVisibleChildren < _maxInitialTailChildren &&
+      sourceChars < _maxInitialTailSourceChars) {
+    startEntryIndex -= 1;
+    final entry = entries[startEntryIndex];
+    final entryChildren = _buildThreadChildren(
+      entries,
+      startEntryIndex: startEntryIndex,
+      endEntryIndex: startEntryIndex + 1,
+    );
+    children.insertAll(0, entryChildren);
+    final entrySourceChars = switch (entry) {
+      AcpUserPromptEntry(:final parts) => parts.whereType<AcpTextPart>().fold(
+        0,
+        (length, part) => length + part.text.length,
+      ),
+      AcpAssistantMessageEntry(:final markdown) ||
+      AcpThoughtEntry(:final markdown) => markdown.length,
+      _ => 128,
+    };
+    if (entryChildren.length > 1 ||
+        entrySourceChars > _maxInitialTailSourceChars) {
+      // For oversized content, mount only its final virtual segment plus any
+      // already-selected lightweight rows after it. This is the critical
+      // bottom-first path: no older Markdown participates in initial layout.
+      initialVisibleChildren += 1;
+      break;
+    }
+    initialVisibleChildren += entryChildren.length;
+    sourceChars += entrySourceChars;
+  }
+  return (
+    startEntryIndex: startEntryIndex,
+    children: children,
+    initialVisibleChildren: children.isEmpty
+        ? 0
+        : initialVisibleChildren.clamp(1, children.length),
+  );
 }
 
 /// Renders an ordered list of [AcpTimelineEntry]s as a conversation thread.
@@ -292,16 +348,23 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   ScrollController? _ownedController;
   List<AcpTimelineEntry>? _threadEntries;
   List<_AcpThreadChild> _threadChildren = const [];
+  int _loadedStartEntryIndex = 0;
+  int _initialVisibleChildCount = 1;
   Map<int, int> _firstChildIndexByEntry = const {};
   Map<String, int> _childIndexByKey = const {};
   int _renderStartChildIndex = 0;
   bool _earlierTranscriptLoadScheduled = false;
+  int _earlierTranscriptAnchorGeneration = 0;
   int? _stickyPromptIndex;
   int? _firstVisibleEntryIndex;
   Timer? _promptNavigationHideTimer;
   bool _promptNavigationVisible = false;
   bool _awayFromTop = false;
   bool _stickyUpdateScheduled = false;
+  bool _tailAnchorScheduled = false;
+  int _tailAnchorAttempts = 0;
+  int _tailAnchorStableFrames = 0;
+  double? _lastTailMaxExtent;
 
   ScrollController get _controller =>
       widget.controller ?? (_ownedController ??= ScrollController());
@@ -312,6 +375,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     _syncThreadChildren();
     _controller.addListener(_scheduleStickyUpdate);
     _scheduleStickyUpdate();
+    _scheduleTailAnchor(reset: true);
   }
 
   @override
@@ -327,6 +391,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       _controller.addListener(_scheduleStickyUpdate);
     }
     _scheduleStickyUpdate();
+    _scheduleTailAnchor(reset: true);
   }
 
   @override
@@ -340,25 +405,38 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   void _syncThreadChildren({bool forceWindowSync = false}) {
     final entriesChanged = !identical(_threadEntries, widget.entries);
     if (!entriesChanged && !forceWindowSync) return;
-    if (entriesChanged) {
+    final initialProjection = _threadEntries == null;
+    if (entriesChanged || (forceWindowSync && widget.followTail)) {
+      final firstLoadedEntryId = _threadChildren.firstOrNull?.entry.id;
       _threadEntries = widget.entries;
-      _threadChildren = _buildThreadChildren(widget.entries);
-      final firstChildIndexByEntry = <int, int>{};
-      for (var index = 0; index < _threadChildren.length; index++) {
-        firstChildIndexByEntry.putIfAbsent(
-          _threadChildren[index].entryIndex,
-          () => index,
+      if (widget.followTail) {
+        final tail = _buildTailThreadChildren(widget.entries);
+        _loadedStartEntryIndex = tail.startEntryIndex;
+        _initialVisibleChildCount = tail.initialVisibleChildren;
+        _threadChildren = tail.children;
+      } else if (initialProjection || firstLoadedEntryId == null) {
+        _loadedStartEntryIndex = 0;
+        _threadChildren = _buildThreadChildren(
+          widget.entries,
+          startEntryIndex: 0,
+        );
+      } else {
+        final retainedStart = widget.entries.indexWhere(
+          (entry) => entry.id == firstLoadedEntryId,
+        );
+        _loadedStartEntryIndex = retainedStart < 0
+            ? _loadedStartEntryIndex.clamp(0, widget.entries.length)
+            : retainedStart;
+        _threadChildren = _buildThreadChildren(
+          widget.entries,
+          startEntryIndex: _loadedStartEntryIndex,
         );
       }
-      _firstChildIndexByEntry = firstChildIndexByEntry;
-      _childIndexByKey = <String, int>{
-        for (var index = 0; index < _threadChildren.length; index++)
-          _threadChildren[index].keyValue: index,
-      };
+      _rebuildThreadChildIndexes();
     }
     if (widget.followTail) {
       _renderStartChildIndex =
-          (_threadChildren.length - _initialTailWindowChildren).clamp(
+          (_threadChildren.length - _initialVisibleChildCount).clamp(
             0,
             _threadChildren.length,
           );
@@ -366,6 +444,47 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       final maxStart = _threadChildren.isEmpty ? 0 : _threadChildren.length - 1;
       _renderStartChildIndex = _renderStartChildIndex.clamp(0, maxStart);
     }
+  }
+
+  void _rebuildThreadChildIndexes() {
+    final firstChildIndexByEntry = <int, int>{};
+    for (var index = 0; index < _threadChildren.length; index++) {
+      firstChildIndexByEntry.putIfAbsent(
+        _threadChildren[index].entryIndex,
+        () => index,
+      );
+    }
+    _firstChildIndexByEntry = firstChildIndexByEntry;
+    _childIndexByKey = <String, int>{
+      for (var index = 0; index < _threadChildren.length; index++)
+        _threadChildren[index].keyValue: index,
+    };
+  }
+
+  void _scheduleTailAnchor({bool reset = false}) {
+    if (!widget.followTail) return;
+    if (reset) {
+      _tailAnchorAttempts = 0;
+      _tailAnchorStableFrames = 0;
+      _lastTailMaxExtent = null;
+    }
+    if (_tailAnchorScheduled || _tailAnchorAttempts >= 24) return;
+    _tailAnchorScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _tailAnchorScheduled = false;
+      if (!mounted || !widget.followTail || !_controller.hasClients) return;
+      final position = _controller.position;
+      final target = position.maxScrollExtent;
+      if ((position.pixels - target).abs() > 0.5) {
+        position.jumpTo(target);
+      }
+      final priorExtent = _lastTailMaxExtent;
+      final stable = priorExtent != null && (priorExtent - target).abs() <= 0.5;
+      _lastTailMaxExtent = target;
+      _tailAnchorStableFrames = stable ? _tailAnchorStableFrames + 1 : 0;
+      _tailAnchorAttempts += 1;
+      if (_tailAnchorStableFrames < 2) _scheduleTailAnchor();
+    });
   }
 
   void _scheduleStickyUpdate() {
@@ -477,13 +596,44 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     return null;
   }
 
-  bool get _hasEarlierTranscript => _renderStartChildIndex > 0;
+  bool get _hasEarlierTranscript =>
+      _loadedStartEntryIndex > 0 || _renderStartChildIndex > 0;
 
   int get _leadingWindowChildCount => _hasEarlierTranscript ? 1 : 0;
 
   int _absoluteChildIndex(int sliverChildIndex) =>
       (sliverChildIndex - _leadingWindowChildCount + _renderStartChildIndex)
           .clamp(_renderStartChildIndex, _threadChildren.length - 1);
+
+  void _revealEarlierTranscriptPage({bool all = false}) {
+    final currentVisible = _threadChildren.length - _renderStartChildIndex;
+    final desiredVisible = all
+        ? _threadChildren.length + _loadedStartEntryIndex
+        : currentVisible + _earlierTranscriptPageChildren;
+    final prefix = <_AcpThreadChild>[];
+    while (_loadedStartEntryIndex > 0 &&
+        (all || _threadChildren.length + prefix.length < desiredVisible)) {
+      _loadedStartEntryIndex -= 1;
+      prefix.insertAll(
+        0,
+        _buildThreadChildren(
+          widget.entries,
+          startEntryIndex: _loadedStartEntryIndex,
+          endEntryIndex: _loadedStartEntryIndex + 1,
+        ),
+      );
+    }
+    if (prefix.isNotEmpty) {
+      _threadChildren = <_AcpThreadChild>[...prefix, ..._threadChildren];
+      _rebuildThreadChildIndexes();
+    }
+    _renderStartChildIndex = all
+        ? 0
+        : (_threadChildren.length - desiredVisible).clamp(
+            0,
+            _threadChildren.length,
+          );
+  }
 
   void _scheduleEarlierTranscriptPage({bool force = false}) {
     if (!_hasEarlierTranscript ||
@@ -492,31 +642,58 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       return;
     }
     _earlierTranscriptLoadScheduled = true;
+    final generation = ++_earlierTranscriptAnchorGeneration;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _earlierTranscriptLoadScheduled = false;
-      if (!mounted || !_controller.hasClients || !_hasEarlierTranscript) return;
+      if (!mounted || !_controller.hasClients || !_hasEarlierTranscript) {
+        _earlierTranscriptLoadScheduled = false;
+        return;
+      }
       final position = _controller.position;
-      final oldPixels = position.pixels;
-      final oldMaxExtent = position.maxScrollExtent;
-      setState(() {
-        _renderStartChildIndex =
-            (_renderStartChildIndex - _earlierTranscriptPageChildren).clamp(
-              0,
-              _threadChildren.length,
-            );
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_controller.hasClients) return;
-        final next = _controller.position;
-        final insertedExtent = next.maxScrollExtent - oldMaxExtent;
-        next.jumpTo(
-          (oldPixels + insertedExtent).clamp(
-            next.minScrollExtent,
-            next.maxScrollExtent,
-          ),
-        );
+      final distanceFromBottom = position.maxScrollExtent - position.pixels;
+      setState(_revealEarlierTranscriptPage);
+      _settleEarlierTranscriptAnchor(
+        generation: generation,
+        distanceFromBottom: distanceFromBottom,
+      );
+    });
+  }
+
+  void _settleEarlierTranscriptAnchor({
+    required int generation,
+    required double distanceFromBottom,
+    double? priorMaxExtent,
+    int stableFrames = 0,
+    int attempt = 0,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          generation != _earlierTranscriptAnchorGeneration ||
+          !_controller.hasClients) {
+        _earlierTranscriptLoadScheduled = false;
+        return;
+      }
+      final position = _controller.position;
+      final maxExtent = position.maxScrollExtent;
+      final target = (maxExtent - distanceFromBottom).clamp(
+        position.minScrollExtent,
+        maxExtent,
+      );
+      if ((position.pixels - target).abs() > 0.5) position.jumpTo(target);
+      final extentStable =
+          priorMaxExtent != null && (priorMaxExtent - maxExtent).abs() <= 0.5;
+      final nextStableFrames = extentStable ? stableFrames + 1 : 0;
+      if (nextStableFrames >= 2 || attempt >= 23) {
+        _earlierTranscriptLoadScheduled = false;
         _scheduleStickyUpdate();
-      });
+        return;
+      }
+      _settleEarlierTranscriptAnchor(
+        generation: generation,
+        distanceFromBottom: distanceFromBottom,
+        priorMaxExtent: maxExtent,
+        stableFrames: nextStableFrames,
+        attempt: attempt + 1,
+      );
     });
   }
 
@@ -548,7 +725,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       _showPromptNavigation();
       if (notification.metrics.pixels <=
           notification.metrics.minScrollExtent + 64) {
-        _scheduleEarlierTranscriptPage();
+        _scheduleEarlierTranscriptPage(force: true);
       }
     }
     return false;
@@ -565,7 +742,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     _showPromptNavigation();
     widget.onStickyPromptTap?.call();
     if (_hasEarlierTranscript) {
-      setState(() => _renderStartChildIndex = 0);
+      setState(() => _revealEarlierTranscriptPage(all: true));
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _scrollToTop();
       });
@@ -588,18 +765,34 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 
   Future<void> _scrollEntryIntoView(int entryIndex) async {
     if (!_controller.hasClients) return;
-    final absoluteTargetChildIndex = _firstChildIndexByEntry[entryIndex];
-    if (absoluteTargetChildIndex == null) return;
+    var absoluteTargetChildIndex = _firstChildIndexByEntry[entryIndex];
+    if (absoluteTargetChildIndex == null &&
+        entryIndex < _loadedStartEntryIndex) {
+      setState(() {
+        final prefix = _buildThreadChildren(
+          widget.entries,
+          startEntryIndex: entryIndex,
+          endEntryIndex: _loadedStartEntryIndex,
+        );
+        _threadChildren = <_AcpThreadChild>[...prefix, ..._threadChildren];
+        _loadedStartEntryIndex = entryIndex;
+        _renderStartChildIndex = 0;
+        _rebuildThreadChildIndexes();
+      });
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || !_controller.hasClients) return;
+      absoluteTargetChildIndex = _firstChildIndexByEntry[entryIndex];
+    }
+    final absoluteTarget = absoluteTargetChildIndex;
+    if (absoluteTarget == null) return;
     widget.onStickyPromptTap?.call();
-    if (absoluteTargetChildIndex < _renderStartChildIndex) {
-      setState(() => _renderStartChildIndex = absoluteTargetChildIndex);
+    if (absoluteTarget < _renderStartChildIndex) {
+      setState(() => _renderStartChildIndex = absoluteTarget);
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || !_controller.hasClients) return;
     }
     final targetChildIndex =
-        absoluteTargetChildIndex -
-        _renderStartChildIndex +
-        _leadingWindowChildCount;
+        absoluteTarget - _renderStartChildIndex + _leadingWindowChildCount;
     // A sticky prompt can be many screens above the viewport and therefore no
     // longer have a built element. Seek until SliverList materializes it, then
     // animate to its exact scroll offset. RenderObject.showOnScreen is not
@@ -620,12 +813,11 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
       var child = sliver.firstChild;
       while (child != null) {
         if (sliver.indexOf(child) == targetChildIndex) {
-          final childOffset = sliver.childScrollOffset(child);
-          if (childOffset == null) return;
-          final destination = (sliverOrigin + childOffset).clamp(
-            position.minScrollExtent,
-            position.maxScrollExtent,
-          );
+          final viewport = RenderAbstractViewport.of(child);
+          final destination = viewport
+              .getOffsetToReveal(child, 0)
+              .offset
+              .clamp(position.minScrollExtent, position.maxScrollExtent);
           if (reduceMotion) {
             _controller.jumpTo(destination);
           } else {

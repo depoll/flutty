@@ -515,18 +515,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
 
   void _onScroll() {
     if (!_scroll.hasClients) return;
-    if (_userDraggingTranscript) {
-      _publishScrollState();
-      return;
-    }
-    final position = _scroll.position;
-    final nearBottom = position.pixels >= position.maxScrollExtent - 2;
-    if (nearBottom != _autoScroll || _showJumpToLatest == nearBottom) {
-      setState(() {
-        _autoScroll = nearBottom;
-        _showJumpToLatest = !nearBottom;
-      });
-    }
+    // Programmatic jumps while a lazy Markdown list is still discovering its
+    // extent are not evidence that the user left the tail. Only explicit user
+    // scroll notifications in [_handleTranscriptScroll] may disable follow.
     _publishScrollState();
   }
 

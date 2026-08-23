@@ -319,19 +319,34 @@ final class AcpTimeline {
 /// the truncated portion so the timeline stays within its byte budget.
 const _truncationMarkerText = '\n… (truncated to stay within memory limits)';
 
+final Expando<int> _contentBlockByteCache = Expando<int>(
+  'ACP content block approximate bytes',
+);
+
 /// Approximates the retained byte footprint of [block].
 ///
 /// This is only used to bound memory, not for wire transfer. Large image
-/// payloads are measured directly; other blocks use their JSON encoding.
+/// payloads are measured directly; other blocks use their JSON encoding. Since
+/// immutable blocks are shared by every successive streaming-message copy, the
+/// weak identity cache prevents re-encoding all prior chunks on every append.
 int approximateContentBlockBytes(AcpContentBlock block) {
-  // Base64 image data is ASCII. Avoid materializing another multi-megabyte JSON
-  // string solely to estimate memory for the images this timeline now retains.
-  if (block is AcpImageContent) {
-    return block.data.length +
-        block.mimeType.length +
-        (block.uri?.length ?? 0) +
-        256;
-  }
+  final cached = _contentBlockByteCache[block];
+  if (cached != null) return cached;
+  final bytes = switch (block) {
+    // Base64 image data is ASCII. Avoid materializing another multi-megabyte
+    // JSON string solely to estimate images this timeline already retains.
+    AcpImageContent() =>
+      block.data.length +
+          block.mimeType.length +
+          (block.uri?.length ?? 0) +
+          256,
+    _ => _encodedContentBlockBytes(block),
+  };
+  _contentBlockByteCache[block] = bytes;
+  return bytes;
+}
+
+int _encodedContentBlockBytes(AcpContentBlock block) {
   try {
     return utf8.encode(jsonEncode(block.toJson())).length;
   } on Object {
@@ -492,16 +507,20 @@ class AcpTimelineBuilder {
 
   /// Applies [update], returning an immutable snapshot when the timeline
   /// changed, or `null` when [update] does not affect the timeline.
-  AcpTimeline? apply(AcpSessionUpdate update) {
+  ///
+  /// A caller accumulating an unpublished replay can set [createSnapshot] to
+  /// false and call [snapshot] once at its publication boundary. This avoids
+  /// copying the growing bounded entry list for every historical wire chunk.
+  AcpTimeline? apply(AcpSessionUpdate update, {bool createSnapshot = true}) {
     switch (update) {
       case AcpContentChunkUpdate():
         _applyContentChunk(update);
         _enforceLimits();
-        return snapshot();
+        return createSnapshot ? snapshot() : null;
       case AcpToolCallUpdate():
         _applyToolCall(update);
         _enforceLimits();
-        return snapshot();
+        return createSnapshot ? snapshot() : null;
       // Session-scoped updates are normalized on the session state, not here.
       case AcpPlanUpdate():
       case AcpAvailableCommandsUpdate():

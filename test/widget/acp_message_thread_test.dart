@@ -283,11 +283,14 @@ void main() {
   testWidgets('windows live-follow transcripts to the recent tail', (
     tester,
   ) async {
+    final controller = ScrollController();
+    addTearDown(controller.dispose);
     await tester.pumpWidget(
       wrap(
         SizedBox(
           height: 200,
           child: AcpMessageThread(
+            controller: controller,
             followTail: true,
             entries: [
               for (var index = 0; index < 200; index++)
@@ -301,7 +304,11 @@ void main() {
       ),
     );
     await tester.pump();
+    await tester.pump();
+    await tester.pump();
 
+    expect(controller.position.pixels, controller.position.maxScrollExtent);
+    expect(find.byKey(const ValueKey('tail-status-199')), findsOneWidget);
     expect(
       tester
           .widget<CustomScrollView>(find.byType(CustomScrollView))
@@ -309,6 +316,9 @@ void main() {
       48,
     );
     expect(find.byKey(const ValueKey('tail-status-0')), findsNothing);
+
+    controller.jumpTo(controller.position.minScrollExtent);
+    await tester.pump();
     expect(
       find.byKey(const ValueKey('acp-earlier-transcript')),
       findsOneWidget,
@@ -344,6 +354,155 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('rebuilds the bounded tail when follow resumes', (tester) async {
+    final controller = ScrollController();
+    addTearDown(controller.dispose);
+    var followTail = false;
+    final entries = <AcpTimelineEntry>[
+      for (var index = 0; index < 200; index++)
+        AcpStatusEntry(id: 'resume-$index', message: 'resume $index'),
+    ];
+
+    await tester.pumpWidget(
+      wrap(
+        StatefulBuilder(
+          builder: (context, setState) => Column(
+            children: [
+              TextButton(
+                onPressed: () => setState(() => followTail = true),
+                child: const Text('Resume follow'),
+              ),
+              Expanded(
+                child: AcpMessageThread(
+                  controller: controller,
+                  entries: entries,
+                  followTail: followTail,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .semanticChildCount,
+      200,
+    );
+
+    await tester.tap(find.text('Resume follow'));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .semanticChildCount,
+      48,
+    );
+    expect(controller.position.pixels, controller.position.maxScrollExtent);
+    expect(find.byKey(const ValueKey('resume-199')), findsOneWidget);
+    expect(find.byKey(const ValueKey('resume-0')), findsNothing);
+  });
+
+  testWidgets('anchors a maximum-size history without laying out older chunks', (
+    tester,
+  ) async {
+    final controller = ScrollController();
+    addTearDown(controller.dispose);
+    final entries = <AcpTimelineEntry>[
+      for (var index = 0; index < 120; index++)
+        AcpAssistantMessageEntry(
+          id: 'large-$index',
+          markdown: 'entry $index\n\n${'x' * 32000} LATEST-END-$index',
+        ),
+    ];
+
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          height: 800,
+          child: AcpMessageThread(
+            controller: controller,
+            entries: entries,
+            followTail: true,
+          ),
+        ),
+      ),
+    );
+    final tailLayout = Stopwatch()..start();
+    await tester.pump();
+
+    expect(
+      tailLayout.elapsed,
+      lessThan(const Duration(seconds: 5)),
+      reason:
+          'initial layout must mount the final virtual chunk directly instead '
+          'of seeking through the preceding large Markdown window',
+    );
+    expect(controller.position.pixels, controller.position.maxScrollExtent);
+    expect(find.textContaining('LATEST-END-119'), findsOneWidget);
+    expect(find.byKey(const ValueKey('large-118')), findsNothing);
+  });
+
+  testWidgets('earlier paging preserves the oversized tail anchor', (
+    tester,
+  ) async {
+    final controller = ScrollController();
+    addTearDown(controller.dispose);
+    final markdown = List.generate(
+      1600,
+      (index) => 'large paragraph $index with enough words to wrap',
+    ).join('\n\n');
+    final chunks = splitAcpMarkdownForVirtualization(markdown);
+    final finalChunkKey = ValueKey(
+      'paged-large-markdown-part-${chunks.length - 1}',
+    );
+
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          height: 240,
+          child: AcpMessageThread(
+            controller: controller,
+            followTail: true,
+            entries: [
+              const AcpStatusEntry(id: 'paged-older', message: 'older entry'),
+              AcpAssistantMessageEntry(id: 'paged-large', markdown: markdown),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    controller.jumpTo(controller.position.minScrollExtent);
+    await tester.pump();
+
+    expect(find.byKey(finalChunkKey), findsOneWidget);
+    expect(find.byKey(const ValueKey('paged-large')), findsNothing);
+    expect(find.byKey(const ValueKey('paged-older')), findsNothing);
+    final tailTopBefore = tester.getTopLeft(find.byKey(finalChunkKey)).dy;
+
+    await tester.tap(find.text('Earlier messages'));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getTopLeft(find.byKey(finalChunkKey)).dy,
+      closeTo(tailTopBefore, 1),
+      reason: 'prepending older chunks must not move the current tail anchor',
+    );
+    expect(controller.offset, greaterThan(0));
+
+    controller.jumpTo(controller.position.minScrollExtent);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('paged-older')), findsOneWidget);
+    expect(find.byKey(const ValueKey('paged-large')), findsOneWidget);
   });
 
   testWidgets('keeps long transcripts lazy', (tester) async {

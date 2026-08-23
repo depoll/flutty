@@ -1308,6 +1308,7 @@ class _QueuedAcpPrompt {
 const _maxSessionListEntries = 200;
 const _sessionUpdateTurnMaxCount = 16;
 const _sessionUpdateTurnTimeBudget = Duration(milliseconds: 4);
+const _maxCoalescedReplayTextChars = 32 * 1024;
 
 /// Owns the normalized state and streaming lifecycle for one ACP session.
 class _SessionController {
@@ -1481,7 +1482,7 @@ class _SessionController {
           : await _establishSession(existingSessionId, init);
       if (holdHistoryReplay) await _drainHistoryReplayNotifications();
     } finally {
-      if (holdHistoryReplay) _historyReplayPublicationHeld = false;
+      if (holdHistoryReplay) _finishHistoryReplayPublication();
     }
     _freshBridge = false;
     _key = AcpSessionKey.of(
@@ -1678,12 +1679,10 @@ class _SessionController {
         final turn = Stopwatch()..start();
         var turnCount = 0;
         do {
-          _applySessionUpdate(
-            _pendingSessionUpdates.removeFirst(),
-            notifyManager: false,
-          );
-          _sessionUpdatesApplied += 1;
-          updateCount += 1;
+          final queued = _removeNextSessionUpdate();
+          _applySessionUpdate(queued.notification, notifyManager: false);
+          _sessionUpdatesApplied += queued.consumedCount;
+          updateCount += queued.consumedCount;
           turnCount += 1;
         } while (_sessionUpdatesApplied < targetAppliedCount &&
             _pendingSessionUpdates.isNotEmpty &&
@@ -1726,6 +1725,91 @@ class _SessionController {
     }
   }
 
+  ({AcpSessionNotification notification, int consumedCount})
+  _removeNextSessionUpdate() {
+    final first = _pendingSessionUpdates.removeFirst();
+    if (!_historyReplayPublicationHeld ||
+        first.update is! AcpContentChunkUpdate ||
+        (first.update as AcpContentChunkUpdate).content is! AcpTextContent) {
+      return (notification: first, consumedCount: 1);
+    }
+
+    final firstUpdate = first.update as AcpContentChunkUpdate;
+    final firstText = firstUpdate.content as AcpTextContent;
+    final text = StringBuffer(firstText.text);
+    var consumedCount = 1;
+    while (_pendingSessionUpdates.isNotEmpty) {
+      final next = _pendingSessionUpdates.first;
+      if (!_canCoalesceReplayText(first, next)) break;
+      final nextText =
+          ((next.update as AcpContentChunkUpdate).content as AcpTextContent)
+              .text;
+      if (text.length + nextText.length > _maxCoalescedReplayTextChars) break;
+      _pendingSessionUpdates.removeFirst();
+      text.write(nextText);
+      consumedCount += 1;
+    }
+    if (consumedCount == 1) {
+      return (notification: first, consumedCount: 1);
+    }
+    return (
+      notification: AcpSessionNotification(
+        sessionId: first.sessionId,
+        update: AcpContentChunkUpdate(
+          kind: firstUpdate.kind,
+          content: AcpTextContent(
+            text.toString(),
+            annotations: firstText.annotations,
+            meta: firstText.meta,
+            extensions: firstText.extensions,
+          ),
+          messageId: firstUpdate.messageId,
+          meta: firstUpdate.meta,
+          extensions: firstUpdate.extensions,
+        ),
+        meta: first.meta,
+        extensions: first.extensions,
+      ),
+      consumedCount: consumedCount,
+    );
+  }
+
+  bool _canCoalesceReplayText(
+    AcpSessionNotification first,
+    AcpSessionNotification next,
+  ) {
+    if (first.sessionId != next.sessionId) return false;
+    final firstUpdate = first.update;
+    final nextUpdate = next.update;
+    if (firstUpdate is! AcpContentChunkUpdate ||
+        nextUpdate is! AcpContentChunkUpdate ||
+        firstUpdate.kind != nextUpdate.kind ||
+        firstUpdate.messageId != nextUpdate.messageId ||
+        firstUpdate.content is! AcpTextContent ||
+        nextUpdate.content is! AcpTextContent) {
+      return false;
+    }
+    final firstText = firstUpdate.content as AcpTextContent;
+    final nextText = nextUpdate.content as AcpTextContent;
+    const equality = DeepCollectionEquality();
+    return equality.equals(first.meta, next.meta) &&
+        equality.equals(first.extensions, next.extensions) &&
+        equality.equals(firstUpdate.meta, nextUpdate.meta) &&
+        equality.equals(firstUpdate.extensions, nextUpdate.extensions) &&
+        equality.equals(
+          firstText.annotations?.toJson(),
+          nextText.annotations?.toJson(),
+        ) &&
+        equality.equals(firstText.meta, nextText.meta) &&
+        equality.equals(firstText.extensions, nextText.extensions);
+  }
+
+  void _finishHistoryReplayPublication() {
+    if (!_historyReplayPublicationHeld) return;
+    _state = _state.copyWith(timeline: _timelineBuilder.snapshot());
+    _historyReplayPublicationHeld = false;
+  }
+
   Future<void> _drainHistoryReplayNotifications() async {
     var stableTurns = 0;
     for (var turn = 0; turn < 64 && stableTurns < 2; turn++) {
@@ -1749,7 +1833,10 @@ class _SessionController {
     bool notifyManager = true,
   }) {
     final update = notification.update;
-    final timeline = _timelineBuilder.apply(update);
+    final timeline = _timelineBuilder.apply(
+      update,
+      createSnapshot: !_historyReplayPublicationHeld,
+    );
     _update((s) {
       var next = s.copyWith(lastActivityAt: _clock());
       if (timeline != null) next = next.copyWith(timeline: timeline);
@@ -2305,7 +2392,7 @@ class _SessionController {
           await _establishSession(sessionId, init);
           await _drainHistoryReplayNotifications();
         } finally {
-          _historyReplayPublicationHeld = false;
+          _finishHistoryReplayPublication();
         }
       }
       _update(

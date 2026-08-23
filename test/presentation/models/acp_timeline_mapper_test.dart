@@ -48,6 +48,21 @@ AcpSessionState _state({
 }
 
 void main() {
+  test('builds previews from only the newest lines in chronological order', () {
+    final entries = <p.AcpTimelineEntry>[
+      for (var index = 0; index < 20; index++)
+        p.AcpAssistantMessageEntry(
+          id: 'preview-$index',
+          markdown: 'message $index',
+        ),
+    ];
+
+    expect(
+      buildAcpConversationPreview(entries, maxLines: 3),
+      'Agent: message 17\nAgent: message 18\nAgent: message 19',
+    );
+  });
+
   test('memoizes identical immutable session snapshots', () {
     final session = _state(
       timeline: AcpTimeline(

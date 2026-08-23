@@ -40,6 +40,7 @@ class _FakeAcpServer implements AcpTransport {
     this.promptErrorMessage,
     this.replayTextOnLoad,
     this.replayUpdateCountOnLoad = 0,
+    this.replayUpdatesOnLoad = const <Map<String, Object?>>[],
     this.loadResponseGate,
     this.permissionIdOnLoad,
     this.permissionIdOnInitialize,
@@ -68,6 +69,9 @@ class _FakeAcpServer implements AcpTransport {
 
   /// Number of same-message content chunks synchronously replayed on load.
   final int replayUpdateCountOnLoad;
+
+  /// Exact typed updates synchronously replayed after the generated burst.
+  final List<Map<String, Object?>> replayUpdatesOnLoad;
 
   /// Holds the session/load response so reconnecting-state publication can be
   /// observed independently from provider history latency.
@@ -185,6 +189,9 @@ class _FakeAcpServer implements AcpTransport {
             'messageId': 'replay-burst',
             'content': {'type': 'text', 'text': 'chunk-$index '},
           });
+        }
+        for (final update in replayUpdatesOnLoad) {
+          pushUpdate(sessionId, update);
         }
         if (permissionIdOnLoad != null) {
           _pushPermission(permissionIdOnLoad!, sessionId, 'replay-tool');
@@ -1903,6 +1910,99 @@ void main() {
       );
     });
 
+    test(
+      'keeps replay chunks separate across metadata and tool boundaries',
+      () async {
+        Map<String, Object?> textUpdate(
+          String text, {
+          Map<String, Object?> updateFields = const {},
+          Map<String, Object?> contentFields = const {},
+        }) => <String, Object?>{
+          'sessionUpdate': 'agent_message_chunk',
+          'messageId': 'boundary-message',
+          ...updateFields,
+          'content': <String, Object?>{
+            'type': 'text',
+            'text': text,
+            ...contentFields,
+          },
+        };
+        final replayConnector = _FakeConnector(
+          serverFactory: (_, _) => _FakeAcpServer(
+            supportsResume: false,
+            replayUpdatesOnLoad: <Map<String, Object?>>[
+              textUpdate('a'),
+              textUpdate(
+                'b',
+                updateFields: {
+                  '_meta': {'variant': 'update'},
+                },
+              ),
+              textUpdate('c', updateFields: {'x-update': true}),
+              textUpdate(
+                'd',
+                contentFields: {
+                  '_meta': {'variant': 'content'},
+                },
+              ),
+              textUpdate('e', contentFields: {'x-content': true}),
+              textUpdate(
+                'f',
+                contentFields: {
+                  'annotations': {
+                    'audience': ['assistant'],
+                  },
+                },
+              ),
+              const <String, Object?>{
+                'sessionUpdate': 'tool_call',
+                'toolCallId': 'boundary-tool',
+                'title': 'Boundary',
+                'status': 'completed',
+              },
+              textUpdate('g'),
+            ],
+          ),
+        );
+        final replayManager = buildManagerWith(replayConnector);
+        final started = await replayManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+        await replayManager.detachSession(key);
+        replayConnector.availableBridges.remove(key.bridgeId);
+
+        final result = await replayManager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
+        final reloadedKey = (result as AcpSessionLaunchStarted).key;
+        await _pump();
+        final timeline = replayManager.state
+            .byKeyValue(reloadedKey.value)!
+            .timeline;
+        final message = timeline.entries
+            .whereType<AcpMessageEntry>()
+            .singleWhere((entry) => entry.messageId == 'boundary-message');
+
+        expect(
+          message.content.whereType<AcpTextContent>().map(
+            (block) => block.text,
+          ),
+          ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+        );
+        expect(
+          timeline.entries.whereType<AcpToolCallEntry>().single.toolCallId,
+          'boundary-tool',
+        );
+      },
+    );
+
     test('failed provisional reconnect restores prior selection', () async {
       isPro = true;
       final selectionConnector = _FakeConnector(
@@ -1940,7 +2040,7 @@ void main() {
       final replayConnector = _FakeConnector(
         serverFactory: (_, _) => _FakeAcpServer(
           supportsResume: false,
-          replayUpdateCountOnLoad: 600,
+          replayUpdateCountOnLoad: 4000,
           loadResponseGate: loadGate.future,
         ),
       );
@@ -1960,7 +2060,11 @@ void main() {
       await replayManager.detachSession(key);
       replayConnector.availableBridges.remove(key.bridgeId);
 
-      final publishedReplayLengths = <int>[];
+      final completeReplayText = List.generate(
+        4000,
+        (index) => 'chunk-$index ',
+      ).join();
+      final publishedReplayTextLengths = <int>[];
       final statesSubscription = replayManager.states.listen((managerState) {
         final replay = managerState.sessions
             .expand((session) => session.timeline.entries)
@@ -1968,7 +2072,12 @@ void main() {
             .where((entry) => entry.messageId == 'replay-burst')
             .firstOrNull;
         if (replay != null && replay.content.isNotEmpty) {
-          publishedReplayLengths.add(replay.content.length);
+          publishedReplayTextLengths.add(
+            replay.content.whereType<AcpTextContent>().fold(
+              0,
+              (length, block) => length + block.text.length,
+            ),
+          );
         }
       });
       addTearDown(statesSubscription.cancel);
@@ -2012,7 +2121,7 @@ void main() {
         },
       );
       await _pump();
-      expect(publishedReplayLengths, isEmpty);
+      expect(publishedReplayTextLengths, isEmpty);
 
       loadGate.complete();
       final result = await reconnect;
@@ -2028,15 +2137,26 @@ void main() {
             .whereType<AcpMessageEntry>()
             .where((entry) => entry.messageId == 'replay-burst')
             .firstOrNull;
-        if (message?.content.length == 600) break;
+        final replayText = message?.content
+            .whereType<AcpTextContent>()
+            .map((block) => block.text)
+            .join();
+        if (replayText == completeReplayText) break;
       }
       expect(message, isNotNull);
-      expect(message!.content, hasLength(600));
-      expect((message.content.first as AcpTextContent).text, 'chunk-0 ');
-      expect((message.content.last as AcpTextContent).text, 'chunk-599 ');
-      expect(publishedReplayLengths, contains(600));
+      expect(message!.content, isNotEmpty);
       expect(
-        publishedReplayLengths.where((length) => length < 600),
+        message.content
+            .whereType<AcpTextContent>()
+            .map((block) => block.text)
+            .join(),
+        completeReplayText,
+      );
+      expect(publishedReplayTextLengths, contains(completeReplayText.length));
+      expect(
+        publishedReplayTextLengths.where(
+          (length) => length < completeReplayText.length,
+        ),
         isEmpty,
         reason:
             'the native UI should first receive the complete replay so its '

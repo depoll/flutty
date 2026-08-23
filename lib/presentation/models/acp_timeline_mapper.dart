@@ -109,13 +109,25 @@ String? buildAcpConversationPreview(
 }) {
   final lines = <String>[];
 
-  String clean(String value) => value
-      .replaceAll(RegExp(r'!\[[^\]]*\]\([^)]+\)'), '[image]')
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
+  String clean(String value) {
+    const scanLimit = 4096;
+    final sample = value.length <= scanLimit
+        ? value
+        : value.substring(0, scanLimit);
+    return sample
+        .replaceAll(RegExp(r'!\[[^\]]*\]\([^)]+\)'), '[image]')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
 
-  void collect(Iterable<AcpTimelineEntry> source, {String prefix = ''}) {
-    for (final entry in source) {
+  void collectNewestFirst(List<AcpTimelineEntry> source, {String prefix = ''}) {
+    for (var index = source.length - 1; index >= 0; index--) {
+      if (lines.length >= maxLines) return;
+      final entry = source[index];
+      if (entry is AcpSubagentTranscriptEntry) {
+        collectNewestFirst(entry.entries, prefix: 'Subagent · ');
+        continue;
+      }
       final line = switch (entry) {
         AcpUserPromptEntry() =>
           'You: ${clean(entry.parts.whereType<AcpTextPart>().map((part) => part.text).join(' '))}',
@@ -132,20 +144,12 @@ String? buildAcpConversationPreview(
       if (line.isNotEmpty) {
         lines.add('$prefix${_bound(line, 240)}');
       }
-      if (entry is AcpSubagentTranscriptEntry) {
-        collect(entry.entries, prefix: 'Subagent · ');
-      }
     }
   }
 
-  collect(entries);
-  if (lines.isEmpty) {
-    return null;
-  }
-  final selected = lines.length <= maxLines
-      ? lines
-      : lines.sublist(lines.length - maxLines);
-  return _bound(selected.join('\n'), maxChars);
+  collectNewestFirst(entries);
+  if (lines.isEmpty) return null;
+  return _bound(lines.reversed.join('\n'), maxChars);
 }
 
 /// Maps [state] into an ordered list of presentation timeline entries.

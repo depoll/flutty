@@ -336,6 +336,30 @@ void main() {
       expect(joined, isNot(contains('chunk-0 ')));
     });
 
+    test('keeps a near-limit 4000-chunk replay below the ANR budget', () {
+      final builder = AcpTimelineBuilder();
+      final elapsed = Stopwatch()..start();
+
+      for (var index = 0; index < 4000; index++) {
+        builder.apply(
+          _chunk(
+            'agent_message_chunk',
+            '${'x' * 200}$index',
+            messageId: 'large-replay',
+          ),
+        );
+      }
+
+      expect(builder.snapshot().entries, hasLength(1));
+      expect(
+        elapsed.elapsed,
+        lessThan(const Duration(seconds: 5)),
+        reason:
+            'immutable historical blocks must not be JSON-encoded again for '
+            'every later append on the UI isolate',
+      );
+    });
+
     test('a single accumulating message entry never grows the whole timeline '
         'past its total byte budget', () {
       final builder = AcpTimelineBuilder(
