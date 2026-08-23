@@ -91,9 +91,6 @@ void _stubTrueColorLoginShell(
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
-Future<void> _runTerminalIdleTaskImmediately(Future<void> Function() task) =>
-    task();
-
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockShellChannel extends Mock implements SSHSession {}
@@ -1481,8 +1478,6 @@ void main() {
       ShellCompletionService? shellCompletionService,
       AndroidDeviceDebugPlatform? deviceDebugPlatform,
       RemoteAdbCommandRunner? remoteAdbCommandRunner,
-      TerminalIdleTaskScheduler scheduleIdleTask =
-          _runTerminalIdleTaskImmediately,
     }) async {
       await tester.pumpWidget(
         ProviderScope(
@@ -1525,7 +1520,6 @@ void main() {
             home: TerminalScreen(
               hostId: host.id,
               connectionId: session.connectionId,
-              scheduleIdleTask: scheduleIdleTask,
             ),
           ),
         ),
@@ -8131,23 +8125,10 @@ void main() {
     );
 
     testWidgets(
-      'arms preload only after a successful foreground native open',
+      'retries an immediate native transport close without background preload',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 800));
         addTearDown(() => tester.binding.setSurfaceSize(null));
-        final scheduledIdleTasks = <Future<void> Function()>[];
-        Future<void> holdIdleTask(Future<void> Function() task) {
-          final completer = Completer<void>();
-          scheduledIdleTasks.add(() async {
-            try {
-              await task();
-            } finally {
-              completer.complete();
-            }
-          });
-          return completer.future;
-        }
-
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final windowEvents = StreamController<TmuxWindowChangeEvent>();
@@ -8293,7 +8274,6 @@ void main() {
           tmuxService: tmuxService,
           monkeyMuxService: monkeyMuxService,
           acpSessionManager: acpManager,
-          scheduleIdleTask: holdIdleTask,
         );
         await tester.pump(const Duration(milliseconds: 100));
         expect(
@@ -8301,8 +8281,6 @@ void main() {
           isEmpty,
           reason: 'startup must not speculatively attach native bridges',
         );
-        expect(scheduledIdleTasks, isEmpty);
-
         await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
         for (
           var attempt = 0;
@@ -8319,21 +8297,10 @@ void main() {
           AcpConnectionStatus.ready,
         );
 
-        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pump(const Duration(milliseconds: 300));
         expect(find.text('opening persistent agent session…'), findsNothing);
-        expect(scheduledIdleTasks, hasLength(1));
-
-        unawaited(scheduledIdleTasks.removeAt(0)());
-        for (
-          var attempt = 0;
-          attempt < 10 && acpManager.reconnects.length < 3;
-          attempt++
-        ) {
-          await tester.pump(const Duration(milliseconds: 50));
-        }
-        expect(acpManager.reconnects, hasLength(3));
-        expect(acpManager.reconnectSelectOnSuccess, [true, true, false]);
-        expect(acpManager.reconnectKnownBridges.last?.id, siblingBridgeId);
+        expect(acpManager.reconnects, hasLength(2));
+        expect(acpManager.reconnectSelectOnSuccess, [true, true]);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

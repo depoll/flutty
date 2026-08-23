@@ -11,7 +11,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -3613,18 +3612,6 @@ class _NativeAcpLaunchState {
       );
 }
 
-/// Scheduler used for background terminal work that must yield to UI frames.
-typedef TerminalIdleTaskScheduler =
-    Future<void> Function(Future<void> Function() task);
-
-/// Runs [task] only when Flutter's scheduler has idle capacity.
-Future<void> scheduleTerminalIdleTask(Future<void> Function() task) =>
-    SchedulerBinding.instance.scheduleTask<void>(
-      task,
-      Priority.idle,
-      debugLabel: 'terminal idle task',
-    );
-
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -3638,7 +3625,6 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.initiallyExpandTmuxWindows = false,
     this.initiallyShowKeyboard = false,
     this.pasteDemoImage = false,
-    this.scheduleIdleTask = scheduleTerminalIdleTask,
     super.key,
   });
 
@@ -3668,10 +3654,6 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
   /// Whether to paste the store-demo image after opening the terminal.
   final bool pasteDemoImage;
-
-  /// Schedules non-urgent work without competing with foreground frames.
-  @visibleForTesting
-  final TerminalIdleTaskScheduler scheduleIdleTask;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -3834,10 +3816,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   double _tmuxSidebarDragOffset = 0;
   AcpSessionKey? _activeNativeAcpSessionKey;
   String? _autoOpenedNativeAcpBridgeId;
-  String? _backgroundNativeAcpWarmupSignature;
-  int? _nativeAcpBackgroundWarmupConnectionId;
-  final Map<String, Future<AcpSessionLaunchResult>>
-  _backgroundNativeAcpWarmups = {};
   String? _openingNativeAcpBridgeId;
   String? _nativeAcpReconnectOwnedKeyValue;
   Future<void>? _openingNativeAcpWindow;
@@ -11407,17 +11385,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final isProUser = monetizationState.allowsFeature(
       MonetizationFeature.agentLaunchPresets,
     );
-    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux &&
-        monetizationState.allowsFeature(
-          MonetizationFeature.concurrentAcpSessions,
-        )) {
-      final windows = _currentTmuxWindowsSnapshot?.toList(growable: false);
-      if (windows != null && windows.isNotEmpty) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _warmInactiveNativeAcpMuxWindows(session, windows);
-        });
-      }
-    }
 
     return _TmuxExpandableBar(
       key: _tmuxBarKey,
@@ -11443,7 +11410,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           }
           _syncTerminalProgressFromActiveMonkeyMuxWindow(session, windows);
           _syncActiveNativeAcpMuxWindow(session, windows);
-          _warmInactiveNativeAcpMuxWindows(session, windows);
         }
         _syncAutomaticPortForwardProcessRoots(
           session,
@@ -11492,193 +11458,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         workingDirectory: active.currentPath,
       ),
     );
-  }
-
-  void _warmInactiveNativeAcpMuxWindows(
-    SshSession session,
-    List<TmuxWindow> windows,
-  ) {
-    if (_nativeAcpBackgroundWarmupConnectionId != session.connectionId) return;
-    final hasParallelNativeChats = ref
-        .read(monetizationServiceProvider)
-        .currentState
-        .allowsFeature(MonetizationFeature.concurrentAcpSessions);
-    if (!hasParallelNativeChats) {
-      _backgroundNativeAcpWarmupSignature = null;
-      return;
-    }
-
-    final opening = _openingNativeAcpWindow;
-    if (opening != null) {
-      unawaited(() async {
-        try {
-          await opening;
-        } on Object {
-          // Foreground open reports its own failure; background warmup remains
-          // best-effort and retries against the latest window snapshot.
-        }
-        if (mounted) _warmInactiveNativeAcpMuxWindows(session, windows);
-      }());
-      return;
-    }
-
-    final targets =
-        windows
-            .where(
-              (window) =>
-                  window.isNativeAcp &&
-                  !window.isActive &&
-                  window.nativeAcpBridgeId != null &&
-                  window.nativeAcpProviderId != null,
-            )
-            .toList(growable: false)
-          ..sort(
-            (left, right) =>
-                left.nativeAcpBridgeId!.compareTo(right.nativeAcpBridgeId!),
-          );
-    if (targets.isEmpty) {
-      _backgroundNativeAcpWarmupSignature = null;
-      return;
-    }
-    final signature =
-        '${session.connectionId}:'
-        '${targets.map((window) => window.nativeAcpBridgeId).join(',')}';
-    if (_backgroundNativeAcpWarmupSignature == signature) return;
-    _backgroundNativeAcpWarmupSignature = signature;
-    unawaited(_scheduleInactiveNativeAcpWarmup(session, targets));
-  }
-
-  Future<void> _scheduleInactiveNativeAcpWarmup(
-    SshSession session,
-    List<TmuxWindow> targets,
-  ) => widget.scheduleIdleTask(
-    () => _performInactiveNativeAcpWarmup(session, targets),
-  );
-
-  Future<void> _waitForNativeAcpWarmupIdle() =>
-      widget.scheduleIdleTask(() async {});
-
-  Future<void> _performInactiveNativeAcpWarmup(
-    SshSession sshSession,
-    List<TmuxWindow> targets,
-  ) async {
-    final manager = ref.read(acpSessionManagerProvider);
-    final List<MonkeyMuxAcpBridgeMetadata> bridges;
-    try {
-      bridges = await manager.listRemoteBridges(sshSession.hostId);
-    } on Object catch (error) {
-      DiagnosticsLogService.instance.debug(
-        'acp.window',
-        'background_list_failed',
-        fields: {'hostId': sshSession.hostId, 'errorType': error.runtimeType},
-      );
-      return;
-    }
-    if (!mounted || _connectionId != sshSession.connectionId) return;
-    final bridgeById = {for (final bridge in bridges) bridge.id: bridge};
-
-    for (var index = 0; index < targets.length; index++) {
-      if (index > 0) await _waitForNativeAcpWarmupIdle();
-      if (!mounted || _connectionId != sshSession.connectionId) return;
-      final foregroundOpen = _openingNativeAcpWindow;
-      if (foregroundOpen != null) {
-        try {
-          await foregroundOpen;
-        } on Object {
-          // The foreground path owns user-facing recovery. Resume warmup only
-          // after it yields the connection and manager serialization lane.
-        }
-      }
-      if (!mounted || _connectionId != sshSession.connectionId) return;
-      final window = targets[index];
-      final bridgeId = window.nativeAcpBridgeId!;
-      final providerId = window.nativeAcpProviderId!;
-      final alreadyLive = manager.state.sessions.any(
-        (session) =>
-            session.key.hostId == sshSession.hostId &&
-            session.key.bridgeId == bridgeId &&
-            session.isLive,
-      );
-      if (alreadyLive) continue;
-
-      final bridge = bridgeById[bridgeId];
-      final acpSessionId = bridge?.sessionId?.trim();
-      if (bridge == null ||
-          bridge.state == MonkeyMuxAcpProviderState.exited ||
-          bridge.state == MonkeyMuxAcpProviderState.stopped ||
-          bridge.state == MonkeyMuxAcpProviderState.protocolError ||
-          acpSessionId == null ||
-          acpSessionId.isEmpty) {
-        continue;
-      }
-      final cwd = bridge.cwd?.trim().isNotEmpty ?? false
-          ? bridge.cwd!.trim()
-          : (window.currentPath?.trim().isNotEmpty ?? false)
-          ? window.currentPath!.trim()
-          : (_workingDirectoryPath ?? _host?.tmuxWorkingDirectory ?? '~');
-      final reconnect = manager.reconnectSession(
-        hostId: sshSession.hostId,
-        providerId: providerId,
-        bridgeId: bridgeId,
-        acpSessionId: acpSessionId,
-        cwd: cwd,
-        autoApprovePermissions: _startClisInYoloMode,
-        selectOnSuccess: false,
-        knownRemoteBridge: bridge,
-      );
-      _backgroundNativeAcpWarmups[bridgeId] = reconnect;
-      late final AcpSessionLaunchResult result;
-      try {
-        result = await reconnect;
-      } on Object catch (error) {
-        DiagnosticsLogService.instance.debug(
-          'acp.window',
-          'background_failed',
-          fields: {
-            'hostId': sshSession.hostId,
-            'bridgeId': bridgeId,
-            'errorType': error.runtimeType,
-          },
-        );
-        continue;
-      } finally {
-        if (identical(_backgroundNativeAcpWarmups[bridgeId], reconnect)) {
-          _backgroundNativeAcpWarmups.remove(bridgeId)?.ignore();
-        }
-      }
-      switch (result) {
-        case AcpSessionLaunchStarted():
-          DiagnosticsLogService.instance.debug(
-            'acp.window',
-            'background_ready',
-            fields: {'hostId': sshSession.hostId, 'bridgeId': bridgeId},
-          );
-        case AcpSessionLaunchFailed(:final error):
-          DiagnosticsLogService.instance.debug(
-            'acp.window',
-            'background_failed',
-            fields: {
-              'hostId': sshSession.hostId,
-              'bridgeId': bridgeId,
-              'errorType': error.kind.name,
-            },
-          );
-        case AcpSessionLaunchBlocked():
-          // Entitlement may have changed while the batch was running. Leave
-          // remaining windows lazy rather than interrupting the foreground UI.
-          return;
-      }
-    }
-  }
-
-  void _armNativeAcpBackgroundWarmup(SshSession session) {
-    if (_nativeAcpBackgroundWarmupConnectionId == session.connectionId) return;
-    _nativeAcpBackgroundWarmupConnectionId = session.connectionId;
-    final windows = _currentTmuxWindowsSnapshot?.toList(growable: false);
-    if (windows == null || windows.isEmpty) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _warmInactiveNativeAcpMuxWindows(session, windows);
-    });
   }
 
   void _handleTmuxBarExpandedChanged(bool expanded) {
@@ -12184,7 +11963,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         lockHost: true,
       );
       if (mounted && key != null) {
-        _armNativeAcpBackgroundWarmup(session);
         _openNativeAcpSession(key);
       }
       return;
@@ -12293,7 +12071,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     switch (result) {
       case AcpSessionLaunchStarted(:final key):
-        _armNativeAcpBackgroundWarmup(session);
         _openNativeAcpSession(key);
       case AcpSessionLaunchFailed(:final error):
         final authCommand = acpTerminalAuthCommandFor(providerId);
@@ -12405,31 +12182,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String? workingDirectory,
   }) async {
     final manager = ref.read(acpSessionManagerProvider);
-    final backgroundWarmup = _backgroundNativeAcpWarmups[bridgeId];
-    if (backgroundWarmup != null) {
-      final result = await backgroundWarmup;
-      if (result is AcpSessionLaunchStarted) {
-        final warmed = manager.state.sessions
-            .where(
-              (session) =>
-                  session.key.hostId == sshSession.hostId &&
-                  session.key.bridgeId == bridgeId &&
-                  session.key.providerId == providerId &&
-                  session.isLive,
-            )
-            .firstOrNull;
-        if (warmed != null) {
-          _armNativeAcpBackgroundWarmup(sshSession);
-          await _switchTmuxWindow(
-            sshSession,
-            windowIndex,
-            suppressTerminalReplay: true,
-          );
-          if (mounted) _openNativeAcpSession(warmed.key);
-          return;
-        }
-      }
-    }
     final tracked = manager.state.sessions
         .where(
           (session) =>
@@ -12439,7 +12191,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         )
         .firstOrNull;
     if (tracked != null && tracked.isLive) {
-      _armNativeAcpBackgroundWarmup(sshSession);
       await _switchTmuxWindow(
         sshSession,
         windowIndex,
@@ -12603,7 +12354,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) return;
       switch (result) {
         case AcpSessionLaunchStarted(:final key):
-          _armNativeAcpBackgroundWarmup(sshSession);
           if (_activeNativeAcpSessionKey == provisionalKey &&
               key != provisionalKey) {
             _openNativeAcpSession(key);
