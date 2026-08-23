@@ -370,6 +370,20 @@ func requestAcpBridgeStop(id string) error {
 	})
 }
 
+func requestAcpBridgeStopAndWait(id string) error {
+	if err := requestAcpBridgeStop(id); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := acpBridgeStatus(id); err != nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return errors.New("ACP bridge did not stop")
+}
+
 func acpStopCommand(args []string) {
 	if len(args) != 1 || !validAcpBridgeID(args[0]) {
 		acpUsageAndExit()

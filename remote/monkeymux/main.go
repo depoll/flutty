@@ -6835,7 +6835,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 		_ = window.closePty(windowPty)
 	}
 	if nativeAcpBridgeID != "" {
-		_ = requestAcpBridgeStop(nativeAcpBridgeID)
+		_ = requestAcpBridgeStopAndWait(nativeAcpBridgeID)
 	}
 
 	s.broadcast(controlResponse{
@@ -9044,7 +9044,7 @@ func (c *controlClient) startAcpBridgeAsync(s *muxServer, request controlMessage
 		}
 		windowArgs, err := nativeAcpWindowArguments(bridgeID)
 		if err != nil {
-			_ = requestAcpBridgeStop(bridgeID)
+			_ = requestAcpBridgeStopAndWait(bridgeID)
 			c.sendError(request, errors.New("unable to create native agent window"))
 			return
 		}
@@ -9056,7 +9056,7 @@ func (c *controlClient) startAcpBridgeAsync(s *muxServer, request controlMessage
 			nativeAcpProviderID: request.ProviderID,
 		})
 		if err != nil {
-			_ = requestAcpBridgeStop(bridgeID)
+			_ = requestAcpBridgeStopAndWait(bridgeID)
 			c.sendError(request, errors.New("unable to create native agent window"))
 			return
 		}
@@ -9649,7 +9649,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 		_ = window.closePty(windowPty)
 	}
 	if nativeAcpBridgeID != "" {
-		_ = requestAcpBridgeStop(nativeAcpBridgeID)
+		_ = requestAcpBridgeStopAndWait(nativeAcpBridgeID)
 	}
 	return shouldShutdown, nil
 }
@@ -16422,7 +16422,7 @@ func (s *muxServer) close() {
 			_ = window.closePty(window.pty)
 		}
 		if window.nativeAcpBridgeID != "" {
-			_ = requestAcpBridgeStop(window.nativeAcpBridgeID)
+			_ = requestAcpBridgeStopAndWait(window.nativeAcpBridgeID)
 		}
 	}
 	// Closing the ptys ends the reader goroutines and the hangup above ends the
