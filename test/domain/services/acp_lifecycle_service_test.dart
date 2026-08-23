@@ -26,7 +26,7 @@ import 'package:monkeyssh/domain/services/settings_service.dart';
 /// A minimal fake ACP agent transport: enough to open sessions, push
 /// permission requests, and complete prompt turns.
 class _FakeAcpServer implements AcpTransport {
-  _FakeAcpServer({this.failInitialize = false});
+  _FakeAcpServer() : failInitialize = false;
 
   /// When true, `initialize` fails so a reconnect can be forced to fail.
   bool failInitialize;
@@ -110,7 +110,7 @@ class _FakeAcpServer implements AcpTransport {
 }
 
 class _FakeConnector implements AcpBridgeConnector {
-  _FakeConnector({this.serverFactory});
+  _FakeConnector() : serverFactory = null;
 
   final _FakeAcpServer Function(int hostId, String bridgeId)? serverFactory;
   final Map<String, _FakeAcpServer> servers = <String, _FakeAcpServer>{};
@@ -233,7 +233,6 @@ void main() {
   late AcpSessionManager manager;
   late LocalNotificationService notificationService;
   late Set<int> connectedHostIds;
-  late bool isAuthUsable;
   late AcpLifecycleService lifecycle;
 
   Future<AcpSessionKey> startSession({required int hostId}) async {
@@ -252,7 +251,6 @@ void main() {
     recentSessions = AcpRecentSessionsService(settings);
     connector = _FakeConnector();
     connectedHostIds = <int>{1, 2};
-    isAuthUsable = true;
     manager = AcpSessionManager(
       connector: connector,
       providerService: providerService,
@@ -265,9 +263,7 @@ void main() {
       sessionManager: manager,
       hasActiveSshSession: (hostId) => connectedHostIds.contains(hostId),
       notificationService: notificationService,
-      isAuthUsable: () => isAuthUsable,
       diagnostics: const NoopDiagnosticsLogger(),
-      backgroundDetachGrace: const Duration(milliseconds: 20),
     )..start();
   });
 
@@ -278,167 +274,8 @@ void main() {
     await database.close();
   });
 
-  group('background detach and foreground resume', () {
-    test(
-      'detaches live sessions only after the grace period elapses',
-      () async {
-        await startSession(hostId: 1);
-
-        await lifecycle.handleBackground();
-        expect(
-          manager.state.sessions.single.status,
-          isNot(AcpConnectionStatus.detached),
-        );
-
-        await Future<void>.delayed(const Duration(milliseconds: 60));
-        expect(
-          manager.state.sessions.single.status,
-          AcpConnectionStatus.detached,
-        );
-      },
-    );
-
-    test(
-      'never detaches on a transient background/foreground flicker',
-      () async {
-        await startSession(hostId: 1);
-
-        await lifecycle.handleBackground();
-        // Resumed well before the grace period elapses: a real device would
-        // see this on a quick app-switcher glance or permission dialog.
-        await Future<void>.delayed(const Duration(milliseconds: 5));
-        await lifecycle.handleForeground();
-        await Future<void>.delayed(const Duration(milliseconds: 60));
-
-        expect(manager.state.sessions.single.status, AcpConnectionStatus.ready);
-        expect(manager.state.sessions.single.isLive, isTrue);
-      },
-    );
-
-    test('reconnects a session it auto-detached once foregrounded', () async {
-      await startSession(hostId: 1);
-
-      await lifecycle.handleBackground();
-      await Future<void>.delayed(const Duration(milliseconds: 60));
-      expect(
-        manager.state.sessions.single.status,
-        AcpConnectionStatus.detached,
-      );
-
-      await lifecycle.handleForeground();
-      await _pump();
-
-      expect(manager.state.sessions.single.status, AcpConnectionStatus.ready);
-      expect(manager.state.sessions.single.isLive, isTrue);
-    });
-
-    test('reconnects immediately instead of stranding a session detached while '
-        'the app already came back to the foreground mid-sweep', () async {
-      final firstKey = await startSession(hostId: 1);
-      final secondKey = await startSession(hostId: 2);
-
-      // Gate host 1's detach so the test can resume the app while that
-      // detach is still in flight, and never let host 2's detach begin
-      // before the resume is observed.
-      final gate = Completer<void>();
-      connector.closeGates[firstKey.bridgeId] = gate;
-
-      await lifecycle.handleBackground();
-      await Future<void>.delayed(const Duration(milliseconds: 30));
-      // The background sweep is now awaiting host 1's gated detach.
-
-      // The user reopens the app while that detach is still in flight.
-      final foregroundFuture = lifecycle.handleForeground();
-
-      // Let the gated detach complete now that the app is foreground again.
-      gate.complete();
-      await foregroundFuture;
-      await _pump();
-      await _pump();
-
-      // Host 1 must never be left stranded in a detached state once the
-      // app is back in the foreground: it should be reconnected.
-      expect(
-        manager.state.byKeyValue(firstKey.value)!.status,
-        AcpConnectionStatus.ready,
-      );
-      expect(manager.state.byKeyValue(firstKey.value)!.isLive, isTrue);
-      // Host 2's detach must never have started once the app resumed.
-      expect(
-        manager.state.byKeyValue(secondKey.value)!.status,
-        AcpConnectionStatus.ready,
-      );
-      expect(manager.state.byKeyValue(secondKey.value)!.isLive, isTrue);
-
-      // A later foreground call must not find a stranded auto-detach entry
-      // for host 1 either (it was reconnected immediately, not recorded).
-      await lifecycle.handleForeground();
-      await _pump();
-      expect(
-        manager.state.byKeyValue(firstKey.value)!.status,
-        AcpConnectionStatus.ready,
-      );
-    });
-
-    test('isolates a failed reconnect for one host from a healthy reconnect '
-        'on another host', () async {
-      final connectionCounts = <int, int>{};
-      final failingConnector = _FakeConnector(
-        serverFactory: (hostId, bridgeId) {
-          final count = (connectionCounts[hostId] ?? 0) + 1;
-          connectionCounts[hostId] = count;
-          return _FakeAcpServer(failInitialize: hostId == 1 && count > 1);
-        },
-      );
-      final failingManager = AcpSessionManager(
-        connector: failingConnector,
-        providerService: providerService,
-        recentSessions: recentSessions,
-        isProUnlocked: () => true,
-        diagnostics: const NoopDiagnosticsLogger(),
-      );
-      addTearDown(failingManager.dispose);
-      final failingLifecycle = AcpLifecycleService(
-        sessionManager: failingManager,
-        hasActiveSshSession: (hostId) => connectedHostIds.contains(hostId),
-        notificationService: notificationService,
-        diagnostics: const NoopDiagnosticsLogger(),
-        backgroundDetachGrace: const Duration(milliseconds: 10),
-      )..start();
-      addTearDown(failingLifecycle.dispose);
-
-      final firstResult = await failingManager.startNewSession(
-        hostId: 1,
-        providerId: AcpBuiltinProviderIds.copilotCli,
-        cwd: '/repo',
-      );
-      final secondResult = await failingManager.startNewSession(
-        hostId: 2,
-        providerId: AcpBuiltinProviderIds.copilotCli,
-        cwd: '/repo',
-      );
-      final firstKey = (firstResult as AcpSessionLaunchStarted).key;
-      final secondKey = (secondResult as AcpSessionLaunchStarted).key;
-
-      await failingLifecycle.handleBackground();
-      await Future<void>.delayed(const Duration(milliseconds: 40));
-      await failingLifecycle.handleForeground();
-      await _pump();
-      await _pump();
-
-      // Host 1's new attachment fails initialization, but host 2 still
-      // succeeds: one bad reconnect never blocks the other.
-      expect(
-        failingManager.state.byKeyValue(firstKey.value)!.status,
-        isNot(AcpConnectionStatus.ready),
-      );
-      expect(
-        failingManager.state.byKeyValue(secondKey.value)!.status,
-        AcpConnectionStatus.ready,
-      );
-    });
-
-    test('reconnects auto-detached sessions across multiple hosts', () async {
+  group('background keepalive', () {
+    test('keeps every healthy session attached across app switching', () async {
       await startSession(hostId: 1);
       await startSession(hostId: 2);
 
@@ -446,15 +283,34 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 60));
       expect(
         manager.state.sessions.every(
-          (s) => s.status == AcpConnectionStatus.detached,
+          (session) => session.status == AcpConnectionStatus.ready,
         ),
         isTrue,
       );
 
       await lifecycle.handleForeground();
+      expect(manager.state.sessions.every((session) => session.isLive), isTrue);
+    });
+
+    test('continues receiving agent requests while backgrounded', () async {
+      final key = await startSession(hostId: 1);
+      await lifecycle.handleBackground();
+      // Suppress the platform notification side effect in this unit test; the
+      // connectivity watcher is intentionally not invoked, so the attachment
+      // remains live and exercises background update delivery.
+      connectedHostIds.remove(1);
+
+      connector.servers.values.single.requestPermission(key.acpSessionId);
       await _pump();
 
-      expect(manager.state.sessions.every((s) => s.isLive), isTrue);
+      expect(
+        manager.state.byKeyValue(key.value)!.pendingPermissions,
+        hasLength(1),
+      );
+      expect(
+        manager.state.byKeyValue(key.value)!.status,
+        AcpConnectionStatus.ready,
+      );
     });
   });
 
@@ -469,7 +325,7 @@ void main() {
 
         expect(
           manager.state.sessions.every(
-            (s) => s.status == AcpConnectionStatus.detached,
+            (session) => session.status == AcpConnectionStatus.detached,
           ),
           isTrue,
         );
@@ -477,47 +333,32 @@ void main() {
       },
     );
 
-    test('background -> lock -> resume never reconnects while still locked, '
-        'and clears the pending auto-detach so it never reconnects later '
-        'either', () async {
-      final key = await startSession(hostId: 1);
+    test(
+      'background stays live until lock and foreground does not reconnect',
+      () async {
+        final key = await startSession(hostId: 1);
 
-      // Backgrounds and lets the grace period elapse so the session is
-      // auto-detached and queued for a foreground reconnect.
-      await lifecycle.handleBackground();
-      await Future<void>.delayed(const Duration(milliseconds: 60));
-      expect(
-        manager.state.byKeyValue(key.value)!.status,
-        AcpConnectionStatus.detached,
-      );
+        await lifecycle.handleBackground();
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+        expect(
+          manager.state.byKeyValue(key.value)!.status,
+          AcpConnectionStatus.ready,
+        );
 
-      // Auto-lock fires while still backgrounded (or just as the app
-      // resumes): auth becomes unusable and any pending auto-detach intent
-      // must be cleared/suppressed.
-      isAuthUsable = false;
-      await lifecycle.handleAuthLocked();
+        await lifecycle.handleAuthLocked();
+        expect(
+          manager.state.byKeyValue(key.value)!.status,
+          AcpConnectionStatus.detached,
+        );
 
-      // The app comes back to the foreground, but the user has not
-      // unlocked yet: reconnecting now would attach a live client to a
-      // session behind a lock screen.
-      await lifecycle.handleForeground();
-      await _pump();
-      expect(
-        manager.state.byKeyValue(key.value)!.status,
-        AcpConnectionStatus.detached,
-      );
-      expect(manager.state.byKeyValue(key.value)!.isLive, isFalse);
-
-      // Unlocking alone (without another real foreground transition) must
-      // not silently reconnect a session whose auto-detach was already
-      // cleared by the lock.
-      isAuthUsable = true;
-      await _pump();
-      expect(
-        manager.state.byKeyValue(key.value)!.status,
-        AcpConnectionStatus.detached,
-      );
-    });
+        await lifecycle.handleForeground();
+        await _pump();
+        expect(
+          manager.state.byKeyValue(key.value)!.status,
+          AcpConnectionStatus.detached,
+        );
+      },
+    );
   });
 
   group('SSH disconnect cleanup', () {
@@ -572,12 +413,12 @@ void main() {
   });
 
   group('disposal', () {
-    test('cancels the background timer and state subscription', () async {
+    test('dispose keeps healthy background sessions attached', () async {
       await startSession(hostId: 1);
       await lifecycle.handleBackground();
       await lifecycle.dispose();
 
-      // Waiting past the grace period must not detach anything once disposed.
+      // Ordinary backgrounding never schedules a detach, even after disposal.
       await Future<void>.delayed(const Duration(milliseconds: 60));
       expect(manager.state.sessions.single.status, AcpConnectionStatus.ready);
     });

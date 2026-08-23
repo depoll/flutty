@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import '../models/acp_content.dart';
 import '../models/acp_json.dart';
@@ -58,6 +59,10 @@ final class AcpUnknownServerRequest extends AcpServerRequest {
 final class AcpClient {
   /// Creates a client over an active JSON-RPC connection.
   AcpClient(this.connection) {
+    _serverRequests = StreamController<AcpServerRequest>.broadcast(
+      sync: true,
+      onListen: _schedulePendingServerRequestFlush,
+    );
     _notificationSubscription = connection.notifications.listen(
       _handleNotification,
     );
@@ -72,9 +77,13 @@ final class AcpClient {
   final _updates = StreamController<AcpSessionNotification>.broadcast(
     sync: true,
   );
-  final _serverRequests = StreamController<AcpServerRequest>.broadcast(
-    sync: true,
-  );
+  // Exactly one capability router answers provider-to-client requests. Keep a
+  // small, bridge-bounded pre-listener queue because pending replay can arrive
+  // as soon as the transport attaches, before that router has rebound.
+  late final StreamController<AcpServerRequest> _serverRequests;
+  final Queue<AcpServerRequest> _pendingServerRequests =
+      Queue<AcpServerRequest>();
+  var _pendingServerRequestFlushScheduled = false;
   final _otherNotifications =
       StreamController<AcpJsonRpcNotification>.broadcast(sync: true);
   late final StreamSubscription<AcpJsonRpcNotification>
@@ -399,6 +408,7 @@ final class AcpClient {
     await _notificationSubscription.cancel();
     await _serverRequestSubscription.cancel();
     await connection.close();
+    _pendingServerRequests.clear();
     await _updates.close();
     await _serverRequests.close();
     await _otherNotifications.close();
@@ -434,7 +444,7 @@ final class AcpClient {
     if (request.method == 'session/request_permission') {
       final params = AcpJson.object(request.params);
       if (params != null) {
-        _serverRequests.add(
+        _emitServerRequest(
           AcpPermissionServerRequest(
             request,
             AcpPermissionRequest.fromJson(params),
@@ -443,7 +453,34 @@ final class AcpClient {
         return;
       }
     }
-    _serverRequests.add(AcpUnknownServerRequest(request));
+    _emitServerRequest(AcpUnknownServerRequest(request));
+  }
+
+  void _emitServerRequest(AcpServerRequest request) {
+    if (!_serverRequests.hasListener ||
+        _pendingServerRequestFlushScheduled ||
+        _pendingServerRequests.isNotEmpty) {
+      _pendingServerRequests.addLast(request);
+      if (_serverRequests.hasListener) {
+        _schedulePendingServerRequestFlush();
+      }
+      return;
+    }
+    _serverRequests.add(request);
+  }
+
+  void _schedulePendingServerRequestFlush() {
+    if (_pendingServerRequestFlushScheduled || _closed) return;
+    _pendingServerRequestFlushScheduled = true;
+    scheduleMicrotask(_flushPendingServerRequests);
+  }
+
+  void _flushPendingServerRequests() {
+    _pendingServerRequestFlushScheduled = false;
+    if (_closed || !_serverRequests.hasListener) return;
+    while (_pendingServerRequests.isNotEmpty) {
+      _serverRequests.add(_pendingServerRequests.removeFirst());
+    }
   }
 
   void _requireCapability(String capability, bool supported) {

@@ -1205,8 +1205,10 @@ class _BridgeAttachment {
     required AcpBridgeSession session,
     required Future<AcpClientCapabilityService> Function()
     capabilityServiceFactory,
+    AcpInitializeResult? initialization,
   }) : _session = session,
-       _capabilityServiceFactory = capabilityServiceFactory;
+       _capabilityServiceFactory = capabilityServiceFactory,
+       _initialization = initialization;
 
   final AcpBridgeKey bridgeKey;
   final String providerId;
@@ -1292,6 +1294,11 @@ class _BridgeAttachment {
 
   Future<AcpInitializeResult> _doInitialize() async {
     final service = _capabilityService ??= await _capabilityServiceFactory();
+    final retainedInitialization = _initialization;
+    if (retainedInitialization != null) {
+      service.attach(client);
+      return retainedInitialization;
+    }
     final result = await service.initialize(client);
     _initialization = result;
     return result;
@@ -2384,6 +2391,8 @@ class _SessionController {
     // decisions across the detach instead of silently discarding them in
     // favor of a fresh, empty registry.
     final priorRegistry = attachment.capabilityService?.registry;
+    final priorInitialization =
+        attachment.initialization ?? _state.initialization;
 
     // Discard any stale subscriptions and lease left over from a previous
     // (possibly failed) attempt so retries start clean and balanced.
@@ -2422,6 +2431,7 @@ class _SessionController {
           autoApprovePermissions: _autoApprovePermissions,
           existingRegistry: priorRegistry,
         ),
+        initialization: priorInitialization,
       );
       _manager._attachments[bridgeKey.value] = target;
     }

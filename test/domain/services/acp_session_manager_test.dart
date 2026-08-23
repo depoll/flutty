@@ -36,6 +36,7 @@ class _FakeAcpServer implements AcpTransport {
     this.authMethods = const <Map<String, Object?>>[],
     this.failNewSession = false,
     this.rejectInitialize = false,
+    this.rejectResume = false,
     this.newSessionErrorCode = -32000,
     this.promptErrorMessage,
     this.replayTextOnLoad,
@@ -43,8 +44,7 @@ class _FakeAcpServer implements AcpTransport {
     this.replayUpdatesOnLoad = const <Map<String, Object?>>[],
     this.loadResponseGate,
     this.permissionIdOnLoad,
-    this.permissionIdOnInitialize,
-    this.permissionSessionIdOnInitialize,
+    this.permissionIdOnResume,
   });
 
   final bool supportsResume;
@@ -56,6 +56,9 @@ class _FakeAcpServer implements AcpTransport {
 
   /// When true, `initialize` rejects the client metadata.
   final bool rejectInitialize;
+
+  /// When true, `session/resume` rejects reconnect setup.
+  final bool rejectResume;
 
   /// JSON-RPC error code returned when session creation is rejected.
   final int newSessionErrorCode;
@@ -81,11 +84,8 @@ class _FakeAcpServer implements AcpTransport {
   /// JSON-RPC id before replying, simulating a replayed pending permission.
   final String? permissionIdOnLoad;
 
-  /// Stable request replayed immediately after initialize on a live attach.
-  final String? permissionIdOnInitialize;
-
-  /// Session id associated with [permissionIdOnInitialize].
-  final String? permissionSessionIdOnInitialize;
+  /// Stable permission request delivered during the first resumed setup call.
+  final String? permissionIdOnResume;
 
   final _incoming = StreamController<List<int>>(sync: true);
   final List<String> methods = <String>[];
@@ -142,14 +142,6 @@ class _FakeAcpServer implements AcpTransport {
           },
           if (authMethods.isNotEmpty) 'authMethods': authMethods,
         });
-        if (permissionIdOnInitialize != null &&
-            permissionSessionIdOnInitialize != null) {
-          _pushPermission(
-            permissionIdOnInitialize!,
-            permissionSessionIdOnInitialize!,
-            'replayed-tool',
-          );
-        }
       case 'session/new':
         final params = (message['params']! as Map).cast<String, Object?>();
         newSessionCwds.add(params['cwd']! as String);
@@ -162,6 +154,15 @@ class _FakeAcpServer implements AcpTransport {
         final sessionId = 'fork-${++_sessionCounter}';
         _reply(id, {'sessionId': sessionId});
       case 'session/resume':
+        final params = (message['params']! as Map).cast<String, Object?>();
+        final sessionId = params['sessionId'] as String? ?? '';
+        if (permissionIdOnResume != null) {
+          _pushPermission(permissionIdOnResume!, sessionId, 'replayed-tool');
+        }
+        if (rejectResume) {
+          _replyError(id, -32603, 'Resume failed');
+          break;
+        }
         _reply(id, {
           'configOptions': [
             {
@@ -1043,19 +1044,16 @@ void main() {
     });
 
     test(
-      'live attach mirrors a permission replayed during initialize',
+      'live attach mirrors a permission replayed after capability rebind',
       () async {
         var connectionCount = 0;
-        String? replaySessionId;
+
         final replayConnector = _FakeConnector(
           serverFactory: (_, _) {
             connectionCount++;
             return _FakeAcpServer(
-              permissionIdOnInitialize: connectionCount > 1
+              permissionIdOnResume: connectionCount > 1
                   ? 'replayed-on-attach'
-                  : null,
-              permissionSessionIdOnInitialize: connectionCount > 1
-                  ? replaySessionId
                   : null,
             );
           },
@@ -1067,8 +1065,6 @@ void main() {
           cwd: '/repo',
         );
         final key = (started as AcpSessionLaunchStarted).key;
-        replaySessionId = key.acpSessionId;
-
         await replayManager.detachSession(key);
         final result = await replayManager.reconnectSession(
           hostId: key.hostId,
@@ -1508,7 +1504,7 @@ void main() {
         );
         expect(result, isA<AcpSessionLaunchStarted>());
         final attachedServer = connector.servers[key.bridgeId]!;
-        expect(attachedServer.methods, contains('initialize'));
+        expect(attachedServer.methods, isNot(contains('initialize')));
         expect(attachedServer.methods, isNot(contains('session/resume')));
         expect(attachedServer.methods, isNot(contains('session/load')));
         expect(
@@ -1801,6 +1797,10 @@ void main() {
 
         expect(result, isA<AcpSessionLaunchStarted>());
         expect(connector.connectionAcknowledgements[key.bridgeId], [0, 23]);
+        expect(
+          connector.servers[key.bridgeId]!.methods,
+          isNot(contains('initialize')),
+        );
       },
     );
 
@@ -1888,10 +1888,10 @@ void main() {
     test(
       'repeated reconnect failures return typed errors and then recover',
       () async {
-        var rejectReconnectInitialize = false;
+        var rejectReconnectResume = false;
         final flakyConnector = _FakeConnector(
           serverFactory: (_, _) =>
-              _FakeAcpServer(rejectInitialize: rejectReconnectInitialize),
+              _FakeAcpServer(rejectResume: rejectReconnectResume),
         );
         final flakyManager = buildManagerWith(flakyConnector);
         final started = await flakyManager.startNewSession(
@@ -1900,7 +1900,7 @@ void main() {
           cwd: '/repo',
         );
         final key = (started as AcpSessionLaunchStarted).key;
-        rejectReconnectInitialize = true;
+        rejectReconnectResume = true;
 
         Future<AcpSessionLaunchResult> reconnect() async {
           await flakyManager.detachSession(key);
@@ -1929,7 +1929,7 @@ void main() {
 
         // Leases stayed balanced across repeated failures: once the agent
         // recovers, a fresh reconnect succeeds and the session is live again.
-        rejectReconnectInitialize = false;
+        rejectReconnectResume = false;
         final third = await reconnect();
         expect(third, isA<AcpSessionLaunchStarted>());
         final state = flakyManager.state.byKeyValue(key.value)!;

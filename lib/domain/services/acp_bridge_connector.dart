@@ -240,6 +240,7 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
     required String providerId,
     int lastAcknowledgedSequence = 0,
   }) {
+    // A replacement local attachment continues the same logical replay cursor.
     final transport = _bridgeService.connect(
       sessionProvider: () => _sessionResolver(hostId),
       bridgeId: bridgeId,

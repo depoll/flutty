@@ -134,6 +134,73 @@ func TestAcpResolvedClientRequestRemainsUnsafeForDirectReplay(t *testing.T) {
 	}
 }
 
+func TestAcpCachedInitializeResponseAvoidsDuplicateProviderRequest(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	providerInput := &testWriteCloser{}
+	bridge.stdin = providerInput
+	firstInitialize := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	if _, ok := bridge.trackInitializeRequest(firstInitialize); !ok {
+		t.Fatal("first initialize request was not tracked")
+	}
+	bridge.publish(
+		"output",
+		json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}`),
+		"",
+		nil,
+	)
+
+	server, peer := net.Pipe()
+	attachDone := make(chan struct{})
+	go func() {
+		defer close(attachDone)
+		bridge.handleAttach(
+			server,
+			bufio.NewReader(server),
+			acpWireMessage{
+				Version: acpBridgeProtocolVersion,
+				Type:    "hello",
+				LastAck: 1,
+			},
+		)
+	}()
+	defer func() {
+		_ = peer.Close()
+		select {
+		case <-attachDone:
+		case <-time.After(time.Second):
+			t.Error("cached initialize attach did not stop")
+		}
+	}()
+
+	reader := bufio.NewReader(peer)
+	if hello := readTestAcpFrame(t, reader, peer); hello.Type != "hello" {
+		t.Fatalf("first attach frame = %#v, want hello", hello)
+	}
+	secondInitialize := json.RawMessage(`{"jsonrpc":"2.0","id":"reattach","method":"initialize","params":{}}`)
+	if err := writeAcpWireFrame(peer, acpWireMessage{
+		Version:  acpBridgeProtocolVersion,
+		Type:     "input",
+		BridgeID: bridge.id,
+		Data:     secondInitialize,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := readTestAcpFrame(t, reader, peer)
+	var envelope struct {
+		ID     string `json:"id"`
+		Result struct {
+			ProtocolVersion int `json:"protocolVersion"`
+		} `json:"result"`
+	}
+	if response.Type != "output" || json.Unmarshal(response.Data, &envelope) != nil ||
+		envelope.ID != "reattach" || envelope.Result.ProtocolVersion != 1 {
+		t.Fatalf("cached initialize response = %#v / %#v", response, envelope)
+	}
+	if providerInput.Len() != 0 {
+		t.Fatalf("duplicate initialize reached provider: %q", providerInput.String())
+	}
+}
+
 func TestAcpAttachQueuesHelloBeforeConcurrentLiveEvent(t *testing.T) {
 	bridge := newOrderingTestBridge()
 	peer, primed, release, attachDone := startPrimedTestAttach(t, bridge)
@@ -718,6 +785,12 @@ func TestAcpPendingProviderRequestsAreBoundedByBytes(t *testing.T) {
 		t.Fatal("byte limit did not trigger before the event limit")
 	}
 }
+
+type testWriteCloser struct {
+	bytes.Buffer
+}
+
+func (*testWriteCloser) Close() error { return nil }
 
 func newOrderingTestBridge() *acpBridge {
 	now := time.Now()

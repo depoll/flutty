@@ -183,6 +183,36 @@ void main() {
   });
 
   test(
+    'buffers a provider request until the capability router attaches',
+    () async {
+      final transport = _ServerTransport();
+      final client = AcpClient(AcpJsonRpcConnection(transport: transport));
+
+      transport.send({
+        'jsonrpc': '2.0',
+        'id': 'early-permission',
+        'method': 'session/request_permission',
+        'params': {
+          'sessionId': 'session-1',
+          'toolCall': {'toolCallId': 'tool-1', 'title': 'Write file'},
+          'options': [
+            {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+          ],
+        },
+      });
+      await Future<void>.delayed(Duration.zero);
+
+      final request = await client.serverRequests.first;
+      expect(request, isA<AcpPermissionServerRequest>());
+      expect(
+        (request as AcpPermissionServerRequest).raw.id,
+        'early-permission',
+      );
+      await client.close();
+    },
+  );
+
+  test(
     'rejects session operations absent from initialized capabilities',
     () async {
       final transport = _ServerTransport();
