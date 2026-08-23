@@ -152,8 +152,8 @@ type acpBridge struct {
 	pendingRequests      map[string]struct{}
 	inFlightTurns        map[string]struct{}
 	sessionSetupRequests map[string]struct{}
-	initializeRequestIDs  map[string]struct{}
-	initializeResult      json.RawMessage
+	initializeRequestIDs map[string]struct{}
+	initializeResult     json.RawMessage
 	exitCode             *int
 	providerDone         chan struct{}
 	providerDoneOnce     sync.Once
