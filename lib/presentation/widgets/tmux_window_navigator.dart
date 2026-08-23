@@ -11,6 +11,7 @@ import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/host_cli_launch_preferences.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/acp_provider_service.dart';
@@ -211,7 +212,6 @@ Future<TmuxNavigatorAction?> showTmuxNewWindowPicker({
   isScrollControlled: true,
   requestFocus: terminalOverlayRouteRequestFocus(context),
   builder: (context) => TmuxToolPickerSheet(
-    isProUser: isProUser,
     installedToolsFuture: installedToolsFuture,
     preferredTool: preferredTool,
     nativeAcpTools: nativeAcpProviderIds.keys.toSet(),
@@ -306,6 +306,9 @@ AgentWindowModePreference normalizeAgentWindowModePreference(Object value) =>
     : AgentWindowModePreference.askEveryTime;
 
 /// Resolves the app-wide default or presents a one-off mode chooser.
+///
+/// Terminal and native modes are available on every tier. [isProUser] only
+/// tailors the native-chat description to mention parallel-session access.
 Future<AgentWindowMode?> resolveAgentWindowMode({
   required BuildContext context,
   required AgentLaunchTool tool,
@@ -317,10 +320,8 @@ Future<AgentWindowMode?> resolveAgentWindowMode({
     switch (preference) {
       case AgentWindowModePreference.preferNative:
         return Future.value(AgentWindowMode.nativeAcp);
-      case AgentWindowModePreference.preferTerminal when isProUser:
-        return Future.value(AgentWindowMode.terminal);
       case AgentWindowModePreference.preferTerminal:
-        return Future.value(AgentWindowMode.nativeAcp);
+        return Future.value(AgentWindowMode.terminal);
       case AgentWindowModePreference.askEveryTime:
         break;
     }
@@ -424,11 +425,10 @@ class _AgentWindowModePickerSheetState
                   leading: const Icon(Icons.terminal_outlined),
                   title: const Text('Terminal'),
                   subtitle: const Text('Run the full CLI in MonkeyMux'),
-                  trailing: widget.isProUser ? null : const PremiumBadge(),
-                  enabled: widget.isProUser && !_saving,
-                  onTap: widget.isProUser && !_saving
-                      ? () => unawaited(_choose(AgentWindowMode.terminal))
-                      : null,
+                  enabled: !_saving,
+                  onTap: _saving
+                      ? null
+                      : () => unawaited(_choose(AgentWindowMode.terminal)),
                 ),
                 ListTile(
                   minTileHeight: 52,
@@ -437,7 +437,11 @@ class _AgentWindowModePickerSheetState
                     color: theme.colorScheme.primary,
                   ),
                   title: const Text('Native chat'),
-                  subtitle: const Text('Chat, tools, and permissions'),
+                  subtitle: Text(
+                    widget.isProUser
+                        ? 'Chat, tools, permissions, and parallel sessions'
+                        : 'Chat, tools, and permissions · one connected chat on Free',
+                  ),
                   enabled: !_saving,
                   onTap: _saving
                       ? null
@@ -468,7 +472,6 @@ class _AgentWindowModePickerSheetState
 Future<TmuxNewWindowAction?> showTmuxNewWindowContextMenu({
   required BuildContext context,
   required BuildContext anchorContext,
-  required bool isProUser,
   required bool startClisInYoloMode,
   Future<Set<AgentLaunchTool>>? installedToolsFuture,
   AgentLaunchTool? preferredTool,
@@ -519,7 +522,6 @@ Future<TmuxNewWindowAction?> showTmuxNewWindowContextMenu({
       else
         for (final tool in tools)
           PopupMenuItem<TmuxNewWindowAction>(
-            enabled: isProUser,
             value: TmuxNewWindowAction(
               command: buildAgentToolCommand(
                 tool,
@@ -531,7 +533,6 @@ Future<TmuxNewWindowAction?> showTmuxNewWindowContextMenu({
             child: _TmuxNewWindowMenuItem(
               icon: TmuxToolPickerSheet._iconForTool(tool, Theme.of(context)),
               label: tool.label,
-              trailing: !isProUser ? const PremiumBadge() : null,
             ),
           ),
       const PopupMenuDivider(),
@@ -681,6 +682,25 @@ class TmuxResumeSessionAction extends TmuxNavigatorAction {
   final String? workingDirectory;
 }
 
+/// Open a contextual MonkeySSH Pro paywall from the mux navigator.
+class TmuxUpgradeAction extends TmuxNavigatorAction {
+  /// Creates an upgrade action for [feature].
+  const TmuxUpgradeAction({
+    required this.feature,
+    required this.blockedAction,
+    required this.blockedOutcome,
+  });
+
+  /// Premium feature that owns the blocked workflow.
+  final MonetizationFeature feature;
+
+  /// Specific action the user attempted.
+  final String blockedAction;
+
+  /// Concrete benefit unlocked by Pro.
+  final String blockedOutcome;
+}
+
 /// Close a tmux window.
 class TmuxCloseWindowAction extends TmuxNavigatorAction {
   /// Creates a new [TmuxCloseWindowAction].
@@ -701,6 +721,7 @@ String diagnosticTmuxNavigatorActionKind(TmuxNavigatorAction action) =>
       TmuxCloseAcpSessionAction() => 'close_acp_session',
       TmuxResumeAcpSessionAction() => 'resume_acp_session',
       TmuxResumeSessionAction() => 'resume_session',
+      TmuxUpgradeAction() => 'upgrade',
       TmuxCloseWindowAction() => 'close_window',
     };
 
@@ -1415,11 +1436,11 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
                     dense: true,
                     onTap: () => unawaited(_showNewWindowPicker()),
                   ),
-                  // Recent AI Sessions
-                  if (widget.isProUser) ...[
-                    const Divider(height: 1),
-                    _buildRecentSessionsSection(theme),
-                  ],
+                  const Divider(height: 1),
+                  if (widget.isProUser)
+                    _buildRecentSessionsSection(theme)
+                  else
+                    _buildRecentSessionsUpgrade(theme),
                   const SizedBox(height: 8),
                 ],
               ),
@@ -1809,6 +1830,44 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     );
   }
 
+  Widget _buildRecentSessionsUpgrade(ThemeData theme) => ListTile(
+    key: const ValueKey('recent-terminal-sessions-upgrade'),
+    dense: true,
+    visualDensity: _tmuxNavigatorDenseVisualDensity,
+    minTileHeight: 52,
+    contentPadding: _tmuxNavigatorTilePadding,
+    horizontalTitleGap: 12,
+    minLeadingWidth: 18,
+    leading: Icon(
+      Icons.smart_toy_outlined,
+      size: 18,
+      color: theme.colorScheme.onSurfaceVariant,
+    ),
+    title: const Row(
+      children: [
+        Expanded(
+          child: Text(
+            'Recent terminal sessions',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        SizedBox(width: 8),
+        PremiumBadge(),
+      ],
+    ),
+    subtitle: const Text('Discover and resume agent work across windows'),
+    trailing: const Icon(Icons.chevron_right, size: 18),
+    onTap: () => Navigator.pop(
+      context,
+      const TmuxUpgradeAction(
+        feature: MonetizationFeature.agentLaunchPresets,
+        blockedAction: 'Discover and resume terminal agent sessions',
+        blockedOutcome:
+            'Unlock Pro to find recent agent sessions and jump back into them.',
+      ),
+    ),
+  );
+
   Widget _buildRecentSessionsSection(ThemeData theme) => Column(
     mainAxisSize: MainAxisSize.min,
     children: [
@@ -1995,7 +2054,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
 class TmuxToolPickerSheet extends StatelessWidget {
   /// Creates a new [TmuxToolPickerSheet].
   const TmuxToolPickerSheet({
-    required this.isProUser,
     required this.onToolSelected,
     required this.onEmptyWindow,
     this.onToolLongPressed,
@@ -2004,9 +2062,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
     this.nativeAcpTools = const <AgentLaunchTool>{},
     super.key,
   });
-
-  /// Whether the user has Pro access.
-  final bool isProUser;
 
   /// Future that resolves to the set of agent CLIs detected on the remote
   /// host, or `null` if the caller could not initiate detection. While the
@@ -2157,8 +2212,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
                                     color: theme.colorScheme.primary,
                                     icon: const Icon(Icons.more_horiz_rounded),
                                   )
-                                : (!isProUser ? const PremiumBadge() : null),
-                            enabled: isProUser || nativeAcpTools.contains(tool),
+                                : null,
                             onTap: () => onToolSelected(tool),
                             onLongPress:
                                 nativeAcpTools.contains(tool) &&
@@ -2199,15 +2253,10 @@ class TmuxToolPickerSheet extends StatelessWidget {
 }
 
 class _TmuxNewWindowMenuItem extends StatelessWidget {
-  const _TmuxNewWindowMenuItem({
-    required this.icon,
-    required this.label,
-    this.trailing,
-  });
+  const _TmuxNewWindowMenuItem({required this.icon, required this.label});
 
   final Widget icon;
   final String label;
-  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) => Row(
@@ -2216,7 +2265,6 @@ class _TmuxNewWindowMenuItem extends StatelessWidget {
       SizedBox(width: 24, child: Center(child: icon)),
       const SizedBox(width: 12),
       Flexible(child: Text(label)),
-      if (trailing != null) ...[const SizedBox(width: 12), trailing!],
     ],
   );
 }

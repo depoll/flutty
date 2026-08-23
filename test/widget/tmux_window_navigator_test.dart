@@ -15,6 +15,7 @@ import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
+import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/acp_provider_service.dart';
@@ -1022,7 +1023,7 @@ void main() {
       expect(result, isA<TmuxNewAcpSessionAction>());
     });
 
-    testWidgets('app preference opens terminal without prompting', (
+    testWidgets('free app preference opens terminal without prompting', (
       tester,
     ) async {
       TmuxNavigatorAction? result;
@@ -1034,7 +1035,7 @@ void main() {
                 onPressed: () async {
                   result = await showTmuxNewWindowPicker(
                     context: context,
-                    isProUser: true,
+                    isProUser: false,
                     startClisInYoloMode: false,
                     agentWindowModePreference:
                         AgentWindowModePreference.preferTerminal,
@@ -1170,7 +1171,7 @@ void main() {
       );
     });
 
-    testWidgets('ACP-capable tool offers a native mode to free users', (
+    testWidgets('free user can choose terminal for an ACP-capable tool', (
       tester,
     ) async {
       TmuxNavigatorAction? result;
@@ -1208,15 +1209,15 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Terminal'), findsOneWidget);
       expect(find.text('Native chat'), findsOneWidget);
-      expect(find.byType(PremiumBadge), findsOneWidget);
+      expect(find.byType(PremiumBadge), findsNothing);
 
-      await tester.tap(find.text('Native chat'));
+      await tester.tap(find.text('Terminal'));
       await tester.pumpAndSettle();
 
-      expect(result, isA<TmuxNewAcpSessionAction>());
+      expect(result, isA<TmuxNewWindowAction>());
       expect(
-        (result! as TmuxNewAcpSessionAction).providerId,
-        AcpBuiltinProviderIds.copilotCli,
+        (result! as TmuxNewWindowAction).agentTool,
+        AgentLaunchTool.copilotCli,
       );
     });
 
@@ -1322,7 +1323,7 @@ void main() {
       expect(action.agentTool, AgentLaunchTool.openCode);
     });
 
-    testWidgets('tool without ACP support opens a terminal directly', (
+    testWidgets('free tool without ACP support opens a terminal directly', (
       tester,
     ) async {
       TmuxNavigatorAction? result;
@@ -1334,7 +1335,7 @@ void main() {
                 onPressed: () async {
                   result = await showTmuxNewWindowPicker(
                     context: context,
-                    isProUser: true,
+                    isProUser: false,
                     startClisInYoloMode: false,
                     installedToolsFuture: Future.value(const <AgentLaunchTool>{
                       AgentLaunchTool.claudeCode,
@@ -1415,6 +1416,66 @@ void main() {
 
       expect(find.text('Native chat'), findsNothing);
       expect(selected, isA<TmuxNewWindowAction>());
+    });
+
+    testWidgets('free navigator offers recent terminal sessions with Pro', (
+      tester,
+    ) async {
+      final tmuxService = _MockTmuxService();
+      final presetService = _MockAgentLaunchPresetService();
+      final discoveryService = _MockAgentSessionDiscoveryService();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 1,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      TmuxNavigatorAction? selected;
+      when(
+        () => presetService.getPresetForHost(session.hostId),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.watchWindowChanges(session, 'main'),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(
+        () => tmuxService.listWindows(session, 'main'),
+      ).thenAnswer((_) async => windows);
+
+      await _pumpNavigatorHost(
+        tester,
+        tmuxService: tmuxService,
+        presetService: presetService,
+        discoveryService: discoveryService,
+        session: session,
+        tmuxSessionName: 'main',
+        isProUser: false,
+        onActionSelected: (action) => selected = action,
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.text('Recent terminal sessions'), findsOneWidget);
+      expect(
+        find.text('Discover and resume agent work across windows'),
+        findsOneWidget,
+      );
+
+      final upgrade = find.byKey(
+        const ValueKey('recent-terminal-sessions-upgrade'),
+      );
+      await tester.ensureVisible(upgrade);
+      await tester.pumpAndSettle();
+      await tester.tap(upgrade);
+      await tester.pumpAndSettle();
+      expect(selected, isA<TmuxUpgradeAction>());
+      expect(
+        (selected! as TmuxUpgradeAction).feature,
+        MonetizationFeature.agentLaunchPresets,
+      );
     });
 
     testWidgets('MonkeyMux omits the custom native provider action', (
@@ -1870,6 +1931,7 @@ Future<void> _pumpNavigatorHost(
   required String tmuxSessionName,
   RemoteMuxBackend remoteMuxBackend = RemoteMuxBackend.tmux,
   bool startClisInYoloMode = false,
+  bool isProUser = true,
   bool? confirmWindowClose,
   ValueChanged<TmuxNavigatorAction?>? onActionSelected,
   FakeAcpSessionManager? acpManager,
@@ -1910,7 +1972,7 @@ Future<void> _pumpNavigatorHost(
                     remoteMultiplexerService: TmuxRemoteMultiplexerService(
                       tmuxService,
                     ),
-                    isProUser: true,
+                    isProUser: isProUser,
                     startClisInYoloMode: startClisInYoloMode,
                   ).then((action) => onActionSelected?.call(action)),
                 );

@@ -1084,7 +1084,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ? await showTmuxNewWindowContextMenu(
             context: context,
             anchorContext: anchorContext,
-            isProUser: widget.isProUser,
             startClisInYoloMode: widget.startClisInYoloMode,
             installedToolsFuture: installedToolsFuture,
             preferredTool: _preferredLaunchTool,

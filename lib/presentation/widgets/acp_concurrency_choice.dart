@@ -20,7 +20,7 @@ enum AcpConcurrencyChoice {
   /// Stop the blocking live session(s) and continue for free.
   stopAndContinue,
 
-  /// Unlock Pro to keep multiple sessions live, then retry without replacing.
+  /// Unlock Pro for parallel native chats, then retry without replacing.
   upgrade,
 }
 
@@ -82,7 +82,7 @@ class _ConcurrencyChoiceSheet extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            'one live session on free',
+            'one native chat on free',
             style: FluttyTheme.displayMono(
               fontSize: 18,
               color: colorScheme.onSurface,
@@ -91,11 +91,11 @@ class _ConcurrencyChoiceSheet extends StatelessWidget {
           const SizedBox(height: FluttyTheme.spacingSm),
           Text(
             allowStopAndContinue
-                ? 'You already have $blockingCount live agent $label. Free '
-                      'keeps one running at a time — stop it to continue, or '
-                      'unlock Pro to keep them all live and switch instantly.'
-                : 'Free keeps one live agent session at a time. Forking must '
-                      'keep the parent alive, so unlock Pro to create a child.',
+                ? 'You already have $blockingCount connected native $label. '
+                      'Free includes one at a time — stop it to continue, or '
+                      'unlock Pro to keep several connected and switch instantly.'
+                : 'Free includes one connected native chat at a time. Forking '
+                      'keeps the parent connected, so creating a child requires Pro.',
             style: textTheme.bodyMedium?.copyWith(
               color: colorScheme.onSurfaceVariant,
             ),
@@ -144,7 +144,7 @@ class _ConcurrencyChoiceSheet extends StatelessWidget {
             onPressed: () =>
                 Navigator.of(context).pop(AcpConcurrencyChoice.upgrade),
             icon: const Icon(Icons.workspace_premium_outlined),
-            label: const Text('Unlock Pro to keep both'),
+            label: const Text('Unlock parallel native chats'),
           ),
           const SizedBox(height: FluttyTheme.spacingSm),
           TextButton(

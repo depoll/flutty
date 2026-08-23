@@ -906,8 +906,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Stop and continue free'), findsNothing);
-    expect(find.text('Unlock Pro to keep both'), findsOneWidget);
-    expect(find.textContaining('keep the parent alive'), findsOneWidget);
+    expect(find.text('Unlock parallel native chats'), findsOneWidget);
+    expect(find.textContaining('keeps the parent connected'), findsOneWidget);
     expect(manager.stopped, isEmpty);
   });
 

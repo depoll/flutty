@@ -85,7 +85,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: completer.future,
             onToolSelected: (_) {},
             onEmptyWindow: () {},
@@ -109,7 +108,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: Future.value({
               AgentLaunchTool.claudeCode,
               AgentLaunchTool.codex,
@@ -136,7 +134,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: Future.value(const <AgentLaunchTool>{}),
             onToolSelected: (_) {},
             onEmptyWindow: () {},
@@ -157,11 +154,7 @@ void main() {
       (tester) async {
         await tester.pumpWidget(
           _wrap(
-            TmuxToolPickerSheet(
-              isProUser: true,
-              onToolSelected: (_) {},
-              onEmptyWindow: () {},
-            ),
+            TmuxToolPickerSheet(onToolSelected: (_) {}, onEmptyWindow: () {}),
           ),
         );
         await tester.pump();
@@ -177,7 +170,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: completer.future,
             onToolSelected: (_) {},
             onEmptyWindow: () {},
@@ -201,7 +193,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: Future.value({AgentLaunchTool.claudeCode}),
             onToolSelected: (t) => chosen = t,
             onEmptyWindow: () {},
@@ -220,7 +211,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: Future.value({
               AgentLaunchTool.claudeCode,
               AgentLaunchTool.codex,

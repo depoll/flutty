@@ -11603,6 +11603,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) async {
     try {
       switch (action) {
+        case TmuxUpgradeAction(
+          :final feature,
+          :final blockedAction,
+          :final blockedOutcome,
+        ):
+          await context.push<void>(
+            Uri(
+              path: Routes.upgrade,
+              queryParameters: <String, String>{
+                'feature': feature.name,
+                'action': blockedAction,
+                'outcome': blockedOutcome,
+              },
+            ).toString(),
+          );
         case TmuxSwitchWindowAction(:final windowIndex):
           await _switchTmuxWindow(session, windowIndex);
           if (!mounted) return;

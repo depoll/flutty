@@ -44,7 +44,7 @@ void main() {
 
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
-    expect(find.text('one live session on free'), findsOneWidget);
+    expect(find.text('one native chat on free'), findsOneWidget);
     expect(find.text('Busy session'), findsOneWidget);
 
     await tester.tap(find.text(buttonText));
@@ -89,9 +89,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Stop and continue free'), findsOneWidget);
-    expect(find.text('Unlock Pro to keep both'), findsOneWidget);
+    expect(find.text('Unlock parallel native chats'), findsOneWidget);
 
-    await tester.tap(find.text('Unlock Pro to keep both'));
+    await tester.tap(find.text('Unlock parallel native chats'));
     await tester.pumpAndSettle();
     expect(result, AcpConcurrencyChoice.upgrade);
   });

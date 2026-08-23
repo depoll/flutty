@@ -125,7 +125,7 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
     MonetizationFeature.migrationImportExport => 'Migration import/export',
     MonetizationFeature.autoConnectAutomation => 'Auto-connect automation',
     MonetizationFeature.agentLaunchPresets => 'Agent launch presets',
-    MonetizationFeature.concurrentAcpSessions => 'Concurrent agent sessions',
+    MonetizationFeature.concurrentAcpSessions => 'Parallel native chats',
     MonetizationFeature.hostSpecificThemes => 'Host-specific themes',
   };
 
@@ -140,7 +140,7 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
     MonetizationFeature.agentLaunchPresets =>
       'Save repeatable startup flows for tools like Codex, Claude Code, Copilot CLI, or OpenCode.',
     MonetizationFeature.concurrentAcpSessions =>
-      'Keep multiple coding-agent sessions live across hosts and providers.',
+      'Keep multiple native agent chats connected across hosts and providers.',
     MonetizationFeature.hostSpecificThemes =>
       'Save terminal theme overrides for individual hosts while keeping app-wide defaults unchanged.',
   };
@@ -155,7 +155,7 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
     MonetizationFeature.agentLaunchPresets =>
       'Save coding-agent launch presets',
     MonetizationFeature.concurrentAcpSessions =>
-      'Keep another coding-agent session live',
+      'Connect another native agent chat',
     MonetizationFeature.hostSpecificThemes => 'Save a host-specific theme',
   };
 
@@ -170,7 +170,7 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
     MonetizationFeature.agentLaunchPresets =>
       'Unlock Pro to repeat your preferred coding-agent startup flow on each host.',
     MonetizationFeature.concurrentAcpSessions =>
-      'Unlock Pro to keep multiple coding-agent sessions running and switch between them instantly.',
+      'Unlock Pro to keep multiple native chats connected, switch instantly, and fork active sessions.',
     MonetizationFeature.hostSpecificThemes =>
       'Unlock Pro to keep this host on its own terminal theme while preserving your app defaults.',
   };
