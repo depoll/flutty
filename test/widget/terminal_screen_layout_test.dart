@@ -444,6 +444,87 @@ void main() {
       );
     });
 
+    test('preserves MonkeyMux chrome only for bounded attach churn', () {
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.monkeyMux,
+          serverReplacementPending: true,
+          nativeAgentActive: false,
+          attachEstablished: false,
+          consecutiveFalseProbes: 20,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.monkeyMux,
+          serverReplacementPending: false,
+          nativeAgentActive: true,
+          attachEstablished: true,
+          consecutiveFalseProbes: 3,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.monkeyMux,
+          serverReplacementPending: false,
+          nativeAgentActive: true,
+          attachEstablished: true,
+          consecutiveFalseProbes: 4,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.tmux,
+          serverReplacementPending: true,
+          nativeAgentActive: true,
+          attachEstablished: true,
+          consecutiveFalseProbes: 1,
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'terminal theme view-ready retries are bounded and skip native UI',
+      () {
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: false,
+            routeIsCurrent: true,
+            attempt: 2,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: false,
+            routeIsCurrent: true,
+            attempt: 3,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: true,
+            routeIsCurrent: true,
+            attempt: 0,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: false,
+            routeIsCurrent: false,
+            attempt: 0,
+          ),
+          isFalse,
+        );
+      },
+    );
+
     test('preserves tmux state after tmux is confirmed active', () {
       expect(
         shouldPreserveTerminalTmuxStateAfterDetectionFailure(

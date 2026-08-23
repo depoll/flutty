@@ -665,8 +665,66 @@ void main() {
         isTrue,
       );
 
+      await service.resetServerRuntime(898, 'work');
+      expect(
+        service.supportsBracketedPasteControlInput(session, 'work'),
+        isFalse,
+      );
+      verifyNever(() => installer.clearCache(898));
+
       await stdoutController.close();
       await service.clearCache(898);
+      verify(() => installer.clearCache(898)).called(1);
+    });
+
+    test('recycles a watcher without closing existing consumers', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 897);
+      final oldOutput = StreamController<Uint8List>();
+      final newOutput = StreamController<Uint8List>();
+      final oldControl = _buildRespondingControlSession(
+        oldOutput,
+        window: {..._fakeWindowJson, 'name': 'Old helper'},
+      );
+      final newControl = _buildRespondingControlSession(
+        newOutput,
+        window: {..._fakeWindowJson, 'name': 'Replacement helper'},
+      );
+      var opens = 0;
+
+      when(
+        () => installer.ensureInstalled(session),
+      ).thenAnswer((_) async => _fakeInstallation);
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => opens++ == 0 ? oldControl : newControl);
+
+      final service = MonkeyMuxService(
+        installer: installer,
+        agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+      );
+      var streamClosed = false;
+      final subscription = service
+          .watchWindowChanges(session, 'work')
+          .listen((_) {}, onDone: () => streamClosed = true);
+
+      expect(
+        (await service.listWindows(session, 'work')).single.name,
+        'Old helper',
+      );
+      await service.resetServerRuntime(897, 'work');
+      expect(streamClosed, isFalse);
+      expect(
+        (await service.refreshWindows(session, 'work')).single.name,
+        'Replacement helper',
+      );
+      expect(opens, 2);
+
+      await subscription.cancel();
+      await oldOutput.close();
+      await newOutput.close();
+      await service.clearCache(897);
     });
 
     test('preserves an exact bracketed paste in one control request', () async {

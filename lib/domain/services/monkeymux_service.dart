@@ -274,6 +274,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _agentMetadataPeriodicSessions =
       <_MonkeyMuxWatchKey, ({SshSession session, String sessionName})>{};
   static final _windowSnapshotGenerations = <_MonkeyMuxWatchKey, int>{};
+  static final _runtimeGenerations = <_MonkeyMuxWatchKey, int>{};
   static final _appReviewDemoMuxStates =
       <_MonkeyMuxWatchKey, _AppReviewDemoMonkeyMuxState>{};
   static const _agentSessionMetadataFreshTtl = Duration(seconds: 5);
@@ -310,6 +311,39 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
   }
 
+  /// Reconnects one workspace's stable watcher stream after the public
+  /// MonkeyMux socket moves to a replacement helper. Other session names and
+  /// the uploaded-helper cache remain untouched.
+  Future<void> resetServerRuntime(int connectionId, String sessionName) async {
+    final key = _MonkeyMuxWatchKey(connectionId, sessionName);
+    DiagnosticsLogService.instance.info(
+      'monkeymux.cache',
+      'server_runtime_reset',
+      fields: {'connectionId': connectionId},
+    );
+    _runtimeGenerations[key] = (_runtimeGenerations[key] ?? 0) + 1;
+
+    void clearKeyState() {
+      _windowSnapshotCache.remove(key);
+      _serverStatusCache.remove(key);
+      _windowSnapshotGenerations.remove(key);
+      _agentMetadataRefreshes.remove(key);
+      _cancelAgentMetadataPeriodicRefresh(key);
+      _agentMetadataRequestPanePids.remove(key);
+      _agentMetadataPendingWindows.remove(key);
+      _agentMetadataPendingForced.remove(key);
+      _windowListRequests.remove(key)?.ignore();
+      _agentMetadataRequests.remove(key)?.ignore();
+    }
+
+    final observer = _observers[key];
+    if (observer == null || observer.isDisposed) {
+      clearKeyState();
+      return;
+    }
+    await observer.recycleForServerReplacement(clearKeyState);
+  }
+
   /// Clears MonkeyMux caches and watchers for a connection.
   Future<void> clearCache(int connectionId) async {
     DiagnosticsLogService.instance.info(
@@ -323,6 +357,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         .toList(growable: false);
     for (final key in demoKeys) {
       _appReviewDemoMuxStates.remove(key)?.dispose();
+    }
+    for (final key
+        in _runtimeGenerations.keys
+            .where((key) => key.connectionId == connectionId)
+            .toList(growable: false)) {
+      _runtimeGenerations[key] = (_runtimeGenerations[key] ?? 0) + 1;
     }
     _windowSnapshotCache.removeWhere(
       (key, _) => key.connectionId == connectionId,
@@ -370,9 +410,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         .toList(growable: false);
     for (final key in observerKeys) {
       final observer = _observers.remove(key);
-      if (observer != null) {
-        await observer.dispose();
-      }
+      if (observer != null) await observer.dispose();
     }
   }
 
@@ -454,9 +492,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     _MonkeyMuxWatchKey key,
   ) async {
+    final runtimeGeneration = _runtimeGenerations.putIfAbsent(key, () => 0);
     final response = await _runControlCommand(session, sessionName, {
       'type': 'list_windows',
     });
+    if ((_runtimeGenerations[key] ?? 0) != runtimeGeneration) {
+      return response.windows;
+    }
     _cacheWindows(key, response.windows);
     _scheduleAgentMetadataRefresh(session, sessionName, key, response.windows);
     return _windowSnapshotCache[key] ?? response.windows;
@@ -858,6 +900,20 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
   }
 
+  /// Queries attach ownership through a fresh control process after a server
+  /// replacement, bypassing any watcher still connected to the outgoing host.
+  Future<bool> hasForegroundClientAfterServerReplacement(
+    SshSession session,
+    String sessionName,
+  ) async {
+    if (isAppReviewDemoSession(session)) return true;
+    final response = await _runControlCommand(session, sessionName, {
+      'type': 'query_attach_state',
+      'clientId': session.monkeyMuxClientId,
+    }, forceOneShot: true);
+    return response.hasForegroundClient;
+  }
+
   @override
   Future<bool> hasForegroundClientOrThrow(
     SshSession session,
@@ -1104,10 +1160,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     Map<String, Object?> command, {
     SshExecPriority priority = SshExecPriority.normal,
+    bool forceOneShot = false,
   }) async {
     final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
     final observer = _observers[key];
-    if (observer != null && !observer.isDisposed) {
+    if (!forceOneShot && observer != null && !observer.isDisposed) {
       return observer.runCommand(command, priority: priority);
     }
     final installation = await _installer.ensureInstalled(
@@ -1706,6 +1763,29 @@ class _MonkeyMuxWindowChangeObserver {
 
   /// Whether this observer has been torn down and can no longer run commands.
   bool get isDisposed => _disposed;
+
+  /// Reconnects the remote watch process after a helper socket takeover while
+  /// keeping this broadcast stream alive for every existing UI consumer.
+  Future<void> recycleForServerReplacement(VoidCallback afterCleanup) async {
+    if (_disposed) {
+      afterCleanup();
+      return;
+    }
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _abandonStartAttempt();
+    _failPending(
+      const MonkeyMuxInstallException('MonkeyMux server was replaced.'),
+      StackTrace.current,
+    );
+    await _cleanup();
+    afterCleanup();
+    if (_disposed) return;
+    _reconnectAttempts = 0;
+    if (_controller.hasListener) {
+      await _ensureStarted();
+    }
+  }
 
   void emitWindowList(List<TmuxWindow> windows) {
     if (_disposed || _controller.isClosed || windows.isEmpty) {

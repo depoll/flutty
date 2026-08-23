@@ -750,8 +750,10 @@ class AcpSessionManager {
       if (existingSessionId != null) {
         // The reconnect identity is already stable. Publish its connecting
         // state before session/load replays history so the real conversation
-        // shell can replace the terminal immediately and update progressively.
+        // shell can replace the terminal immediately while history rebuilds
+        // atomically off-screen from its final tail.
         provisionalKeyValue = controller.state.key.value;
+        controller._commitPublishedState();
         _controllers[provisionalKeyValue] = controller;
         _select(provisionalKeyValue);
       }
@@ -1068,13 +1070,16 @@ class AcpSessionManager {
 
   void _onControllerChanged(_SessionController controller) {
     if (!_controllers.containsValue(controller)) return;
+    controller._commitPublishedState();
     _emit();
   }
 
   void _emit() {
     if (_disposed) return;
     final sessions =
-        _controllers.values.map((controller) => controller.state).toList()
+        _controllers.values
+            .map((controller) => controller.publishedState)
+            .toList()
           ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     if (_selectedKeyValue != null &&
         !_controllers.containsKey(_selectedKeyValue)) {
@@ -1347,6 +1352,9 @@ class _SessionController {
   Future<void>? _sessionUpdatePumpFuture;
   var _sessionUpdatesEnqueued = 0;
   var _sessionUpdatesApplied = 0;
+  var _coalescingSessionUpdateNotifications = false;
+  var _historyReplayPublicationHeld = false;
+  var _managerNotificationPending = false;
   final Queue<_QueuedAcpPrompt> _promptQueue = Queue<_QueuedAcpPrompt>();
   var _queuedPromptBytes = 0;
   var _promptActive = false;
@@ -1360,12 +1368,18 @@ class _SessionController {
   StreamSubscription<MonkeyMuxAcpBridgeException>? _transportErrorSub;
 
   late AcpSessionState _state;
+  AcpSessionState? _publishedState;
   late AcpSessionKey _key;
   var _holdsAttachment = false;
   var _disposed = false;
 
-  /// Current immutable state.
+  /// Current immutable working state.
   AcpSessionState get state => _state;
+
+  /// Last state atomically committed to aggregate manager listeners.
+  AcpSessionState get publishedState => _publishedState ?? _state;
+
+  void _commitPublishedState() => _publishedState = _state;
 
   /// Bridge key of the attachment currently backing this session.
   AcpBridgeKey get bridgeKey => _key.bridge;
@@ -1425,11 +1439,13 @@ class _SessionController {
       lastActivityAt: now,
     );
 
-    _subscribeTransport();
     final reattachingLiveBridge =
         existingSessionId != null && liveBridge != null;
     final reattachingActiveTurn =
         reattachingLiveBridge && liveBridge.inFlightTurnCount > 0;
+    final holdHistoryReplay = existingSessionId != null;
+    if (holdHistoryReplay) _historyReplayPublicationHeld = true;
+    _subscribeTransport();
     if (reattachingLiveBridge) {
       // The MonkeyMux writer handshake can immediately replay notifications.
       // Subscribe before initialize so process-restart reattachment loses none.
@@ -1441,6 +1457,7 @@ class _SessionController {
       _update((s) => s.copyWith(status: AcpConnectionStatus.initializing));
       init = await attachment.ensureInitialized();
     } on Object catch (error) {
+      if (holdHistoryReplay) _historyReplayPublicationHeld = false;
       throw _LaunchException(_key, _mapClientError(error));
     }
 
@@ -1457,9 +1474,15 @@ class _SessionController {
       _subscribeSessionStreams();
     }
 
-    final resolvedSessionId = reattachingActiveTurn
-        ? existingSessionId
-        : await _establishSession(existingSessionId, init);
+    late final String resolvedSessionId;
+    try {
+      resolvedSessionId = reattachingActiveTurn
+          ? existingSessionId
+          : await _establishSession(existingSessionId, init);
+      if (holdHistoryReplay) await _drainHistoryReplayNotifications();
+    } finally {
+      if (holdHistoryReplay) _historyReplayPublicationHeld = false;
+    }
     _freshBridge = false;
     _key = AcpSessionKey.of(
       hostId: hostId,
@@ -1647,6 +1670,7 @@ class _SessionController {
     final burst = Stopwatch()..start();
     var updateCount = 0;
     var yieldCount = 0;
+    _coalescingSessionUpdateNotifications = true;
     try {
       while (_sessionUpdatesApplied < targetAppliedCount &&
           _pendingSessionUpdates.isNotEmpty &&
@@ -1654,7 +1678,10 @@ class _SessionController {
         final turn = Stopwatch()..start();
         var turnCount = 0;
         do {
-          _applySessionUpdate(_pendingSessionUpdates.removeFirst());
+          _applySessionUpdate(
+            _pendingSessionUpdates.removeFirst(),
+            notifyManager: false,
+          );
           _sessionUpdatesApplied += 1;
           updateCount += 1;
           turnCount += 1;
@@ -1667,7 +1694,20 @@ class _SessionController {
           await Future<void>.delayed(Duration.zero);
         }
       }
+      // Apply replay chronologically off-screen for protocol correctness, then
+      // publish one complete immutable snapshot. The first transcript frame can
+      // therefore mount the final tail instead of visibly walking from the
+      // oldest history toward the newest message.
     } finally {
+      _coalescingSessionUpdateNotifications = false;
+      if ((updateCount > 0 || _managerNotificationPending) && !_disposed) {
+        if (_historyReplayPublicationHeld) {
+          _managerNotificationPending = true;
+        } else {
+          _managerNotificationPending = false;
+          _manager._onControllerChanged(this);
+        }
+      }
       _sessionUpdatePumpFuture = null;
       if (_pendingSessionUpdates.isNotEmpty && !_disposed) {
         _scheduleSessionUpdatePump();
@@ -1686,7 +1726,28 @@ class _SessionController {
     }
   }
 
-  void _applySessionUpdate(AcpSessionNotification notification) {
+  Future<void> _drainHistoryReplayNotifications() async {
+    var stableTurns = 0;
+    for (var turn = 0; turn < 64 && stableTurns < 2; turn++) {
+      await Future<void>.delayed(Duration.zero);
+      final pump = _sessionUpdatePumpFuture;
+      if (pump != null) await pump;
+      final appliedThroughHighWater =
+          _sessionUpdatesApplied == _sessionUpdatesEnqueued &&
+          _pendingSessionUpdates.isEmpty &&
+          _sessionUpdatePumpFuture == null;
+      if (appliedThroughHighWater) {
+        stableTurns += 1;
+      } else {
+        stableTurns = 0;
+      }
+    }
+  }
+
+  void _applySessionUpdate(
+    AcpSessionNotification notification, {
+    bool notifyManager = true,
+  }) {
     final update = notification.update;
     final timeline = _timelineBuilder.apply(update);
     _update((s) {
@@ -1741,7 +1802,7 @@ class _SessionController {
           break;
       }
       return next;
-    });
+    }, notifyManager: notifyManager);
   }
 
   static List<T> _bounded<T>(List<T> values, int maxLength) =>
@@ -2239,7 +2300,13 @@ class _SessionController {
       final detachedTurnRunning =
           wasDetached && remoteBridge.inFlightTurnCount > 0;
       if (!detachedTurnRunning) {
-        await _establishSession(sessionId, init);
+        _historyReplayPublicationHeld = true;
+        try {
+          await _establishSession(sessionId, init);
+          await _drainHistoryReplayNotifications();
+        } finally {
+          _historyReplayPublicationHeld = false;
+        }
       }
       _update(
         (s) => s.copyWith(
@@ -2513,6 +2580,7 @@ class _SessionController {
   void _update(
     AcpSessionState Function(AcpSessionState) transform, {
     AcpSessionKey? key,
+    bool notifyManager = true,
   }) {
     _state = transform(_state);
     // Rebuild under a new identity through the single copyWith path so no
@@ -2520,7 +2588,15 @@ class _SessionController {
     if (key != null && key != _state.key) {
       _state = _state.copyWith(key: key);
     }
-    _manager._onControllerChanged(this);
+    if (notifyManager) {
+      if (_coalescingSessionUpdateNotifications ||
+          _historyReplayPublicationHeld) {
+        _managerNotificationPending = true;
+      } else {
+        _managerNotificationPending = false;
+        _manager._onControllerChanged(this);
+      }
+    }
   }
 
   AcpSessionError _mapClientError(Object error) => switch (error) {

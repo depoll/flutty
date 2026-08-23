@@ -378,6 +378,13 @@ typedef _TerminalPasteMode = ({
 });
 
 typedef _AttachmentPasteResult = ({int requestedCount, int sentCount});
+typedef _PendingMonkeyMuxServerReplacement = ({
+  int connectionId,
+  String sessionName,
+  String previousVersion,
+  String targetVersion,
+  DateTime expiresAt,
+});
 
 /// Resolves the retry schedule used for tmux detection after connect.
 @visibleForTesting
@@ -410,6 +417,29 @@ double? resolveTerminalOverflowMenuMaxHeight({
 /// should not hide a bar whose attached client was already confirmed to belong
 /// to this SSH connection. State that was only primed from host settings has no
 /// confirmed client yet, so it must never survive a failed probe.
+@visibleForTesting
+bool shouldPreserveMonkeyMuxChromeAfterAttachProbe({
+  required RemoteMuxBackend backend,
+  required bool serverReplacementPending,
+  required bool nativeAgentActive,
+  required bool attachEstablished,
+  required int consecutiveFalseProbes,
+}) =>
+    backend == RemoteMuxBackend.monkeyMux &&
+    (serverReplacementPending ||
+        (nativeAgentActive &&
+            attachEstablished &&
+            consecutiveFalseProbes <= 3));
+
+/// Returns whether a missing terminal view should be checked on another frame.
+@visibleForTesting
+bool shouldRetryTerminalThemeWhenViewMounts({
+  required bool nativeAgentActive,
+  required bool routeIsCurrent,
+  required int attempt,
+}) => !nativeAgentActive && routeIsCurrent && attempt < 3;
+
+/// Returns whether tmux detection should keep the terminal's current tmux UI.
 @visibleForTesting
 bool shouldPreserveTerminalTmuxStateAfterDetectionFailure({
   required bool preserveExistingTmuxState,
@@ -3757,6 +3787,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _monkeyMuxReconnectSessionName;
   bool _monkeyMuxReconnectAttachPending = false;
   bool _monkeyMuxAttachEstablished = false;
+  _PendingMonkeyMuxServerReplacement? _pendingMonkeyMuxServerReplacement;
+  Future<void>? _monkeyMuxServerReplacementRecovery;
+  int _monkeyMuxForegroundFalseProbeCount = 0;
   int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
@@ -4940,6 +4973,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     required String reason,
     bool forceForegroundRedraw = false,
+    int viewReadyAttempt = 0,
   }) {
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
@@ -4964,7 +4998,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'terminalViewReady': terminalViewReady,
       },
     );
-    if (!terminalViewReady) {
+    final nativeAgentActive =
+        _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null;
+    final routeIsCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    if (!terminalViewReady &&
+        shouldRetryTerminalThemeWhenViewMounts(
+          nativeAgentActive: nativeAgentActive,
+          routeIsCurrent: routeIsCurrent,
+          attempt: viewReadyAttempt,
+        )) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_isCurrentTerminalThemeRefresh(
           theme: theme,
@@ -4976,8 +5018,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _refreshTerminalThemeForTui(
           theme,
           session,
-          reason: '${reason}_view_ready',
+          reason: reason.endsWith('_view_ready')
+              ? reason
+              : '${reason}_view_ready',
           forceForegroundRedraw: forceForegroundRedraw,
+          viewReadyAttempt: viewReadyAttempt + 1,
         );
       });
     }
@@ -7727,6 +7772,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'startupBackend': command.backend.storageValue,
         },
       );
+      final pendingReplacement = _pendingMonkeyMuxServerReplacement;
+      if (startupCommand?.backend == RemoteMuxBackend.monkeyMux &&
+          pendingReplacement != null &&
+          pendingReplacement.connectionId == session.connectionId &&
+          pendingReplacement.sessionName == startupCommand?.sessionName) {
+        _startMonkeyMuxServerReplacementRecovery(session, pendingReplacement);
+      }
 
       _wireTerminalCallbacks(session);
       await _applySharedClipboardSetting(
@@ -9582,6 +9634,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             status: status,
             bundledVersion: bundledVersion,
           );
+      if (updatePolicy == MonkeyMuxServerUpdatePolicy.always) {
+        final previousVersion = status.version?.trim();
+        if (previousVersion != null && previousVersion.isNotEmpty) {
+          _pendingMonkeyMuxServerReplacement = (
+            connectionId: session.connectionId,
+            sessionName: sessionName,
+            previousVersion: previousVersion,
+            targetVersion: bundledVersion.trim(),
+            expiresAt: DateTime.now().add(const Duration(seconds: 30)),
+          );
+        }
+      }
       DiagnosticsLogService.instance.info(
         'monkeymux.install',
         updatePolicy == MonkeyMuxServerUpdatePolicy.always
@@ -9613,6 +9677,131 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       versionComparison: versionComparison,
     );
     return MonkeyMuxServerUpdatePolicy.never;
+  }
+
+  void _startMonkeyMuxServerReplacementRecovery(
+    SshSession session,
+    _PendingMonkeyMuxServerReplacement pending,
+  ) {
+    if (!pending.expiresAt.isAfter(DateTime.now())) {
+      if (_pendingMonkeyMuxServerReplacement == pending) {
+        _pendingMonkeyMuxServerReplacement = null;
+      }
+      return;
+    }
+    if (_monkeyMuxServerReplacementRecovery != null) return;
+    final operation = _recoverMonkeyMuxAfterServerReplacement(session, pending);
+    _monkeyMuxServerReplacementRecovery = operation;
+    unawaited(
+      operation
+          .then<void>(
+            (_) {},
+            onError: (Object error, StackTrace _) {
+              DiagnosticsLogService.instance.warning(
+                'monkeymux.install',
+                'upgrade_runtime_recovery_failed',
+                fields: {
+                  'connectionId': session.connectionId,
+                  'errorType': error.runtimeType,
+                },
+              );
+            },
+          )
+          .whenComplete(() {
+            if (identical(_monkeyMuxServerReplacementRecovery, operation)) {
+              _monkeyMuxServerReplacementRecovery = null;
+            }
+          }),
+    );
+  }
+
+  Future<void> _recoverMonkeyMuxAfterServerReplacement(
+    SshSession session,
+    _PendingMonkeyMuxServerReplacement pending,
+  ) async {
+    var replacementObserved = false;
+    var foregroundAttached = false;
+    var attempts = 0;
+    for (; attempts < 30; attempts++) {
+      if (!mounted ||
+          _connectionId != pending.connectionId ||
+          _pendingMonkeyMuxServerReplacement != pending) {
+        return;
+      }
+      if (attempts > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
+      try {
+        final version = (await _monkeyMuxService.detectedVersion(
+          session,
+          pending.sessionName,
+        ))?.trim();
+        replacementObserved =
+            version != null &&
+            version.isNotEmpty &&
+            (version == pending.targetVersion ||
+                version != pending.previousVersion);
+        if (replacementObserved) {
+          foregroundAttached = await _monkeyMuxService
+              .hasForegroundClientAfterServerReplacement(
+                session,
+                pending.sessionName,
+              );
+          if (foregroundAttached) break;
+        }
+      } on Object {
+        // Socket takeover and attach registration are transiently unavailable.
+      }
+    }
+    if (!mounted ||
+        _connectionId != pending.connectionId ||
+        _pendingMonkeyMuxServerReplacement != pending) {
+      return;
+    }
+
+    // A watch started before the replacement attach remains connected to the
+    // outgoing native-bridge host even after the public socket moves.
+    await _monkeyMuxService.resetServerRuntime(
+      session.connectionId,
+      pending.sessionName,
+    );
+    if (!mounted ||
+        _connectionId != pending.connectionId ||
+        _pendingMonkeyMuxServerReplacement != pending) {
+      return;
+    }
+    setState(() {
+      _pendingMonkeyMuxServerReplacement = null;
+      _isTmuxActive = true;
+      _tmuxOwnershipConfirmed = foregroundAttached;
+      _tmuxSessionName = pending.sessionName;
+      _activeMuxBackend = RemoteMuxBackend.monkeyMux;
+      _tmuxStateConnectionId = session.connectionId;
+      _monkeyMuxAttachEstablished =
+          _monkeyMuxAttachEstablished || foregroundAttached;
+      _monkeyMuxForegroundFalseProbeCount = 0;
+      _tmuxBarRecoveryGeneration += 1;
+    });
+    DiagnosticsLogService.instance.info(
+      'monkeymux.install',
+      'upgrade_runtime_recovered',
+      fields: {
+        'connectionId': session.connectionId,
+        'replacementObserved': replacementObserved,
+        'foregroundAttached': foregroundAttached,
+        'attempts': (attempts + 1).clamp(1, 30),
+      },
+    );
+
+    if (!foregroundAttached) {
+      await _reattachTmuxIfNeeded(session, pending.sessionName);
+      if (!mounted || _connectionId != session.connectionId) return;
+    } else {
+      _startTmuxForegroundVerification(session, pending.sessionName);
+    }
+    unawaited(
+      _detectTmux(session, skipDelay: true, preserveExistingTmuxState: true),
+    );
   }
 
   Future<MonkeyMuxServerUpdatePolicy> _confirmMonkeyMuxRunningServerUpdate({
@@ -10180,6 +10369,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxOwnershipConfirmed = false;
     _tmuxSessionName = null;
     _monkeyMuxAttachEstablished = false;
+    _pendingMonkeyMuxServerReplacement = null;
+    _monkeyMuxForegroundFalseProbeCount = 0;
     _muxVersion = null;
     _activeMuxBackend = RemoteMuxBackend.tmux;
     _tmuxStateConnectionId = null;
@@ -10200,6 +10391,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) {
     _tmuxForegroundVerificationTimer?.cancel();
     _tmuxForegroundVerificationInFlight = false;
+    _monkeyMuxForegroundFalseProbeCount = 0;
     final generation = ++_tmuxForegroundVerificationGeneration;
     _tmuxForegroundVerificationTimer = Timer.periodic(
       _tmuxForegroundVerificationInterval,
@@ -10316,10 +10508,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       if (foregroundMatches) {
+        _monkeyMuxForegroundFalseProbeCount = 0;
         DiagnosticsLogService.instance.debug(
           'tmux.ui',
           'foreground_verified',
           fields: {'connectionId': session.connectionId},
+        );
+        return;
+      }
+
+      _monkeyMuxForegroundFalseProbeCount += 1;
+      final pendingReplacement = _pendingMonkeyMuxServerReplacement;
+      final preserveChrome = shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+        backend: _activeMuxBackend,
+        serverReplacementPending:
+            pendingReplacement?.connectionId == session.connectionId &&
+            pendingReplacement?.sessionName == sessionName &&
+            pendingReplacement!.expiresAt.isAfter(DateTime.now()),
+        nativeAgentActive:
+            _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null,
+        attachEstablished: _monkeyMuxAttachEstablished,
+        consecutiveFalseProbes: _monkeyMuxForegroundFalseProbeCount,
+      );
+      if (preserveChrome) {
+        DiagnosticsLogService.instance.info(
+          'tmux.ui',
+          'foreground_detach_deferred',
+          fields: {
+            'connectionId': session.connectionId,
+            'replacementPending': pendingReplacement != null,
+            'nativeAgentActive': _activeNativeAcpSessionKey != null,
+            'attempt': _monkeyMuxForegroundFalseProbeCount,
+          },
         );
         return;
       }
@@ -10544,6 +10764,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           continue;
         }
         confirmedTmuxActive = true;
+        _monkeyMuxForegroundFalseProbeCount = 0;
 
         final sessionName = candidateSessionName ?? foregroundSessionName;
         if (!mounted ||
@@ -10681,6 +10902,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted ||
           _connectionId != capturedConnectionId ||
           detectionGeneration != _tmuxDetectionGeneration) {
+        return false;
+      }
+
+      _monkeyMuxForegroundFalseProbeCount += 1;
+      final pendingReplacement = _pendingMonkeyMuxServerReplacement;
+      final replacementPending =
+          pendingReplacement?.connectionId == session.connectionId &&
+          pendingReplacement?.sessionName == candidateSessionName &&
+          pendingReplacement!.expiresAt.isAfter(DateTime.now());
+      if (shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+        backend: muxBackend,
+        serverReplacementPending: replacementPending,
+        nativeAgentActive:
+            _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null,
+        attachEstablished: _monkeyMuxAttachEstablished,
+        consecutiveFalseProbes: _monkeyMuxForegroundFalseProbeCount,
+      )) {
+        DiagnosticsLogService.instance.info(
+          'tmux.ui',
+          'detection_preserved_during_handoff',
+          fields: {
+            'connectionId': session.connectionId,
+            'replacementPending': replacementPending,
+            'nativeAgentActive': _activeNativeAcpSessionKey != null,
+            'attempt': _monkeyMuxForegroundFalseProbeCount,
+          },
+        );
         return false;
       }
 
@@ -12081,6 +12329,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       session?.setTerminalParsingPaused(paused: false);
+      _handleTerminalThemeDependenciesChanged(
+        forceRemoteRefresh: true,
+        reason: 'native_terminal_restored',
+      );
       _probeAndForceMuxWindowRefresh();
     });
     final connectionId = _connectionId;
@@ -12873,6 +13125,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'directMonkeyMuxAttach': shouldRunMonkeyMuxAttachDirectly,
       },
     );
+    final pendingReplacement = _pendingMonkeyMuxServerReplacement;
+    if (reattachBackend == RemoteMuxBackend.monkeyMux &&
+        pendingReplacement != null &&
+        pendingReplacement.connectionId == session.connectionId &&
+        pendingReplacement.sessionName == sessionName) {
+      _startMonkeyMuxServerReplacementRecovery(session, pendingReplacement);
+    }
   }
 
   Future<SSHSession?> _reopenShellForVisibleTmux(
@@ -13346,7 +13605,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
         unawaited(_reconnect(showProgressDialog: false));
-      } else if (session != null) {
+      } else if (session != null &&
+          _activeNativeAcpSessionKey == null &&
+          _nativeAcpLaunchState == null) {
         _handleTerminalThemeDependenciesChanged(
           forceRemoteRefresh: forceThemeRefresh,
           reason: 'app_resumed',

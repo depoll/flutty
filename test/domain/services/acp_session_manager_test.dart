@@ -1935,6 +1935,7 @@ void main() {
     });
 
     test('publishes reconnecting state before a slow load completes', () async {
+      isPro = true;
       final loadGate = Completer<void>();
       final replayConnector = _FakeConnector(
         serverFactory: (_, _) => _FakeAcpServer(
@@ -1950,8 +1951,27 @@ void main() {
         cwd: '/repo',
       );
       final key = (started as AcpSessionLaunchStarted).key;
+      final sibling = await replayManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final siblingKey = (sibling as AcpSessionLaunchStarted).key;
       await replayManager.detachSession(key);
       replayConnector.availableBridges.remove(key.bridgeId);
+
+      final publishedReplayLengths = <int>[];
+      final statesSubscription = replayManager.states.listen((managerState) {
+        final replay = managerState.sessions
+            .expand((session) => session.timeline.entries)
+            .whereType<AcpMessageEntry>()
+            .where((entry) => entry.messageId == 'replay-burst')
+            .firstOrNull;
+        if (replay != null && replay.content.isNotEmpty) {
+          publishedReplayLengths.add(replay.content.length);
+        }
+      });
+      addTearDown(statesSubscription.cancel);
 
       var reconnectCompleted = false;
       final reconnect = replayManager
@@ -1970,11 +1990,29 @@ void main() {
       AcpSessionState? provisional;
       for (var turn = 0; turn < 100 && provisional == null; turn++) {
         await Future<void>.delayed(const Duration(milliseconds: 1));
-        provisional = replayManager.state.sessions.firstOrNull;
+        provisional = replayManager.state.sessions
+            .where(
+              (session) => session.status == AcpConnectionStatus.initializing,
+            )
+            .firstOrNull;
       }
       expect(provisional, isNotNull);
       expect(provisional!.status, AcpConnectionStatus.initializing);
       expect(reconnectCompleted, isFalse);
+
+      // An unrelated live session may emit while this replay's working state
+      // already contains hundreds of chunks. Aggregate state must still use
+      // the replaying controller's last committed (empty) snapshot.
+      replayConnector.servers[siblingKey.bridgeId]!.pushUpdate(
+        siblingKey.acpSessionId,
+        {
+          'sessionUpdate': 'agent_message_chunk',
+          'messageId': 'sibling-live',
+          'content': {'type': 'text', 'text': 'live'},
+        },
+      );
+      await _pump();
+      expect(publishedReplayLengths, isEmpty);
 
       loadGate.complete();
       final result = await reconnect;
@@ -1996,6 +2034,14 @@ void main() {
       expect(message!.content, hasLength(600));
       expect((message.content.first as AcpTextContent).text, 'chunk-0 ');
       expect((message.content.last as AcpTextContent).text, 'chunk-599 ');
+      expect(publishedReplayLengths, contains(600));
+      expect(
+        publishedReplayLengths.where((length) => length < 600),
+        isEmpty,
+        reason:
+            'the native UI should first receive the complete replay so its '
+            'bounded window mounts from the final tail',
+      );
     });
 
     test(
