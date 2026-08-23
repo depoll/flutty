@@ -442,6 +442,35 @@ void main() {
     }
   });
 
+  testWidgets('uses compact circles in a shorter composer toolbar', (
+    tester,
+  ) async {
+    final controller = _makeController(_RecordingManager());
+    addTearDown(controller.dispose);
+    await _pump(
+      tester,
+      controller,
+      actions: AcpComposerAttachmentActions(pickFiles: (_) async => const []),
+    );
+
+    expect(
+      tester.getSize(find.byKey(const ValueKey('acp-add-button-visual'))),
+      const Size.square(38),
+    );
+    final primary = tester.widget<IconButton>(
+      find.byKey(const ValueKey('acp-primary-button-visual')),
+    );
+    expect(primary.style?.minimumSize?.resolve({}), const Size.square(38));
+    expect(
+      tester.getSize(find.byKey(const ValueKey('acp-primary-button-visual'))),
+      const Size.square(44),
+    );
+    expect(
+      tester.getSize(find.byKey(const ValueKey('acp-composer-toolbar'))).height,
+      48,
+    );
+  });
+
   testWidgets('config affordance is shown when a handler is provided', (
     tester,
   ) async {
@@ -610,7 +639,7 @@ void main() {
     expect(send.padding, EdgeInsets.zero);
     expect(
       send.constraints,
-      const BoxConstraints.tightFor(width: 44, height: 44),
+      const BoxConstraints.tightFor(width: 38, height: 38),
     );
 
     final surface = find.byKey(const ValueKey('acp-composer-surface'));

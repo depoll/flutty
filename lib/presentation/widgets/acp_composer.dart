@@ -602,7 +602,8 @@ class _AcpComposerState extends State<AcpComposer> {
                         ),
                       ),
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(6, 1, 6, 6),
+                        key: const ValueKey('acp-composer-toolbar'),
+                        padding: const EdgeInsets.fromLTRB(6, 0, 6, 4),
                         child: Row(
                           children: [
                             _AddButton(
@@ -653,6 +654,9 @@ class _AcpComposerState extends State<AcpComposer> {
   }
 }
 
+const _composerControlTapDimension = 44.0;
+const _composerControlVisualDimension = 38.0;
+
 enum _AcpAddAction { photos, files, remoteFiles }
 
 class _ComposerToolbarButton extends StatelessWidget {
@@ -672,19 +676,28 @@ class _ComposerToolbarButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return SizedBox.square(
-      dimension: 44,
-      child: IconButton(
-        tooltip: tooltip,
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-        style: IconButton.styleFrom(
-          backgroundColor: scheme.surfaceContainerHighest,
-          foregroundColor: foregroundColor ?? scheme.onSurfaceVariant,
-          disabledBackgroundColor: scheme.surfaceContainerHighest.withAlpha(90),
-          disabledForegroundColor: scheme.onSurfaceVariant.withAlpha(90),
+      dimension: _composerControlTapDimension,
+      child: Center(
+        child: IconButton(
+          tooltip: tooltip,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(
+            width: _composerControlVisualDimension,
+            height: _composerControlVisualDimension,
+          ),
+          style: IconButton.styleFrom(
+            minimumSize: const Size.square(_composerControlVisualDimension),
+            maximumSize: const Size.square(_composerControlVisualDimension),
+            backgroundColor: scheme.surfaceContainerHighest,
+            foregroundColor: foregroundColor ?? scheme.onSurfaceVariant,
+            disabledBackgroundColor: scheme.surfaceContainerHighest.withAlpha(
+              90,
+            ),
+            disabledForegroundColor: scheme.onSurfaceVariant.withAlpha(90),
+          ),
+          onPressed: onPressed,
+          icon: Icon(icon, size: 20),
         ),
-        onPressed: onPressed,
-        icon: Icon(icon, size: 22),
       ),
     );
   }
@@ -752,9 +765,10 @@ class _AddButton extends StatelessWidget {
           ),
       ],
       child: SizedBox.square(
-        dimension: 44,
+        dimension: _composerControlTapDimension,
         child: Center(
           child: DecoratedBox(
+            key: const ValueKey('acp-add-button-visual'),
             decoration: BoxDecoration(
               color: enabled
                   ? scheme.surfaceContainerHighest
@@ -762,10 +776,10 @@ class _AddButton extends StatelessWidget {
               shape: BoxShape.circle,
             ),
             child: SizedBox.square(
-              dimension: 40,
+              dimension: _composerControlVisualDimension,
               child: Icon(
                 Icons.add,
-                size: 24,
+                size: 22,
                 color: enabled
                     ? scheme.onSurfaceVariant
                     : scheme.onSurfaceVariant.withAlpha(90),
@@ -808,24 +822,30 @@ class _PrimaryActionButton extends StatelessWidget {
       enabled: enabled,
       label: label,
       child: SizedBox.square(
-        dimension: 44,
-        child: IconButton.filled(
-          tooltip: label,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-          style: IconButton.styleFrom(
-            minimumSize: const Size.square(44),
-            maximumSize: const Size.square(44),
+        dimension: _composerControlTapDimension,
+        child: Center(
+          child: IconButton.filled(
+            key: const ValueKey('acp-primary-button-visual'),
+            tooltip: label,
             padding: EdgeInsets.zero,
-            backgroundColor: stopping ? scheme.onSurface : scheme.primary,
-            foregroundColor: stopping ? scheme.surface : scheme.onPrimary,
-            disabledBackgroundColor: scheme.surfaceContainerHighest,
-            disabledForegroundColor: scheme.onSurfaceVariant.withAlpha(110),
-          ),
-          onPressed: enabled ? (stopping ? onStop : onSend) : null,
-          icon: Icon(
-            stopping ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-            size: stopping ? 19 : 22,
+            constraints: const BoxConstraints.tightFor(
+              width: _composerControlVisualDimension,
+              height: _composerControlVisualDimension,
+            ),
+            style: IconButton.styleFrom(
+              minimumSize: const Size.square(_composerControlVisualDimension),
+              maximumSize: const Size.square(_composerControlVisualDimension),
+              padding: EdgeInsets.zero,
+              backgroundColor: stopping ? scheme.onSurface : scheme.primary,
+              foregroundColor: stopping ? scheme.surface : scheme.onPrimary,
+              disabledBackgroundColor: scheme.surfaceContainerHighest,
+              disabledForegroundColor: scheme.onSurfaceVariant.withAlpha(110),
+            ),
+            onPressed: enabled ? (stopping ? onStop : onSend) : null,
+            icon: Icon(
+              stopping ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+              size: stopping ? 17 : 20,
+            ),
           ),
         ),
       ),
