@@ -363,6 +363,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   bool _awayFromTop = false;
   bool _stickyUpdateScheduled = false;
   bool _tailAnchorScheduled = false;
+  bool _userOwnsScrollPosition = false;
   int _tailAnchorAttempts = 0;
   int _tailAnchorStableFrames = 0;
   double? _lastTailMaxExtent;
@@ -385,6 +386,9 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     _syncThreadChildren(
       forceWindowSync: oldWidget.followTail != widget.followTail,
     );
+    if (!oldWidget.followTail && widget.followTail) {
+      _userOwnsScrollPosition = false;
+    }
     if (oldWidget.controller != widget.controller) {
       (oldWidget.controller ?? _ownedController)?.removeListener(
         _scheduleStickyUpdate,
@@ -473,7 +477,12 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     _tailAnchorScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _tailAnchorScheduled = false;
-      if (!mounted || !widget.followTail || !_controller.hasClients) return;
+      if (!mounted ||
+          !widget.followTail ||
+          _userOwnsScrollPosition ||
+          !_controller.hasClients) {
+        return;
+      }
       final position = _controller.position;
       final target = position.maxScrollExtent;
       if ((position.pixels - target).abs() > 0.5) {
@@ -742,6 +751,9 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
         notification is UserScrollNotification &&
             notification.direction != ScrollDirection.idle;
     if (userInitiated) {
+      _userOwnsScrollPosition = true;
+      _earlierTranscriptAnchorGeneration += 1;
+      _earlierTranscriptLoadScheduled = false;
       _showPromptNavigation();
       if (notification.metrics.pixels <=
           notification.metrics.minScrollExtent + 64) {

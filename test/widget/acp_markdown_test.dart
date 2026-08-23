@@ -23,7 +23,7 @@ Widget wrap(Widget child) => MaterialApp(
 void main() {
   setUp(() {
     FluttyTheme.debugUseSystemFonts = true;
-    clearAcpInlineDataImageCache();
+    clearAcpInlineImageCache();
   });
   tearDown(() => FluttyTheme.debugUseSystemFonts = false);
 
@@ -211,7 +211,7 @@ void main() {
     await tester.pumpWidget(wrap(AcpInlineImage(image: image)));
     await tester.pumpAndSettle();
     expect(acpInlineDataImageDecodeCount, 1);
-    expect(acpInlineDataImageCacheEntryCount, 1);
+    expect(acpInlineImageCacheEntryCount, 1);
 
     await tester.pumpWidget(wrap(const SizedBox.shrink()));
     await tester.pump();
@@ -221,7 +221,107 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(acpInlineDataImageDecodeCount, 1);
-    expect(acpInlineDataImageCacheEntryCount, 1);
+    expect(acpInlineImageCacheEntryCount, 1);
+  });
+
+  testWidgets('reuses resolved file image across reverse-scroll remounts', (
+    tester,
+  ) async {
+    var resolveCount = 0;
+    final image = AcpImageContent(
+      uri: 'file:///repo/screenshots/layout.png',
+      label: 'layout',
+    );
+    Future<Uint8List?> resolve(AcpImageContent _) async {
+      resolveCount++;
+      return Uint8List.fromList(const [
+        0x89,
+        0x50,
+        0x4E,
+        0x47,
+        0x0D,
+        0x0A,
+        0x1A,
+        0x0A,
+        0x00,
+        0x00,
+        0x00,
+        0x0D,
+        0x49,
+        0x48,
+        0x44,
+        0x52,
+        0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x08,
+        0x06,
+        0x00,
+        0x00,
+        0x00,
+        0x1F,
+        0x15,
+        0xC4,
+        0x89,
+        0x00,
+        0x00,
+        0x00,
+        0x0A,
+        0x49,
+        0x44,
+        0x41,
+        0x54,
+        0x78,
+        0x9C,
+        0x63,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
+        0x05,
+        0x00,
+        0x01,
+        0x0D,
+        0x0A,
+        0x2D,
+        0xB4,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x49,
+        0x45,
+        0x4E,
+        0x44,
+        0xAE,
+        0x42,
+        0x60,
+        0x82,
+      ]);
+    }
+
+    await tester.pumpWidget(
+      wrap(AcpInlineImage(image: image, resolver: resolve)),
+    );
+    await tester.pumpAndSettle();
+    expect(resolveCount, 1);
+    expect(acpInlineImageCacheEntryCount, 1);
+
+    await tester.pumpWidget(wrap(const SizedBox.shrink()));
+    await tester.pump();
+    await tester.pumpWidget(
+      wrap(AcpInlineImage(image: image, resolver: resolve)),
+    );
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    await tester.pumpAndSettle();
+
+    expect(resolveCount, 1);
+    expect(acpInlineImageCacheEntryCount, 1);
   });
 
   testWidgets('renders a provider-wrapped inline data image', (tester) async {

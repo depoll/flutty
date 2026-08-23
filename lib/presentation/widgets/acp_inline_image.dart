@@ -33,22 +33,22 @@ const int kAcpMaxImageDecodePixels = 4096 * 4096; // ~16.7 MP
 /// any decode is attempted.
 const int kAcpMaxDecodableSourcePixels = 100 * 1000 * 1000; // 100 MP
 
-const int _acpInlineDataImageCacheBudgetBytes = 32 * 1024 * 1024;
+const int _acpInlineImageCacheBudgetBytes = 32 * 1024 * 1024;
 const int _acpInlineDataImageWorkerThresholdChars = 64 * 1024;
 
-final _acpInlineDataImageCache = _AcpInlineDataImageCache();
+final _acpInlineImageCache = _AcpInlineImageCache();
 var _acpInlineDataImageDecodeCount = 0;
 
-/// Clears the bounded data-image cache and decode counter in tests.
+/// Clears the bounded inline-image cache and data decode counter in tests.
 @visibleForTesting
-void clearAcpInlineDataImageCache() {
-  _acpInlineDataImageCache.clear();
+void clearAcpInlineImageCache() {
+  _acpInlineImageCache.clear();
   _acpInlineDataImageDecodeCount = 0;
 }
 
-/// Number of data images currently retained by the bounded cache.
+/// Number of URI images currently retained by the bounded cache.
 @visibleForTesting
-int get acpInlineDataImageCacheEntryCount => _acpInlineDataImageCache.length;
+int get acpInlineImageCacheEntryCount => _acpInlineImageCache.length;
 
 /// Number of base64 data-image decodes since the cache was last cleared.
 @visibleForTesting
@@ -62,8 +62,15 @@ Uint8List? _decodeInlineDataImage(String uri) {
   }
 }
 
-final class _CachedDataImage {
-  const _CachedDataImage({
+String? _imageCacheKey(AcpImageContent image) => switch (image.sourceKind) {
+  AcpImageSourceKind.bytes => null,
+  AcpImageSourceKind.dataUri ||
+  AcpImageSourceKind.fileUri ||
+  AcpImageSourceKind.networkUri => '${image.sourceKind.name}:${image.uri}',
+};
+
+final class _CachedInlineImage {
+  const _CachedInlineImage({
     required this.bytes,
     required this.intrinsicWidth,
     required this.intrinsicHeight,
@@ -76,13 +83,13 @@ final class _CachedDataImage {
   final int retainedBytes;
 }
 
-final class _AcpInlineDataImageCache {
-  final _entries = <String, _CachedDataImage>{};
+final class _AcpInlineImageCache {
+  final _entries = <String, _CachedInlineImage>{};
   var _retainedBytes = 0;
 
   int get length => _entries.length;
 
-  _CachedDataImage? read(String uri) {
+  _CachedInlineImage? read(String uri) {
     final entry = _entries.remove(uri);
     if (entry != null) _entries[uri] = entry;
     return entry;
@@ -95,10 +102,10 @@ final class _AcpInlineDataImageCache {
     required int intrinsicHeight,
   }) {
     final retainedBytes = uri.length * 2 + bytes.lengthInBytes;
-    if (retainedBytes > _acpInlineDataImageCacheBudgetBytes) return;
+    if (retainedBytes > _acpInlineImageCacheBudgetBytes) return;
     final previous = _entries.remove(uri);
     if (previous != null) _retainedBytes -= previous.retainedBytes;
-    final entry = _CachedDataImage(
+    final entry = _CachedInlineImage(
       bytes: bytes,
       intrinsicWidth: intrinsicWidth,
       intrinsicHeight: intrinsicHeight,
@@ -106,7 +113,7 @@ final class _AcpInlineDataImageCache {
     );
     _entries[uri] = entry;
     _retainedBytes += retainedBytes;
-    while (_retainedBytes > _acpInlineDataImageCacheBudgetBytes &&
+    while (_retainedBytes > _acpInlineImageCacheBudgetBytes &&
         _entries.isNotEmpty) {
       final oldestKey = _entries.keys.first;
       _retainedBytes -= _entries.remove(oldestKey)!.retainedBytes;
@@ -266,30 +273,34 @@ class _AcpInlineImageState extends State<AcpInlineImage> {
       return;
     }
 
+    final cacheKey = _imageCacheKey(image);
+    if (cacheKey != null) {
+      final cached = _acpInlineImageCache.read(cacheKey);
+      if (cached != null) {
+        if (!_withinLimit(cached.bytes.lengthInBytes)) {
+          _set(_ImageState.tooLarge);
+          return;
+        }
+        final (width, height) = _targetDimensions(
+          cached.intrinsicWidth,
+          cached.intrinsicHeight,
+          image,
+        );
+        _set(
+          _ImageState.ready,
+          bytes: cached.bytes,
+          width: width,
+          height: height,
+        );
+        return;
+      }
+    }
+
     final Uint8List? bytes;
     switch (image.sourceKind) {
       case AcpImageSourceKind.bytes:
         bytes = image.bytes;
       case AcpImageSourceKind.dataUri:
-        final cached = _acpInlineDataImageCache.read(image.uri!);
-        if (cached != null) {
-          if (!_withinLimit(cached.bytes.lengthInBytes)) {
-            _set(_ImageState.tooLarge);
-            return;
-          }
-          final (width, height) = _targetDimensions(
-            cached.intrinsicWidth,
-            cached.intrinsicHeight,
-            image,
-          );
-          _set(
-            _ImageState.ready,
-            bytes: cached.bytes,
-            width: width,
-            height: height,
-          );
-          return;
-        }
         bytes = await _decodeDataUriBytes(image.uri!, generation);
       case AcpImageSourceKind.fileUri:
       case AcpImageSourceKind.networkUri:
@@ -377,9 +388,10 @@ class _AcpInlineImageState extends State<AcpInlineImage> {
       case _DecodeOutcome.invalid:
         _set(_ImageState.error);
       case _DecodeOutcome.ok:
-        if (image.sourceKind == AcpImageSourceKind.dataUri) {
-          _acpInlineDataImageCache.write(
-            image.uri!,
+        final cacheKey = _imageCacheKey(image);
+        if (cacheKey != null) {
+          _acpInlineImageCache.write(
+            cacheKey,
             bytes,
             intrinsicWidth: target.intrinsicWidth,
             intrinsicHeight: target.intrinsicHeight,

@@ -604,8 +604,17 @@ void main() {
 
     await tester.drag(find.byType(CustomScrollView), const Offset(0, 300));
     await tester.pump();
-
     expect(controller.offset, lessThan(before));
+
+    for (var frame = 0; frame < 6; frame++) {
+      await tester.pump();
+    }
+    expect(
+      controller.offset,
+      lessThan(before),
+      reason:
+          'late image layout must not snap a manual scroll back to the tail',
+    );
   });
 
   testWidgets('virtualizes one full-screen user diagnostics prompt', (
