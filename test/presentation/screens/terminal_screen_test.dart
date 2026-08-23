@@ -44,6 +44,7 @@ import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
+import 'package:monkeyssh/presentation/controllers/system_keyboard_visibility_controller.dart';
 import 'package:monkeyssh/presentation/screens/port_forward_browser_screen.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/acp_native_badge.dart';
@@ -11540,6 +11541,46 @@ void main() {
         expect(find.byType(KeyboardToolbar), findsNothing);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'native mode ignores a stale inset when the platform IME is closed',
+      (tester) async {
+        tester.view
+          ..physicalSize = const Size(390, 844)
+          ..devicePixelRatio = 1
+          ..viewInsets = const FakeViewPadding(bottom: 500);
+        final keyboard = SystemKeyboardVisibilityController.instance
+          ..debugSetVisible(visible: false);
+        final key = AcpSessionKey.of(
+          hostId: host.id,
+          providerId: AcpBuiltinProviderIds.pi,
+          bridgeId: 'native-bridge',
+          acpSessionId: 'native-session',
+        );
+        final acpManager = FakeAcpSessionManager(
+          sessions: [fakeAcpSession(key: key, providerLabel: 'Pi')],
+        );
+        addTearDown(acpManager.dispose);
+        session.activeNativeAcpSessionKey = key;
+        addTearDown(() {
+          keyboard.debugSetVisible(visible: null);
+          session.activeNativeAcpSessionKey = null;
+          tester.view
+            ..resetPhysicalSize()
+            ..resetDevicePixelRatio()
+            ..resetViewInsets();
+        });
+
+        await pumpScreen(tester, acpSessionManager: acpManager);
+
+        // Android may keep reporting the old inset after predictive/system Back.
+        // Native WindowInsets visibility must still collapse the layout.
+        expect(find.byTooltip('Show system keyboard'), findsOneWidget);
+        expect(find.byTooltip('Hide system keyboard'), findsNothing);
+        expect(tester.getBottomLeft(find.byType(KeyboardToolbar)).dy, 844);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
     testWidgets(

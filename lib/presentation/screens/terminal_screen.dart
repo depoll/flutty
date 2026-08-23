@@ -71,6 +71,7 @@ import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/terminal_wake_lock_service.dart';
 import '../../domain/services/tmux_service.dart';
+import '../controllers/system_keyboard_visibility_controller.dart';
 import '../controllers/terminal_session_controller.dart';
 import '../widgets/acp_composer.dart';
 import '../widgets/acp_concurrency_choice.dart';
@@ -919,15 +920,23 @@ TmuxBarPlacement resolveTmuxBarPlacement(double availableWidth) {
 bool resolveTerminalScreenCanPop({required bool isTmuxBarExpanded}) =>
     !isTmuxBarExpanded;
 
-/// Whether the terminal shell should treat the current bottom inset as an
-/// active keyboard. Native ACP owns its own text input connection, so its
-/// visible inset is sufficient even when the terminal input handler is idle.
+/// Whether the terminal shell should resize for the system keyboard.
+///
+/// Insets describe occupied geometry but can remain stale after the IME closes.
+/// A native platform visibility report therefore wins for both terminal and
+/// ACP inputs. Before that report arrives, require a live input owner rather
+/// than treating native content itself as proof that a keyboard is open.
 @visibleForTesting
 bool resolveTerminalSystemKeyboardVisible({
   required double bottomInset,
+  required bool? platformKeyboardVisible,
   required bool terminalInputConnectionVisible,
-  required bool nativeAgentActive,
-}) => bottomInset > 0 && (terminalInputConnectionVisible || nativeAgentActive);
+  required bool nativeComposerInputOwner,
+}) {
+  if (bottomInset <= 0) return false;
+  if (platformKeyboardVisible case final visible?) return visible;
+  return terminalInputConnectionVisible || nativeComposerInputOwner;
+}
 
 /// Whether actions that read or mutate terminal viewport state belong in the
 /// overflow menu for the current content mode.
@@ -3731,6 +3740,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
+  final _systemKeyboardVisibilityController =
+      SystemKeyboardVisibilityController.instance;
   final _nativeComposerFocusController = AcpComposerFocusController();
   bool _keyboardVisibilityRebuildScheduled = false;
   int _terminalFocusRestoreGeneration = 0;
@@ -4746,6 +4757,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalTextInputController.addListener(
       _handleTerminalKeyboardVisibilityChanged,
     );
+    _systemKeyboardVisibilityController.addListener(
+      _handleTerminalKeyboardVisibilityChanged,
+    );
+    unawaited(_systemKeyboardVisibilityController.initialize());
     unawaited(_refreshKeyboardToolbarSnippetMenu());
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
@@ -13587,6 +13602,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCommandCompletedSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
+    _systemKeyboardVisibilityController.removeListener(
+      _handleTerminalKeyboardVisibilityChanged,
+    );
     _terminalTextInputController
       ..removeListener(_handleTerminalKeyboardVisibilityChanged)
       ..dispose();
@@ -13779,15 +13797,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
-    // Terminal input requires its own live connection to reject stale insets.
-    // Native ACP has a separate composer input, so native focus plus a visible
-    // inset is the corresponding source of truth.
+    // Insets are geometry, not authoritative visibility: some Android IMEs
+    // leave a stale bottom inset after closing. Prefer native IME visibility
+    // for every input owner, falling back to each owner's live connection/focus
+    // only until the platform channel responds.
     final systemKeyboardVisible = resolveTerminalSystemKeyboardVisible(
       bottomInset: MediaQuery.viewInsetsOf(context).bottom,
+      platformKeyboardVisible: _systemKeyboardVisibilityController.visible,
       terminalInputConnectionVisible:
           _terminalTextInputController.isKeyboardVisible,
-      nativeAgentActive:
-          _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null,
+      nativeComposerInputOwner:
+          _activeNativeAcpSessionKey != null &&
+          _nativeComposerFocusController.hasFocus,
     );
     if (_isAndroidPlatform) {
       _logAndroidPredictiveBackDiagnostics(context, phase: 'build');

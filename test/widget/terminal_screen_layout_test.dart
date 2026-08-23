@@ -56,28 +56,49 @@ void main() {
       );
     });
 
-    test('native composer keyboard resizes the outer mux shell', () {
+    test('uses platform IME state over stale inset geometry', () {
       expect(
         resolveTerminalSystemKeyboardVisible(
           bottomInset: 300,
+          platformKeyboardVisible: null,
           terminalInputConnectionVisible: false,
-          nativeAgentActive: true,
+          nativeComposerInputOwner: true,
         ),
         isTrue,
       );
       expect(
         resolveTerminalSystemKeyboardVisible(
           bottomInset: 300,
-          terminalInputConnectionVisible: false,
-          nativeAgentActive: false,
+          platformKeyboardVisible: false,
+          terminalInputConnectionVisible: true,
+          nativeComposerInputOwner: true,
         ),
         isFalse,
       );
       expect(
         resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: null,
+          terminalInputConnectionVisible: false,
+          nativeComposerInputOwner: false,
+        ),
+        isFalse,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: true,
+          terminalInputConnectionVisible: false,
+          nativeComposerInputOwner: false,
+        ),
+        isTrue,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
           bottomInset: 0,
+          platformKeyboardVisible: true,
           terminalInputConnectionVisible: true,
-          nativeAgentActive: true,
+          nativeComposerInputOwner: true,
         ),
         isFalse,
       );

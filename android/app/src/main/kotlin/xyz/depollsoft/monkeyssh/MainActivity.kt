@@ -10,6 +10,8 @@ import android.provider.OpenableColumns
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -24,6 +26,8 @@ class MainActivity : FlutterFragmentActivity() {
         private const val MONKEYSSH_TRANSFER_EXTENSION = ".monkeysshx"
         private const val TERMINAL_IME_KEY_CHANNEL =
             "xyz.depollsoft.monkeyssh/terminal_ime_keys"
+        private const val KEYBOARD_VISIBILITY_CHANNEL =
+            "xyz.depollsoft.monkeyssh/keyboard_visibility"
     }
 
     private val clipboardChannel = "xyz.depollsoft.monkeyssh/clipboard_content"
@@ -32,6 +36,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var clipboardMethodChannel: MethodChannel? = null
     private var transferMethodChannel: MethodChannel? = null
     private var terminalImeKeyMethodChannel: MethodChannel? = null
+    private var keyboardVisibilityMethodChannel: MethodChannel? = null
     private var terminalImeKeyInterceptionEnabled = false
     private var pendingTransferPayload: String? = null
     private var hasRequestedNotificationPermission = false
@@ -40,6 +45,7 @@ class MainActivity : FlutterFragmentActivity() {
         MonkeySshApplication.from(this).ensureSharedFlutterEngine()
         super.onCreate(savedInstanceState)
         SshServiceChannelHandler.attachActivity(this)
+        installKeyboardVisibilityListener()
         handleTransferIntent(intent)
     }
 
@@ -118,6 +124,17 @@ class MainActivity : FlutterFragmentActivity() {
                 else -> result.notImplemented()
             }
         }
+        keyboardVisibilityMethodChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            KEYBOARD_VISIBILITY_CHANNEL,
+        )
+        keyboardVisibilityMethodChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getVisibility" -> result.success(keyboardVisible)
+                else -> result.notImplemented()
+            }
+        }
+
         terminalImeKeyMethodChannel?.invokeMethod(
             "getInterceptionEnabled",
             null,
@@ -210,6 +227,7 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        ViewCompat.setOnApplyWindowInsetsListener(window.decorView, null)
         SshServiceChannelHandler.detachActivity(this)
         clipboardMethodChannel?.setMethodCallHandler(null)
         clipboardMethodChannel = null
@@ -218,6 +236,8 @@ class MainActivity : FlutterFragmentActivity() {
         terminalImeKeyInterceptionEnabled = false
         terminalImeKeyMethodChannel?.setMethodCallHandler(null)
         terminalImeKeyMethodChannel = null
+        keyboardVisibilityMethodChannel?.setMethodCallHandler(null)
+        keyboardVisibilityMethodChannel = null
         super.onDestroy()
     }
 
@@ -294,6 +314,23 @@ class MainActivity : FlutterFragmentActivity() {
         } catch (_: Exception) {
             pendingTransferPayload = null
         }
+    }
+
+    private var keyboardVisible = false
+
+    private fun installKeyboardVisibilityListener() {
+        ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
+            val visible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            if (visible != keyboardVisible) {
+                keyboardVisible = visible
+                keyboardVisibilityMethodChannel?.invokeMethod(
+                    "onVisibilityChanged",
+                    visible,
+                )
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(window.decorView)
     }
 
     private fun notifyIncomingTransferPayload() {

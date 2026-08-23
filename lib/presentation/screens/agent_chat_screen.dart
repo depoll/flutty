@@ -1410,6 +1410,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
               ),
             );
       return Scaffold(
+        resizeToAvoidBottomInset: !widget.embedded,
         appBar: widget.embedded
             ? null
             : AppBar(
@@ -1428,6 +1429,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     final quickConfigControls = _buildQuickConfigControls(session);
 
     return Scaffold(
+      resizeToAvoidBottomInset: !widget.embedded,
       appBar: widget.embedded
           ? null
           : AppBar(
