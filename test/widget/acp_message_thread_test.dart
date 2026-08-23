@@ -554,6 +554,60 @@ void main() {
     );
   });
 
+  testWidgets('underfilled last-image tail remains scrollable', (tester) async {
+    final controller = ScrollController();
+    addTearDown(controller.dispose);
+    final prose = List.generate(
+      1200,
+      (index) => 'Earlier paragraph $index with enough text to wrap.',
+    ).join('\n\n');
+    final payload = List.filled(30000, 'A').join();
+    final markdown = '$prose\n\n![last image](data:image/png;base64,$payload)';
+    var followTail = true;
+    late StateSetter setThreadState;
+
+    await tester.pumpWidget(
+      wrap(
+        SizedBox(
+          height: 700,
+          child: StatefulBuilder(
+            builder: (context, setState) {
+              setThreadState = setState;
+              return AcpMessageThread(
+                controller: controller,
+                followTail: followTail,
+                entries: [
+                  AcpAssistantMessageEntry(
+                    id: 'image-tail',
+                    markdown: markdown,
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    for (
+      var attempt = 0;
+      attempt < 12 &&
+          (!controller.hasClients || controller.position.maxScrollExtent <= 0);
+      attempt++
+    ) {
+      await tester.pump();
+    }
+
+    expect(controller.position.maxScrollExtent, greaterThan(0));
+    setThreadState(() => followTail = false);
+    await tester.pump();
+    final before = controller.offset;
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 300));
+    await tester.pump();
+
+    expect(controller.offset, lessThan(before));
+  });
+
   testWidgets('virtualizes one full-screen user diagnostics prompt', (
     tester,
   ) async {

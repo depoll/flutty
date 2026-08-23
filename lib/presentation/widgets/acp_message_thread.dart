@@ -8,6 +8,7 @@ import '../../app/theme.dart';
 import '../models/acp_timeline.dart';
 import 'acp_inline_image.dart';
 import 'acp_markdown.dart';
+import 'acp_markdown_data_images.dart';
 import 'acp_markdown_virtualization.dart';
 import 'acp_plan.dart';
 import 'acp_status_entry.dart';
@@ -635,6 +636,23 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
           );
   }
 
+  void _ensureEarlierTranscriptIsScrollable(ScrollMetrics metrics) {
+    final tailMarkdown = _threadChildren.lastOrNull?.markdown;
+    if (tailMarkdown == null ||
+        !containsAcpMarkdownDataImage(tailMarkdown) ||
+        !_hasEarlierTranscript ||
+        _earlierTranscriptLoadScheduled ||
+        metrics.maxScrollExtent > metrics.minScrollExtent + 1) {
+      return;
+    }
+    // A final virtual segment can be only one image and shorter than the
+    // viewport. With no scroll extent, an upward drag cannot reach the lazy
+    // paging trigger, leaving the transcript apparently stuck on that image.
+    // Materialize one earlier page while preserving the tail anchor so the
+    // user immediately has real content to scroll into.
+    _scheduleEarlierTranscriptPage(force: true);
+  }
+
   void _scheduleEarlierTranscriptPage({bool force = false}) {
     if (!_hasEarlierTranscript ||
         _earlierTranscriptLoadScheduled ||
@@ -718,6 +736,8 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
         notification is ScrollStartNotification &&
             notification.dragDetails != null ||
         notification is ScrollUpdateNotification &&
+            notification.dragDetails != null ||
+        notification is OverscrollNotification &&
             notification.dragDetails != null ||
         notification is UserScrollNotification &&
             notification.direction != ScrollDirection.idle;
@@ -919,10 +939,12 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
 
   Widget _buildListChild(BuildContext context, int index) {
     if (_hasEarlierTranscript && index == 0) {
+      final stickyInset = _stickyPromptIndex == null ? 0.0 : 44.0;
       return SizedBox(
         key: const ValueKey('acp-earlier-transcript'),
-        height: 44,
-        child: Center(
+        height: 44 + stickyInset,
+        child: Align(
+          alignment: Alignment.bottomCenter,
           child: TextButton.icon(
             onPressed: () {
               widget.onStickyPromptTap?.call();
@@ -1014,7 +1036,8 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
           NotificationListener<ScrollNotification>(
             onNotification: _handleThreadScroll,
             child: NotificationListener<ScrollMetricsNotification>(
-              onNotification: (_) {
+              onNotification: (notification) {
+                _ensureEarlierTranscriptIsScrollable(notification.metrics);
                 _scheduleStickyUpdate();
                 return false;
               },
