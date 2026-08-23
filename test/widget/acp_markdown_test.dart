@@ -170,8 +170,19 @@ void main() {
     await tester.pumpWidget(
       wrap(const AcpMarkdown(data: '![diagram]($dataUri)')),
     );
-    await tester.pump();
-    expect(find.byType(AcpInlineImage), findsOneWidget);
+    await tester.pumpAndSettle();
+    final image = find.byType(AcpInlineImage);
+    expect(image, findsOneWidget);
+    final outlinedFrames = tester
+        .widgetList<DecoratedBox>(
+          find.descendant(of: image, matching: find.byType(DecoratedBox)),
+        )
+        .where(
+          (box) =>
+              box.decoration is BoxDecoration &&
+              (box.decoration as BoxDecoration).border != null,
+        );
+    expect(outlinedFrames, isEmpty);
   });
 
   testWidgets('keeps parsed Markdown stable across parent rebuilds', (

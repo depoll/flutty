@@ -541,13 +541,17 @@ class _AcpInlineImageState extends State<AcpInlineImage> {
       child: widget.showFrame
           ? ClipRRect(
               borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  border: Border.all(color: scheme.outline),
-                  borderRadius: BorderRadius.circular(FluttyTheme.radiusMd),
-                ),
-                child: child,
-              ),
+              child: _state == _ImageState.ready
+                  ? child
+                  : DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: scheme.outline),
+                        borderRadius: BorderRadius.circular(
+                          FluttyTheme.radiusMd,
+                        ),
+                      ),
+                      child: child,
+                    ),
             )
           : child,
     );

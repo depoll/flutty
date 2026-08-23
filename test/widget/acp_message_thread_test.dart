@@ -474,7 +474,7 @@ void main() {
     expect(find.byKey(const ValueKey('large-118')), findsNothing);
   });
 
-  testWidgets('earlier paging preserves the oversized tail anchor', (
+  testWidgets('Earlier messages reveals oversized history immediately', (
     tester,
   ) async {
     final controller = ScrollController();
@@ -511,17 +511,21 @@ void main() {
     expect(find.byKey(finalChunkKey), findsOneWidget);
     expect(find.byKey(const ValueKey('paged-large')), findsNothing);
     expect(find.byKey(const ValueKey('paged-older')), findsNothing);
-    final tailTopBefore = tester.getTopLeft(find.byKey(finalChunkKey)).dy;
+    final childCountBefore = tester
+        .widget<CustomScrollView>(find.byType(CustomScrollView))
+        .semanticChildCount!;
 
     await tester.tap(find.text('Earlier messages'));
     await tester.pumpAndSettle();
 
+    expect(controller.offset, controller.position.minScrollExtent);
     expect(
-      tester.getTopLeft(find.byKey(finalChunkKey)).dy,
-      closeTo(tailTopBefore, 1),
-      reason: 'prepending older chunks must not move the current tail anchor',
+      tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .semanticChildCount,
+      greaterThan(childCountBefore),
+      reason: 'a button tap must visibly expose a new history page',
     );
-    expect(controller.offset, greaterThan(0));
 
     for (var page = 0; page < 8; page++) {
       controller.jumpTo(controller.position.minScrollExtent);

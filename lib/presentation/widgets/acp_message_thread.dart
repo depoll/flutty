@@ -663,6 +663,22 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     _scheduleEarlierTranscriptPage(force: true, pageChildren: 1);
   }
 
+  void _revealEarlierMessagesFromButton() {
+    if (!_hasEarlierTranscript) return;
+    widget.onStickyPromptTap?.call();
+    // A button promises navigation, not an invisible anchor-preserving prepend.
+    // Cancel any pending automatic page and expose the newly materialized
+    // history at the top of the viewport immediately.
+    _earlierTranscriptAnchorGeneration += 1;
+    _earlierTranscriptLoadScheduled = false;
+    setState(_revealEarlierTranscriptPage);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_controller.hasClients) return;
+      _controller.jumpTo(_controller.position.minScrollExtent);
+      _scheduleStickyUpdate();
+    });
+  }
+
   void _scheduleEarlierTranscriptPage({
     bool force = false,
     int pageChildren = _earlierTranscriptPageChildren,
@@ -675,6 +691,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     _earlierTranscriptLoadScheduled = true;
     final generation = ++_earlierTranscriptAnchorGeneration;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (generation != _earlierTranscriptAnchorGeneration) return;
       if (!mounted || !_controller.hasClients || !_hasEarlierTranscript) {
         _earlierTranscriptLoadScheduled = false;
         return;
@@ -962,10 +979,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
         child: Align(
           alignment: Alignment.bottomCenter,
           child: TextButton.icon(
-            onPressed: () {
-              widget.onStickyPromptTap?.call();
-              _scheduleEarlierTranscriptPage(force: true);
-            },
+            onPressed: _revealEarlierMessagesFromButton,
             icon: const Icon(Icons.expand_less_rounded, size: 18),
             label: const Text('Earlier messages'),
           ),
