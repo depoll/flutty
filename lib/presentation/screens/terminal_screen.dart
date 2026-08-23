@@ -11,6 +11,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -3611,6 +3612,18 @@ class _NativeAcpLaunchState {
       );
 }
 
+/// Scheduler used for background terminal work that must yield to UI frames.
+typedef TerminalIdleTaskScheduler =
+    Future<void> Function(Future<void> Function() task);
+
+/// Runs [task] only when Flutter's scheduler has idle capacity.
+Future<void> scheduleTerminalIdleTask(Future<void> Function() task) =>
+    SchedulerBinding.instance.scheduleTask<void>(
+      task,
+      Priority.idle,
+      debugLabel: 'terminal idle task',
+    );
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -3624,6 +3637,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.initiallyExpandTmuxWindows = false,
     this.initiallyShowKeyboard = false,
     this.pasteDemoImage = false,
+    this.scheduleIdleTask = scheduleTerminalIdleTask,
     super.key,
   });
 
@@ -3653,6 +3667,10 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
   /// Whether to paste the store-demo image after opening the terminal.
   final bool pasteDemoImage;
+
+  /// Schedules non-urgent work without competing with foreground frames.
+  @visibleForTesting
+  final TerminalIdleTaskScheduler scheduleIdleTask;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -11524,8 +11542,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         '${targets.map((window) => window.nativeAcpBridgeId).join(',')}';
     if (_backgroundNativeAcpWarmupSignature == signature) return;
     _backgroundNativeAcpWarmupSignature = signature;
-    unawaited(_performInactiveNativeAcpWarmup(session, targets));
+    unawaited(_scheduleInactiveNativeAcpWarmup(session, targets));
   }
+
+  Future<void> _scheduleInactiveNativeAcpWarmup(
+    SshSession session,
+    List<TmuxWindow> targets,
+  ) => widget.scheduleIdleTask(
+    () => _performInactiveNativeAcpWarmup(session, targets),
+  );
+
+  Future<void> _waitForNativeAcpWarmupIdle() =>
+      widget.scheduleIdleTask(() async {});
 
   Future<void> _performInactiveNativeAcpWarmup(
     SshSession sshSession,
@@ -11546,8 +11574,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted || _connectionId != sshSession.connectionId) return;
     final bridgeById = {for (final bridge in bridges) bridge.id: bridge};
 
-    for (final window in targets) {
+    for (var index = 0; index < targets.length; index++) {
+      if (index > 0) await _waitForNativeAcpWarmupIdle();
       if (!mounted || _connectionId != sshSession.connectionId) return;
+      final foregroundOpen = _openingNativeAcpWindow;
+      if (foregroundOpen != null) {
+        try {
+          await foregroundOpen;
+        } on Object {
+          // The foreground path owns user-facing recovery. Resume warmup only
+          // after it yields the connection and manager serialization lane.
+        }
+      }
+      if (!mounted || _connectionId != sshSession.connectionId) return;
+      final window = targets[index];
       final bridgeId = window.nativeAcpBridgeId!;
       final providerId = window.nativeAcpProviderId!;
       final alreadyLive = manager.state.sessions.any(

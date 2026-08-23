@@ -91,6 +91,9 @@ void _stubTrueColorLoginShell(
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
+Future<void> _runTerminalIdleTaskImmediately(Future<void> Function() task) =>
+    task();
+
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockShellChannel extends Mock implements SSHSession {}
@@ -1478,6 +1481,8 @@ void main() {
       ShellCompletionService? shellCompletionService,
       AndroidDeviceDebugPlatform? deviceDebugPlatform,
       RemoteAdbCommandRunner? remoteAdbCommandRunner,
+      TerminalIdleTaskScheduler scheduleIdleTask =
+          _runTerminalIdleTaskImmediately,
     }) async {
       await tester.pumpWidget(
         ProviderScope(
@@ -1520,6 +1525,7 @@ void main() {
             home: TerminalScreen(
               hostId: host.id,
               connectionId: session.connectionId,
+              scheduleIdleTask: scheduleIdleTask,
             ),
           ),
         ),
@@ -8129,6 +8135,19 @@ void main() {
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 800));
         addTearDown(() => tester.binding.setSurfaceSize(null));
+        final scheduledIdleTasks = <Future<void> Function()>[];
+        Future<void> holdIdleTask(Future<void> Function() task) {
+          final completer = Completer<void>();
+          scheduledIdleTasks.add(() async {
+            try {
+              await task();
+            } finally {
+              completer.complete();
+            }
+          });
+          return completer.future;
+        }
+
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final windowEvents = StreamController<TmuxWindowChangeEvent>();
@@ -8232,7 +8251,16 @@ void main() {
           tmuxService: tmuxService,
           monkeyMuxService: monkeyMuxService,
           acpSessionManager: acpManager,
+          scheduleIdleTask: holdIdleTask,
         );
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          acpManager.reconnects,
+          isEmpty,
+          reason: 'preload must not compete with non-idle app work',
+        );
+        expect(scheduledIdleTasks, hasLength(1));
+        unawaited(scheduledIdleTasks.removeAt(0)());
         for (
           var attempt = 0;
           attempt < 10 && acpManager.reconnects.isEmpty;
