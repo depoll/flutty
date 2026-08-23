@@ -1,8 +1,5 @@
 part of '../screens/terminal_screen.dart';
 
-Color _muxWindowIdentityColor(ThemeData theme, {required bool isActive}) =>
-    isActive ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant;
-
 /// Builds the compact native-agent identity used by collapsed mux handles.
 ///
 /// The provider mark identifies the agent and the chat badge distinguishes a
@@ -1774,7 +1771,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         : nativeSession == null
         ? window.displayTitle
         : acpSessionDisplayTitle(nativeSession);
-    final iconColor = _muxWindowIdentityColor(theme, isActive: isActive);
+    final iconColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: isActive,
+    );
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
@@ -2146,7 +2146,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final activity = entry.session == null
         ? null
         : acpSessionActivityDisplay(entry.session!);
-    final identityColor = _muxWindowIdentityColor(theme, isActive: isActive);
+    final identityColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: isActive,
+    );
     final activityColor = activity == null
         ? theme.colorScheme.onSurfaceVariant
         : acpStatusColor(theme.colorScheme, activity.tone);
@@ -2258,7 +2261,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ? null
         : acpSessionActivityDisplay(session);
     final isActive = widget.activeNativeAcpSessionKey == key;
-    final identityColor = _muxWindowIdentityColor(theme, isActive: isActive);
+    final identityColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: isActive,
+    );
     final progress = activity == null
         ? null
         : acpActivityTerminalProgress(activity);
@@ -2446,7 +2452,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ? window.secondaryTitle
         : '${nativeSession.providerLabel} · '
               '${acpCwdSummary(nativeSession.cwd)} · ${nativeActivity!.label}';
-    final iconColor = _muxWindowIdentityColor(theme, isActive: isActive);
+    final iconColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: isActive,
+    );
     final progress = _progressForWindow(window);
 
     return ListTile(

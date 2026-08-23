@@ -35,6 +35,7 @@ import 'package:monkeyssh/domain/services/transfer_intent_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/providers/host_row_providers.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
+import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
@@ -1275,11 +1276,18 @@ void main() {
       await tester.pump();
       expect(find.text('Native task'), findsOneWidget);
       expect(find.text('NATIVE'), findsOneWidget);
-      expect(
+      final nativeRow = find.byKey(
+        ValueKey('connection-native-acp-window-${fakeAcpKey().value}'),
+      );
+      expect(nativeRow, findsOneWidget);
+      final nativeIcon = tester.widget<AgentToolIcon>(
         find.byKey(
-          ValueKey('connection-native-acp-window-${fakeAcpKey().value}'),
+          ValueKey('connection-native-acp-agent-icon-${fakeAcpKey().value}'),
         ),
-        findsOneWidget,
+      );
+      expect(
+        nativeIcon.color,
+        Theme.of(tester.element(nativeRow)).colorScheme.onSurfaceVariant,
       );
       await tester.pump(const Duration(seconds: 1));
       verify(

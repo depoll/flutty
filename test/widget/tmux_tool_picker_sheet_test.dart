@@ -11,6 +11,19 @@ Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 void main() {
   group('AgentToolIcon', () {
+    test('window identity color depends only on selection', () {
+      const scheme = ColorScheme.light(
+        primary: Color(0xFF123456),
+        onSurfaceVariant: Color(0xFF654321),
+      );
+
+      expect(agentWindowIdentityColor(scheme, isActive: true), scheme.primary);
+      expect(
+        agentWindowIdentityColor(scheme, isActive: false),
+        scheme.onSurfaceVariant,
+      );
+    });
+
     testWidgets('renders a branded svg for a known tool name', (tester) async {
       await tester.pumpWidget(_wrap(const AgentToolIcon(toolName: 'Codex')));
 

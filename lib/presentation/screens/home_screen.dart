@@ -4106,8 +4106,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   }) {
     final session = entry.session!;
     final key = session.key;
-    final activity = acpSessionActivityDisplay(session);
-    final activityColor = acpStatusColor(theme.colorScheme, activity.tone);
+    final identityColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: false,
+    );
     final agentTool = agentLaunchToolForBuiltinAcpProviderId(key.providerId);
 
     return InkWell(
@@ -4139,7 +4141,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 '$windowIndex',
                 style: theme.textTheme.labelSmall?.copyWith(
                   fontSize: 10,
-                  color: activityColor,
+                  color: identityColor,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -4148,9 +4150,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: AgentToolIcon(
+                key: ValueKey('connection-native-acp-agent-icon-${key.value}'),
                 tool: agentTool,
                 size: 14,
-                color: activityColor,
+                color: identityColor,
               ),
             ),
             Expanded(
@@ -4169,16 +4172,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                           vertical: 1,
                         ),
                         decoration: BoxDecoration(
-                          color: activityColor.withAlpha(24),
+                          color: identityColor.withAlpha(24),
                           border: Border.all(
-                            color: activityColor.withAlpha(110),
+                            color: identityColor.withAlpha(110),
                           ),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
                           'NATIVE',
                           style: FluttyTheme.monoStyle.copyWith(
-                            color: activityColor,
+                            color: identityColor,
                             fontSize: 7,
                             height: 1,
                             fontWeight: FontWeight.w700,
@@ -4234,9 +4237,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
     final title = window.displayTitle;
     final secondaryTitle = window.secondaryTitle;
-    final iconColor = window.isActive
-        ? theme.colorScheme.primary
-        : theme.colorScheme.onSurfaceVariant;
+    final iconColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: window.isActive,
+    );
 
     return InkWell(
       onTap: () => _switchAndOpenWindow(window.index),
