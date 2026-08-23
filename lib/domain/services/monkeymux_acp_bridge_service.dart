@@ -512,7 +512,11 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   final _wireFrame = <int>[];
   final _wireInputChunks = Queue<({int generation, Uint8List bytes})>();
   final _outgoingFrame = <int>[];
+  static const _maxPendingInputFrames = 32;
+  static const _maxPendingInputBytes = monkeyMuxAcpBridgeMaxFrameBytes;
+
   final _pendingInputFrames = Queue<Uint8List>();
+  var _pendingInputBytes = 0;
   final _pendingReplayFrames = Queue<Uint8List>();
 
   SSHSession? _channel;
@@ -573,6 +577,12 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
         'The ACP bridge transport is closed.',
       );
     }
+    if (!_connected && _freshBaselineEstablished) {
+      throw const MonkeyMuxAcpBridgeException(
+        MonkeyMuxAcpBridgeErrorKind.sshChannel,
+        'The ACP bridge is reconnecting; retry the request after reattach.',
+      );
+    }
     for (final byte in bytes) {
       if (byte == 0x0a) {
         final frame = List<int>.of(_outgoingFrame);
@@ -580,7 +590,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
         if (frame.isNotEmpty && frame.last == 0x0d) frame.removeLast();
         if (frame.isEmpty) continue;
         _validateAcpInputFrame(frame);
-        _pendingInputFrames.add(Uint8List.fromList(frame));
+        _enqueuePendingInput(Uint8List.fromList(frame));
         continue;
       }
       _outgoingFrame.add(byte);
@@ -1341,6 +1351,28 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     }
   }
 
+  void _enqueuePendingInput(Uint8List frame, {bool first = false}) {
+    if (_pendingInputFrames.length >= _maxPendingInputFrames ||
+        _pendingInputBytes + frame.length > _maxPendingInputBytes) {
+      throw const MonkeyMuxAcpBridgeException(
+        MonkeyMuxAcpBridgeErrorKind.frameTooLarge,
+        'Too much ACP input is waiting for the bridge.',
+      );
+    }
+    if (first) {
+      _pendingInputFrames.addFirst(frame);
+    } else {
+      _pendingInputFrames.addLast(frame);
+    }
+    _pendingInputBytes += frame.length;
+  }
+
+  Uint8List _removePendingInput() {
+    final frame = _pendingInputFrames.removeFirst();
+    _pendingInputBytes -= frame.length;
+    return frame;
+  }
+
   void _flushPendingInput() {
     if (_directReplayInProgress ||
         !_connected ||
@@ -1350,7 +1382,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       return;
     }
     while (_pendingInputFrames.isNotEmpty && _connected) {
-      final frame = _pendingInputFrames.removeFirst();
+      final frame = _removePendingInput();
       try {
         _sendWire({
           'version': monkeyMuxAcpBridgeProtocolVersion,
@@ -1358,7 +1390,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
           'data': jsonDecode(utf8.decode(frame, allowMalformed: false)),
         });
       } on Object catch (error) {
-        _pendingInputFrames.addFirst(frame);
+        _enqueuePendingInput(frame, first: true);
         _handleChannelLoss(_generation, error);
         return;
       }
@@ -1506,6 +1538,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     _discardWireInput();
     _outgoingFrame.clear();
     _pendingInputFrames.clear();
+    _pendingInputBytes = 0;
     if (closeStreams) {
       if (!_incoming.isClosed) unawaited(_incoming.close());
       if (!_errors.isClosed) unawaited(_errors.close());

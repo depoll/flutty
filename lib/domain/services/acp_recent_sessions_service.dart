@@ -47,11 +47,15 @@ class AcpRecentSessionsService {
   /// A reference with the same [AcpSessionKey] replaces the previous entry so
   /// updated titles and timestamps are retained without duplication.
   Future<void> record(AcpRecentSessionRef ref) => _withMutationLock(() async {
+    final safeRef = ref.copyWith(
+      title: _bounded(ref.title, kAcpRecentTitleMaxCharacters),
+      cwd: _bounded(ref.cwd, kAcpRecentCwdMaxCharacters),
+    );
     final existing = await list();
     final deduped = existing
-        .where((entry) => entry.key != ref.key)
+        .where((entry) => entry.key != safeRef.key)
         .toList(growable: true);
-    final updated = <AcpRecentSessionRef>[ref, ...deduped];
+    final updated = <AcpRecentSessionRef>[safeRef, ...deduped];
     final bounded = updated.length > _maxEntries
         ? updated.sublist(0, _maxEntries)
         : updated;
@@ -100,6 +104,11 @@ class AcpRecentSessionsService {
           }),
         );
       });
+
+  static String? _bounded(String? value, int maxCharacters) {
+    if (value == null || value.length <= maxCharacters) return value;
+    return value.substring(0, maxCharacters);
+  }
 
   Future<void> _write(List<AcpRecentSessionRef> refs) async {
     if (refs.isEmpty) {

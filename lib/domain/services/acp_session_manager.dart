@@ -100,10 +100,12 @@ final class AcpSessionManagerState {
   AcpSessionState? get selected =>
       selectedKey == null ? null : byKeyValue(selectedKey!);
 
-  /// Keys of sessions that currently count against the concurrency limit.
+  /// Keys of remote mux windows that count against the concurrency limit.
+  ///
+  /// A local detach does not stop the provider, so it must not free a slot.
   Set<String> get liveSessionKeyValues => {
     for (final session in sessions)
-      if (session.isLive) session.key.value,
+      if (session.isOpenMuxWindow) session.key.value,
   };
 
   @override
@@ -615,12 +617,18 @@ class AcpSessionManager {
         final index = local.indexWhere(
           (candidate) => candidate.key.value == recent.key.value,
         );
+        final merged = index >= 0
+            ? local[index].copyWith(
+                cwd: recent.cwd,
+                lastActivityAt: recent.lastActivityAt,
+              )
+            : recent;
         if (index >= 0) {
-          local[index] = recent;
+          local[index] = merged;
         } else {
-          local.add(recent);
+          local.add(merged);
         }
-        await _recentSessions.record(recent);
+        await _recentSessions.record(merged);
       }
     } on Object {
       // Local recents remain available while SSH/helper discovery is offline.
@@ -867,18 +875,35 @@ class AcpSessionManager {
   }
 
   Future<void> _recordRecent(AcpSessionState state) async {
-    await _recentSessions.record(
-      AcpRecentSessionRef(
-        hostId: state.key.hostId,
-        providerId: state.key.providerId,
-        bridgeId: state.key.bridgeId,
-        acpSessionId: state.key.acpSessionId,
-        title: state.title,
-        cwd: state.cwd,
-        createdAt: state.createdAt,
-        lastActivityAt: state.lastActivityAt,
-      ),
-    );
+    String? bounded(String? value, int maxCharacters) {
+      if (value == null) return null;
+      return value.length <= maxCharacters
+          ? value
+          : value.substring(0, maxCharacters);
+    }
+
+    try {
+      await _recentSessions.record(
+        AcpRecentSessionRef(
+          hostId: state.key.hostId,
+          providerId: state.key.providerId,
+          bridgeId: state.key.bridgeId,
+          acpSessionId: state.key.acpSessionId,
+          title: bounded(state.title, kAcpRecentTitleMaxCharacters),
+          cwd: bounded(state.cwd, kAcpRecentCwdMaxCharacters),
+          createdAt: state.createdAt,
+          lastActivityAt: state.lastActivityAt,
+        ),
+      );
+    } on Object catch (error) {
+      // Recents are optional navigation metadata. A settings failure must never
+      // tear down an already-running provider/session.
+      _diagnostics.warning(
+        'acp.manager',
+        'recent_persist_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+    }
   }
 
   Future<void> _stopAll(
@@ -886,38 +911,37 @@ class AcpSessionManager {
     bool stopRemoteBridges = true,
   }) async {
     for (final key in keys) {
-      final controller = _controllers.remove(key.value);
+      final controller = _controllers[key.value];
       if (controller == null) continue;
-      final hostId = key.hostId;
-      final bridgeId = key.bridgeId;
+      // Confirm termination before dropping local ownership. Otherwise a
+      // transient SSH/control failure makes the UI report success while an
+      // untracked provider keeps running and frees a concurrency slot.
+      final bridgeStillUsed = _controllers.values.any(
+        (other) =>
+            !identical(other, controller) && other.bridgeKey == key.bridge,
+      );
+      if (stopRemoteBridges && !bridgeStillUsed) {
+        try {
+          await _connector.stopBridge(key.hostId, key.bridgeId);
+        } on Object catch (error) {
+          _diagnostics.warning(
+            'acp.manager',
+            'bridge_stop_failed',
+            fields: {'hostId': key.hostId, 'errorType': error.runtimeType},
+          );
+          rethrow;
+        }
+      }
+
+      _controllers.remove(key.value);
       // Cancel only this session's own pending permission/write requests
-      // before releasing its lease. When another live session (for example
-      // a fork) still shares this bridge attachment, the attachment and its
-      // capability service stay alive for that other session, so this must
-      // not rely on a full `close()` to clean up: it would incorrectly
-      // cancel the other session's pending requests too.
+      // before releasing its lease. A sibling fork keeps its own requests and
+      // terminals through the shared capability service.
       await controller.attachment.capabilityService?.closeSession(
         key.acpSessionId,
       );
-      // Release the local lease (idempotent) and cancel streams.
       await controller.disposeLocal();
       _telemetry.sessionEnded(reason: 'stopped');
-      // Explicit stop must terminate the remote bridge process even if this
-      // session had detached locally, unless another live session still uses
-      // that bridge (for example, a fork sharing the same provider process).
-      final bridgeStillUsed = _controllers.values.any(
-        (other) => other.bridgeKey == key.bridge,
-      );
-      if (bridgeStillUsed || !stopRemoteBridges) continue;
-      try {
-        await _connector.stopBridge(hostId, bridgeId);
-      } on Object catch (error) {
-        _diagnostics.warning(
-          'acp.manager',
-          'bridge_stop_failed',
-          fields: {'hostId': hostId, 'errorType': error.runtimeType},
-        );
-      }
     }
     _emit();
   }
@@ -1206,9 +1230,11 @@ class _BridgeAttachment {
     required Future<AcpClientCapabilityService> Function()
     capabilityServiceFactory,
     AcpInitializeResult? initialization,
+    AcpClientCapabilityService? capabilityService,
   }) : _session = session,
        _capabilityServiceFactory = capabilityServiceFactory,
-       _initialization = initialization;
+       _initialization = initialization,
+       _capabilityService = capabilityService;
 
   final AcpBridgeKey bridgeKey;
   final String providerId;
@@ -1392,6 +1418,7 @@ class _SessionController {
   var _promptActive = false;
   var _detachedTurnInFlight = false;
   Timer? _detachedTurnStatusTimer;
+  Timer? _recentPersistTimer;
   var _detachedTurnMonitorGeneration = 0;
   var _lastAcknowledgedBridgeSequence = 0;
 
@@ -1866,6 +1893,14 @@ class _SessionController {
         equality.equals(firstText.extensions, nextText.extensions);
   }
 
+  void _scheduleRecentPersistence() {
+    _recentPersistTimer?.cancel();
+    _recentPersistTimer = Timer(
+      const Duration(milliseconds: 500),
+      () => unawaited(_manager._recordRecent(_state)),
+    );
+  }
+
   void _finishHistoryReplayPublication() {
     if (!_historyReplayPublicationHeld) return;
     _state = _state.copyWith(timeline: _timelineBuilder.snapshot());
@@ -1952,6 +1987,7 @@ class _SessionController {
       }
       return next;
     }, notifyManager: notifyManager);
+    _scheduleRecentPersistence();
   }
 
   static List<T> _bounded<T>(List<T> values, int maxLength) =>
@@ -2242,6 +2278,7 @@ class _SessionController {
         'close_failed',
         fields: {'errorType': error.runtimeType},
       );
+      rethrow;
     }
   }
 
@@ -2256,6 +2293,7 @@ class _SessionController {
         'delete_failed',
         fields: {'errorType': error.runtimeType},
       );
+      rethrow;
     }
   }
 
@@ -2298,6 +2336,7 @@ class _SessionController {
       _manager
         .._select(key.value)
         .._emit();
+      await _manager._recordRecent(forkController.state);
       return AcpSessionLaunchStarted(key);
     } on AcpUnsupportedCapabilityException {
       return AcpSessionLaunchFailed(
@@ -2390,7 +2429,10 @@ class _SessionController {
     // attachment below preserves any still-pending permission/write
     // decisions across the detach instead of silently discarding them in
     // favor of a fresh, empty registry.
-    final priorRegistry = attachment.capabilityService?.registry;
+    final priorCapabilityService = wasDetached
+        ? attachment.capabilityService
+        : null;
+    final priorRegistry = priorCapabilityService?.registry;
     final priorInitialization =
         attachment.initialization ?? _state.initialization;
 
@@ -2415,6 +2457,9 @@ class _SessionController {
     } else {
       if (existing != null) {
         _manager._attachments.remove(bridgeKey.value);
+        if (priorCapabilityService == null) {
+          await existing.forceClose();
+        }
       }
       target = _BridgeAttachment(
         bridgeKey: bridgeKey,
@@ -2432,6 +2477,7 @@ class _SessionController {
           existingRegistry: priorRegistry,
         ),
         initialization: priorInitialization,
+        capabilityService: priorCapabilityService,
       );
       _manager._attachments[bridgeKey.value] = target;
     }
@@ -2691,6 +2737,8 @@ class _SessionController {
   Future<void> disposeLocal({bool permanent = true}) async {
     if (_disposed) return;
     _disposed = true;
+    _recentPersistTimer?.cancel();
+    _recentPersistTimer = null;
     _stopDetachedTurnMonitor();
     while (_promptQueue.isNotEmpty) {
       final queued = _promptQueue.removeFirst();

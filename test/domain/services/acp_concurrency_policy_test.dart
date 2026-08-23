@@ -26,6 +26,18 @@ void main() {
       expect(decision, const AcpConcurrencyAllowed());
     });
 
+    test(
+      'allows reopening one of several existing sessions after downgrade',
+      () {
+        final decision = policy.evaluate(
+          currentLiveSessionKeys: const {'session-a', 'session-b'},
+          candidateSessionKey: 'session-a',
+          isProUnlocked: false,
+        );
+        expect(decision, const AcpConcurrencyAllowed());
+      },
+    );
+
     test('requires a choice when moving from one live session to two', () {
       final decision = policy.evaluate(
         currentLiveSessionKeys: const {'session-a'},

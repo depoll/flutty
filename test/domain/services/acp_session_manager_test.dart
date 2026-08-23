@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
+import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_timeline.dart';
@@ -59,6 +60,9 @@ class _FakeAcpServer implements AcpTransport {
 
   /// When true, `session/resume` rejects reconnect setup.
   final bool rejectResume;
+
+  /// When true, `session/delete` returns a provider error.
+  bool failDelete = false;
 
   /// JSON-RPC error code returned when session creation is rejected.
   final int newSessionErrorCode;
@@ -219,8 +223,13 @@ class _FakeAcpServer implements AcpTransport {
           ],
         });
       case 'session/close':
-      case 'session/delete':
         _reply(id, <String, Object?>{});
+      case 'session/delete':
+        if (failDelete) {
+          _replyError(id, -32603, 'Delete failed');
+        } else {
+          _reply(id, <String, Object?>{});
+        }
       default:
         _reply(id, <String, Object?>{});
     }
@@ -387,6 +396,7 @@ class _FakeConnector implements AcpBridgeConnector {
       <String, StreamController<MonkeyMuxAcpBridgeException>>{};
   MonkeyMuxInstallConfirmation? lastListConfirmInstall;
   Exception? startError;
+  Exception? stopError;
   int _bridgeCounter = 0;
   int bridgeStatusInFlightTurnCount = 0;
   bool skippedHistoricalReplay = false;
@@ -471,6 +481,7 @@ class _FakeConnector implements AcpBridgeConnector {
   @override
   Future<void> stopBridge(int hostId, String bridgeId) async {
     stoppedBridges.add(bridgeId);
+    if (stopError case final error?) throw error;
     availableBridges.remove(bridgeId);
   }
 
@@ -775,6 +786,21 @@ void main() {
       expect(connector.startedBridges, hasLength(1));
     });
 
+    test('detached remote window still blocks a second free session', () async {
+      final first = await startCopilot();
+      await manager.detachSession(first);
+
+      final result = await manager.startNewSession(
+        hostId: 2,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+
+      expect(result, isA<AcpSessionLaunchBlocked>());
+      expect(manager.liveSessionKeyValues, contains(first.value));
+      expect(connector.availableBridges, contains(first.bridgeId));
+    });
+
     test('pro tier allows multiple live sessions', () async {
       isPro = true;
       await startCopilot();
@@ -837,6 +863,29 @@ void main() {
       final tool = timeline.entries.whereType<AcpToolCallEntry>().single;
       expect(tool.status, isNotNull);
       expect(tool.status!.value, 'completed');
+    });
+
+    test('debounces and bounds later session metadata in recents', () async {
+      final key = await startCopilot();
+      final title = List.filled(400, 'x').join();
+      connector.servers[key.bridgeId]!.pushUpdate(key.acpSessionId, {
+        'sessionUpdate': 'session_info_update',
+        'title': title,
+      });
+      await _pump();
+      await Future<void>.delayed(const Duration(milliseconds: 550));
+
+      final recent = (await recentSessions.list()).firstWhere(
+        (candidate) => candidate.key == key,
+      );
+      expect(recent.title, title.substring(0, 256));
+      expect(
+        recent.lastActivityAt.millisecondsSinceEpoch,
+        manager.state
+            .byKeyValue(key.value)!
+            .lastActivityAt
+            .millisecondsSinceEpoch,
+      );
     });
 
     test('applies available-commands and config updates to state', () async {
@@ -1231,36 +1280,52 @@ void main() {
     );
   });
 
-  test('remote bridge metadata restores a navigable native session', () async {
-    final now = DateTime(2026);
-    connector.remoteMetadata = [
-      MonkeyMuxAcpBridgeMetadata(
-        id: '0123456789abcdef0123456789abcdef',
-        providerId: AcpBuiltinProviderIds.copilotCli,
-        sessionId: 'remote-session',
-        cwd: '/repo',
-        provider: 'Copilot CLI',
-        commandHash: 'hash',
-        state: MonkeyMuxAcpProviderState.running,
-        clientCount: 0,
-        pendingRequestCount: 0,
-        inFlightTurnCount: 0,
-        lastActivity: now,
-        startedAt: now,
-        nextSequence: 1,
-      ),
-    ];
+  test(
+    'remote bridge metadata preserves local title while refreshing',
+    () async {
+      final now = DateTime(2026);
+      await recentSessions.record(
+        AcpRecentSessionRef(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          bridgeId: '0123456789abcdef0123456789abcdef',
+          acpSessionId: 'remote-session',
+          title: 'Preserved title',
+          cwd: '/old',
+          createdAt: DateTime(2025),
+          lastActivityAt: DateTime(2025),
+        ),
+      );
+      connector.remoteMetadata = [
+        MonkeyMuxAcpBridgeMetadata(
+          id: '0123456789abcdef0123456789abcdef',
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          sessionId: 'remote-session',
+          cwd: '/repo',
+          provider: 'Copilot CLI',
+          commandHash: 'hash',
+          state: MonkeyMuxAcpProviderState.running,
+          clientCount: 0,
+          pendingRequestCount: 0,
+          inFlightTurnCount: 0,
+          lastActivity: now,
+          startedAt: now,
+          nextSequence: 1,
+        ),
+      ];
 
-    final sessions = await manager.loadNavigableSessions(1);
+      final sessions = await manager.loadNavigableSessions(1);
 
-    expect(sessions, hasLength(1));
-    expect(sessions.single.acpSessionId, 'remote-session');
-    expect(sessions.single.cwd, '/repo');
-    expect(
-      (await manager.loadRecentSessions()).map((recent) => recent.key.value),
-      contains(sessions.single.key.value),
-    );
-  });
+      expect(sessions, hasLength(1));
+      expect(sessions.single.acpSessionId, 'remote-session');
+      expect(sessions.single.title, 'Preserved title');
+      expect(sessions.single.cwd, '/repo');
+      expect(
+        (await manager.loadRecentSessions()).map((recent) => recent.key.value),
+        contains(sessions.single.key.value),
+      );
+    },
+  );
 
   group('prompt lifecycle', () {
     test('prompt returns a stop reason and clears streaming', () async {
@@ -1415,6 +1480,40 @@ void main() {
       expect(connector.stoppedBridges, [key.bridgeId]);
       expect(manager.state.byKeyValue(key.value), isNull);
     });
+
+    test(
+      'remote stop failure keeps the live session and recent retry handle',
+      () async {
+        final key = await startCopilot();
+        connector.stopError = Exception('SSH unavailable');
+
+        await expectLater(manager.stopSession(key), throwsA(isA<Exception>()));
+
+        expect(manager.state.byKeyValue(key.value)?.isLive, isTrue);
+        expect(
+          (await recentSessions.list()).map((recent) => recent.key),
+          contains(key),
+        );
+        expect(connector.availableBridges, contains(key.bridgeId));
+      },
+    );
+
+    test(
+      'remote delete failure keeps the session and recent retry handle',
+      () async {
+        final key = await startCopilot();
+        connector.servers[key.bridgeId]!.failDelete = true;
+
+        await expectLater(manager.deleteSession(key), throwsA(isA<Object>()));
+
+        expect(manager.state.byKeyValue(key.value)?.isLive, isTrue);
+        expect(connector.stoppedBridges, isEmpty);
+        expect(
+          (await recentSessions.list()).map((recent) => recent.key),
+          contains(key),
+        );
+      },
+    );
 
     test('idle reconnect refreshes session setup safely', () async {
       final key = await startCopilot();
@@ -1683,6 +1782,10 @@ void main() {
       // The original remains tracked and live.
       expect(manager.state.byKeyValue(key.value)!.isLive, isTrue);
       expect(manager.state.byKeyValue(forkKey.value)!.isLive, isTrue);
+      expect(
+        (await recentSessions.list()).map((recent) => recent.key),
+        contains(forkKey),
+      );
     });
   });
 

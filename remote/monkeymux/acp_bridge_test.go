@@ -882,16 +882,18 @@ func TestAcpProviderExitCancelsDelayedForceStop(t *testing.T) {
 	done := make(chan struct{})
 	forced := make(chan struct{}, 1)
 
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
 	stopAcpProviderAfter(cmd, done, 250*time.Millisecond, func(*exec.Cmd) {
 		forced <- struct{}{}
 	})
-	_ = cmd.Wait()
-	close(done)
 
 	select {
 	case <-forced:
 		t.Fatal("force stop ran after the provider had exited")
-	case <-time.After(300 * time.Millisecond):
+	default:
 	}
 }
 
@@ -1265,6 +1267,43 @@ func TestAcpProviderCommandUsesPipesNotTerminal(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("provider did not exit")
+}
+
+func TestReplayHasGapIncludesTrailingHighWaterGap(t *testing.T) {
+	replay := []acpReplayEvent{
+		{message: acpWireMessage{Sequence: 3}},
+		{message: acpWireMessage{Sequence: 4}},
+	}
+	if !replayHasGap(replay, 2, 6) {
+		t.Fatal("expected missing trailing sequences 5-6 to be reported")
+	}
+	if replayHasGap(replay, 2, 4) {
+		t.Fatal("contiguous replay through high-water was reported as incomplete")
+	}
+}
+
+func TestReadProviderOutputFailsMalformedAndOversizedFrames(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		output string
+	}{
+		{name: "malformed", output: "not-json\n"},
+		{name: "oversized", output: strings.Repeat("x", acpMaxFrameBytes+1) + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bridge := &acpBridge{
+				state:        "running",
+				providerDone: make(chan struct{}),
+			}
+			bridge.readProviderOutput(strings.NewReader(test.output))
+			if bridge.state != "protocol_error" {
+				t.Fatalf("state = %q, want protocol_error", bridge.state)
+			}
+			if len(bridge.replay) != 1 || bridge.replay[0].message.State != "protocol_error" {
+				t.Fatalf("protocol failure replay = %#v", bridge.replay)
+			}
+		})
+	}
 }
 
 func startTestAcpBridge(t *testing.T, command string) (*acpBridge, func()) {

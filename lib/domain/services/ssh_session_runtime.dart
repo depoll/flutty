@@ -1180,17 +1180,14 @@ if(!$__flResolved){$__flResolved='cmd'}
       return;
     }
     _terminalParsingPaused = paused;
-    if (paused) {
-      _terminalParsePumpTimer?.cancel();
-      _terminalParsePumpTimer = null;
-      _terminalParseBacklog = '';
-      _terminalParseOffset = 0;
+    if (!paused) {
       _lastTerminalParseNotifyAtMs = null;
+      _terminal?.notifyListeners();
     }
   }
 
   void _enqueueTerminalParse(Terminal terminal, String data) {
-    if (data.isEmpty || _terminalParsingPaused) {
+    if (data.isEmpty) {
       return;
     }
     // Drop already-consumed prefix before appending so the backing string does
@@ -1247,7 +1244,7 @@ if(!$__flResolved){$__flResolved='cmd'}
     }
     if (processedAny) {
       _notifyTerminalParseProgress(terminal, drained: remaining == 0);
-      _scheduleTerminalPreviewRefresh();
+      if (!_terminalParsingPaused) _scheduleTerminalPreviewRefresh();
       if (diagnosticsEnabled) {
         DiagnosticsLogService.instance.debug(
           'terminal.parse',
@@ -1279,6 +1276,7 @@ if(!$__flResolved){$__flResolved='cmd'}
     Terminal terminal, {
     required bool drained,
   }) {
+    if (_terminalParsingPaused) return;
     if (drained) {
       _lastTerminalParseNotifyAtMs = null;
       terminal.notifyListeners();

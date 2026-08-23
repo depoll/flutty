@@ -1570,7 +1570,7 @@ void main() {
       );
       expect(agentIcon.tool, AgentLaunchTool.copilotCli);
       expect(agentIcon.size, 16);
-      expect(agentIcon.color, scheme.primary);
+      expect(agentIcon.color, scheme.onSurfaceVariant);
       final subtitle = tester.widget<Text>(
         find.byKey(ValueKey('native-acp-subtitle-${key.value}')),
       );
@@ -1645,7 +1645,9 @@ void main() {
             ),
           ],
         );
-        final windows = [
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        var windows = <TmuxWindow>[
           TmuxWindow(
             index: 3,
             id: '@4',
@@ -1679,7 +1681,7 @@ void main() {
         ).thenAnswer((_) async => null);
         when(
           () => tmuxService.watchWindowChanges(session, tmuxSessionName),
-        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        ).thenAnswer((_) => windowEvents.stream);
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
         ).thenAnswer((_) async => windows);
@@ -1727,8 +1729,70 @@ void main() {
         final terminalIcon = tester.widget<AgentToolIcon>(
           find.byKey(const ValueKey('tmux-window-agent-icon-4')),
         );
-        expect(nativeIcon.color, scheme.primary);
+        expect(nativeIcon.color, scheme.onSurfaceVariant);
         expect(terminalIcon.color, nativeIcon.color);
+
+        windows = [
+          TmuxWindow(
+            index: 3,
+            id: '@4',
+            name: 'Copilot CLI',
+            isActive: true,
+            currentPath: '/home/dev/project',
+            nativeAcpBridgeId: key.bridgeId,
+            nativeAcpProviderId: key.providerId,
+          ),
+          const TmuxWindow(
+            index: 4,
+            id: '@5',
+            name: 'Terminal Copilot',
+            isActive: false,
+            agentTool: AgentLaunchTool.copilotCli,
+          ),
+          const TmuxWindow(index: 5, id: '@6', name: 'zsh', isActive: false),
+        ];
+        windowEvents.add(TmuxWindowListEvent(windows));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          tester
+              .widget<AgentToolIcon>(
+                find.byKey(const ValueKey('tmux-window-agent-icon-3')),
+              )
+              .color,
+          scheme.primary,
+        );
+
+        windows = [
+          TmuxWindow(
+            index: 3,
+            id: '@4',
+            name: 'Copilot CLI',
+            isActive: false,
+            currentPath: '/home/dev/project',
+            nativeAcpBridgeId: key.bridgeId,
+            nativeAcpProviderId: key.providerId,
+          ),
+          const TmuxWindow(
+            index: 4,
+            id: '@5',
+            name: 'Terminal Copilot',
+            isActive: false,
+            agentTool: AgentLaunchTool.copilotCli,
+          ),
+          const TmuxWindow(index: 5, id: '@6', name: 'zsh', isActive: true),
+        ];
+        windowEvents.add(TmuxWindowListEvent(windows));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          tester
+              .widget<AgentToolIcon>(
+                find.byKey(const ValueKey('tmux-window-agent-icon-3')),
+              )
+              .color,
+          scheme.onSurfaceVariant,
+        );
         expect(
           find.byKey(const ValueKey('native-acp-window-progress-3')),
           findsOneWidget,
@@ -1753,7 +1817,7 @@ void main() {
         final nativeSubtitle = tester.widget<Text>(
           find.byKey(const ValueKey('tmux-window-subtitle-3')),
         );
-        expect(reconnectingNativeIcon.color, scheme.primary);
+        expect(reconnectingNativeIcon.color, scheme.onSurfaceVariant);
         expect(nativeSubtitle.style?.color, scheme.onSurfaceVariant);
         expect(
           tester
@@ -1761,7 +1825,7 @@ void main() {
                 find.byKey(const ValueKey('native-acp-window-indicator-3')),
               )
               .color,
-          scheme.primary,
+          scheme.onSurfaceVariant,
         );
         expect(find.text('reconnecting'), findsOneWidget);
         expect(

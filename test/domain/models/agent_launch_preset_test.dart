@@ -642,20 +642,22 @@ void main() {
       );
     });
 
-    test('wraps only MonkeyMux Pi commands with exact identity support', () {
+    test('quotes Windows launch profiles as one cmd.exe argument', () {
       expect(
-        buildMonkeyMuxAgentToolCommand(
-          AgentLaunchTool.pi,
-          'pi --session-dir sessions',
+        buildAgentToolCommand(
+          AgentLaunchTool.hermes,
+          launchProfile: 'work & review',
+          windows: true,
         ),
-        'monkeymux pi-agent --session-dir sessions',
+        contains('--profile "work & review"'),
       );
       expect(
-        buildMonkeyMuxAgentToolCommand(
-          AgentLaunchTool.claudeCode,
-          'claude --resume session',
+        () => buildAgentToolCommand(
+          AgentLaunchTool.hermes,
+          launchProfile: 'unsafe%PATH%',
+          windows: true,
         ),
-        'claude --resume session',
+        throwsFormatException,
       );
     });
 

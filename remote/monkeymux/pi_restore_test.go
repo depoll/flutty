@@ -10,6 +10,23 @@ import (
 	"time"
 )
 
+func TestMonkeyMuxAgentLaunchCommandWrapsPiWithCurrentExecutable(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	argument, ok := shellArgument(executable)
+	if !ok {
+		t.Fatalf("current executable is not shell-safe: %q", executable)
+	}
+	if got, want := monkeyMuxAgentLaunchCommand("pi --session-dir sessions"), argument+" pi-agent --session-dir sessions"; got != want {
+		t.Fatalf("Pi create command = %q, want %q", got, want)
+	}
+	if got := monkeyMuxAgentLaunchCommand("opencode"); got != "opencode" {
+		t.Fatalf("non-Pi command was rewritten: %q", got)
+	}
+}
+
 func writePiTestSession(t *testing.T, path string, id string, cwd string, modified time.Time) {
 	t.Helper()
 	writePiTestSessionTimes(t, path, id, cwd, modified, modified)

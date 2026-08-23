@@ -1833,31 +1833,39 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     AcpSessionState session,
   ) async {
     final manager = ref.read(acpSessionManagerProvider);
-    switch (action) {
-      case _ChatAction.settings:
-        await _openConfig(session);
-      case _ChatAction.reconnect:
-        await _ensureConnected();
-      case _ChatAction.detach:
-        await manager.detachSession(_key);
-        if (mounted) {
-          _leaveChat();
-        }
-      case _ChatAction.stop:
-        await manager.stopSession(_key);
-        if (mounted) {
-          _leaveChat();
-        }
-      case _ChatAction.fork:
-        await _fork();
-      case _ChatAction.delete:
-        if (!await _confirmDeleteSession() || !mounted) {
-          return;
-        }
-        await manager.deleteSession(_key);
-        if (mounted) {
-          _leaveChat();
-        }
+    try {
+      switch (action) {
+        case _ChatAction.settings:
+          await _openConfig(session);
+        case _ChatAction.reconnect:
+          await _ensureConnected();
+        case _ChatAction.detach:
+          await manager.detachSession(_key);
+          if (mounted) _leaveChat();
+        case _ChatAction.stop:
+          await manager.stopSession(_key);
+          if (mounted) _leaveChat();
+        case _ChatAction.fork:
+          await _fork();
+        case _ChatAction.delete:
+          if (!await _confirmDeleteSession() || !mounted) return;
+          await manager.deleteSession(_key);
+          if (mounted) _leaveChat();
+      }
+    } on Object {
+      if (!mounted) return;
+      final actionLabel = switch (action) {
+        _ChatAction.delete => 'delete',
+        _ChatAction.stop => 'stop',
+        _ => 'update',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Couldn’t $actionLabel this session. It is still available to retry.',
+          ),
+        ),
+      );
     }
   }
 

@@ -77,11 +77,37 @@ void main() {
       await _settle();
 
       expect(registry.requests, hasLength(1));
-      await service.selectPermission('permission-1', 'agent-option');
+      await service.selectPermission('s:permission-1', 'agent-option');
 
       expect(transport.responseFor('permission-1')['result'], {
         'outcome': {'outcome': 'selected', 'optionId': 'agent-option'},
       });
+      expect(registry.requests, isEmpty);
+    });
+
+    test('keeps numeric and string JSON-RPC request IDs distinct', () async {
+      Map<String, Object?> permission(String toolCallId) => {
+        'sessionId': 'session-1',
+        'toolCall': {'toolCallId': toolCallId},
+        'options': [
+          {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+        ],
+      };
+
+      transport
+        ..sendRequest(1, 'session/request_permission', permission('numeric'))
+        ..sendRequest('1', 'session/request_permission', permission('string'));
+      await _settle();
+
+      expect(registry.requests.map((request) => request.id).toSet(), {
+        'n:1',
+        's:1',
+      });
+      await service.selectPermission('n:1', 'allow');
+      await service.selectPermission('s:1', 'allow');
+
+      expect(transport.responseFor(1)['result'], isNotNull);
+      expect(transport.responseFor('1')['result'], isNotNull);
       expect(registry.requests, isEmpty);
     });
 
@@ -201,7 +227,7 @@ void main() {
         );
         await _settle();
 
-        await service.selectPermission('permission-1', 'allow');
+        await service.selectPermission('s:permission-1', 'allow');
         expect(
           reconnectTransport.responseFor('permission-1')['result'],
           isNotNull,
@@ -321,7 +347,7 @@ void main() {
         expect(transport.responseForOrNull('write-1'), isNull);
         expect(files.files['/workspace/a.txt'], isNull);
 
-        await service.approveWrite('write-1');
+        await service.approveWrite('s:write-1');
         expect(utf8.decode(files.files['/workspace/a.txt']!), 'edited');
         expect(transport.responseFor('write-1')['result'], isNull);
 
@@ -370,7 +396,7 @@ void main() {
         files.writeFailure = const FileSystemException('SFTP failed');
 
         await expectLater(
-          () => service.approveWrite('write-failure'),
+          () => service.approveWrite('s:write-failure'),
           throwsA(isA<FileSystemException>()),
         );
         expect(transport.responseFor('write-failure')['error'], {
@@ -393,7 +419,7 @@ void main() {
         files.writeFailure = TimeoutException('timed out');
 
         await expectLater(
-          () => service.approveWrite('write-timeout'),
+          () => service.approveWrite('s:write-timeout'),
           throwsA(isA<TimeoutException>()),
         );
         expect(transport.responseFor('write-timeout')['error'], {
@@ -403,6 +429,58 @@ void main() {
         expect(registry.requests, isEmpty);
       },
     );
+
+    test(
+      'scopes terminals to their owner and releases them on session close',
+      () async {
+        transport.sendRequest('create-owned', 'terminal/create', {
+          'sessionId': 'session-1',
+          'command': 'long-task',
+        });
+        await _settle();
+        final terminalId =
+            (transport.responseFor('create-owned')['result']!
+                    as Map)['terminalId']
+                as String;
+
+        transport.sendRequest('cross-session-output', 'terminal/output', {
+          'sessionId': 'session-2',
+          'terminalId': terminalId,
+        });
+        await _settle();
+        expect(
+          (transport.responseFor('cross-session-output')['error']!
+              as Map)['code'],
+          -32000,
+        );
+
+        await service.closeSession('session-1');
+        expect(terminals.processes.single.killed, isTrue);
+      },
+    );
+
+    test('reserves terminal capacity across concurrent creates', () async {
+      final gate = Completer<void>();
+      terminals.startGate = gate.future;
+      for (var index = 1; index <= 3; index++) {
+        transport.sendRequest('create-$index', 'terminal/create', {
+          'sessionId': 'session-$index',
+          'command': 'task-$index',
+        });
+      }
+      await _settle();
+
+      expect(
+        (transport.responseFor('create-3')['error']! as Map)['code'],
+        -32000,
+      );
+      gate.complete();
+      await _settle();
+      await _settle();
+      expect(terminals.processes, hasLength(2));
+      expect(transport.responseFor('create-1')['result'], isNotNull);
+      expect(transport.responseFor('create-2')['result'], isNotNull);
+    });
 
     test(
       'creates concurrent terminals, truncates output, waits, kills, and releases',
@@ -673,10 +751,10 @@ final class _ServerTransport implements AcpTransport {
     );
   }
 
-  Map<String, Object?> responseFor(String id) =>
+  Map<String, Object?> responseFor(Object id) =>
       messages.lastWhere((message) => message['id'] == id);
 
-  Map<String, Object?>? responseForOrNull(String id) {
+  Map<String, Object?>? responseForOrNull(Object id) {
     for (final message in messages.reversed) {
       if (message['id'] == id) return message;
     }
@@ -725,10 +803,12 @@ final class _FakeFileSystem implements AcpRemoteFileSystem {
 final class _FakeTerminalExecutor implements AcpTerminalExecutor {
   final processes = <_FakeTerminalProcess>[];
   final commands = <String>[];
+  Future<void>? startGate;
 
   @override
   Future<AcpTerminalProcess> start(String command) async {
     commands.add(command);
+    if (startGate case final gate?) await gate;
     final process = _FakeTerminalProcess();
     processes.add(process);
     return process;

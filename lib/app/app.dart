@@ -329,7 +329,10 @@ class _BackgroundLifecycleBridgeState
         return;
       }
       _pendingAcpNavigation = null;
-      ref.read(routerProvider).go(buildAcpNotificationLocation(payload));
+      openAcpNotificationStack(
+        router: ref.read(routerProvider),
+        payload: payload,
+      );
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }

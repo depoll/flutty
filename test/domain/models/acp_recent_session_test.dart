@@ -23,7 +23,7 @@ void main() {
     expect(parsed, ref);
   });
 
-  test('serialized JSON contains only non-content metadata keys', () {
+  test('serialized JSON contains only bounded navigation metadata keys', () {
     final json = ref.toJson();
     expect(json.keys.toSet(), {
       'hostId',
@@ -77,6 +77,32 @@ void main() {
       });
       expect(parsed, isNotNull);
       expect(parsed!.lastActivityAt, parsed.createdAt);
+    });
+
+    test('rejects out-of-range epoch timestamps without throwing', () {
+      final parsed = AcpRecentSessionRef.tryFromJson(<String, Object?>{
+        'hostId': 1,
+        'providerId': 'p',
+        'bridgeId': 'b',
+        'acpSessionId': 's',
+        'createdAt': 0x7fffffffffffffff,
+      });
+      expect(parsed, isNull);
+    });
+
+    test('bounds persisted display metadata while parsing', () {
+      final parsed = AcpRecentSessionRef.tryFromJson(<String, Object?>{
+        'hostId': 1,
+        'providerId': 'p',
+        'bridgeId': 'b',
+        'acpSessionId': 's',
+        'createdAt': '2024-01-01T00:00:00Z',
+        'title': List.filled(400, 't').join(),
+        'cwd': List.filled(1200, 'c').join(),
+      });
+
+      expect(parsed?.title, hasLength(kAcpRecentTitleMaxCharacters));
+      expect(parsed?.cwd, hasLength(kAcpRecentCwdMaxCharacters));
     });
 
     test('accepts epoch millisecond timestamps', () {

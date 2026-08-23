@@ -88,7 +88,7 @@ class AcpConcurrencyPolicy {
     required String candidateSessionKey,
     required bool isProUnlocked,
   }) {
-    if (isProUnlocked) {
+    if (isProUnlocked || currentLiveSessionKeys.contains(candidateSessionKey)) {
       return const AcpConcurrencyAllowed();
     }
 

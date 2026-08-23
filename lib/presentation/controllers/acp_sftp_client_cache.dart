@@ -9,10 +9,17 @@ library;
 
 import 'package:dartssh2/dartssh2.dart';
 
-/// Opens a fresh SFTP client for the current SSH connection.
+/// Borrows the SSH session-owned SFTP client for the current connection.
+///
+/// `SshSession.sftp` caches and closes this shared channel. Callers here must
+/// never close a displaced result because the browser and capability service
+/// may be using the same instance.
 typedef AcpSftpClientOpener = Future<SftpClient> Function();
 
-/// Connection-aware cache for a single host's SFTP client.
+/// Connection-aware reference cache for a single host's shared SFTP client.
+///
+/// This object never owns the channel. Invalidation only drops a borrowed
+/// reference; the corresponding SSH session owns channel disposal.
 class AcpSftpClientCache {
   SftpClient? _client;
   int? _connectionId;
@@ -95,8 +102,8 @@ class AcpSftpClientCache {
   ) async {
     try {
       final client = await open();
-      // A newer open request superseded this one while it was in flight; do
-      // not let this stale connection's client overwrite the current cache.
+      // A newer request superseded this borrowed session-owned client. Do not
+      // cache it and do not close it: other SSH-session consumers may share it.
       if (generation != _generation) {
         return null;
       }

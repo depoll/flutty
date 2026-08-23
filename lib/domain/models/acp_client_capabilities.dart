@@ -10,8 +10,15 @@ sealed class AcpPendingClientRequest {
   /// Current transport-bound request responder.
   AcpJsonRpcServerRequest request;
 
-  /// JSON-RPC request identifier, stable across a bridge reconnect.
-  String get id => request.id.toString();
+  /// Type-preserving JSON-RPC request identifier, stable across reconnect.
+  ///
+  /// JSON-RPC numeric `1` and string `"1"` are distinct IDs and may be
+  /// outstanding simultaneously. The tag prevents registry collisions while
+  /// retaining a compact UI-safe key.
+  String get id {
+    final value = request.id;
+    return value is int ? 'n:$value' : 's:$value';
+  }
 
   /// ACP session that owns this request, if supplied by the agent.
   String get sessionId;

@@ -163,7 +163,7 @@ final class AcpSftpRemoteFileSystem implements AcpRemoteFileSystem {
     final filename = separator == -1 ? path : path.substring(separator + 1);
     final temporaryPath =
         '$parent/.$filename.acp-${Random.secure().nextInt(1 << 32)}';
-    var uploaded = false;
+    var temporaryMayExist = false;
     SftpFileMode? existingMode;
     try {
       try {
@@ -171,12 +171,14 @@ final class AcpSftpRemoteFileSystem implements AcpRemoteFileSystem {
       } on SftpStatusError catch (error) {
         if (error.code != SftpStatusCode.noSuchFile) rethrow;
       }
+      // uploadBytes may create/truncate the temporary path before throwing.
+      // Mark cleanup first; remove already tolerates a path that was never made.
+      temporaryMayExist = true;
       await const RemoteFileService().uploadBytes(
         sftp: sftp,
         remotePath: temporaryPath,
         bytes: bytes,
       );
-      uploaded = true;
       if (existingMode != null) {
         await sftp.setStat(temporaryPath, SftpFileAttrs(mode: existingMode));
       }
@@ -187,7 +189,7 @@ final class AcpSftpRemoteFileSystem implements AcpRemoteFileSystem {
         await sftp.setStat(path, SftpFileAttrs(mode: existingMode));
       }
     } finally {
-      if (uploaded) {
+      if (temporaryMayExist) {
         try {
           await sftp.remove(temporaryPath);
         } on Object {
@@ -426,6 +428,7 @@ final class AcpClientCapabilityService {
 
   final DiagnosticsLogger _diagnostics;
   final _terminals = <String, _ManagedAcpTerminal>{};
+  var _terminalReservations = 0;
   StreamSubscription<AcpServerRequest>? _subscription;
   var _nextTerminalId = 0;
 
@@ -489,6 +492,13 @@ final class AcpClientCapabilityService {
   /// requests too and stop routing their `fs`/`terminal` requests.
   Future<void> closeSession(String sessionId) async {
     _sessionAutoApprovePermissions.remove(sessionId);
+    final owned = _terminals.entries
+        .where((entry) => entry.value.sessionId == sessionId)
+        .toList(growable: false);
+    for (final entry in owned) {
+      _terminals.remove(entry.key);
+    }
+    await Future.wait<void>(owned.map((entry) => entry.value.release()));
     await registry.cancelForSession(sessionId);
   }
 
@@ -738,11 +748,8 @@ final class AcpClientCapabilityService {
         'Terminal access is unavailable',
       );
     }
-    if (_terminals.length >= limits.maxTerminals) {
-      throw const AcpLimitExceededException('Too many active terminals');
-    }
     final params = _objectParams(request);
-    _requiredSessionId(params);
+    final sessionId = _requiredSessionId(params);
     final command = _requiredString(params, 'command');
     final arguments = _stringList(params['args'], 'args');
     final environment = _environment(params['env']);
@@ -776,9 +783,18 @@ final class AcpClientCapabilityService {
           executor is AcpSshTerminalExecutor &&
           executor.session.remoteIsWindows,
     );
-    final process = await executor.start(remoteCommand);
+    if (_terminals.length + _terminalReservations >= limits.maxTerminals) {
+      throw const AcpLimitExceededException('Too many active terminals');
+    }
+    _terminalReservations++;
+    final AcpTerminalProcess process;
+    try {
+      process = await executor.start(remoteCommand);
+    } finally {
+      _terminalReservations--;
+    }
     final id = 'acp-terminal-${++_nextTerminalId}';
-    final terminal = _ManagedAcpTerminal(process, outputLimit);
+    final terminal = _ManagedAcpTerminal(sessionId, process, outputLimit);
     _terminals[id] = terminal;
     terminal
       ..start(
@@ -815,21 +831,22 @@ final class AcpClientCapabilityService {
 
   Future<void> _terminalRelease(AcpJsonRpcServerRequest request) async {
     final params = _objectParams(request);
-    _requiredSessionId(params);
+    final sessionId = _requiredSessionId(params);
     final id = _requiredString(params, 'terminalId');
-    final terminal = _terminals.remove(id);
-    if (terminal == null) {
+    final terminal = _terminals[id];
+    if (terminal == null || terminal.sessionId != sessionId) {
       throw const AcpClientCapabilityException('Unknown terminal');
     }
+    _terminals.remove(id);
     await terminal.release();
     await request.respond();
   }
 
   _ManagedAcpTerminal _terminalFor(AcpJsonRpcServerRequest request) {
     final params = _objectParams(request);
-    _requiredSessionId(params);
+    final sessionId = _requiredSessionId(params);
     final terminal = _terminals[_requiredString(params, 'terminalId')];
-    if (terminal == null) {
+    if (terminal == null || terminal.sessionId != sessionId) {
       throw const AcpClientCapabilityException('Unknown terminal');
     }
     return terminal;
@@ -980,8 +997,9 @@ final class _SshAcpTerminalProcess implements AcpTerminalProcess {
 }
 
 final class _ManagedAcpTerminal {
-  _ManagedAcpTerminal(this._process, this._limit);
+  _ManagedAcpTerminal(this.sessionId, this._process, this._limit);
 
+  final String sessionId;
   final AcpTerminalProcess _process;
   final int _limit;
   final Queue<Uint8List> _outputChunks = Queue<Uint8List>();

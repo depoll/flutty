@@ -56,9 +56,9 @@ void main() {
     await tester.pump();
 
     final markdown = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
-    expect(markdown.styleSheet?.p?.fontSize, 14);
+    expect(markdown.styleSheet?.p?.fontSize, 15);
     expect(markdown.styleSheet?.p?.height, 1.45);
-    expect(markdown.styleSheet?.blockSpacing, 6);
+    expect(markdown.styleSheet?.blockSpacing, FluttyTheme.spacingSm);
     expect(
       markdown.styleSheet?.p?.fontFamily,
       isNot(FluttyTheme.monoStyle.fontFamily),
@@ -168,6 +168,20 @@ void main() {
       wrap(const AcpMarkdown(data: '![diagram]($dataUri)')),
     );
     await tester.pump();
+    expect(find.byType(AcpInlineImage), findsOneWidget);
+  });
+
+  testWidgets('renders a provider-wrapped inline data image', (tester) async {
+    const wrappedDataUri =
+        'data:image/\n'
+        'png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC\n'
+        'AAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    await tester.pumpWidget(
+      wrap(const AcpMarkdown(data: '![diagram]($wrappedDataUri)')),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('base64'), findsNothing);
     expect(find.byType(AcpInlineImage), findsOneWidget);
   });
 

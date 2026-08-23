@@ -2,12 +2,17 @@ import 'package:flutter/foundation.dart';
 
 import 'acp_session_keys.dart';
 
-/// A persistable, content-free reference to a recently used ACP session.
+/// Maximum persisted provider-title characters for one recent session.
+const kAcpRecentTitleMaxCharacters = 256;
+
+/// Maximum persisted working-directory characters for one recent session.
+const kAcpRecentCwdMaxCharacters = 1024;
+
+/// A persistable navigation reference to a recently used ACP session.
 ///
-/// Only non-content metadata is stored: the host, provider, bridge, and remote
-/// ACP session identifiers plus an optional title and working directory and
-/// activity timestamps. Prompts, messages, attachments, tool data, and
-/// reasoning are never included.
+/// This stores identifiers, bounded display metadata (provider title and
+/// working directory), and timestamps. It never stores transcript messages,
+/// attachments, tool payloads, or reasoning.
 @immutable
 final class AcpRecentSessionRef {
   /// Creates a recent-session reference.
@@ -49,8 +54,8 @@ final class AcpRecentSessionRef {
       acpSessionId: acpSessionId,
       createdAt: createdAt,
       lastActivityAt: lastActivityAt,
-      title: _readOptionalString(json['title']),
-      cwd: _readOptionalString(json['cwd']),
+      title: _readOptionalString(json['title'], kAcpRecentTitleMaxCharacters),
+      cwd: _readOptionalString(json['cwd'], kAcpRecentCwdMaxCharacters),
     );
   }
 
@@ -154,9 +159,11 @@ final class AcpRecentSessionRef {
     return trimmed.isEmpty ? null : trimmed;
   }
 
-  static String? _readOptionalString(Object? value) {
+  static String? _readOptionalString(Object? value, int maxCharacters) {
     if (value is! String) return null;
-    return value;
+    return value.length <= maxCharacters
+        ? value
+        : value.substring(0, maxCharacters);
   }
 
   static DateTime? _readTimestamp(Object? value) {
@@ -164,7 +171,12 @@ final class AcpRecentSessionRef {
       return DateTime.tryParse(value)?.toUtc();
     }
     if (value is int) {
-      // Interpret bare integers as epoch milliseconds.
+      // Interpret bare integers as epoch milliseconds, but never let one
+      // corrupted setting prevent every sibling recent from loading.
+      const maxEpochMilliseconds = 8640000000000000;
+      if (value < -maxEpochMilliseconds || value > maxEpochMilliseconds) {
+        return null;
+      }
       return DateTime.fromMillisecondsSinceEpoch(value, isUtc: true);
     }
     return null;

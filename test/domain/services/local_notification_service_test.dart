@@ -168,7 +168,7 @@ void main() {
   });
 
   group('AcpNotificationPayload', () {
-    test('round-trips completion and permission notification fields', () {
+    test('round-trips completion, permission, and write fields', () {
       const completion = AcpNotificationPayload(
         kind: AcpNotificationKind.completion,
         hostId: 3,
@@ -184,8 +184,29 @@ void main() {
         acpSessionId: 'session-2',
       );
 
+      const write = AcpNotificationPayload(
+        kind: AcpNotificationKind.writeApproval,
+        hostId: 3,
+        providerId: 'builtin:opencode',
+        bridgeId: 'bridge-2',
+        acpSessionId: 'session-2',
+      );
+
       expect(AcpNotificationPayload.decode(completion.encode()), completion);
       expect(AcpNotificationPayload.decode(permission.encode()), permission);
+      expect(AcpNotificationPayload.decode(write.encode()), write);
+      expect(
+        acpNotificationIdFor(permission),
+        acpNotificationIdFor(permission),
+      );
+      expect(
+        acpNotificationIdFor(write),
+        isNot(acpNotificationIdFor(permission)),
+      );
+      expect(
+        acpNotificationIdFor(write),
+        inInclusiveRange(0x40000000, 0x7fffffff),
+      );
     });
 
     test('ignores malformed and unrelated payloads', () {

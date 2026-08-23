@@ -523,6 +523,7 @@ List<String> buildAgentGlobalLaunchArguments(
   bool startInYoloMode = false,
   String? launchProfile,
   bool quoteProfileForShell = true,
+  bool windows = false,
 }) {
   final profile = launchProfile?.trim();
   if (profile != null && profile.isNotEmpty && !tool.supportsLaunchProfiles) {
@@ -530,6 +531,8 @@ List<String> buildAgentGlobalLaunchArguments(
   }
   final profileArgument = profile == null || !quoteProfileForShell
       ? profile
+      : windows
+      ? _quoteWindowsShellArgument(profile)
       : _quoteShellArgument(profile);
   return <String>[
     if (profileArgument != null && profileArgument.isNotEmpty) ...[
@@ -540,22 +543,13 @@ List<String> buildAgentGlobalLaunchArguments(
   ];
 }
 
-/// Wraps a generated terminal command with MonkeyMux-specific integration.
-///
-/// Pi exposes its exact session ID/path to extensions on every session switch.
-/// The helper wrapper injects that private extension; plain tmux launches keep
-/// the original command because they may not have MonkeyMux installed.
-String buildMonkeyMuxAgentToolCommand(AgentLaunchTool tool, String command) {
-  if (tool != AgentLaunchTool.pi) return command;
-  return command.replaceFirst(RegExp(r'^pi(?=\s|$)'), 'monkeymux pi-agent');
-}
-
 /// Builds the base shell command for launching [tool].
 String buildAgentToolCommand(
   AgentLaunchTool tool, {
   String? additionalArguments,
   bool startInYoloMode = false,
   String? launchProfile,
+  bool windows = false,
 }) {
   final commandParts = <String>[
     ..._buildAgentToolEnvironmentAssignments(
@@ -567,6 +561,7 @@ String buildAgentToolCommand(
       tool,
       startInYoloMode: startInYoloMode,
       launchProfile: launchProfile,
+      windows: windows,
     ),
     ...tool.launchArguments,
   ];
@@ -880,6 +875,13 @@ String _quoteShellPath(String value) {
 
 String _quoteShellArgument(String value) =>
     '\'${value.replaceAll('\'', '\'"\'"\'')}\'';
+
+String _quoteWindowsShellArgument(String value) {
+  if (value.contains(RegExp(r'["%!\r\n]'))) {
+    throw const FormatException('Profile name is unsafe for cmd.exe.');
+  }
+  return '"$value"';
+}
 
 String _quoteShellEnvironmentAssignment(String key, String value) =>
     '$key="${_escapeForDoubleQuotedShellContent(value)}"';

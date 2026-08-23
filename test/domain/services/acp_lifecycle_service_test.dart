@@ -23,6 +23,22 @@ import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 
+import '../../support/fake_acp_session_manager.dart';
+
+class _RecordingAcpNotificationService extends LocalNotificationService {
+  final calls = <({int id, AcpNotificationPayload payload})>[];
+
+  @override
+  Future<void> showAcpNotification({
+    required int notificationId,
+    required String title,
+    required String body,
+    required AcpNotificationPayload payload,
+  }) async {
+    calls.add((id: notificationId, payload: payload));
+  }
+}
+
 /// A minimal fake ACP agent transport: enough to open sessions, push
 /// permission requests, and complete prompt turns.
 class _FakeAcpServer implements AcpTransport {
@@ -374,6 +390,53 @@ void main() {
       expect(byHost[2]!.status, AcpConnectionStatus.ready);
       expect(connector.stoppedBridges, isEmpty);
     });
+  });
+
+  test('background pending write emits a stable write-approval alert', () async {
+    final key = fakeAcpKey();
+    final initial = fakeAcpSession(key: key);
+    final fakeManager = FakeAcpSessionManager(sessions: [initial]);
+    final notifications = _RecordingAcpNotificationService();
+    final testLifecycle = AcpLifecycleService(
+      sessionManager: fakeManager,
+      hasActiveSshSession: (_) => true,
+      notificationService: notifications,
+      diagnostics: const NoopDiagnosticsLogger(),
+    )..start();
+    addTearDown(testLifecycle.dispose);
+    addTearDown(fakeManager.dispose);
+    addTearDown(notifications.dispose);
+
+    await _pump(); // Let the initial zero-pending snapshot reach the observer.
+    await testLifecycle.handleBackground();
+    fakeManager.emit(
+      AcpSessionManagerState(
+        sessions: [
+          initial.copyWith(
+            pendingWrites: [
+              AcpPendingWrite(
+                requestKey: 's:write-1',
+                sessionId: key.acpSessionId,
+                path: '/private/path-never-notified',
+                contentByteLength: 7,
+                requestedAt: DateTime(2026),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    await _pump();
+
+    expect(notifications.calls, hasLength(1));
+    expect(
+      notifications.calls.single.payload.kind,
+      AcpNotificationKind.writeApproval,
+    );
+    expect(
+      notifications.calls.single.id,
+      acpNotificationIdFor(notifications.calls.single.payload),
+    );
   });
 
   group('notification gating', () {

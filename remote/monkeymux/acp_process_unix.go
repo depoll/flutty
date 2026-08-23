@@ -43,25 +43,24 @@ func stopAcpProviderAfter(
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
 	_ = cmd.Process.Signal(syscall.SIGTERM)
-	go func() {
-		timer := time.NewTimer(grace)
-		defer timer.Stop()
-		select {
-		case <-providerDone:
-			return
-		case <-timer.C:
-		}
-		// The bridge's sole Wait caller closes providerDone immediately after it
-		// reaps the original child. Never issue a delayed PID/process-group kill
-		// after that signal: a recycled PID or PGID could otherwise belong to an
-		// unrelated user process.
-		select {
-		case <-providerDone:
-			return
-		default:
-			force(cmd)
-		}
-	}()
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-providerDone:
+		return
+	case <-timer.C:
+	}
+	// The bridge's sole Wait caller closes providerDone immediately after it
+	// reaps the original child. Never issue a delayed PID/process-group kill
+	// after that signal: a recycled PID or PGID could otherwise belong to an
+	// unrelated user process. This path is synchronous so a detached `acp serve`
+	// helper cannot exit before the force-stop sequence completes.
+	select {
+	case <-providerDone:
+		return
+	default:
+		force(cmd)
+	}
 }
 
 func forceStopAcpProvider(cmd *exec.Cmd) {

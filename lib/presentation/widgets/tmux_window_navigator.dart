@@ -1494,9 +1494,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     final activity = session == null
         ? null
         : acpSessionActivityDisplay(session);
-    final iconColor = agentTool == null
-        ? theme.colorScheme.onSurfaceVariant
-        : theme.colorScheme.primary;
+    final iconColor = theme.colorScheme.onSurfaceVariant;
     final secondaryColor = theme.colorScheme.onSurfaceVariant;
     final activityColor = activity == null
         ? secondaryColor
@@ -1658,7 +1656,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     final windowTool = window.isNativeAcp
         ? agentLaunchToolForAcpProviderId(window.nativeAcpProviderId!)
         : window.foregroundAgentTool;
-    final iconColor = isActive || windowTool != null
+    final iconColor = isActive
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurfaceVariant;
     final secondaryColor = theme.colorScheme.onSurfaceVariant;

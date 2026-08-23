@@ -171,6 +171,8 @@ class _FakeRemoteAdbCommandRunner implements RemoteAdbCommandRunner {
   }) async => const RemoteAdbCommandResult(exitCode: 1, output: '');
 }
 
+class _FakeSshSession extends Fake implements SshSession {}
+
 class _MockTmuxService extends Mock implements TmuxService {
   String? detectedVersionValue;
 
@@ -186,6 +188,20 @@ class _MockTmuxService extends Mock implements TmuxService {
 }
 
 class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
+  _MockMonkeyMuxService() {
+    when(
+      () => selectWindow(
+        any(),
+        any(),
+        any(),
+        windowId: any(named: 'windowId'),
+        extraFlags: any(named: 'extraFlags'),
+        clientImageSignatures: any(named: 'clientImageSignatures'),
+        suppressReplay: any(named: 'suppressReplay'),
+      ),
+    ).thenAnswer((_) async {});
+  }
+
   MonkeyMuxServerStatus? runningStatus;
   Future<MonkeyMuxServerStatus?>? runningStatusFuture;
   MonkeyMuxServerStatus? installedHelpersStatus;
@@ -703,6 +719,8 @@ void main() {
     registerFallbackValue(const SSHPtyConfig());
     registerFallbackValue(<int>[]);
     registerFallbackValue(Uint8List(0));
+    registerFallbackValue(_FakeSshSession());
+    registerFallbackValue(<int, int>{});
     registerFallbackValue(MonetizationFeature.autoConnectAutomation);
     registerFallbackValue(monkey_themes.TerminalThemes.defaultDarkTheme);
     registerFallbackValue(SshExecPriority.normal);
@@ -4227,8 +4245,10 @@ void main() {
             session,
             sessionName,
             1,
+            windowId: any(named: 'windowId'),
             extraFlags: any(named: 'extraFlags'),
             clientImageSignatures: any(named: 'clientImageSignatures'),
+            suppressReplay: any(named: 'suppressReplay'),
           ),
         ).thenAnswer((_) async {
           monkeyMuxService.controlOperations.add('select');
@@ -4358,8 +4378,10 @@ void main() {
             session,
             sessionName,
             1,
+            windowId: any(named: 'windowId'),
             extraFlags: any(named: 'extraFlags'),
             clientImageSignatures: any(named: 'clientImageSignatures'),
+            suppressReplay: any(named: 'suppressReplay'),
           ),
         ).called(1);
         expect(
@@ -4855,8 +4877,10 @@ void main() {
             session,
             sessionName,
             1,
+            windowId: any(named: 'windowId'),
             extraFlags: any(named: 'extraFlags'),
             clientImageSignatures: any(named: 'clientImageSignatures'),
+            suppressReplay: any(named: 'suppressReplay'),
           ),
         ).thenAnswer((_) async {
           monkeyMuxService.controlOperations.add('select');
@@ -7895,8 +7919,10 @@ void main() {
             session,
             'work',
             2,
+            windowId: any(named: 'windowId'),
             extraFlags: any(named: 'extraFlags'),
             clientImageSignatures: any(named: 'clientImageSignatures'),
+            suppressReplay: any(named: 'suppressReplay'),
           ),
         ).thenAnswer((_) async {});
         when(
@@ -8051,7 +8077,7 @@ void main() {
     );
 
     testWidgets(
-      'opens an existing Codex native window once behind a responsive loader',
+      'opens an existing Codex native window exactly once',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 800));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -8122,8 +8148,10 @@ void main() {
             session,
             'work',
             2,
+            windowId: any(named: 'windowId'),
             extraFlags: any(named: 'extraFlags'),
             clientImageSignatures: any(named: 'clientImageSignatures'),
+            suppressReplay: any(named: 'suppressReplay'),
           ),
         ).thenAnswer((_) async {
           windows = const <TmuxWindow>[
@@ -8155,9 +8183,13 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
 
         await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
-        await tester.pump();
-        expect(find.text('opening persistent agent session…'), findsOneWidget);
-        await tester.pump(const Duration(milliseconds: 100));
+        for (
+          var attempt = 0;
+          attempt < 10 && acpManager.reconnects.isEmpty;
+          attempt++
+        ) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
         expect(acpManager.reconnects, hasLength(1));
 
         windowEvents.add(TmuxWindowSnapshotEvent(windows.last));

@@ -768,9 +768,25 @@ void main() {
       (jsonDecode(utf8.decode(incoming.current)) as Map)['method'],
       'short-history/1',
     );
-    await transport.write(
-      utf8.encode(
-        '${jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'})}\n',
+    for (var id = 1; id <= 32; id++) {
+      await transport.write(
+        utf8.encode(
+          '${jsonEncode({'jsonrpc': '2.0', 'id': id, 'method': 'initialize'})}\n',
+        ),
+      );
+    }
+    await expectLater(
+      transport.write(
+        utf8.encode(
+          '${jsonEncode({'jsonrpc': '2.0', 'id': 33, 'method': 'initialize'})}\n',
+        ),
+      ),
+      throwsA(
+        isA<MonkeyMuxAcpBridgeException>().having(
+          (error) => error.kind,
+          'kind',
+          MonkeyMuxAcpBridgeErrorKind.frameTooLarge,
+        ),
       ),
     );
     expect(
@@ -789,9 +805,12 @@ void main() {
     );
     expect(await incoming.moveNext(), isTrue);
     await _waitUntil(
-      () => channel.writes
-          .map(_decodeFrame)
-          .any((message) => message['type'] == 'input'),
+      () =>
+          channel.writes
+              .map(_decodeFrame)
+              .where((message) => message['type'] == 'input')
+              .length ==
+          32,
     );
 
     expect(transport.lastDeliveredSequence, 2);
@@ -870,30 +889,36 @@ void main() {
           sessionProvider: () async => _sshSession(client),
           bridgeId: _bridgeId,
           providerId: 'copilot',
-          reconnectBackoff: const [Duration(milliseconds: 1)],
+          reconnectBackoff: const [Duration(milliseconds: 100)],
         );
     addTearDown(transport.close);
     final incoming = StreamIterator<List<int>>(transport.incoming);
     addTearDown(incoming.cancel);
 
     expect(await incoming.moveNext(), isTrue);
-    await transport.write(
-      utf8.encode(
-        '${jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'})}\n',
+    await _waitUntil(() => !transport.isConnected);
+    await expectLater(
+      transport.write(
+        utf8.encode(
+          '${jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'})}\n',
+        ),
+      ),
+      throwsA(
+        isA<MonkeyMuxAcpBridgeException>().having(
+          (error) => error.kind,
+          'kind',
+          MonkeyMuxAcpBridgeErrorKind.sshChannel,
+        ),
       ),
     );
     await _waitUntil(() => channels.length == 2);
-    expect(
-      channels.expand((channel) => channel.writes).map(_decodeFrame),
-      isNot(contains(containsPair('type', 'input'))),
-    );
 
     releaseSecondReplay.complete();
     expect(await incoming.moveNext(), isTrue);
-    await _waitUntil(
-      () => channels[1].writes
-          .map(_decodeFrame)
-          .any((message) => message['type'] == 'input'),
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      channels[1].writes.map(_decodeFrame),
+      isNot(contains(containsPair('type', 'input'))),
     );
     expect(transport.lastDeliveredSequence, 2);
   });

@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/presentation/widgets/acp_markdown_data_images.dart';
 import 'package:monkeyssh/presentation/widgets/acp_markdown_virtualization.dart';
 
 void main() {
@@ -26,6 +27,36 @@ void main() {
       isTrue,
     );
     expect(chunks.join(), source);
+  });
+
+  test('normalizes and keeps a wrapped inline data image atomic', () {
+    final payload = List.filled(9000, 'A').join();
+    final wrappedPayload = payload.replaceAllMapped(
+      RegExp('.{1,72}'),
+      (match) => '${match.group(0)}\n',
+    );
+    final source =
+        'before\n\n![diagram](data:image/\npng;base64,$wrappedPayload)\n\nafter';
+
+    final chunks = splitAcpMarkdownForVirtualization(source, targetChars: 1024);
+
+    final imageChunks = chunks.where((chunk) => chunk.contains('![diagram]'));
+    expect(imageChunks, hasLength(1));
+    expect(imageChunks.single.length, greaterThan(1024));
+    expect(imageChunks.single, isNot(contains('image/\npng')));
+    expect(imageChunks.single, isNot(contains('\nAAAA')));
+    expect(chunks.join(), contains('data:image/png;base64,$payload'));
+    expect(chunks.join(), startsWith('before'));
+    expect(chunks.join(), endsWith('after'));
+  });
+
+  test('leaves wrapped data-image syntax unchanged inside code fences', () {
+    const source =
+        '```text\n'
+        '![literal](data:image/\npng;base64,AAAA\nBBBB)\n'
+        '```\n';
+
+    expect(normalizeAcpMarkdownDataImages(source), source);
   });
 
   test('bounds long literal text without changing pasted diagnostics', () {

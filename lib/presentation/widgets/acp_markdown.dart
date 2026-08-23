@@ -10,6 +10,7 @@ import '../models/acp_timeline.dart';
 import 'acp_chat_typography.dart';
 import 'acp_code_block.dart';
 import 'acp_inline_image.dart';
+import 'acp_markdown_data_images.dart';
 
 /// URL schemes that [AcpMarkdown] will open by default.
 const _allowedLinkSchemes = {'http', 'https', 'mailto', 'tel'};
@@ -160,7 +161,7 @@ class AcpMarkdown extends StatelessWidget {
     );
 
     return MarkdownBody(
-      data: data,
+      data: normalizeAcpMarkdownDataImages(data),
       selectable: selectable,
       styleSheet: styleSheet,
       softLineBreak: true,

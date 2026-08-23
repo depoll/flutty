@@ -67,13 +67,9 @@ class AcpLifecycleService {
   bool _started = false;
   bool _disposed = false;
 
-  // Last known per-session state, used only to detect meaningful transitions
-  // (a permission request appearing, a prompt turn completing) without
-  // retaining any transcript content.
-  final Map<String, AcpSessionState> _lastKnownStates =
-      <String, AcpSessionState>{};
-
-  var _acpNotificationId = 0;
+  // Lightweight transition state only; never retain timeline/content snapshots.
+  final Map<String, _AcpNotificationSnapshot> _lastKnownStates =
+      <String, _AcpNotificationSnapshot>{};
 
   /// Starts observing session-manager state for notification gating.
   ///
@@ -176,8 +172,10 @@ class AcpLifecycleService {
       currentKeyValues.add(session.key.value);
       final previous = _lastKnownStates[session.key.value];
       _maybeNotifyNewPermission(session, previous);
+      _maybeNotifyNewWrite(session, previous);
       _maybeNotifyCompletion(session, previous);
-      _lastKnownStates[session.key.value] = session;
+      _lastKnownStates[session.key.value] =
+          _AcpNotificationSnapshot.fromSession(session);
     }
     _lastKnownStates.removeWhere(
       (keyValue, _) => !currentKeyValues.contains(keyValue),
@@ -186,30 +184,43 @@ class AcpLifecycleService {
 
   void _maybeNotifyNewPermission(
     AcpSessionState session,
-    AcpSessionState? previous,
+    _AcpNotificationSnapshot? previous,
   ) {
-    final previousCount = previous?.pendingPermissions.length ?? 0;
+    final previousCount = previous?.pendingPermissionCount ?? 0;
     if (session.pendingPermissions.length <= previousCount) return;
     if (!_canNotify(session.key.hostId)) return;
+    final payload = _payload(session, AcpNotificationKind.permission);
     unawaited(
       _notificationService.showAcpNotification(
-        notificationId: _nextAcpNotificationId(),
+        notificationId: acpNotificationIdFor(payload),
         title: '${acpSafeAgentDisplayLabel(session)} needs your permission',
         body: 'Open the app to review and respond.',
-        payload: AcpNotificationPayload(
-          kind: AcpNotificationKind.permission,
-          hostId: session.key.hostId,
-          providerId: session.key.providerId,
-          bridgeId: session.key.bridgeId,
-          acpSessionId: session.key.acpSessionId,
-        ),
+        payload: payload,
+      ),
+    );
+  }
+
+  void _maybeNotifyNewWrite(
+    AcpSessionState session,
+    _AcpNotificationSnapshot? previous,
+  ) {
+    final previousCount = previous?.pendingWriteCount ?? 0;
+    if (session.pendingWrites.length <= previousCount) return;
+    if (!_canNotify(session.key.hostId)) return;
+    final payload = _payload(session, AcpNotificationKind.writeApproval);
+    unawaited(
+      _notificationService.showAcpNotification(
+        notificationId: acpNotificationIdFor(payload),
+        title: '${acpSafeAgentDisplayLabel(session)} needs write approval',
+        body: 'Open the app to review and respond.',
+        payload: payload,
       ),
     );
   }
 
   void _maybeNotifyCompletion(
     AcpSessionState session,
-    AcpSessionState? previous,
+    _AcpNotificationSnapshot? previous,
   ) {
     final wasStreaming = switch (previous?.promptStatus) {
       AcpPromptStatus.sending || AcpPromptStatus.streaming => true,
@@ -219,18 +230,13 @@ class AcpLifecycleService {
     if (session.promptStatus != AcpPromptStatus.idle) return;
     if (session.lastStopReason == null) return;
     if (!_canNotify(session.key.hostId)) return;
+    final payload = _payload(session, AcpNotificationKind.completion);
     unawaited(
       _notificationService.showAcpNotification(
-        notificationId: _nextAcpNotificationId(),
+        notificationId: acpNotificationIdFor(payload),
         title: '${acpSafeAgentDisplayLabel(session)} finished',
         body: 'Open the app to see the result.',
-        payload: AcpNotificationPayload(
-          kind: AcpNotificationKind.completion,
-          hostId: session.key.hostId,
-          providerId: session.key.providerId,
-          bridgeId: session.key.bridgeId,
-          acpSessionId: session.key.acpSessionId,
-        ),
+        payload: payload,
       ),
     );
   }
@@ -245,7 +251,35 @@ class AcpLifecycleService {
     return _hasActiveSshSession(hostId);
   }
 
-  int _nextAcpNotificationId() => ++_acpNotificationId;
+  AcpNotificationPayload _payload(
+    AcpSessionState session,
+    AcpNotificationKind kind,
+  ) => AcpNotificationPayload(
+    kind: kind,
+    hostId: session.key.hostId,
+    providerId: session.key.providerId,
+    bridgeId: session.key.bridgeId,
+    acpSessionId: session.key.acpSessionId,
+  );
+}
+
+final class _AcpNotificationSnapshot {
+  const _AcpNotificationSnapshot({
+    required this.pendingPermissionCount,
+    required this.pendingWriteCount,
+    required this.promptStatus,
+  });
+
+  factory _AcpNotificationSnapshot.fromSession(AcpSessionState session) =>
+      _AcpNotificationSnapshot(
+        pendingPermissionCount: session.pendingPermissions.length,
+        pendingWriteCount: session.pendingWrites.length,
+        promptStatus: session.promptStatus,
+      );
+
+  final int pendingPermissionCount;
+  final int pendingWriteCount;
+  final AcpPromptStatus promptStatus;
 }
 
 /// Provider for [AcpLifecycleService].

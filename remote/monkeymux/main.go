@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.175"
+	monkeyMuxVersion                  = "0.1.176"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -6319,6 +6319,7 @@ func newWindowAgentTool(
 }
 
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
+	options.command = monkeyMuxAgentLaunchCommand(options.command)
 	var replay []byte
 	var snapshots []windowSnapshot
 	var addedSnapshot *windowSnapshot
@@ -15303,6 +15304,17 @@ func agentToolFromCommandName(command string) string {
 	default:
 		return ""
 	}
+}
+
+func monkeyMuxAgentLaunchCommand(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "pi" {
+		return monkeyMuxPiAgentLaunchCommand()
+	}
+	if strings.HasPrefix(trimmed, "pi ") {
+		return monkeyMuxPiAgentLaunchCommand() + trimmed[len("pi"):]
+	}
+	return command
 }
 
 func monkeyMuxPiAgentLaunchCommand() string {

@@ -641,10 +641,14 @@ func (b *acpBridge) readProviderOutput(stdout io.Reader) {
 					return
 				}
 			} else {
-				b.publish("state", nil, "protocol_error", nil)
+				b.failProviderProtocol()
+				return
 			}
 		}
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				b.failProviderProtocol()
+			}
 			return
 		}
 	}
@@ -1087,7 +1091,8 @@ func (b *acpBridge) handleAttach(
 	}
 	snapshot := b.snapshotLocked()
 	snapshot.ClientCount++
-	replayIncomplete := hello.LastAck+1 < retainedFrom || replayHasGap(replay, hello.LastAck)
+	replayIncomplete := hello.LastAck+1 < retainedFrom ||
+		replayHasGap(replay, hello.LastAck, b.nextSequence)
 	replayMode := replayModeForAttach(
 		hello,
 		b.replayBytes,
@@ -1270,7 +1275,10 @@ func replayContainsClientRequest(replay []acpReplayEvent) bool {
 	return false
 }
 
-func replayHasGap(replay []acpReplayEvent, after uint64) bool {
+func replayHasGap(replay []acpReplayEvent, after uint64, highWater uint64) bool {
+	if after >= highWater {
+		return false
+	}
 	expected := after + 1
 	for _, event := range replay {
 		if event.message.Sequence <= after {
@@ -1281,7 +1289,7 @@ func replayHasGap(replay []acpReplayEvent, after uint64) bool {
 		}
 		expected++
 	}
-	return false
+	return expected != highWater+1
 }
 
 func (b *acpBridge) writeClient(client *acpBridgeClient) {

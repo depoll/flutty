@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'acp_markdown_data_images.dart';
+
 /// Target source size for one lazily rendered Markdown segment.
 ///
 /// `MarkdownBody` eagerly parses and lays out its complete source. Keeping each
@@ -22,9 +24,10 @@ List<String> splitAcpMarkdownForVirtualization(
   int targetChars = kAcpMarkdownVirtualChunkChars,
 }) {
   assert(targetChars > 0);
-  if (source.length <= targetChars) return <String>[source];
+  final normalizedSource = normalizeAcpMarkdownDataImages(source);
+  if (normalizedSource.length <= targetChars) return <String>[normalizedSource];
 
-  final lines = _markdownLines(source);
+  final lines = _markdownLines(normalizedSource);
   final chunks = <String>[];
   var current = StringBuffer();
   String? fenceMarker;
@@ -50,6 +53,17 @@ List<String> splitAcpMarkdownForVirtualization(
   for (final originalLine in lines) {
     var line = originalLine;
     while (line.isNotEmpty) {
+      if (fenceMarker == null &&
+          line.length > targetChars &&
+          containsAcpMarkdownDataImage(line)) {
+        // Parsing the data URI once is cheaper and correct; splitting it would
+        // turn every later chunk into visible base64 text. AcpInlineImage still
+        // enforces encoded-byte and decoded-pixel limits before display.
+        flush();
+        chunks.add(line);
+        line = '';
+        continue;
+      }
       final remaining = targetChars - current.length;
       if (remaining <= 0) {
         flush(reopenFence: fenceMarker != null);

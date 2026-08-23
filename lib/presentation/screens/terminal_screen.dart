@@ -3789,6 +3789,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _monkeyMuxAttachEstablished = false;
   _PendingMonkeyMuxServerReplacement? _pendingMonkeyMuxServerReplacement;
   Future<void>? _monkeyMuxServerReplacementRecovery;
+  Timer? _monkeyMuxServerReplacementRecoveryTimer;
+  Completer<bool>? _monkeyMuxServerReplacementRecoveryDelay;
   int _monkeyMuxForegroundFalseProbeCount = 0;
   int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
@@ -9715,6 +9717,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  Future<bool> _waitForMonkeyMuxRecoveryRetry() {
+    _cancelMonkeyMuxServerReplacementRetry();
+    final completer = Completer<bool>();
+    _monkeyMuxServerReplacementRecoveryDelay = completer;
+    _monkeyMuxServerReplacementRecoveryTimer = Timer(
+      const Duration(milliseconds: 500),
+      () {
+        if (!completer.isCompleted) completer.complete(true);
+        if (identical(_monkeyMuxServerReplacementRecoveryDelay, completer)) {
+          _monkeyMuxServerReplacementRecoveryDelay = null;
+          _monkeyMuxServerReplacementRecoveryTimer = null;
+        }
+      },
+    );
+    return completer.future;
+  }
+
+  void _cancelMonkeyMuxServerReplacementRetry() {
+    _monkeyMuxServerReplacementRecoveryTimer?.cancel();
+    _monkeyMuxServerReplacementRecoveryTimer = null;
+    final completer = _monkeyMuxServerReplacementRecoveryDelay;
+    _monkeyMuxServerReplacementRecoveryDelay = null;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(false);
+    }
+  }
+
   Future<void> _recoverMonkeyMuxAfterServerReplacement(
     SshSession session,
     _PendingMonkeyMuxServerReplacement pending,
@@ -9728,8 +9757,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _pendingMonkeyMuxServerReplacement != pending) {
         return;
       }
-      if (attempts > 0) {
-        await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (attempts > 0 && !await _waitForMonkeyMuxRecoveryRetry()) {
+        return;
       }
       try {
         final version = (await _monkeyMuxService.detectedVersion(
@@ -11593,6 +11622,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 agentTool!,
                 startInYoloMode: _startClisInYoloMode,
                 launchProfile: profile.argument,
+                windows: session.remoteIsWindows,
               );
               if (profile.showInTitle) {
                 launchWindowName = '${agentTool.label} · ${profile.label}';
@@ -12782,12 +12812,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) return;
     }
     final tool = agentLaunchToolForCommandText(command);
-    final createCommand =
-        backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux && tool != null
-        ? buildMonkeyMuxAgentToolCommand(tool, command!)
-        : command;
     await backend.createWindow(
-      command: createCommand,
+      command: command,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
     );
@@ -13533,6 +13559,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _stopTmuxForegroundVerification();
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
+    _cancelMonkeyMuxServerReplacementRetry();
     _cancelMonkeyMuxRefreshAndResizeState();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();

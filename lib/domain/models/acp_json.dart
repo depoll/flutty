@@ -17,7 +17,7 @@ abstract final class AcpJson {
   /// Returns [value] as a JSON list, or `null`.
   static List<Object?>? list(Object? value) {
     if (value is! List) return null;
-    return List<Object?>.unmodifiable(value);
+    return List<Object?>.unmodifiable(value.map(_freeze));
   }
 
   /// Returns a JSON string field.
@@ -60,14 +60,13 @@ abstract final class AcpJson {
   }
 
   /// Returns the reserved ACP `_meta` object.
-  static AcpJsonMap meta(AcpJsonMap json) => Map<String, Object?>.unmodifiable(
-    objectField(json, '_meta') ?? const <String, Object?>{},
-  );
+  static AcpJsonMap meta(AcpJsonMap json) =>
+      immutableObject(objectField(json, '_meta') ?? const <String, Object?>{});
 
   /// Returns fields that are not recognized by the parser.
   static AcpJsonMap extensions(AcpJsonMap json, Iterable<String> knownFields) {
     final known = knownFields.toSet()..add('_meta');
-    return Map<String, Object?>.unmodifiable(
+    return immutableObject(
       Map<String, Object?>.fromEntries(
         json.entries.where((entry) => !known.contains(entry.key)),
       ),
@@ -76,7 +75,25 @@ abstract final class AcpJson {
 
   /// Returns an immutable copy suitable for retaining unknown protocol data.
   static AcpJsonMap immutableObject(AcpJsonMap json) =>
-      Map<String, Object?>.unmodifiable(json);
+      Map<String, Object?>.unmodifiable(
+        json.map((key, value) => MapEntry(key, _freeze(value))),
+      );
+
+  static Object? _freeze(Object? value) {
+    if (value is Map) {
+      final result = <String, Object?>{};
+      for (final entry in value.entries) {
+        if (entry.key case final String key) {
+          result[key] = _freeze(entry.value);
+        }
+      }
+      return Map<String, Object?>.unmodifiable(result);
+    }
+    if (value is List) {
+      return List<Object?>.unmodifiable(value.map(_freeze));
+    }
+    return value;
+  }
 }
 
 /// Shared extension data retained by forward-compatible ACP models.
