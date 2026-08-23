@@ -356,11 +356,13 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('rebuilds the bounded tail when follow resumes', (tester) async {
+  testWidgets('preserves loaded history until new followed content arrives', (
+    tester,
+  ) async {
     final controller = ScrollController();
     addTearDown(controller.dispose);
     var followTail = false;
-    final entries = <AcpTimelineEntry>[
+    var entries = <AcpTimelineEntry>[
       for (var index = 0; index < 200; index++)
         AcpStatusEntry(id: 'resume-$index', message: 'resume $index'),
     ];
@@ -373,6 +375,18 @@ void main() {
               TextButton(
                 onPressed: () => setState(() => followTail = true),
                 child: const Text('Resume follow'),
+              ),
+              TextButton(
+                onPressed: () => setState(
+                  () => entries = [
+                    ...entries,
+                    const AcpStatusEntry(
+                      id: 'resume-new',
+                      message: 'new update',
+                    ),
+                  ],
+                ),
+                child: const Text('Append update'),
               ),
               Expanded(
                 child: AcpMessageThread(
@@ -403,10 +417,20 @@ void main() {
       tester
           .widget<CustomScrollView>(find.byType(CustomScrollView))
           .semanticChildCount,
-      48,
+      200,
     );
     expect(controller.position.pixels, controller.position.maxScrollExtent);
-    expect(find.byKey(const ValueKey('resume-199')), findsOneWidget);
+
+    await tester.tap(find.text('Append update'));
+    await tester.pump();
+    await tester.pump();
+    expect(
+      tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .semanticChildCount,
+      48,
+    );
+    expect(find.byKey(const ValueKey('resume-new')), findsOneWidget);
     expect(find.byKey(const ValueKey('resume-0')), findsNothing);
   });
 

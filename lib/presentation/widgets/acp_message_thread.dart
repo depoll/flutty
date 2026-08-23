@@ -383,9 +383,7 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   @override
   void didUpdateWidget(covariant AcpMessageThread oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _syncThreadChildren(
-      forceWindowSync: oldWidget.followTail != widget.followTail,
-    );
+    _syncThreadChildren();
     if (!oldWidget.followTail && widget.followTail) {
       _userOwnsScrollPosition = false;
     }
@@ -407,11 +405,11 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
     super.dispose();
   }
 
-  void _syncThreadChildren({bool forceWindowSync = false}) {
+  void _syncThreadChildren() {
     final entriesChanged = !identical(_threadEntries, widget.entries);
-    if (!entriesChanged && !forceWindowSync) return;
+    if (!entriesChanged) return;
     final initialProjection = _threadEntries == null;
-    if (entriesChanged || (forceWindowSync && widget.followTail)) {
+    if (entriesChanged) {
       final firstLoadedEntryId = _threadChildren.firstOrNull?.entry.id;
       _threadEntries = widget.entries;
       if (widget.followTail) {
