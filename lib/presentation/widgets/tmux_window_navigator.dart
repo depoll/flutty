@@ -1494,9 +1494,12 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     final activity = session == null
         ? null
         : acpSessionActivityDisplay(session);
-    final identityColor = theme.colorScheme.onSurfaceVariant;
+    final iconColor = agentTool == null
+        ? theme.colorScheme.onSurfaceVariant
+        : theme.colorScheme.primary;
+    final secondaryColor = theme.colorScheme.onSurfaceVariant;
     final activityColor = activity == null
-        ? identityColor
+        ? secondaryColor
         : acpStatusColor(theme.colorScheme, activity.tone);
     final progress = activity == null
         ? null
@@ -1521,7 +1524,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         child: Text(
           '$windowIndex',
           style: theme.textTheme.labelMedium?.copyWith(
-            color: identityColor,
+            color: secondaryColor,
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -1530,13 +1533,13 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         children: [
           AcpNativeBadgeOverlay(
             size: 16,
-            color: identityColor,
+            color: iconColor,
             badgeKey: ValueKey('native-acp-indicator-${key.value}'),
             child: AgentToolIcon(
               key: ValueKey('native-acp-agent-icon-${key.value}'),
               tool: agentTool,
               size: 16,
-              color: identityColor,
+              color: iconColor,
             ),
           ),
           const SizedBox(width: 8),
@@ -1558,7 +1561,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
             key: ValueKey('native-acp-subtitle-${key.value}'),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(color: identityColor),
+            style: theme.textTheme.bodySmall?.copyWith(color: secondaryColor),
           ),
           if (progress != null) ...[
             const SizedBox(height: 3),
@@ -1652,15 +1655,16 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         ? window.secondaryTitle
         : '${nativeSession.providerLabel} · '
               '${acpCwdSummary(nativeSession.cwd)} · ${nativeActivity!.label}';
-    final identityColor = isActive
-        ? theme.colorScheme.primary
-        : theme.colorScheme.onSurfaceVariant;
-    final activityColor = nativeActivity == null
-        ? identityColor
-        : acpStatusColor(theme.colorScheme, nativeActivity.tone);
     final windowTool = window.isNativeAcp
         ? agentLaunchToolForAcpProviderId(window.nativeAcpProviderId!)
         : window.foregroundAgentTool;
+    final iconColor = isActive || windowTool != null
+        ? theme.colorScheme.primary
+        : theme.colorScheme.onSurfaceVariant;
+    final secondaryColor = theme.colorScheme.onSurfaceVariant;
+    final activityColor = nativeActivity == null
+        ? secondaryColor
+        : acpStatusColor(theme.colorScheme, nativeActivity.tone);
     final progress = nativeActivity == null
         ? null
         : acpActivityTerminalProgress(nativeActivity);
@@ -1702,13 +1706,13 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           if (window.isNativeAcp)
             AcpNativeBadgeOverlay(
               size: 16,
-              color: identityColor,
+              color: iconColor,
               badgeKey: ValueKey('native-acp-window-indicator-${window.index}'),
               child: AgentToolIcon(
                 key: ValueKey('tmux-window-agent-icon-${window.index}'),
                 tool: windowTool,
                 size: 16,
-                color: identityColor,
+                color: iconColor,
               ),
             )
           else
@@ -1716,7 +1720,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
               key: ValueKey('tmux-window-agent-icon-${window.index}'),
               tool: windowTool,
               size: 16,
-              color: identityColor,
+              color: iconColor,
               fallbackIcon: Icons.terminal,
             ),
           const SizedBox(width: 8),
@@ -1747,7 +1751,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
                     overflow: TextOverflow.ellipsis,
                     key: ValueKey('tmux-window-subtitle-${window.index}'),
                     style: theme.textTheme.bodySmall?.copyWith(
-                      color: identityColor,
+                      color: secondaryColor,
                     ),
                   ),
                 if (progress != null) ...[

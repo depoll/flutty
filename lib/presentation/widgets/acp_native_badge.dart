@@ -15,7 +15,7 @@ class AcpNativeBadgeOverlay extends StatelessWidget {
   /// Agent icon receiving the native badge.
   final Widget child;
 
-  /// Window identity color shared with the underlying agent icon.
+  /// Agent accent shared with the underlying terminal/native tool icon.
   final Color color;
 
   /// Stable key for the overlaid badge.
@@ -50,7 +50,7 @@ class AcpNativeBadge extends StatelessWidget {
   /// Creates a native-agent identity badge using [color] for its accent.
   const AcpNativeBadge({required this.color, this.size = 12, super.key});
 
-  /// Accent derived from the window identity state.
+  /// Accent shared by the same agent in terminal and native modes.
   final Color color;
 
   /// Square badge dimension.

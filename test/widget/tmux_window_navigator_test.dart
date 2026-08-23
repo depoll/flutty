@@ -1570,7 +1570,7 @@ void main() {
       );
       expect(agentIcon.tool, AgentLaunchTool.copilotCli);
       expect(agentIcon.size, 16);
-      expect(agentIcon.color, scheme.onSurfaceVariant);
+      expect(agentIcon.color, scheme.primary);
       final subtitle = tester.widget<Text>(
         find.byKey(ValueKey('native-acp-subtitle-${key.value}')),
       );
@@ -1650,10 +1650,26 @@ void main() {
             index: 3,
             id: '@4',
             name: 'Copilot CLI',
-            isActive: true,
+            isActive: false,
             currentPath: '/home/dev/project',
             nativeAcpBridgeId: key.bridgeId,
             nativeAcpProviderId: key.providerId,
+          ),
+          const TmuxWindow(
+            index: 4,
+            id: '@5',
+            name: 'Terminal Copilot',
+            isActive: false,
+            currentCommand: 'copilot',
+            currentPath: '/home/dev/project',
+            agentTool: AgentLaunchTool.copilotCli,
+          ),
+          const TmuxWindow(
+            index: 5,
+            id: '@6',
+            name: 'zsh',
+            isActive: true,
+            currentCommand: 'zsh',
           ),
         ];
         TmuxNavigatorAction? selected;
@@ -1699,7 +1715,20 @@ void main() {
           ),
           findsOneWidget,
         );
-        expect(find.text('running'), findsOneWidget);
+        final nativeRow = find.byKey(const ValueKey('tmux-window-3'));
+        expect(
+          find.descendant(of: nativeRow, matching: find.text('running')),
+          findsOneWidget,
+        );
+        final scheme = Theme.of(tester.element(nativeRow)).colorScheme;
+        final nativeIcon = tester.widget<AgentToolIcon>(
+          find.byKey(const ValueKey('tmux-window-agent-icon-3')),
+        );
+        final terminalIcon = tester.widget<AgentToolIcon>(
+          find.byKey(const ValueKey('tmux-window-agent-icon-4')),
+        );
+        expect(nativeIcon.color, scheme.primary);
+        expect(terminalIcon.color, nativeIcon.color);
         expect(
           find.byKey(const ValueKey('native-acp-window-progress-3')),
           findsOneWidget,
@@ -1718,17 +1747,14 @@ void main() {
         );
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
-        final nativeIcon = tester.widget<AgentToolIcon>(
+        final reconnectingNativeIcon = tester.widget<AgentToolIcon>(
           find.byKey(const ValueKey('tmux-window-agent-icon-3')),
         );
         final nativeSubtitle = tester.widget<Text>(
           find.byKey(const ValueKey('tmux-window-subtitle-3')),
         );
-        final scheme = Theme.of(
-          tester.element(find.byKey(const ValueKey('tmux-window-3'))),
-        ).colorScheme;
-        expect(nativeIcon.color, scheme.primary);
-        expect(nativeSubtitle.style?.color, scheme.primary);
+        expect(reconnectingNativeIcon.color, scheme.primary);
+        expect(nativeSubtitle.style?.color, scheme.onSurfaceVariant);
         expect(
           tester
               .widget<AcpNativeBadge>(
