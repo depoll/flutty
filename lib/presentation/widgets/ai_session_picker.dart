@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../app/theme.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import 'acp_session_presentation.dart';
 import 'agent_tool_icon.dart';
 
 /// Derived UI state for a discovered-session provider row.
@@ -392,6 +393,7 @@ Future<ToolSessionInfo?> showAiSessionPickerDialog({
   required AiSessionLoader loadSessions,
   int initialMaxSessions = 12,
   int sessionFetchStep = 12,
+  ValueChanged<ToolSessionInfo>? onSessionLongPress,
 }) => showDialog<ToolSessionInfo>(
   context: context,
   builder: (context) => AiSessionPickerDialog(
@@ -399,8 +401,24 @@ Future<ToolSessionInfo?> showAiSessionPickerDialog({
     loadSessions: loadSessions,
     initialMaxSessions: initialMaxSessions,
     sessionFetchStep: sessionFetchStep,
+    onSessionLongPress: onSessionLongPress,
   ),
 );
+
+/// Builds a compact, identifiable subtitle for one recent session.
+///
+/// Pi titles commonly come from the first prompt and can repeat across
+/// worktrees/subtrees, so include the final cwd segment before recency. Other
+/// providers retain the existing time/tool fallback.
+String aiSessionSubtitle(ToolSessionInfo session) {
+  final updated = session.lastUpdatedLabel;
+  if (session.toolName == 'Pi' &&
+      (session.workingDirectory?.trim().isNotEmpty ?? false)) {
+    final directory = acpCwdSummary(session.workingDirectory);
+    return updated.isEmpty ? directory : '$directory · $updated';
+  }
+  return updated.isNotEmpty ? updated : session.toolName;
+}
 
 /// Dialog for picking one of a provider's recent sessions.
 class AiSessionPickerDialog extends StatefulWidget {
@@ -410,6 +428,7 @@ class AiSessionPickerDialog extends StatefulWidget {
     required this.loadSessions,
     this.initialMaxSessions = 12,
     this.sessionFetchStep = 12,
+    this.onSessionLongPress,
     super.key,
   });
 
@@ -424,6 +443,9 @@ class AiSessionPickerDialog extends StatefulWidget {
 
   /// Step to use when the user asks for more sessions.
   final int sessionFetchStep;
+
+  /// Called when a session is held for a one-off launch-mode choice.
+  final ValueChanged<ToolSessionInfo>? onSessionLongPress;
 
   @override
   State<AiSessionPickerDialog> createState() => _AiSessionPickerDialogState();
@@ -561,6 +583,12 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
                           session: sessions[index],
                           onTap: () =>
                               Navigator.of(context).pop(sessions[index]),
+                          onLongPress: widget.onSessionLongPress == null
+                              ? null
+                              : () {
+                                  widget.onSessionLongPress!(sessions[index]);
+                                  Navigator.of(context).pop();
+                                },
                         ),
                       ),
                     ),
@@ -633,10 +661,15 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
 }
 
 class _AiSessionPickerTile extends StatelessWidget {
-  const _AiSessionPickerTile({required this.session, required this.onTap});
+  const _AiSessionPickerTile({
+    required this.session,
+    required this.onTap,
+    this.onLongPress,
+  });
 
   final ToolSessionInfo session;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -662,14 +695,13 @@ class _AiSessionPickerTile extends StatelessWidget {
         ),
       ),
       subtitle: Text(
-        session.lastUpdatedLabel.isNotEmpty
-            ? session.lastUpdatedLabel
-            : session.toolName,
+        aiSessionSubtitle(session),
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,
         ),
       ),
       onTap: onTap,
+      onLongPress: onLongPress,
     );
   }
 }

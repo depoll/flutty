@@ -77,6 +77,7 @@ abstract interface class TerminalConnectionBackend {
     int windowIndex, {
     String? windowId,
     Map<int, int>? clientImageSignatures,
+    bool suppressReplay = false,
   });
 
   /// Closes a backend window.
@@ -228,6 +229,7 @@ class _DirectTerminalConnectionBackend implements TerminalConnectionBackend {
     int windowIndex, {
     String? windowId,
     Map<int, int>? clientImageSignatures,
+    bool suppressReplay = false,
   }) => Future<void>.error(
     UnsupportedError('Direct terminal sessions do not support windows.'),
   );
@@ -373,6 +375,7 @@ class _MultiplexedTerminalConnectionBackend
     int windowIndex, {
     String? windowId,
     Map<int, int>? clientImageSignatures,
+    bool suppressReplay = false,
   }) => _remoteMultiplexer.selectWindow(
     _session,
     _sessionName,
@@ -380,6 +383,7 @@ class _MultiplexedTerminalConnectionBackend
     windowId: windowId,
     extraFlags: _extraFlags,
     clientImageSignatures: clientImageSignatures,
+    suppressReplay: suppressReplay,
   );
 
   @override

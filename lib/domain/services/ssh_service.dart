@@ -16,6 +16,8 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../models/acp_native_preview.dart';
+import '../models/acp_session_keys.dart';
 import '../models/port_proxy_name.dart';
 import '../models/remote_multiplexer.dart';
 import '../models/terminal_preview.dart';
@@ -3563,6 +3565,7 @@ class SshSession {
   static const _defaultPortForwardStartTimeout = Duration(seconds: 10);
   static const _automaticPortDiscoveryTimeout = Duration(seconds: 8);
   static const _automaticPortWatcherStartTimeout = Duration(seconds: 10);
+  static const _automaticPortWatcherCloseTimeout = Duration(seconds: 2);
   static const _sftpOpenRetryDelays = [
     Duration(milliseconds: 250),
     Duration(milliseconds: 750),
@@ -3635,6 +3638,18 @@ class SshSession {
 
   /// Session-specific terminal font size override.
   double? terminalFontSize;
+
+  /// Native ACP session currently focused instead of the terminal viewport.
+  AcpSessionKey? activeNativeAcpSessionKey;
+
+  /// In-memory display title for the focused native ACP session.
+  String? activeNativeAcpDisplayTitle;
+
+  /// Bounded in-memory conversation preview for the focused native session.
+  String? activeNativeAcpPreview;
+
+  /// Role-aware live preview for the focused native session.
+  AcpNativePreviewSnapshot? activeNativeAcpPreviewSnapshot;
 
   /// The terminal multiplexer backend currently attached in this session.
   RemoteMuxBackend? remoteMuxBackend;
@@ -3759,6 +3774,10 @@ class SshSession {
   @visibleForTesting
   void debugFlushPendingTerminalOutput() =>
       _runtime.debugFlushPendingTerminalOutput();
+
+  /// Pauses hidden terminal parsing while a native ACP viewport is active.
+  void setTerminalParsingPaused({required bool paused}) =>
+      _runtime.setTerminalParsingPaused(paused: paused);
 
   /// The latest terminal window title emitted by the remote session.
   String? get windowTitle => _windowTitle;
@@ -4784,7 +4803,7 @@ class SshSession {
       final generation = ++_automaticPortForwardGeneration;
       _automaticPortForwardTimer?.cancel();
       _automaticPortForwardTimer = null;
-      await _stopAutomaticPortForwardWatcher();
+      await _stopAutomaticPortForwardWatcher(waitForClose: true);
       await _startAutomaticPortDiscovery(generation);
     });
     _automaticPortForwardConfiguration = operation.then<void>(
@@ -4850,12 +4869,12 @@ class SshSession {
       final generation = ++_automaticPortForwardGeneration;
       _automaticPortForwardTimer?.cancel();
       _automaticPortForwardTimer = null;
-      await _stopAutomaticPortForwardWatcher();
+      await _stopAutomaticPortForwardWatcher(waitForClose: true);
       await _startAutomaticPortDiscovery(generation);
       return;
     }
 
-    await _stopAutomaticPortForwarding();
+    await _stopAutomaticPortForwarding(waitForWatcherClose: true);
     if (_isClosing) {
       return;
     }
@@ -4869,11 +4888,13 @@ class SshSession {
     await _startAutomaticPortDiscovery(generation);
   }
 
-  Future<void> _stopAutomaticPortForwarding() async {
+  Future<void> _stopAutomaticPortForwarding({
+    bool waitForWatcherClose = false,
+  }) async {
     _automaticPortForwardGeneration++;
     _automaticPortForwardTimer?.cancel();
     _automaticPortForwardTimer = null;
-    await _stopAutomaticPortForwardWatcher();
+    await _stopAutomaticPortForwardWatcher(waitForClose: waitForWatcherClose);
     _automaticPortProxyHost = null;
     _automaticPortForwardExcludedListeners = const {};
     _automaticPortForwardShellTokens = const {};
@@ -5160,7 +5181,7 @@ class SshSession {
       return false;
     }
     if (_isClosing || generation != _automaticPortForwardGeneration) {
-      watcher.close();
+      await _closeAutomaticPortForwardWatcherSession(watcher);
       return false;
     }
 
@@ -5361,7 +5382,9 @@ class SshSession {
     unawaited(refreshAutomaticPortForwards());
   }
 
-  Future<void> _stopAutomaticPortForwardWatcher() async {
+  Future<void> _stopAutomaticPortForwardWatcher({
+    bool waitForClose = false,
+  }) async {
     final watcher = _automaticPortForwardWatcherSession;
     _automaticPortForwardWatcherSession = null;
     final ready = _automaticPortForwardWatcherReady;
@@ -5374,7 +5397,32 @@ class SshSession {
     _automaticPortForwardWatcherSnapshot = null;
     _automaticPortForwardWatcherSnapshotUnavailable = false;
     await subscription?.cancel();
-    watcher?.close();
+    if (watcher != null) {
+      if (waitForClose) {
+        await _closeAutomaticPortForwardWatcherSession(watcher);
+      } else {
+        watcher.close();
+      }
+    }
+  }
+
+  Future<void> _closeAutomaticPortForwardWatcherSession(
+    SSHSession watcher,
+  ) async {
+    watcher.close();
+    try {
+      await watcher.done.timeout(_automaticPortWatcherCloseTimeout);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'automatic_watcher_close_wait_failed',
+        fields: {
+          'connectionId': connectionId,
+          'hostId': hostId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
   }
 
   /// Discovers listening TCP ports and their loopback targets on the remote host.
@@ -5441,6 +5489,7 @@ class SshSession {
     final shellPidsCommand = _posixAutomaticPortShellPidsCommand();
     final listenerCommand = _posixAutomaticPortListenerCommand();
     final script =
+        r'''(cat >/dev/null 2>&1; kill -TERM "$$" 2>/dev/null || true) & watcher_guard=$!; trap 'kill "$watcher_guard" 2>/dev/null || true' EXIT; trap 'exit 0' HUP INT TERM; '''
         "previous_set=0; previous=''; "
         'while :; do '
         'snapshot=\$({ $listenerCommand }); '
@@ -6431,6 +6480,17 @@ void writeAppReviewDemoTerminalOutput(
   }
 }
 
+String? _activeNativeAcpConnectionTitle(SshSession session) {
+  if (session.activeNativeAcpSessionKey == null) {
+    return null;
+  }
+  final title = session.activeNativeAcpDisplayTitle?.trim();
+  return [
+    if (title != null && title.isNotEmpty) title else 'Native agent',
+    'native',
+  ].join(' · ');
+}
+
 class _SshConnectionHealthFailure {
   const _SshConnectionHealthFailure({
     required this.connectionId,
@@ -6452,6 +6512,7 @@ class ActiveConnection {
     required this.config,
     this.preview,
     this.previewSnapshot,
+    this.nativeAcpPreviewSnapshot,
     this.terminalTheme,
     this.sessionTitle,
     this.windowTitle,
@@ -6485,6 +6546,9 @@ class ActiveConnection {
 
   /// The latest styled terminal preview snippet, when available.
   final TerminalPreviewSnapshot? previewSnapshot;
+
+  /// Role-aware native-agent preview, when a native window is focused.
+  final AcpNativePreviewSnapshot? nativeAcpPreviewSnapshot;
 
   /// The active terminal theme resolved for this connection.
   final TerminalThemeData? terminalTheme;
@@ -8181,21 +8245,31 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (session == null || hostId == null || connectionState == null) {
       return null;
     }
+    final nativeFocusTitle = _activeNativeAcpConnectionTitle(session);
     return ActiveConnection(
       connectionId: connectionId,
       hostId: hostId,
       state: connectionState,
       createdAt: session.createdAt,
       config: session.config,
-      preview: session.terminalPreview,
-      previewSnapshot: session.terminalPreviewSnapshot,
+      preview: nativeFocusTitle == null
+          ? session.terminalPreview
+          : session.activeNativeAcpPreview,
+      previewSnapshot: nativeFocusTitle == null
+          ? session.terminalPreviewSnapshot
+          : null,
+      nativeAcpPreviewSnapshot: nativeFocusTitle == null
+          ? null
+          : session.activeNativeAcpPreviewSnapshot,
       terminalTheme: session.terminalTheme,
-      sessionTitle: _connectionSessionTitles[connectionId],
-      windowTitle: session.windowTitle,
-      iconName: session.iconName,
-      workingDirectory: session.workingDirectory,
-      shellStatus: session.shellStatus,
-      lastExitCode: session.lastExitCode,
+      sessionTitle: nativeFocusTitle ?? _connectionSessionTitles[connectionId],
+      windowTitle: nativeFocusTitle == null ? session.windowTitle : null,
+      iconName: nativeFocusTitle == null ? session.iconName : null,
+      workingDirectory: nativeFocusTitle == null
+          ? session.workingDirectory
+          : null,
+      shellStatus: nativeFocusTitle == null ? session.shellStatus : null,
+      lastExitCode: nativeFocusTitle == null ? session.lastExitCode : null,
       remoteMuxBackend: session.remoteMuxBackend,
       remoteMuxSessionName: session.remoteMuxSessionName,
       terminalThemeLightId: session.terminalThemeLightId,
@@ -8277,6 +8351,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       if (session == null || hostId == null) {
         continue;
       }
+      final nativeFocusTitle = _activeNativeAcpConnectionTitle(session);
       connections.add(
         ActiveConnection(
           connectionId: connectionId,
@@ -8284,15 +8359,25 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           state: entry.value,
           createdAt: session.createdAt,
           config: session.config,
-          preview: session.terminalPreview,
-          previewSnapshot: session.terminalPreviewSnapshot,
+          preview: nativeFocusTitle == null
+              ? session.terminalPreview
+              : session.activeNativeAcpPreview,
+          previewSnapshot: nativeFocusTitle == null
+              ? session.terminalPreviewSnapshot
+              : null,
+          nativeAcpPreviewSnapshot: nativeFocusTitle == null
+              ? null
+              : session.activeNativeAcpPreviewSnapshot,
           terminalTheme: session.terminalTheme,
-          sessionTitle: _connectionSessionTitles[connectionId],
-          windowTitle: session.windowTitle,
-          iconName: session.iconName,
-          workingDirectory: session.workingDirectory,
-          shellStatus: session.shellStatus,
-          lastExitCode: session.lastExitCode,
+          sessionTitle:
+              nativeFocusTitle ?? _connectionSessionTitles[connectionId],
+          windowTitle: nativeFocusTitle == null ? session.windowTitle : null,
+          iconName: nativeFocusTitle == null ? session.iconName : null,
+          workingDirectory: nativeFocusTitle == null
+              ? session.workingDirectory
+              : null,
+          shellStatus: nativeFocusTitle == null ? session.shellStatus : null,
+          lastExitCode: nativeFocusTitle == null ? session.lastExitCode : null,
           remoteMuxBackend: session.remoteMuxBackend,
           remoteMuxSessionName: session.remoteMuxSessionName,
           terminalThemeLightId: session.terminalThemeLightId,
@@ -8874,6 +8959,57 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       return;
     }
     session.terminalFontSize = fontSize;
+    state = {...state};
+  }
+
+  /// Updates the native ACP session focused inside an active connection.
+  void updateSessionNativeAcpFocus(
+    int connectionId, {
+    required AcpSessionKey? key,
+    String? displayTitle,
+  }) {
+    final session = getSession(connectionId);
+    if (session == null ||
+        (session.activeNativeAcpSessionKey == key &&
+            session.activeNativeAcpDisplayTitle == displayTitle)) {
+      return;
+    }
+    final focusChanged = session.activeNativeAcpSessionKey != key;
+    session
+      ..activeNativeAcpSessionKey = key
+      ..activeNativeAcpDisplayTitle = displayTitle;
+    if (focusChanged || key == null) {
+      session
+        ..activeNativeAcpPreview = null
+        ..activeNativeAcpPreviewSnapshot = null;
+    }
+    state = {...state};
+  }
+
+  /// Updates the bounded preview for the focused native ACP session.
+  void updateSessionNativeAcpPreview(int connectionId, String? preview) {
+    final session = getSession(connectionId);
+    if (session == null ||
+        session.activeNativeAcpSessionKey == null ||
+        session.activeNativeAcpPreview == preview) {
+      return;
+    }
+    session.activeNativeAcpPreview = preview;
+    state = {...state};
+  }
+
+  /// Updates the role-aware preview for the focused native ACP session.
+  void updateSessionNativeAcpPreviewSnapshot(
+    int connectionId,
+    AcpNativePreviewSnapshot? snapshot,
+  ) {
+    final session = getSession(connectionId);
+    if (session == null ||
+        session.activeNativeAcpSessionKey == null ||
+        session.activeNativeAcpPreviewSnapshot == snapshot) {
+      return;
+    }
+    session.activeNativeAcpPreviewSnapshot = snapshot;
     state = {...state};
   }
 

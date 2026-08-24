@@ -7,6 +7,7 @@ import '../data/database/database.dart';
 import '../data/repositories/host_repository.dart';
 import '../domain/models/terminal_theme.dart';
 import '../domain/models/terminal_themes.dart';
+import '../domain/services/acp_lifecycle_service.dart';
 import '../domain/services/auth_service.dart';
 import '../domain/services/background_ssh_service.dart';
 import '../domain/services/home_screen_shortcut_service.dart';
@@ -121,6 +122,7 @@ class _BackgroundLifecycleBridgeState
   StreamSubscription<TmuxAlertNotificationPayload>? _tmuxAlertTapSubscription;
   StreamSubscription<TerminalNotificationPayload>?
   _terminalNotificationTapSubscription;
+  StreamSubscription<AcpNotificationPayload>? _acpNotificationTapSubscription;
   ProviderSubscription<AuthState>? _authStateSubscription;
   List<Host> _latestHomeScreenShortcutHosts = const <Host>[];
   Set<int> _latestPinnedHomeScreenShortcutHostIds = const <int>{};
@@ -130,6 +132,8 @@ class _BackgroundLifecycleBridgeState
   bool _isTmuxAlertNavigationQueued = false;
   TerminalNotificationPayload? _pendingTerminalNavigation;
   bool _isTerminalNavigationQueued = false;
+  AcpNotificationPayload? _pendingAcpNavigation;
+  bool _isAcpNavigationQueued = false;
 
   @override
   void initState() {
@@ -138,8 +142,7 @@ class _BackgroundLifecycleBridgeState
     _lifecycleCoordinator = AppLifecycleCoordinator(
       syncAuthLifecycle: _syncAuthLifecycle,
       syncForegroundBackgroundStatus: _syncForegroundBackgroundStatus,
-      syncBackgroundState: () =>
-          BackgroundSshService.setForegroundState(isForeground: false),
+      syncBackgroundState: _syncBackgroundState,
     );
     _bootstrapController = AppBootstrapController(
       startNotificationRouting: _startTmuxAlertNotificationRouting,
@@ -163,6 +166,11 @@ class _BackgroundLifecycleBridgeState
       errorContext: 'while recording app startup telemetry',
       defer: true,
     );
+    // Activates the ACP auth-lock and SSH-disconnect cleanup listeners; both
+    // are no-ops until an ACP session actually exists.
+    ref
+      ..read(acpAuthLockWatcherProvider)
+      ..read(acpSshConnectivityWatcherProvider);
   }
 
   @override
@@ -172,6 +180,7 @@ class _BackgroundLifecycleBridgeState
     unawaited(_pinnedHomeScreenShortcutHostsSubscription?.cancel());
     unawaited(_tmuxAlertTapSubscription?.cancel());
     unawaited(_terminalNotificationTapSubscription?.cancel());
+    unawaited(_acpNotificationTapSubscription?.cancel());
     _authStateSubscription?.close();
     super.dispose();
   }
@@ -184,6 +193,8 @@ class _BackgroundLifecycleBridgeState
     _terminalNotificationTapSubscription = notificationService
         .terminalNotificationTaps
         .listen(_handleTerminalNotification);
+    _acpNotificationTapSubscription = notificationService.acpNotificationTaps
+        .listen(_handleAcpNotification);
     _authStateSubscription = ref.listenManual<AuthState>(authStateProvider, (
       previous,
       next,
@@ -191,6 +202,7 @@ class _BackgroundLifecycleBridgeState
       if (_canOpenTmuxAlertNotification(next)) {
         _queuePendingTmuxAlertNavigation();
         _queuePendingTerminalNavigation();
+        _queuePendingAcpNavigation();
       }
     });
   }
@@ -206,6 +218,11 @@ class _BackgroundLifecycleBridgeState
         .consumeLaunchTerminalNotification();
     if (launchTerminalNotification != null) {
       _handleTerminalNotification(launchTerminalNotification);
+    }
+    final launchAcpNotification = await notificationService
+        .consumeLaunchAcpNotification();
+    if (launchAcpNotification != null) {
+      _handleAcpNotification(launchAcpNotification);
     }
   }
 
@@ -288,6 +305,38 @@ class _BackgroundLifecycleBridgeState
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
+  void _handleAcpNotification(AcpNotificationPayload payload) {
+    _pendingAcpNavigation = payload;
+    _queuePendingAcpNavigation();
+  }
+
+  void _queuePendingAcpNavigation() {
+    if (_isAcpNavigationQueued ||
+        _pendingAcpNavigation == null ||
+        !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
+      return;
+    }
+
+    _isAcpNavigationQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isAcpNavigationQueued = false;
+      if (!mounted ||
+          !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
+        return;
+      }
+      final payload = _pendingAcpNavigation;
+      if (payload == null) {
+        return;
+      }
+      _pendingAcpNavigation = null;
+      openAcpNotificationStack(
+        router: ref.read(routerProvider),
+        payload: payload,
+      );
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   void _listenForHomeScreenShortcutChanges() {
     final hostRepository = ref.read(hostRepositoryProvider);
     _homeScreenShortcutHostsSubscription = hostRepository.watchAll().listen((
@@ -321,6 +370,12 @@ class _BackgroundLifecycleBridgeState
   Future<void> _syncForegroundBackgroundStatus() async {
     await BackgroundSshService.setForegroundState(isForeground: true);
     await ref.read(activeSessionsProvider.notifier).syncBackgroundStatus();
+    await ref.read(acpLifecycleServiceProvider).handleForeground();
+  }
+
+  Future<void> _syncBackgroundState() async {
+    await BackgroundSshService.setForegroundState(isForeground: false);
+    await ref.read(acpLifecycleServiceProvider).handleBackground();
   }
 
   Future<void> _refreshMonetizationOnStartup() async {

@@ -11,6 +11,19 @@ Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 void main() {
   group('AgentToolIcon', () {
+    test('window identity color depends only on selection', () {
+      const scheme = ColorScheme.light(
+        primary: Color(0xFF123456),
+        onSurfaceVariant: Color(0xFF654321),
+      );
+
+      expect(agentWindowIdentityColor(scheme, isActive: true), scheme.primary);
+      expect(
+        agentWindowIdentityColor(scheme, isActive: false),
+        scheme.onSurfaceVariant,
+      );
+    });
+
     testWidgets('renders a branded svg for a known tool name', (tester) async {
       await tester.pumpWidget(_wrap(const AgentToolIcon(toolName: 'Codex')));
 
@@ -72,7 +85,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: completer.future,
             onToolSelected: (_) {},
             onEmptyWindow: () {},
@@ -84,8 +96,8 @@ void main() {
       // No CLI tiles before detection completes.
       expect(find.text('Claude Code'), findsNothing);
       expect(find.text('Codex'), findsNothing);
-      // Empty window remains available even while loading.
-      expect(find.text('Empty window'), findsOneWidget);
+      // Empty terminal remains available even while loading.
+      expect(find.text('Empty terminal'), findsOneWidget);
 
       completer.complete({AgentLaunchTool.claudeCode});
       await tester.pump();
@@ -96,7 +108,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: Future.value({
               AgentLaunchTool.claudeCode,
               AgentLaunchTool.codex,
@@ -114,7 +125,7 @@ void main() {
       expect(find.text('Copilot CLI'), findsNothing);
       expect(find.text('Gemini CLI'), findsNothing);
       expect(find.text('OpenCode'), findsNothing);
-      expect(find.text('Empty window'), findsOneWidget);
+      expect(find.text('Empty terminal'), findsOneWidget);
     });
 
     testWidgets('shows fallback message when no CLIs are detected', (
@@ -123,7 +134,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: Future.value(const <AgentLaunchTool>{}),
             onToolSelected: (_) {},
             onEmptyWindow: () {},
@@ -133,7 +143,7 @@ void main() {
       await tester.pump();
 
       expect(find.text('No supported CLIs found on PATH.'), findsOneWidget);
-      expect(find.text('Empty window'), findsOneWidget);
+      expect(find.text('Empty terminal'), findsOneWidget);
       for (final tool in AgentLaunchTool.values) {
         expect(find.text(tool.label), findsNothing);
       }
@@ -144,11 +154,7 @@ void main() {
       (tester) async {
         await tester.pumpWidget(
           _wrap(
-            TmuxToolPickerSheet(
-              isProUser: true,
-              onToolSelected: (_) {},
-              onEmptyWindow: () {},
-            ),
+            TmuxToolPickerSheet(onToolSelected: (_) {}, onEmptyWindow: () {}),
           ),
         );
         await tester.pump();
@@ -164,7 +170,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: completer.future,
             onToolSelected: (_) {},
             onEmptyWindow: () {},
@@ -175,7 +180,7 @@ void main() {
       await tester.pump();
 
       expect(find.text('No supported CLIs found on PATH.'), findsOneWidget);
-      expect(find.text('Empty window'), findsOneWidget);
+      expect(find.text('Empty terminal'), findsOneWidget);
       for (final tool in AgentLaunchTool.values) {
         expect(find.text(tool.label), findsNothing);
       }
@@ -188,7 +193,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: Future.value({AgentLaunchTool.claudeCode}),
             onToolSelected: (t) => chosen = t,
             onEmptyWindow: () {},
@@ -207,7 +211,6 @@ void main() {
       await tester.pumpWidget(
         _wrap(
           TmuxToolPickerSheet(
-            isProUser: true,
             installedToolsFuture: Future.value({
               AgentLaunchTool.claudeCode,
               AgentLaunchTool.codex,

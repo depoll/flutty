@@ -83,6 +83,7 @@ class MonkeyMuxServerStatus {
   const MonkeyMuxServerStatus({
     required this.version,
     required this.capabilities,
+    this.nativeAcpWindowCount = 0,
   });
 
   /// Running helper version reported by the server.
@@ -90,6 +91,12 @@ class MonkeyMuxServerStatus {
 
   /// Capability strings reported by the server.
   final Set<String> capabilities;
+
+  /// Number of live native ACP windows reported by the initial window list.
+  final int nativeAcpWindowCount;
+
+  /// Whether replacing this server would interrupt a native agent session.
+  bool get hasNativeAcpWindows => nativeAcpWindowCount > 0;
 
   /// Whether the server can be shut down through the control channel.
   bool get supportsShutdown => capabilities.contains('shutdown');
@@ -267,6 +274,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _agentMetadataPeriodicSessions =
       <_MonkeyMuxWatchKey, ({SshSession session, String sessionName})>{};
   static final _windowSnapshotGenerations = <_MonkeyMuxWatchKey, int>{};
+  static final _runtimeGenerations = <_MonkeyMuxWatchKey, int>{};
   static final _appReviewDemoMuxStates =
       <_MonkeyMuxWatchKey, _AppReviewDemoMonkeyMuxState>{};
   static const _agentSessionMetadataFreshTtl = Duration(seconds: 5);
@@ -303,6 +311,39 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
   }
 
+  /// Reconnects one workspace's stable watcher stream after the public
+  /// MonkeyMux socket moves to a replacement helper. Other session names and
+  /// the uploaded-helper cache remain untouched.
+  Future<void> resetServerRuntime(int connectionId, String sessionName) async {
+    final key = _MonkeyMuxWatchKey(connectionId, sessionName);
+    DiagnosticsLogService.instance.info(
+      'monkeymux.cache',
+      'server_runtime_reset',
+      fields: {'connectionId': connectionId},
+    );
+    _runtimeGenerations[key] = (_runtimeGenerations[key] ?? 0) + 1;
+
+    void clearKeyState() {
+      _windowSnapshotCache.remove(key);
+      _serverStatusCache.remove(key);
+      _windowSnapshotGenerations.remove(key);
+      _agentMetadataRefreshes.remove(key);
+      _cancelAgentMetadataPeriodicRefresh(key);
+      _agentMetadataRequestPanePids.remove(key);
+      _agentMetadataPendingWindows.remove(key);
+      _agentMetadataPendingForced.remove(key);
+      _windowListRequests.remove(key)?.ignore();
+      _agentMetadataRequests.remove(key)?.ignore();
+    }
+
+    final observer = _observers[key];
+    if (observer == null || observer.isDisposed) {
+      clearKeyState();
+      return;
+    }
+    await observer.recycleForServerReplacement(clearKeyState);
+  }
+
   /// Clears MonkeyMux caches and watchers for a connection.
   Future<void> clearCache(int connectionId) async {
     DiagnosticsLogService.instance.info(
@@ -316,6 +357,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         .toList(growable: false);
     for (final key in demoKeys) {
       _appReviewDemoMuxStates.remove(key)?.dispose();
+    }
+    for (final key
+        in _runtimeGenerations.keys
+            .where((key) => key.connectionId == connectionId)
+            .toList(growable: false)) {
+      _runtimeGenerations[key] = (_runtimeGenerations[key] ?? 0) + 1;
     }
     _windowSnapshotCache.removeWhere(
       (key, _) => key.connectionId == connectionId,
@@ -363,9 +410,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         .toList(growable: false);
     for (final key in observerKeys) {
       final observer = _observers.remove(key);
-      if (observer != null) {
-        await observer.dispose();
-      }
+      if (observer != null) await observer.dispose();
     }
   }
 
@@ -447,9 +492,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     _MonkeyMuxWatchKey key,
   ) async {
+    final runtimeGeneration = _runtimeGenerations.putIfAbsent(key, () => 0);
     final response = await _runControlCommand(session, sessionName, {
       'type': 'list_windows',
     });
+    if ((_runtimeGenerations[key] ?? 0) != runtimeGeneration) {
+      return response.windows;
+    }
     _cacheWindows(key, response.windows);
     _scheduleAgentMetadataRefresh(session, sessionName, key, response.windows);
     return _windowSnapshotCache[key] ?? response.windows;
@@ -658,6 +707,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String? windowId,
     String? extraFlags,
     Map<int, int>? clientImageSignatures,
+    bool suppressReplay = false,
   }) async {
     if (isAppReviewDemoSession(session)) {
       final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
@@ -674,6 +724,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         'windowId': windowId.trim()
       else
         'windowIndex': windowIndex,
+      if (suppressReplay) 'suppressReplay': true,
       if (clientImageSignatures != null && clientImageSignatures.isNotEmpty)
         'haveImageSignatures': {
           for (final entry in clientImageSignatures.entries)
@@ -849,6 +900,20 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
   }
 
+  /// Queries attach ownership through a fresh control process after a server
+  /// replacement, bypassing any watcher still connected to the outgoing host.
+  Future<bool> hasForegroundClientAfterServerReplacement(
+    SshSession session,
+    String sessionName,
+  ) async {
+    if (isAppReviewDemoSession(session)) return true;
+    final response = await _runControlCommand(session, sessionName, {
+      'type': 'query_attach_state',
+      'clientId': session.monkeyMuxClientId,
+    }, forceOneShot: true);
+    return response.hasForegroundClient;
+  }
+
   @override
   Future<bool> hasForegroundClientOrThrow(
     SshSession session,
@@ -926,6 +991,39 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     final response = await _runControlCommand(session, sessionName, {
       'type': 'run_command',
       'command': command,
+    }, priority: priority);
+    return TerminalClientCommandResult(
+      output: response.data ?? '',
+      exitCode: response.exitCode,
+    );
+  }
+
+  /// Starts an ACP bridge directly inside the existing MonkeyMux server.
+  ///
+  /// This preserves the server's inherited login/security environment without
+  /// spawning a second detached helper process.
+  Future<TerminalClientCommandResult> startAcpBridge(
+    SshSession session,
+    String sessionName, {
+    required String providerId,
+    required String provider,
+    required String command,
+    required String cwd,
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    if (isAppReviewDemoSession(session)) {
+      return const TerminalClientCommandResult(
+        output:
+            '{"version":1,"type":"started","bridgeId":"00000000000000000000000000000000"}',
+        exitCode: 0,
+      );
+    }
+    final response = await _runControlCommand(session, sessionName, {
+      'type': 'start_acp_bridge',
+      'providerId': providerId,
+      'provider': provider,
+      'command': command,
+      'cwd': cwd,
     }, priority: priority);
     return TerminalClientCommandResult(
       output: response.data ?? '',
@@ -1062,10 +1160,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     Map<String, Object?> command, {
     SshExecPriority priority = SshExecPriority.normal,
+    bool forceOneShot = false,
   }) async {
     final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
     final observer = _observers[key];
-    if (observer != null && !observer.isDisposed) {
+    if (!forceOneShot && observer != null && !observer.isDisposed) {
       return observer.runCommand(command, priority: priority);
     }
     final installation = await _installer.ensureInstalled(
@@ -1436,7 +1535,7 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
 }
 
 Duration _oneShotResponseTimeout(Map<String, Object?> request) =>
-    request['type'] == 'run_command'
+    request['type'] == 'run_command' || request['type'] == 'start_acp_bridge'
     ? _oneShotRunCommandResponseTimeout
     : _oneShotControlResponseTimeout;
 
@@ -1445,6 +1544,7 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
   String command,
 ) async {
   final execSession = await session.execute(command);
+  MonkeyMuxServerStatus? status;
   try {
     execSession.stderr.drain<void>().ignore();
     await for (final line
@@ -1454,16 +1554,36 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
             .transform(const LineSplitter())
             .timeout(const Duration(seconds: 5))) {
       final response = _MonkeyMuxControlResponse.tryParse(line);
-      if (response == null || response.type != 'hello') {
+      if (response == null) {
         continue;
       }
-      return MonkeyMuxServerStatus(
-        version: response.version,
-        capabilities: response.capabilities.toSet(),
-      );
+      if (response.type == 'hello') {
+        status = MonkeyMuxServerStatus(
+          version: response.version,
+          capabilities: response.capabilities.toSet(),
+        );
+        // Helpers without native ACP window support cannot own an in-process
+        // bridge, so their hello is already a complete update-safety answer.
+        if (!status.capabilities.contains('acp-window-v1')) {
+          return status;
+        }
+        continue;
+      }
+      if (response.type == 'window_list' && status != null) {
+        return MonkeyMuxServerStatus(
+          version: status.version,
+          capabilities: status.capabilities,
+          nativeAcpWindowCount: response.windows
+              .where((window) => window.nativeAcpBridgeId?.isNotEmpty ?? false)
+              .length,
+        );
+      }
     }
   } on TimeoutException {
-    return null;
+    // A transitional helper may advertise ACP support but omit its initial
+    // window list. Keep the version answer without claiming an unsafe update
+    // is blocked; the helper's own replacement guard remains authoritative.
+    return status;
   } finally {
     await _closeMonkeyMuxExecSession(
       execSession,
@@ -1471,7 +1591,7 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
       operation: 'server_status',
     );
   }
-  return null;
+  return status;
 }
 
 /// Matches the `major.minor.patch` line `monkeymux version` prints, allowing an
@@ -1643,6 +1763,29 @@ class _MonkeyMuxWindowChangeObserver {
 
   /// Whether this observer has been torn down and can no longer run commands.
   bool get isDisposed => _disposed;
+
+  /// Reconnects the remote watch process after a helper socket takeover while
+  /// keeping this broadcast stream alive for every existing UI consumer.
+  Future<void> recycleForServerReplacement(VoidCallback afterCleanup) async {
+    if (_disposed) {
+      afterCleanup();
+      return;
+    }
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _abandonStartAttempt();
+    _failPending(
+      const MonkeyMuxInstallException('MonkeyMux server was replaced.'),
+      StackTrace.current,
+    );
+    await _cleanup();
+    afterCleanup();
+    if (_disposed) return;
+    _reconnectAttempts = 0;
+    if (_controller.hasListener) {
+      await _ensureStarted();
+    }
+  }
 
   void emitWindowList(List<TmuxWindow> windows) {
     if (_disposed || _controller.isClosed || windows.isEmpty) {
@@ -2501,6 +2644,7 @@ TmuxWindow? _windowFromJson(Object? value) {
   final terminalBracketedPasteMode = explicitTerminalBracketedPasteMode is bool
       ? explicitTerminalBracketedPasteMode
       : _privateModeValue(privateModes, '2004');
+  final agentSessionId = _nonEmpty(value['agentSessionId'] as String?);
   // The MonkeyMux server only raises the `#` alert flag when a background
   // window emits a terminal bell (agents ring the bell when they need input),
   // and clears it as soon as the window is selected. Parsing it restores the
@@ -2517,6 +2661,13 @@ TmuxWindow? _windowFromJson(Object? value) {
     flags: _nonEmpty(value['flags'] as String?),
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
+    activeAgentSessionId: agentSessionId,
+    activeAgentSessionConfidence:
+        agentSessionId != null && value['agentSessionIdentityExact'] == true
+        ? AgentSessionConfidence.high
+        : null,
+    nativeAcpBridgeId: _nonEmpty(value['nativeAcpBridgeId'] as String?),
+    nativeAcpProviderId: _nonEmpty(value['nativeAcpProviderId'] as String?),
     terminalReportsMouseWheel: terminalReportsMouseWheel,
     terminalMouseReportSgr: terminalMouseReportSgr,
     terminalBracketedPasteMode: terminalBracketedPasteMode,

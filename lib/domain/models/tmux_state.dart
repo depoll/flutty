@@ -116,6 +116,8 @@ class TmuxWindow {
     this.activeAgentSessionId,
     this.agentSessionTitle,
     this.activeAgentSessionConfidence,
+    this.nativeAcpBridgeId,
+    this.nativeAcpProviderId,
     this.terminalReportsMouseWheel,
     this.terminalMouseReportSgr,
     this.terminalBracketedPasteMode,
@@ -212,6 +214,16 @@ class TmuxWindow {
   /// Confidence level for [activeAgentSessionId] and [agentSessionTitle].
   final AgentSessionConfidence? activeAgentSessionConfidence;
 
+  /// Server-owned ACP bridge represented by this real MonkeyMux window.
+  final String? nativeAcpBridgeId;
+
+  /// Stable ACP provider id for [nativeAcpBridgeId].
+  final String? nativeAcpProviderId;
+
+  /// Whether this real MonkeyMux window uses the native ACP viewport.
+  bool get isNativeAcp =>
+      nativeAcpBridgeId != null && nativeAcpProviderId != null;
+
   /// Whether the foreground application requested terminal mouse-wheel input.
   final bool? terminalReportsMouseWheel;
 
@@ -279,6 +291,8 @@ class TmuxWindow {
     String? activeAgentSessionId,
     String? agentSessionTitle,
     AgentSessionConfidence? activeAgentSessionConfidence,
+    String? nativeAcpBridgeId,
+    String? nativeAcpProviderId,
     bool? terminalReportsMouseWheel,
     bool? terminalMouseReportSgr,
     bool? terminalBracketedPasteMode,
@@ -307,6 +321,8 @@ class TmuxWindow {
     activeAgentSessionConfidence: clearActiveAgentSessionMetadata
         ? null
         : activeAgentSessionConfidence ?? this.activeAgentSessionConfidence,
+    nativeAcpBridgeId: nativeAcpBridgeId ?? this.nativeAcpBridgeId,
+    nativeAcpProviderId: nativeAcpProviderId ?? this.nativeAcpProviderId,
     terminalReportsMouseWheel:
         terminalReportsMouseWheel ?? this.terminalReportsMouseWheel,
     terminalMouseReportSgr:
@@ -611,6 +627,8 @@ class TmuxWindow {
           activeAgentSessionId == other.activeAgentSessionId &&
           agentSessionTitle == other.agentSessionTitle &&
           activeAgentSessionConfidence == other.activeAgentSessionConfidence &&
+          nativeAcpBridgeId == other.nativeAcpBridgeId &&
+          nativeAcpProviderId == other.nativeAcpProviderId &&
           terminalReportsMouseWheel == other.terminalReportsMouseWheel &&
           terminalMouseReportSgr == other.terminalMouseReportSgr &&
           terminalBracketedPasteMode == other.terminalBracketedPasteMode &&
@@ -619,7 +637,7 @@ class TmuxWindow {
           _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
     index,
     id,
     panePid,
@@ -634,13 +652,15 @@ class TmuxWindow {
     activeAgentSessionId,
     agentSessionTitle,
     activeAgentSessionConfidence,
+    nativeAcpBridgeId,
+    nativeAcpProviderId,
     terminalReportsMouseWheel,
     terminalMouseReportSgr,
     terminalBracketedPasteMode,
     terminalProgress,
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
-  );
+  ]);
 }
 
 /// Live update emitted while watching a tmux session in control mode.

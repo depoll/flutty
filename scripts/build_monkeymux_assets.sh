@@ -12,12 +12,12 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 force=false
 case "${1:-}" in
-  "") ;;
-  --force) force=true ;;
-  *)
-    echo "usage: $0 [--force]" >&2
-    exit 2
-    ;;
+"") ;;
+--force) force=true ;;
+*)
+  echo "usage: $0 [--force]" >&2
+  exit 2
+  ;;
 esac
 
 targets=(
@@ -66,11 +66,11 @@ build_fingerprint() {
     printf 'toolchain=%s\n' "$GO_TOOLCHAIN"
     find "$REMOTE_DIR" -type f \
       \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \
-         -o -name 'monkeymux-version.sh' -o -path '*/conpty/*' \) \
+      -o -name 'monkeymux-version.sh' -o -path '*/conpty/*' \) \
       -print | LC_ALL=C sort | while IFS= read -r input; do
-        printf '%s  %s\n' \
-          "$(sha256_file "$input")" "${input#"$ROOT_DIR/"}"
-      done
+      printf '%s  %s\n' \
+        "$(sha256_file "$input")" "${input#"$ROOT_DIR/"}"
+    done
     printf '%s  scripts/build_monkeymux_assets.sh\n' \
       "$(sha256_file "$ROOT_DIR/scripts/build_monkeymux_assets.sh")"
     printf '%s  scripts/deterministic_gzip.go\n' \
@@ -92,8 +92,8 @@ stored_fingerprint=""
 if [[ -f "$STAMP_FILE" ]]; then
   stored_fingerprint="$(<"$STAMP_FILE")"
 fi
-if [[ "$force" == false ]] && assets_are_complete && \
-   [[ "$stored_fingerprint" == "$fingerprint" ]]; then
+if [[ "$force" == false ]] && assets_are_complete &&
+  [[ "$stored_fingerprint" == "$fingerprint" ]]; then
   echo "MonkeyMux assets are current ($VERSION)."
   exit 0
 fi
@@ -118,8 +118,8 @@ for target in "${targets[@]}"; do
   read -r goos goarch platform <<<"$target"
   arch_env=()
   case "$goarch" in
-    amd64) arch_env+=(GOAMD64=v1) ;;
-    arm64) arch_env+=(GOARM64=v8.0) ;;
+  amd64) arch_env+=(GOAMD64=v1) ;;
+  arm64) arch_env+=(GOARM64=v8.0) ;;
   esac
   output_dir="$ASSET_DIR/bin/$platform"
   raw_output="$TMP_DIR/$platform/monkeymux"
@@ -151,7 +151,7 @@ done
   done
   printf '\n  ]\n'
   printf '}\n'
-} > "$ASSET_DIR/manifest.json"
+} >"$ASSET_DIR/manifest.json"
 
-printf '%s\n' "$fingerprint" > "$STAMP_FILE"
+printf '%s\n' "$fingerprint" >"$STAMP_FILE"
 echo "Built MonkeyMux $VERSION assets with $GO_TOOLCHAIN."

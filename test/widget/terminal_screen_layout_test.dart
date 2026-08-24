@@ -41,6 +41,70 @@ void main() {
       expect(tmuxHandleMinTouchExtent, greaterThanOrEqualTo(44));
     });
 
+    test('native focus leaves the connection on Back', () {
+      expect(resolveTerminalScreenCanPop(isTmuxBarExpanded: false), isTrue);
+      expect(resolveTerminalScreenCanPop(isTmuxBarExpanded: true), isFalse);
+    });
+
+    test('native mode hides only terminal-viewport menu actions', () {
+      expect(
+        resolveShowTerminalViewportMenuActions(nativeAgentActive: false),
+        isTrue,
+      );
+      expect(
+        resolveShowTerminalViewportMenuActions(nativeAgentActive: true),
+        isFalse,
+      );
+    });
+
+    test('uses platform IME state over stale inset geometry', () {
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: null,
+          terminalInputConnectionVisible: false,
+          nativeComposerInputOwner: true,
+        ),
+        isTrue,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: false,
+          terminalInputConnectionVisible: true,
+          nativeComposerInputOwner: true,
+        ),
+        isFalse,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: null,
+          terminalInputConnectionVisible: false,
+          nativeComposerInputOwner: false,
+        ),
+        isFalse,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: true,
+          terminalInputConnectionVisible: false,
+          nativeComposerInputOwner: false,
+        ),
+        isTrue,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 0,
+          platformKeyboardVisible: true,
+          terminalInputConnectionVisible: true,
+          nativeComposerInputOwner: true,
+        ),
+        isFalse,
+      );
+    });
+
     test('moves tmux controls to a sidebar only when width allows it', () {
       const breakpoint = tmuxSidebarExpandedWidth + tmuxSidebarMinTerminalWidth;
 
@@ -414,6 +478,87 @@ void main() {
       );
     });
 
+    test('preserves MonkeyMux chrome only for bounded attach churn', () {
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.monkeyMux,
+          serverReplacementPending: true,
+          nativeAgentActive: false,
+          attachEstablished: false,
+          consecutiveFalseProbes: 20,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.monkeyMux,
+          serverReplacementPending: false,
+          nativeAgentActive: true,
+          attachEstablished: true,
+          consecutiveFalseProbes: 3,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.monkeyMux,
+          serverReplacementPending: false,
+          nativeAgentActive: true,
+          attachEstablished: true,
+          consecutiveFalseProbes: 4,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.tmux,
+          serverReplacementPending: true,
+          nativeAgentActive: true,
+          attachEstablished: true,
+          consecutiveFalseProbes: 1,
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'terminal theme view-ready retries are bounded and skip native UI',
+      () {
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: false,
+            routeIsCurrent: true,
+            attempt: 2,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: false,
+            routeIsCurrent: true,
+            attempt: 3,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: true,
+            routeIsCurrent: true,
+            attempt: 0,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: false,
+            routeIsCurrent: false,
+            attempt: 0,
+          ),
+          isFalse,
+        );
+      },
+    );
+
     test('preserves tmux state after tmux is confirmed active', () {
       expect(
         shouldPreserveTerminalTmuxStateAfterDetectionFailure(
@@ -608,6 +753,31 @@ void main() {
       );
     });
 
+    test('new native windows use the host connection directory', () {
+      expect(
+        resolveNativeAcpNewWindowWorkingDirectory(
+          connectionWorkingDirectory: ' /host/connection ',
+          launchWorkingDirectory: '/host/launch',
+          hostWorkingDirectory: '/host/configured',
+        ),
+        '/host/connection',
+      );
+      expect(
+        resolveNativeAcpNewWindowWorkingDirectory(
+          launchWorkingDirectory: '/host/launch',
+          hostWorkingDirectory: '/host/configured',
+        ),
+        '/host/launch',
+      );
+      expect(
+        resolveNativeAcpNewWindowWorkingDirectory(
+          hostWorkingDirectory: '/host/configured',
+        ),
+        '/host/configured',
+      );
+      expect(resolveNativeAcpNewWindowWorkingDirectory(), '~');
+    });
+
     test('falls back through launch, active, and observed directories', () {
       expect(
         resolveTmuxWindowWorkingDirectory(
@@ -658,6 +828,41 @@ void main() {
           hostWorkingDirectory: '/tmp/host',
         ),
         '/tmp/host',
+      );
+    });
+
+    test('reopens only an established lost MonkeyMux attach', () {
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.monkeyMux,
+          attachEstablished: true,
+          hasForegroundClient: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.monkeyMux,
+          attachEstablished: false,
+          hasForegroundClient: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.tmux,
+          attachEstablished: true,
+          hasForegroundClient: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.monkeyMux,
+          attachEstablished: true,
+          hasForegroundClient: true,
+        ),
+        isFalse,
       );
     });
 

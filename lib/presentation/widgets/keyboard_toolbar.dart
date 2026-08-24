@@ -230,6 +230,8 @@ class KeyboardToolbar extends StatefulWidget {
     required this.terminal,
     this.controller,
     this.onKeyPressed,
+    this.onTextInput,
+    this.onSpecialKey,
     this.onPasteRequested,
     this.onPasteMenuOpened,
     this.onSnippetPasteRequested,
@@ -249,6 +251,12 @@ class KeyboardToolbar extends StatefulWidget {
 
   /// Optional callback when any key is pressed.
   final VoidCallback? onKeyPressed;
+
+  /// Overrides literal text delivery instead of writing to [terminal].
+  final ValueChanged<String>? onTextInput;
+
+  /// Overrides special-key delivery instead of writing to [terminal].
+  final ValueChanged<TerminalKey>? onSpecialKey;
 
   /// Optional callback when the Paste key is tapped.
   final FutureOr<void> Function()? onPasteRequested;
@@ -987,6 +995,13 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendEscape() {
     HapticFeedback.lightImpact();
+    if (widget.onSpecialKey case final sink?) {
+      sink(TerminalKey.escape);
+      widget.onKeyPressed?.call();
+      _controller.consumeOneShot();
+      _refocusTerminal();
+      return;
+    }
     if (_shouldUseKittyKeyboardEncoding(TerminalKeyEventType.press)) {
       widget.terminal.keyInput(TerminalKey.escape);
     } else {
@@ -1004,6 +1019,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendTab() {
     HapticFeedback.lightImpact();
+    if (widget.onSpecialKey case final sink?) {
+      sink(TerminalKey.tab);
+      widget.onKeyPressed?.call();
+      _consumeOneShot();
+      return;
+    }
     if (_shouldUseKittyKeyboardEncoding(TerminalKeyEventType.press)) {
       widget.terminal.keyInput(
         TerminalKey.tab,
@@ -1022,6 +1043,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendEnter() {
     HapticFeedback.lightImpact();
+    if (widget.onSpecialKey case final sink?) {
+      sink(TerminalKey.enter);
+      widget.onKeyPressed?.call();
+      _consumeOneShot();
+      return;
+    }
     sendTerminalEnterInput(
       widget.terminal,
       shiftActive: _controller.isShiftActive,
@@ -1034,20 +1061,25 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendText(String text) {
     HapticFeedback.lightImpact();
-    var output = text;
+    final textSink = widget.onTextInput;
+    if (textSink != null) {
+      textSink(_controller.isShiftActive ? text.toUpperCase() : text);
+      widget.onKeyPressed?.call();
+      _consumeOneShot();
+      return;
+    }
 
+    var output = text;
     if (_controller.isCtrlActive) {
       final ctrlCode = _ctrlCodeForCharacter(output);
       if (ctrlCode != null) {
         output = String.fromCharCode(ctrlCode);
       }
     }
-
     if (_controller.isAltActive) {
-      // Alt/Meta sends ESC prefix
+      // Alt/Meta sends ESC prefix.
       output = '\x1b$output';
     }
-
     if (_controller.isShiftActive) {
       output = output.toUpperCase();
     }
@@ -1066,6 +1098,14 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   }) {
     if (withHaptic) {
       HapticFeedback.lightImpact();
+    }
+    if (widget.onSpecialKey case final sink?) {
+      sink(key);
+      widget.onKeyPressed?.call();
+      if (consumeOneShot) {
+        _consumeOneShot();
+      }
+      return;
     }
     if (_shouldUseKittyKeyboardEncoding(type)) {
       final handled = widget.terminal.keyInput(
@@ -1096,9 +1136,18 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     if (withHaptic) {
       HapticFeedback.lightImpact();
     }
+    final key = _terminalKeyForArrow(arrow);
+    if (widget.onSpecialKey case final sink?) {
+      sink(key);
+      widget.onKeyPressed?.call();
+      if (consumeOneShot) {
+        _consumeOneShot();
+      }
+      return;
+    }
     if (_shouldUseKittyKeyboardEncoding(type)) {
       final handled = widget.terminal.keyInput(
-        _terminalKeyForArrow(arrow),
+        key,
         shift: _controller.isShiftActive,
         alt: _controller.isAltActive,
         ctrl: _controller.isCtrlActive,

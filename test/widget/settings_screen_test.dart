@@ -203,6 +203,56 @@ void main() {
       );
     });
 
+    testWidgets('sets the app-wide agent window mode', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+      final tile = find.byKey(const ValueKey('settings-agent-window-mode'));
+      await tester.scrollUntilVisible(
+        tile,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Ask every time'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Choose Terminal or Native chat for each new agent window.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester.getTopLeft(tile).dy,
+        greaterThan(tester.getTopLeft(find.text('Font family')).dy),
+      );
+
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining(
+          'Choose the default for agents that support both experiences.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Open the focused chat, tools, and permissions interface.'),
+        findsOneWidget,
+      );
+      expect(find.text('Open the agent’s full terminal CLI.'), findsOneWidget);
+      await tester.tap(find.text('Prefer native chat').last);
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Prefer native chat'), findsOneWidget);
+      expect(
+        await SettingsService(
+          db,
+        ).getString(SettingKeys.agentWindowModePreference),
+        'native',
+      );
+    });
+
     testWidgets('toggles shell completion popups from terminal settings', (
       tester,
     ) async {
@@ -389,6 +439,28 @@ void main() {
 
       expect(find.text('Cursor style'), findsOneWidget);
       expect(find.text('Block'), findsOneWidget);
+    });
+
+    testWidgets('exposes mux close confirmation toggle', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Confirm before closing mux windows'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      final tile = tester.widget<SwitchListTile>(
+        find.widgetWithText(
+          SwitchListTile,
+          'Confirm before closing mux windows',
+        ),
+      );
+      expect(tile.value, isTrue);
     });
 
     testWidgets('displays bell sound toggle', (tester) async {

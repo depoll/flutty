@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:monkeyssh/domain/models/acp_native_preview.dart';
 import 'package:monkeyssh/domain/models/terminal_preview.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
@@ -83,6 +84,78 @@ void main() {
     expect(previewText.overflow, TextOverflow.clip);
     expect(previewText.style?.fontSize, 10.5);
     expect(previewText.style?.height, 1.22);
+  });
+
+  testWidgets('renders role-aware live native content and progress', (
+    tester,
+  ) async {
+    final snapshot = AcpNativePreviewSnapshot(
+      lines: const [
+        AcpNativePreviewLine(
+          kind: AcpNativePreviewKind.user,
+          text: 'Fix the failing test',
+        ),
+        AcpNativePreviewLine(
+          kind: AcpNativePreviewKind.tool,
+          text: 'Running Flutter tests',
+          active: true,
+        ),
+        AcpNativePreviewLine(
+          kind: AcpNativePreviewKind.agent,
+          text: 'The targeted tests now pass.',
+        ),
+      ],
+      indeterminate: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 360,
+            child: ConnectionPreviewStack(
+              entries: [
+                ConnectionPreviewStackEntry(
+                  title: 'Connection #1 · Hermes · work',
+                  body: 'fallback',
+                  nativeAcpPreviewSnapshot: snapshot,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Fix the failing test'), findsOneWidget);
+    expect(find.text('Running Flutter tests'), findsOneWidget);
+    expect(find.text('The targeted tests now pass.'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+  });
+
+  testWidgets('renders native content in compact connection metadata', (
+    tester,
+  ) async {
+    final snapshot = AcpNativePreviewSnapshot(
+      lines: const [
+        AcpNativePreviewLine(
+          kind: AcpNativePreviewKind.agent,
+          text: 'Live native response',
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectionPreviewSnippet(
+            endpoint: 'host · connected',
+            nativeAcpPreviewSnapshot: snapshot,
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Live native response'), findsOneWidget);
   });
 
   test('stack preview titles prefer session title over terminal metadata', () {

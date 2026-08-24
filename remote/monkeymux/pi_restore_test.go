@@ -10,6 +10,23 @@ import (
 	"time"
 )
 
+func TestMonkeyMuxAgentLaunchCommandWrapsPiWithCurrentExecutable(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	argument, ok := shellArgument(executable)
+	if !ok {
+		t.Fatalf("current executable is not shell-safe: %q", executable)
+	}
+	if got, want := monkeyMuxAgentLaunchCommand("pi --session-dir sessions"), argument+" pi-agent --session-dir sessions"; got != want {
+		t.Fatalf("Pi create command = %q, want %q", got, want)
+	}
+	if got := monkeyMuxAgentLaunchCommand("opencode"); got != "opencode" {
+		t.Fatalf("non-Pi command was rewritten: %q", got)
+	}
+}
+
 func writePiTestSession(t *testing.T, path string, id string, cwd string, modified time.Time) {
 	t.Helper()
 	writePiTestSessionTimes(t, path, id, cwd, modified, modified)
@@ -359,7 +376,7 @@ func TestPiEncodedSessionDirNameMatchesPiLayout(t *testing.T) {
 }
 
 func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
-	for _, name := range []string{"pi", "/Users/demo/.local/bin/pi"} {
+	for _, name := range []string{"pi", "pi-agent", "/Users/demo/.local/bin/pi"} {
 		if got := agentToolFromCommandName(name); got != "pi" {
 			t.Fatalf("agentToolFromCommandName(%q) = %q, want pi", name, got)
 		}
@@ -394,7 +411,10 @@ func TestPiAgentToolMappingAndResumeCommand(t *testing.T) {
 		CurrentCommand: "pi",
 		AgentSessionID: "session-id",
 	}, true)
-	want := piResumeCommandWithFreshFallback("pi --session session-id", "pi")
+	want := piResumeCommandWithFreshFallback(
+		piResumeCommand("session-id", "", ""),
+		piLaunchCommand(""),
+	)
 	if options.agentTool != "pi" || options.command != want {
 		t.Fatalf("Pi restore options = tool:%q command:%q, want tool pi command %q", options.agentTool, options.command, want)
 	}
@@ -428,8 +448,8 @@ func TestPiResumeCommandRejectsShellMetacharacters(t *testing.T) {
 		CurrentCommand: "pi",
 		AgentSessionID: "session&id",
 	}, false)
-	if options.command != "pi" {
-		t.Fatalf("unsafe session command = %q, want fresh pi", options.command)
+	if options.command != piLaunchCommand("") {
+		t.Fatalf("unsafe session command = %q, want managed fresh Pi", options.command)
 	}
 }
 
@@ -453,6 +473,98 @@ func TestEnrichRestoreWithAgentSessionIDsKeepsFreshPiWindowFresh(t *testing.T) {
 	}
 	if restore.Windows[0].AgentSessionDir != "" || restore.Windows[0].AgentSessionPath != "" {
 		t.Fatalf("fresh Pi window kept restore metadata: %#v", restore.Windows[0])
+	}
+}
+
+func TestDiscoverPiSessionsUsesConfirmedWindowActivityWithoutProcessTable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	activity := time.Now().UTC().Truncate(time.Second)
+	path := filepath.Join(root, "project", "active.jsonl")
+	writePiTestSession(t, path, "active-session", project, activity)
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		Name:                     "Pi",
+		Cwd:                      project,
+		CurrentCommand:           "pi",
+		AgentTool:                "pi",
+		AgentToolConfirmed:       true,
+		LastActivityEpochSeconds: activity.Unix(),
+	}}}
+
+	got := discoverPiSessions(restore, nil, nil)
+	session, ok := got[0]
+	if !ok {
+		t.Fatal("confirmed Pi window activity did not restore a session")
+	}
+	if session.sessionID != "active-session" || session.sessionPath != path {
+		t.Fatalf("activity-correlated Pi session = %#v", session)
+	}
+	options := createWindowOptionsForRestore(restoreWindowState{
+		AgentTool:        "pi",
+		AgentSessionID:   session.sessionID,
+		AgentSessionDir:  session.sessionDir,
+		AgentSessionPath: session.sessionPath,
+	}, false)
+	want := piResumeCommandWithFreshFallback(
+		piResumeCommand(session.sessionID, session.sessionDir, session.sessionPath),
+		piLaunchCommand(session.sessionDir),
+	)
+	if options.command != want {
+		t.Fatalf("restored Pi command = %q, want %q", options.command, want)
+	}
+}
+
+func TestDiscoverPiSessionsUsesConfirmedPublishedTitleWithoutProcessTable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	written := time.Now().Add(-time.Hour).UTC()
+	path := filepath.Join(root, "project", "named.jsonl")
+	writePiTestSession(t, path, "named-session", project, written)
+	appendPiTestSessionName(t, path, "long restore")
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		Name:                     "Pi",
+		Cwd:                      project,
+		CurrentCommand:           "pi",
+		AgentTool:                "pi",
+		AgentToolConfirmed:       true,
+		PaneTitle:                "π - long restore - project",
+		LastActivityEpochSeconds: time.Now().Unix(),
+	}}}
+
+	got := discoverPiSessions(restore, nil, nil)
+	if got[0].sessionID != "named-session" || got[0].sessionPath != path {
+		t.Fatalf("title-correlated processless Pi session = %#v", got)
+	}
+}
+
+func TestDiscoverPiSessionsUsesLatestForSingleConfirmedWindowWithoutProcessTable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	project := filepath.Join(root, "project")
+	now := time.Now().UTC().Truncate(time.Second)
+	writePiTestSession(
+		t,
+		filepath.Join(root, "project", "older.jsonl"),
+		"older-session",
+		project,
+		now.Add(-2*time.Hour),
+	)
+	latestPath := filepath.Join(root, "project", "current.jsonl")
+	writePiTestSession(t, latestPath, "current-session", project, now.Add(-time.Hour))
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		Name:                     "Pi",
+		Cwd:                      project,
+		CurrentCommand:           "pi",
+		AgentTool:                "pi",
+		AgentToolConfirmed:       true,
+		LastActivityEpochSeconds: now.Unix(),
+	}}}
+
+	got := discoverPiSessions(restore, nil, nil)
+	if got[0].sessionID != "current-session" || got[0].sessionPath != latestPath {
+		t.Fatalf("latest confirmed Pi session = %#v", got)
 	}
 }
 
@@ -624,6 +736,114 @@ func TestDiscoverPiSessionsDeclinesInitialSessionAfterResume(t *testing.T) {
 
 	if got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}}); len(got) != 0 {
 		t.Fatalf("resumed Pi session match = %#v, want fresh fallback rather than initial session", got)
+	}
+}
+
+func TestDiscoverPiSessionsPrefersExactExtensionIdentity(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	t.Cleanup(func() { processOpenFilePathsForMetadata = originalOpenFiles })
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	launchDirectory := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktrees", "feature")
+	path := filepath.Join(root, "sessions", "resumed.jsonl")
+	writePiTestSessionTimes(
+		t,
+		path,
+		"resumed-session",
+		worktree,
+		time.Now().Add(-3*time.Hour),
+		time.Now().Add(-2*time.Hour),
+	)
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid:                   100,
+		CurrentCommand:            "pi",
+		AgentTool:                 "pi",
+		AgentToolConfirmed:        true,
+		Cwd:                       launchDirectory,
+		PaneTitle:                 "π - unrelated-title",
+		AgentSessionID:            "resumed-session",
+		AgentSessionDir:           filepath.Dir(path),
+		AgentSessionPath:          path,
+		AgentSessionIdentityExact: true,
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "resumed-session" || got.sessionPath != path {
+		t.Fatalf("exact Pi extension identity = %#v, want exact resumed path", got)
+	}
+}
+
+func TestDiscoverPiSessionsRestoresInteractiveResumeIntoWorktree(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processStartedAtForMetadata = originalProcessStart
+	})
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+
+	root := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", root)
+	launchDirectory := filepath.Join(root, "project")
+	worktree := filepath.Join(root, "worktrees", "feature")
+	otherWorktree := filepath.Join(root, "archive", "feature")
+	started := time.Now().Add(-time.Hour).UTC()
+	activity := started.Add(30 * time.Minute)
+	writePiTestSessionTimes(
+		t,
+		filepath.Join(root, "archive", "old.jsonl"),
+		"old-session",
+		otherWorktree,
+		started.Add(-2*time.Hour),
+		started.Add(10*time.Minute),
+	)
+	resumedPath := filepath.Join(root, "worktree", "resumed.jsonl")
+	writePiTestSessionTimes(
+		t,
+		resumedPath,
+		"resumed-session",
+		worktree,
+		started.Add(-2*time.Hour),
+		activity,
+	)
+	processStartedAtForMetadata = func(int) time.Time { return started }
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "pi", args: "pi"},
+	}
+	// Pi was launched in launchDirectory and changed sessions through its
+	// interactive picker, so neither argv nor the pane cwd names the worktree.
+	restore := &serverRestore{Windows: []restoreWindowState{{
+		PanePid:                  100,
+		CurrentCommand:           "pi",
+		AgentTool:                "pi",
+		Cwd:                      launchDirectory,
+		PaneTitle:                "π - feature",
+		LastActivityEpochSeconds: activity.Unix(),
+	}}}
+
+	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
+	if got.sessionID != "resumed-session" || got.sessionPath != resumedPath {
+		t.Fatalf("cross-worktree interactive resume = %#v, want exact resumed path", got)
+	}
+	options := createWindowOptionsForRestore(restoreWindowState{
+		AgentTool:        "pi",
+		AgentSessionID:   got.sessionID,
+		AgentSessionDir:  got.sessionDir,
+		AgentSessionPath: got.sessionPath,
+	}, false)
+	want := piResumeCommandWithFreshFallback(
+		piResumeCommand(got.sessionID, got.sessionDir, got.sessionPath),
+		piLaunchCommand(got.sessionDir),
+	)
+	if options.command != want {
+		t.Fatalf("cross-worktree restore command = %q, want %q", options.command, want)
 	}
 }
 

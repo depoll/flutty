@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
+import '../models/host_cli_launch_preferences.dart';
 import '../models/terminal_theme.dart';
 import '../models/terminal_themes.dart';
 
@@ -61,6 +62,9 @@ abstract final class SettingKeys {
   /// Enable shell completion popups while typing in the terminal.
   static const shellCompletions = 'shell_completions';
 
+  /// Ask before closing a tmux or MonkeyMux terminal window.
+  static const confirmMuxWindowClose = 'confirm_mux_window_close';
+
   /// Enable haptic feedback.
   static const hapticFeedback = 'haptic_feedback';
 
@@ -106,6 +110,22 @@ abstract final class SettingKeys {
 
   /// Saved host-scoped coding CLI launch preferences.
   static const hostCliLaunchPreferences = 'host_cli_launch_preferences';
+
+  /// App-wide default for ACP-capable agent windows.
+  static const agentWindowModePreference = 'agent_window_mode_preference';
+
+  /// Saved user-defined ACP provider definitions (JSON array).
+  static const acpCustomProviders = 'acp_custom_providers';
+
+  /// Saved non-content references to recently used ACP sessions (JSON array).
+  ///
+  /// Only host/provider/bridge/session identifiers, an optional title and
+  /// working directory, and activity timestamps are persisted; transcript
+  /// content is never stored.
+  static const acpRecentSessions = 'acp_recent_sessions';
+
+  /// Canonical key of the last selected ACP session (JSON string).
+  static const acpLastSelectedSession = 'acp_last_selected_session';
 
   /// Enable shared clipboard between device and remote session.
   ///
@@ -221,6 +241,8 @@ final settingsServiceProvider = Provider<SettingsService>(
 abstract class _AsyncSettingsNotifier<T> extends Notifier<T> {
   late SettingsService _settings;
   bool _disposed = false;
+  Future<void>? _initialization;
+  var _stateRevision = 0;
 
   SettingsService get _settingsService => _settings;
 
@@ -235,17 +257,65 @@ abstract class _AsyncSettingsNotifier<T> extends Notifier<T> {
     _settings = ref.watch(settingsServiceProvider);
     _disposed = false;
     ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
+    final initializationRevision = _stateRevision;
+    _initialization = Future<void>.microtask(
+      () => _init(initializationRevision),
+    );
     return _defaultValue;
   }
 
-  Future<void> _init() async {
+  Future<void> _init(int initializationRevision) async {
     if (_disposed) return;
     final value = await _loadValue();
-    if (_disposed) return;
+    if (_disposed || initializationRevision != _stateRevision) return;
+    state = value;
+  }
+
+  /// Waits until this notifier has loaded its persisted value.
+  Future<T> initializedValue() async {
+    await _initialization;
+    return state;
+  }
+
+  /// Publishes a value after its persistent write has completed.
+  ///
+  /// Incrementing the revision prevents an older initialization read from
+  /// replacing a newer user choice when both operations overlap.
+  void _setPersistedState(T value) {
+    _stateRevision++;
     state = value;
   }
 }
+
+/// Notifier for the app-wide coding-agent window default.
+class AgentWindowModePreferenceNotifier
+    extends _AsyncSettingsNotifier<AgentWindowModePreference> {
+  @override
+  AgentWindowModePreference get _defaultValue =>
+      AgentWindowModePreference.askEveryTime;
+
+  @override
+  Future<AgentWindowModePreference> _loadValue() async =>
+      AgentWindowModePreferencePresentation.fromStorageValue(
+        await _settingsService.getString(SettingKeys.agentWindowModePreference),
+      );
+
+  /// Persists the default used by ordinary taps on ACP-capable agents.
+  Future<void> setPreference(AgentWindowModePreference preference) async {
+    await _settingsService.setString(
+      SettingKeys.agentWindowModePreference,
+      preference.storageValue,
+    );
+    _setPersistedState(preference);
+  }
+}
+
+/// App-wide coding-agent window default with write capability.
+final agentWindowModePreferenceNotifierProvider =
+    NotifierProvider<
+      AgentWindowModePreferenceNotifier,
+      AgentWindowModePreference
+    >(AgentWindowModePreferenceNotifier.new);
 
 /// Provider for theme mode setting.
 final themeModeProvider = FutureProvider<String>((ref) async {
@@ -417,6 +487,33 @@ class AutoLockTimeoutNotifier extends _AsyncSettingsNotifier<int> {
 /// Provider for auto-lock timeout with write capability.
 final autoLockTimeoutNotifierProvider =
     NotifierProvider<AutoLockTimeoutNotifier, int>(AutoLockTimeoutNotifier.new);
+
+/// Notifier for mux window close confirmations.
+class ConfirmMuxWindowCloseNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
+
+  @override
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.confirmMuxWindowClose,
+    defaultValue: true,
+  );
+
+  /// Sets whether closing a mux terminal window requires confirmation.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settingsService.setBool(
+      SettingKeys.confirmMuxWindowClose,
+      value: enabled,
+    );
+    _setPersistedState(enabled);
+  }
+}
+
+/// Provider for mux window close confirmations.
+final confirmMuxWindowCloseNotifierProvider =
+    NotifierProvider<ConfirmMuxWindowCloseNotifier, bool>(
+      ConfirmMuxWindowCloseNotifier.new,
+    );
 
 /// Provider for haptic feedback setting.
 final hapticFeedbackProvider = FutureProvider<bool>((ref) async {

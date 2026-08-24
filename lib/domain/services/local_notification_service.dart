@@ -34,6 +34,9 @@ const terminalNotificationLowSilentChannelId =
 const terminalNotificationCriticalSilentChannelId =
     'terminal-notifications-critical-silent-v2';
 
+/// Local notification channel used for ACP agent completion/permission
+/// alerts shown only while the app is backgrounded.
+const acpNotificationChannelId = 'acp-notifications';
 const _androidNotificationIcon = 'ic_notification_monkey';
 
 /// Builds native details for a terminal notification's protocol metadata.
@@ -324,7 +327,7 @@ class TerminalNotificationPayload {
 /// Kitty's protocol identifier makes create/update/close actions address the
 /// same local notification without exposing that user-controlled string.
 int buildTerminalNotificationId(int connectionId, {String? identifier}) =>
-    Object.hash('terminal-notification', connectionId, identifier) & 0x7fffffff;
+    Object.hash('terminal-notification', connectionId, identifier) & 0x3fffffff;
 
 /// Builds the terminal route location for a terminal notification tap.
 String buildTerminalNotificationLocation(TerminalNotificationPayload payload) =>
@@ -334,6 +337,193 @@ String buildTerminalNotificationLocation(TerminalNotificationPayload payload) =>
         'connectionId': '${payload.connectionId}',
       },
     ).toString();
+
+/// Coarse category of an ACP notification. Never carries prompt, tool, path,
+/// or content details.
+enum AcpNotificationKind {
+  /// A prompt turn finished while the app was backgrounded.
+  completion,
+
+  /// The agent requested a permission decision while the app was
+  /// backgrounded.
+  permission,
+
+  /// The agent requested approval for a validated file write.
+  writeApproval,
+}
+
+/// Stable, process-independent notification ID namespaced away from terminal
+/// notifications. The same session/kind intentionally replaces itself while
+/// different sessions and approval kinds remain separately actionable.
+int acpNotificationIdFor(AcpNotificationPayload payload) {
+  final value =
+      '${payload.kind.name}|${payload.hostId}|${payload.providerId}|'
+      '${payload.bridgeId}|${payload.acpSessionId}';
+  var hash = 0x811c9dc5;
+  for (final codeUnit in value.codeUnits) {
+    hash ^= codeUnit;
+    hash = (hash * 0x01000193) & 0xffffffff;
+  }
+  return 0x40000000 | (hash & 0x3fffffff);
+}
+
+/// Payload attached to an ACP agent notification.
+///
+/// Deliberately holds only stable identifiers: no prompt text, tool output,
+/// paths, commands, or session titles are ever included.
+@immutable
+class AcpNotificationPayload {
+  /// Creates a new [AcpNotificationPayload].
+  const AcpNotificationPayload({
+    required this.kind,
+    required this.hostId,
+    required this.providerId,
+    required this.bridgeId,
+    required this.acpSessionId,
+  });
+
+  static const _type = 'acp-notification';
+  static const _version = 1;
+
+  /// Notification category.
+  final AcpNotificationKind kind;
+
+  /// Host that owns the ACP session.
+  final int hostId;
+
+  /// ACP provider identifier (built-in or custom), never a raw command.
+  final String providerId;
+
+  /// Remote MonkeyMux ACP bridge identifier.
+  final String bridgeId;
+
+  /// Remote ACP session identifier.
+  final String acpSessionId;
+
+  /// Encodes this payload for the notification plugin.
+  String encode() => jsonEncode(<String, Object>{
+    'type': _type,
+    'version': _version,
+    'kind': kind.name,
+    'hostId': hostId,
+    'providerId': providerId,
+    'bridgeId': bridgeId,
+    'acpSessionId': acpSessionId,
+  });
+
+  /// Decodes a notification payload, returning `null` for other payload types.
+  static AcpNotificationPayload? decode(String? payload) {
+    if (payload == null || payload.isEmpty) {
+      return null;
+    }
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is! Map<String, Object?> ||
+          decoded['type'] != _type ||
+          decoded['version'] != _version) {
+        return null;
+      }
+      final kindName = decoded['kind'];
+      final hostId = decoded['hostId'];
+      final providerId = decoded['providerId'];
+      final bridgeId = decoded['bridgeId'];
+      final acpSessionId = decoded['acpSessionId'];
+      AcpNotificationKind? kind;
+      for (final value in AcpNotificationKind.values) {
+        if (value.name == kindName) {
+          kind = value;
+          break;
+        }
+      }
+      if (kind == null ||
+          hostId is! int ||
+          providerId is! String ||
+          providerId.isEmpty ||
+          bridgeId is! String ||
+          bridgeId.isEmpty ||
+          acpSessionId is! String ||
+          acpSessionId.isEmpty) {
+        return null;
+      }
+      return AcpNotificationPayload(
+        kind: kind,
+        hostId: hostId,
+        providerId: providerId,
+        bridgeId: bridgeId,
+        acpSessionId: acpSessionId,
+      );
+    } on FormatException {
+      return null;
+    }
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AcpNotificationPayload &&
+          kind == other.kind &&
+          hostId == other.hostId &&
+          providerId == other.providerId &&
+          bridgeId == other.bridgeId &&
+          acpSessionId == other.acpSessionId;
+
+  @override
+  int get hashCode =>
+      Object.hash(kind, hostId, providerId, bridgeId, acpSessionId);
+}
+
+/// Route path for the full-screen ACP agent chat.
+const acpAgentChatRoutePath = '/agents/chat';
+
+/// Query key carrying the opaque host identifier for the agent chat route.
+const acpAgentChatHostQueryKey = 'h';
+
+/// Query key carrying the opaque provider identifier for the agent chat route.
+const acpAgentChatProviderQueryKey = 'p';
+
+/// Query key carrying the opaque bridge identifier for the agent chat route.
+const acpAgentChatBridgeQueryKey = 'b';
+
+/// Query key carrying the opaque remote ACP session identifier for the agent
+/// chat route.
+const acpAgentChatSessionQueryKey = 's';
+
+/// Safe fallback used when an ACP chat has no route beneath it.
+///
+/// Native ACP sessions live in the MonkeyMux window navigator, so the fallback
+/// returns to active connections rather than a separate top-level workspace.
+String buildAcpSessionFallbackLocation() =>
+    Uri(path: '/', queryParameters: const {'tab': 'connections'}).toString();
+
+/// Builds the deep-link location for a specific ACP chat session, carrying
+/// only opaque identifiers. No working directory, title, command, prompt, or
+/// path is ever placed in the URL.
+String buildAgentChatLocation({
+  required int hostId,
+  required String providerId,
+  required String bridgeId,
+  required String acpSessionId,
+}) => Uri(
+  path: acpAgentChatRoutePath,
+  queryParameters: <String, String>{
+    acpAgentChatHostQueryKey: '$hostId',
+    acpAgentChatProviderQueryKey: providerId,
+    acpAgentChatBridgeQueryKey: bridgeId,
+    acpAgentChatSessionQueryKey: acpSessionId,
+  },
+).toString();
+
+/// Builds the safe navigation location for an ACP notification tap.
+///
+/// The redacted payload carries the full set of opaque session identifiers, so
+/// the tap lands directly on the matching native chat.
+String buildAcpNotificationLocation(AcpNotificationPayload payload) =>
+    buildAgentChatLocation(
+      hostId: payload.hostId,
+      providerId: payload.providerId,
+      bridgeId: payload.bridgeId,
+      acpSessionId: payload.acpSessionId,
+    );
 
 /// Service for showing local notifications inside the app.
 class LocalNotificationService {
@@ -394,17 +584,30 @@ class LocalNotificationService {
   static List<AndroidNotificationChannel>
   get debugTerminalNotificationChannels => _terminalNotificationChannels;
 
+  static const _acpNotificationChannel = AndroidNotificationChannel(
+    acpNotificationChannelId,
+    'Agent notifications',
+    description:
+        'Agent completion and permission alerts shown only while the app '
+        'is in the background.',
+    importance: Importance.high,
+  );
+
   final FlutterLocalNotificationsPlugin _plugin;
   final StreamController<TmuxAlertNotificationPayload> _tmuxAlertTapController =
       StreamController<TmuxAlertNotificationPayload>.broadcast();
   final StreamController<TerminalNotificationPayload>
   _terminalNotificationTapController =
       StreamController<TerminalNotificationPayload>.broadcast();
+  final StreamController<AcpNotificationPayload> _acpNotificationTapController =
+      StreamController<AcpNotificationPayload>.broadcast();
   Future<bool>? _initializeFuture;
   TmuxAlertNotificationPayload? _launchTmuxAlert;
   TerminalNotificationPayload? _launchTerminalNotification;
+  AcpNotificationPayload? _launchAcpNotification;
   bool _didConsumeLaunchTmuxAlert = false;
   bool _didConsumeLaunchTerminalNotification = false;
+  bool _didConsumeLaunchAcpNotification = false;
 
   /// Emits whenever the user taps a tmux alert notification.
   Stream<TmuxAlertNotificationPayload> get tmuxAlertTaps =>
@@ -414,6 +617,10 @@ class LocalNotificationService {
   Stream<TerminalNotificationPayload> get terminalNotificationTaps =>
       _terminalNotificationTapController.stream;
 
+  /// Emits whenever the user taps an ACP agent notification.
+  Stream<AcpNotificationPayload> get acpNotificationTaps =>
+      _acpNotificationTapController.stream;
+
   /// Ensures the underlying notification plugin is initialized.
   Future<bool> initialize() => _initializeFuture ??= _initializeInternal();
 
@@ -421,6 +628,7 @@ class LocalNotificationService {
   void dispose() {
     unawaited(_tmuxAlertTapController.close());
     unawaited(_terminalNotificationTapController.close());
+    unawaited(_acpNotificationTapController.close());
   }
 
   /// Returns the tmux alert that launched the app, if one has not been consumed.
@@ -443,6 +651,17 @@ class LocalNotificationService {
     }
     _didConsumeLaunchTerminalNotification = true;
     return _launchTerminalNotification;
+  }
+
+  /// Returns the ACP notification that launched the app, if one has not been
+  /// consumed.
+  Future<AcpNotificationPayload?> consumeLaunchAcpNotification() async {
+    final didInitialize = await initialize();
+    if (!didInitialize || _didConsumeLaunchAcpNotification) {
+      return null;
+    }
+    _didConsumeLaunchAcpNotification = true;
+    return _launchAcpNotification;
   }
 
   /// Shows or refreshes a tmux alert notification.
@@ -551,6 +770,70 @@ class LocalNotificationService {
     }
   }
 
+  /// Shows an ACP agent notification (completion or permission-needed).
+  ///
+  /// Callers must only invoke this while the app is backgrounded and a
+  /// network/SSH path to the host still exists: there is no push path when
+  /// disconnected, so no notification can ever be delivered in that case.
+  /// [title] and [body] must never include prompt text, tool arguments or
+  /// output, paths, or commands.
+  Future<void> showAcpNotification({
+    required int notificationId,
+    required String title,
+    required String body,
+    required AcpNotificationPayload payload,
+  }) async {
+    final didInitialize = await initialize();
+    if (!didInitialize) return;
+    final hasPermission = await _requestNotificationPermission();
+    if (!hasPermission) return;
+
+    const androidDetails = AndroidNotificationDetails(
+      acpNotificationChannelId,
+      'Agent notifications',
+      channelDescription:
+          'Agent completion and permission alerts shown only while the app '
+          'is in the background.',
+      importance: Importance.high,
+      priority: Priority.high,
+      icon: _androidNotificationIcon,
+      onlyAlertOnce: true,
+    );
+    const darwinDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: false,
+      presentSound: false,
+    );
+
+    try {
+      await _plugin.show(
+        id: notificationId,
+        title: title,
+        body: body,
+        notificationDetails: const NotificationDetails(
+          android: androidDetails,
+          iOS: darwinDetails,
+          macOS: darwinDetails,
+        ),
+        payload: payload.encode(),
+      );
+    } on MissingPluginException {
+      // Widget and unit tests don't register platform notification plugins.
+    }
+  }
+
+  /// Clears a previously shown ACP notification.
+  Future<void> clearAcpNotification(int notificationId) async {
+    final didInitialize = await initialize();
+    if (!didInitialize) return;
+
+    try {
+      await _plugin.cancel(id: notificationId);
+    } on MissingPluginException {
+      // Widget and unit tests don't register platform notification plugins.
+    }
+  }
+
   Future<bool> _initializeInternal() async {
     if (kIsWeb) return false;
     if (_disableNotificationsForStoreScreenshots) return false;
@@ -577,6 +860,7 @@ class LocalNotificationService {
       _launchTerminalNotification = TerminalNotificationPayload.decode(
         launchPayload,
       );
+      _launchAcpNotification = AcpNotificationPayload.decode(launchPayload);
 
       await _plugin.initialize(
         settings: initializationSettings,
@@ -593,6 +877,9 @@ class LocalNotificationService {
       for (final channel in _terminalNotificationChannels) {
         await androidImplementation?.createNotificationChannel(channel);
       }
+      await androidImplementation?.createNotificationChannel(
+        _acpNotificationChannel,
+      );
 
       return true;
     } on MissingPluginException {
@@ -652,6 +939,11 @@ class LocalNotificationService {
     );
     if (terminalPayload != null) {
       _terminalNotificationTapController.add(terminalPayload);
+      return;
+    }
+    final acpPayload = AcpNotificationPayload.decode(response.payload);
+    if (acpPayload != null) {
+      _acpNotificationTapController.add(acpPayload);
     }
   }
 }

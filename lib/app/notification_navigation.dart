@@ -43,6 +43,16 @@ void openTmuxAlertNotificationStack({
   );
 }
 
+/// Opens an ACP notification with Connections beneath the native chat so
+/// system and predictive Back match manual navigation.
+void openAcpNotificationStack({
+  required GoRouter router,
+  required AcpNotificationPayload payload,
+}) {
+  router.go(buildTmuxAlertHomeLocation());
+  unawaited(router.push<void>(buildAcpNotificationLocation(payload)));
+}
+
 /// Builds the terminal route for a terminal desktop notification navigation.
 String buildTerminalNotificationNavigationLocation(
   TerminalNotificationPayload payload, {

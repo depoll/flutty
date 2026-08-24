@@ -5,6 +5,8 @@ per-user helper that runs on the SSH target and exposes:
 
 - `monkeymux attach <session>` for the foreground terminal path.
 - `monkeymux control <session> --json` for newline-delimited JSON control.
+- `monkeymux acp` for persistent, local-only Agent Client Protocol (ACP)
+  provider bridges.
 
 ## Using MonkeyMux on the host
 
@@ -62,6 +64,54 @@ Ordinary foreground output is relayed directly without terminal emulation.
 MonkeyMux observes metadata and routes response-producing terminal queries only
 to the primary client so simultaneous terminals cannot send duplicate replies.
 All structured state and commands belong on the control backchannel.
+
+### Persistent ACP bridges
+
+`monkeymux acp start --provider-id ID --provider LABEL --command COMMAND --cwd DIR` starts an
+already-approved ACP provider in `DIR` without a PTY. The provider's stdin and
+stdout are strictly NDJSON; stderr is discarded separately and is never
+relayed, logged, or persisted. The bridge daemon is detached from its launching
+SSH exec channel, so provider work continues across phone suspension and
+reconnects.
+
+Each bridge has an opaque ID and a distinct user-only socket in MonkeyMux's
+existing runtime directory. The bridge namespace is intentionally separate from
+terminal session sockets. The supported operations are:
+
+```text
+monkeymux acp start --provider-id ID --provider LABEL --command COMMAND --cwd DIR
+monkeymux acp attach BRIDGE_ID       # `connect` is an alias
+monkeymux acp list
+monkeymux acp status BRIDGE_ID
+monkeymux acp stop BRIDGE_ID
+monkeymux acp gc
+```
+
+`attach` speaks newline-delimited JSON over its stdin/stdout. Its first frame is
+`{"version":1,"type":"hello","bridgeId":"...","lastAck":N}`. Provider output is
+relayed as `output` frames with a monotonically increasing `sequence`; clients
+reply with `ack` frames and may reconnect using `lastAck`. The bridge retains a
+bounded in-memory replay window. If a requested sequence was evicted, it sends
+an `overflow` frame with `retainedFrom` before the retained events. State changes
+are sequenced `state` frames. Client-to-provider ACP messages use
+`{"version":1,"type":"input","data":{...}}`.
+
+Multiple clients may attach safely as readers. Only one attached client holds
+the input writer lease at a time; another client can take the lease after that
+writer disconnects. Provider-originated JSON-RPC requests, including permission
+requests, remain pending while no client is attached. MonkeyMux never creates a
+permission response.
+
+The replay buffer is memory-only. Bridge metadata exposed by `list` and
+`status` contains bounded provider/session IDs, working directory, state,
+counts, timing, and a command hash so clients can rediscover native windows; it
+never contains the command, stderr, prompts, responses, or other ACP payload.
+Explicit `stop` terminates the provider process tree. Bridges persist until
+explicitly stopped, like MonkeyMux terminal windows. `gc` performs deliberate
+idle cleanup and removes stale socket artifacts. ACP children use ordinary
+pipes on every platform—never a POSIX PTY or Windows ConPTY.
+
+### Terminal session details
 
 `attach` and `new-session` can start a session server. Optional `--cwd`,
 `--name`, and `--command` flags seed the initial window only when a new server

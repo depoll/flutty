@@ -669,9 +669,11 @@ func newRunCommand(command string) *exec.Cmd {
 	shell := commandShellPath()
 	var cmd *exec.Cmd
 	if isCmdShell(shell) {
-		cmd = exec.Command(shell, "/c", command)
+		// ComSpec is the platform shell selected by the signed-in user environment.
+		cmd = exec.Command(shell, "/c", command) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	} else {
-		cmd = exec.Command(shell, "-NoLogo", "-NonInteractive", "-Command", command)
+		// Non-cmd ComSpec values are invoked as the configured PowerShell host.
+		cmd = exec.Command(shell, "-NoLogo", "-NonInteractive", "-Command", command) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,

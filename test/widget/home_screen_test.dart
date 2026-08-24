@@ -20,6 +20,7 @@ import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_preview.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
@@ -34,8 +35,11 @@ import 'package:monkeyssh/domain/services/transfer_intent_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/providers/host_row_providers.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
+import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
+
+import '../support/fake_acp_session_manager.dart';
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
@@ -1178,13 +1182,23 @@ void main() {
   });
 
   testWidgets(
-    'connection badge uses MonkeyMux windows for MonkeyMux sessions',
+    'connection badge includes native windows in MonkeyMux window list',
     (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
       final tmuxService = _MockTmuxService();
       final monkeyMuxService = _MockMonkeyMuxService();
       final sshClient = _MockSshClient();
+      final acpManager = FakeAcpSessionManager(
+        sessions: [
+          fakeAcpSession(
+            title: 'Native task',
+            providerLabel: 'Copilot CLI',
+            cwd: '/home/dev/project',
+          ),
+        ],
+      );
+      addTearDown(acpManager.dispose);
       const sessionName = 'mmux-work';
       final session =
           SshSession(
@@ -1248,6 +1262,7 @@ void main() {
             ),
             tmuxServiceProvider.overrideWithValue(tmuxService),
             monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            acpSessionManagerProvider.overrideWithValue(acpManager),
           ],
         ),
       );
@@ -1256,7 +1271,24 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      expect(find.text('$sessionName · 1 windows'), findsOneWidget);
+      expect(find.text('$sessionName · 2 windows'), findsOneWidget);
+      await tester.tap(find.text('$sessionName · 2 windows'));
+      await tester.pump();
+      expect(find.text('Native task'), findsOneWidget);
+      expect(find.text('NATIVE'), findsOneWidget);
+      final nativeRow = find.byKey(
+        ValueKey('connection-native-acp-window-${fakeAcpKey().value}'),
+      );
+      expect(nativeRow, findsOneWidget);
+      final nativeIcon = tester.widget<AgentToolIcon>(
+        find.byKey(
+          ValueKey('connection-native-acp-agent-icon-${fakeAcpKey().value}'),
+        ),
+      );
+      expect(
+        nativeIcon.color,
+        Theme.of(tester.element(nativeRow)).colorScheme.onSurfaceVariant,
+      );
       await tester.pump(const Duration(seconds: 1));
       verify(
         () => monkeyMuxService.listWindows(

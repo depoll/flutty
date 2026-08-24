@@ -140,6 +140,10 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.grokBuild => 'Grok Build',
   };
 
+  /// Whether this tool exposes isolated launch profiles.
+  bool get supportsLaunchProfiles =>
+      this == AgentLaunchTool.hermes || this == AgentLaunchTool.openclaw;
+
   /// Whether this tool supports launching directly into YOLO mode.
   bool get supportsYoloMode =>
       yoloArguments.isNotEmpty || yoloEnvironment.isNotEmpty;
@@ -195,14 +199,22 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
   }
 
   return switch (normalized) {
-    'claude' || 'claude-code' => AgentLaunchTool.claudeCode,
+    'claude' ||
+    'claude-code' ||
+    'claude-agent-acp' => AgentLaunchTool.claudeCode,
     'copilot' || 'github-copilot' => AgentLaunchTool.copilotCli,
-    'codex' || 'codex-cli' => AgentLaunchTool.codex,
+    'codex' || 'codex-cli' || 'codex-acp' => AgentLaunchTool.codex,
     'opencode' || 'open-code' => AgentLaunchTool.openCode,
     'gemini' || 'gemini-cli' => AgentLaunchTool.geminiCli,
-    'agy' || 'antigravity' || 'antigravity-cli' => AgentLaunchTool.antigravity,
-    'cursor-agent' => AgentLaunchTool.cursorAgent,
-    'pi' => AgentLaunchTool.pi,
+    'agy' ||
+    'antigravity' ||
+    'antigravity-cli' ||
+    'antigravity-acp' ||
+    'agy-acp' => AgentLaunchTool.antigravity,
+    'cursor-agent' ||
+    'cursor-acp' ||
+    'cursor-agent-acp' => AgentLaunchTool.cursorAgent,
+    'pi' || 'pi-acp' => AgentLaunchTool.pi,
     'hermes' || 'hermes-agent' => AgentLaunchTool.hermes,
     'openclaw' => AgentLaunchTool.openclaw,
     'grok' => AgentLaunchTool.grokBuild,
@@ -503,11 +515,41 @@ String buildAgentLaunchCommand(
   return baseCommand;
 }
 
+/// Builds global agent arguments shared by terminal and native ACP launches.
+///
+/// These arguments always precede the mode-specific TUI/ACP entrypoint.
+List<String> buildAgentGlobalLaunchArguments(
+  AgentLaunchTool tool, {
+  bool startInYoloMode = false,
+  String? launchProfile,
+  bool quoteProfileForShell = true,
+  bool windows = false,
+}) {
+  final profile = launchProfile?.trim();
+  if (profile != null && profile.isNotEmpty && !tool.supportsLaunchProfiles) {
+    throw FormatException('${tool.label} does not support launch profiles.');
+  }
+  final profileArgument = profile == null || !quoteProfileForShell
+      ? profile
+      : windows
+      ? _quoteWindowsShellArgument(profile)
+      : _quoteShellArgument(profile);
+  return <String>[
+    if (profileArgument != null && profileArgument.isNotEmpty) ...[
+      '--profile',
+      profileArgument,
+    ],
+    if (startInYoloMode) ...tool.yoloArguments,
+  ];
+}
+
 /// Builds the base shell command for launching [tool].
 String buildAgentToolCommand(
   AgentLaunchTool tool, {
   String? additionalArguments,
   bool startInYoloMode = false,
+  String? launchProfile,
+  bool windows = false,
 }) {
   final commandParts = <String>[
     ..._buildAgentToolEnvironmentAssignments(
@@ -515,6 +557,12 @@ String buildAgentToolCommand(
       startInYoloMode: startInYoloMode,
     ),
     tool.commandName,
+    ...buildAgentGlobalLaunchArguments(
+      tool,
+      startInYoloMode: startInYoloMode,
+      launchProfile: launchProfile,
+      windows: windows,
+    ),
     ...tool.launchArguments,
   ];
   final normalizedArguments = _normalizeAgentToolArguments(
@@ -645,17 +693,7 @@ String? _normalizeAgentToolArguments({
       ]),
   };
 
-  final yoloArguments = tool.yoloArguments;
-  if (yoloArguments.isEmpty) {
-    return sanitizedAdditionalArguments;
-  }
-
-  if (sanitizedAdditionalArguments == null ||
-      sanitizedAdditionalArguments.isEmpty) {
-    return yoloArguments.join(' ');
-  }
-
-  return '${yoloArguments.join(' ')} $sanitizedAdditionalArguments';
+  return sanitizedAdditionalArguments;
 }
 
 List<String> _buildAgentToolEnvironmentAssignments(
@@ -837,6 +875,15 @@ String _quoteShellPath(String value) {
 
 String _quoteShellArgument(String value) =>
     '\'${value.replaceAll('\'', '\'"\'"\'')}\'';
+
+String _quoteWindowsShellArgument(String value) {
+  if (value.contains(RegExp(r'["%!$`\r\n\u201c-\u201e]'))) {
+    throw const FormatException(
+      'Profile name is unsafe for the Windows shell.',
+    );
+  }
+  return '"$value"';
+}
 
 String _quoteShellEnvironmentAssignment(String key, String value) =>
     '$key="${_escapeForDoubleQuotedShellContent(value)}"';

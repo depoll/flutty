@@ -48,6 +48,35 @@ void main() {
         'cursor-agent --force',
       );
     });
+
+    test(
+      'places profiles before terminal modes and preserves YOLO settings',
+      () {
+        expect(
+          buildAgentToolCommand(
+            AgentLaunchTool.hermes,
+            launchProfile: 'work',
+            startInYoloMode: true,
+          ),
+          "hermes --profile 'work' --yolo",
+        );
+        expect(
+          buildAgentToolCommand(
+            AgentLaunchTool.openclaw,
+            launchProfile: 'ops',
+            startInYoloMode: true,
+          ),
+          "openclaw --profile 'ops' tui",
+        );
+        expect(
+          () => buildAgentToolCommand(
+            AgentLaunchTool.claudeCode,
+            launchProfile: 'unsupported',
+          ),
+          throwsFormatException,
+        );
+      },
+    );
   });
 
   group('buildAgentResumeCommand', () {
@@ -524,6 +553,23 @@ void main() {
     });
 
     test('resolves the newly supported CLIs from command names', () {
+      expect(
+        agentLaunchToolForCommandName('claude-agent-acp'),
+        AgentLaunchTool.claudeCode,
+      );
+      expect(agentLaunchToolForCommandName('codex-acp'), AgentLaunchTool.codex);
+      expect(
+        agentLaunchToolForCommandName('cursor-agent-acp'),
+        AgentLaunchTool.cursorAgent,
+      );
+      expect(
+        agentLaunchToolForCommandName('antigravity-acp'),
+        AgentLaunchTool.antigravity,
+      );
+      expect(
+        agentLaunchToolForCommandName('agy-acp'),
+        AgentLaunchTool.antigravity,
+      );
       expect(agentLaunchToolForCommandName('pi'), AgentLaunchTool.pi);
       expect(agentLaunchToolForCommandName('hermes'), AgentLaunchTool.hermes);
       expect(
@@ -594,6 +640,34 @@ void main() {
         ),
         'grok --yolo --trust',
       );
+    });
+
+    test('quotes Windows profiles without cmd or PowerShell expansion', () {
+      expect(
+        buildAgentToolCommand(
+          AgentLaunchTool.hermes,
+          launchProfile: 'work & review',
+          windows: true,
+        ),
+        contains('--profile "work & review"'),
+      );
+      for (final unsafe in [
+        'unsafe%PATH%',
+        r'unsafe$env:PATH',
+        r'unsafe$(Get-Item .)',
+        'unsafe`nvalue',
+        'unsafe”value',
+      ]) {
+        expect(
+          () => buildAgentToolCommand(
+            AgentLaunchTool.hermes,
+            launchProfile: unsafe,
+            windows: true,
+          ),
+          throwsFormatException,
+          reason: unsafe,
+        );
+      }
     });
 
     test('builds resume commands for the newly supported CLIs', () {

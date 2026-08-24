@@ -30,6 +30,7 @@ class _SshSessionRuntime {
   Timer? _terminalOutputFlushTimer;
   Timer? _monkeyMuxReplayCoalesceTimer;
   Timer? _terminalParsePumpTimer;
+  bool _terminalParsingPaused = false;
   Duration _terminalOutputFlushInterval = _defaultTerminalOutputFlushInterval;
   SSHSession? _pendingShellOutputShell;
   Terminal? _pendingShellOutputTerminal;
@@ -96,6 +97,7 @@ class _SshSessionRuntime {
   // yields between slices.
   static const _maxTerminalParseSequenceSliceChars = 256 * 1024;
   static const _terminalParseFrameBudget = Duration(milliseconds: 8);
+  static const _terminalParseContinuationDelay = Duration(milliseconds: 1);
   // While draining a multi-frame backlog (a large switch/reconnect replay),
   // repaint at most this often. The parser keeps advancing every event-loop
   // turn, but coalescing the repaints keeps the raster thread — which must
@@ -1173,8 +1175,33 @@ if(!$__flResolved){$__flResolved='cmd'}
   /// synchronously, which would block the UI thread. The remainder resumes on
   /// the next event-loop turn so the app stays responsive while draining as
   /// fast as the device can manage.
+  void setTerminalParsingPaused({required bool paused}) {
+    if (_terminalParsingPaused == paused) {
+      return;
+    }
+    _terminalParsingPaused = paused;
+    if (paused) {
+      _terminalParsePumpTimer?.cancel();
+      _terminalParsePumpTimer = null;
+      // The native viewport has no use for hidden terminal replay. A coherent
+      // MonkeyMux redraw is requested when terminal mode returns, so retaining
+      // megabytes here only competes with native scrolling and risks a large
+      // catch-up drain.
+      _terminalParseBacklog = '';
+      _terminalParseOffset = 0;
+      return;
+    }
+    _lastTerminalParseNotifyAtMs = null;
+    final terminal = _terminal;
+    if (terminal != null &&
+        _terminalParseOffset < _terminalParseBacklog.length) {
+      _pumpTerminalParse(terminal);
+    }
+    terminal?.notifyListeners();
+  }
+
   void _enqueueTerminalParse(Terminal terminal, String data) {
-    if (data.isEmpty) {
+    if (_terminalParsingPaused || data.isEmpty) {
       return;
     }
     // Drop already-consumed prefix before appending so the backing string does
@@ -1186,12 +1213,13 @@ if(!$__flResolved){$__flResolved='cmd'}
       _terminalParseOffset = 0;
     }
     _terminalParseBacklog += data;
-    _pumpTerminalParse(terminal);
+    if (!_terminalParsingPaused) _pumpTerminalParse(terminal);
   }
 
   void _pumpTerminalParse(Terminal terminal) {
     _terminalParsePumpTimer?.cancel();
     _terminalParsePumpTimer = null;
+    if (_terminalParsingPaused) return;
     if (!identical(_terminal, terminal)) {
       _terminalParseBacklog = '';
       _terminalParseOffset = 0;
@@ -1222,6 +1250,7 @@ if(!$__flResolved){$__flResolved='cmd'}
       }
     }
 
+    final processedChars = _terminalParseOffset - startOffset;
     final remaining = _terminalParseBacklog.length - _terminalParseOffset;
     if (remaining > 0) {
       _scheduleTerminalParsePump(terminal);
@@ -1231,7 +1260,7 @@ if(!$__flResolved){$__flResolved='cmd'}
     }
     if (processedAny) {
       _notifyTerminalParseProgress(terminal, drained: remaining == 0);
-      _scheduleTerminalPreviewRefresh();
+      if (!_terminalParsingPaused) _scheduleTerminalPreviewRefresh();
       if (diagnosticsEnabled) {
         DiagnosticsLogService.instance.debug(
           'terminal.parse',
@@ -1239,7 +1268,7 @@ if(!$__flResolved){$__flResolved='cmd'}
           fields: {
             'connectionId': _session.connectionId,
             'slices': sliceCount,
-            'chars': _terminalParseOffset - startOffset,
+            'chars': processedChars,
             'durationMs': stopwatch.elapsedMilliseconds,
             'worstSliceMs': (worstSliceMicros / 1000).round(),
             'remainingChars': remaining,
@@ -1263,6 +1292,7 @@ if(!$__flResolved){$__flResolved='cmd'}
     Terminal terminal, {
     required bool drained,
   }) {
+    if (_terminalParsingPaused) return;
     if (drained) {
       _lastTerminalParseNotifyAtMs = null;
       terminal.notifyListeners();
@@ -1332,9 +1362,11 @@ if(!$__flResolved){$__flResolved='cmd'}
     if (_terminalParsePumpTimer?.isActive ?? false) {
       return;
     }
-    // Resume on the next event-loop turn so the engine can render a frame
-    // between budgets; the run still completes within a handful of frames.
-    _terminalParsePumpTimer = Timer(Duration.zero, () {
+    // A zero-delay timer can repeatedly win the event loop ahead of vsync and
+    // starve rendering while a multi-megabyte replay drains. A tiny positive
+    // delay gives queued platform/frame events a guaranteed turn without
+    // materially slowing catch-up.
+    _terminalParsePumpTimer = Timer(_terminalParseContinuationDelay, () {
       _terminalParsePumpTimer = null;
       _pumpTerminalParse(terminal);
     });
