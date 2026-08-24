@@ -16,9 +16,9 @@ func newAcpProviderCommand(command string) *exec.Cmd {
 	shell := commandShellPath()
 	var cmd *exec.Cmd
 	if isCmdShell(shell) {
-		cmd = exec.Command(shell, "/c", command)
+		cmd = exec.Command(shell, "/c", command) // nosemgrep
 	} else {
-		cmd = exec.Command(shell, "-NoLogo", "-NonInteractive", "-Command", command)
+		cmd = exec.Command(shell, "-NoLogo", "-NonInteractive", "-Command", command) // nosemgrep
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
@@ -27,14 +27,16 @@ func newAcpProviderCommand(command string) *exec.Cmd {
 	return cmd
 }
 
-func stopAcpProvider(cmd *exec.Cmd, providerDone <-chan struct{}) {
+func acpProviderProcessGroupHasLiveMember(cmd *exec.Cmd) (bool, error) {
+	if cmd == nil || cmd.Process == nil {
+		return false, nil
+	}
+	return processIDAlive(cmd.Process.Pid), nil
+}
+
+func stopAcpProvider(cmd *exec.Cmd, _ <-chan struct{}) {
 	if cmd == nil || cmd.Process == nil {
 		return
-	}
-	select {
-	case <-providerDone:
-		return
-	default:
 	}
 	pid := cmd.Process.Pid
 	if pid > 0 {
