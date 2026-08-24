@@ -897,6 +897,62 @@ func TestAcpProviderExitCancelsDelayedForceStop(t *testing.T) {
 	}
 }
 
+func TestAcpProviderWrapperExitStillForcesSurvivingProcessGroup(t *testing.T) {
+	readyPath := filepath.Join(t.TempDir(), "child-ready")
+	cmd := newAcpProviderCommand(fmt.Sprintf(
+		"trap 'exit 0' TERM; "+
+			"(trap '' TERM; : > %q; while :; do sleep 1; done) & wait",
+		readyPath,
+	))
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	forced := make(chan struct{}, 1)
+	wrapperExitedBeforeForce := false
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	readyDeadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		if time.Now().After(readyDeadline) {
+			forceStopAcpProvider(cmd)
+			t.Fatal("TERM-ignoring provider child did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	stopAcpProviderAfter(cmd, done, 100*time.Millisecond, func(cmd *exec.Cmd) {
+		select {
+		case <-done:
+			wrapperExitedBeforeForce = true
+		default:
+		}
+		forced <- struct{}{}
+		forceStopAcpProvider(cmd)
+	})
+
+	select {
+	case <-forced:
+	default:
+		t.Fatal("wrapper exit skipped force-stop for a surviving process group")
+	}
+	if !wrapperExitedBeforeForce {
+		t.Fatal("test shell wrapper was still alive when force-stop ran")
+	}
+	deadline := time.Now().Add(time.Second)
+	for acpProviderProcessGroupAlive(cmd) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if acpProviderProcessGroupAlive(cmd) {
+		t.Fatal("provider process group survived force-stop")
+	}
+}
+
 func TestAcpConcurrentStopAndProviderWrite(t *testing.T) {
 	providerInput, peer := net.Pipe()
 	defer peer.Close()

@@ -31,36 +31,45 @@ func stopAcpProviderAfter(
 	grace time.Duration,
 	force func(*exec.Cmd),
 ) {
-	if cmd == nil || cmd.Process == nil {
+	if cmd == nil || cmd.Process == nil || !acpProviderProcessGroupAlive(cmd) {
 		return
-	}
-	select {
-	case <-providerDone:
-		return
-	default:
 	}
 	if cmd.Process.Pid > 0 {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
 	_ = cmd.Process.Signal(syscall.SIGTERM)
+
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
-	select {
-	case <-providerDone:
-		return
-	case <-timer.C:
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	done := providerDone
+	for {
+		if !acpProviderProcessGroupAlive(cmd) {
+			return
+		}
+		select {
+		case <-done:
+			// cmd.Wait only reaped the shell wrapper. Disable this always-ready
+			// channel and keep polling because children may still occupy the
+			// process group after ignoring SIGTERM.
+			done = nil
+		case <-poll.C:
+		case <-timer.C:
+			if acpProviderProcessGroupAlive(cmd) {
+				force(cmd)
+			}
+			return
+		}
 	}
-	// The bridge's sole Wait caller closes providerDone immediately after it
-	// reaps the original child. Never issue a delayed PID/process-group kill
-	// after that signal: a recycled PID or PGID could otherwise belong to an
-	// unrelated user process. This path is synchronous so a detached `acp serve`
-	// helper cannot exit before the force-stop sequence completes.
-	select {
-	case <-providerDone:
-		return
-	default:
-		force(cmd)
+}
+
+func acpProviderProcessGroupAlive(cmd *exec.Cmd) bool {
+	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
+		return false
 	}
+	err := syscall.Kill(-cmd.Process.Pid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 func forceStopAcpProvider(cmd *exec.Cmd) {
