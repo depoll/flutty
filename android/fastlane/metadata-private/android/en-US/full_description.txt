@@ -1,16 +1,19 @@
-MonkeySSH beta is the mobile SSH workspace for testing agentic coding workflows. Connect to your servers, attach to MonkeyMux or tmux, switch remote windows, resume coding agents, browse files, forward ports, and keep long-running work alive from your phone.
+Test the latest MonkeySSH agent workflows on your phone or tablet. MonkeySSH beta puts native agent conversations, a full SSH terminal, MonkeyMux or tmux windows, and SFTP in one remote workspace.
 
-Built for modern remote development:
+Choose the right view for each task:
 
-- Mobile terminal with xterm-256color, themes, gestures, modifier keys, function keys, macros, inline images and animations, and IME-friendly typing.
-- MonkeyMux and tmux remote windows with a fast window switcher, wide-screen sidebar, status badges, alerts, multi-client sessions shared with your desktop, and reconnect-friendly attach.
-- Agent workflows with scoped recent-session discovery and saved launch presets for Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, Antigravity, Cursor Agent, Pi, Hermes, OpenClaw, and Grok Build.
-- SFTP workspace for browsing, uploading, downloading, creating, and editing remote files.
-- SSH key management with Ed25519/RSA generation, import, export, host-key verification, and cancellable connection attempts.
-- Port forwarding with live session controls, automatic proxying for remote services, and an in-app browser for forwarded ports with file uploads, downloads, and site permissions.
-- Snippets, auto-connect commands, themed home-screen shortcuts, and macros for repeatable remote workflows.
-- Android device debugging that connects the remote host's ADB client to your device over the current SSH session.
-- Local-first security with PIN/biometrics, encrypted transfer bundles, encrypted migration packages, and no required cloud sync.
-- Optional analytics and crash reports that are off by default and exclude commands, terminal output, paths, hostnames, usernames, clipboard contents, and credentials.
+- Open supported agents in a native window with readable chat, streamed tool progress, permission controls, images, attachments, session history, and a mobile composer.
+- Switch to the full terminal whenever you need direct CLI control, xterm-256color, inline images, gestures, modifier keys, function keys, macros, or IME-friendly typing.
+- Keep agent and shell work running in persistent MonkeyMux windows. Reconnect, switch windows, and share the same session with your desktop.
+- Find recent project-scoped sessions and save launch presets for Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, Antigravity, Cursor Agent, Pi, Hermes, OpenClaw, and Grok Build.
+- Browse, upload, download, create, and edit remote files over SFTP.
+- Generate or import Ed25519 and RSA keys, verify host keys, use jump hosts, and cancel slow connection attempts.
+- Forward remote ports, manage live tunnels, and open forwarded services in the in-app browser.
+- Debug an attached Android device by connecting the remote host's ADB client through the current SSH session.
+- Save snippets, macros, home-screen shortcuts, and per-host startup settings for repeat work.
 
-This beta listing is used for preview and internal testing builds before changes reach the public MonkeySSH app.
+Your hosts, keys, snippets, and settings stay on your device. PIN and biometric lock are available, and MonkeySSH does not require cloud sync. Optional analytics and crash reports are off by default and exclude commands, terminal output, paths, hostnames, usernames, clipboard contents, and credentials.
+
+One connected native chat, SSH, terminal, SFTP, and the choice between native and terminal agent windows are available without Pro.
+
+This beta listing receives preview and internal testing builds before the public MonkeySSH app.

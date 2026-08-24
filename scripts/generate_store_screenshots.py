@@ -316,12 +316,14 @@ class StoreDemoEnvironment:
         self._monkeymux_control: _MonkeyMuxControl | None = None
         self._owned_monkeymux_process_groups: set[int] = set()
         self._window_ids: dict[str, str] = {}
-        self._copilot = shutil.which('copilot')
-        if self._copilot is None:
+        copilot = shutil.which('copilot')
+        if copilot is None:
             raise RuntimeError('GitHub Copilot CLI is required for the first store screenshot.')
-        self._claude = shutil.which('claude')
-        if self._claude is None:
+        self._copilot = copilot
+        claude = shutil.which('claude')
+        if claude is None:
             raise RuntimeError('Claude Code CLI is required for the Claude store screenshot.')
+        self._claude = claude
         self._opencode = shutil.which('opencode')
         # Populated after the light-mode app capture; used for video image paste.
         self.demo_image_b64: str | None = None
@@ -546,7 +548,7 @@ class StoreDemoEnvironment:
         self._write_pane_script(
             'copilot',
             f"""
-            exec env COPILOT_ALLOW_ALL=0 \\
+            exec env COPILOT_ALLOW_ALL=0 TERM=xterm-kitty \\
               {self._shell_quote(self._copilot)} \\
               --no-remote \\
               --log-level default \\
@@ -677,7 +679,7 @@ class StoreDemoEnvironment:
                     '',
                     '| Platform | Form factors | Scenes |',
                     '| --- | --- | --- |',
-                    '| App Store | iPhone 6.9, iPad 13 | Copilot, hosts, snippets, MonkeyMux selector with all supported agent windows, SFTP, Claude Code |',
+                    '| App Store | iPhone 6.9, iPad 13 | Native Copilot, Copilot terminal, hosts, snippets, MonkeyMux selector with all supported agent windows, SFTP, Claude Code |',
                     '| Google Play | Phone, 7-inch tablet, 10-inch tablet | Same scene order for production and private tracks |',
                     '',
                     'Validation checklist:',
@@ -1000,9 +1002,9 @@ class StoreDemoEnvironment:
         )
         time.sleep(2)
         prompt = (
-            'Visually describe only what is shown in this light-mode MonkeySSH '
-            'screenshot and call out the strongest store-listing details. Do '
-            'not run tools, read other files, load skills, or access paths '
+            'Describe only this light-mode MonkeySSH screenshot in two bullets '
+            'and no more than 35 words total. Mention Hosts, Add Host, and Build '
+            'runner. Do not run tools, read files, load skills, or access paths '
             'outside this workspace.'
         )
         self._monkeymux_send_literal('copilot', prompt)

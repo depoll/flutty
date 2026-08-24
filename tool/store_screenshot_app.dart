@@ -20,8 +20,12 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/acp_content.dart';
+import 'package:monkeyssh/domain/models/acp_provider.dart';
+import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/host_key_prompt_handler_provider.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
@@ -49,6 +53,11 @@ const _workspacePath = String.fromEnvironment(
   'STORE_SCREENSHOT_WORKSPACE_PATH',
   defaultValue: '/Users/Shared/monkeyssh-release-workspace',
 );
+const _nativeCopilotPrompt =
+    'Write three short bullets for a mobile developer. State that this native '
+    'agent window keeps Copilot readable, MonkeyMux sessions stay running after '
+    'disconnect, and the full terminal is one tap away. Do not run tools or '
+    'read files.';
 const _themeMode = String.fromEnvironment(
   'STORE_SCREENSHOT_THEME_MODE',
   defaultValue: 'dark',
@@ -129,6 +138,7 @@ const _sceneNames = <String>[
   'monkeymux_windows',
   'sftp',
   'terminal_claude',
+  'native_copilot',
 ];
 
 final _targets = <String, _ScreenshotTarget>{
@@ -569,6 +579,7 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void>? _flow;
   int? _connectionId;
   Completer<void>? _demoImagePasteCompleter;
+  AcpSessionKey? _nativeCopilotKey;
 
   @override
   void initState() {
@@ -663,8 +674,11 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     // the full window list and Claude selection lands, even on slower devices.
     await _ensureMuxReady();
 
+    final nativeKey = await _ensureNativeCopilotSession();
+    _clearNativeFocus();
+    await _selectMonkeyMuxWindow(0);
     _go('/terminal/$terminalHostId?connectionId=$_connectionId');
-    await Future<void>.delayed(const Duration(seconds: 6));
+    await Future<void>.delayed(const Duration(seconds: 3));
     await _announceScene(0);
 
     _go('/');
@@ -693,6 +707,13 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     _go('/terminal/$terminalHostId?connectionId=$_connectionId');
     await Future<void>.delayed(const Duration(seconds: 4));
     await _announceScene(5);
+
+    _focusNativeCopilot(nativeKey);
+    _go('/');
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    _go('/terminal/$terminalHostId?connectionId=$_connectionId');
+    await Future<void>.delayed(const Duration(seconds: 4));
+    await _announceScene(6);
   }
 
   Future<void> _runVideoDemoFlow() async {
@@ -705,48 +726,101 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
 
     final base = '/terminal/$terminalHostId?connectionId=$_connectionId';
 
-    // Beat 1 — Claude Code: a real agent session, driven from the keyboard.
-    await _selectMonkeyMuxWindow(2);
-    _go('$base&showKeyboard=1');
-    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    // Beat 1: a real Copilot ACP session in the embedded native agent window.
+    final nativeKey = await _ensureNativeCopilotSession();
+    _focusNativeCopilot(nativeKey);
+    _go(base);
+    await Future<void>.delayed(const Duration(milliseconds: 2200));
     _emitBeat(1); // Recording starts on the first beat marker.
+    await Future<void>.delayed(const Duration(milliseconds: 2200));
+
+    // Beat 2: Claude Code remains available as a full terminal agent.
+    _clearNativeFocus();
+    _go('/');
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    await _selectMonkeyMuxWindow(2);
+    _emitBeat(2);
+    _go('$base&showKeyboard=1');
     await Future<void>.delayed(const Duration(milliseconds: 650));
     await _typePrompt(_claudePrompt);
     await _hideKeyboard();
-    // Let the live Claude response stream in, keyboard-free, so it does not
-    // block the terminal output.
-    await Future<void>.delayed(const Duration(milliseconds: 2600));
+    await Future<void>.delayed(const Duration(milliseconds: 2400));
 
-    // Beat 2 — MonkeyMux: every coding agent alive in its own remote window.
-    _emitBeat(2);
-    _go('$base&expandTmux=1');
-    await Future<void>.delayed(const Duration(milliseconds: 3000));
-
-    // Beat 3 — OpenCode: switch windows inside the same persistent SSH session.
-    await _selectMonkeyMuxWindow(4);
+    // Beat 3: show the MonkeyMux window list, then open OpenCode in the same
+    // persistent SSH workspace before moving to the next captioned beat.
     _emitBeat(3);
+    _go('$base&expandTmux=1');
+    await Future<void>.delayed(const Duration(milliseconds: 1800));
+    await _selectMonkeyMuxWindow(4);
     _go(base);
     await _hideKeyboard();
-    await Future<void>.delayed(const Duration(milliseconds: 2800));
+    await Future<void>.delayed(const Duration(milliseconds: 1600));
 
-    // Beat 4 — Image context: paste a real screenshot into Copilot CLI so the
-    // agent conversation shows the image inline. Wait for an explicit paste
-    // completion marker so Beat 5 cannot race ahead of the SFTP upload.
+    // Beat 4: paste a real screenshot into Copilot CLI and wait until the
+    // inline image has finished uploading and rendering.
     await _selectMonkeyMuxWindow(0);
     _emitBeat(4);
     _armDemoImagePasteWait();
     _go('$base&pasteDemoImage=1');
     await _hideKeyboard();
     await _waitForDemoImagePaste();
-    await Future<void>.delayed(const Duration(milliseconds: 800));
+    await Future<void>.delayed(const Duration(milliseconds: 700));
 
-    // Beat 5 — Copilot: prompt against the pasted screenshot.
+    // Beat 5: prompt Copilot against the pasted screenshot.
     _emitBeat(5);
     _go('$base&showKeyboard=1');
     await Future<void>.delayed(const Duration(milliseconds: 650));
     await _typePrompt(_copilotPrompt);
     await _hideKeyboard();
-    await Future<void>.delayed(const Duration(milliseconds: 2800));
+    await Future<void>.delayed(const Duration(milliseconds: 2400));
+  }
+
+  Future<AcpSessionKey> _ensureNativeCopilotSession() async {
+    final existing = _nativeCopilotKey;
+    if (existing != null) return existing;
+    final manager = ref.read(acpSessionManagerProvider);
+    final result = await manager.startNewSession(
+      hostId: widget.terminalHostId,
+      providerId: AcpBuiltinProviderIds.copilotCli,
+      cwd: _workspacePath,
+      providerLabelOverride: 'Copilot CLI · Native',
+    );
+    final key = switch (result) {
+      AcpSessionLaunchStarted(:final key) => key,
+      AcpSessionLaunchFailed(:final error) => throw StateError(
+        'Native Copilot session failed: ${error.message}',
+      ),
+      AcpSessionLaunchBlocked() => throw StateError(
+        'Native Copilot session was blocked.',
+      ),
+    };
+    await manager
+        .prompt(key, const [AcpTextContent(_nativeCopilotPrompt)])
+        .timeout(const Duration(seconds: 90));
+    _nativeCopilotKey = key;
+    return key;
+  }
+
+  void _focusNativeCopilot(AcpSessionKey key) {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      throw StateError('SSH connection is unavailable for native Copilot.');
+    }
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionNativeAcpFocus(
+          connectionId,
+          key: key,
+          displayTitle: 'Copilot CLI · Native',
+        );
+  }
+
+  void _clearNativeFocus() {
+    final connectionId = _connectionId;
+    if (connectionId == null) return;
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionNativeAcpFocus(connectionId, key: null);
   }
 
   /// Emits an ordered promo beat marker. The compositor records the wall-clock

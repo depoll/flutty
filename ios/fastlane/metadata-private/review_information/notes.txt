@@ -1,23 +1,23 @@
-MonkeySSH Pro is available from Settings > MonkeySSH Pro and from Pro-gated feature prompts.
+MonkeySSH Pro is available from Settings > MonkeySSH Pro and from prompts for Pro features.
 
-The purchase flow shows the subscription title, monthly/annual renewal lengths, App Store-loaded prices, and functional links to:
-- Terms of Use (EULA): https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
+The purchase screen displays App Store prices, monthly or annual renewal terms, and working links to:
+- Terms of Use: https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
 - Privacy Policy: https://github.com/depollsoft/MonkeySSH/blob/main/docs/privacy-policy.md
 
-The private beta app queries only the private App Store product IDs:
+The private beta app requests only these private product IDs:
 - monkeyssh_pro_monthly
 - monkeyssh_pro_annual
 
-MonkeySSH includes an offline App Review Demo that does not require an account, private SSH server, or external credentials.
+Reviewers can explore the main app without an account, SSH server, or external agent credentials:
 
-To access it:
 1. Open MonkeySSH.
-2. Go to Settings.
-3. Scroll to About.
-4. Tap App Review Demo.
-5. Tap Load demo data.
-6. Open the seeded App Review Demo hosts from the Hosts screen.
+2. Open Settings.
+3. Scroll to About and tap App Review Demo.
+4. Tap Load demo data.
+5. Return to Hosts and open either App Review Demo host.
 
-The demo hosts connect to an in-app local demo transport. They include pre-populated hosts, keys, snippets, SFTP sample files, port-forward rules, host-specific themes, and local MonkeyMux windows. The MonkeyMux demo supports switching windows and creating additional windows, with panes representing Copilot CLI, Claude Code, OpenCode, Codex, Gemini CLI, Antigravity, and SFTP/shell workflows.  Note that within these connections, everything is mocked -- normally these would run on a remote machine which you must have privileged access to -- so, the actual interfaces of these CLIs, files, etc., would be fully functional rather than what you see in the app.
+The offline demo uses an in-app local transport. It includes hosts, keys, snippets, SFTP files, port-forward rules, host themes, and local MonkeyMux windows. Reviewers can switch windows and create windows for Copilot CLI, Claude Code, OpenCode, Codex, Gemini CLI, Antigravity, SFTP, and shell workflows.
 
-No username or password is required for the demo.
+Native agent windows normally connect through SSH and MonkeyMux to a supported coding agent installed and authenticated on the user's own server. The offline review demo does not contact those third-party agent services, so its panes use fixed sample content. The store screenshots and App Preview were captured separately from a live local SSH and MonkeyMux workspace with authenticated Copilot CLI and Claude Code sessions.
+
+The offline demo requires no username or password.

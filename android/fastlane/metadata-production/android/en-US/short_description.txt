@@ -1,1 +1,1 @@
-Mobile SSH, SFTP, MonkeyMux, tmux, and coding agents.
+Native coding agents, SSH, terminal, SFTP, MonkeyMux, and tmux.
