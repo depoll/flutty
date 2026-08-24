@@ -10827,6 +10827,267 @@ func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T
 	}
 }
 
+// writeClaudeWorktreeSessionFile writes the shape Claude leaves behind after a
+// session enters a git worktree: the file is moved into the worktree's project
+// directory and keeps appending there, so its opening entries still name the
+// directory the session started in and only the later ones name the worktree.
+func writeClaudeWorktreeSessionFile(
+	t *testing.T,
+	home string,
+	sessionID string,
+	originalCwd string,
+	worktreeCwd string,
+) string {
+	t.Helper()
+	projectDir := filepath.Join(
+		home,
+		".claude",
+		"projects",
+		"-work-project--claude-worktrees-feature",
+	)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(projectDir, sessionID+".jsonl")
+	lines := []string{
+		`{"type":"user","cwd":"` + originalCwd + `","sessionId":"` + sessionID + `"}`,
+		`{"type":"worktree-state","worktreeSession":{"originalCwd":"` + originalCwd +
+			`","worktreePath":"` + worktreeCwd + `"},"sessionId":"` + sessionID + `"}`,
+		`{"type":"user","cwd":"` + worktreeCwd + `","sessionId":"` + sessionID + `"}`,
+	}
+	if err := os.WriteFile(
+		path,
+		[]byte(strings.Join(lines, "\n")+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestDiscoverClaudeSessionIDsResumesSessionThatMovedIntoWorktree(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "b3f0d1c6-2f4f-4d0e-9f0f-2f26f9b1f4c1"
+	worktreeCwd := "/work/project/.claude/worktrees/feature"
+	writeClaudeWorktreeSessionFile(t, home, sessionID, "/work/project", worktreeCwd)
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return worktreeCwd
+		}
+		return ""
+	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return time.Now().Add(-time.Minute)
+		}
+		return time.Time{}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
+	}
+
+	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("claude session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverClaudeSessionIDsIgnoresSessionThatLeftTheWorkingDirectory(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "0d1b2f5c-9a0e-4c1a-8a6a-2b7f5c8d0e11"
+	writeClaudeWorktreeSessionFile(
+		t,
+		home,
+		sessionID,
+		"/work/project",
+		"/work/project/.claude/worktrees/feature",
+	)
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return time.Now().Add(-time.Minute)
+		}
+		return time.Time{}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
+	}
+
+	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if len(sessions) != 0 {
+		t.Fatalf("relocated Claude session leaked to the original directory: %#v", sessions)
+	}
+}
+
+func TestClaudeSessionMatchesWorkingDirectoryUsesProjectDirWithoutRecordedCwd(t *testing.T) {
+	home := t.TempDir()
+	projectDir := filepath.Join(
+		home,
+		".claude",
+		"projects",
+		"-work-project--claude-worktrees-feature",
+	)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "6b1f0f2e-1c3a-4f6b-9d2e-7c4a1b8e5f30"
+	path := filepath.Join(projectDir, sessionID+".jsonl")
+	if err := os.WriteFile(
+		path,
+		[]byte(`{"type":"mode","mode":"normal","sessionId":"`+sessionID+`"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	worktreeCwd := "/work/project/.claude/worktrees/feature"
+	if !claudeSessionMatchesWorkingDirectory(path, worktreeCwd) {
+		t.Fatalf("session in %q did not match working directory %q", projectDir, worktreeCwd)
+	}
+	if claudeSessionMatchesWorkingDirectory(path, "/work/project") {
+		t.Fatal("session matched the directory its project folder does not encode")
+	}
+}
+
+// Claude's per-message cwd follows the agent's shell, so a `cd` inside a tool
+// call leaves every later record naming a subdirectory while the pane's process
+// stays where it launched. That must not cost the window its resume.
+func TestDiscoverClaudeSessionIDsResumesAfterAgentChangedDirectory(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "8c2e4d17-3b5a-4e7c-9f01-6d3b8a2c5e94"
+	projectDir := filepath.Join(home, ".claude", "projects", "-work-project")
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"type":"user","cwd":"/work/project","sessionId":"` + sessionID + `"}`,
+		`{"type":"assistant","cwd":"/work/project/server","sessionId":"` + sessionID + `"}`,
+		`{"type":"user","cwd":"/work/project/server","sessionId":"` + sessionID + `"}`,
+	}
+	if err := os.WriteFile(
+		filepath.Join(projectDir, sessionID+".jsonl"),
+		[]byte(strings.Join(lines, "\n")+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 200 {
+			return time.Now().Add(-time.Minute)
+		}
+		return time.Time{}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
+	}
+
+	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("claude session id = %q, want %q", got, sessionID)
+	}
+}
+
+// A project directory this encoding cannot account for — a Claude release that
+// names them differently — must fall back to the directories the session
+// recorded rather than losing the resume outright.
+func TestClaudeSessionMatchesWorkingDirectoryFallsBackForUnknownProjectDirName(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), ".claude", "projects", "7f3a9c22e1")
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "2c7f4e91-5d0b-4a3e-8c16-9b5e2f7a1d40"
+	path := filepath.Join(projectDir, sessionID+".jsonl")
+	if err := os.WriteFile(
+		path,
+		[]byte(`{"type":"user","cwd":"/work/project","sessionId":"`+sessionID+`"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if !claudeSessionMatchesWorkingDirectory(path, "/work/project") {
+		t.Fatal("session did not fall back to its recorded working directory")
+	}
+	if claudeSessionMatchesWorkingDirectory(path, "/work/other") {
+		t.Fatal("session matched a directory it never recorded")
+	}
+}
+
+func TestJSONStringFieldValuesFromFileEndsCoversBothEnds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	filler := strings.Repeat("x", 2*sessionFileScanChunkBytes)
+	lines := []string{
+		`{"type":"user","cwd":"/work/project"}`,
+		`{"type":"user","cwd":"/work/ignored","filler":"` + filler + `"}`,
+		`{"type":"user","cwd":"/work/project/.claude/worktrees/feature"}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := jsonStringFieldValuesFromFileEnds(path, "cwd")
+
+	want := []string{"/work/project", "/work/project/.claude/worktrees/feature"}
+	if len(got) != len(want) {
+		t.Fatalf("cwd values = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("cwd values = %#v, want %#v", got, want)
+		}
+	}
+}
+
 func TestDiscoverClaudeSessionIDsDoesNotResumeSessionFromBeforeFreshProcess(t *testing.T) {
 	originalOpenFiles := processOpenFilePathsForMetadata
 	originalWorkingDirectory := processWorkingDirectoryForMetadata

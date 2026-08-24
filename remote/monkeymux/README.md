@@ -143,7 +143,13 @@ than risking the wrong conversation. Plain working-directory fallback is used
 only for one live window and one unused session updated during that foreground
 process. Across Copilot, Codex, OpenCode, Claude Code, Gemini, Antigravity, and
 Cursor Agent, argv, open-file, or live-lock identity wins; cwd/history fallback
-only accepts state updated during that foreground process. A carried resume ID
+only accepts state updated during that foreground process. Claude Code's cwd
+fallback follows a session that moved: entering a git worktree relocates the
+JSONL into the worktree's project directory, so that directory's name — which
+encodes where the session lives — decides ownership, not the directory the
+session opened in or the per-message `cwd`, which tracks the agent's own shell
+through any `cd`. Directories the session recorded remain the fallback for a
+project directory name that encoding cannot account for. A carried resume ID
 is revalidated because a failed resume may have fallen back to a fresh agent.
 Stale or ambiguous evidence leaves the restored window fresh instead of
 injecting an older conversation. `--session-dir`,

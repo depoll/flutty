@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.177"
+	monkeyMuxVersion                  = "0.1.178"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -5373,7 +5373,7 @@ func claudeRecentSessionIDForWorkingDirectory(
 		if err != nil || !sessionUpdatedDuringProcess(info.ModTime(), processStarted) {
 			continue
 		}
-		if normalizedMetadataPath(jsonStringFieldFromFile(path, "cwd")) != workingDirectory {
+		if !claudeSessionMatchesWorkingDirectory(path, workingDirectory) {
 			continue
 		}
 		if sessionID := claudeSessionIDFromProjectFile(path); sessionID != "" {
@@ -5381,6 +5381,75 @@ func claudeRecentSessionIDForWorkingDirectory(
 		}
 	}
 	return ""
+}
+
+// claudeSessionMatchesWorkingDirectory reports whether a project file belongs
+// to a Claude session running in workingDirectory, which the caller has already
+// normalized.
+//
+// The directory the file lives in is the signal to trust. Claude names it by
+// encoding the session's working directory, and entering a git worktree *moves*
+// the file into the worktree's project directory, so the name follows the
+// session. The per-message `cwd` does not: it tracks the agent's shell, so a
+// `cd` inside any tool call leaves the newest records naming a subdirectory,
+// while a relocated session's opening records still name the directory it
+// started in. Matching recorded values alone therefore missed every relocated
+// session — no `--resume` after a helper upgrade — and could hand that session
+// to an unrelated pane left behind in the original directory.
+//
+// Recorded directories stay the fallback for a project directory name this
+// encoding cannot account for: a Claude release that names them differently
+// must not cost every window its resume.
+func claudeSessionMatchesWorkingDirectory(path string, workingDirectory string) bool {
+	if workingDirectory == "" {
+		return false
+	}
+	projectDir := claudeEncodedProjectDirName(filepath.Base(filepath.Dir(path)))
+	if projectDir != "" && projectDir == claudeEncodedProjectDirName(workingDirectory) {
+		return true
+	}
+	recorded := claudeRecordedWorkingDirectories(path)
+	for _, dir := range recorded {
+		// The project directory encodes a directory this very session recorded,
+		// so the name is accounted for and names somewhere else: the session
+		// has moved on from workingDirectory.
+		if projectDir != "" && claudeEncodedProjectDirName(dir) == projectDir {
+			return false
+		}
+	}
+	for _, dir := range recorded {
+		if normalizedMetadataPath(dir) == workingDirectory {
+			return true
+		}
+	}
+	return false
+}
+
+// claudeRecordedWorkingDirectories returns the distinct `cwd` values a session
+// file records, read from its first and last sessionFileScanChunkBytes. A
+// relocated session names its new directory from the move onwards, so the two
+// ends together cover both the directory the session opened in and the one it
+// is using now, however long the transcript in between grew.
+func claudeRecordedWorkingDirectories(path string) []string {
+	return jsonStringFieldValuesFromFileEnds(path, "cwd")
+}
+
+// claudeEncodedProjectDirName mirrors how Claude Code names the directory a
+// session is stored in: every character outside [A-Za-z0-9] becomes "-", so
+// `/work/project` lives in `~/.claude/projects/-work-project`. Encoding an
+// already-encoded name is a no-op, so the same function normalizes both sides
+// of the comparison even if Claude later preserves more characters.
+func claudeEncodedProjectDirName(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, trimmed)
 }
 
 func claudeSessionIDFromProjectFile(path string) string {
@@ -5682,6 +5751,54 @@ func jsonStringFieldFromFile(path string, field string) string {
 		}
 	}
 	return ""
+}
+
+// sessionFileScanChunkBytes bounds how much of each end of a session file is
+// read when collecting a field's values. Agent transcripts grow into megabytes
+// of tool output that says nothing about which pane owns the session.
+const sessionFileScanChunkBytes = 256 * 1024
+
+// jsonStringFieldValuesFromFileEnds returns the distinct values of field found
+// in the first and last sessionFileScanChunkBytes of a JSONL file, in the order
+// encountered. A single oversized record (a large tool result) can cut a chunk's
+// scan short; callers treat the result as evidence collected, never as proof
+// that no other value exists.
+func jsonStringFieldValuesFromFileEnds(path string, field string) []string {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil
+	}
+	values := []string{}
+	seen := map[string]bool{}
+	collect := func(reader io.Reader, skipPartialRecord bool) {
+		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		if skipPartialRecord && !scanner.Scan() {
+			return
+		}
+		for scanner.Scan() {
+			value := jsonStringFieldFromLine(scanner.Text(), field)
+			if value == "" || seen[value] {
+				continue
+			}
+			seen[value] = true
+			values = append(values, value)
+		}
+	}
+	collect(io.LimitReader(file, sessionFileScanChunkBytes), false)
+	// Below two chunks the head scan already covered the whole file, and a tail
+	// scan would only re-read records it has seen.
+	if info.Size() > 2*sessionFileScanChunkBytes {
+		if _, err := file.Seek(info.Size()-sessionFileScanChunkBytes, io.SeekStart); err == nil {
+			collect(file, true)
+		}
+	}
+	return values
 }
 
 func jsonStringFieldFromLine(line string, field string) string {
