@@ -12,6 +12,17 @@ local_ssh_test_restore_mode() {
     fi
 }
 
+local_ssh_test_append_authorized_key() {
+    local auth_keys="$1"
+    local public_key="$2"
+    local marker="$3"
+
+    if [ -s "$auth_keys" ] && [ -n "$(tail -c 1 "$auth_keys")" ]; then
+        printf '\n' >> "$auth_keys"
+    fi
+    printf '%s %s\n' "$public_key" "$marker" >> "$auth_keys"
+}
+
 local_ssh_test_prepare() {
     local state_dir="$1"
     local key_comment="$2"
@@ -39,7 +50,8 @@ local_ssh_test_prepare() {
     ssh-keygen -t ed25519 -f "$key_path" -N "" -C "$key_comment" -q
     chmod 600 "$key_path"
     chmod 644 "${key_path}.pub"
-    printf '%s %s\n' "$(cat "${key_path}.pub")" "$marker" >> "$auth_keys"
+    local_ssh_test_append_authorized_key \
+        "$auth_keys" "$(cat "${key_path}.pub")" "$marker"
     chmod 600 "$auth_keys"
 
     if ! ssh -i "$key_path" -o StrictHostKeyChecking=no -o BatchMode=yes \

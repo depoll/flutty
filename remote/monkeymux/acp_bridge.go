@@ -157,6 +157,9 @@ type acpBridge struct {
 	exitCode             *int
 	providerDone         chan struct{}
 	providerDoneOnce     sync.Once
+	providerReapMu       sync.Mutex
+	providerReapAllowed  bool
+	providerReapReady    chan struct{}
 	providerOutput       io.ReadCloser
 	providerOutputDone   chan struct{}
 	beforeClientVisible  func()
@@ -228,7 +231,7 @@ func acpStartCommand(args []string) {
 	}
 	buildCommand := func() (*exec.Cmd, io.WriteCloser, error) {
 		// #nosec G204 -- exe is os.Executable(), never provider or user input.
-		cmd := exec.Command(exe, "acp", "serve", "--id", id)
+		cmd := exec.Command(exe, "acp", "serve", "--id", id) // nosemgrep
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			return nil, nil, err
@@ -584,6 +587,7 @@ func newAcpBridge(
 		inFlightTurns:        map[string]struct{}{},
 		sessionSetupRequests: map[string]struct{}{},
 		providerDone:         make(chan struct{}),
+		providerReapReady:    make(chan struct{}),
 		providerOutput:       stdout,
 		providerOutputDone:   make(chan struct{}),
 		done:                 make(chan struct{}),
@@ -689,6 +693,7 @@ func readBoundedAcpLine(reader *bufio.Reader) ([]byte, error) {
 }
 
 func (b *acpBridge) waitForProvider() {
+	b.awaitProviderReapReady()
 	err := b.cmd.Wait()
 	b.providerDoneOnce.Do(func() { close(b.providerDone) })
 	b.waitForProviderOutput()
@@ -707,6 +712,76 @@ func (b *acpBridge) waitForProvider() {
 	b.releaseAllPendingReplayLocked()
 	b.mu.Unlock()
 	b.publish("state", nil, "exited", &exitCode)
+}
+
+func (b *acpBridge) awaitProviderReapReady() {
+	if b.providerReapReady == nil {
+		return
+	}
+	select {
+	case <-b.providerReapReady:
+		return
+	case <-b.providerOutputDone:
+	}
+
+	// Output EOF usually means the wrapper exited. Keep its leader unreaped
+	// until every non-zombie group member is gone, reserving the PGID while a
+	// concurrent explicit stop may still need to signal surviving descendants.
+	pollDelay := 50 * time.Millisecond
+	pollTimer := time.NewTimer(pollDelay)
+	defer pollTimer.Stop()
+	for {
+		live, err := acpProviderProcessGroupHasLiveMember(b.cmd)
+		if err != nil {
+			// If process inspection is unavailable, reaping without any later
+			// group signal is safer than guessing at a recycled PGID.
+			b.allowProviderReap()
+			return
+		}
+		if !live {
+			b.allowProviderReap()
+			return
+		}
+		select {
+		case <-b.providerReapReady:
+			return
+		case <-pollTimer.C:
+			if pollDelay < time.Second {
+				pollDelay *= 2
+				if pollDelay > time.Second {
+					pollDelay = time.Second
+				}
+			}
+			pollTimer.Reset(pollDelay)
+		}
+	}
+}
+
+func (b *acpBridge) allowProviderReap() {
+	b.providerReapMu.Lock()
+	defer b.providerReapMu.Unlock()
+	b.allowProviderReapLocked()
+}
+
+func (b *acpBridge) allowProviderReapLocked() {
+	if b.providerReapAllowed || b.providerReapReady == nil {
+		return
+	}
+	b.providerReapAllowed = true
+	close(b.providerReapReady)
+}
+
+func (b *acpBridge) stopProviderProcess() {
+	if b.providerReapReady == nil {
+		stopAcpProvider(b.cmd, b.providerOutputDone)
+		return
+	}
+	b.providerReapMu.Lock()
+	defer b.providerReapMu.Unlock()
+	if !b.providerReapAllowed {
+		stopAcpProvider(b.cmd, b.providerOutputDone)
+	}
+	b.allowProviderReapLocked()
 }
 
 func (b *acpBridge) waitForProviderOutput() {
@@ -968,7 +1043,7 @@ func (b *acpBridge) failProviderProtocol() {
 	b.mu.Unlock()
 	b.publish("state", nil, "protocol_error", nil)
 	b.closeProviderInput()
-	stopAcpProvider(b.cmd, b.providerDone)
+	b.stopProviderProcess()
 }
 
 func (b *acpBridge) appendReplayLocked(message acpWireMessage, pendingID string) {
@@ -1461,7 +1536,7 @@ func (b *acpBridge) stop() {
 		b.clients = map[string]*acpBridgeClient{}
 		b.mu.Unlock()
 		b.closeProviderInput()
-		stopAcpProvider(b.cmd, b.providerDone)
+		b.stopProviderProcess()
 		close(b.done)
 		for _, client := range clients {
 			client.cancel()
