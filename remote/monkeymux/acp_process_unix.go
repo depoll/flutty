@@ -45,6 +45,7 @@ func stopAcpProviderAfter(
 
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
+	forceReady := timer.C
 	poll := time.NewTicker(10 * time.Millisecond)
 	defer poll.Stop()
 	outputDone := providerOutputDone
@@ -58,9 +59,14 @@ func stopAcpProviderAfter(
 			// inherited descriptors while remaining alive in the provider group.
 			outputDone = nil
 		case <-poll.C:
-		case <-timer.C:
+		case <-forceReady:
 			force(cmd)
-			return
+			// SIGKILL is asynchronous and may fail or wait behind uninterruptible
+			// kernel work. Disable the one-shot timer but keep the reap gate closed
+			// and inspection loop running until the original group is truly empty.
+			// A persistent inspection/kill failure deliberately blocks bridge-stop
+			// completion instead of reporting success or risking a recycled PGID.
+			forceReady = nil
 		}
 	}
 }

@@ -978,6 +978,66 @@ func TestAcpProviderWrapperExitStillForcesSurvivingProcessGroup(t *testing.T) {
 	}
 }
 
+func TestAcpProviderForceWaitsForProcessGroupExit(t *testing.T) {
+	readyPath := filepath.Join(t.TempDir(), "async-force-child-ready")
+	cmd := newAcpProviderCommand(fmt.Sprintf( // nosemgrep
+		"trap 'exit 0' TERM; "+
+			"(trap '' TERM; : > %q; while :; do sleep 1; done) & wait",
+		readyPath,
+	))
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reaped := false
+	defer func() {
+		if reaped {
+			return
+		}
+		forceStopAcpProvider(cmd)
+		_ = cmd.Wait()
+	}()
+	readyDeadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatal("TERM-ignoring provider child did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	forced := make(chan struct{})
+	stopDone := make(chan struct{})
+	go func() {
+		stopAcpProviderAfter(cmd, nil, 50*time.Millisecond, func(cmd *exec.Cmd) {
+			close(forced)
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				forceStopAcpProvider(cmd)
+			}()
+		})
+		close(stopDone)
+	}()
+	select {
+	case <-forced:
+	case <-time.After(time.Second):
+		t.Fatal("force-stop was not requested")
+	}
+	select {
+	case <-stopDone:
+		t.Fatal("provider stop returned before the process group exited")
+	case <-time.After(50 * time.Millisecond):
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("provider stop did not finish after the process group exited")
+	}
+	_ = cmd.Wait()
+	reaped = true
+}
+
 func TestAcpConcurrentStopAndProviderWrite(t *testing.T) {
 	providerInput, peer := net.Pipe()
 	defer peer.Close()
