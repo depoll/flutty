@@ -741,11 +741,32 @@ void main() {
       find.byKey(const ValueKey('acp-user-prompt-navigation')),
     );
     expect(navigation().opacity, 0);
+    final topSlot = find.byKey(const ValueKey('acp-scroll-to-top-slot'));
+    final previousSlot = find.byKey(
+      const ValueKey('acp-previous-user-message-slot'),
+    );
+    final nextSlot = find.byKey(const ValueKey('acp-next-user-message-slot'));
+    final initialSlotPositions = [
+      tester.getTopLeft(topSlot),
+      tester.getTopLeft(previousSlot),
+      tester.getTopLeft(nextSlot),
+    ];
+    expect(find.byKey(const ValueKey('acp-scroll-to-top')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('acp-previous-user-message')),
+      findsNothing,
+    );
+    expect(find.byKey(const ValueKey('acp-next-user-message')), findsOneWidget);
 
     await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
     await tester.pump();
     await tester.pump();
     expect(navigation().opacity, 1);
+    expect([
+      tester.getTopLeft(topSlot),
+      tester.getTopLeft(previousSlot),
+      tester.getTopLeft(nextSlot),
+    ], initialSlotPositions);
     expect(
       tester.getSize(find.byKey(const ValueKey('acp-next-user-message'))),
       const Size(48, 48),
@@ -767,6 +788,17 @@ void main() {
     await tester.pumpAndSettle();
     expect(controller.offset, controller.position.minScrollExtent);
     expect(find.byKey(const ValueKey('prompt-1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('acp-scroll-to-top')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('acp-previous-user-message')),
+      findsNothing,
+    );
+    expect(find.byKey(const ValueKey('acp-next-user-message')), findsOneWidget);
+    expect([
+      tester.getTopLeft(topSlot),
+      tester.getTopLeft(previousSlot),
+      tester.getTopLeft(nextSlot),
+    ], initialSlotPositions);
 
     await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
     await tester.pump();
@@ -786,6 +818,12 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('acp-next-user-message')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('prompt-3')), findsOneWidget);
+    expect(find.byKey(const ValueKey('acp-next-user-message')), findsNothing);
+    expect([
+      tester.getTopLeft(topSlot),
+      tester.getTopLeft(previousSlot),
+      tester.getTopLeft(nextSlot),
+    ], initialSlotPositions);
 
     await tester.tap(find.byKey(const ValueKey('acp-previous-user-message')));
     await tester.pumpAndSettle();

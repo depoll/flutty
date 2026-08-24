@@ -579,11 +579,13 @@ class _AcpMessageThreadState extends State<AcpMessageThread> {
   int? _previousUserPromptIndex() {
     final firstVisible = _firstVisibleEntryIndex;
     if (firstVisible == null || widget.entries.isEmpty) return null;
-    final start = (_stickyPromptIndex ?? firstVisible - 1).clamp(
-      0,
-      widget.entries.length - 1,
-    );
-    for (var index = start; index >= 0; index--) {
+    final start = _stickyPromptIndex ?? firstVisible - 1;
+    if (start < 0) return null;
+    for (
+      var index = start.clamp(0, widget.entries.length - 1);
+      index >= 0;
+      index--
+    ) {
       if (widget.entries[index] is AcpUserPromptEntry) return index;
     }
     return null;
@@ -1195,45 +1197,36 @@ class _UserPromptNavigation extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                IconButton(
-                  key: const ValueKey('acp-scroll-to-top'),
+                _UserPromptNavigationButtonSlot(
+                  key: const ValueKey('acp-scroll-to-top-slot'),
+                  visible: topEnabled,
+                  buttonKey: const ValueKey('acp-scroll-to-top'),
                   tooltip: 'Scroll to top',
-                  onPressed: topEnabled ? onTop : null,
-                  constraints: const BoxConstraints.tightFor(
-                    width: 48,
-                    height: 48,
-                  ),
-                  padding: EdgeInsets.zero,
+                  onPressed: onTop,
                   icon: const Icon(Icons.vertical_align_top_rounded, size: 19),
                 ),
                 SizedBox(
                   width: 28,
                   child: Divider(height: 1, color: scheme.outlineVariant),
                 ),
-                IconButton(
-                  key: const ValueKey('acp-previous-user-message'),
+                _UserPromptNavigationButtonSlot(
+                  key: const ValueKey('acp-previous-user-message-slot'),
+                  visible: previousEnabled,
+                  buttonKey: const ValueKey('acp-previous-user-message'),
                   tooltip: 'Previous user message',
-                  onPressed: previousEnabled ? onPrevious : null,
-                  constraints: const BoxConstraints.tightFor(
-                    width: 48,
-                    height: 48,
-                  ),
-                  padding: EdgeInsets.zero,
+                  onPressed: onPrevious,
                   icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 20),
                 ),
                 SizedBox(
                   width: 28,
                   child: Divider(height: 1, color: scheme.outlineVariant),
                 ),
-                IconButton(
-                  key: const ValueKey('acp-next-user-message'),
+                _UserPromptNavigationButtonSlot(
+                  key: const ValueKey('acp-next-user-message-slot'),
+                  visible: nextEnabled,
+                  buttonKey: const ValueKey('acp-next-user-message'),
                   tooltip: 'Next user message',
-                  onPressed: nextEnabled ? onNext : null,
-                  constraints: const BoxConstraints.tightFor(
-                    width: 48,
-                    height: 48,
-                  ),
-                  padding: EdgeInsets.zero,
+                  onPressed: onNext,
                   icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
                 ),
               ],
@@ -1243,6 +1236,39 @@ class _UserPromptNavigation extends StatelessWidget {
       ),
     );
   }
+}
+
+class _UserPromptNavigationButtonSlot extends StatelessWidget {
+  const _UserPromptNavigationButtonSlot({
+    required this.visible,
+    required this.buttonKey,
+    required this.tooltip,
+    required this.onPressed,
+    required this.icon,
+    super.key,
+  });
+
+  final bool visible;
+  final Key buttonKey;
+  final String tooltip;
+  final VoidCallback onPressed;
+  final Widget icon;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 48,
+    height: 48,
+    child: visible
+        ? IconButton(
+            key: buttonKey,
+            tooltip: tooltip,
+            onPressed: onPressed,
+            constraints: const BoxConstraints.tightFor(width: 48, height: 48),
+            padding: EdgeInsets.zero,
+            icon: icon,
+          )
+        : null,
+  );
 }
 
 class _StickyUserPromptSummary extends StatelessWidget {
