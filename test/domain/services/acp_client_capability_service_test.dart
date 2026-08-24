@@ -431,6 +431,93 @@ void main() {
     );
 
     test(
+      'bounds aggregate pending write content and releases the budget',
+      () async {
+        await service.close();
+        registry = AcpPendingRequestRegistry(maxPendingContentBytes: 16);
+        service = AcpClientCapabilityService(
+          fileSystem: files,
+          terminalExecutor: terminals,
+          allowedRoots: const ['/workspace'],
+          registry: registry,
+          limits: const AcpClientCapabilityLimits(maxWriteBytes: 16),
+        )..attach(client);
+
+        transport.sendRequest('write-budget-1', 'fs/write_text_file', {
+          'sessionId': 'session-1',
+          'path': '/workspace/one.txt',
+          'content': '123456789012',
+        });
+        await _settle();
+        expect(registry.requests, hasLength(1));
+
+        transport.sendRequest('write-budget-2', 'fs/write_text_file', {
+          'sessionId': 'session-2',
+          'path': '/workspace/two.txt',
+          'content': 'abcdefghijkl',
+        });
+        await _settle();
+        expect(
+          (transport.responseFor('write-budget-2')['error']! as Map)['code'],
+          -32000,
+        );
+        expect(registry.requests, hasLength(1));
+
+        await service.closeSession('session-1');
+        transport.sendRequest('write-budget-3', 'fs/write_text_file', {
+          'sessionId': 'session-2',
+          'path': '/workspace/three.txt',
+          'content': 'abcdefghijkl',
+        });
+        await _settle();
+        expect(registry.requests, hasLength(1));
+        expect(registry.requests.single.id, 's:write-budget-3');
+      },
+    );
+
+    test('bounds terminal environment, cwd, and final shell command', () async {
+      final oversized = List.filled(8192, 'x').join();
+      final expansionHeavy = List.filled(3000, "'").join();
+
+      transport.sendRequest('create-env-limit', 'terminal/create', {
+        'sessionId': 'session-1',
+        'command': 'echo',
+        'env': [
+          {'name': 'VALUE', 'value': oversized},
+        ],
+      });
+      await _settle();
+      expect(
+        (transport.responseFor('create-env-limit')['error']! as Map)['code'],
+        -32000,
+      );
+
+      transport.sendRequest('create-cwd-limit', 'terminal/create', {
+        'sessionId': 'session-1',
+        'command': 'echo',
+        'cwd': '/workspace/$oversized',
+      });
+      await _settle();
+      expect(
+        (transport.responseFor('create-cwd-limit')['error']! as Map)['code'],
+        -32000,
+      );
+
+      transport.sendRequest('create-encoded-limit', 'terminal/create', {
+        'sessionId': 'session-1',
+        'command': 'echo',
+        'args': [expansionHeavy],
+      });
+      await _settle();
+      expect(
+        (transport.responseFor('create-encoded-limit')['error']!
+            as Map)['code'],
+        -32000,
+      );
+      expect(terminals.commands, isEmpty);
+    });
+
+    test(
       'scopes terminals to their owner and releases them on session close',
       () async {
         transport.sendRequest('create-owned', 'terminal/create', {

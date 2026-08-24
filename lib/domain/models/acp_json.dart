@@ -4,6 +4,13 @@
 /// not be allowed to bypass the normal timeline memory budget.
 const acpMaxIdentifierCharacters = 4096;
 
+/// Maximum nested containers retained from provider-controlled JSON.
+///
+/// JSON decoding itself accepts deeply nested frames. Retained metadata and
+/// extension fields are copied recursively, so this bound prevents malformed
+/// providers from exhausting the app isolate's stack.
+const acpMaxJsonNestingDepth = 64;
+
 /// A JSON object used by the Agent Client Protocol.
 typedef AcpJsonMap = Map<String, Object?>;
 
@@ -94,18 +101,22 @@ abstract final class AcpJson {
         json.map((key, value) => MapEntry(key, _freeze(value))),
       );
 
-  static Object? _freeze(Object? value) {
+  static Object? _freeze(Object? value, [int depth = 0]) {
     if (value is Map) {
+      if (depth >= acpMaxJsonNestingDepth) return null;
       final result = <String, Object?>{};
       for (final entry in value.entries) {
         if (entry.key case final String key) {
-          result[key] = _freeze(entry.value);
+          result[key] = _freeze(entry.value, depth + 1);
         }
       }
       return Map<String, Object?>.unmodifiable(result);
     }
     if (value is List) {
-      return List<Object?>.unmodifiable(value.map(_freeze));
+      if (depth >= acpMaxJsonNestingDepth) return null;
+      return List<Object?>.unmodifiable(
+        value.map((item) => _freeze(item, depth + 1)),
+      );
     }
     return value;
   }

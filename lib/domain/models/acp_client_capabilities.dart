@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../services/acp_json_rpc_connection.dart';
 import 'acp_updates.dart';
 
@@ -22,6 +24,12 @@ sealed class AcpPendingClientRequest {
 
   /// ACP session that owns this request, if supplied by the agent.
   String get sessionId;
+
+  /// Bytes retained exclusively for this pending request.
+  ///
+  /// Used by the shared registry to bound provider-controlled content kept in
+  /// memory while waiting for a user decision.
+  int get retainedContentBytes => 0;
 
   /// When this request was first observed locally.
   ///
@@ -81,6 +89,9 @@ final class AcpPendingFileWrite extends AcpPendingClientRequest {
 
   /// UTF-8 text to write. This is intentionally never logged.
   final String content;
+
+  @override
+  int get retainedContentBytes => utf8.encode(content).length;
 
   /// Completes this write after user approval.
   Future<void> approve(Future<void> Function() write) async {

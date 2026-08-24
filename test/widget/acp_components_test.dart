@@ -76,7 +76,10 @@ Uint8List buildPng(int w, int h) => Uint8List.fromList([
 ]);
 
 void main() {
-  setUp(() => FluttyTheme.debugUseSystemFonts = true);
+  setUp(() {
+    FluttyTheme.debugUseSystemFonts = true;
+    clearAcpInlineImageCache();
+  });
   tearDown(() => FluttyTheme.debugUseSystemFonts = false);
 
   group('AcpToolCallView', () {

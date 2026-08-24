@@ -877,8 +877,10 @@ String _quoteShellArgument(String value) =>
     '\'${value.replaceAll('\'', '\'"\'"\'')}\'';
 
 String _quoteWindowsShellArgument(String value) {
-  if (value.contains(RegExp(r'["%!\r\n]'))) {
-    throw const FormatException('Profile name is unsafe for cmd.exe.');
+  if (value.contains(RegExp(r'["%!$`\r\n\u201c-\u201e]'))) {
+    throw const FormatException(
+      'Profile name is unsafe for the Windows shell.',
+    );
   }
   return '"$value"';
 }

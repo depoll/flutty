@@ -642,7 +642,7 @@ void main() {
       );
     });
 
-    test('quotes Windows launch profiles as one cmd.exe argument', () {
+    test('quotes Windows profiles without cmd or PowerShell expansion', () {
       expect(
         buildAgentToolCommand(
           AgentLaunchTool.hermes,
@@ -651,14 +651,23 @@ void main() {
         ),
         contains('--profile "work & review"'),
       );
-      expect(
-        () => buildAgentToolCommand(
-          AgentLaunchTool.hermes,
-          launchProfile: 'unsafe%PATH%',
-          windows: true,
-        ),
-        throwsFormatException,
-      );
+      for (final unsafe in [
+        'unsafe%PATH%',
+        r'unsafe$env:PATH',
+        r'unsafe$(Get-Item .)',
+        'unsafe`nvalue',
+        'unsafe”value',
+      ]) {
+        expect(
+          () => buildAgentToolCommand(
+            AgentLaunchTool.hermes,
+            launchProfile: unsafe,
+            windows: true,
+          ),
+          throwsFormatException,
+          reason: unsafe,
+        );
+      }
     });
 
     test('builds resume commands for the newly supported CLIs', () {

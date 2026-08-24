@@ -277,16 +277,24 @@ final class AcpLimitExceededException extends AcpClientCapabilityException {
 ///
 /// Bounded so a misbehaving or malicious agent that floods requests cannot
 /// grow local memory without limit: once [maxPendingRequests] outstanding new
-/// requests are retained, [register] refuses further brand-new requests (a
-/// rebind of an already-tracked request id is always accepted).
+/// requests or [maxPendingContentBytes] of provider content are retained,
+/// [register] refuses further brand-new requests (a rebind of an already
+/// tracked request id is always accepted).
 final class AcpPendingRequestRegistry {
   /// Creates a pending-request registry.
-  AcpPendingRequestRegistry({this.maxPendingRequests = 200});
+  AcpPendingRequestRegistry({
+    this.maxPendingRequests = 200,
+    this.maxPendingContentBytes = 16 * 1024 * 1024,
+  });
 
   /// Maximum distinct outstanding requests retained at once.
   final int maxPendingRequests;
 
+  /// Maximum provider-controlled content retained across pending requests.
+  final int maxPendingContentBytes;
+
   final _requests = <String, AcpPendingClientRequest>{};
+  var _pendingContentBytes = 0;
   final _changes = StreamController<List<AcpPendingClientRequest>>.broadcast(
     sync: true,
   );
@@ -301,9 +309,10 @@ final class AcpPendingRequestRegistry {
   /// Adds a new request or rebinds its response channel after reconnect.
   ///
   /// Returns `null` instead of registering when the registry is already at
-  /// [maxPendingRequests] and [pending] is not a rebind of a tracked request;
-  /// the caller must then answer the request with a safe decline so it never
-  /// leaks unbounded state or leaves the agent's request unanswered.
+  /// [maxPendingRequests] or [maxPendingContentBytes] and [pending] is not a
+  /// rebind of a tracked request; the caller must then answer the request with
+  /// a safe decline so it never leaks unbounded state or leaves the agent's
+  /// request unanswered.
   T? register<T extends AcpPendingClientRequest>(T pending) {
     final existing = _requests[pending.id];
     if (existing != null && existing.runtimeType == pending.runtimeType) {
@@ -311,23 +320,35 @@ final class AcpPendingRequestRegistry {
       _emit();
       return existing as T;
     }
-    if (_requests.length >= maxPendingRequests) {
+    if (existing == null && _requests.length >= maxPendingRequests) {
+      return null;
+    }
+    final nextContentBytes =
+        _pendingContentBytes -
+        (existing?.retainedContentBytes ?? 0) +
+        pending.retainedContentBytes;
+    if (nextContentBytes > maxPendingContentBytes) {
       return null;
     }
     _requests[pending.id] = pending;
+    _pendingContentBytes = nextContentBytes;
     _emit();
     return pending;
   }
 
   /// Removes [id] after it has been answered.
   void remove(String id) {
-    if (_requests.remove(id) != null) _emit();
+    final removed = _requests.remove(id);
+    if (removed == null) return;
+    _pendingContentBytes -= removed.retainedContentBytes;
+    _emit();
   }
 
   /// Cancels unresolved permissions during explicit ACP session destruction.
   Future<void> cancelAll() async {
     final pending = _requests.values.toList(growable: false);
     _requests.clear();
+    _pendingContentBytes = 0;
     _emit();
     await _cancelPending(pending);
   }
@@ -347,6 +368,7 @@ final class AcpPendingRequestRegistry {
     if (matching.isEmpty) return;
     for (final request in matching) {
       _requests.remove(request.id);
+      _pendingContentBytes -= request.retainedContentBytes;
     }
     _emit();
     await _cancelPending(matching);
@@ -756,9 +778,25 @@ final class AcpClientCapabilityService {
     if (environment.length > limits.maxEnvironmentVariables) {
       throw const AcpLimitExceededException('Too many environment variables');
     }
-    final cwd = params['cwd'] == null
+    final requestedCwd = params['cwd'] == null
         ? null
-        : await _validatedPath(_requiredString(params, 'cwd'), forWrite: false);
+        : _requiredString(params, 'cwd');
+    final inputCharacters =
+        command.length +
+        arguments.fold<int>(0, (total, value) => total + value.length) +
+        environment.entries.fold<int>(
+          0,
+          (total, entry) => total + entry.key.length + entry.value.length,
+        ) +
+        (requestedCwd?.length ?? 0);
+    if (inputCharacters > limits.maxCommandCharacters) {
+      throw const AcpLimitExceededException(
+        'Terminal command exceeds the limit',
+      );
+    }
+    final cwd = requestedCwd == null
+        ? null
+        : await _validatedPath(requestedCwd, forWrite: false);
     final requestedOutputLimit = _optionalPositiveInteger(
       params,
       'outputByteLimit',
@@ -766,10 +804,7 @@ final class AcpClientCapabilityService {
     final outputLimit = requestedOutputLimit == null
         ? limits.maxTerminalOutputBytes
         : min(requestedOutputLimit, limits.maxTerminalOutputBytes);
-    if (outputLimit <= 0 ||
-        command.length +
-                arguments.fold<int>(0, (total, value) => total + value.length) >
-            limits.maxCommandCharacters) {
+    if (outputLimit <= 0) {
       throw const AcpLimitExceededException(
         'Terminal command exceeds the limit',
       );
@@ -783,6 +818,11 @@ final class AcpClientCapabilityService {
           executor is AcpSshTerminalExecutor &&
           executor.session.remoteIsWindows,
     );
+    if (remoteCommand.length > limits.maxCommandCharacters) {
+      throw const AcpLimitExceededException(
+        'Terminal command exceeds the limit',
+      );
+    }
     if (_terminals.length + _terminalReservations >= limits.maxTerminals) {
       throw const AcpLimitExceededException('Too many active terminals');
     }

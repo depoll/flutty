@@ -11097,6 +11097,59 @@ func TestParseGeminiSessionMetadataFromTruncatedPrefix(t *testing.T) {
 	}
 }
 
+func TestCloseNativeWindowWaitsForRetryableBridgeStop(t *testing.T) {
+	originalStop := stopNativeAcpBridgeForWindow
+	defer func() { stopNativeAcpBridgeForWindow = originalStop }()
+
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:                "@1",
+			index:             0,
+			nativeAcpBridgeID: "bridge-1",
+			lastActivity:      time.Now(),
+		},
+	}
+	server.activeID = "@1"
+
+	stopNativeAcpBridgeForWindow = func(id string) error {
+		if id != "bridge-1" {
+			t.Fatalf("bridge id = %q, want bridge-1", id)
+		}
+		return errors.New("stop failed")
+	}
+	shouldShutdown, err := server.closeWindow("@1")
+	if err == nil {
+		t.Fatal("close succeeded despite bridge stop failure")
+	}
+	if shouldShutdown {
+		t.Fatal("failed close requested server shutdown")
+	}
+	if server.windows[0].closed || server.windows[0].closing {
+		t.Fatal("failed bridge stop did not preserve a retryable open window")
+	}
+	if snapshots := server.snapshots(); len(snapshots) != 1 {
+		t.Fatalf("snapshot count after failed close = %d, want 1", len(snapshots))
+	}
+
+	stopNativeAcpBridgeForWindow = func(id string) error {
+		if server.windows[0].closed {
+			t.Fatal("window closed before bridge stop succeeded")
+		}
+		return nil
+	}
+	shouldShutdown, err = server.closeWindow("@1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !shouldShutdown {
+		t.Fatal("successful native close did not request shutdown")
+	}
+	if !server.windows[0].closed {
+		t.Fatal("window remained open after bridge stop succeeded")
+	}
+}
+
 func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}

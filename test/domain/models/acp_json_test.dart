@@ -25,6 +25,24 @@ void main() {
     );
   });
 
+  test('truncates provider JSON beyond the safe nesting depth', () {
+    Object? nested = 'leaf';
+    for (var depth = 0; depth < acpMaxJsonNestingDepth + 20; depth++) {
+      nested = <Object?>[nested];
+    }
+
+    final frozen = AcpJson.immutableObject({'nested': nested});
+    var cursor = frozen['nested'];
+    var retainedDepth = 0;
+    while (cursor is List<Object?>) {
+      retainedDepth++;
+      cursor = cursor.single;
+    }
+
+    expect(retainedDepth, acpMaxJsonNestingDepth);
+    expect(cursor, isNull);
+  });
+
   test('rejects provider identifiers above the retained-state bound', () {
     final maximum = 'x' * acpMaxIdentifierCharacters;
     final oversized = '$maximum!';

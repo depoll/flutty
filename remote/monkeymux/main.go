@@ -268,6 +268,8 @@ var (
 	errServerUpdateStillAlive       = errors.New("MonkeyMux update could not stop the running workspace; the existing helper was kept")
 )
 
+var stopNativeAcpBridgeForWindow = requestAcpBridgeStopAndWait
+
 var nativeAcpWindowArguments = func(bridgeID string) ([]string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -734,6 +736,7 @@ type muxWindow struct {
 	themeColorQueryKeys                  map[string]bool
 	alert                                bool
 	closed                               bool
+	closing                              bool
 	redrawForwardingPaused               bool
 	redrawForwardingGeneration           int
 	redrawForwardingReplay               []byte
@@ -9537,17 +9540,53 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var process muxProcess
 	var windowPty muxPty
 	var nativeAcpBridgeID string
+	var nativeAcpBridgeStopped bool
 	var snapshots []windowSnapshot
 	var resetViewportParser bool
 	var targetWidth int
 	var targetHeight int
 
+	// Native windows retain their window/concurrency identity until the bridge
+	// confirms shutdown. Mark the stop in flight without closing the window so
+	// a failed request remains visible and retryable. Never wait for bridge I/O
+	// while holding s.mu or attachMu.
+	s.mu.Lock()
+	initialWindow := s.windowByIDLocked(windowID)
+	if initialWindow == nil || initialWindow.closed || initialWindow.closing {
+		s.mu.Unlock()
+		return false, fmt.Errorf("window %q not found", windowID)
+	}
+	nativeAcpBridgeID = initialWindow.nativeAcpBridgeID
+	if nativeAcpBridgeID != "" {
+		initialWindow.closing = true
+	}
+	s.mu.Unlock()
+
+	if nativeAcpBridgeID != "" {
+		if err := stopNativeAcpBridgeForWindow(nativeAcpBridgeID); err != nil {
+			s.mu.Lock()
+			if current := s.windowByIDLocked(windowID); current != nil && !current.closed {
+				current.closing = false
+			}
+			s.mu.Unlock()
+			return false, fmt.Errorf("stop native ACP bridge: %w", err)
+		}
+		nativeAcpBridgeStopped = true
+	}
+
 	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
+		shouldShutdown = len(s.snapshotsLocked()) == 0
 		s.mu.Unlock()
 		s.attachMu.Unlock()
+		if nativeAcpBridgeStopped {
+			// The bridge's `acp wait` watcher committed and broadcast the close
+			// while shutdown was being confirmed. Treat the requested close as
+			// successful rather than reporting a spurious not-found error.
+			return shouldShutdown, nil
+		}
 		return false, fmt.Errorf("window %q not found", windowID)
 	}
 	openCount := 0
@@ -9605,7 +9644,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	}
 	process = window.proc
 	windowPty = window.pty
-	nativeAcpBridgeID = window.nativeAcpBridgeID
 	s.reindexWindowsLocked()
 	snapshots = s.snapshotsLocked()
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
@@ -9647,9 +9685,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	}
 	if windowPty != nil {
 		_ = window.closePty(windowPty)
-	}
-	if nativeAcpBridgeID != "" {
-		_ = requestAcpBridgeStopAndWait(nativeAcpBridgeID)
 	}
 	return shouldShutdown, nil
 }
