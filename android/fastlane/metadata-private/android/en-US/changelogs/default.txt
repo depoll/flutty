@@ -1,6 +1,7 @@
-What's new in this 0.4.1 beta
+What's new in this beta
 
-- Launch or resume Grok Build from the project-scoped agent picker.
-- Compatible tools can report terminal progress, notifications, colours, and command boundaries more cleanly.
-- Touch scrolling is smoother in full-screen apps, image-heavy output, and long sessions.
-- Android keyboard controls, attachment pastes, and shell completion updates are more reliable.
+- Open supported coding agents in a native conversation inside MonkeyMux.
+- Switch persistent agent work between native chat and the full terminal.
+- Follow streamed responses, tool progress, images, attachments, permissions, and history.
+- Choose a preferred agent window mode or ask each time.
+- Large conversations open, scroll, and resume more smoothly.

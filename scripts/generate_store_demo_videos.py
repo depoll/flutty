@@ -16,9 +16,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
-
 import generate_store_screenshots as store_screenshots
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCENE_HOLD_MS = 1600

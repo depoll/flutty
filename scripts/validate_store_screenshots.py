@@ -13,7 +13,7 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-SCREENSHOT_COUNT = 6
+SCREENSHOT_COUNT = 7
 IOS_SCREENSHOTS = {
     ROOT / 'ios/fastlane/screenshots/en-US': {
         'iphone_6_9': (1320, 2868),
@@ -255,6 +255,8 @@ def _validate_ocr_content(paths: list[Path]) -> None:
             _require_ocr_markers(path, text, ['AGENTS.md'])
         elif filename in {'06_iphone_6_9.png', '06_ipad_13.png', '6.png'}:
             _require_ocr_markers(path, text, ['Claude Code'])
+        elif filename in {'07_iphone_6_9.png', '07_ipad_13.png', '7.png'}:
+            _require_ocr_markers(path, text, ['Message the agent', 'native agent window'])
 
     for grouped_texts in monkeymux_texts.values():
         paths_description = ', '.join(

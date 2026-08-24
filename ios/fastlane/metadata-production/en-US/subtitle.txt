@@ -1,1 +1,1 @@
-SSH for coding agents
+Native agents over SSH
