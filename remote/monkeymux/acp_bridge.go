@@ -727,8 +727,9 @@ func (b *acpBridge) awaitProviderReapReady() {
 	// Output EOF usually means the wrapper exited. Keep its leader unreaped
 	// until every non-zombie group member is gone, reserving the PGID while a
 	// concurrent explicit stop may still need to signal surviving descendants.
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
+	pollDelay := 50 * time.Millisecond
+	pollTimer := time.NewTimer(pollDelay)
+	defer pollTimer.Stop()
 	for {
 		live, err := acpProviderProcessGroupHasLiveMember(b.cmd)
 		if err != nil {
@@ -744,7 +745,14 @@ func (b *acpBridge) awaitProviderReapReady() {
 		select {
 		case <-b.providerReapReady:
 			return
-		case <-ticker.C:
+		case <-pollTimer.C:
+			if pollDelay < time.Second {
+				pollDelay *= 2
+				if pollDelay > time.Second {
+					pollDelay = time.Second
+				}
+			}
+			pollTimer.Reset(pollDelay)
 		}
 	}
 }

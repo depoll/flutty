@@ -4,8 +4,6 @@ package main
 
 import (
 	"os/exec"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -20,12 +18,7 @@ func newAcpProviderCommand(command string) *exec.Cmd {
 }
 
 func stopAcpProvider(cmd *exec.Cmd, providerOutputDone <-chan struct{}) {
-	stopAcpProviderAfter(
-		cmd,
-		providerOutputDone,
-		2*time.Second,
-		forceStopAcpProvider,
-	)
+	stopAcpProviderAfter(cmd, providerOutputDone, 2*time.Second, forceStopAcpProvider)
 }
 
 // stopAcpProviderAfter must run while the provider reap gate is closed. Keeping
@@ -43,11 +36,12 @@ func stopAcpProviderAfter(
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 
-	timer := time.NewTimer(grace)
-	defer timer.Stop()
-	forceReady := timer.C
-	poll := time.NewTicker(10 * time.Millisecond)
-	defer poll.Stop()
+	forceTimer := time.NewTimer(grace)
+	defer forceTimer.Stop()
+	forceReady := forceTimer.C
+	pollDelay := 25 * time.Millisecond
+	pollTimer := time.NewTimer(pollDelay)
+	defer pollTimer.Stop()
 	outputDone := providerOutputDone
 	for {
 		if live, err := acpProviderProcessGroupHasLiveMember(cmd); err == nil && !live {
@@ -58,46 +52,23 @@ func stopAcpProviderAfter(
 			// Output EOF is only a wake-up hint. A descendant may have closed its
 			// inherited descriptors while remaining alive in the provider group.
 			outputDone = nil
-		case <-poll.C:
+		case <-pollTimer.C:
+			if forceReady == nil && pollDelay < 500*time.Millisecond {
+				pollDelay *= 2
+				if pollDelay > 500*time.Millisecond {
+					pollDelay = 500 * time.Millisecond
+				}
+			}
+			pollTimer.Reset(pollDelay)
 		case <-forceReady:
 			force(cmd)
 			// SIGKILL is asynchronous and may fail or wait behind uninterruptible
-			// kernel work. Disable the one-shot timer but keep the reap gate closed
-			// and inspection loop running until the original group is truly empty.
-			// A persistent inspection/kill failure deliberately blocks bridge-stop
-			// completion instead of reporting success or risking a recycled PGID.
+			// kernel work. Keep the reap gate closed and inspect with bounded
+			// backoff until the original group is truly empty. Persistent failure
+			// deliberately blocks completion instead of risking a recycled PGID.
 			forceReady = nil
 		}
 	}
-}
-
-// acpProviderProcessGroupHasLiveMember excludes zombie members. During calls
-// from the stop path the unreaped leader keeps the PGID reserved, so a matching
-// live member is guaranteed to belong to this provider group.
-func acpProviderProcessGroupHasLiveMember(cmd *exec.Cmd) (bool, error) {
-	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
-		return false, nil
-	}
-	output, err := runProcessQuery("ps", "-eo", "pid=,pgid=,state=")
-	if err != nil {
-		return false, err
-	}
-	pgid := cmd.Process.Pid
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		memberGroup, err := strconv.Atoi(fields[1])
-		if err != nil || memberGroup != pgid {
-			continue
-		}
-		state := fields[2]
-		if state != "" && state[0] != 'Z' && state[0] != 'X' {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func forceStopAcpProvider(cmd *exec.Cmd) {
