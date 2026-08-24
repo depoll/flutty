@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:drift/native.dart';
@@ -7,8 +8,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+
+class _DelayedBoolSettingsService extends SettingsService {
+  _DelayedBoolSettingsService(super.database);
+
+  final loadedValue = Completer<bool>();
+
+  @override
+  Future<bool> getBool(String key, {bool defaultValue = false}) =>
+      loadedValue.future;
+}
 
 void main() {
   late AppDatabase db;
@@ -206,6 +218,36 @@ void main() {
     });
   });
 
+  test('app-wide agent window mode loads and persists', () async {
+    await service.setString(
+      SettingKeys.agentWindowModePreference,
+      AgentWindowModePreference.preferTerminal.storageValue,
+    );
+    final container = ProviderContainer(
+      overrides: [settingsServiceProvider.overrideWithValue(service)],
+    );
+    addTearDown(container.dispose);
+
+    final notifier = container.read(
+      agentWindowModePreferenceNotifierProvider.notifier,
+    );
+    expect(
+      await notifier.initializedValue(),
+      AgentWindowModePreference.preferTerminal,
+    );
+
+    await notifier.setPreference(AgentWindowModePreference.preferNative);
+
+    expect(
+      container.read(agentWindowModePreferenceNotifierProvider),
+      AgentWindowModePreference.preferNative,
+    );
+    expect(
+      await service.getString(SettingKeys.agentWindowModePreference),
+      'native',
+    );
+  });
+
   group('Settings Providers', () {
     late AppDatabase testDb;
     late ProviderContainer container;
@@ -220,6 +262,53 @@ void main() {
     tearDown(() async {
       container.dispose();
       await testDb.close();
+    });
+
+    group('confirmMuxWindowCloseNotifierProvider', () {
+      test('a late startup read cannot overwrite a newer choice', () async {
+        container.dispose();
+        final delayedSettings = _DelayedBoolSettingsService(testDb);
+        container = ProviderContainer(
+          overrides: [
+            settingsServiceProvider.overrideWithValue(delayedSettings),
+          ],
+        );
+        final notifier = container.read(
+          confirmMuxWindowCloseNotifierProvider.notifier,
+        );
+
+        await notifier.setEnabled(enabled: false);
+        delayedSettings.loadedValue.complete(true);
+        await notifier.initializedValue();
+
+        expect(container.read(confirmMuxWindowCloseNotifierProvider), isFalse);
+        expect(
+          await SettingsService(
+            testDb,
+          ).getBool(SettingKeys.confirmMuxWindowClose, defaultValue: true),
+          isFalse,
+        );
+      });
+
+      test('loads disabled preference after provider reconstruction', () async {
+        final settings = container.read(settingsServiceProvider);
+        await settings.setBool(SettingKeys.confirmMuxWindowClose, value: false);
+
+        final first = await container
+            .read(confirmMuxWindowCloseNotifierProvider.notifier)
+            .initializedValue();
+        expect(first, isFalse);
+
+        container.dispose();
+        container = ProviderContainer(
+          overrides: [databaseProvider.overrideWithValue(testDb)],
+        );
+
+        final restored = await container
+            .read(confirmMuxWindowCloseNotifierProvider.notifier)
+            .initializedValue();
+        expect(restored, isFalse);
+      });
     });
 
     group('themeModeProvider', () {

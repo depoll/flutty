@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/presentation/view_models/host_edit_view_model.dart';
 
@@ -55,6 +56,7 @@ HostEditDraft _draft({
   disableTmuxStatusBar: false,
   disableAgentTmuxStatusBar: false,
   startClisInYoloMode: false,
+  agentWindowModePreference: AgentWindowModePreference.askEveryTime,
   autoForwardPorts: autoForwardPorts,
 );
 

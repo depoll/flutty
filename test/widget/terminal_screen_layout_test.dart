@@ -6,6 +6,7 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:monkeyssh/presentation/widgets/system_bottom_inset.dart';
 
 void main() {
   group('terminal layout helpers', () {
@@ -38,6 +39,70 @@ void main() {
 
     test('tmux handle keeps a full touch target', () {
       expect(tmuxHandleMinTouchExtent, greaterThanOrEqualTo(44));
+    });
+
+    test('native focus leaves the connection on Back', () {
+      expect(resolveTerminalScreenCanPop(isTmuxBarExpanded: false), isTrue);
+      expect(resolveTerminalScreenCanPop(isTmuxBarExpanded: true), isFalse);
+    });
+
+    test('native mode hides only terminal-viewport menu actions', () {
+      expect(
+        resolveShowTerminalViewportMenuActions(nativeAgentActive: false),
+        isTrue,
+      );
+      expect(
+        resolveShowTerminalViewportMenuActions(nativeAgentActive: true),
+        isFalse,
+      );
+    });
+
+    test('uses platform IME state over stale inset geometry', () {
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: null,
+          terminalInputConnectionVisible: false,
+          nativeComposerInputOwner: true,
+        ),
+        isTrue,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: false,
+          terminalInputConnectionVisible: true,
+          nativeComposerInputOwner: true,
+        ),
+        isFalse,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: null,
+          terminalInputConnectionVisible: false,
+          nativeComposerInputOwner: false,
+        ),
+        isFalse,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 300,
+          platformKeyboardVisible: true,
+          terminalInputConnectionVisible: false,
+          nativeComposerInputOwner: false,
+        ),
+        isTrue,
+      );
+      expect(
+        resolveTerminalSystemKeyboardVisible(
+          bottomInset: 0,
+          platformKeyboardVisible: true,
+          terminalInputConnectionVisible: true,
+          nativeComposerInputOwner: true,
+        ),
+        isFalse,
+      );
     });
 
     test('moves tmux controls to a sidebar only when width allows it', () {
@@ -325,7 +390,15 @@ void main() {
         size: Size(390, 844),
         padding: EdgeInsets.only(bottom: 34),
       );
+      // The scaffold lifts the body above the keyboard and strips the bottom
+      // view inset from it, leaving only the already-zeroed bottom padding.
       const portraitKeyboardMediaQuery = MediaQueryData(
+        size: Size(390, 844),
+        viewPadding: EdgeInsets.only(bottom: 34),
+      );
+      // A bottom view inset that survives into the body means the layout was
+      // never lifted for it, so the navigation bar is still on screen.
+      const portraitStaleInsetMediaQuery = MediaQueryData(
         size: Size(390, 844),
         viewPadding: EdgeInsets.only(bottom: 34),
         viewInsets: EdgeInsets.only(bottom: 320),
@@ -342,6 +415,10 @@ void main() {
       expect(
         resolveTmuxBarSafeInsets(portraitKeyboardMediaQuery),
         EdgeInsets.zero,
+      );
+      expect(
+        resolveTmuxBarSafeInsets(portraitStaleInsetMediaQuery),
+        const EdgeInsets.only(bottom: 34),
       );
       expect(
         resolveTmuxBarSafeInsets(landscapeMediaQuery),
@@ -400,6 +477,87 @@ void main() {
             'connection must not survive a failed probe',
       );
     });
+
+    test('preserves MonkeyMux chrome only for bounded attach churn', () {
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.monkeyMux,
+          serverReplacementPending: true,
+          nativeAgentActive: false,
+          attachEstablished: false,
+          consecutiveFalseProbes: 20,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.monkeyMux,
+          serverReplacementPending: false,
+          nativeAgentActive: true,
+          attachEstablished: true,
+          consecutiveFalseProbes: 3,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.monkeyMux,
+          serverReplacementPending: false,
+          nativeAgentActive: true,
+          attachEstablished: true,
+          consecutiveFalseProbes: 4,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+          backend: RemoteMuxBackend.tmux,
+          serverReplacementPending: true,
+          nativeAgentActive: true,
+          attachEstablished: true,
+          consecutiveFalseProbes: 1,
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'terminal theme view-ready retries are bounded and skip native UI',
+      () {
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: false,
+            routeIsCurrent: true,
+            attempt: 2,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: false,
+            routeIsCurrent: true,
+            attempt: 3,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: true,
+            routeIsCurrent: true,
+            attempt: 0,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldRetryTerminalThemeWhenViewMounts(
+            nativeAgentActive: false,
+            routeIsCurrent: false,
+            attempt: 0,
+          ),
+          isFalse,
+        );
+      },
+    );
 
     test('preserves tmux state after tmux is confirmed active', () {
       expect(
@@ -595,6 +753,31 @@ void main() {
       );
     });
 
+    test('new native windows use the host connection directory', () {
+      expect(
+        resolveNativeAcpNewWindowWorkingDirectory(
+          connectionWorkingDirectory: ' /host/connection ',
+          launchWorkingDirectory: '/host/launch',
+          hostWorkingDirectory: '/host/configured',
+        ),
+        '/host/connection',
+      );
+      expect(
+        resolveNativeAcpNewWindowWorkingDirectory(
+          launchWorkingDirectory: '/host/launch',
+          hostWorkingDirectory: '/host/configured',
+        ),
+        '/host/launch',
+      );
+      expect(
+        resolveNativeAcpNewWindowWorkingDirectory(
+          hostWorkingDirectory: '/host/configured',
+        ),
+        '/host/configured',
+      );
+      expect(resolveNativeAcpNewWindowWorkingDirectory(), '~');
+    });
+
     test('falls back through launch, active, and observed directories', () {
       expect(
         resolveTmuxWindowWorkingDirectory(
@@ -645,6 +828,41 @@ void main() {
           hostWorkingDirectory: '/tmp/host',
         ),
         '/tmp/host',
+      );
+    });
+
+    test('reopens only an established lost MonkeyMux attach', () {
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.monkeyMux,
+          attachEstablished: true,
+          hasForegroundClient: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.monkeyMux,
+          attachEstablished: false,
+          hasForegroundClient: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.tmux,
+          attachEstablished: true,
+          hasForegroundClient: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldReopenLostMonkeyMuxAttach(
+          backend: RemoteMuxBackend.monkeyMux,
+          attachEstablished: true,
+          hasForegroundClient: true,
+        ),
+        isFalse,
       );
     });
 
@@ -1211,9 +1429,10 @@ void main() {
                 builder: (outerContext) => Column(
                   children: [
                     Expanded(
-                      child: MediaQuery.removePadding(
-                        context: outerContext,
-                        removeBottom: true,
+                      child: MediaQuery(
+                        data: removeSystemBottomInset(
+                          MediaQuery.of(outerContext),
+                        ),
                         child: Builder(
                           builder: (innerContext) {
                             strippedMediaQuery = MediaQuery.of(innerContext);
@@ -1245,6 +1464,48 @@ void main() {
         );
       },
     );
+
+    testWidgets('collapses to zero for a stale unlifted bottom inset', (
+      tester,
+    ) async {
+      late MediaQueryData strippedMediaQuery;
+      await tester.pumpWidget(
+        MediaQuery(
+          // The keyboard is closed but the platform still reports its inset,
+          // so the scaffold never lifted the body and the keyboard toolbar
+          // below absorbs the navigation-bar inset itself.
+          data: const MediaQueryData(
+            viewPadding: EdgeInsets.only(bottom: 34),
+            viewInsets: EdgeInsets.only(bottom: 320),
+          ),
+          child: Directionality(
+            textDirection: TextDirection.ltr,
+            child: Builder(
+              builder: (outerContext) => Column(
+                children: [
+                  Expanded(
+                    child: MediaQuery(
+                      data: removeSystemBottomInset(
+                        MediaQuery.of(outerContext),
+                      ),
+                      child: Builder(
+                        builder: (innerContext) {
+                          strippedMediaQuery = MediaQuery.of(innerContext);
+                          return const SizedBox.expand();
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 118),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(resolveTmuxBarSafeInsets(strippedMediaQuery).bottom, 0);
+    });
   });
 }
 

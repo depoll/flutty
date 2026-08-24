@@ -4,7 +4,10 @@ import 'package:xterm/xterm.dart';
 ///
 /// Outside Kitty mode, non-press events are ignored (legacy keytabs only emit
 /// on press). Kitty mode forwards press/repeat/release so the remote gets the
-/// full progressive-enhancement sequence.
+/// full progressive-enhancement sequence, except Alt+Enter. That chord keeps
+/// the broadly-supported meta-sends-escape form (`ESC CR`) because Pi and
+/// other prompt TUIs bind it to queue/enqueue while treating CSI-u Alt+Enter
+/// as a literal multiline insertion.
 ///
 /// Two legacy keytab gaps are corrected only for this Enter keystroke:
 /// - DEC LNM makes unmodified Return emit CRLF; collapse that to CR so prompt
@@ -21,6 +24,15 @@ bool sendTerminalEnterInput(
 }) {
   if (type != TerminalKeyEventType.press && !terminal.kittyKeyboardMode) {
     return false;
+  }
+
+  final altOnly = altActive && !shiftActive && !ctrlActive && !metaActive;
+  if (altOnly) {
+    if (type == TerminalKeyEventType.press) {
+      terminal.onOutput?.call('\x1b\r');
+    }
+    // Do not send a CSI-u repeat/release after the legacy press sequence.
+    return true;
   }
 
   final previousOutput = terminal.onOutput;
@@ -49,13 +61,6 @@ bool sendTerminalEnterInput(
   if (!hasModifiers && payload == '\r\n') {
     // LNM Return keytab emits CRLF as one keystroke.
     payload = '\r';
-  } else if (altActive &&
-      !shiftActive &&
-      !ctrlActive &&
-      !metaActive &&
-      payload == '\r') {
-    // Meta-sends-escape: legacy keytab matched plain Enter and dropped Alt.
-    payload = '\x1b\r';
   }
 
   previousOutput?.call(payload);

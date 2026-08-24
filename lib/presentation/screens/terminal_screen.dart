@@ -28,15 +28,23 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/acp_native_preview.dart';
+import '../../domain/models/acp_provider.dart';
+import '../../domain/models/acp_session_keys.dart';
+import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/monkeymux_acp_bridge.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_capability_hint.dart';
 import '../../domain/models/terminal_progress.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/acp_launch_profile_service.dart';
+import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/app_review_demo_service.dart';
@@ -63,7 +71,17 @@ import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/terminal_wake_lock_service.dart';
 import '../../domain/services/tmux_service.dart';
+import '../controllers/system_keyboard_visibility_controller.dart';
 import '../controllers/terminal_session_controller.dart';
+import '../widgets/acp_composer.dart';
+import '../widgets/acp_concurrency_choice.dart';
+import '../widgets/acp_connection_support.dart';
+import '../widgets/acp_mux_window_status_badge.dart';
+import '../widgets/acp_native_badge.dart';
+import '../widgets/acp_native_starting_view.dart';
+import '../widgets/acp_new_session_sheet.dart';
+import '../widgets/acp_session_presentation.dart';
+import '../widgets/acp_session_switcher.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/brand_error_state.dart';
@@ -73,6 +91,7 @@ import '../widgets/device_debug_sheet.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
+import '../widgets/system_bottom_inset.dart';
 import '../widgets/terminal_menu_style.dart';
 import '../widgets/terminal_overlay_focus.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
@@ -83,6 +102,7 @@ import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
+import 'agent_chat_screen.dart';
 import 'port_forward_browser_screen.dart';
 import 'sftp_screen.dart';
 import 'snippet_edit_screen.dart';
@@ -360,6 +380,13 @@ typedef _TerminalPasteMode = ({
 });
 
 typedef _AttachmentPasteResult = ({int requestedCount, int sentCount});
+typedef _PendingMonkeyMuxServerReplacement = ({
+  int connectionId,
+  String sessionName,
+  String previousVersion,
+  String targetVersion,
+  DateTime expiresAt,
+});
 
 /// Resolves the retry schedule used for tmux detection after connect.
 @visibleForTesting
@@ -392,6 +419,29 @@ double? resolveTerminalOverflowMenuMaxHeight({
 /// should not hide a bar whose attached client was already confirmed to belong
 /// to this SSH connection. State that was only primed from host settings has no
 /// confirmed client yet, so it must never survive a failed probe.
+@visibleForTesting
+bool shouldPreserveMonkeyMuxChromeAfterAttachProbe({
+  required RemoteMuxBackend backend,
+  required bool serverReplacementPending,
+  required bool nativeAgentActive,
+  required bool attachEstablished,
+  required int consecutiveFalseProbes,
+}) =>
+    backend == RemoteMuxBackend.monkeyMux &&
+    (serverReplacementPending ||
+        (nativeAgentActive &&
+            attachEstablished &&
+            consecutiveFalseProbes <= 3));
+
+/// Returns whether a missing terminal view should be checked on another frame.
+@visibleForTesting
+bool shouldRetryTerminalThemeWhenViewMounts({
+  required bool nativeAgentActive,
+  required bool routeIsCurrent,
+  required int attempt,
+}) => !nativeAgentActive && routeIsCurrent && attempt < 3;
+
+/// Returns whether tmux detection should keep the terminal's current tmux UI.
 @visibleForTesting
 bool shouldPreserveTerminalTmuxStateAfterDetectionFailure({
   required bool preserveExistingTmuxState,
@@ -498,6 +548,23 @@ String? resolveTmuxWindowWorkingDirectory({
   observedWorkingDirectory,
 ]);
 
+/// Resolves the stable host connection directory for a new native window.
+///
+/// Active-window context is intentionally absent: opening a native window is a
+/// host-level action and must not inherit whichever MonkeyMux pane is selected.
+@visibleForTesting
+String resolveNativeAcpNewWindowWorkingDirectory({
+  String? connectionWorkingDirectory,
+  String? launchWorkingDirectory,
+  String? hostWorkingDirectory,
+}) =>
+    _firstNonEmptyWorkingDirectory([
+      connectionWorkingDirectory,
+      launchWorkingDirectory,
+      hostWorkingDirectory,
+    ]) ??
+    '~';
+
 /// Resolves the host-configured directory for the active multiplexer session.
 @visibleForTesting
 String? resolveConfiguredMuxWorkingDirectory({
@@ -539,6 +606,18 @@ bool shouldReattachTmuxAfterWindowAction({
   }
   return shellStatus == TerminalShellStatus.prompt;
 }
+
+/// Whether a previously established MonkeyMux attach should be replaced
+/// directly after its foreground client disappears.
+@visibleForTesting
+bool shouldReopenLostMonkeyMuxAttach({
+  required RemoteMuxBackend backend,
+  required bool attachEstablished,
+  required bool hasForegroundClient,
+}) =>
+    backend == RemoteMuxBackend.monkeyMux &&
+    attachEstablished &&
+    !hasForegroundClient;
 
 /// Returns whether shell-command review warnings should be shown for text
 /// inserted into the active terminal context.
@@ -793,7 +872,7 @@ EdgeInsets resolveTmuxBarSafeInsets(MediaQueryData mediaQuery) {
   return EdgeInsets.only(
     left: horizontalInsets.left,
     right: horizontalInsets.right,
-    bottom: mediaQuery.padding.bottom,
+    bottom: resolveSystemBottomInset(mediaQuery),
   );
 }
 
@@ -833,6 +912,39 @@ TmuxBarPlacement resolveTmuxBarPlacement(double availableWidth) {
       ? TmuxBarPlacement.sidebar
       : TmuxBarPlacement.bottomOverlay;
 }
+
+/// Whether Back should leave the connection screen.
+///
+/// Native ACP focus replaces the terminal viewport but does not create a new
+/// navigation level. Only expanded mux chrome consumes the first Back action.
+@visibleForTesting
+bool resolveTerminalScreenCanPop({required bool isTmuxBarExpanded}) =>
+    !isTmuxBarExpanded;
+
+/// Whether the terminal shell should resize for the system keyboard.
+///
+/// Insets describe occupied geometry but can remain stale after the IME closes.
+/// A native platform visibility report therefore wins for both terminal and
+/// ACP inputs. Before that report arrives, require a live input owner rather
+/// than treating native content itself as proof that a keyboard is open.
+@visibleForTesting
+bool resolveTerminalSystemKeyboardVisible({
+  required double bottomInset,
+  required bool? platformKeyboardVisible,
+  required bool terminalInputConnectionVisible,
+  required bool nativeComposerInputOwner,
+}) {
+  if (bottomInset <= 0) return false;
+  if (platformKeyboardVisible case final visible?) return visible;
+  return terminalInputConnectionVisible || nativeComposerInputOwner;
+}
+
+/// Whether actions that read or mutate terminal viewport state belong in the
+/// overflow menu for the current content mode.
+@visibleForTesting
+bool resolveShowTerminalViewportMenuActions({
+  required bool nativeAgentActive,
+}) => !nativeAgentActive;
 
 /// Resolves the wide-layout sidebar width while the user drags it.
 @visibleForTesting
@@ -3469,6 +3581,37 @@ class _StoreDemoAutoConfirmDialogState {
   bool open = true;
 }
 
+enum _NativeAcpLaunchPhase { resolvingAdapter, startingSession }
+
+@immutable
+class _NativeAcpLaunchState {
+  const _NativeAcpLaunchState({
+    required this.generation,
+    required this.providerId,
+    required this.providerLabel,
+    required this.phase,
+    required this.resuming,
+    required this.startedAt,
+  });
+
+  final int generation;
+  final String providerId;
+  final String providerLabel;
+  final _NativeAcpLaunchPhase phase;
+  final bool resuming;
+  final DateTime startedAt;
+
+  _NativeAcpLaunchState copyWith({required _NativeAcpLaunchPhase phase}) =>
+      _NativeAcpLaunchState(
+        generation: generation,
+        providerId: providerId,
+        providerLabel: providerLabel,
+        phase: phase,
+        resuming: resuming,
+        startedAt: startedAt,
+      );
+}
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -3598,6 +3741,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
+  final _systemKeyboardVisibilityController =
+      SystemKeyboardVisibilityController.instance;
+  final _nativeComposerFocusController = AcpComposerFocusController();
   bool _keyboardVisibilityRebuildScheduled = false;
   int _terminalFocusRestoreGeneration = 0;
   final _toolbarController = KeyboardToolbarController();
@@ -3653,6 +3799,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _monkeyMuxReconnectSessionName;
   bool _monkeyMuxReconnectAttachPending = false;
   bool _monkeyMuxAttachEstablished = false;
+  _PendingMonkeyMuxServerReplacement? _pendingMonkeyMuxServerReplacement;
+  Future<void>? _monkeyMuxServerReplacementRecovery;
+  Timer? _monkeyMuxServerReplacementRecoveryTimer;
+  Completer<bool>? _monkeyMuxServerReplacementRecoveryDelay;
+  int _monkeyMuxForegroundFalseProbeCount = 0;
   int _automaticPortForwardRootSyncGeneration = 0;
   int? _tmuxStateConnectionId;
   Size? _terminalViewportLayoutSize;
@@ -3663,6 +3814,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
   double _tmuxSidebarDragOffset = 0;
+  AcpSessionKey? _activeNativeAcpSessionKey;
+  String? _autoOpenedNativeAcpBridgeId;
+  String? _openingNativeAcpBridgeId;
+  String? _nativeAcpReconnectOwnedKeyValue;
+  Future<void>? _openingNativeAcpWindow;
+  _NativeAcpLaunchState? _nativeAcpLaunchState;
+  var _nativeAcpLaunchGeneration = 0;
+  final Map<String, AcpChatScrollState> _nativeAcpScrollStates = {};
   String? _connectionOpenedWorkingDirectory;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
@@ -4329,8 +4488,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required BuildContext context,
     required bool hasTerminalInfo,
     required bool isMobile,
+    required bool nativeAgentActive,
   }) => [
-    if (hasTerminalInfo)
+    if (!nativeAgentActive && hasTerminalInfo)
       _terminalOverflowMenuItem(
         context: context,
         icon: _showsTerminalMetadata
@@ -4348,19 +4508,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         label: _showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar',
         action: 'toggle_tmux_bar',
       ),
-    if (isMobile)
+    if (!nativeAgentActive && isMobile)
       _terminalOverflowCheckboxMenuItem(
         context: context,
         label: 'Tap to Show Keyboard',
         checked: ref.read(tapToShowKeyboardNotifierProvider),
         action: 'toggle_tap_keyboard',
       ),
-    _terminalOverflowCheckboxMenuItem(
-      context: context,
-      label: 'Shell Completion Popups',
-      checked: ref.read(shellCompletionsNotifierProvider),
-      action: 'toggle_shell_completions',
-    ),
+    if (!nativeAgentActive)
+      _terminalOverflowCheckboxMenuItem(
+        context: context,
+        label: 'Shell Completion Popups',
+        checked: ref.read(shellCompletionsNotifierProvider),
+        action: 'toggle_shell_completions',
+      ),
   ];
 
   bool get _showsNativeSelectionOverlay => shouldShowNativeSelectionOverlay(
@@ -4597,6 +4758,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalTextInputController.addListener(
       _handleTerminalKeyboardVisibilityChanged,
     );
+    _systemKeyboardVisibilityController.addListener(
+      _handleTerminalKeyboardVisibilityChanged,
+    );
+    unawaited(_systemKeyboardVisibilityController.initialize());
     unawaited(_refreshKeyboardToolbarSnippetMenu());
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
@@ -4826,6 +4991,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     required String reason,
     bool forceForegroundRedraw = false,
+    int viewReadyAttempt = 0,
   }) {
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
@@ -4850,7 +5016,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'terminalViewReady': terminalViewReady,
       },
     );
-    if (!terminalViewReady) {
+    final nativeAgentActive =
+        _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null;
+    final routeIsCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    if (!terminalViewReady &&
+        shouldRetryTerminalThemeWhenViewMounts(
+          nativeAgentActive: nativeAgentActive,
+          routeIsCurrent: routeIsCurrent,
+          attempt: viewReadyAttempt,
+        )) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_isCurrentTerminalThemeRefresh(
           theme: theme,
@@ -4862,8 +5036,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _refreshTerminalThemeForTui(
           theme,
           session,
-          reason: '${reason}_view_ready',
+          reason: reason.endsWith('_view_ready')
+              ? reason
+              : '${reason}_view_ready',
           forceForegroundRedraw: forceForegroundRedraw,
+          viewReadyAttempt: viewReadyAttempt + 1,
         );
       });
     }
@@ -7456,6 +7633,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _activeNativeAcpSessionKey = session.activeNativeAcpSessionKey;
+    session.setTerminalParsingPaused(
+      paused: _activeNativeAcpSessionKey != null,
+    );
+
     try {
       // Reuse the session's persistent terminal if it exists (preserves
       // scrollback and screen buffer across screen navigations).
@@ -7608,6 +7790,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'startupBackend': command.backend.storageValue,
         },
       );
+      final pendingReplacement = _pendingMonkeyMuxServerReplacement;
+      if (startupCommand?.backend == RemoteMuxBackend.monkeyMux &&
+          pendingReplacement != null &&
+          pendingReplacement.connectionId == session.connectionId &&
+          pendingReplacement.sessionName == startupCommand?.sessionName) {
+        _startMonkeyMuxServerReplacementRecovery(session, pendingReplacement);
+      }
 
       _wireTerminalCallbacks(session);
       await _applySharedClipboardSetting(
@@ -7631,6 +7820,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _syncTerminalWakeLock(SshConnectionState.connected);
       if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
         _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        unawaited(prewarmAcpRemoteExecutables(session));
       } else {
         _scheduleTerminalSizeRefresh();
       }
@@ -9462,6 +9652,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             status: status,
             bundledVersion: bundledVersion,
           );
+      if (updatePolicy == MonkeyMuxServerUpdatePolicy.always) {
+        final previousVersion = status.version?.trim();
+        if (previousVersion != null && previousVersion.isNotEmpty) {
+          _pendingMonkeyMuxServerReplacement = (
+            connectionId: session.connectionId,
+            sessionName: sessionName,
+            previousVersion: previousVersion,
+            targetVersion: bundledVersion.trim(),
+            expiresAt: DateTime.now().add(const Duration(seconds: 30)),
+          );
+        }
+      }
       DiagnosticsLogService.instance.info(
         'monkeymux.install',
         updatePolicy == MonkeyMuxServerUpdatePolicy.always
@@ -9495,6 +9697,158 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return MonkeyMuxServerUpdatePolicy.never;
   }
 
+  void _startMonkeyMuxServerReplacementRecovery(
+    SshSession session,
+    _PendingMonkeyMuxServerReplacement pending,
+  ) {
+    if (!pending.expiresAt.isAfter(DateTime.now())) {
+      if (_pendingMonkeyMuxServerReplacement == pending) {
+        _pendingMonkeyMuxServerReplacement = null;
+      }
+      return;
+    }
+    if (_monkeyMuxServerReplacementRecovery != null) return;
+    final operation = _recoverMonkeyMuxAfterServerReplacement(session, pending);
+    _monkeyMuxServerReplacementRecovery = operation;
+    unawaited(
+      operation
+          .then<void>(
+            (_) {},
+            onError: (Object error, StackTrace _) {
+              DiagnosticsLogService.instance.warning(
+                'monkeymux.install',
+                'upgrade_runtime_recovery_failed',
+                fields: {
+                  'connectionId': session.connectionId,
+                  'errorType': error.runtimeType,
+                },
+              );
+            },
+          )
+          .whenComplete(() {
+            if (identical(_monkeyMuxServerReplacementRecovery, operation)) {
+              _monkeyMuxServerReplacementRecovery = null;
+            }
+          }),
+    );
+  }
+
+  Future<bool> _waitForMonkeyMuxRecoveryRetry() {
+    _cancelMonkeyMuxServerReplacementRetry();
+    final completer = Completer<bool>();
+    _monkeyMuxServerReplacementRecoveryDelay = completer;
+    _monkeyMuxServerReplacementRecoveryTimer = Timer(
+      const Duration(milliseconds: 500),
+      () {
+        if (!completer.isCompleted) completer.complete(true);
+        if (identical(_monkeyMuxServerReplacementRecoveryDelay, completer)) {
+          _monkeyMuxServerReplacementRecoveryDelay = null;
+          _monkeyMuxServerReplacementRecoveryTimer = null;
+        }
+      },
+    );
+    return completer.future;
+  }
+
+  void _cancelMonkeyMuxServerReplacementRetry() {
+    _monkeyMuxServerReplacementRecoveryTimer?.cancel();
+    _monkeyMuxServerReplacementRecoveryTimer = null;
+    final completer = _monkeyMuxServerReplacementRecoveryDelay;
+    _monkeyMuxServerReplacementRecoveryDelay = null;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(false);
+    }
+  }
+
+  Future<void> _recoverMonkeyMuxAfterServerReplacement(
+    SshSession session,
+    _PendingMonkeyMuxServerReplacement pending,
+  ) async {
+    var replacementObserved = false;
+    var foregroundAttached = false;
+    var attempts = 0;
+    for (; attempts < 30; attempts++) {
+      if (!mounted ||
+          _connectionId != pending.connectionId ||
+          _pendingMonkeyMuxServerReplacement != pending) {
+        return;
+      }
+      if (attempts > 0 && !await _waitForMonkeyMuxRecoveryRetry()) {
+        return;
+      }
+      try {
+        final version = (await _monkeyMuxService.detectedVersion(
+          session,
+          pending.sessionName,
+        ))?.trim();
+        replacementObserved =
+            version != null &&
+            version.isNotEmpty &&
+            (version == pending.targetVersion ||
+                version != pending.previousVersion);
+        if (replacementObserved) {
+          foregroundAttached = await _monkeyMuxService
+              .hasForegroundClientAfterServerReplacement(
+                session,
+                pending.sessionName,
+              );
+          if (foregroundAttached) break;
+        }
+      } on Object {
+        // Socket takeover and attach registration are transiently unavailable.
+      }
+    }
+    if (!mounted ||
+        _connectionId != pending.connectionId ||
+        _pendingMonkeyMuxServerReplacement != pending) {
+      return;
+    }
+
+    // A watch started before the replacement attach remains connected to the
+    // outgoing native-bridge host even after the public socket moves.
+    await _monkeyMuxService.resetServerRuntime(
+      session.connectionId,
+      pending.sessionName,
+    );
+    if (!mounted ||
+        _connectionId != pending.connectionId ||
+        _pendingMonkeyMuxServerReplacement != pending) {
+      return;
+    }
+    setState(() {
+      _pendingMonkeyMuxServerReplacement = null;
+      _isTmuxActive = true;
+      _tmuxOwnershipConfirmed = foregroundAttached;
+      _tmuxSessionName = pending.sessionName;
+      _activeMuxBackend = RemoteMuxBackend.monkeyMux;
+      _tmuxStateConnectionId = session.connectionId;
+      _monkeyMuxAttachEstablished =
+          _monkeyMuxAttachEstablished || foregroundAttached;
+      _monkeyMuxForegroundFalseProbeCount = 0;
+      _tmuxBarRecoveryGeneration += 1;
+    });
+    DiagnosticsLogService.instance.info(
+      'monkeymux.install',
+      'upgrade_runtime_recovered',
+      fields: {
+        'connectionId': session.connectionId,
+        'replacementObserved': replacementObserved,
+        'foregroundAttached': foregroundAttached,
+        'attempts': (attempts + 1).clamp(1, 30),
+      },
+    );
+
+    if (!foregroundAttached) {
+      await _reattachTmuxIfNeeded(session, pending.sessionName);
+      if (!mounted || _connectionId != session.connectionId) return;
+    } else {
+      _startTmuxForegroundVerification(session, pending.sessionName);
+    }
+    unawaited(
+      _detectTmux(session, skipDelay: true, preserveExistingTmuxState: true),
+    );
+  }
+
   Future<MonkeyMuxServerUpdatePolicy> _confirmMonkeyMuxRunningServerUpdate({
     required MonkeyMuxServerStatus status,
     required String bundledVersion,
@@ -9507,7 +9861,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final currentVersionLabel = runningVersion == null || runningVersion.isEmpty
         ? 'current version'
         : runningVersion;
-    final warning = status.supportsShutdown
+    final warning = status.hasNativeAcpWindows
+        ? 'Native agent windows stay connected to their running sessions while '
+              'MonkeySSH recreates the terminal windows in the new helper.'
+        : status.supportsShutdown
         ? 'Updating may briefly interrupt running programs. Some restored '
               'sessions may not resume exactly where they left off.'
         : 'The running helper cannot stop itself cleanly. Updating may '
@@ -10057,6 +10414,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxOwnershipConfirmed = false;
     _tmuxSessionName = null;
     _monkeyMuxAttachEstablished = false;
+    _pendingMonkeyMuxServerReplacement = null;
+    _monkeyMuxForegroundFalseProbeCount = 0;
     _muxVersion = null;
     _activeMuxBackend = RemoteMuxBackend.tmux;
     _tmuxStateConnectionId = null;
@@ -10077,6 +10436,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) {
     _tmuxForegroundVerificationTimer?.cancel();
     _tmuxForegroundVerificationInFlight = false;
+    _monkeyMuxForegroundFalseProbeCount = 0;
     final generation = ++_tmuxForegroundVerificationGeneration;
     _tmuxForegroundVerificationTimer = Timer.periodic(
       _tmuxForegroundVerificationInterval,
@@ -10193,10 +10553,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       if (foregroundMatches) {
+        _monkeyMuxForegroundFalseProbeCount = 0;
         DiagnosticsLogService.instance.debug(
           'tmux.ui',
           'foreground_verified',
           fields: {'connectionId': session.connectionId},
+        );
+        return;
+      }
+
+      _monkeyMuxForegroundFalseProbeCount += 1;
+      final pendingReplacement = _pendingMonkeyMuxServerReplacement;
+      final preserveChrome = shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+        backend: _activeMuxBackend,
+        serverReplacementPending:
+            pendingReplacement?.connectionId == session.connectionId &&
+            pendingReplacement?.sessionName == sessionName &&
+            pendingReplacement!.expiresAt.isAfter(DateTime.now()),
+        nativeAgentActive:
+            _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null,
+        attachEstablished: _monkeyMuxAttachEstablished,
+        consecutiveFalseProbes: _monkeyMuxForegroundFalseProbeCount,
+      );
+      if (preserveChrome) {
+        DiagnosticsLogService.instance.info(
+          'tmux.ui',
+          'foreground_detach_deferred',
+          fields: {
+            'connectionId': session.connectionId,
+            'replacementPending': pendingReplacement != null,
+            'nativeAgentActive': _activeNativeAcpSessionKey != null,
+            'attempt': _monkeyMuxForegroundFalseProbeCount,
+          },
         );
         return;
       }
@@ -10421,6 +10809,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           continue;
         }
         confirmedTmuxActive = true;
+        _monkeyMuxForegroundFalseProbeCount = 0;
 
         final sessionName = candidateSessionName ?? foregroundSessionName;
         if (!mounted ||
@@ -10558,6 +10947,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted ||
           _connectionId != capturedConnectionId ||
           detectionGeneration != _tmuxDetectionGeneration) {
+        return false;
+      }
+
+      _monkeyMuxForegroundFalseProbeCount += 1;
+      final pendingReplacement = _pendingMonkeyMuxServerReplacement;
+      final replacementPending =
+          pendingReplacement?.connectionId == session.connectionId &&
+          pendingReplacement?.sessionName == candidateSessionName &&
+          pendingReplacement!.expiresAt.isAfter(DateTime.now());
+      if (shouldPreserveMonkeyMuxChromeAfterAttachProbe(
+        backend: muxBackend,
+        serverReplacementPending: replacementPending,
+        nativeAgentActive:
+            _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null,
+        attachEstablished: _monkeyMuxAttachEstablished,
+        consecutiveFalseProbes: _monkeyMuxForegroundFalseProbeCount,
+      )) {
+        DiagnosticsLogService.instance.info(
+          'tmux.ui',
+          'detection_preserved_during_handoff',
+          fields: {
+            'connectionId': session.connectionId,
+            'replacementPending': replacementPending,
+            'nativeAgentActive': _activeNativeAcpSessionKey != null,
+            'attempt': _monkeyMuxForegroundFalseProbeCount,
+          },
+        );
         return false;
       }
 
@@ -10709,7 +11125,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         deferPostSwitchExec: false,
       );
     } on Exception catch (error) {
-      _showTmuxActionFailure(error);
+      _showTmuxActionFailure(error, TmuxSwitchWindowAction(targetWindow.index));
     }
   }
 
@@ -10964,7 +11380,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (session == null) return const SizedBox.shrink();
 
     final monetizationState =
-        ref.read(monetizationStateProvider).asData?.value ??
+        ref.watch(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
     final isProUser = monetizationState.allowsFeature(
       MonetizationFeature.agentLaunchPresets,
@@ -10993,6 +11409,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             _monkeyMuxAttachEstablished = true;
           }
           _syncTerminalProgressFromActiveMonkeyMuxWindow(session, windows);
+          _syncActiveNativeAcpMuxWindow(session, windows);
         }
         _syncAutomaticPortForwardProcessRoots(
           session,
@@ -11006,10 +11423,39 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       onSessionEnded: _handleMuxSessionEnded,
+      activeNativeAcpSessionKey: _activeNativeAcpSessionKey,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
         tmuxWorkingDirectory: _tmuxWorkingDirectory,
         sessionWorkingDirectory: session.workingDirectory,
+      ),
+    );
+  }
+
+  void _syncActiveNativeAcpMuxWindow(
+    SshSession session,
+    List<TmuxWindow> windows,
+  ) {
+    final active = windows.where((window) => window.isActive).firstOrNull;
+    final bridgeId = active?.nativeAcpBridgeId;
+    final providerId = active?.nativeAcpProviderId;
+    if (active == null || bridgeId == null || providerId == null) {
+      _autoOpenedNativeAcpBridgeId = null;
+      return;
+    }
+    if (_nativeAcpLaunchState != null ||
+        _activeNativeAcpSessionKey?.bridgeId == bridgeId ||
+        _autoOpenedNativeAcpBridgeId == bridgeId) {
+      return;
+    }
+    _autoOpenedNativeAcpBridgeId = bridgeId;
+    unawaited(
+      _openServerOwnedNativeAcpWindow(
+        session,
+        windowIndex: active.index,
+        bridgeId: bridgeId,
+        providerId: providerId,
+        workingDirectory: active.currentPath,
       ),
     );
   }
@@ -11115,6 +11561,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final isProUser = monetizationState.allowsFeature(
         MonetizationFeature.agentLaunchPresets,
       );
+      final agentWindowModePreference = await ref
+          .read(agentWindowModePreferenceNotifierProvider.notifier)
+          .initializedValue();
+      if (!mounted) return;
       final currentWindowCount = _currentTmuxWindowsSnapshot?.length ?? 0;
       unawaited(
         ref
@@ -11127,7 +11577,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       final action = await showTmuxNavigator(
         context: context,
-        ref: ref,
         session: session,
         tmuxSessionName: _tmuxSessionName!,
         remoteMuxBackend: _activeMuxBackend,
@@ -11135,6 +11584,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         tmuxExtraFlags: _activeTmuxExtraFlags,
         isProUser: isProUser,
         startClisInYoloMode: _startClisInYoloMode,
+        agentWindowModePreference: agentWindowModePreference,
         scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
           liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
           tmuxWorkingDirectory: _tmuxWorkingDirectory,
@@ -11154,9 +11604,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) async {
     try {
       switch (action) {
+        case TmuxUpgradeAction(
+          :final feature,
+          :final blockedAction,
+          :final blockedOutcome,
+        ):
+          await context.push<void>(
+            Uri(
+              path: Routes.upgrade,
+              queryParameters: <String, String>{
+                'feature': feature.name,
+                'action': blockedAction,
+                'outcome': blockedOutcome,
+              },
+            ).toString(),
+          );
         case TmuxSwitchWindowAction(:final windowIndex):
           await _switchTmuxWindow(session, windowIndex);
           if (!mounted) return;
+          _showTerminalViewport();
           unawaited(
             ref
                 .read(telemetryServiceProvider)
@@ -11164,16 +11630,92 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   backend: _telemetryMuxBackendName(_activeMuxBackend),
                 ),
           );
-        case TmuxNewWindowAction(:final command, :final windowName):
-          await _createTmuxWindow(session, command: command, name: windowName);
+        case TmuxNewWindowAction(
+          :final command,
+          :final windowName,
+          :final agentTool,
+        ):
+          var launchCommand = command;
+          var launchWindowName = windowName;
+          if (agentTool?.supportsLaunchProfiles ?? false) {
+            final providerId = builtinNativeAcpProvidersByTool()[agentTool];
+            final provider = acpBuiltinProviders
+                .where((candidate) => candidate.id == providerId)
+                .firstOrNull;
+            if (provider != null) {
+              final profile = await selectAcpLaunchProfile(
+                context: context,
+                session: session,
+                provider: provider,
+              );
+              if (!mounted || profile == null) return;
+              launchCommand = buildAgentToolCommand(
+                agentTool!,
+                startInYoloMode: _startClisInYoloMode,
+                launchProfile: profile.argument,
+                windows: session.remoteIsWindows,
+              );
+              if (profile.showInTitle) {
+                launchWindowName = '${agentTool.label} · ${profile.label}';
+              }
+            }
+          }
+          await _createTmuxWindow(
+            session,
+            command: launchCommand,
+            name: launchWindowName,
+          );
           if (!mounted) return;
+          _showTerminalViewport();
           unawaited(
             ref
                 .read(telemetryServiceProvider)
                 .logMuxWindowCreated(
                   backend: _telemetryMuxBackendName(_activeMuxBackend),
-                  hasCommand: command?.trim().isNotEmpty ?? false,
+                  hasCommand: launchCommand?.trim().isNotEmpty ?? false,
                 ),
+          );
+        case TmuxNewAcpSessionAction(:final providerId):
+          await _startNativeAcpSession(
+            session,
+            providerId: providerId,
+            workingDirectory: resolveNativeAcpNewWindowWorkingDirectory(
+              connectionWorkingDirectory: _connectionOpenedWorkingDirectory,
+              launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
+              hostWorkingDirectory: _host?.tmuxWorkingDirectory,
+            ),
+          );
+        case TmuxOpenAcpSessionAction(:final key):
+          _openNativeAcpSession(key);
+        case TmuxOpenAcpWindowAction(
+          :final windowIndex,
+          :final bridgeId,
+          :final providerId,
+          :final workingDirectory,
+        ):
+          await _openServerOwnedNativeAcpWindow(
+            session,
+            windowIndex: windowIndex,
+            bridgeId: bridgeId,
+            providerId: providerId,
+            workingDirectory: workingDirectory,
+          );
+        case TmuxCloseAcpSessionAction(:final key):
+          await ref.read(acpSessionManagerProvider).stopSession(key);
+          _nativeAcpScrollStates.remove(key.value);
+          if (mounted && _activeNativeAcpSessionKey == key) {
+            _showTerminalViewport();
+          }
+        case TmuxResumeAcpSessionAction(
+          :final providerId,
+          :final acpSessionId,
+          :final workingDirectory,
+        ):
+          await _startNativeAcpSession(
+            session,
+            providerId: providerId,
+            workingDirectory: workingDirectory,
+            resumeSessionId: acpSessionId,
           );
         case TmuxResumeSessionAction(
           :final resumeCommand,
@@ -11185,6 +11727,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             workingDirectory: workingDirectory,
           );
           if (!mounted) return;
+          _showTerminalViewport();
           final tool = agentLaunchToolForCommandText(resumeCommand);
           unawaited(
             ref
@@ -11201,7 +11744,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
           );
         case TmuxCloseWindowAction(:final windowIndex):
+          final closingWindow = _resolveTmuxWindowByTarget(windowIndex);
+          if (!(closingWindow?.isNativeAcp ?? false)) {
+            await _closeTmuxWindow(session, windowIndex);
+            break;
+          }
+
+          final bridgeId = closingWindow!.nativeAcpBridgeId!;
+          final manager = ref.read(acpSessionManagerProvider);
+          final closingKeys = manager.state.sessions
+              .where(
+                (nativeSession) =>
+                    nativeSession.key.hostId == session.hostId &&
+                    nativeSession.key.bridgeId == bridgeId,
+              )
+              .map((nativeSession) => nativeSession.key)
+              .toList(growable: false);
+
+          // The mux close owns remote bridge termination. Keep every local
+          // controller and concurrency lease until that close is confirmed so
+          // a transport/control failure leaves a retryable, still-accounted
+          // native window instead of an untracked provider.
           await _closeTmuxWindow(session, windowIndex);
+          if (_activeNativeAcpSessionKey?.bridgeId == bridgeId) {
+            _showTerminalViewport();
+          }
+          await manager.releaseSessionsForClosingMuxWindow(
+            hostId: session.hostId,
+            bridgeId: bridgeId,
+          );
+          for (final key in closingKeys) {
+            _nativeAcpScrollStates.remove(key.value);
+          }
       }
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
@@ -11213,15 +11787,800 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'errorType': error.runtimeType,
         },
       );
-      _showTmuxActionFailure(error);
+      _showTmuxActionFailure(error, action);
+      if (action is TmuxCloseWindowAction) {
+        rethrow;
+      }
     }
   }
 
-  void _showTmuxActionFailure(Exception error) {
+  Future<
+    ({AcpLaunchCommand? override, bool terminal, AcpLaunchProfile? profile})?
+  >
+  _resolveNativeAdapterLaunch(SshSession session, String providerId) async {
+    final provider = acpBuiltinProviders
+        .where((candidate) => candidate.id == providerId)
+        .firstOrNull;
+    if (provider == null) {
+      return (override: null, terminal: false, profile: null);
+    }
+    AcpLaunchProfile? selectedProfile;
+    final launch = await resolveAcpRemoteProviderLaunch(
+      context: context,
+      session: session,
+      provider: provider,
+      canUseTerminalCli: agentLaunchToolForAcpProviderId(providerId) != null,
+      startInYoloMode: _startClisInYoloMode,
+      onProfileSelected: (profile) => selectedProfile = profile,
+    );
+    if (launch == null) return null;
+    return (
+      override: launch.override,
+      terminal: launch.terminal,
+      profile: selectedProfile,
+    );
+  }
+
+  String? _nativeProfileDisplayLabel(
+    String providerId,
+    AcpLaunchProfile? profile,
+  ) {
+    if (profile == null || !profile.showInTitle) return null;
+    final provider = acpBuiltinProviders
+        .where((candidate) => candidate.id == providerId)
+        .firstOrNull;
+    return '${provider?.label ?? 'Agent'} · ${profile.label}';
+  }
+
+  void _beginNativeAcpLaunch(SshSession session, _NativeAcpLaunchState launch) {
+    session.setTerminalParsingPaused(paused: true);
+    setState(() => _nativeAcpLaunchState = launch);
+    _collapseTmuxBarIfExpanded();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _nativeAcpLaunchState?.generation != launch.generation) {
+        return;
+      }
+      DiagnosticsLogService.instance.info(
+        'acp.launch',
+        'visual_ready',
+        fields: {
+          'connectionId': session.connectionId,
+          'durationMs': DateTime.now()
+              .difference(launch.startedAt)
+              .inMilliseconds,
+        },
+      );
+    });
+  }
+
+  void _updateNativeAcpLaunchPhase(
+    int generation,
+    _NativeAcpLaunchPhase phase,
+  ) {
+    if (!mounted || _nativeAcpLaunchState?.generation != generation) return;
+    setState(() {
+      _nativeAcpLaunchState = _nativeAcpLaunchState!.copyWith(phase: phase);
+    });
+  }
+
+  void _finishNativeAcpLaunch(SshSession session, int generation) {
+    if (!mounted || _nativeAcpLaunchState?.generation != generation) return;
+    final launch = _nativeAcpLaunchState!;
+    final hasActiveNativeSession = _activeNativeAcpSessionKey != null;
+    DiagnosticsLogService.instance.info(
+      'acp.launch',
+      'visual_finished',
+      fields: {
+        'connectionId': session.connectionId,
+        'durationMs': DateTime.now()
+            .difference(launch.startedAt)
+            .inMilliseconds,
+        'openedSession': false,
+      },
+    );
+    setState(() => _nativeAcpLaunchState = null);
+    if (hasActiveNativeSession) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          _nativeAcpLaunchState != null ||
+          _activeNativeAcpSessionKey != null) {
+        return;
+      }
+      session.setTerminalParsingPaused(paused: false);
+      _probeAndForceMuxWindowRefresh();
+    });
+  }
+
+  Future<void> _startNativeAcpSession(
+    SshSession session, {
+    String? providerId,
+    String? workingDirectory,
+    String? resumeSessionId,
+  }) async {
+    if (providerId == null || _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return _performNativeAcpSessionStart(
+        session,
+        providerId: providerId,
+        workingDirectory: workingDirectory,
+        resumeSessionId: resumeSessionId,
+      );
+    }
+    if (_nativeAcpLaunchState != null) return;
+    final provider = acpBuiltinProviders
+        .where((candidate) => candidate.id == providerId)
+        .firstOrNull;
+    final generation = ++_nativeAcpLaunchGeneration;
+    _beginNativeAcpLaunch(
+      session,
+      _NativeAcpLaunchState(
+        generation: generation,
+        providerId: providerId,
+        providerLabel: provider?.label ?? 'Native agent',
+        phase: _NativeAcpLaunchPhase.resolvingAdapter,
+        resuming: resumeSessionId != null,
+        startedAt: DateTime.now(),
+      ),
+    );
+    try {
+      await _performNativeAcpSessionStart(
+        session,
+        providerId: providerId,
+        workingDirectory: workingDirectory,
+        resumeSessionId: resumeSessionId,
+        launchGeneration: generation,
+      );
+    } finally {
+      _finishNativeAcpLaunch(session, generation);
+    }
+  }
+
+  Future<void> _performNativeAcpSessionStart(
+    SshSession session, {
+    String? providerId,
+    String? workingDirectory,
+    String? resumeSessionId,
+    int? launchGeneration,
+  }) async {
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Native agent sessions require MonkeyMux.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    // The generic native-provider action still needs a picker. A tool chosen
+    // from the MonkeyMux new-window menu already supplies its provider and
+    // should launch immediately, exactly like a terminal mux window.
+    if (providerId == null) {
+      final key = await showAcpNewSessionSheet(
+        context,
+        initialHostId: session.hostId,
+        initialWorkingDirectory: workingDirectory,
+        lockHost: true,
+      );
+      if (mounted && key != null) {
+        _openNativeAcpSession(key);
+      }
+      return;
+    }
+
+    final adapterLaunch = await _resolveNativeAdapterLaunch(
+      session,
+      providerId,
+    );
+    if (!mounted || adapterLaunch == null) return;
+    if (launchGeneration != null) {
+      _updateNativeAcpLaunchPhase(
+        launchGeneration,
+        _NativeAcpLaunchPhase.startingSession,
+      );
+    }
+    if (adapterLaunch.terminal) {
+      final tool = agentLaunchToolForAcpProviderId(providerId);
+      if (tool != null) {
+        await _createTmuxWindow(
+          session,
+          command: buildAgentToolCommand(tool),
+          workingDirectory: workingDirectory,
+          name: tool.commandName,
+        );
+      }
+      return;
+    }
+
+    final manager = ref.read(acpSessionManagerProvider);
+    final cwd = workingDirectory?.trim().isNotEmpty ?? false
+        ? workingDirectory!.trim()
+        : (_workingDirectoryPath ?? _host?.tmuxWorkingDirectory ?? '~');
+
+    Future<AcpSessionLaunchResult> launch({
+      List<AcpSessionKey> replace = const <AcpSessionKey>[],
+    }) => resumeSessionId == null
+        ? manager.startNewSession(
+            hostId: session.hostId,
+            providerId: providerId,
+            cwd: cwd,
+            confirmInstall: (request) =>
+                confirmAcpMonkeyMuxInstall(context, request),
+            launchCommandOverride: adapterLaunch.override,
+            providerLabelOverride: _nativeProfileDisplayLabel(
+              providerId,
+              adapterLaunch.profile,
+            ),
+            autoApprovePermissions: _startClisInYoloMode,
+            replace: replace,
+          )
+        : manager.resumeProviderSession(
+            hostId: session.hostId,
+            providerId: providerId,
+            acpSessionId: resumeSessionId,
+            cwd: cwd,
+            confirmInstall: (request) =>
+                confirmAcpMonkeyMuxInstall(context, request),
+            launchCommandOverride: adapterLaunch.override,
+            providerLabelOverride: _nativeProfileDisplayLabel(
+              providerId,
+              adapterLaunch.profile,
+            ),
+            autoApprovePermissions: _startClisInYoloMode,
+            replace: replace,
+          );
+
+    var result = await launch();
+    if (result is AcpSessionLaunchBlocked && mounted) {
+      final choice = await showAcpConcurrencyChoice(
+        context,
+        decision: result.decision,
+        managerState: manager.state,
+      );
+      if (!mounted || choice == null) {
+        return;
+      }
+      switch (choice) {
+        case AcpConcurrencyChoice.stopAndContinue:
+          final blocking = [
+            for (final value in result.decision.blockingSessionKeys)
+              manager.state.byKeyValue(value)?.key,
+          ].whereType<AcpSessionKey>().toList(growable: false);
+          result = await launch(replace: blocking);
+        case AcpConcurrencyChoice.upgrade:
+          await context.push<void>(
+            Uri(
+              path: '/upgrade',
+              queryParameters: {
+                'feature': MonetizationFeature.concurrentAcpSessions.name,
+              },
+            ).toString(),
+          );
+          if (!mounted ||
+              !ref
+                  .read(monetizationServiceProvider)
+                  .currentState
+                  .isProUnlocked) {
+            return;
+          }
+          result = await launch();
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    switch (result) {
+      case AcpSessionLaunchStarted(:final key):
+        _openNativeAcpSession(key);
+      case AcpSessionLaunchFailed(:final error):
+        final authCommand = acpTerminalAuthCommandFor(providerId);
+        final unlocksCursorKeychain =
+            providerId == AcpBuiltinProviderIds.cursorAgent &&
+            error.kind == AcpSessionErrorKind.authenticationRequired;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error.message),
+            action: authCommand == null
+                ? null
+                : SnackBarAction(
+                    label: unlocksCursorKeychain
+                        ? 'Unlock keychain'
+                        : 'Copy sign-in',
+                    onPressed: () {
+                      if (unlocksCursorKeychain) {
+                        unawaited(
+                          _createTmuxWindow(
+                            session,
+                            command: authCommand.argv.join(' '),
+                            name: 'Unlock keychain',
+                            workingDirectory: workingDirectory,
+                          ),
+                        );
+                        return;
+                      }
+                      unawaited(
+                        Clipboard.setData(
+                          ClipboardData(text: authCommand.argv.join(' ')),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        );
+      case AcpSessionLaunchBlocked():
+    }
+  }
+
+  Future<void> _openServerOwnedNativeAcpWindow(
+    SshSession sshSession, {
+    required int windowIndex,
+    required String bridgeId,
+    required String providerId,
+    String? workingDirectory,
+  }) {
+    final opening = _openingNativeAcpWindow;
+    if (opening != null) {
+      if (_openingNativeAcpBridgeId == bridgeId) return opening;
+      return opening.then(
+        (_) => _openServerOwnedNativeAcpWindow(
+          sshSession,
+          windowIndex: windowIndex,
+          bridgeId: bridgeId,
+          providerId: providerId,
+          workingDirectory: workingDirectory,
+        ),
+      );
+    }
+
+    final completer = Completer<void>();
+    _openingNativeAcpBridgeId = bridgeId;
+    _openingNativeAcpWindow = completer.future;
+    _autoOpenedNativeAcpBridgeId = bridgeId;
+    final provider = acpBuiltinProviders
+        .where((candidate) => candidate.id == providerId)
+        .firstOrNull;
+    final generation = ++_nativeAcpLaunchGeneration;
+    _beginNativeAcpLaunch(
+      sshSession,
+      _NativeAcpLaunchState(
+        generation: generation,
+        providerId: providerId,
+        providerLabel: provider?.label ?? 'Native agent',
+        phase: _NativeAcpLaunchPhase.startingSession,
+        resuming: true,
+        startedAt: DateTime.now(),
+      ),
+    );
+    unawaited(() async {
+      try {
+        await _performOpenServerOwnedNativeAcpWindow(
+          sshSession,
+          windowIndex: windowIndex,
+          bridgeId: bridgeId,
+          providerId: providerId,
+          workingDirectory: workingDirectory,
+        );
+        completer.complete();
+      } on Object catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      } finally {
+        if (identical(_openingNativeAcpWindow, completer.future)) {
+          _openingNativeAcpWindow = null;
+          _openingNativeAcpBridgeId = null;
+        }
+        _finishNativeAcpLaunch(sshSession, generation);
+      }
+    }());
+    return completer.future;
+  }
+
+  Future<void> _performOpenServerOwnedNativeAcpWindow(
+    SshSession sshSession, {
+    required int windowIndex,
+    required String bridgeId,
+    required String providerId,
+    String? workingDirectory,
+  }) async {
+    final manager = ref.read(acpSessionManagerProvider);
+    final tracked = manager.state.sessions
+        .where(
+          (session) =>
+              session.key.hostId == sshSession.hostId &&
+              session.key.bridgeId == bridgeId &&
+              session.key.providerId == providerId,
+        )
+        .firstOrNull;
+    if (tracked != null && tracked.isLive) {
+      await _switchTmuxWindow(
+        sshSession,
+        windowIndex,
+        suppressTerminalReplay: true,
+      );
+      if (mounted) _openNativeAcpSession(tracked.key);
+      return;
+    }
+
+    final List<MonkeyMuxAcpBridgeMetadata> bridges;
+    try {
+      bridges = await manager.listRemoteBridges(sshSession.hostId);
+    } on Object catch (error) {
+      if (!mounted) return;
+      DiagnosticsLogService.instance.warning(
+        'acp.window',
+        'remote_lookup_failed',
+        fields: {'hostId': sshSession.hostId, 'errorType': error.runtimeType},
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('The native agent window is unavailable.'),
+        ),
+      );
+      return;
+    }
     if (!mounted) return;
+    final bridge = bridges
+        .where((candidate) => candidate.id == bridgeId)
+        .firstOrNull;
+    final acpSessionId = bridge?.sessionId?.trim();
+    if (bridge == null ||
+        bridge.state == MonkeyMuxAcpProviderState.exited ||
+        bridge.state == MonkeyMuxAcpProviderState.stopped ||
+        bridge.state == MonkeyMuxAcpProviderState.protocolError ||
+        acpSessionId == null ||
+        acpSessionId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('The native agent window is no longer running.'),
+        ),
+      );
+      return;
+    }
+
+    await _switchTmuxWindow(
+      sshSession,
+      windowIndex,
+      suppressTerminalReplay: true,
+    );
+    if (!mounted) return;
+
+    final cwd = bridge.cwd?.trim().isNotEmpty ?? false
+        ? bridge.cwd!.trim()
+        : (workingDirectory?.trim().isNotEmpty ?? false)
+        ? workingDirectory!.trim()
+        : (_workingDirectoryPath ?? _host?.tmuxWorkingDirectory ?? '~');
+    Future<AcpSessionLaunchResult> reconnect({
+      List<AcpSessionKey> replace = const <AcpSessionKey>[],
+    }) => manager.reconnectSession(
+      hostId: sshSession.hostId,
+      providerId: providerId,
+      bridgeId: bridgeId,
+      acpSessionId: acpSessionId,
+      cwd: cwd,
+      confirmInstall: (request) => confirmAcpMonkeyMuxInstall(context, request),
+      autoApprovePermissions: _startClisInYoloMode,
+      replace: replace,
+    );
+
+    Future<AcpSessionLaunchResult> reconnectWithTransportRetry({
+      List<AcpSessionKey> replace = const <AcpSessionKey>[],
+    }) async {
+      var result = await reconnect(replace: replace);
+      if (result case AcpSessionLaunchFailed(
+        error: AcpSessionError(kind: AcpSessionErrorKind.transport),
+      )) {
+        DiagnosticsLogService.instance.info(
+          'acp.window',
+          'foreground_transport_retry',
+          fields: {'hostId': sshSession.hostId, 'bridgeId': bridgeId},
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        if (mounted) result = await reconnect(replace: replace);
+      }
+      return result;
+    }
+
+    final provisionalKey = AcpSessionKey.of(
+      hostId: sshSession.hostId,
+      providerId: providerId,
+      bridgeId: bridgeId,
+      acpSessionId: acpSessionId,
+    );
+    _nativeAcpReconnectOwnedKeyValue = provisionalKey.value;
+    _openNativeAcpSession(provisionalKey);
+    DiagnosticsLogService.instance.info(
+      'acp.window',
+      'native_shell_opened',
+      fields: {'hostId': sshSession.hostId},
+    );
+
+    Future<void> restoreTerminalAfterFailedHandoff() async {
+      if (!mounted || _activeNativeAcpSessionKey != provisionalKey) return;
+      try {
+        // The native selection suppressed its hidden placeholder replay. Before
+        // exposing the terminal again, select normally so MonkeyMux sends a
+        // coherent frame instead of leaving the previous window frozen.
+        await _switchTmuxWindow(sshSession, windowIndex);
+      } on Object catch (error) {
+        DiagnosticsLogService.instance.debug(
+          'acp.window',
+          'terminal_replay_restore_failed',
+          fields: {'hostId': sshSession.hostId, 'errorType': error.runtimeType},
+        );
+      }
+      if (mounted && _activeNativeAcpSessionKey == provisionalKey) {
+        _showTerminalViewport();
+      }
+    }
+
+    try {
+      var result = await reconnectWithTransportRetry();
+      if (result is AcpSessionLaunchBlocked && mounted) {
+        final choice = await showAcpConcurrencyChoice(
+          context,
+          decision: result.decision,
+          managerState: manager.state,
+        );
+        if (!mounted || choice == null) {
+          await restoreTerminalAfterFailedHandoff();
+          return;
+        }
+        switch (choice) {
+          case AcpConcurrencyChoice.stopAndContinue:
+            final blocking = [
+              for (final value in result.decision.blockingSessionKeys)
+                manager.state.byKeyValue(value)?.key,
+            ].whereType<AcpSessionKey>().toList(growable: false);
+            result = await reconnectWithTransportRetry(replace: blocking);
+          case AcpConcurrencyChoice.upgrade:
+            await context.push<void>(
+              Uri(
+                path: '/upgrade',
+                queryParameters: {
+                  'feature': MonetizationFeature.concurrentAcpSessions.name,
+                },
+              ).toString(),
+            );
+            if (!mounted) return;
+            if (!ref
+                .read(monetizationServiceProvider)
+                .currentState
+                .isProUnlocked) {
+              await restoreTerminalAfterFailedHandoff();
+              return;
+            }
+            result = await reconnectWithTransportRetry();
+        }
+      }
+      if (!mounted) return;
+      switch (result) {
+        case AcpSessionLaunchStarted(:final key):
+          if (_activeNativeAcpSessionKey == provisionalKey &&
+              key != provisionalKey) {
+            _openNativeAcpSession(key);
+          }
+        case AcpSessionLaunchFailed(:final error):
+          await restoreTerminalAfterFailedHandoff();
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(error.message)));
+        case AcpSessionLaunchBlocked():
+          await restoreTerminalAfterFailedHandoff();
+      }
+    } finally {
+      if (_nativeAcpReconnectOwnedKeyValue == provisionalKey.value) {
+        _nativeAcpReconnectOwnedKeyValue = null;
+      }
+    }
+  }
+
+  void _openNativeAcpSession(AcpSessionKey key) {
+    if (!mounted) {
+      return;
+    }
+    if (key.hostId != widget.hostId) {
+      unawaited(
+        context.push<void>(
+          buildAgentChatLocation(
+            hostId: key.hostId,
+            providerId: key.providerId,
+            bridgeId: key.bridgeId,
+            acpSessionId: key.acpSessionId,
+          ),
+        ),
+      );
+      return;
+    }
+    (_observedSession ?? _activeSession())?.setTerminalParsingPaused(
+      paused: true,
+    );
+    final launch = _nativeAcpLaunchState;
+    if (launch != null) {
+      DiagnosticsLogService.instance.info(
+        'acp.launch',
+        'visual_finished',
+        fields: {
+          'connectionId': ?_connectionId,
+          'durationMs': DateTime.now()
+              .difference(launch.startedAt)
+              .inMilliseconds,
+          'openedSession': true,
+        },
+      );
+    }
+    setState(() {
+      _nativeAcpLaunchState = null;
+      _activeNativeAcpSessionKey = key;
+    });
+    _persistNativeAcpFocus(key);
+    _collapseTmuxBarIfExpanded();
+  }
+
+  void _showTerminalViewport() {
+    if (!mounted || _activeNativeAcpSessionKey == null) {
+      return;
+    }
+    final session = _observedSession ?? _activeSession();
+    // Paint the frozen terminal immediately. Only after that first frame do we
+    // resume parsing and request one frame-budgeted MonkeyMux replay, so the
+    // viewport switch itself never waits on a large terminal backlog.
+    setState(() => _activeNativeAcpSessionKey = null);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _activeNativeAcpSessionKey != null) {
+        return;
+      }
+      session?.setTerminalParsingPaused(paused: false);
+      _handleTerminalThemeDependenciesChanged(
+        forceRemoteRefresh: true,
+        reason: 'native_terminal_restored',
+      );
+      _probeAndForceMuxWindowRefresh();
+    });
+    final connectionId = _connectionId;
+    if (connectionId != null) {
+      ref
+          .read(activeSessionsProvider.notifier)
+          .updateSessionNativeAcpFocus(connectionId, key: null);
+    }
+    if (!_isMobilePlatform) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _terminalFocusNode.requestFocus();
+        }
+      });
+    }
+  }
+
+  void _persistNativeAcpFocus(AcpSessionKey key) {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return;
+    }
+    final session = ref
+        .read(acpSessionManagerProvider)
+        .state
+        .byKeyValue(key.value);
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionNativeAcpFocus(
+          connectionId,
+          key: key,
+          displayTitle: session == null
+              ? null
+              : acpSessionDisplayTitle(session),
+        );
+  }
+
+  void _updateNativeAcpPreview(AcpSessionKey sessionKey, String? preview) {
+    final connectionId = _connectionId;
+    if (connectionId == null ||
+        _activeNativeAcpSessionKey?.value != sessionKey.value) {
+      return;
+    }
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionNativeAcpPreview(connectionId, preview);
+  }
+
+  void _updateNativeAcpPreviewSnapshot(
+    AcpSessionKey sessionKey,
+    AcpNativePreviewSnapshot? preview,
+  ) {
+    final connectionId = _connectionId;
+    if (connectionId == null ||
+        _activeNativeAcpSessionKey?.value != sessionKey.value) {
+      return;
+    }
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionNativeAcpPreviewSnapshot(connectionId, preview);
+  }
+
+  void _updateNativeAcpScroll(
+    AcpSessionKey sessionKey,
+    AcpChatScrollState state,
+  ) {
+    // Refresh insertion order so the bounded map retains recently visited
+    // native windows without coupling UI scroll state to transcript/domain data.
+    _nativeAcpScrollStates
+      ..remove(sessionKey.value)
+      ..[sessionKey.value] = state;
+    while (_nativeAcpScrollStates.length > 32) {
+      _nativeAcpScrollStates.remove(_nativeAcpScrollStates.keys.first);
+    }
+  }
+
+  void _commitNativeAgentFontSize(double fontSize) {
+    final connectionId = _connectionId;
+    if (!mounted || connectionId == null) {
+      return;
+    }
+    final next = clampTerminalFontSize(fontSize);
+    setState(() => _sessionFontSizeOverride = next);
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionFontSize(connectionId, next);
+  }
+
+  Widget _buildNativeAgentStartingView(_NativeAcpLaunchState launch) {
+    final detail = switch (launch.phase) {
+      _NativeAcpLaunchPhase.resolvingAdapter => 'checking native adapter…',
+      _NativeAcpLaunchPhase.startingSession =>
+        'opening persistent agent session…',
+    };
+    return AcpNativeStartingView(
+      key: ValueKey<_NativeAcpLaunchPhase>(launch.phase),
+      providerLabel: launch.providerLabel,
+      detail: detail,
+      resuming: launch.resuming,
+      tool: agentLaunchToolForAcpProviderId(launch.providerId),
+    );
+  }
+
+  Widget _buildEmbeddedNativeAgentView(AcpSessionKey key) {
+    final globalFontSize = ref.watch(fontSizeNotifierProvider);
+    final fontSize = resolveTerminalFontSize(
+      globalFontSize: globalFontSize,
+      sessionFontSize: _sessionFontSizeOverride,
+    );
+    final fontFamily =
+        _host?.terminalFontFamily ??
+        ref.watch(fontFamilyNotifierProvider) ??
+        'monospace';
+    return AgentChatScreen(
+      key: ValueKey<String>('native-agent-${key.value}'),
+      hostId: key.hostId,
+      providerId: key.providerId,
+      bridgeId: key.bridgeId,
+      acpSessionId: key.acpSessionId,
+      embedded: true,
+      connectOnMount: _nativeAcpReconnectOwnedKeyValue != key.value,
+      composerFocusController: _nativeComposerFocusController,
+      preferredFontSize: fontSize,
+      preferredFontFamily: fontFamily,
+      onFontSizeCommitted: _commitNativeAgentFontSize,
+      onExitEmbedded: _showTerminalViewport,
+      onSessionChanged: _openNativeAcpSession,
+      onPreviewChanged: _updateNativeAcpPreview,
+      onNativePreviewChanged: _updateNativeAcpPreviewSnapshot,
+      initialScrollState: _nativeAcpScrollStates[key.value],
+      onScrollChanged: _updateNativeAcpScroll,
+    );
+  }
+
+  void _showTmuxActionFailure(Exception error, TmuxNavigatorAction action) {
+    if (!mounted) return;
+    final isAcpAction =
+        action is TmuxNewAcpSessionAction ||
+        action is TmuxOpenAcpSessionAction ||
+        action is TmuxCloseAcpSessionAction;
     final message = switch (error) {
+      TimeoutException() when isAcpAction =>
+        'Timed out waiting for the native agent. Reconnect and try again.',
       TimeoutException() =>
         'Timed out waiting for tmux. Reconnect if actions keep failing.',
+      _ when isAcpAction =>
+        'Native agent action failed. Check the session and try again.',
       _ => 'tmux action failed. Check the session and try again.',
     };
     ScaffoldMessenger.of(
@@ -11305,6 +12664,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String? windowId,
     bool forceVisibleTmux = false,
     bool deferPostSwitchExec = true,
+    bool suppressTerminalReplay = false,
   }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
@@ -11324,12 +12684,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await backend.selectWindow(
         windowIndex,
         clientImageSignatures: _terminal.heldImageSignatures(),
+        suppressReplay: suppressTerminalReplay,
       );
     } else {
       await backend.selectWindow(
         windowIndex,
         windowId: targetWindowId,
         clientImageSignatures: _terminal.heldImageSignatures(),
+        suppressReplay: suppressTerminalReplay,
       );
     }
     final activeTool =
@@ -11506,13 +12868,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       if (!mounted) return;
     }
+    final tool = agentLaunchToolForCommandText(command);
     await backend.createWindow(
       command: command,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
     );
     if (!mounted) return;
-    final tool = agentLaunchToolForCommandText(command);
     if (tool != null) {
       unawaited(
         ref
@@ -11775,7 +13137,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       hasForegroundClient: hasForegroundClient,
       shellStatus: _shellStatus,
     );
-    if (!canReattachInCurrentShell && !forceVisibleTmux) {
+    final shouldReopenLostMonkeyMux = shouldReopenLostMonkeyMuxAttach(
+      backend: _activeMuxBackend,
+      attachEstablished: _monkeyMuxAttachEstablished,
+      hasForegroundClient: hasForegroundClient,
+    );
+    if (!canReattachInCurrentShell &&
+        !forceVisibleTmux &&
+        !shouldReopenLostMonkeyMux) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -11822,24 +13191,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       reattachBackend = attachCommand.backend;
       reattachCommand = attachCommand.command;
     }
-    final requiresRawMonkeyMuxAttach =
-        session.remoteIsWindows &&
-        reattachBackend == RemoteMuxBackend.monkeyMux;
+    final shouldRunMonkeyMuxAttachDirectly =
+        reattachBackend == RemoteMuxBackend.monkeyMux &&
+        (session.remoteIsWindows || shouldReopenLostMonkeyMux);
     final mustReopenShell =
-        requiresRawMonkeyMuxAttach ||
+        shouldRunMonkeyMuxAttachDirectly ||
         (forceVisibleTmux && !canReattachInCurrentShell);
+    final requestPty =
+        !shouldRunMonkeyMuxAttachDirectly || !session.remoteIsWindows;
     final shell = mustReopenShell
         ? await _reopenShellForVisibleTmux(
             session,
-            command: requiresRawMonkeyMuxAttach ? reattachCommand : null,
-            requestPty: !requiresRawMonkeyMuxAttach,
+            command: shouldRunMonkeyMuxAttachDirectly ? reattachCommand : null,
+            requestPty: requestPty,
           )
         : _shell;
     if (shell == null) {
       return;
     }
 
-    if (!requiresRawMonkeyMuxAttach) {
+    if (!shouldRunMonkeyMuxAttachDirectly) {
       session.writeToShell(formatAutoConnectCommandForShell(reattachCommand));
     }
     DiagnosticsLogService.instance.info(
@@ -11847,9 +13218,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       'reattach_command_sent',
       fields: {
         'connectionId': session.connectionId,
-        'requestedPty': !requiresRawMonkeyMuxAttach,
+        'requestedPty': requestPty,
+        'directMonkeyMuxAttach': shouldRunMonkeyMuxAttachDirectly,
       },
     );
+    final pendingReplacement = _pendingMonkeyMuxServerReplacement;
+    if (reattachBackend == RemoteMuxBackend.monkeyMux &&
+        pendingReplacement != null &&
+        pendingReplacement.connectionId == session.connectionId &&
+        pendingReplacement.sessionName == sessionName) {
+      _startMonkeyMuxServerReplacementRecovery(session, pendingReplacement);
+    }
   }
 
   Future<SSHSession?> _reopenShellForVisibleTmux(
@@ -12237,6 +13616,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _stopTmuxForegroundVerification();
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
+    _cancelMonkeyMuxServerReplacementRetry();
     _cancelMonkeyMuxRefreshAndResizeState();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
@@ -12264,6 +13644,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCommandCompletedSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
+    _systemKeyboardVisibilityController.removeListener(
+      _handleTerminalKeyboardVisibilityChanged,
+    );
     _terminalTextInputController
       ..removeListener(_handleTerminalKeyboardVisibilityChanged)
       ..dispose();
@@ -12323,7 +13706,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
         unawaited(_reconnect(showProgressDialog: false));
-      } else if (session != null) {
+      } else if (session != null &&
+          _activeNativeAcpSessionKey == null &&
+          _nativeAcpLaunchState == null) {
         _handleTerminalThemeDependenciesChanged(
           forceRemoteRefresh: forceThemeRefresh,
           reason: 'app_resumed',
@@ -12454,13 +13839,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
-    // A stale platform bottom inset (keyboard space reserved while the keyboard
-    // is not actually open) must not make the toggle think the keyboard is
-    // visible; otherwise the button would run its hide branch and fail to bring
-    // the keyboard up. Require the app's own input-connection state to agree.
-    final systemKeyboardVisible =
-        MediaQuery.viewInsetsOf(context).bottom > 0 &&
-        _terminalTextInputController.isKeyboardVisible;
+    // Insets are geometry, not authoritative visibility: some Android IMEs
+    // leave a stale bottom inset after closing. Prefer native IME visibility
+    // for every input owner, falling back to each owner's live connection/focus
+    // only until the platform channel responds.
+    final systemKeyboardVisible = resolveTerminalSystemKeyboardVisible(
+      bottomInset: MediaQuery.viewInsetsOf(context).bottom,
+      platformKeyboardVisible: _systemKeyboardVisibilityController.visible,
+      terminalInputConnectionVisible:
+          _terminalTextInputController.isKeyboardVisible,
+      nativeComposerInputOwner:
+          _activeNativeAcpSessionKey != null &&
+          _nativeComposerFocusController.hasFocus,
+    );
     if (_isAndroidPlatform) {
       _logAndroidPredictiveBackDiagnostics(context, phase: 'build');
       _queueAndroidPredictiveBackPostFrameDiagnostics(context);
@@ -12473,6 +13864,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final activeSession = _connectionId == null
         ? null
         : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
+    final showsNativeAgent =
+        _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null;
+    final showsTerminalViewportMenuActions =
+        resolveShowTerminalViewportMenuActions(
+          nativeAgentActive: showsNativeAgent,
+        );
     // Keep the user-selected theme as the session base. Remote OSC color
     // setters are applied only to the session's effective terminal theme.
     final configuredTerminalTheme = _resolveEffectiveTerminalTheme();
@@ -12508,15 +13905,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (connectionIdentity != null) {
       titleSubtitleSegments.add(connectionIdentity);
     }
-    if ((_iconName ?? '').isNotEmpty) {
+    if (!showsNativeAgent && (_iconName ?? '').isNotEmpty) {
       titleSubtitleSegments.add(_iconName!);
     }
-    if ((_windowTitle ?? '').isNotEmpty) {
+    if (!showsNativeAgent && (_windowTitle ?? '').isNotEmpty) {
       titleSubtitleSegments.add(_windowTitle!);
     }
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
-    final terminalProgress = _terminalProgress;
+    final activeNativeKey = _activeNativeAcpSessionKey;
+    final nativeActivitySnapshot = activeNativeKey == null
+        ? null
+        : ref.watch(
+            acpSessionManagerStateProvider.select((state) {
+              final session = state.asData?.value.byKeyValue(
+                activeNativeKey.value,
+              );
+              return session == null
+                  ? null
+                  : AcpActivitySnapshot.fromSession(session);
+            }),
+          );
+    final nativeActivity = nativeActivitySnapshot == null
+        ? null
+        : acpActivitySnapshotDisplay(nativeActivitySnapshot);
+    final terminalProgress = activeNativeKey == null
+        ? _terminalProgress
+        : nativeActivity == null
+        ? null
+        : acpActivityTerminalProgress(nativeActivity);
     final commandMarkCount =
         (_sessionController.observedSession ?? activeSession)
             ?.terminalCommandMarkCount ??
@@ -12529,7 +13946,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     return PopScope(
-      canPop: !_isTmuxBarExpanded,
+      canPop: resolveTerminalScreenCanPop(
+        isTmuxBarExpanded: _isTmuxBarExpanded,
+      ),
       onPopInvokedWithResult: (didPop, _) {
         _logAndroidPredictiveBackDiagnostics(
           context,
@@ -12587,11 +14006,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
           bottom:
               terminalProgress == null &&
-                  (!_showsTerminalMetadata || statusChips.isEmpty)
+                  (showsNativeAgent ||
+                      !_showsTerminalMetadata ||
+                      statusChips.isEmpty)
               ? null
               : PreferredSize(
                   preferredSize: Size.fromHeight(
-                    (_showsTerminalMetadata && statusChips.isNotEmpty
+                    (!showsNativeAgent &&
+                                _showsTerminalMetadata &&
+                                statusChips.isNotEmpty
                             ? 40
                             : 0) +
                         (terminalProgress == null ? 0 : 3),
@@ -12599,7 +14022,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (_showsTerminalMetadata && statusChips.isNotEmpty)
+                      if (!showsNativeAgent &&
+                          _showsTerminalMetadata &&
+                          statusChips.isNotEmpty)
                         Container(
                           alignment: Alignment.centerLeft,
                           width: double.infinity,
@@ -12651,7 +14076,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       ? Icons.keyboard_hide
                       : Icons.keyboard_alt_outlined,
                 ),
-                onPressed: () => _toggleSystemKeyboard(systemKeyboardVisible),
+                onPressed: () => showsNativeAgent
+                    ? _toggleNativeComposerKeyboard(systemKeyboardVisible)
+                    : _toggleSystemKeyboard(systemKeyboardVisible),
                 tooltip: systemKeyboardVisible
                     ? 'Hide system keyboard'
                     : 'Show system keyboard',
@@ -12681,12 +14108,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 isMobilePlatform: isMobile,
               ),
               menuChildren: [
-                _terminalOverflowMenuItem(
-                  context: context,
-                  icon: Icons.code_rounded,
-                  label: 'Snippets',
-                  action: 'snippets',
-                ),
+                if (showsTerminalViewportMenuActions)
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.code_rounded,
+                    label: 'Snippets',
+                    action: 'snippets',
+                  ),
                 _terminalOverflowMenuItem(
                   context: context,
                   icon: Icons.palette_outlined,
@@ -12730,10 +14158,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     context: context,
                     hasTerminalInfo: statusChips.isNotEmpty,
                     isMobile: isMobile,
+                    nativeAgentActive: showsNativeAgent,
                   ),
                 ),
                 _terminalOverflowMenuDivider(context),
-                if (!isMobile)
+                if (showsTerminalViewportMenuActions && !isMobile)
                   _terminalOverflowMenuItem(
                     context: context,
                     icon: _isNativeSelectionMode
@@ -12744,7 +14173,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         : 'Native Selection',
                     action: 'native_select',
                   ),
-                if (commandMarkCount > 0)
+                if (showsTerminalViewportMenuActions && commandMarkCount > 0)
                   _terminalOverflowMenuItem(
                     context: context,
                     icon: Icons.history_rounded,
@@ -12753,28 +14182,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         : 'Previous Command ($commandMarkCount)',
                     action: 'previous_command',
                   ),
-                if (_workingDirectoryPath != null)
+                if (showsTerminalViewportMenuActions &&
+                    _workingDirectoryPath != null)
                   _terminalOverflowMenuItem(
                     context: context,
                     icon: Icons.folder_copy_outlined,
                     label: 'Copy Current Directory',
                     action: 'copy_working_directory',
                   ),
-                if (_currentTerminalSelectionText() != null)
+                if (showsTerminalViewportMenuActions &&
+                    _currentTerminalSelectionText() != null)
                   _terminalOverflowMenuItem(
                     context: context,
                     icon: Icons.code_rounded,
                     label: 'Create Snippet',
                     action: 'create_snippet',
                   ),
-                _terminalOverflowSubmenuButton(
-                  context: context,
-                  isMobile: isMobile,
-                  icon: Icons.paste_rounded,
-                  label: 'Paste',
-                  menuChildren: _terminalPastingMenuItems(context),
-                ),
-                _terminalOverflowMenuDivider(context),
+                if (showsTerminalViewportMenuActions)
+                  _terminalOverflowSubmenuButton(
+                    context: context,
+                    isMobile: isMobile,
+                    icon: Icons.paste_rounded,
+                    label: 'Paste',
+                    menuChildren: _terminalPastingMenuItems(context),
+                  ),
+                if (showsTerminalViewportMenuActions)
+                  _terminalOverflowMenuDivider(context),
                 _terminalOverflowMenuItem(
                   context: context,
                   icon: Icons.link_off_rounded,
@@ -12812,12 +14245,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               children: [
                 Expanded(
                   // The KeyboardToolbar below already absorbs the bottom
-                  // safe-area inset via its own SafeArea, so strip it here to
-                  // prevent the tmux bar from floating above the toolbar.
+                  // system inset, so strip it here to prevent the tmux bar
+                  // from reserving that space a second time.
                   child: showsKeyboardToolbar
-                      ? MediaQuery.removePadding(
-                          context: bodyContext,
-                          removeBottom: true,
+                      ? MediaQuery(
+                          data: removeSystemBottomInset(
+                            MediaQuery.of(bodyContext),
+                          ),
                           child: terminalArea,
                         )
                       : terminalArea,
@@ -12826,15 +14260,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   KeyboardToolbar(
                     controller: _toolbarController,
                     terminal: _terminal,
-                    onKeyPressed: _handleKeyboardToolbarKeyPressed,
-                    onPasteRequested: _pasteClipboard,
+                    onKeyPressed: showsNativeAgent
+                        ? null
+                        : _handleKeyboardToolbarKeyPressed,
+                    onTextInput: showsNativeAgent
+                        ? _nativeComposerFocusController.insertText
+                        : null,
+                    onSpecialKey: showsNativeAgent
+                        ? _nativeComposerFocusController.sendSpecialKey
+                        : null,
+                    onPasteRequested: showsNativeAgent
+                        ? _pasteClipboardIntoNativeComposer
+                        : _pasteClipboard,
                     onPasteMenuOpened: _refreshKeyboardToolbarSnippetMenu,
-                    onSnippetPasteRequested: _pasteKeyboardToolbarSnippet,
-                    onPasteMediaRequested: _pastePickedMedia,
-                    onPasteFilesRequested: _pastePickedFiles,
+                    onSnippetPasteRequested: showsNativeAgent
+                        ? _pasteSnippetIntoNativeComposer
+                        : _pasteKeyboardToolbarSnippet,
+                    onPasteMediaRequested: showsNativeAgent
+                        ? _nativeComposerFocusController.pickPhotos
+                        : _pastePickedMedia,
+                    onPasteFilesRequested: showsNativeAgent
+                        ? _nativeComposerFocusController.pickFiles
+                        : _pastePickedFiles,
                     snippets: _keyboardToolbarSnippets,
                     snippetFolders: _keyboardToolbarSnippetFolders,
-                    terminalFocusNode: _terminalFocusNode,
+                    terminalFocusNode: showsNativeAgent
+                        ? null
+                        : _terminalFocusNode,
                   ),
               ],
             );
@@ -12878,6 +14330,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  void _toggleNativeComposerKeyboard(bool isVisible) {
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logSystemKeyboardToggled(visible: !isVisible),
+    );
+    if (isVisible) {
+      _nativeComposerFocusController.dismissKeyboard();
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    } else {
+      _nativeComposerFocusController.requestFocus();
+    }
+  }
+
   void _toggleKeyboardToolbar() {
     final nextValue = !_showKeyboardToolbar;
     final shouldRestoreSystemKeyboard =
@@ -12891,7 +14357,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     setState(() => _showKeyboardToolbar = nextValue);
     if (shouldRestoreSystemKeyboard) {
-      _restoreTerminalFocus(forceShowSystemKeyboard: true);
+      if (_activeNativeAcpSessionKey != null) {
+        _nativeComposerFocusController.requestFocus();
+      } else {
+        _restoreTerminalFocus(forceShowSystemKeyboard: true);
+      }
     }
   }
 
@@ -13496,6 +14966,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         message: overlayMessage,
         onRetry: _reconnect,
       );
+    }
+
+    final nativeAcpLaunchState = _nativeAcpLaunchState;
+    if (nativeAcpLaunchState != null) {
+      return _buildNativeAgentStartingView(nativeAcpLaunchState);
+    }
+
+    final activeNativeAcpSessionKey = _activeNativeAcpSessionKey;
+    if (activeNativeAcpSessionKey != null) {
+      return _buildEmbeddedNativeAgentView(activeNativeAcpSessionKey);
     }
 
     // Use a session override when pinch-zoom has customized this connection.
@@ -17728,6 +19208,50 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           KeyboardToolbarSnippetFolder(id: folder.id, name: folder.name),
       ];
     });
+  }
+
+  Future<void> _pasteClipboardIntoNativeComposer() async {
+    try {
+      final imageBytes = await Pasteboard.image;
+      if (imageBytes != null && imageBytes.isNotEmpty) {
+        if (!mounted) return;
+        _nativeComposerFocusController.pasteImage(imageBytes);
+        return;
+      }
+    } on PlatformException {
+      // Fall through to plain text when this platform cannot read image data.
+    }
+
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (!mounted) {
+      return;
+    }
+    final text = data?.text;
+    if (text == null || text.isEmpty) {
+      _showClipboardMessage('Clipboard has no text or image to paste.');
+      return;
+    }
+    _nativeComposerFocusController.pasteText(text);
+  }
+
+  Future<void> _pasteSnippetIntoNativeComposer(
+    KeyboardToolbarSnippet selectedSnippet,
+  ) async {
+    final repository = ref.read(snippetRepositoryProvider);
+    final snippet = await repository.getById(selectedSnippet.id);
+    if (!mounted) {
+      return;
+    }
+    if (snippet == null) {
+      _showClipboardMessage('Snippet is no longer available.');
+      return;
+    }
+    final substitution = await _substituteVariables(context, snippet);
+    if (!mounted || substitution == null || substitution.command.isEmpty) {
+      return;
+    }
+    _nativeComposerFocusController.insertText(substitution.command);
+    unawaited(repository.incrementUsage(snippet.id));
   }
 
   Future<void> _pasteKeyboardToolbarSnippet(

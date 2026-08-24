@@ -4423,6 +4423,54 @@ func TestWindowSelectionPromotesRequestingClient(t *testing.T) {
 	}
 }
 
+func TestNativeWindowSelectionSuppressesTerminalReplay(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, history: []byte("visible terminal"), lastActivity: time.Now()},
+		{
+			id:                  "@2",
+			index:               1,
+			history:             []byte("native placeholder replay"),
+			nativeAcpBridgeID:   "0123456789abcdef0123456789abcdef",
+			nativeAcpProviderID: "pi",
+			alert:               true,
+			lastActivity:        time.Now(),
+		},
+	}
+	server.activeID = "@1"
+	conn := &recordingConn{}
+	registerTestAttachClient(t, server, conn, "native-client", 120, 40)
+	conn.Reset()
+
+	windowIndex := 1
+	server.handleControlRequest(
+		newControlClient(nil),
+		controlMessage{
+			Type:           "select_window",
+			ClientID:       "native-client",
+			WindowIndex:    &windowIndex,
+			SuppressReplay: true,
+		},
+	)
+
+	server.mu.Lock()
+	activeID := server.activeID
+	lastActiveID := server.lastActiveID
+	alert := server.windows[1].alert
+	server.mu.Unlock()
+	if activeID != "@2" || lastActiveID != "@1" || alert {
+		t.Fatalf(
+			"selection state = active %q, last %q, alert %v; want @2, @1, false",
+			activeID,
+			lastActiveID,
+			alert,
+		)
+	}
+	if got := conn.String(); got != "" {
+		t.Fatalf("suppressed native selection wrote terminal replay %q", got)
+	}
+}
+
 func TestMostRecentlyFocusedRemainingClientTakesOverAfterDetach(t *testing.T) {
 	server := newMuxServerWithSize("test", 160, 60)
 	first := registerTestAttachClient(
@@ -6323,6 +6371,46 @@ func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
 	waitForRecordedOutput(t, conn, want)
 }
 
+func TestRedrawResizeBoundsLongPiTranscriptRepaint(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "pi",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	window.redrawForwardingReplay = []byte("terminal reset")
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	oldLine := append(
+		[]byte("UNIQUE_TRANSCRIPT_HEAD\r\n"),
+		bytes.Repeat([]byte("old transcript line that is superseded\r\n"), 20000)...,
+	)
+	server.handleWindowOutput("@1", oldLine)
+	server.handleWindowOutput("@1", []byte("\x1b[Hfinal visible Pi frame"))
+	server.resumePausedAttachForwarding("@1", generation)
+
+	got := conn.String()
+	if !strings.Contains(got, "final visible Pi frame") {
+		t.Fatalf("bounded redraw dropped the final frame")
+	}
+	if strings.Contains(got, "UNIQUE_TRANSCRIPT_HEAD") {
+		t.Fatalf("bounded redraw retained the superseded transcript head")
+	}
+	max := foregroundRedrawBufferLimitBytes + len("terminal reset") + 128
+	if len(got) > max {
+		t.Fatalf("bounded redraw = %d bytes, want <= %d", len(got), max)
+	}
+}
+
 func TestRedrawResizeWrapsBufferedRedrawAtomically(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}
@@ -7887,6 +7975,35 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 	}
 }
 
+func TestLongAgentImageHistoryKeepsInitialAttachReplayBounded(t *testing.T) {
+	window := &muxWindow{}
+	// Mirrors the reproduced 100+ MiB Pi session: 27 retained screenshots
+	// totaling roughly 10 MiB. Initial attach must not enqueue all of them.
+	const imageCount = 27
+	payload := strings.Repeat("P", 384*1024)
+	for i := 0; i < imageCount; i++ {
+		window.observeKittyGraphicsLocked([]byte(fmt.Sprintf(
+			"\x1b_Ga=T,U=1,i=%d,f=100;%s\x1b\\",
+			i+1,
+			payload,
+		)))
+	}
+
+	replay := window.kittyImageReplayLocked(nil)
+	if len(replay) > maxReplayedKittyImageBytes {
+		t.Fatalf("long-session replay = %d bytes, limit = %d",
+			len(replay), maxReplayedKittyImageBytes)
+	}
+	if !strings.Contains(string(replay), fmt.Sprintf("i=%d,", imageCount)) {
+		t.Fatalf("newest likely-visible image missing from bounded replay")
+	}
+	// An omitted older image remains available through post-attach repair.
+	repair, served := window.kittyImageTransmissionsForLocked([]string{"1"})
+	if len(repair) == 0 || !reflect.DeepEqual(served, []string{"1"}) {
+		t.Fatalf("older image was not available for repair: served=%#v", served)
+	}
+}
+
 func TestKittyImageReplaySkipsOversizedImageAndKeepsSmallerCandidate(t *testing.T) {
 	window := &muxWindow{
 		kittyImages: map[string][]byte{
@@ -7954,7 +8071,7 @@ func TestKittyImageReplaySkipsImagesClientAlreadyHolds(t *testing.T) {
 	}
 }
 
-func TestRequestedKittyImagesRespectReplayByteLimit(t *testing.T) {
+func TestRequestedKittyImagesUsePostAttachRepairByteLimit(t *testing.T) {
 	window := &muxWindow{
 		kittyImages: map[string][]byte{
 			"1": bytes.Repeat([]byte{'a'}, 5*1024*1024),
@@ -7969,8 +8086,8 @@ func TestRequestedKittyImagesRespectReplayByteLimit(t *testing.T) {
 	if len(payload) != 5*1024*1024 {
 		t.Fatalf("requested image payload = %d bytes, want 5 MiB", len(payload))
 	}
-	if len(payload) > maxReplayedKittyImageBytes {
-		t.Fatalf("requested image payload exceeded replay limit: %d", len(payload))
+	if len(payload) > maxKittyImageRepairBytes {
+		t.Fatalf("requested image payload exceeded repair limit: %d", len(payload))
 	}
 	if !reflect.DeepEqual(served, []string{"1"}) {
 		t.Fatalf("served ids = %#v, want [1]", served)
@@ -8678,6 +8795,24 @@ func TestActiveOutputKeepsUnansweredPaletteQueryInAttach(t *testing.T) {
 	}
 }
 
+func TestStripLocallyAnsweredThemeQueriesConsumesSplitPiIdentity(t *testing.T) {
+	window := &muxWindow{}
+	first := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("before\x1b]1337;MonkeyMuxPi=abc"),
+		nil,
+	)
+	if got := string(first); got != "before" {
+		t.Fatalf("first filtered output = %q, want before", got)
+	}
+	second := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("123\x07after"),
+		nil,
+	)
+	if got := string(second); got != "after" {
+		t.Fatalf("second filtered output = %q, want after", got)
+	}
+}
+
 func TestStripLocallyAnsweredThemeQueriesLeavesNormalOutput(t *testing.T) {
 	chunk := []byte("plain text without queries\x1b]2;Title\x07")
 	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
@@ -9021,6 +9156,50 @@ func TestWindowMetadataTracksOscTitleAsPaneTitle(t *testing.T) {
 	}
 	if window.paneTitle != "Claude Code · flutty" {
 		t.Fatalf("pane title = %q, want OSC title", window.paneTitle)
+	}
+}
+
+func TestWindowMetadataTracksExactPiIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resumed.jsonl")
+	payload, err := json.Marshal(map[string]string{
+		"id":   "session-id",
+		"file": path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	window := &muxWindow{
+		command:            "monkeymux pi-agent",
+		foregroundCommand:  "pi",
+		agentTool:          "pi",
+		agentToolConfirmed: true,
+	}
+
+	window.observeTerminalMetadataLocked(
+		[]byte("\x1b]1337;MonkeyMuxPi=" + encoded + "\x07"),
+	)
+
+	if window.agentSessionID != "session-id" ||
+		window.agentSessionPath != path ||
+		window.agentSessionDir != filepath.Dir(path) ||
+		!window.agentSessionIdentityExact {
+		t.Fatalf("Pi identity = id:%q path:%q dir:%q", window.agentSessionID, window.agentSessionPath, window.agentSessionDir)
+	}
+}
+
+func TestWindowMetadataRejectsPiIdentityFromOtherProcess(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString(
+		[]byte(`{"id":"session-id","file":"/tmp/session.jsonl"}`),
+	)
+	window := &muxWindow{command: "zsh", foregroundCommand: "zsh"}
+
+	window.observeTerminalMetadataLocked(
+		[]byte("\x1b]1337;MonkeyMuxPi=" + payload + "\x07"),
+	)
+
+	if window.agentSessionID != "" || window.agentSessionPath != "" {
+		t.Fatalf("non-Pi process stored identity: %#v", window)
 	}
 }
 
@@ -9409,6 +9588,123 @@ func TestMouseTrackingProcessIDClearsWhenModesDisabled(t *testing.T) {
 	window.observeTerminalModesLocked([]byte("\x1b[?1002l"))
 	if window.mouseTrackingProcessID != 0 {
 		t.Fatalf("mouseTrackingProcessID = %d, want cleared once no wheel mode remains", window.mouseTrackingProcessID)
+	}
+}
+
+func TestRestorePreservesNativeAcpOwnershipAcrossUpgrade(t *testing.T) {
+	const bridgeID = "0123456789abcdef0123456789abcdef"
+	restore := restoreFromWindowSnapshots([]windowSnapshot{{
+		ID:                  "@7",
+		Index:               6,
+		Name:                "Pi",
+		CurrentPath:         "/repo",
+		AgentTool:           "pi",
+		NativeAcpBridgeID:   bridgeID,
+		NativeAcpProviderID: "builtin:pi-acp",
+	}})
+	if restore == nil || len(restore.Windows) != 1 {
+		t.Fatalf("restore windows = %#v, want one window", restore)
+	}
+	window := restore.Windows[0]
+	if window.NativeAcpBridgeID != bridgeID ||
+		window.NativeAcpProviderID != "builtin:pi-acp" {
+		t.Fatalf("native ACP restore window = %#v", window)
+	}
+	if !restoreHasNativeAcpWindows(restore) {
+		t.Fatal("native ACP restore did not request a bridge handoff")
+	}
+	if restoreHasNativeAcpWindows(&serverRestore{Windows: []restoreWindowState{{Name: "shell"}}}) {
+		t.Fatal("plain terminal restore incorrectly requested a bridge handoff")
+	}
+
+	originalArguments := nativeAcpWindowArguments
+	nativeAcpWindowArguments = func(id string) ([]string, error) {
+		return []string{"monkeymux-new", "acp", "wait", id}, nil
+	}
+	t.Cleanup(func() { nativeAcpWindowArguments = originalArguments })
+	options := createWindowOptionsForRestore(window, false)
+	if !reflect.DeepEqual(options.args, []string{"monkeymux-new", "acp", "wait", bridgeID}) {
+		t.Fatalf("native restore args = %#v", options.args)
+	}
+	if options.command != "" || options.nativeAcpBridgeID != bridgeID ||
+		options.nativeAcpProviderID != "builtin:pi-acp" || options.cwd != "/repo" {
+		t.Fatalf("native restore options = %#v", options)
+	}
+}
+
+func TestNativeAcpUpgradeHandoffClosesOnlyTerminalWindows(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	serverDone := make(chan error, 1)
+	go func() {
+		defer serverConn.Close()
+		dec := json.NewDecoder(serverConn)
+		enc := json.NewEncoder(serverConn)
+		var hello controlMessage
+		if err := dec.Decode(&hello); err != nil {
+			serverDone <- err
+			return
+		}
+		if hello.Role != "control" || hello.Session != "workspace" {
+			serverDone <- fmt.Errorf("hello = %#v", hello)
+			return
+		}
+		if err := enc.Encode(controlResponse{Type: "hello", Status: "ok"}); err != nil {
+			serverDone <- err
+			return
+		}
+		for _, expectedID := range []string{"@1", "@3"} {
+			var request controlMessage
+			if err := dec.Decode(&request); err != nil {
+				serverDone <- err
+				return
+			}
+			if request.Type != "close_window" || request.WindowID != expectedID {
+				serverDone <- fmt.Errorf("handoff request = %#v, want close %s", request, expectedID)
+				return
+			}
+			// Real servers can interleave broadcasts with the command response.
+			if err := enc.Encode(controlResponse{Type: "window_removed"}); err != nil {
+				serverDone <- err
+				return
+			}
+			if err := enc.Encode(controlResponse{
+				ID: request.ID, Type: "window_closed", Status: "ok",
+			}); err != nil {
+				serverDone <- err
+				return
+			}
+		}
+		serverDone <- nil
+	}()
+
+	windowIDs, err := terminalWindowIDsForNativeAcpHandoff(&serverRestore{
+		Windows: []restoreWindowState{
+			{ID: "@1", Name: "shell"},
+			{
+				ID:                  "@2",
+				Name:                "Pi",
+				NativeAcpBridgeID:   "0123456789abcdef0123456789abcdef",
+				NativeAcpProviderID: "builtin:pi-acp",
+			},
+			{ID: "@3", Name: "Codex"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(windowIDs, []string{"@1", "@3"}) {
+		t.Fatalf("terminal handoff ids = %#v", windowIDs)
+	}
+	if err := closeOutgoingTerminalWindows(
+		clientConn,
+		"workspace",
+		windowIDs,
+	); err != nil {
+		t.Fatalf("closeOutgoingTerminalWindows: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -11062,6 +11358,59 @@ func TestParseGeminiSessionMetadataFromTruncatedPrefix(t *testing.T) {
 	}
 }
 
+func TestCloseNativeWindowWaitsForRetryableBridgeStop(t *testing.T) {
+	originalStop := stopNativeAcpBridgeForWindow
+	defer func() { stopNativeAcpBridgeForWindow = originalStop }()
+
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:                "@1",
+			index:             0,
+			nativeAcpBridgeID: "bridge-1",
+			lastActivity:      time.Now(),
+		},
+	}
+	server.activeID = "@1"
+
+	stopNativeAcpBridgeForWindow = func(id string) error {
+		if id != "bridge-1" {
+			t.Fatalf("bridge id = %q, want bridge-1", id)
+		}
+		return errors.New("stop failed")
+	}
+	shouldShutdown, err := server.closeWindow("@1")
+	if err == nil {
+		t.Fatal("close succeeded despite bridge stop failure")
+	}
+	if shouldShutdown {
+		t.Fatal("failed close requested server shutdown")
+	}
+	if server.windows[0].closed || server.windows[0].closing {
+		t.Fatal("failed bridge stop did not preserve a retryable open window")
+	}
+	if snapshots := server.snapshots(); len(snapshots) != 1 {
+		t.Fatalf("snapshot count after failed close = %d, want 1", len(snapshots))
+	}
+
+	stopNativeAcpBridgeForWindow = func(id string) error {
+		if server.windows[0].closed {
+			t.Fatal("window closed before bridge stop succeeded")
+		}
+		return nil
+	}
+	shouldShutdown, err = server.closeWindow("@1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !shouldShutdown {
+		t.Fatal("successful native close did not request shutdown")
+	}
+	if !server.windows[0].closed {
+		t.Fatal("window remained open after bridge stop succeeded")
+	}
+}
+
 func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -11465,6 +11814,43 @@ func TestCursorAgentToolMapping(t *testing.T) {
 	}
 }
 
+func TestLiveCursorWindowPublishesSessionFromFalseConversationMetadata(t *testing.T) {
+	originalProcessStart := processStartedAtForMetadata
+	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
+	now := time.Now()
+	processStartedAtForMetadata = func(pid int) time.Time {
+		if pid == 201 {
+			return now.Add(-time.Second)
+		}
+		return time.Time{}
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "project", "named-subtree")
+	chatDir := filepath.Join(home, ".cursor", "chats", "workspace", "live-chat")
+	if err := os.MkdirAll(chatDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := fmt.Sprintf(
+		`{"cwd":%q,"updatedAtMs":%d,"hasConversation":false}`,
+		project,
+		now.UnixMilli(),
+	)
+	if err := os.WriteFile(filepath.Join(chatDir, "meta.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	window := &muxWindow{cwd: project, agentTool: "cursor-agent"}
+	window.refreshCursorSessionMetadataLocked(201)
+
+	if window.agentSessionID != "live-chat" {
+		t.Fatalf("live Cursor session = %q, want live-chat", window.agentSessionID)
+	}
+	if !window.agentSessionIdentityExact {
+		t.Fatalf("live Cursor identity was not marked exact")
+	}
+}
+
 func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
 	originalProcessStart := processStartedAtForMetadata
 	originalProcessTable := processTableForMetadata
@@ -11496,7 +11882,7 @@ func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		meta := fmt.Sprintf(
-			`{"title":"Chat %s","cwd":%q,"updatedAtMs":%d,"hasConversation":true}`,
+			`{"title":"Chat %s","cwd":%q,"updatedAtMs":%d,"hasConversation":false}`,
 			chatID, cwd, updatedAtMs,
 		)
 		if err := os.WriteFile(
@@ -12666,6 +13052,120 @@ func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("control handler did not stop")
+	}
+}
+
+func TestControlStartAcpBridgeHostsProviderInServer(t *testing.T) {
+	dir := testAcpRuntimeDirectory(t)
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("SHELL", "/bin/sh")
+	originalWindowArguments := nativeAcpWindowArguments
+	nativeAcpWindowArguments = func(string) ([]string, error) { return nil, nil }
+	t.Cleanup(func() { nativeAcpWindowArguments = originalWindowArguments })
+	server := newMuxServer("test")
+	serverConn, clientConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleControl(serverConn, bufio.NewReader(serverConn))
+	}()
+	decoder := json.NewDecoder(clientConn)
+	readResponse := func() controlResponse {
+		t.Helper()
+		if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		var response controlResponse
+		if err := decoder.Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	if response := readResponse(); response.Type != "hello" {
+		t.Fatalf("first response type = %q, want hello", response.Type)
+	}
+	if response := readResponse(); response.Type != "window_list" {
+		t.Fatalf("second response type = %q, want window_list", response.Type)
+	}
+	request := controlMessage{
+		ID:         "agent-start",
+		Type:       "start_acp_bridge",
+		ProviderID: "test:cat-acp",
+		Provider:   "Test Agent",
+		Command:    "cat",
+		Cwd:        ".",
+	}
+	if err := json.NewEncoder(clientConn).Encode(request); err != nil {
+		t.Fatal(err)
+	}
+	var response controlResponse
+	for response.ID != request.ID {
+		response = readResponse()
+	}
+	if response.Type != "acp_bridge_started" {
+		t.Fatalf("start response = %#v", response)
+	}
+	var frame acpWireMessage
+	if err := json.Unmarshal([]byte(response.Data), &frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame.Type != "started" || !validAcpBridgeID(frame.BridgeID) || frame.WindowID == "" {
+		t.Fatalf("started frame = %#v", frame)
+	}
+	windows := server.snapshots()
+	if len(windows) != 1 || windows[0].ID != frame.WindowID ||
+		windows[0].NativeAcpBridgeID != frame.BridgeID ||
+		windows[0].NativeAcpProviderID != request.ProviderID {
+		t.Fatalf("native ACP windows = %#v", windows)
+	}
+	info, err := acpBridgeStatus(frame.BridgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ProviderID != request.ProviderID || info.State != "running" {
+		t.Fatalf("bridge status = %#v", info)
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first control handler did not stop")
+	}
+	if _, err := acpBridgeStatus(frame.BridgeID); err != nil {
+		t.Fatalf("bridge stopped after client disconnect: %v", err)
+	}
+
+	serverConn2, clientConn2 := net.Pipe()
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		server.handleControl(serverConn2, bufio.NewReader(serverConn2))
+	}()
+	decoder2 := json.NewDecoder(clientConn2)
+	var hello, windowList controlResponse
+	if err := decoder2.Decode(&hello); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoder2.Decode(&windowList); err != nil {
+		t.Fatal(err)
+	}
+	if hello.Type != "hello" || windowList.Type != "window_list" ||
+		len(windowList.Windows) != 1 ||
+		windowList.Windows[0].NativeAcpBridgeID != frame.BridgeID ||
+		windowList.Windows[0].NativeAcpProviderID != request.ProviderID {
+		t.Fatalf("reconnected control state = %#v / %#v", hello, windowList)
+	}
+
+	server.close()
+	_ = clientConn2.Close()
+	select {
+	case <-done2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second control handler did not stop")
+	}
+	if _, err := acpBridgeStatus(frame.BridgeID); err == nil {
+		t.Fatal("bridge survived owning workspace shutdown")
 	}
 }
 

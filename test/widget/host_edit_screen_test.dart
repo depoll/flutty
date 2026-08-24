@@ -19,7 +19,9 @@ import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/screens/host_edit_screen.dart';
 import 'package:monkeyssh/presentation/view_models/host_edit_view_model.dart';
 import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
@@ -279,7 +281,7 @@ Future<void> _selectStartupMode(WidgetTester tester, String label) async {
     scrollable: formScroll,
   );
   await tester.ensureVisible(startupModeField);
-  await tester.tap(find.text('Do nothing'), warnIfMissed: false);
+  await tester.tap(startupModeField);
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 300));
   await tester.tap(find.text(label).last, warnIfMissed: false);
@@ -537,6 +539,21 @@ void main() {
       expect(find.text('MonkeyMux'), findsOneWidget);
       expect(find.text('tmux'), findsOneWidget);
       expect(find.text('Automatic windows'), findsNothing);
+    });
+
+    testWidgets('keeps app-wide agent window mode out of host settings', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester, hasPro: true);
+      final modeField = find.byKey(const Key('host-agent-window-mode-field'));
+
+      expect(modeField, findsNothing);
+      await _selectStartupMode(tester, 'MonkeyMux');
+      expect(modeField, findsNothing);
+      await _selectStartupMode(tester, 'tmux');
+      expect(modeField, findsNothing);
+      await _selectStartupMode(tester, 'Launch coding agent');
+      expect(modeField, findsNothing);
     });
 
     testWidgets('retains tmux session config when switching to coding agent', (
@@ -1401,10 +1418,21 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
+        expect(
+          find.byKey(const Key('host-agent-window-mode-field')),
+          findsNothing,
+        );
+
         final yoloFinder = find.byKey(const Key('host-cli-yolo-mode-checkbox'));
         expect(yoloFinder, findsOneWidget);
         expect(tester.widget<CheckboxListTile>(yoloFinder).value, isFalse);
 
+        await tester.scrollUntilVisible(
+          yoloFinder,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(yoloFinder);
         await tester.tap(yoloFinder);
         await tester.pump();
 
@@ -1432,6 +1460,10 @@ void main() {
           hostRepository.updatedHost!.autoConnectCommand,
           contains('--yolo'),
         );
+        final savedPreferences = await HostCliLaunchPreferencesService(
+          SettingsService(database),
+        ).getPreferencesForHost(1);
+        expect(savedPreferences.startInYoloMode, isTrue);
       },
     );
 

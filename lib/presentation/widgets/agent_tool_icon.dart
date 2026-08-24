@@ -4,6 +4,13 @@ import 'package:flutter_svg/flutter_svg.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import 'agent_tool_marks.dart';
 
+/// Resolves the shared identity tint for terminal and native agent windows.
+///
+/// Activity belongs in status/progress UI; only window selection changes the
+/// tool mark and native identity badge.
+Color agentWindowIdentityColor(ColorScheme scheme, {required bool isActive}) =>
+    isActive ? scheme.primary : scheme.onSurfaceVariant;
+
 /// Renders a branded icon for a supported coding-agent CLI.
 class AgentToolIcon extends StatelessWidget {
   /// Creates a new [AgentToolIcon].

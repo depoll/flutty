@@ -188,6 +188,8 @@ void main() {
       );
 
       expect(status.supportsShutdown, isTrue);
+      expect(status.hasNativeAcpWindows, isFalse);
+      expect(status.nativeAcpWindowCount, 0);
       expect(status.supportsViewportClipping, isTrue);
       expect(status.supportsBracketedPasteControlInput, isTrue);
       expect(status.needsUpdate('0.1.13'), isFalse);
@@ -303,6 +305,43 @@ void main() {
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
+    });
+
+    test('maps server-owned native ACP identity onto real windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@7',
+        'index': 6,
+        'name': 'Pi',
+        'active': true,
+        'currentPath': '/home/demo/project',
+        'nativeAcpBridgeId': '0123456789abcdef0123456789abcdef',
+        'nativeAcpProviderId': 'builtin:pi-acp',
+      });
+
+      expect(window, isNotNull);
+      expect(window!.isNativeAcp, isTrue);
+      expect(window.nativeAcpBridgeId, '0123456789abcdef0123456789abcdef');
+      expect(window.nativeAcpProviderId, 'builtin:pi-acp');
+      expect(window.copyWith(isActive: false).isNativeAcp, isTrue);
+    });
+
+    test('maps exact live Cursor session metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@2',
+        'index': 1,
+        'name': 'Cursor Agent',
+        'active': true,
+        'currentCommand': 'cursor-agent',
+        'panePid': 4321,
+        'agentTool': 'cursor-agent',
+        'agentSessionId': 'cursor-chat-id',
+        'agentSessionIdentityExact': true,
+      });
+
+      expect(window, isNotNull);
+      expect(window!.foregroundAgentTool, AgentLaunchTool.cursorAgent);
+      expect(window.activeAgentSessionId, 'cursor-chat-id');
+      expect(window.activeAgentSessionConfidence, AgentSessionConfidence.high);
     });
 
     test('maps helper terminal progress metadata onto tmux windows', () {
@@ -626,8 +665,66 @@ void main() {
         isTrue,
       );
 
+      await service.resetServerRuntime(898, 'work');
+      expect(
+        service.supportsBracketedPasteControlInput(session, 'work'),
+        isFalse,
+      );
+      verifyNever(() => installer.clearCache(898));
+
       await stdoutController.close();
       await service.clearCache(898);
+      verify(() => installer.clearCache(898)).called(1);
+    });
+
+    test('recycles a watcher without closing existing consumers', () async {
+      final client = _MockSshClient();
+      final installer = _MockMonkeyMuxInstaller();
+      final session = _buildSession(client, connectionId: 897);
+      final oldOutput = StreamController<Uint8List>();
+      final newOutput = StreamController<Uint8List>();
+      final oldControl = _buildRespondingControlSession(
+        oldOutput,
+        window: {..._fakeWindowJson, 'name': 'Old helper'},
+      );
+      final newControl = _buildRespondingControlSession(
+        newOutput,
+        window: {..._fakeWindowJson, 'name': 'Replacement helper'},
+      );
+      var opens = 0;
+
+      when(
+        () => installer.ensureInstalled(session),
+      ).thenAnswer((_) async => _fakeInstallation);
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => opens++ == 0 ? oldControl : newControl);
+
+      final service = MonkeyMuxService(
+        installer: installer,
+        agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+      );
+      var streamClosed = false;
+      final subscription = service
+          .watchWindowChanges(session, 'work')
+          .listen((_) {}, onDone: () => streamClosed = true);
+
+      expect(
+        (await service.listWindows(session, 'work')).single.name,
+        'Old helper',
+      );
+      await service.resetServerRuntime(897, 'work');
+      expect(streamClosed, isFalse);
+      expect(
+        (await service.refreshWindows(session, 'work')).single.name,
+        'Replacement helper',
+      );
+      expect(opens, 2);
+
+      await subscription.cancel();
+      await oldOutput.close();
+      await newOutput.close();
+      await service.clearCache(897);
     });
 
     test('preserves an exact bracketed paste in one control request', () async {
@@ -1005,6 +1102,35 @@ void main() {
         "'/home/tester/.monkeyssh/bin/monkeymux' control --json 'work'",
       );
     });
+
+    test(
+      'counts native ACP windows from the initial control snapshot',
+      () async {
+        final client = _MockSshClient();
+        final installer = _MockMonkeyMuxInstaller();
+        final session = _buildSession(client, connectionId: 917);
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (_) async => _buildOutputSession(
+            '{"type":"hello","status":"ok","version":"0.2.4",'
+            '"capabilities":["shutdown","acp-window-v1"]}\n'
+            '{"type":"window_list","status":"ok","windows":['
+            '{"id":"@1","index":0,"name":"Pi","active":true,'
+            '"nativeAcpBridgeId":"0123456789abcdef0123456789abcdef",'
+            '"nativeAcpProviderId":"builtin:pi-acp"},'
+            '{"id":"@2","index":1,"name":"shell","active":false}]}\n',
+          ),
+        );
+
+        final status = await MonkeyMuxService(
+          installer: installer,
+        ).runningServerStatus(session, _fakeInstallation, 'work');
+
+        expect(status, isNotNull);
+        expect(status!.version, '0.2.4');
+        expect(status.hasNativeAcpWindows, isTrue);
+        expect(status.nativeAcpWindowCount, 1);
+      },
+    );
   });
 
   group('MonkeyMuxService.installedHelperVersion', () {

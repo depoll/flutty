@@ -33,7 +33,7 @@ MonkeySSH is designed around the tools and workflows people use for remote AI-as
 | --- | --- |
 | **SSH connections** | Password and key auth, jump hosts, cancellable connection attempts, multiple concurrent sessions, host organization, search, favorites, home-screen shortcuts |
 | **Terminal** | xterm-256color, customizable themes, adjustable fonts, modifier keys, function keys, gestures, macros, bell, inline images and animations, tap-to-show keyboard, and IME-friendly typing with autocorrect, swipe, keyboard dictation, and password-friendly prompt input |
-| **Coding workflow** | AI session picker, scoped recent session resume, MonkeyMux/tmux launch flows, multi-client MonkeyMux sessions shared with your desktop, window switcher, wide-screen sidebar, clickable file paths, shared clipboard, safer paste review |
+| **Coding workflow** | Terminal or native chat for supported agents, AI session picker, scoped recent session resume, MonkeyMux/tmux launch flows, multi-client MonkeyMux sessions shared with your desktop, window switcher, wide-screen sidebar, clickable file paths, shared clipboard, safer paste review |
 | **Files** | SFTP browser, upload/download, remote file creation, direct remote text editing, syntax highlighting, path-aware navigation from terminal output |
 | **Automation** | Snippets, variable-aware snippet insertion, host auto-connect commands, saved agent launch presets |
 | **Networking** | Local and remote port forwards for tunnels, dashboards, previews, and remote services, live per-session forward controls, automatic proxying for detected remote listeners, an in-app browser for forwarded ports with file uploads, downloads, and site permissions, and Android device debugging over the current SSH session |
@@ -47,10 +47,12 @@ MonkeySSH Pro unlocks the features that matter most for power users and multi-de
 - encrypted host and key transfers
 - full migration import/export
 - auto-connect automation
+- parallel native chats with instant switching and session forks
+- recent terminal-session discovery
 - agent launch presets
 - host-specific terminal themes
 
-Core SSH, terminal, SFTP, and everyday remote access stay front and center regardless.
+Core SSH, terminal, SFTP, agent mode choice, and one connected native chat stay available without Pro.
 
 ## Privacy and telemetry
 
@@ -98,6 +100,9 @@ To test tmux navigation against a real SSH target:
 # ... run the app and connect to localhost ...
 ./scripts/setup_tmux_test_env.sh teardown
 ```
+
+For deterministic ACP validation over a real SSH exec channel and persistent
+MonkeyMux bridge, see [ACP manual testing](docs/manual_testing_acp.md).
 
 ## Deployment
 

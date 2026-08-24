@@ -113,6 +113,12 @@ void main() {
     expect(find.textContaining('renew every month'), findsOneWidget);
     expect(find.text('Privacy Policy'), findsOneWidget);
     expect(find.text('Terms of Use (EULA)'), findsOneWidget);
+
+    await tester.scrollUntilVisible(find.text('Parallel native chats'), 300);
+    await tester.pumpAndSettle();
+    expect(find.text('Parallel native chats'), findsOneWidget);
+    expect(find.text('Recent terminal sessions'), findsOneWidget);
+    expect(find.textContaining('fork active sessions'), findsOneWidget);
   });
 
   testWidgets('plan cards stay legible in dark mode', (tester) async {
@@ -537,6 +543,8 @@ void main() {
         find.byKey(const ValueKey('lifetime-status-banner')),
         findsOneWidget,
       );
+      await tester.fling(find.byType(ListView), const Offset(0, -1200), 1000);
+      await tester.pumpAndSettle();
       expect(find.text('MonkeySSH Pro Lifetime'), findsOneWidget);
       expect(
         find.textContaining('Unlocked with a one-time purchase on'),

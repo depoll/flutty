@@ -77,6 +77,7 @@ abstract interface class RemoteMultiplexerService {
     String? windowId,
     String? extraFlags,
     Map<int, int>? clientImageSignatures,
+    bool suppressReplay = false,
   });
 
   /// Closes a remote window.
@@ -205,6 +206,7 @@ class TmuxRemoteMultiplexerService implements RemoteMultiplexerService {
     String? windowId,
     String? extraFlags,
     Map<int, int>? clientImageSignatures,
+    bool suppressReplay = false,
   }) => _tmuxService.selectWindow(
     session,
     sessionName,

@@ -1,5 +1,43 @@
 part of '../screens/terminal_screen.dart';
 
+/// Builds the compact native-agent identity used by collapsed mux handles.
+///
+/// The provider mark identifies the agent and the chat badge distinguishes a
+/// native ACP pane from a terminal window running the same tool. Window numbers
+/// remain in the expanded window list, matching terminal-bar behavior.
+@visibleForTesting
+Widget buildNativeAcpHandleIcon({
+  required ThemeData theme,
+  required AgentLaunchTool? tool,
+}) {
+  final color = theme.colorScheme.primary;
+  return SizedBox(
+    width: 22,
+    height: 20,
+    child: Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.centerLeft,
+      children: [
+        AgentToolIcon(
+          key: const ValueKey('native-acp-handle-icon'),
+          tool: tool,
+          size: 16,
+          color: color,
+        ),
+        Positioned(
+          right: 0,
+          bottom: 0,
+          child: AcpNativeBadge(
+            key: const ValueKey('native-acp-handle-indicator'),
+            color: color,
+            size: 10,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 /// Expandable tmux bar shown as a bottom overlay or a wide-layout side rail.
 ///
 /// Bottom overlay collapsed: a slim handle bar sitting over bottom padding in
@@ -24,6 +62,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.onSidebarDragOffsetChanged,
     this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
+    this.activeNativeAcpSessionKey,
     this.onWindowsChanged,
     this.onWindowStateChanged,
     this.onActiveWindowTerminalModeChanged,
@@ -102,6 +141,9 @@ class _TmuxExpandableBar extends StatefulWidget {
   /// Best-known project working directory for AI session scoping.
   final String? scopeWorkingDirectory;
 
+  /// Native ACP session currently replacing the terminal viewport.
+  final AcpSessionKey? activeNativeAcpSessionKey;
+
   /// Height of the collapsed handle bar. The terminal adds this as
   /// bottom padding so the handle sits over empty space.
   static const handleHeight = tmuxHandleMinTouchExtent;
@@ -124,6 +166,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   AgentLaunchTool? _preferredLaunchTool;
   final Set<String> _seenAlertWindowKeys = <String>{};
   final Map<String, int> _seenAlertWindowIndexesByKey = <String, int>{};
+  final Set<String> _closingWindowKeys = <String>{};
   late bool _expanded;
   bool _isLoading = true;
   bool _showSessions = false;
@@ -134,6 +177,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Offset? _sidebarDragLastGlobalPosition;
   bool _isSidebarDragActive = false;
   StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
+  StreamSubscription<AcpSessionManagerState>? _acpSessionSubscription;
+  List<AcpSessionState> _nativeAcpSessions = const <AcpSessionState>[];
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
   bool _loadingWindows = false;
@@ -165,10 +210,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   AgentSessionDiscoveryService get _discovery =>
       widget.ref.read(agentSessionDiscoveryServiceProvider);
 
-  List<TmuxWindow>? get _displayedWindows => resolveTmuxBarDisplayedWindows(
-    _windows,
-    pendingSelectedWindowIndex: _pendingSelectedWindowIndex,
-  );
+  List<TmuxWindow>? get _displayedWindows {
+    final visibleWindows = _windows
+        ?.where(
+          (window) => !_closingWindowKeys.contains(_windowCloseKey(window)),
+        )
+        .toList(growable: false);
+    return resolveTmuxBarDisplayedWindows(
+      visibleWindows,
+      pendingSelectedWindowIndex: _pendingSelectedWindowIndex,
+    );
+  }
+
+  String _windowCloseKey(TmuxWindow window) => window.id ?? '#${window.index}';
 
   @override
   void initState() {
@@ -205,6 +259,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
     _loadWindows();
     _subscribeToWindowChanges();
+    _subscribeToNativeAcpSessions();
   }
 
   @override
@@ -224,6 +279,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
     final wasExpanded = _expanded;
     _clearPendingSelectedWindow(notify: false);
+    _closingWindowKeys.clear();
     _resetWindowReloadRecovery();
     if (!shouldPreserveTmuxBarSnapshotOnUpdate(
       sessionChanged: sessionChanged,
@@ -261,6 +317,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       _sessionEndedNotified = false;
       unawaited(_windowChangeSubscription?.cancel());
       _subscribeToWindowChanges();
+      _subscribeToNativeAcpSessions();
     }
     unawaited(_loadPreferredLaunchTool());
     _loadWindows();
@@ -271,9 +328,139 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _clearPendingSelectedWindow(notify: false);
     _resetWindowReloadRecovery();
     unawaited(_windowChangeSubscription?.cancel());
+    unawaited(_acpSessionSubscription?.cancel());
     _clearSeenAlertNotifications(widget.session, widget.tmuxSessionName);
     _bounceController.dispose();
     super.dispose();
+  }
+
+  AcpSwitcherEntry? get _activeNativeAcpEntry {
+    final activeKey = widget.activeNativeAcpSessionKey;
+    if (activeKey == null) {
+      return null;
+    }
+    return buildAcpMuxWindowEntries(
+      _nativeAcpSessions,
+    ).where((entry) => entry.keyValue == activeKey.value).firstOrNull;
+  }
+
+  List<AcpSwitcherEntry> get _nativeAcpEntries {
+    if (widget.activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return const <AcpSwitcherEntry>[];
+    }
+    final serverOwnedBridgeIds = (_windows ?? const <TmuxWindow>[])
+        .map((window) => window.nativeAcpBridgeId)
+        .whereType<String>()
+        .toSet();
+    return buildAcpMuxWindowEntries(_nativeAcpSessions)
+        .where(
+          (entry) => !serverOwnedBridgeIds.contains(
+            entry.session?.key.bridgeId ?? entry.recent?.key.bridgeId,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  AcpSessionState? _sessionForNativeWindow(TmuxWindow window) =>
+      _nativeAcpSessions
+          .where(
+            (session) =>
+                session.key.bridgeId == window.nativeAcpBridgeId &&
+                session.key.providerId == window.nativeAcpProviderId,
+          )
+          .firstOrNull;
+
+  TerminalProgress? _progressForWindow(TmuxWindow window) {
+    if (widget.activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return null;
+    }
+    if (window.isNativeAcp) {
+      final session = _sessionForNativeWindow(window);
+      if (session != null) {
+        return acpActivityTerminalProgress(acpSessionActivityDisplay(session));
+      }
+    }
+    return window.terminalProgress;
+  }
+
+  TmuxOpenAcpWindowAction _openNativeWindowAction(TmuxWindow window) =>
+      TmuxOpenAcpWindowAction(
+        windowIndex: window.index,
+        bridgeId: window.nativeAcpBridgeId!,
+        providerId: window.nativeAcpProviderId!,
+        workingDirectory: window.currentPath,
+      );
+
+  int _nativeAcpWindowIndex(AcpSwitcherEntry entry) {
+    final terminalMax = (_displayedWindows ?? const <TmuxWindow>[]).fold<int>(
+      -1,
+      (maximum, window) => window.index > maximum ? window.index : maximum,
+    );
+    final offset = _nativeAcpEntries.indexWhere(
+      (candidate) => candidate.keyValue == entry.keyValue,
+    );
+    return terminalMax + 1 + (offset < 0 ? 0 : offset);
+  }
+
+  bool _sameNativeWindowPresentation(
+    List<AcpSessionState> previous,
+    List<AcpSessionState> next,
+  ) {
+    if (identical(previous, next)) {
+      return true;
+    }
+    if (previous.length != next.length) {
+      return false;
+    }
+    for (var index = 0; index < previous.length; index++) {
+      final before = previous[index];
+      final after = next[index];
+      if (before.key != after.key ||
+          before.title != after.title ||
+          before.providerLabel != after.providerLabel ||
+          before.cwd != after.cwd ||
+          before.isLive != after.isLive ||
+          AcpActivitySnapshot.fromSession(before) !=
+              AcpActivitySnapshot.fromSession(after)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void _subscribeToNativeAcpSessions() {
+    unawaited(_acpSessionSubscription?.cancel());
+    _acpSessionSubscription = null;
+    if (widget.activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      if (mounted) {
+        setState(() {
+          _nativeAcpSessions = const <AcpSessionState>[];
+        });
+      }
+      return;
+    }
+    final manager = widget.ref.read(acpSessionManagerProvider);
+    final hostId = widget.session.hostId;
+    _nativeAcpSessions = manager.state.sessions
+        .where(
+          (session) => session.key.hostId == hostId && session.isOpenMuxWindow,
+        )
+        .toList(growable: false);
+    _acpSessionSubscription = manager.states.listen((state) {
+      if (!mounted || widget.session.hostId != hostId) {
+        return;
+      }
+      final nextSessions = state.sessions
+          .where(
+            (session) =>
+                session.key.hostId == hostId && session.isOpenMuxWindow,
+          )
+          .toList(growable: false);
+      if (_sameNativeWindowPresentation(_nativeAcpSessions, nextSessions)) {
+        return;
+      }
+      setState(() => _nativeAcpSessions = nextSessions);
+    });
   }
 
   Future<void> _loadPreferredLaunchTool() async {
@@ -791,25 +978,75 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
   }
 
-  void _resumeSession(ToolSessionInfo info) {
-    final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
-    final command = discovery.buildResumeCommand(
-      info,
-      startInYoloMode: widget.startClisInYoloMode,
-    );
+  Future<AgentWindowModePreference> _loadAgentWindowModePreference() => widget
+      .ref
+      .read(agentWindowModePreferenceNotifierProvider.notifier)
+      .initializedValue();
+
+  Future<void> _resumeSession(
+    ToolSessionInfo info, {
+    bool forceModePicker = false,
+  }) async {
+    final tool = AgentLaunchTool.values
+        .where((candidate) => candidate.label == info.toolName)
+        .firstOrNull;
+    final providerId = tool == null
+        ? null
+        : builtinNativeAcpProvidersByTool()[tool];
+    TmuxNavigatorAction action;
+    if (tool != null &&
+        providerId != null &&
+        widget.activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      final preference = await _loadAgentWindowModePreference();
+      if (!mounted) return;
+      final mode = await resolveAgentWindowMode(
+        context: context,
+        tool: tool,
+        isProUser: widget.isProUser,
+        preference: preference,
+        forcePicker: forceModePicker,
+      );
+      if (!mounted || mode == null) {
+        return;
+      }
+      action = mode == AgentWindowMode.nativeAcp
+          ? TmuxResumeAcpSessionAction(
+              providerId: providerId,
+              acpSessionId: info.sessionId,
+              workingDirectory: info.workingDirectory,
+            )
+          : TmuxResumeSessionAction(
+              widget.ref
+                  .read(agentSessionDiscoveryServiceProvider)
+                  .buildResumeCommand(
+                    info,
+                    startInYoloMode: widget.startClisInYoloMode,
+                  ),
+              workingDirectory: info.workingDirectory,
+            );
+    } else {
+      action = TmuxResumeSessionAction(
+        widget.ref
+            .read(agentSessionDiscoveryServiceProvider)
+            .buildResumeCommand(
+              info,
+              startInYoloMode: widget.startClisInYoloMode,
+            ),
+        workingDirectory: info.workingDirectory,
+      );
+    }
     final wasExpanded = _expanded;
     setState(() => _expanded = false);
     if (wasExpanded) {
       widget.onExpandedChanged(false);
     }
-    widget.onAction(
-      TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
-    );
+    await widget.onAction(action);
   }
 
   Future<void> _showSessionPickerForTool(
     AiSessionProviderEntry provider,
   ) async {
+    ToolSessionInfo? heldSession;
     final selected = await showAiSessionPickerDialog(
       context: context,
       toolName: provider.toolName,
@@ -819,20 +1056,34 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         maxPerTool: maxSessions,
         toolName: provider.toolName,
       ),
+      onSessionLongPress: (session) => heldSession = session,
     );
-    if (!mounted || selected == null) return;
-    _resumeSession(selected);
+    final session = heldSession ?? selected;
+    if (!mounted || session == null) return;
+    await _resumeSession(session, forceModePicker: heldSession != null);
   }
 
   Future<void> _showNewWindowPicker({BuildContext? anchorContext}) async {
     final installedToolsFuture = widget.ref
         .read(tmuxServiceProvider)
         .detectInstalledAgentTools(widget.session);
-    final action = _isSidebar && anchorContext != null
+    final nativeAcpAvailable =
+        widget.activeMuxBackend == RemoteMuxBackend.monkeyMux;
+    final nativeAcpProviderIds = nativeAcpAvailable
+        ? builtinNativeAcpProvidersByTool()
+        : const <AgentLaunchTool, String>{};
+    final agentWindowModePreference = await _loadAgentWindowModePreference();
+    if (!mounted || (anchorContext != null && !anchorContext.mounted)) {
+      return;
+    }
+    final usesTerminalOnlyContextMenu =
+        _isSidebar &&
+        anchorContext != null &&
+        widget.activeMuxBackend != RemoteMuxBackend.monkeyMux;
+    final action = usesTerminalOnlyContextMenu
         ? await showTmuxNewWindowContextMenu(
             context: context,
             anchorContext: anchorContext,
-            isProUser: widget.isProUser,
             startClisInYoloMode: widget.startClisInYoloMode,
             installedToolsFuture: installedToolsFuture,
             preferredTool: _preferredLaunchTool,
@@ -841,8 +1092,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             context: context,
             isProUser: widget.isProUser,
             startClisInYoloMode: widget.startClisInYoloMode,
+            agentWindowModePreference: agentWindowModePreference,
             installedToolsFuture: installedToolsFuture,
             preferredTool: _preferredLaunchTool,
+            nativeAcpProviderIds: nativeAcpProviderIds,
           );
     if (!mounted || action == null) {
       return;
@@ -1266,11 +1519,26 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildHandleBar(ThemeData theme) {
     final displayedWindows = _displayedWindows;
-    final handleLabel = resolveTmuxBarHandleLabel(
-      widget.tmuxSessionName,
-      activeWindowTitle: resolveTmuxBarActiveWindowTitle(displayedWindows),
-    );
-    final activeWindowTool = resolveTmuxBarActiveWindowTool(displayedWindows);
+    final activeNative = _activeNativeAcpEntry;
+    final nativeActivity = activeNative?.session == null
+        ? null
+        : acpSessionActivityDisplay(activeNative!.session!);
+    final handleLabel = activeNative == null
+        ? resolveTmuxBarHandleLabel(
+            widget.tmuxSessionName,
+            activeWindowTitle: resolveTmuxBarActiveWindowTitle(
+              displayedWindows,
+            ),
+          )
+        : '${activeNative.title} · ${nativeActivity?.label ?? 'recent'}';
+    final activeWindowTool = activeNative == null
+        ? resolveTmuxBarActiveWindowTool(displayedWindows)
+        : null;
+    final activeNativeTool = activeNative == null
+        ? null
+        : agentLaunchToolForAcpProviderId(
+            (activeNative.session?.key ?? activeNative.recent!.key).providerId,
+          );
     final tooltip = _expanded
         ? 'Collapse tmux windows'
         : 'Show tmux windows: $handleLabel';
@@ -1294,7 +1562,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(
                 children: [
-                  _buildHandleIcon(theme, activeWindowTool),
+                  _buildHandleIcon(
+                    theme,
+                    activeWindowTool,
+                    nativeWindowIndex: activeNative == null
+                        ? null
+                        : _nativeAcpWindowIndex(activeNative),
+                    nativeWindowTool: activeNativeTool,
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -1336,15 +1611,37 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildSidebarHandle(ThemeData theme) {
     final displayedWindows = _displayedWindows;
-    final handleLabel = resolveTmuxBarHandleLabel(
-      widget.tmuxSessionName,
-      activeWindowTitle: resolveTmuxBarActiveWindowTitle(displayedWindows),
-    );
-    final activeWindowTool = resolveTmuxBarActiveWindowTool(displayedWindows);
+    final activeNative = _activeNativeAcpEntry;
+    final nativeActivity = activeNative?.session == null
+        ? null
+        : acpSessionActivityDisplay(activeNative!.session!);
+    final handleLabel = activeNative == null
+        ? resolveTmuxBarHandleLabel(
+            widget.tmuxSessionName,
+            activeWindowTitle: resolveTmuxBarActiveWindowTitle(
+              displayedWindows,
+            ),
+          )
+        : '${activeNative.title} · ${nativeActivity?.label ?? 'recent'}';
+    final activeWindowTool = activeNative == null
+        ? resolveTmuxBarActiveWindowTool(displayedWindows)
+        : null;
+    final activeNativeTool = activeNative == null
+        ? null
+        : agentLaunchToolForAcpProviderId(
+            (activeNative.session?.key ?? activeNative.recent!.key).providerId,
+          );
     final tooltip = _expanded
         ? 'Collapse tmux windows'
         : 'Show tmux windows: $handleLabel';
-    final icon = _buildHandleIcon(theme, activeWindowTool);
+    final icon = _buildHandleIcon(
+      theme,
+      activeWindowTool,
+      nativeWindowIndex: activeNative == null
+          ? null
+          : _nativeAcpWindowIndex(activeNative),
+      nativeWindowTool: activeNativeTool,
+    );
 
     return Semantics(
       button: true,
@@ -1396,8 +1693,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
   }
 
-  Widget _buildHandleIcon(ThemeData theme, AgentLaunchTool? activeWindowTool) {
+  Widget _buildHandleIcon(
+    ThemeData theme,
+    AgentLaunchTool? activeWindowTool, {
+    required int? nativeWindowIndex,
+    required AgentLaunchTool? nativeWindowTool,
+  }) {
     final color = theme.colorScheme.primary;
+    if (nativeWindowIndex != null) {
+      return buildNativeAcpHandleIcon(theme: theme, tool: nativeWindowTool);
+    }
     if (activeWindowTool != null) {
       return AgentToolIcon(tool: activeWindowTool, size: 16, color: color);
     }
@@ -1424,7 +1729,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       );
     }
 
-    if (displayedWindows == null || displayedWindows.isEmpty) {
+    final nativeEntries = _nativeAcpEntries;
+    if ((displayedWindows == null || displayedWindows.isEmpty) &&
+        nativeEntries.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -1432,8 +1739,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Column(
         children: [
-          for (final window in displayedWindows)
+          for (final window in displayedWindows ?? const <TmuxWindow>[])
             _buildCollapsedSidebarWindowButton(theme, window),
+          for (final entry in nativeEntries)
+            _buildCollapsedNativeAcpButton(theme, entry),
           const SizedBox(height: 4),
           _buildCollapsedSidebarNewWindowButton(theme),
         ],
@@ -1445,16 +1754,26 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     ThemeData theme,
     TmuxWindow window,
   ) {
-    final isActive = window.isActive;
-    final progress = widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
-        ? window.terminalProgress
+    final activeNativeKey = widget.activeNativeAcpSessionKey;
+    final isActive = window.isNativeAcp
+        ? activeNativeKey?.bridgeId == window.nativeAcpBridgeId
+        : window.isActive && activeNativeKey == null;
+    final windowTool = window.isNativeAcp
+        ? agentLaunchToolForAcpProviderId(window.nativeAcpProviderId!)
+        : window.foregroundAgentTool;
+    final nativeSession = window.isNativeAcp
+        ? _sessionForNativeWindow(window)
         : null;
+    final progress = _progressForWindow(window);
     final title = _redactStoreScreenshotIdentities
         ? _storeScreenshotWindowTitle(window)
-        : window.displayTitle;
-    final iconColor = isActive
-        ? theme.colorScheme.onPrimaryContainer
-        : theme.colorScheme.onSurfaceVariant;
+        : nativeSession == null
+        ? window.displayTitle
+        : acpSessionDisplayTitle(nativeSession);
+    final iconColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: isActive,
+    );
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
@@ -1472,12 +1791,17 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             onTap: isActive
                 ? null
                 : () {
+                    unawaited(HapticFeedback.selectionClick());
                     setState(() {
                       _pendingSelectedWindowIndex = window.index;
                     });
                     _startPendingSelectionTimer(window.index);
                     unawaited(
-                      widget.onAction(TmuxSwitchWindowAction(window.index)),
+                      widget.onAction(
+                        window.isNativeAcp
+                            ? _openNativeWindowAction(window)
+                            : TmuxSwitchWindowAction(window.index),
+                      ),
                     );
                   },
             child: Ink(
@@ -1498,10 +1822,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                   alignment: Alignment.center,
                   children: [
                     AgentToolIcon(
-                      tool: window.foregroundAgentTool,
+                      tool: windowTool,
                       color: iconColor,
-                      fallbackIcon: Icons.terminal,
+                      fallbackIcon: window.isNativeAcp
+                          ? Icons.smart_toy_outlined
+                          : Icons.terminal,
                     ),
+                    if (window.isNativeAcp)
+                      Positioned(
+                        left: 2,
+                        top: 2,
+                        child: AcpNativeBadge(
+                          key: ValueKey(
+                            'monkeymux-sidebar-native-${window.index}',
+                          ),
+                          color: iconColor,
+                        ),
+                      ),
                     Positioned(
                       right: -9,
                       bottom: -9,
@@ -1585,25 +1922,21 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     builder: (buttonContext) => Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       child: Tooltip(
-        message: 'New Window',
-        child: Semantics(
-          button: true,
-          label: 'New tmux window',
-          child: InkWell(
-            key: const ValueKey('tmux-sidebar-new-window'),
-            customBorder: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            onTap: () =>
-                unawaited(_showNewWindowPicker(anchorContext: buttonContext)),
-            child: SizedBox(
-              width: 44,
-              height: 44,
-              child: Icon(
-                Icons.add_circle_outline,
-                size: 22,
-                color: theme.colorScheme.primary,
-              ),
+        message: 'New tmux window',
+        child: InkWell(
+          key: const ValueKey('tmux-sidebar-new-window'),
+          customBorder: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          onTap: () =>
+              unawaited(_showNewWindowPicker(anchorContext: buttonContext)),
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: Icon(
+              Icons.add_circle_outline,
+              size: 22,
+              color: theme.colorScheme.primary,
             ),
           ),
         ),
@@ -1626,7 +1959,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       );
     }
 
-    if (displayedWindows == null || displayedWindows.isEmpty) {
+    final nativeEntries = _nativeAcpEntries;
+    if ((displayedWindows == null || displayedWindows.isEmpty) &&
+        nativeEntries.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -1635,8 +1970,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         mainAxisSize: MainAxisSize.min,
         children: [
           const Divider(height: 1),
-          for (final window in displayedWindows)
+          for (final window in displayedWindows ?? const <TmuxWindow>[])
             _buildWindowTile(theme, window),
+          for (final entry in nativeEntries) _buildNativeAcpTile(theme, entry),
           const Divider(height: 1),
           ListTile(
             dense: true,
@@ -1650,7 +1986,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               color: theme.colorScheme.primary,
               size: 18,
             ),
-            title: const Text('New Window'),
+            title: const Text('New window'),
             onTap: () {
               final wasExpanded = _expanded;
               setState(() => _expanded = false);
@@ -1798,22 +2134,331 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
   }
 
-  Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
-    final isActive = window.isActive;
+  Widget _buildCollapsedNativeAcpButton(
+    ThemeData theme,
+    AcpSwitcherEntry entry,
+  ) {
+    final key = entry.session?.key ?? entry.recent!.key;
+    final windowIndex = _nativeAcpWindowIndex(entry);
+    final agentTool = agentLaunchToolForAcpProviderId(key.providerId);
+    final isActive = widget.activeNativeAcpSessionKey == key;
+    final activity = entry.session == null
+        ? null
+        : acpSessionActivityDisplay(entry.session!);
+    final identityColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: isActive,
+    );
+    final activityColor = activity == null
+        ? theme.colorScheme.onSurfaceVariant
+        : acpStatusColor(theme.colorScheme, activity.tone);
+    final progress = activity == null
+        ? null
+        : acpActivityTerminalProgress(activity);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      child: Tooltip(
+        message: 'Open ${entry.title}',
+        child: InkWell(
+          key: ValueKey('monkeymux-sidebar-acp-${key.value}'),
+          customBorder: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          onTap: () {
+            unawaited(HapticFeedback.selectionClick());
+            unawaited(widget.onAction(TmuxOpenAcpSessionAction(key)));
+          },
+          child: Ink(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: isActive
+                  ? theme.colorScheme.primaryContainer
+                  : theme.colorScheme.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(12),
+              border: isActive
+                  ? Border.all(color: theme.colorScheme.primary)
+                  : null,
+            ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                AgentToolIcon(tool: agentTool, size: 22, color: identityColor),
+                Positioned(
+                  left: 2,
+                  top: 2,
+                  child: AcpNativeBadge(
+                    key: ValueKey('monkeymux-sidebar-acp-native-${key.value}'),
+                    color: identityColor,
+                  ),
+                ),
+                Positioned(
+                  right: -9,
+                  bottom: -9,
+                  child: DecoratedBox(
+                    key: ValueKey('monkeymux-sidebar-acp-index-${key.value}'),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHigh,
+                      border: Border.all(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        width: 1.5,
+                      ),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: SizedBox(
+                      width: 18,
+                      height: 15,
+                      child: Center(
+                        child: Text(
+                          '$windowIndex',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: identityColor,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                if (activity != null && !activity.isReady)
+                  Positioned(
+                    right: 3,
+                    top: 3,
+                    child: Icon(activity.icon, size: 11, color: activityColor),
+                  ),
+                if (progress != null)
+                  Positioned(
+                    left: -7,
+                    right: 7,
+                    bottom: -11,
+                    child: _MuxWindowProgressIndicator(
+                      key: ValueKey(
+                        'monkeymux-sidebar-acp-progress-${key.value}',
+                      ),
+                      progress: progress,
+                      semanticsWindowLabel:
+                          'Native agent window: ${entry.title}',
+                      compact: true,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNativeAcpTile(ThemeData theme, AcpSwitcherEntry entry) {
+    final session = entry.session;
+    final recent = entry.recent;
+    final key = session?.key ?? recent!.key;
+    final windowIndex = _nativeAcpWindowIndex(entry);
+    final agentTool = agentLaunchToolForAcpProviderId(key.providerId);
+    final activity = session == null
+        ? null
+        : acpSessionActivityDisplay(session);
+    final isActive = widget.activeNativeAcpSessionKey == key;
+    final identityColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: isActive,
+    );
+    final progress = activity == null
+        ? null
+        : acpActivityTerminalProgress(activity);
+    return ListTile(
+      key: ValueKey('monkeymux-acp-${key.value}'),
+      dense: true,
+      selected: isActive,
+      selectedTileColor: theme.colorScheme.primaryContainer.withAlpha(96),
+      minTileHeight: 44,
+      contentPadding: const EdgeInsets.only(left: 12, right: 4),
+      horizontalTitleGap: 10,
+      minLeadingWidth: 24,
+      leading: Container(
+        key: ValueKey('monkeymux-acp-number-slot-${key.value}'),
+        width: 22,
+        height: 22,
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          '$windowIndex',
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: identityColor,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+      title: Row(
+        children: [
+          AcpNativeBadgeOverlay(
+            color: identityColor,
+            badgeKey: ValueKey('monkeymux-acp-native-${key.value}'),
+            child: AgentToolIcon(
+              key: ValueKey('monkeymux-acp-agent-icon-${key.value}'),
+              tool: agentTool,
+              size: 17,
+              color: identityColor,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              entry.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: isActive
+                  ? theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    )
+                  : null,
+            ),
+          ),
+        ],
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${acpCwdSummary(session?.cwd ?? recent?.cwd)} · '
+            '${activity?.label ?? 'recent'}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          if (progress != null) ...[
+            const SizedBox(height: 3),
+            _MuxWindowProgressIndicator(
+              key: ValueKey('monkeymux-acp-progress-${key.value}'),
+              progress: progress,
+              semanticsWindowLabel: 'Native agent window: ${entry.title}',
+            ),
+          ],
+        ],
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: AcpMuxWindowStatusBadge(session: session),
+          ),
+          if (session != null)
+            IconButton(
+              icon: const Icon(Icons.close, size: 16),
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+              padding: EdgeInsets.zero,
+              tooltip: 'Close window',
+              onPressed: () =>
+                  unawaited(_confirmCloseNativeAcpSession(key, entry.title)),
+            )
+          else
+            const SizedBox(width: 30),
+        ],
+      ),
+      onTap: () {
+        unawaited(HapticFeedback.selectionClick());
+        unawaited(widget.onAction(TmuxOpenAcpSessionAction(key)));
+      },
+    );
+  }
+
+  Future<void> _confirmCloseNativeAcpSession(
+    AcpSessionKey key,
+    String title,
+  ) async {
+    final confirmed = await confirmMuxWindowClose(
+      context: context,
+      ref: widget.ref,
+      title: title,
+    );
+    if (!mounted || !confirmed) {
+      return;
+    }
+    await widget.onAction(TmuxCloseAcpSessionAction(key));
+  }
+
+  Future<void> _confirmCloseWindow(TmuxWindow window) async {
     final title = _redactStoreScreenshotIdentities
         ? _storeScreenshotWindowTitle(window)
         : window.displayTitle;
+    final confirmed = await confirmMuxWindowClose(
+      context: context,
+      ref: widget.ref,
+      title: title,
+    );
+    if (!mounted || !confirmed) {
+      return;
+    }
+    final closeKey = _windowCloseKey(window);
+    setState(() {
+      _closingWindowKeys.add(closeKey);
+      if (_pendingSelectedWindowIndex == window.index) {
+        _pendingSelectedWindowIndex = null;
+        _pendingSelectionTimer?.cancel();
+        _pendingSelectionTimer = null;
+      }
+    });
+    try {
+      await widget.onAction(TmuxCloseWindowAction(window.index));
+    } on Object {
+      if (mounted) {
+        setState(() => _closingWindowKeys.remove(closeKey));
+      }
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _closingWindowKeys.remove(closeKey);
+      _windows = _windows
+          ?.where((candidate) => _windowCloseKey(candidate) != closeKey)
+          .toList();
+    });
+  }
+
+  Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
+    final activeNativeKey = widget.activeNativeAcpSessionKey;
+    final isActive = window.isNativeAcp
+        ? activeNativeKey?.bridgeId == window.nativeAcpBridgeId
+        : window.isActive && activeNativeKey == null;
+    final windowTool = window.isNativeAcp
+        ? agentLaunchToolForAcpProviderId(window.nativeAcpProviderId!)
+        : window.foregroundAgentTool;
+    final nativeSession = window.isNativeAcp
+        ? _sessionForNativeWindow(window)
+        : null;
+    final nativeActivity = nativeSession == null
+        ? null
+        : acpSessionActivityDisplay(nativeSession);
+    final title = _redactStoreScreenshotIdentities
+        ? _storeScreenshotWindowTitle(window)
+        : nativeSession == null
+        ? window.displayTitle
+        : acpSessionDisplayTitle(nativeSession);
     final secondaryTitle = _redactStoreScreenshotIdentities
         ? null
-        : window.secondaryTitle;
-    final iconColor = isActive
-        ? theme.colorScheme.primary
-        : theme.colorScheme.onSurfaceVariant;
-    final progress = widget.activeMuxBackend == RemoteMuxBackend.monkeyMux
-        ? window.terminalProgress
-        : null;
+        : nativeSession == null
+        ? window.secondaryTitle
+        : '${nativeSession.providerLabel} · '
+              '${acpCwdSummary(nativeSession.cwd)} · ${nativeActivity!.label}';
+    final iconColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: isActive,
+    );
+    final progress = _progressForWindow(window);
 
     return ListTile(
+      key: ValueKey('monkeymux-window-${window.index}'),
       dense: true,
       visualDensity: _denseTileVisualDensity,
       minVerticalPadding: 2,
@@ -1846,12 +2491,26 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       ),
       title: Row(
         children: [
-          AgentToolIcon(
-            tool: window.foregroundAgentTool,
-            size: 16,
-            color: iconColor,
-            fallbackIcon: Icons.terminal,
-          ),
+          if (window.isNativeAcp)
+            AcpNativeBadgeOverlay(
+              size: 16,
+              color: iconColor,
+              badgeKey: ValueKey('monkeymux-native-badge-${window.index}'),
+              child: AgentToolIcon(
+                key: ValueKey('monkeymux-window-agent-icon-${window.index}'),
+                tool: windowTool,
+                size: 16,
+                color: iconColor,
+              ),
+            )
+          else
+            AgentToolIcon(
+              key: ValueKey('monkeymux-window-agent-icon-${window.index}'),
+              tool: windowTool,
+              size: 16,
+              color: iconColor,
+              fallbackIcon: Icons.terminal,
+            ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -1899,7 +2558,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         children: [
           Padding(
             padding: const EdgeInsets.only(right: 6),
-            child: TmuxWindowStatusBadge(window: window),
+            child: window.isNativeAcp
+                ? AcpMuxWindowStatusBadge(
+                    session: nativeSession,
+                    fallbackLabel: 'native',
+                  )
+                : TmuxWindowStatusBadge(window: window),
           ),
           IconButton(
             icon: const Icon(Icons.close, size: 16),
@@ -1907,19 +2571,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             constraints: const BoxConstraints.tightFor(width: 30, height: 30),
             padding: EdgeInsets.zero,
             tooltip: 'Close window',
-            onPressed: () {
-              widget.onAction(TmuxCloseWindowAction(window.index));
-              setState(() {
-                _windows = _windows
-                    ?.where((w) => w.index != window.index)
-                    .toList();
-                if (_pendingSelectedWindowIndex == window.index) {
-                  _pendingSelectedWindowIndex = null;
-                  _pendingSelectionTimer?.cancel();
-                  _pendingSelectionTimer = null;
-                }
-              });
-            },
+            onPressed: () => unawaited(_confirmCloseWindow(window)),
           ),
         ],
       ),
@@ -1932,13 +2584,20 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               }
             }
           : () {
+              unawaited(HapticFeedback.selectionClick());
               setState(() {
                 _pendingSelectedWindowIndex = window.index;
                 _expanded = false;
               });
               widget.onExpandedChanged(false);
               _startPendingSelectionTimer(window.index);
-              unawaited(widget.onAction(TmuxSwitchWindowAction(window.index)));
+              unawaited(
+                widget.onAction(
+                  window.isNativeAcp
+                      ? _openNativeWindowAction(window)
+                      : TmuxSwitchWindowAction(window.index),
+                ),
+              );
             },
     );
   }

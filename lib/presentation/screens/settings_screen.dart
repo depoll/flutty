@@ -9,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../app/app_metadata.dart';
 import '../../app/routes.dart';
 import '../../app/theme.dart';
+import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
@@ -678,6 +679,9 @@ class _TerminalSection extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final agentWindowMode = ref.watch(
+      agentWindowModePreferenceNotifierProvider,
+    );
     final fontSize = ref.watch(fontSizeNotifierProvider);
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
@@ -694,6 +698,9 @@ class _TerminalSection extends ConsumerWidget {
       portForwardBrowserLinksNotifierProvider,
     );
     final shellCompletions = ref.watch(shellCompletionsNotifierProvider);
+    final confirmMuxWindowClose = ref.watch(
+      confirmMuxWindowCloseNotifierProvider,
+    );
     final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
     final sharedClipboardLocalRead = ref.watch(
       sharedClipboardLocalReadNotifierProvider,
@@ -720,7 +727,8 @@ class _TerminalSection extends ConsumerWidget {
       children: [
         const _SectionHeader(
           title: 'terminal',
-          subtitle: 'Themes, fonts, links, keyboard, and clipboard behavior',
+          subtitle:
+              'Themes, fonts, agent windows, links, keyboard, and clipboard behavior',
         ),
         ListTile(
           leading: const Icon(Icons.palette_outlined),
@@ -745,6 +753,17 @@ class _TerminalSection extends ConsumerWidget {
           title: const Text('Font family'),
           subtitle: Text(_fontFamilyLabel(fontFamily)),
           onTap: () => _showFontFamilyDialog(context, ref, fontFamily),
+        ),
+        ListTile(
+          key: const ValueKey('settings-agent-window-mode'),
+          leading: const Icon(Icons.view_agenda_outlined),
+          title: const Text('Agent window mode'),
+          subtitle: Text(
+            '${agentWindowMode.label}\n${agentWindowMode.explanation}',
+            maxLines: 3,
+          ),
+          onTap: () =>
+              _showAgentWindowModeDialog(context, ref, agentWindowMode),
         ),
         ListTile(
           leading: const Icon(Icons.text_fields),
@@ -844,6 +863,21 @@ class _TerminalSection extends ConsumerWidget {
           },
         ),
         SwitchListTile(
+          secondary: const Icon(Icons.warning_amber_rounded),
+          title: const Text('Confirm before closing mux windows'),
+          subtitle: const Text(
+            'Ask before closing a tmux or MonkeyMux terminal window',
+          ),
+          value: confirmMuxWindowClose,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(confirmMuxWindowCloseNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
+          },
+        ),
+        SwitchListTile(
           secondary: const Icon(Icons.content_paste_go_outlined),
           title: const Text('Remote can update clipboard'),
           subtitle: const Text(
@@ -904,6 +938,53 @@ class _TerminalSection extends ConsumerWidget {
           },
         ),
       ],
+    );
+  }
+
+  void _showAgentWindowModeDialog(
+    BuildContext context,
+    WidgetRef ref,
+    AgentWindowModePreference current,
+  ) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Agent window mode'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Choose the default for agents that support both experiences. '
+              'You can still pick a different mode from the window menu.',
+            ),
+            const SizedBox(height: FluttyTheme.spacingMd),
+            RadioGroup<AgentWindowModePreference>(
+              groupValue: current,
+              onChanged: (value) {
+                if (value == null) return;
+                unawaited(
+                  ref
+                      .read(agentWindowModePreferenceNotifierProvider.notifier)
+                      .setPreference(value),
+                );
+                Navigator.pop(context);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final preference in AgentWindowModePreference.values)
+                    RadioListTile<AgentWindowModePreference>(
+                      title: Text(preference.label),
+                      subtitle: Text(preference.explanation),
+                      value: preference,
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

@@ -23,6 +23,7 @@ import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
@@ -842,6 +843,9 @@ LISTEN ::1:4201
       expect(syntaxCheck.exitCode, 0, reason: '${syntaxCheck.stderr}');
       expect(command, startsWith('/bin/sh -c '));
       expect(command, contains('sleep 0.5'));
+      expect(command, contains('cat >/dev/null'));
+      expect(command, contains(r'kill -TERM "$$"'));
+      expect(command, contains('watcher_guard'));
       expect(command, contains(_automaticPortWatcherSnapshotBeginMarker));
       expect(command, contains(_automaticPortWatcherSnapshotEndMarker));
       expect(command, contains('*$_automaticPortDiscoveryUnavailableMarker*)'));
@@ -1489,15 +1493,15 @@ LISTEN ::1:4201
         ),
       );
       addTearDown(() async {
+        for (final completer in doneCompleters) {
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        }
         await session.configureAutomaticPortForwarding(enabled: false);
         for (final controller in stdoutControllers) {
           if (!controller.isClosed) {
             await controller.close();
-          }
-        }
-        for (final completer in doneCompleters) {
-          if (!completer.isCompleted) {
-            completer.complete();
           }
         }
       });
@@ -1524,6 +1528,13 @@ LISTEN ::1:4201
       final rootsUpdated = session.updateAutomaticPortForwardProcessRoots({
         7300,
       });
+      await pumpEventQueue();
+      expect(
+        watcherIndex,
+        1,
+        reason: 'a replacement must wait for the old SSH channel to close',
+      );
+      doneCompleters[0].complete();
       await _waitUntil(() => watcherIndex == 2);
       stdoutControllers[1].add(
         Uint8List.fromList(
@@ -3809,6 +3820,35 @@ LISTEN ::1:4201
       expect(terminalNotifications, 1);
     });
 
+    test(
+      'native viewport drops hidden terminal replay until restored',
+      () async {
+        final shell = await openShell();
+        final session = shell.session
+          ..debugTerminalOutputFlushInterval = const Duration(minutes: 5)
+          ..setTerminalParsingPaused(paused: true);
+        final terminal = session.terminal!;
+
+        shell.stdout.add(
+          Uint8List.fromList(utf8.encode('hidden terminal replay')),
+        );
+        await pumpEventQueue();
+        session.debugFlushPendingTerminalOutput();
+        await pumpEventQueue();
+        expect(firstLineText(terminal), isEmpty);
+
+        session.setTerminalParsingPaused(paused: false);
+        shell.stdout.add(
+          Uint8List.fromList(utf8.encode('visible after restore')),
+        );
+        await pumpEventQueue();
+        session.debugFlushPendingTerminalOutput();
+        await pumpEventQueue();
+
+        expect(firstLineText(terminal), 'visible after restore');
+      },
+    );
+
     test('coalesces split MonkeyMux active-window replay chunks', () async {
       final shell = await openShell();
       final session = shell.session;
@@ -5362,6 +5402,49 @@ LISTEN ::1:4201
         );
       },
     );
+
+    test('persists native focus in active connection metadata', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final result = await notifier.connect(42, forceNew: true);
+      expect(result.success, isTrue);
+      final connectionId = result.connectionId!;
+      final key = AcpSessionKey.of(
+        hostId: 42,
+        providerId: 'pi',
+        bridgeId: 'bridge-1',
+        acpSessionId: 'session-1',
+      );
+
+      notifier
+        ..updateSessionNativeAcpFocus(
+          connectionId,
+          key: key,
+          displayTitle: 'Pi',
+        )
+        ..updateSessionNativeAcpPreview(
+          connectionId,
+          'You: inspect this\nAgent: working on it',
+        );
+
+      final focused = notifier.getActiveConnection(connectionId)!;
+      expect(
+        fakeSshService.getSession(connectionId)!.activeNativeAcpSessionKey,
+        key,
+      );
+      expect(focused.sessionTitle, 'Pi · native');
+      expect(focused.preview, 'You: inspect this\nAgent: working on it');
+      expect(focused.windowTitle, isNull);
+      expect(focused.workingDirectory, isNull);
+
+      notifier.updateSessionNativeAcpFocus(connectionId, key: null);
+      expect(
+        fakeSshService.getSession(connectionId)!.activeNativeAcpSessionKey,
+        isNull,
+      );
+      final cleared = notifier.getActiveConnection(connectionId)!;
+      expect(cleared.sessionTitle, isNot('Pi · native'));
+      expect(cleared.preview, isNot('You: inspect this\nAgent: working on it'));
+    });
 
     test('syncBackgroundStatus serializes queued updates', () async {
       final notifier = container.read(activeSessionsProvider.notifier);

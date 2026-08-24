@@ -12,6 +12,7 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/port_proxy_name.dart';
 import '../../domain/models/remote_multiplexer.dart';
@@ -365,6 +366,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     disableTmuxStatusBar: _disableTmuxStatusBar,
     disableAgentTmuxStatusBar: _disableAgentTmuxStatusBar,
     startClisInYoloMode: _startClisInYoloMode,
+    agentWindowModePreference: AgentWindowModePreference.askEveryTime,
     autoForwardPorts: _autoForwardPorts,
   );
 

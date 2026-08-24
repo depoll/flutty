@@ -88,6 +88,7 @@ void main() {
         4,
         windowId: '@9',
         clientImageSignatures: const {1: 111, 2: 222},
+        suppressReplay: true,
       );
       await backend.createWindow(command: 'codex', workingDirectory: '/repo');
       await backend.killWindow(3);
@@ -99,8 +100,8 @@ void main() {
         tmuxMultiplexer.calls,
         containsAll(<String>[
           'context:dev:-L flutty',
-          'select:dev:2:@7:-L flutty:null',
-          'select:dev:4:@9:-L flutty:2',
+          'select:dev:2:@7:-L flutty:null:false',
+          'select:dev:4:@9:-L flutty:2:true',
           'create:dev:codex:/repo:-L flutty',
           'kill:dev:3:-L flutty',
         ]),
@@ -245,10 +246,12 @@ class _FakeRemoteMultiplexerService implements RemoteMultiplexerService {
     String? windowId,
     String? extraFlags,
     Map<int, int>? clientImageSignatures,
+    bool suppressReplay = false,
   }) async {
     calls.add(
       'select:$sessionName:$windowIndex:$windowId:$extraFlags:'
-      '${clientImageSignatures == null ? 'null' : clientImageSignatures.length}',
+      '${clientImageSignatures == null ? 'null' : clientImageSignatures.length}:'
+      '$suppressReplay',
     );
   }
 

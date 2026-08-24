@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.161"
+	monkeyMuxVersion                  = "0.1.178"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -80,6 +80,7 @@ const (
 	bracketedPasteStartCarryDelay     = 20 * time.Millisecond
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
 	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
+	foregroundRedrawBufferLimitBytes  = 512 * 1024
 	windowUpdateMinInterval           = 750 * time.Millisecond
 	windowHistoryLimitBytes           = 128 * 1024
 	windowFullReplayHistoryLimitBytes = 512 * 1024
@@ -139,21 +140,19 @@ const (
 	maxRetainedKittyImages       = 128
 	maxRetainedKittyImageNumbers = maxRetainedKittyImages
 	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
-	// Caps for how many retained images are *replayed* on a window switch.
-	// Replaying every retained transmission makes the client decode many
-	// megabytes per switch; even with client-side downscaling and dedup, a very
-	// large burst can pressure memory on small devices, so keep this modest. The
-	// foreground app re-emits placeholder cells for the visible screen, so this
-	// only needs to cover the images currently on screen plus a little
-	// scrollback; deeper scrollback images repaint when the app redraws.
-	maxReplayedKittyImages     = 16
-	maxReplayedKittyImageBytes = 8 * 1024 * 1024
-	// A multipart transmission must fit inside the same budget that can be
-	// replayed to a client. The old 2 MiB cap silently discarded ordinary
-	// screenshots between their m=1 continuation chunks and final m=0 chunk,
-	// leaving only Unicode placeholder cells that referenced an image the
-	// server never retained.
-	maxKittyGraphicsPendingBytes = maxReplayedKittyImageBytes
+	// Initial attach/window-switch replay must stay small enough for a phone to
+	// parse before SSH/terminal readiness deadlines. Long agent sessions can
+	// retain dozens of screenshots; eagerly replaying the former 8 MiB budget
+	// made the whole connection appear timed out. Replay only the newest likely-
+	// visible roots here. Placeholder-driven missing-image requests repair other
+	// visible images after the terminal is already connected.
+	maxReplayedKittyImages     = 4
+	maxReplayedKittyImageBytes = 2 * 1024 * 1024
+	// On-demand repair and multipart capture retain the larger budget so an
+	// ordinary screenshot above 2 MiB is not dropped or permanently blank; only
+	// the synchronous initial replay is constrained to the attach-safe budget.
+	maxKittyImageRepairBytes     = 8 * 1024 * 1024
+	maxKittyGraphicsPendingBytes = maxKittyImageRepairBytes
 )
 
 const terminalParserResetSequence = "\x1b\\"
@@ -251,15 +250,33 @@ var capabilities = []string{
 	"client-viewport-clipping",
 	"image-replay-ack",
 	"upgrade-restore-v1",
+	"acp-bridge-v1",
+	"acp-bridge-replay-v1",
+	"acp-bridge-control-start-v1",
+	"acp-window-v1",
+	"native-acp-upgrade-handoff-v1",
 }
 
 var (
-	errRunCommandCanceled     = errors.New("command canceled")
-	errRunCommandClientClosed = errors.New("control client closed")
-	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
-	errRunCommandTimeout      = errors.New("command timed out")
-	errServerClosed           = errors.New("server is closed")
+	errRunCommandCanceled           = errors.New("command canceled")
+	errRunCommandClientClosed       = errors.New("control client closed")
+	errRunCommandOutputLimit        = errors.New("command output limit exceeded")
+	errRunCommandTimeout            = errors.New("command timed out")
+	errServerClosed                 = errors.New("server is closed")
+	errServerUpdateNoSnapshot       = errors.New("MonkeyMux update could not snapshot the running workspace; the existing helper was kept")
+	errServerUpdateNativeAcpHandoff = errors.New("MonkeyMux update could not preserve the running native agent windows; the existing helper was kept")
+	errServerUpdateStillAlive       = errors.New("MonkeyMux update could not stop the running workspace; the existing helper was kept")
 )
+
+var stopNativeAcpBridgeForWindow = requestAcpBridgeStopAndWait
+
+var nativeAcpWindowArguments = func(bridgeID string) ([]string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return []string{exe, "acp", "wait", bridgeID}, nil
+}
 
 var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
@@ -466,6 +483,8 @@ type controlMessage struct {
 	Name           string   `json:"name,omitempty"`
 	Cwd            string   `json:"cwd,omitempty"`
 	Command        string   `json:"command,omitempty"`
+	ProviderID     string   `json:"providerId,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
 	Args           []string `json:"args,omitempty"`
 	Data           string   `json:"data,omitempty"`
 	BracketedPaste bool     `json:"bracketedPaste,omitempty"`
@@ -480,6 +499,9 @@ type controlMessage struct {
 	Redraw         bool   `json:"redraw,omitempty"`
 	NoPrefix       bool   `json:"noPrefix,omitempty"`
 	ClipViewport   bool   `json:"clipViewport,omitempty"`
+	// SuppressReplay selects a native ACP placeholder without redrawing it into
+	// the attached terminal because the app replaces that viewport natively.
+	SuppressReplay bool `json:"suppressReplay,omitempty"`
 	// HaveImageSignatures maps a Kitty protocol image id (as a string) to the
 	// FNV-1a-32 signature of the base64-decoded payload the client already
 	// holds. Sent with select_window so the replay can skip re-transmitting
@@ -529,6 +551,9 @@ type windowSnapshot struct {
 	AgentSessionID            string                    `json:"agentSessionId,omitempty"`
 	AgentSessionDir           string                    `json:"agentSessionDir,omitempty"`
 	AgentSessionPath          string                    `json:"agentSessionPath,omitempty"`
+	AgentSessionIdentityExact bool                      `json:"agentSessionIdentityExact,omitempty"`
+	NativeAcpBridgeID         string                    `json:"nativeAcpBridgeId,omitempty"`
+	NativeAcpProviderID       string                    `json:"nativeAcpProviderId,omitempty"`
 	LastActivityEpochSeconds  int64                     `json:"lastActivityEpochSeconds,omitempty"`
 	TerminalReportsMouseWheel bool                      `json:"terminalReportsMouseWheel,omitempty"`
 	TerminalMouseReportSgr    bool                      `json:"terminalMouseReportSgr,omitempty"`
@@ -549,30 +574,33 @@ type serverRestore struct {
 }
 
 type restoreWindowState struct {
-	ID                       string                    `json:"id,omitempty"`
-	Index                    int                       `json:"index,omitempty"`
-	Name                     string                    `json:"name,omitempty"`
-	Cwd                      string                    `json:"cwd,omitempty"`
-	CurrentCommand           string                    `json:"currentCommand,omitempty"`
-	PanePid                  int                       `json:"panePid,omitempty"`
-	PaneTitle                string                    `json:"paneTitle,omitempty"`
-	AgentTool                string                    `json:"agentTool,omitempty"`
-	AgentToolConfirmed       bool                      `json:"agentToolConfirmed,omitempty"`
-	AgentSessionID           string                    `json:"agentSessionId,omitempty"`
-	AgentSessionDir          string                    `json:"agentSessionDir,omitempty"`
-	AgentSessionPath         string                    `json:"agentSessionPath,omitempty"`
-	LastActivityEpochSeconds int64                     `json:"lastActivityEpochSeconds,omitempty"`
-	HistoryBase64            string                    `json:"historyBase64,omitempty"`
-	HistoryStartsAtGround    bool                      `json:"historyStartsAtGround,omitempty"`
-	CursorVisible            bool                      `json:"cursorVisible,omitempty"`
-	CursorVisibilityKnown    bool                      `json:"cursorVisibilityKnown,omitempty"`
-	PrivateModes             map[string]bool           `json:"privateModes,omitempty"`
-	InsertModeEnabled        bool                      `json:"insertModeEnabled,omitempty"`
-	InsertModeKnown          bool                      `json:"insertModeKnown,omitempty"`
-	ApplicationKeypadEnabled bool                      `json:"applicationKeypadEnabled,omitempty"`
-	ApplicationKeypadKnown   bool                      `json:"applicationKeypadKnown,omitempty"`
-	TerminalProgress         *terminalProgressSnapshot `json:"terminalProgress,omitempty"`
-	Active                   bool                      `json:"active,omitempty"`
+	ID                        string                    `json:"id,omitempty"`
+	Index                     int                       `json:"index,omitempty"`
+	Name                      string                    `json:"name,omitempty"`
+	Cwd                       string                    `json:"cwd,omitempty"`
+	CurrentCommand            string                    `json:"currentCommand,omitempty"`
+	PanePid                   int                       `json:"panePid,omitempty"`
+	PaneTitle                 string                    `json:"paneTitle,omitempty"`
+	AgentTool                 string                    `json:"agentTool,omitempty"`
+	AgentToolConfirmed        bool                      `json:"agentToolConfirmed,omitempty"`
+	AgentSessionID            string                    `json:"agentSessionId,omitempty"`
+	AgentSessionDir           string                    `json:"agentSessionDir,omitempty"`
+	AgentSessionPath          string                    `json:"agentSessionPath,omitempty"`
+	AgentSessionIdentityExact bool                      `json:"agentSessionIdentityExact,omitempty"`
+	NativeAcpBridgeID         string                    `json:"nativeAcpBridgeId,omitempty"`
+	NativeAcpProviderID       string                    `json:"nativeAcpProviderId,omitempty"`
+	LastActivityEpochSeconds  int64                     `json:"lastActivityEpochSeconds,omitempty"`
+	HistoryBase64             string                    `json:"historyBase64,omitempty"`
+	HistoryStartsAtGround     bool                      `json:"historyStartsAtGround,omitempty"`
+	CursorVisible             bool                      `json:"cursorVisible,omitempty"`
+	CursorVisibilityKnown     bool                      `json:"cursorVisibilityKnown,omitempty"`
+	PrivateModes              map[string]bool           `json:"privateModes,omitempty"`
+	InsertModeEnabled         bool                      `json:"insertModeEnabled,omitempty"`
+	InsertModeKnown           bool                      `json:"insertModeKnown,omitempty"`
+	ApplicationKeypadEnabled  bool                      `json:"applicationKeypadEnabled,omitempty"`
+	ApplicationKeypadKnown    bool                      `json:"applicationKeypadKnown,omitempty"`
+	TerminalProgress          *terminalProgressSnapshot `json:"terminalProgress,omitempty"`
+	Active                    bool                      `json:"active,omitempty"`
 }
 
 type muxServer struct {
@@ -659,6 +687,9 @@ type muxWindow struct {
 	agentSessionID              string
 	agentSessionDir             string
 	agentSessionPath            string
+	agentSessionIdentityExact   bool
+	nativeAcpBridgeID           string
+	nativeAcpProviderID         string
 	foregroundPid               int
 	foregroundCommand           string
 	paneTitle                   string
@@ -705,6 +736,7 @@ type muxWindow struct {
 	themeColorQueryKeys                  map[string]bool
 	alert                                bool
 	closed                               bool
+	closing                              bool
 	redrawForwardingPaused               bool
 	redrawForwardingGeneration           int
 	redrawForwardingReplay               []byte
@@ -971,6 +1003,12 @@ func main() {
 		serveCommand(os.Args[2:])
 	case "gc":
 		gcCommand()
+	case "acp":
+		acpCommand(os.Args[2:])
+	case "pi-agent":
+		piAgentCommand(os.Args[2:])
+	case "cursor-agent-auth":
+		cursorAgentAuthCommand(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(monkeyMuxVersion)
 	case "help", "--help", "-h":
@@ -989,6 +1027,7 @@ func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "  monkeymux new-session [-d] [-s NAME] [COMMAND...]")
 	fmt.Fprintln(writer, "  monkeymux list-sessions")
 	fmt.Fprintln(writer, "  monkeymux kill-session -t NAME")
+	fmt.Fprintln(writer, "  monkeymux acp start|attach|list|status|stop|gc")
 	fmt.Fprintln(writer, "  monkeymux version")
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, "Inside a session (prefix Ctrl-B):")
@@ -1001,6 +1040,77 @@ func printUsage(writer io.Writer) {
 func usageAndExit() {
 	printUsage(os.Stderr)
 	os.Exit(2)
+}
+
+const piIdentityExtensionSource = `export default function (pi) {
+  const publish = (_event, ctx) => {
+    const id = ctx.sessionManager.getSessionId();
+    const file = ctx.sessionManager.getSessionFile();
+    if (!id || !file) return;
+    const payload = Buffer.from(JSON.stringify({ id, file }), "utf8")
+      .toString("base64url");
+    process.stdout.write("\u001b]1337;MonkeyMuxPi=" + payload + "\u0007");
+  };
+  pi.on("session_start", publish);
+}
+`
+
+func piAgentCommand(args []string) {
+	extensionPath, err := ensurePiIdentityExtension()
+	if err != nil {
+		fatal(fmt.Errorf("prepare Pi session integration: %w", err))
+	}
+	commandArgs := make([]string, 0, len(args)+2)
+	commandArgs = append(commandArgs, "--extension", extensionPath)
+	commandArgs = append(commandArgs, args...)
+	command := exec.Command("pi", commandArgs...)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Env = os.Environ()
+	if err := command.Run(); err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitError.ExitCode())
+		}
+		fatal(err)
+	}
+}
+
+func cursorAgentAuthCommand(args []string) {
+	if len(args) != 0 {
+		usageAndExit()
+	}
+	var command *exec.Cmd
+	if acpRuntimeGOOS == "darwin" {
+		command = exec.Command("/usr/bin/security", "unlock-keychain")
+	} else {
+		command = exec.Command("cursor-agent", "login")
+	}
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Env = inheritedEnvironment(os.Environ())
+	if err := command.Run(); err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitError.ExitCode())
+		}
+		fatal(err)
+	}
+}
+
+func ensurePiIdentityExtension() (string, error) {
+	directory, err := runtimeDirectory()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(directory, "monkeymux-pi-identity.ts")
+	if data, readErr := os.ReadFile(path); readErr == nil && string(data) == piIdentityExtensionSource {
+		return path, nil
+	}
+	if err := os.WriteFile(path, []byte(piIdentityExtensionSource), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func attachCommand(args []string) {
@@ -1626,6 +1736,7 @@ func gcCommand() {
 		}
 		_ = os.Remove(path)
 	}
+	gcAcpArtifacts(runDir)
 }
 
 // removeAbandonedRestoreFile deletes an upgrade snapshot left behind by a
@@ -1651,9 +1762,10 @@ func removeAbandonedStagingFile(path string) {
 }
 
 type ensureServerReplacement struct {
-	restore       *serverRestore
-	oldPID        pidRecord
-	legacyHandoff bool
+	restore        *serverRestore
+	oldPID         pidRecord
+	legacyHandoff  bool
+	keepOldProcess bool
 }
 
 func ensureServer(
@@ -1756,7 +1868,9 @@ func ensureServer(
 	var previousPID pidRecord
 	if replacement != nil {
 		restore = replacement.restore
-		previousPID = replacement.oldPID
+		if !replacement.keepOldProcess {
+			previousPID = replacement.oldPID
+		}
 	}
 	if restore != nil && len(restore.Windows) > 0 {
 		path, err := writeRestoreFile(session, restore)
@@ -1842,9 +1956,8 @@ func ensureServer(
 
 	deadline := time.Now().Add(socketTimeout)
 	for time.Now().Before(deadline) {
-		conn, err := dialSession(session)
-		if err == nil {
-			_ = conn.Close()
+		status, err := queryRunningServerStatus(session)
+		if err == nil && status.version == monkeyMuxVersion {
 			// Only signal a process still proven to be the previous server.
 			// The old pid may have been recycled while it shut down — possibly
 			// onto the replacement that just answered this dial.
@@ -1895,9 +2008,36 @@ func prepareRunningServerReplacement(
 			session,
 			status.displayVersion(),
 		)
-		return nil, nil
+		return nil, errServerUpdateNoSnapshot
 	}
 	oldPID, _ := sessionServerOwner(session)
+	if restoreHasNativeAcpWindows(restore) {
+		// Native ACP bridges live inside the outgoing helper. Keep that process
+		// as a private bridge host, but close its terminal windows now that their
+		// restore state is captured. The replacement recreates every window and
+		// points native placeholders at the same live bridge sockets.
+		if err := requestNativeAcpUpgradeHandoff(session, restore); err != nil {
+			fmt.Fprintf(
+				os.Stderr,
+				"monkeymux: could not preserve native agent windows for session %q; keeping helper %s\r\n",
+				session,
+				status.displayVersion(),
+			)
+			return nil, fmt.Errorf("%w: %v", errServerUpdateNativeAcpHandoff, err)
+		}
+		fmt.Fprintf(
+			os.Stderr,
+			"monkeymux: handing live native agent windows from helper %s to helper %s\r\n",
+			status.displayVersion(),
+			monkeyMuxVersion,
+		)
+		return &ensureServerReplacement{
+			restore:        restore,
+			oldPID:         oldPID,
+			legacyHandoff:  true,
+			keepOldProcess: true,
+		}, nil
+	}
 	if status.supportsCapability("shutdown") {
 		requestServerShutdown(session)
 		if !waitForServerProcessExit(session, oldPID, serverExitWaitTimeout) {
@@ -1906,7 +2046,7 @@ func prepareRunningServerReplacement(
 				"monkeymux: running session did not exit; continuing with helper %s\r\n",
 				status.displayVersion(),
 			)
-			return nil, nil
+			return nil, errServerUpdateStillAlive
 		}
 	} else {
 		fmt.Fprintf(
@@ -2655,22 +2795,25 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 	}
 	for _, window := range windows {
 		restore.Windows = append(restore.Windows, restoreWindowState{
-			ID:                       window.ID,
-			Index:                    window.Index,
-			Name:                     window.Name,
-			Cwd:                      window.CurrentPath,
-			CurrentCommand:           window.CurrentCommand,
-			PanePid:                  window.PanePid,
-			PaneTitle:                window.PaneTitle,
-			AgentTool:                window.AgentTool,
-			AgentToolConfirmed:       window.AgentToolConfirmed,
-			AgentSessionID:           window.AgentSessionID,
-			AgentSessionDir:          window.AgentSessionDir,
-			AgentSessionPath:         window.AgentSessionPath,
-			LastActivityEpochSeconds: window.LastActivityEpochSeconds,
-			PrivateModes:             privateModesFromWindowSnapshot(window),
-			TerminalProgress:         copyTerminalProgressSnapshot(window.TerminalProgress),
-			Active:                   window.Active,
+			ID:                        window.ID,
+			Index:                     window.Index,
+			Name:                      window.Name,
+			Cwd:                       window.CurrentPath,
+			CurrentCommand:            window.CurrentCommand,
+			PanePid:                   window.PanePid,
+			PaneTitle:                 window.PaneTitle,
+			AgentTool:                 window.AgentTool,
+			AgentToolConfirmed:        window.AgentToolConfirmed,
+			AgentSessionID:            window.AgentSessionID,
+			AgentSessionDir:           window.AgentSessionDir,
+			AgentSessionPath:          window.AgentSessionPath,
+			AgentSessionIdentityExact: window.AgentSessionIdentityExact,
+			NativeAcpBridgeID:         window.NativeAcpBridgeID,
+			NativeAcpProviderID:       window.NativeAcpProviderID,
+			LastActivityEpochSeconds:  window.LastActivityEpochSeconds,
+			PrivateModes:              privateModesFromWindowSnapshot(window),
+			TerminalProgress:          copyTerminalProgressSnapshot(window.TerminalProgress),
+			Active:                    window.Active,
 		})
 	}
 	return restore
@@ -2716,6 +2859,18 @@ func enrichRestoreWithCapturedShellHistory(session string, restore *serverRestor
 		}
 		restore.Windows[i].HistoryBase64 = base64.StdEncoding.EncodeToString(history)
 	}
+}
+
+func restoreHasNativeAcpWindows(restore *serverRestore) bool {
+	if restore == nil {
+		return false
+	}
+	for _, window := range restore.Windows {
+		if window.NativeAcpBridgeID != "" && window.NativeAcpProviderID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func restoreNeedsShellHistory(restore *serverRestore) bool {
@@ -2968,10 +3123,12 @@ func applyPiRestoreSessions(restore *serverRestore, sessions map[int]piRestoreSe
 		restore.Windows[i].AgentSessionID = ""
 		restore.Windows[i].AgentSessionDir = ""
 		restore.Windows[i].AgentSessionPath = ""
+		restore.Windows[i].AgentSessionIdentityExact = false
 		if session, ok := sessions[i]; ok && agentToolForRestore(restore.Windows[i]) == "pi" {
 			restore.Windows[i].AgentSessionID = session.sessionID
 			restore.Windows[i].AgentSessionDir = session.sessionDir
 			restore.Windows[i].AgentSessionPath = session.sessionPath
+			restore.Windows[i].AgentSessionIdentityExact = session.identityExact
 		}
 	}
 }
@@ -3189,20 +3346,19 @@ func readCursorChatEntries() []cursorChatEntry {
 }
 
 func readCursorChatMeta(path string, chatID string) (cursorChatEntry, bool) {
+	// Current Cursor Agent writes hasConversation=false even for the chat id
+	// owned by a live newly-started TUI. Live assignment is already constrained
+	// by exact cwd and process start time, so that advisory flag must not hide it.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return cursorChatEntry{}, false
 	}
 	var raw struct {
-		Cwd             string `json:"cwd"`
-		UpdatedAtMs     int64  `json:"updatedAtMs"`
-		CreatedAtMs     int64  `json:"createdAtMs"`
-		HasConversation *bool  `json:"hasConversation"`
+		Cwd         string `json:"cwd"`
+		UpdatedAtMs int64  `json:"updatedAtMs"`
+		CreatedAtMs int64  `json:"createdAtMs"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return cursorChatEntry{}, false
-	}
-	if raw.HasConversation != nil && !*raw.HasConversation {
 		return cursorChatEntry{}, false
 	}
 	sessionID := strings.TrimSpace(chatID)
@@ -3284,9 +3440,10 @@ var processStartedAtForMetadata = func(pid int) time.Time {
 var processTableForMetadata = readProcessTable
 
 type piRestoreSession struct {
-	sessionID   string
-	sessionDir  string
-	sessionPath string
+	sessionID     string
+	sessionDir    string
+	sessionPath   string
+	identityExact bool
 }
 
 // discoverPiSessions first correlates each pane with its live Pi process. A
@@ -3323,6 +3480,7 @@ func discoverPiSessions(
 	sessions := map[int]piRestoreSession{}
 	processStarts := map[int]time.Time{}
 	livePiWindows := map[int]bool{}
+	trustedPiWindows := map[int]bool{}
 	type fallbackKey struct {
 		root string
 		cwd  string
@@ -3340,7 +3498,25 @@ func discoverPiSessions(
 			restore.Windows[i].AgentToolConfirmed = true
 			livePiWindows[i] = true
 		}
+		trustedPiWindows[i] = hasProcess ||
+			(restore.Windows[i].AgentToolConfirmed &&
+				agentToolForRestore(restore.Windows[i]) == "pi")
 		if hasProcess {
+			if window.AgentSessionIdentityExact {
+				path := normalizedPiSessionDirectory(window.AgentSessionPath, window.Cwd)
+				if entry, ok := readPiSessionEntry(path); ok &&
+					entry.sessionID == strings.TrimSpace(window.AgentSessionID) &&
+					!used[entry.sessionID] {
+					sessions[i] = piRestoreSession{
+						sessionID:     entry.sessionID,
+						sessionDir:    filepath.Dir(entry.path),
+						sessionPath:   entry.path,
+						identityExact: true,
+					}
+					used[entry.sessionID] = true
+					continue
+				}
+			}
 			if entry, ok := piSessionFromProcessArgs(process.args, window.Cwd); ok && !used[entry.sessionID] {
 				sessions[i] = piRestoreSession{
 					sessionID:   entry.sessionID,
@@ -3407,22 +3583,37 @@ func discoverPiSessions(
 			entries = readPiSessionEntries(key.root)
 			entriesByRoot[key.root] = entries
 		}
+		// Pi's interactive /resume picker can switch to a session recorded in a
+		// different working directory without putting the selected path in argv
+		// or changing the shell process' cwd. Load current names before applying
+		// cwd filtering so Pi's published title can retain that exact cross-cwd
+		// candidate. Unnamed titles retain every matching cwd basename and rely
+		// on the existing one-to-one activity/process evidence below.
+		entries = piSessionsWithLatestNamesForTitles(restore, indices, entries)
 		encodedCwd := piEncodedSessionDirName(key.cwd)
 		candidates := []piSessionEntry{}
 		for _, entry := range entries {
 			if used[entry.sessionID] {
 				continue
 			}
+			matchesPublishedTitle := false
+			for _, index := range indices {
+				if piSessionMatchesPaneTitle(entry, restore.Windows[index].PaneTitle) ||
+					piSessionCwdMatchesPaneTitle(entry, restore.Windows[index].PaneTitle) {
+					matchesPublishedTitle = true
+					break
+				}
+			}
 			// A relocated session (Pi's worktree flow) records the pane's
 			// working directory only in the origin of its parentSession
-			// chain, so match either the live cwd or that origin bucket.
+			// chain, so match either the live cwd, that origin bucket, or an
+			// exact title published after an interactive cross-cwd resume.
 			if entry.cwd == key.cwd ||
-				(encodedCwd != "" && entry.originDir == encodedCwd) {
+				(encodedCwd != "" && entry.originDir == encodedCwd) ||
+				matchesPublishedTitle {
 				candidates = append(candidates, entry)
 			}
 		}
-
-		candidates = piSessionsWithLatestNamesForTitles(restore, indices, candidates)
 
 		// Official Pi publishes named sessions as `π - <name> - <cwd>`;
 		// older/custom builds may use `Pi`. Unlike process-start correlation, this
@@ -3434,8 +3625,13 @@ func discoverPiSessions(
 			indices,
 			candidates,
 		) {
-			if !livePiWindows[index] ||
-				!sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) {
+			if !trustedPiWindows[index] ||
+				!piSessionFreshForRestoreWindow(
+					restore.Windows[index],
+					candidate,
+					processStarts[index],
+					livePiWindows[index],
+				) {
 				continue
 			}
 			sessions[index] = piRestoreSession{
@@ -3466,19 +3662,24 @@ func discoverPiSessions(
 			restore,
 			remainingIndices,
 			remainingCandidates,
-			livePiWindows,
+			trustedPiWindows,
 		)
 		freshActivityMatches := map[int]piSessionEntry{}
 		activityOwnedSessionIDs := map[string]bool{}
 		for index, candidate := range activityMatches {
-			if !sessionUpdatedDuringProcess(candidate.modTime, processStarts[index]) {
+			if !piSessionFreshForRestoreWindow(
+				restore.Windows[index],
+				candidate,
+				processStarts[index],
+				livePiWindows[index],
+			) {
 				continue
 			}
 			freshActivityMatches[index] = candidate
 			activityOwnedSessionIDs[candidate.sessionID] = true
 		}
 		for index, candidate := range freshActivityMatches {
-			if piSessionWasSuperseded(
+			if !processStarts[index].IsZero() && piSessionWasSuperseded(
 				remainingCandidates,
 				candidate,
 				processStarts[index],
@@ -3604,6 +3805,30 @@ func discoverPiSessions(
 			used[candidate.sessionID] = true
 		}
 
+		// If process-table inspection was unavailable, a single confirmed Pi
+		// window may still own the newest primary session in its cwd bucket. This
+		// is weaker than an exact title/activity match, so allow it only for one
+		// window, require a unique newest file no later than captured activity,
+		// and never use it when another Pi pane could claim the same bucket.
+		if len(indices) == 1 {
+			index := indices[0]
+			if _, ok := sessions[index]; !ok && trustedPiWindows[index] &&
+				!livePiWindows[index] {
+				if candidate, ok := uniqueLatestPiSession(remainingCandidates); ok {
+					activity := time.Unix(restore.Windows[index].LastActivityEpochSeconds, 0)
+					if !activity.IsZero() &&
+						!candidate.modTime.After(activity.Add(piSessionActivityMatchTolerance)) {
+						sessions[index] = piRestoreSession{
+							sessionID:   candidate.sessionID,
+							sessionDir:  filepath.Dir(candidate.path),
+							sessionPath: candidate.path,
+						}
+						used[candidate.sessionID] = true
+					}
+				}
+			}
+		}
+
 		// Preserve the old cwd fallback only for a genuinely one-to-one
 		// bucket. Never hand a leftover session to a pane after a multi-pane
 		// process match was rejected as ambiguous.
@@ -3629,6 +3854,56 @@ func discoverPiSessions(
 		}
 	}
 	return sessions
+}
+
+func uniqueLatestPiSession(candidates []piSessionEntry) (piSessionEntry, bool) {
+	var latest piSessionEntry
+	found := false
+	tied := false
+	for _, candidate := range candidates {
+		if candidate.modTime.IsZero() {
+			continue
+		}
+		if !found || candidate.modTime.After(latest.modTime) {
+			latest = candidate
+			found = true
+			tied = false
+			continue
+		}
+		if candidate.modTime.Equal(latest.modTime) {
+			tied = true
+		}
+	}
+	return latest, found && !tied
+}
+
+func piSessionFreshForRestoreWindow(
+	window restoreWindowState,
+	candidate piSessionEntry,
+	processStarted time.Time,
+	hasLiveProcess bool,
+) bool {
+	if hasLiveProcess {
+		return sessionUpdatedDuringProcess(candidate.modTime, processStarted)
+	}
+	if !window.AgentToolConfirmed || agentToolForRestore(window) != "pi" {
+		return false
+	}
+	// A published Pi session name is an exact identity signal and remains
+	// stable even while a long-running progress animation advances window
+	// activity without touching the JSONL file.
+	if piSessionMatchesPaneTitle(candidate, window.PaneTitle) {
+		return true
+	}
+	if window.LastActivityEpochSeconds <= 0 || candidate.modTime.IsZero() {
+		return false
+	}
+	activity := time.Unix(window.LastActivityEpochSeconds, 0)
+	delta := candidate.modTime.Sub(activity)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= piSessionActivityMatchTolerance
 }
 
 func uniquePiSessionsByWindowActivity(
@@ -3739,6 +4014,18 @@ func piSessionMatchesPaneTitle(entry piSessionEntry, paneTitle string) bool {
 	}
 	title := cleanTerminalTitle(paneTitle)
 	wantSuffix := " - " + name + " - " + cwdName
+	return title == cleanTerminalTitle("π"+wantSuffix) ||
+		title == cleanTerminalTitle("Pi"+wantSuffix)
+}
+
+func piSessionCwdMatchesPaneTitle(entry piSessionEntry, paneTitle string) bool {
+	titleCwd := firstNonEmptyString(entry.rawCwd, entry.cwd)
+	cwdName := filepath.Base(strings.TrimSpace(titleCwd))
+	if cwdName == "" {
+		return false
+	}
+	title := cleanTerminalTitle(paneTitle)
+	wantSuffix := " - " + cwdName
 	return title == cleanTerminalTitle("π"+wantSuffix) ||
 		title == cleanTerminalTitle("Pi"+wantSuffix)
 }
@@ -5688,14 +5975,24 @@ func serveSession(
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return err
 	}
-	// Refuse to steal a socket that is still accepting connections. ensureServer
-	// already gates this; the check here covers direct `serve` invocations and
-	// races where another helper rebound the path first.
-	if _, err := queryRunningServerStatus(session); err == nil {
+	// Refuse to steal a socket for a fresh direct `serve` invocation. A
+	// restore process is an already-approved replacement: the outgoing native
+	// bridge host can republish its old socket during process startup, so remove
+	// that race winner and retry the bind instead of silently attaching the old
+	// bridge-only workspace.
+	replacing := restore != nil && len(restore.Windows) > 0
+	if _, err := queryRunningServerStatus(session); err == nil && !replacing {
 		return fmt.Errorf("MonkeyMux session %q is already running", session)
 	}
-	_ = os.Remove(socket)
-	listener, err := net.Listen("unix", socket)
+	var listener net.Listener
+	for attempt := 0; attempt < 5; attempt++ {
+		_ = os.Remove(socket)
+		listener, err = net.Listen("unix", socket)
+		if err == nil || !replacing {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		return err
 	}
@@ -6010,6 +6307,23 @@ func createWindowOptionsForRestore(
 	state restoreWindowState,
 	startInYoloMode bool,
 ) createWindowOptions {
+	if validAcpBridgeID(state.NativeAcpBridgeID) &&
+		validateAcpProviderID(state.NativeAcpProviderID) == nil {
+		args, _ := nativeAcpWindowArguments(state.NativeAcpBridgeID)
+		return createWindowOptions{
+			name:                  firstNonEmptyString(state.Name, state.PaneTitle, "Native agent"),
+			cwd:                   state.Cwd,
+			args:                  args,
+			paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
+			agentTool:             state.AgentTool,
+			nativeAcpBridgeID:     state.NativeAcpBridgeID,
+			nativeAcpProviderID:   state.NativeAcpProviderID,
+			cursorVisible:         state.CursorVisible,
+			cursorVisibilityKnown: state.CursorVisibilityKnown,
+			privateModes:          privateModesForRestore(state.PrivateModes),
+			terminalProgress:      copyTerminalProgressSnapshot(state.TerminalProgress),
+		}
+	}
 	agentTool := agentToolForRestore(state)
 	command := ""
 	if agentTool != "" {
@@ -6044,19 +6358,20 @@ func createWindowOptionsForRestore(
 		)
 	}
 	return createWindowOptions{
-		name:                  firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
-		cwd:                   state.Cwd,
-		command:               command,
-		history:               history,
-		paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
-		agentTool:             agentTool,
-		agentSessionID:        state.AgentSessionID,
-		agentSessionDir:       state.AgentSessionDir,
-		agentSessionPath:      state.AgentSessionPath,
-		cursorVisible:         state.CursorVisible,
-		cursorVisibilityKnown: state.CursorVisibilityKnown,
-		privateModes:          privateModesForRestore(state.PrivateModes),
-		terminalProgress:      copyTerminalProgressSnapshot(state.TerminalProgress),
+		name:                      firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
+		cwd:                       state.Cwd,
+		command:                   command,
+		history:                   history,
+		paneTitle:                 firstNonEmptyString(state.PaneTitle, state.Name),
+		agentTool:                 agentTool,
+		agentSessionID:            state.AgentSessionID,
+		agentSessionDir:           state.AgentSessionDir,
+		agentSessionPath:          state.AgentSessionPath,
+		agentSessionIdentityExact: state.AgentSessionIdentityExact,
+		cursorVisible:             state.CursorVisible,
+		cursorVisibilityKnown:     state.CursorVisibilityKnown,
+		privateModes:              privateModesForRestore(state.PrivateModes),
+		terminalProgress:          copyTerminalProgressSnapshot(state.TerminalProgress),
 	}
 }
 
@@ -6084,26 +6399,29 @@ func isShellRestoreWindow(state restoreWindowState) bool {
 }
 
 type createWindowOptions struct {
-	name                     string
-	cwd                      string
-	command                  string
-	args                     []string
-	history                  []byte
-	paneTitle                string
-	agentTool                string
-	agentSessionID           string
-	agentSessionDir          string
-	agentSessionPath         string
-	cursorVisible            bool
-	cursorVisibilityKnown    bool
-	privateModes             map[string]bool
-	terminalProgress         *terminalProgressSnapshot
-	insertModeEnabled        bool
-	insertModeKnown          bool
-	applicationKeypadEnabled bool
-	applicationKeypadKnown   bool
-	themeHint                []byte
-	capabilityHint           []byte
+	name                      string
+	cwd                       string
+	command                   string
+	args                      []string
+	history                   []byte
+	paneTitle                 string
+	agentTool                 string
+	agentSessionID            string
+	agentSessionDir           string
+	agentSessionPath          string
+	agentSessionIdentityExact bool
+	nativeAcpBridgeID         string
+	nativeAcpProviderID       string
+	cursorVisible             bool
+	cursorVisibilityKnown     bool
+	privateModes              map[string]bool
+	terminalProgress          *terminalProgressSnapshot
+	insertModeEnabled         bool
+	insertModeKnown           bool
+	applicationKeypadEnabled  bool
+	applicationKeypadKnown    bool
+	themeHint                 []byte
+	capabilityHint            []byte
 }
 
 func newWindowAgentTool(
@@ -6121,6 +6439,7 @@ func newWindowAgentTool(
 }
 
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
+	options.command = monkeyMuxAgentLaunchCommand(options.command)
 	var replay []byte
 	var snapshots []windowSnapshot
 	var addedSnapshot *windowSnapshot
@@ -6193,33 +6512,36 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.windowWatchers.Add(2)
 	s.nextID++
 	window := &muxWindow{
-		id:                       fmt.Sprintf("@%d", s.nextID),
-		index:                    len(s.windows),
-		name:                     name,
-		cwd:                      cwd,
-		command:                  filepath.Base(cmd.Path),
-		agentTool:                agentTool,
-		agentToolConfirmed:       agentToolConfirmed,
-		agentSessionID:           options.agentSessionID,
-		agentSessionDir:          options.agentSessionDir,
-		agentSessionPath:         options.agentSessionPath,
-		foregroundPid:            proc.Pid(),
-		foregroundCommand:        filepath.Base(cmd.Path),
-		paneTitle:                paneTitle,
-		pty:                      windowPty,
-		ptyWidth:                 cols,
-		ptyHeight:                rows,
-		proc:                     proc,
-		history:                  append([]byte(nil), options.history...),
-		lastActivity:             time.Now(),
-		cursorVisible:            cursorVisible,
-		cursorVisibilityKnown:    options.cursorVisibilityKnown,
-		privateModes:             copyPrivateModes(options.privateModes),
-		terminalProgress:         copyTerminalProgressSnapshot(options.terminalProgress),
-		insertModeEnabled:        options.insertModeEnabled,
-		insertModeKnown:          options.insertModeKnown,
-		applicationKeypadEnabled: options.applicationKeypadEnabled,
-		applicationKeypadKnown:   options.applicationKeypadKnown,
+		id:                        fmt.Sprintf("@%d", s.nextID),
+		index:                     len(s.windows),
+		name:                      name,
+		cwd:                       cwd,
+		command:                   filepath.Base(cmd.Path),
+		agentTool:                 agentTool,
+		agentToolConfirmed:        agentToolConfirmed,
+		agentSessionID:            options.agentSessionID,
+		agentSessionDir:           options.agentSessionDir,
+		agentSessionPath:          options.agentSessionPath,
+		agentSessionIdentityExact: options.agentSessionIdentityExact,
+		nativeAcpBridgeID:         options.nativeAcpBridgeID,
+		nativeAcpProviderID:       options.nativeAcpProviderID,
+		foregroundPid:             proc.Pid(),
+		foregroundCommand:         filepath.Base(cmd.Path),
+		paneTitle:                 paneTitle,
+		pty:                       windowPty,
+		ptyWidth:                  cols,
+		ptyHeight:                 rows,
+		proc:                      proc,
+		history:                   append([]byte(nil), options.history...),
+		lastActivity:              time.Now(),
+		cursorVisible:             cursorVisible,
+		cursorVisibilityKnown:     options.cursorVisibilityKnown,
+		privateModes:              copyPrivateModes(options.privateModes),
+		terminalProgress:          copyTerminalProgressSnapshot(options.terminalProgress),
+		insertModeEnabled:         options.insertModeEnabled,
+		insertModeKnown:           options.insertModeKnown,
+		applicationKeypadEnabled:  options.applicationKeypadEnabled,
+		applicationKeypadKnown:    options.applicationKeypadKnown,
 	}
 	s.windows = append(s.windows, window)
 	if s.activeID != "" && s.activeID != window.id {
@@ -6557,6 +6879,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var redrew bool
 	var shouldShutdown bool
 	var windowPty muxPty
+	var nativeAcpBridgeID string
 	var resetViewportParser bool
 
 	s.attachMu.Lock()
@@ -6581,6 +6904,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	// pipe is drained by readWindow -> handleWindowOutput, and that reader needs
 	// s.mu. Closing under the lock would deadlock the whole server.
 	windowPty = window.pty
+	nativeAcpBridgeID = window.nativeAcpBridgeID
 	s.reindexWindowsLocked()
 	if s.activeID == windowID {
 		resetViewportParser =
@@ -6629,6 +6953,9 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	// so it must happen after unlocking.
 	if windowPty != nil {
 		_ = window.closePty(windowPty)
+	}
+	if nativeAcpBridgeID != "" {
+		_ = requestAcpBridgeStopAndWait(nativeAcpBridgeID)
 	}
 
 	s.broadcast(controlResponse{
@@ -8496,7 +8823,13 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		if !s.canUseClientImageSignatures(request.ClientID) {
 			clientImages = nil
 		}
-		if err := s.selectWindowWithSkip(id, clientImages); err != nil {
+		var err error
+		if request.SuppressReplay {
+			err = s.selectWindowWithoutReplay(id)
+		} else {
+			err = s.selectWindowWithSkip(id, clientImages)
+		}
+		if err != nil {
 			client.sendError(request, err)
 			return
 		}
@@ -8606,6 +8939,8 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			return
 		}
 		client.runShellCommandAsync(s, request)
+	case "start_acp_bridge":
+		client.startAcpBridgeAsync(s, request)
 	case "inject_input":
 		s.focusAttachClientByID(request.ClientID, 0, 0, false)
 		id := request.WindowID
@@ -8755,6 +9090,116 @@ func (c *controlClient) close() {
 	}
 }
 
+func startAcpBridgeInProcess(
+	ctx context.Context,
+	providerID string,
+	provider string,
+	command string,
+	cwd string,
+) (string, error) {
+	if err := validateAcpLaunch(provider, command, cwd); err != nil {
+		return "", err
+	}
+	if err := validateAcpProviderID(providerID); err != nil {
+		return "", err
+	}
+	id, err := newAcpBridgeID()
+	if err != nil {
+		return "", errors.New("unable to allocate ACP bridge")
+	}
+	bridge, err := newAcpBridge(id, providerID, provider, command, cwd)
+	if errors.Is(err, errCursorAgentKeychainLocked) {
+		return "", errCursorAgentKeychainLocked
+	}
+	if err != nil {
+		return "", errors.New("unable to start ACP provider")
+	}
+	bridge.providerID = providerID
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- serveAcpBridge(bridge) }()
+
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-serveDone:
+			if err == nil {
+				err = errors.New("ACP bridge stopped before startup")
+			}
+			return "", err
+		case <-ctx.Done():
+			bridge.stop()
+			return "", errors.New("ACP bridge did not start")
+		case <-ticker.C:
+			conn, err := dialAcpBridge(id)
+			if err == nil {
+				_ = conn.Close()
+				return id, nil
+			}
+		}
+	}
+}
+
+func (c *controlClient) startAcpBridgeAsync(s *muxServer, request controlMessage) {
+	commandKey := fmt.Sprintf("%s/acp/%d", request.ID, time.Now().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), socketTimeout)
+	if !c.trackCommand(commandKey, cancel) {
+		cancel()
+		c.sendError(request, errRunCommandClientClosed)
+		return
+	}
+	go func() {
+		defer c.untrackCommand(commandKey)
+		defer cancel()
+		bridgeID, err := startAcpBridgeInProcess(
+			ctx,
+			request.ProviderID,
+			request.Provider,
+			request.Command,
+			request.Cwd,
+		)
+		if err != nil {
+			c.sendError(request, err)
+			return
+		}
+		windowArgs, err := nativeAcpWindowArguments(bridgeID)
+		if err != nil {
+			_ = requestAcpBridgeStopAndWait(bridgeID)
+			c.sendError(request, errors.New("unable to create native agent window"))
+			return
+		}
+		window, err := s.createWindow(createWindowOptions{
+			name:                request.Provider,
+			cwd:                 request.Cwd,
+			args:                windowArgs,
+			nativeAcpBridgeID:   bridgeID,
+			nativeAcpProviderID: request.ProviderID,
+		})
+		if err != nil {
+			_ = requestAcpBridgeStopAndWait(bridgeID)
+			c.sendError(request, errors.New("unable to create native agent window"))
+			return
+		}
+		frame, err := json.Marshal(acpWireMessage{
+			Version:  acpBridgeProtocolVersion,
+			Type:     "started",
+			BridgeID: bridgeID,
+			WindowID: window.id,
+		})
+		if err != nil {
+			c.sendError(request, errors.New("unable to encode ACP bridge response"))
+			return
+		}
+		c.send(controlResponse{
+			ID:      request.ID,
+			Type:    "acp_bridge_started",
+			Status:  "ok",
+			Session: s.session,
+			Data:    string(frame),
+		})
+	}()
+}
+
 func (c *controlClient) runShellCommandAsync(s *muxServer, request controlMessage) {
 	commandKey := fmt.Sprintf("%s/%d", request.ID, time.Now().UnixNano())
 	go func() {
@@ -8840,28 +9285,31 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 		}
 		window.refreshProcessMetadataLocked(time.Now())
 		state := restoreWindowState{
-			ID:                       window.id,
-			Index:                    window.index,
-			Name:                     window.name,
-			Cwd:                      window.cwd,
-			CurrentCommand:           window.currentCommandLocked(),
-			PanePid:                  window.metadataProcessIDLocked(),
-			PaneTitle:                window.paneTitle,
-			AgentTool:                window.agentToolLocked(),
-			AgentToolConfirmed:       window.agentToolConfirmedLocked(),
-			AgentSessionID:           window.agentSessionID,
-			AgentSessionDir:          window.agentSessionDir,
-			AgentSessionPath:         window.agentSessionPath,
-			LastActivityEpochSeconds: window.lastActivity.Unix(),
-			CursorVisible:            window.cursorVisible,
-			CursorVisibilityKnown:    window.cursorVisibilityKnown,
-			PrivateModes:             copyPrivateModes(window.privateModes),
-			TerminalProgress:         copyTerminalProgressSnapshot(window.terminalProgress),
-			InsertModeEnabled:        window.insertModeEnabled,
-			InsertModeKnown:          window.insertModeKnown,
-			ApplicationKeypadEnabled: window.applicationKeypadEnabled,
-			ApplicationKeypadKnown:   window.applicationKeypadKnown,
-			Active:                   s.activeID == window.id,
+			ID:                        window.id,
+			Index:                     window.index,
+			Name:                      window.name,
+			Cwd:                       window.cwd,
+			CurrentCommand:            window.currentCommandLocked(),
+			PanePid:                   window.metadataProcessIDLocked(),
+			PaneTitle:                 window.paneTitle,
+			AgentTool:                 window.agentToolLocked(),
+			AgentToolConfirmed:        window.agentToolConfirmedLocked(),
+			AgentSessionID:            window.agentSessionID,
+			AgentSessionDir:           window.agentSessionDir,
+			AgentSessionPath:          window.agentSessionPath,
+			AgentSessionIdentityExact: window.agentSessionIdentityExact,
+			NativeAcpBridgeID:         window.nativeAcpBridgeID,
+			NativeAcpProviderID:       window.nativeAcpProviderID,
+			LastActivityEpochSeconds:  window.lastActivity.Unix(),
+			CursorVisible:             window.cursorVisible,
+			CursorVisibilityKnown:     window.cursorVisibilityKnown,
+			PrivateModes:              copyPrivateModes(window.privateModes),
+			TerminalProgress:          copyTerminalProgressSnapshot(window.terminalProgress),
+			InsertModeEnabled:         window.insertModeEnabled,
+			InsertModeKnown:           window.insertModeKnown,
+			ApplicationKeypadEnabled:  window.applicationKeypadEnabled,
+			ApplicationKeypadKnown:    window.applicationKeypadKnown,
+			Active:                    s.activeID == window.id,
 		}
 		if isShellRestoreWindow(state) && len(window.history) > 0 {
 			history, historyStart := window.historyTailWithParserLocked()
@@ -8903,6 +9351,9 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		AgentSessionID:            window.agentSessionID,
 		AgentSessionDir:           window.agentSessionDir,
 		AgentSessionPath:          window.agentSessionPath,
+		AgentSessionIdentityExact: window.agentSessionIdentityExact,
+		NativeAcpBridgeID:         window.nativeAcpBridgeID,
+		NativeAcpProviderID:       window.nativeAcpProviderID,
 		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
 		TerminalMouseReportSgr:    window.mouseTrackingActiveLocked() && window.privateModes["1006"],
@@ -9027,6 +9478,30 @@ func (o *boundedCommandOutput) exceeded() bool {
 
 func (s *muxServer) selectWindow(windowID string) error {
 	return s.selectWindowWithSkip(windowID, nil)
+}
+
+// selectWindowWithoutReplay updates server/window focus without writing the
+// placeholder's terminal snapshot. Native ACP clients replace the terminal
+// viewport, so replaying and redrawing that hidden pseudo-pane only delays the
+// handoff and can apply backpressure behind a large prior terminal frame.
+func (s *muxServer) selectWindowWithoutReplay(windowID string) error {
+	s.attachMu.Lock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return fmt.Errorf("window %q not found", windowID)
+	}
+	if s.activeID != windowID {
+		s.lastActiveID = s.activeID
+		s.activeID = windowID
+	}
+	window.alert = false
+	s.mu.Unlock()
+	s.attachMu.Unlock()
+	s.broadcastWindowList("active_window_changed")
+	return nil
 }
 
 // replayRequestedImages re-sends specific retained Kitty image transmissions to
@@ -9181,17 +9656,54 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var shouldShutdown bool
 	var process muxProcess
 	var windowPty muxPty
+	var nativeAcpBridgeID string
+	var nativeAcpBridgeStopped bool
 	var snapshots []windowSnapshot
 	var resetViewportParser bool
 	var targetWidth int
 	var targetHeight int
 
+	// Native windows retain their window/concurrency identity until the bridge
+	// confirms shutdown. Mark the stop in flight without closing the window so
+	// a failed request remains visible and retryable. Never wait for bridge I/O
+	// while holding s.mu or attachMu.
+	s.mu.Lock()
+	initialWindow := s.windowByIDLocked(windowID)
+	if initialWindow == nil || initialWindow.closed || initialWindow.closing {
+		s.mu.Unlock()
+		return false, fmt.Errorf("window %q not found", windowID)
+	}
+	nativeAcpBridgeID = initialWindow.nativeAcpBridgeID
+	if nativeAcpBridgeID != "" {
+		initialWindow.closing = true
+	}
+	s.mu.Unlock()
+
+	if nativeAcpBridgeID != "" {
+		if err := stopNativeAcpBridgeForWindow(nativeAcpBridgeID); err != nil {
+			s.mu.Lock()
+			if current := s.windowByIDLocked(windowID); current != nil && !current.closed {
+				current.closing = false
+			}
+			s.mu.Unlock()
+			return false, fmt.Errorf("stop native ACP bridge: %w", err)
+		}
+		nativeAcpBridgeStopped = true
+	}
+
 	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
+		shouldShutdown = len(s.snapshotsLocked()) == 0
 		s.mu.Unlock()
 		s.attachMu.Unlock()
+		if nativeAcpBridgeStopped {
+			// The bridge's `acp wait` watcher committed and broadcast the close
+			// while shutdown was being confirmed. Treat the requested close as
+			// successful rather than reporting a spurious not-found error.
+			return shouldShutdown, nil
+		}
 		return false, fmt.Errorf("window %q not found", windowID)
 	}
 	openCount := 0
@@ -9650,6 +10162,47 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 	})
 }
 
+func trimForegroundRedrawBuffer(data []byte, preservedPrefix []byte) []byte {
+	if len(data) <= foregroundRedrawBufferLimitBytes {
+		return data
+	}
+	body := data
+	prefix := []byte(nil)
+	if len(preservedPrefix) > 0 && bytes.HasPrefix(body, preservedPrefix) {
+		prefix = preservedPrefix
+		body = body[len(preservedPrefix):]
+	}
+	if len(body) <= foregroundRedrawBufferLimitBytes {
+		return data
+	}
+	start := len(body) - foregroundRedrawBufferLimitBytes
+	start = advanceReplayStartToTerminalGround(
+		body,
+		start,
+		terminalOutputParserSnapshot{},
+	)
+	if start >= len(body) {
+		return append([]byte(nil), prefix...)
+	}
+	// Prefer a natural terminal/text boundary near the size cut so the reset
+	// replay is followed by a complete control sequence or line.
+	scanEnd := start + 2048
+	if scanEnd > len(body) {
+		scanEnd = len(body)
+	}
+	for index := start; index < scanEnd; index++ {
+		switch body[index] {
+		case '\x1b', '\n', '\r':
+			start = index
+			index = scanEnd
+		}
+	}
+	result := make([]byte, 0, len(prefix)+len(body)-start)
+	result = append(result, prefix...)
+	result = append(result, body[start:]...)
+	return result
+}
+
 func (s *muxServer) resumePausedAttachForwarding(
 	windowID string,
 	generation int,
@@ -9694,6 +10247,15 @@ func (s *muxServer) resumePausedAttachForwarding(
 	}
 	primaryNeedsFailover =
 		primaryNeedsFailover || window.redrawForwardingPrimaryNeedsFailover
+	// A long normal-buffer agent such as Pi can repaint its entire transcript
+	// on SIGWINCH. The reset replay already establishes a clean terminal frame,
+	// so retain only a parser-safe tail of that redraw instead of sending many
+	// megabytes to a mobile client. Preserve terminal-query prefixes verbatim.
+	if len(replay) > 0 && window.terminalOutputIsGroundLocked() {
+		buffered = trimForegroundRedrawBuffer(buffered, queryData)
+		failoverBuffered = trimForegroundRedrawBuffer(failoverBuffered, queryData)
+		secondaryBuffered = trimForegroundRedrawBuffer(secondaryBuffered, nil)
+	}
 	// Substituting the fallback discards the buffered redraw, so it is only
 	// safe once that redraw has ended on a sequence boundary. Resuming mid
 	// escape sequence would drop the head of a sequence whose tail is still to
@@ -12324,8 +12886,9 @@ func (w *muxWindow) stripLocallyAnsweredThemeQueriesLocked(chunk []byte, hint []
 		}
 		sequenceEnd := payloadStart + payloadEnd + terminatorLength
 		payload := data[payloadStart : payloadStart+payloadEnd]
+		privatePiIdentity := bytes.HasPrefix(payload, []byte("1337;MonkeyMuxPi="))
 		queryKeys := themeQueryKeysFromOscPayload(string(payload))
-		if !answerable(queryKeys) {
+		if !privatePiIdentity && !answerable(queryKeys) {
 			i = sequenceEnd
 			continue
 		}
@@ -13328,8 +13891,9 @@ func (w *muxWindow) kittyImageNumberReplayLocked(id string) []byte {
 
 // kittyImageTransmissionsForLocked returns the concatenated store-only
 // transmissions of the requested image ids, in request order, skipping ids that
-// are unknown or duplicated. Missing-image repair uses the same byte and count
-// limits as ordinary replay so one request cannot monopolize an attach queue.
+// are unknown or duplicated. Missing-image repair keeps the replay count cap
+// but allows a larger byte budget because it runs after attach and targets only
+// placeholder images the visible terminal explicitly reports missing.
 func (w *muxWindow) kittyImageTransmissionsForLocked(
 	ids []string,
 ) ([]byte, []string) {
@@ -13357,8 +13921,8 @@ func (w *muxWindow) kittyImageTransmissionsForLocked(
 		mappings := w.kittyImageNumberReplayLocked(id)
 		animation := w.kittyImageAnimations[id]
 		imageBytes := len(buf) + len(mappings) + len(animation)
-		if imageBytes > maxReplayedKittyImageBytes ||
-			len(out)+imageBytes > maxReplayedKittyImageBytes {
+		if imageBytes > maxKittyImageRepairBytes ||
+			len(out)+imageBytes > maxKittyImageRepairBytes {
 			continue
 		}
 		if seen == nil {
@@ -14495,6 +15059,8 @@ func isReplayUnsafeOscNotification(payload []byte) bool {
 	switch code {
 	case "99", "777":
 		return true
+	case "1337":
+		return strings.HasPrefix(rest, "MonkeyMuxPi=")
 	case "9":
 		// iTerm2 notifications are `OSC 9 ; <text>`. ConEmu reuses OSC 9 with a
 		// numeric sub-command (9;4 progress, 9;9 working dir, ...); leave those
@@ -14586,6 +15152,28 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 	if command := commandNameForProcessGroup(pgrp); command != "" {
 		w.foregroundCommand = command
 	}
+	w.refreshCursorSessionMetadataLocked(pgrp)
+}
+
+func (w *muxWindow) refreshCursorSessionMetadataLocked(processID int) {
+	if w == nil || w.agentSessionID != "" ||
+		w.agentToolLocked() != "cursor-agent" || processID <= 0 {
+		return
+	}
+	processStarted := processStartedAtForMetadata(processID)
+	if processStarted.IsZero() {
+		return
+	}
+	sessionID := cursorSessionIDForWorkspace(
+		readCursorChatEntries(),
+		w.cwd,
+		processStarted,
+	)
+	if sessionID == "" {
+		return
+	}
+	w.agentSessionID = sessionID
+	w.agentSessionIdentityExact = true
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
@@ -14863,11 +15451,32 @@ func agentToolFromCommandName(command string) string {
 		return "antigravity"
 	case "cursor-agent":
 		return "cursor-agent"
-	case "pi":
+	case "pi", "pi-agent":
 		return "pi"
 	default:
 		return ""
 	}
+}
+
+func monkeyMuxAgentLaunchCommand(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "pi" {
+		return monkeyMuxPiAgentLaunchCommand()
+	}
+	if strings.HasPrefix(trimmed, "pi ") {
+		return monkeyMuxPiAgentLaunchCommand() + trimmed[len("pi"):]
+	}
+	return command
+}
+
+func monkeyMuxPiAgentLaunchCommand() string {
+	executable, err := os.Executable()
+	if err == nil {
+		if argument, ok := shellArgument(executable); ok {
+			return argument + " pi-agent"
+		}
+	}
+	return "monkeymux pi-agent"
 }
 
 func agentLaunchCommand(tool string, startInYoloMode bool) string {
@@ -14908,7 +15517,7 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 		}
 		return "cursor-agent"
 	case "pi":
-		return "pi"
+		return monkeyMuxPiAgentLaunchCommand()
 	default:
 		return ""
 	}
@@ -14917,13 +15526,13 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 func piLaunchCommand(sessionDir string) string {
 	sessionDir = strings.TrimSpace(sessionDir)
 	if sessionDir == "" {
-		return "pi"
+		return monkeyMuxPiAgentLaunchCommand()
 	}
 	argument, ok := shellArgument(sessionDir)
 	if !ok {
-		return "pi"
+		return monkeyMuxPiAgentLaunchCommand()
 	}
-	return "pi --session-dir " + argument
+	return monkeyMuxPiAgentLaunchCommand() + " --session-dir " + argument
 }
 
 func piResumeCommand(sessionID string, sessionDir string, sessionPath string) string {
@@ -14935,7 +15544,7 @@ func piResumeCommand(sessionID string, sessionDir string, sessionPath string) st
 		if !ok {
 			return ""
 		}
-		return "pi --session " + argument
+		return monkeyMuxPiAgentLaunchCommand() + " --session " + argument
 	}
 	launch := piLaunchCommand(sessionDir)
 	if strings.TrimSpace(sessionDir) != "" && launch == "pi" {
@@ -15003,7 +15612,7 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 		if !safePiSessionIDPattern.MatchString(sessionID) {
 			return ""
 		}
-		return "pi --session " + sessionID
+		return monkeyMuxPiAgentLaunchCommand() + " --session " + sessionID
 	default:
 		return ""
 	}
@@ -15634,6 +16243,8 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 		}
 	case "9":
 		w.applyTerminalProgressPayloadLocked(value)
+	case "1337":
+		w.applyPiIdentityPayloadLocked(value)
 	}
 	queryKeys := themeQueryKeysFromOscPayload(payload)
 	if len(queryKeys) == 0 {
@@ -15662,6 +16273,38 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 		w.themeColorQueryKeys[key] = true
 	}
 	return queryKeys
+}
+
+func (w *muxWindow) applyPiIdentityPayloadLocked(value string) {
+	const prefix = "MonkeyMuxPi="
+	if !strings.HasPrefix(value, prefix) || w.agentToolLocked() != "pi" {
+		return
+	}
+	encoded := strings.TrimPrefix(value, prefix)
+	data, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(data) == 0 || len(data) > oscBufferLimitBytes {
+		return
+	}
+	var identity struct {
+		ID   string `json:"id"`
+		File string `json:"file"`
+	}
+	if json.Unmarshal(data, &identity) != nil {
+		return
+	}
+	identity.ID = strings.TrimSpace(identity.ID)
+	identity.File = filepath.Clean(strings.TrimSpace(identity.File))
+	if !safePiSessionIDPattern.MatchString(identity.ID) ||
+		!filepath.IsAbs(identity.File) ||
+		!strings.HasSuffix(strings.ToLower(identity.File), ".jsonl") {
+		return
+	}
+	w.agentSessionID = identity.ID
+	w.agentSessionPath = identity.File
+	w.agentSessionDir = filepath.Dir(identity.File)
+	w.agentSessionIdentityExact = true
+	w.agentTool = "pi"
+	w.agentToolConfirmed = true
 }
 
 func appendThemeQueryKeys(existing []string, keys []string) []string {
@@ -15930,6 +16573,9 @@ func (s *muxServer) close() {
 		if window.pty != nil {
 			_ = window.closePty(window.pty)
 		}
+		if window.nativeAcpBridgeID != "" {
+			_ = requestAcpBridgeStopAndWait(window.nativeAcpBridgeID)
+		}
 	}
 	// Closing the ptys ends the reader goroutines and the hangup above ends the
 	// child processes, so the watchers finish promptly. Wait for them so no
@@ -16176,6 +16822,93 @@ func queryRunningServerStatus(session string) (runningServerStatus, error) {
 		version:      hello.Version,
 		capabilities: hello.Capabilities,
 	}, nil
+}
+
+// terminalWindowIDsForNativeAcpHandoff selects only windows whose terminal
+// processes must be recreated by the replacement helper.
+func terminalWindowIDsForNativeAcpHandoff(
+	restore *serverRestore,
+) ([]string, error) {
+	terminalWindowIDs := make([]string, 0, len(restore.Windows))
+	for _, window := range restore.Windows {
+		if window.NativeAcpBridgeID != "" && window.NativeAcpProviderID != "" {
+			continue
+		}
+		if window.ID == "" {
+			return nil, errors.New("terminal restore window is missing its id")
+		}
+		terminalWindowIDs = append(terminalWindowIDs, window.ID)
+	}
+	return terminalWindowIDs, nil
+}
+
+// requestNativeAcpUpgradeHandoff reduces the outgoing workspace to its
+// native ACP windows. Their in-process bridges remain alive while the new
+// helper recreates terminal windows and starts placeholders that wait on those
+// same bridge sockets. The outgoing helper exits naturally after its last
+// native bridge/window closes.
+func requestNativeAcpUpgradeHandoff(
+	session string,
+	restore *serverRestore,
+) error {
+	terminalWindowIDs, err := terminalWindowIDsForNativeAcpHandoff(restore)
+	if err != nil {
+		return err
+	}
+	if len(terminalWindowIDs) == 0 {
+		return nil
+	}
+
+	conn, err := dialSession(session)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+	return closeOutgoingTerminalWindows(conn, session, terminalWindowIDs)
+}
+
+func closeOutgoingTerminalWindows(
+	conn net.Conn,
+	session string,
+	windowIDs []string,
+) error {
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return err
+	}
+	if _, err := readControlHello(dec); err != nil {
+		return err
+	}
+	for index, windowID := range windowIDs {
+		requestID := fmt.Sprintf("native-handoff-%d-%d", time.Now().UnixNano(), index)
+		if err := enc.Encode(controlMessage{
+			ID:       requestID,
+			Type:     "close_window",
+			Session:  session,
+			WindowID: windowID,
+		}); err != nil {
+			return err
+		}
+		for {
+			var response controlResponse
+			if err := dec.Decode(&response); err != nil {
+				return err
+			}
+			if response.ID != requestID {
+				continue
+			}
+			if response.Status == "error" || response.Type == "error" {
+				return errors.New(firstNonEmptyString(response.Error, "unable to close outgoing terminal window"))
+			}
+			if response.Type != "window_closed" {
+				return errors.New("unexpected terminal-window handoff response")
+			}
+			break
+		}
+	}
+	return nil
 }
 
 func requestServerShutdown(session string) {

@@ -9,6 +9,23 @@ import 'package:monkeyssh/presentation/widgets/ai_session_picker.dart';
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 void main() {
+  test('Pi subtitle identifies the session directory or named subtree', () {
+    const session = ToolSessionInfo(
+      toolName: 'Pi',
+      sessionId: 'pi-session',
+      summary: 'Fix discovery',
+      workingDirectory: '/Users/demo/.local/share/pi-worktrees/named-subtree',
+    );
+
+    expect(aiSessionSubtitle(session), '…/named-subtree');
+    expect(
+      aiSessionSubtitle(
+        const ToolSessionInfo(toolName: 'Codex', sessionId: 'codex'),
+      ),
+      'Codex',
+    );
+  });
+
   group('buildAiSessionProviderEntries', () {
     test('derives loading, failure, and loaded provider states', () {
       const codexSession = ToolSessionInfo(
@@ -332,6 +349,48 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(picked, selectedSession);
+    });
+
+    testWidgets('reports a held session as a mode override', (tester) async {
+      const selectedSession = ToolSessionInfo(
+        toolName: 'Codex',
+        sessionId: 'session-held',
+        summary: 'Choose a native window',
+      );
+      ToolSessionInfo? tapped;
+      ToolSessionInfo? held;
+
+      await tester.pumpWidget(
+        _wrap(
+          Builder(
+            builder: (context) => TextButton(
+              onPressed: () async {
+                tapped = await showAiSessionPickerDialog(
+                  context: context,
+                  toolName: 'Codex',
+                  loadSessions: (_) => Stream<DiscoveredSessionsResult>.value(
+                    DiscoveredSessionsResult(
+                      sessions: const <ToolSessionInfo>[selectedSession],
+                      attemptedTools: const <String>{'Codex'},
+                    ),
+                  ),
+                  onSessionLongPress: (session) => held = session,
+                );
+              },
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      await tester.longPress(find.text('Choose a native window'));
+      await tester.pumpAndSettle();
+
+      expect(held, selectedSession);
+      expect(tapped, isNull);
+      expect(find.byType(AlertDialog), findsNothing);
     });
   });
 }

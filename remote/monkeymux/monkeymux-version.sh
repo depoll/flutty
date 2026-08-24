@@ -20,5 +20,4 @@ if [ -z "$version" ]; then
   echo "monkeymux-version.sh: could not read monkeyMuxVersion from main.go" >&2
   exit 1
 fi
-
 printf '%s\n' "$version"

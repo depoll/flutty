@@ -3,17 +3,24 @@ import UIKit
 import UniformTypeIdentifiers
 
 @main
+// AppDelegate owns the existing iOS channel/document bridge surface until the
+// legacy bridge is split by domain.
+// swiftlint:disable:next type_body_length
 @objc class AppDelegate: FlutterAppDelegate, UIDocumentPickerDelegate {
   private let channelName = "xyz.depollsoft.monkeyssh/ssh_service"
   private let transferChannelName = "xyz.depollsoft.monkeyssh/transfer"
   private let appleDatabaseChannelName = "xyz.depollsoft.monkeyssh/apple_file_protection"
   private let syncVaultDocumentChannelName = "xyz.depollsoft.monkeyssh/sync_vault_document"
+  private let keyboardVisibilityChannelName =
+    "xyz.depollsoft.monkeyssh/keyboard_visibility"
   private let maxTransferPayloadBytes = 10 * 1024 * 1024
   private let maxSyncVaultBytes = 10 * 1024 * 1024
   private var backgroundSshChannel: FlutterMethodChannel?
   private var transferChannel: FlutterMethodChannel?
   private var appleDatabaseChannel: FlutterMethodChannel?
   private var syncVaultDocumentChannel: FlutterMethodChannel?
+  private var keyboardVisibilityChannel: FlutterMethodChannel?
+  private var keyboardVisible = false
   private var pendingTransferPayload: String?
   private var pendingSyncVaultOperation: PendingSyncVaultOperation?
 
@@ -52,9 +59,22 @@ import UniformTypeIdentifiers
       setupTransferChannel(with: registrar)
       setupAppleDatabaseChannel(with: registrar)
       setupSyncVaultDocumentChannel(with: registrar)
+      setupKeyboardVisibilityChannel(with: registrar)
     } else {
       NSLog("Failed to configure AppDelegate method channels.")
     }
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(keyboardWillShow),
+      name: UIResponder.keyboardWillShowNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(keyboardWillHide),
+      name: UIResponder.keyboardWillHideNotification,
+      object: nil
+    )
     if let launchUrl = launchOptions?[.url] as? URL {
       _ = handleTransferFile(url: launchUrl)
     }
@@ -102,6 +122,38 @@ import UniformTypeIdentifiers
       application.endBackgroundTask(backgroundTaskId)
       backgroundTaskId = .invalid
     }
+  }
+
+  private func setupKeyboardVisibilityChannel(with registrar: FlutterPluginRegistrar) {
+    let channel = FlutterMethodChannel(
+      name: keyboardVisibilityChannelName,
+      binaryMessenger: registrar.messenger()
+    )
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard call.method == "getVisibility" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      result(self?.keyboardVisible ?? false)
+    }
+    keyboardVisibilityChannel = channel
+  }
+
+  @objc private func keyboardWillShow(_ notification: Notification) {
+    updateKeyboardVisibility(true)
+  }
+
+  @objc private func keyboardWillHide(_ notification: Notification) {
+    updateKeyboardVisibility(false)
+  }
+
+  private func updateKeyboardVisibility(_ visible: Bool) {
+    guard visible != keyboardVisible else { return }
+    keyboardVisible = visible
+    keyboardVisibilityChannel?.invokeMethod(
+      "onVisibilityChanged",
+      arguments: visible
+    )
   }
 
   private func setupBackgroundSshChannel(with registrar: FlutterPluginRegistrar) {

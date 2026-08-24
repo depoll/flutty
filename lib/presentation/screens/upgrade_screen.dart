@@ -313,7 +313,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
-                  'Get the polished extras that make remote coding-agent sessions feel faster to launch, easier to repeat, and more fun to jump back into.',
+                  'Keep more agent work connected, make repeatable workflows one tap away, and move between remote sessions without losing your place.',
                   style: theme.textTheme.bodyLarge,
                 ),
               ),
@@ -358,10 +358,22 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
           ),
           const SizedBox(height: 12),
           const _UpgradeBenefitTile(
+            icon: Icons.hub_outlined,
+            title: 'Parallel native chats',
+            subtitle:
+                'Keep multiple native agents connected, switch instantly, and fork active sessions.',
+          ),
+          const _UpgradeBenefitTile(
+            icon: Icons.history_outlined,
+            title: 'Recent terminal sessions',
+            subtitle:
+                'Discover agent work across windows and jump back in without hunting for it.',
+          ),
+          const _UpgradeBenefitTile(
             icon: Icons.rocket_launch_outlined,
             title: 'Agent launch presets',
             subtitle:
-                'Save repeatable startup flows per host for tools like Codex, Claude Code, Copilot CLI, or OpenCode.',
+                'Save repeatable startup flows per host for Codex, Claude Code, Copilot CLI, OpenCode, and more.',
           ),
           const _UpgradeBenefitTile(
             icon: Icons.play_circle_outline,
