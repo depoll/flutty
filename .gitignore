@@ -41,6 +41,7 @@ migrate_working_dir/
 
 # Local agent runtime state
 /.pi/
+/.claude/worktrees/
 
 # Local Bundler dependencies
 /vendor/bundle/
