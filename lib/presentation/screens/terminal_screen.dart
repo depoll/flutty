@@ -4995,6 +4995,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) {
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
+    final refreshStartedAt = DateTime.now();
     final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(session);
     final terminalViewReady = _isTerminalThemeRefreshViewReady;
     final tmuxStateBelongsToSession =
@@ -5110,9 +5111,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // foreground TUI. Codex treats those bytes as user input, and its crossterm
     // color re-query can also be disrupted by unrelated terminal reports.
     // Always send a synthetic focus transition so focus-aware TUIs re-query OSC
-    // 10/11 through the normal path. Also push default-color reports when the
-    // app requested DEC 2031 updates or when Windows ConPTY is active: ConPTY
-    // consumes the OSC 10/11 queries Copilot CLI uses to repaint its composer.
+    // 10/11 through the normal path. Apps that requested DEC 2031 updates can
+    // receive default-color reports directly. Under Windows ConPTY, wait until
+    // the foreground TUI responds by querying its palette. ConPTY enables focus
+    // reporting for a bare command prompt too, where unsolicited color reports
+    // are echoed as typed input.
     final includeThemeModeReport = session.terminalColorSchemeUpdatesMode;
     final includeDefaultColorReports =
         includeThemeModeReport || session.terminalWin32InputMode;
@@ -5145,6 +5148,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           includeFocusReport: false,
           includeThemeModeReport: false,
           includeDefaultColorReports: true,
+          requirePaletteQuerySince: includeThemeModeReport
+              ? null
+              : refreshStartedAt,
           reason: '${reason}_plain_defaults',
         );
       }
@@ -6160,6 +6166,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool includeColorReports = false,
     bool includeDefaultColorReports = false,
     bool includeFocusReport = true,
+    DateTime? requirePaletteQuerySince,
     String reason = 'unspecified',
   }) {
     late final Timer timer;
@@ -6170,6 +6177,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         refreshGeneration: refreshGeneration,
       )) {
+        return;
+      }
+      if (includeDefaultColorReports &&
+          requirePaletteQuerySince != null &&
+          !session.hasTerminalPaletteQuerySince(requirePaletteQuerySince)) {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'defaults_skipped_no_palette_query',
+          fields: {'reason': reason, 'connectionId': session.connectionId},
+        );
         return;
       }
       if (_isTmuxActive &&
