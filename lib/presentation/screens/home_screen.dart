@@ -469,6 +469,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Widget _buildMobileLayout() => Scaffold(
+    // This shell has no text input. Ignore stale IME insets left behind by
+    // input-heavy routes.
+    resizeToAvoidBottomInset: false,
     appBar: AppBar(
       title: Row(
         mainAxisSize: MainAxisSize.min,
@@ -494,6 +497,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     ),
     body: _buildContent(),
     bottomNavigationBar: NavigationBar(
+      // Keep destinations clear of edge-to-edge system navigation while an
+      // IME inset temporarily reduces MediaQuery.padding.
+      maintainBottomViewPadding: true,
       selectedIndex: _selectedIndex,
       onDestinationSelected: (index) => setState(() => _selectedIndex = index),
       labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,

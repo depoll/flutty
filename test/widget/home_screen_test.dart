@@ -417,6 +417,7 @@ void main() {
     required AppDatabase db,
     required List overrides,
     Size size = const Size(400, 800),
+    MediaQueryData mediaQueryData = const MediaQueryData(),
   }) => ProviderScope(
     overrides: [
       databaseProvider.overrideWithValue(db),
@@ -432,10 +433,80 @@ void main() {
       ...overrides,
     ],
     child: MediaQuery(
-      data: MediaQueryData(size: size),
+      data: mediaQueryData.copyWith(size: size),
       child: const MaterialApp(home: HomeScreen()),
     ),
   );
+
+  group('HomeScreen mobile insets', () {
+    const systemNavigationBarHeight = 24.0;
+    const staleKeyboardInset = 240.0;
+    const insetMediaQueryData = MediaQueryData(
+      padding: EdgeInsets.zero,
+      viewPadding: EdgeInsets.only(bottom: systemNavigationBarHeight),
+      viewInsets: EdgeInsets.only(bottom: staleKeyboardInset),
+    );
+
+    testWidgets('keeps navigation destinations above the system bar', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          mediaQueryData: insetMediaQueryData,
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value(const <Host>[]),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+
+      final scaffoldRect = tester.getRect(find.byType(Scaffold).first);
+      final hostsDestinationRect = tester.getRect(find.text('Hosts').last);
+
+      expect(
+        hostsDestinationRect.bottom,
+        lessThanOrEqualTo(scaffoldRect.bottom - systemNavigationBarHeight),
+      );
+    });
+
+    testWidgets('does not shrink the home content for a stale keyboard inset', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          mediaQueryData: insetMediaQueryData,
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value(const <Host>[]),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+
+      final scaffold = tester.widget<Scaffold>(find.byType(Scaffold).first);
+      final bodyRect = tester.getRect(find.byWidget(scaffold.body!));
+      final navigationBarRect = tester.getRect(find.byType(NavigationBar));
+
+      expect(bodyRect.bottom, closeTo(navigationBarRect.top, 0.01));
+    });
+  });
 
   group('HomeScreen reorder affordance', () {
     testWidgets('shows reorder handles and persists host order on mobile', (
