@@ -5,7 +5,6 @@ import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/native.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,6 +20,7 @@ import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/presentation/models/app_platform_file.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
 
@@ -151,13 +151,13 @@ void main() {
           .createFullMigrationPayload(transferPassphrase: '1234');
 
       setFakeFilePickerResult(
-        result: FilePickerResult([
-          PlatformFile(
+        result: [
+          AppPlatformFile(
             name: 'migration.monkeysshx',
             size: encodedPayload.length,
             bytes: Uint8List.fromList(utf8.encode(encodedPayload)),
           ),
-        ]),
+        ],
       );
 
       final fakeSshService = _FakeActiveSessionsSshService();

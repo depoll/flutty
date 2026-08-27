@@ -91,7 +91,10 @@ void _stubTrueColorLoginShell(
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
-class _MockSshClient extends Mock implements SSHClient {}
+class _MockSshClient extends Mock implements SSHClient {
+  @override
+  Future<void> close() async {}
+}
 
 class _MockShellChannel extends Mock implements SSHSession {}
 

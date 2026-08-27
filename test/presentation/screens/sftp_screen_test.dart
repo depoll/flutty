@@ -4,7 +4,6 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +11,7 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/presentation/models/app_platform_file.dart';
 import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
 import 'package:monkeyssh/presentation/screens/sftp_screen.dart';
 
@@ -29,7 +29,10 @@ final _onePixelPngBytes = Uint8List.fromList(
   ),
 );
 
-class _MockSshClient extends Mock implements SSHClient {}
+class _MockSshClient extends Mock implements SSHClient {
+  @override
+  Future<void> close() async {}
+}
 
 Future<void> _completeSftpClose(Invocation _) async {}
 
@@ -614,7 +617,7 @@ void main() {
         final fileOnDisk = File('${tempDirectory.path}/notes.txt');
         await fileOnDisk.writeAsString('copilot');
 
-        final file = PlatformFile(
+        final file = AppPlatformFile(
           name: 'notes.txt',
           path: fileOnDisk.path,
           size: 7,
@@ -632,7 +635,7 @@ void main() {
     test('uses the file name when a single upload is unreadable', () {
       expect(
         resolveUnreadableSftpUploadMessage([
-          PlatformFile(name: 'notes.txt', size: 0),
+          AppPlatformFile(name: 'notes.txt', size: 0),
         ]),
         'Unable to read "notes.txt"',
       );
@@ -641,8 +644,8 @@ void main() {
     test('uses a pluralized count when multiple uploads are unreadable', () {
       expect(
         resolveUnreadableSftpUploadMessage([
-          PlatformFile(name: 'notes.txt', size: 0),
-          PlatformFile(name: 'todo.txt', size: 0),
+          AppPlatformFile(name: 'notes.txt', size: 0),
+          AppPlatformFile(name: 'todo.txt', size: 0),
         ]),
         'Unable to read 2 selected files',
       );
@@ -660,14 +663,14 @@ void main() {
     test('does not echo unsafe upload names in validation feedback', () {
       expect(
         resolveUnsafeSftpUploadNameMessage([
-          PlatformFile(name: '../authorized_keys', size: 0),
+          AppPlatformFile(name: '../authorized_keys', size: 0),
         ]),
         'The selected file has an unsafe name',
       );
       expect(
         resolveUnsafeSftpUploadNameMessage([
-          PlatformFile(name: '../one', size: 0),
-          PlatformFile(name: r'..\two', size: 0),
+          AppPlatformFile(name: '../one', size: 0),
+          AppPlatformFile(name: r'..\two', size: 0),
         ]),
         '2 selected files have unsafe names',
       );
@@ -1128,7 +1131,6 @@ void main() {
         () => monetizationService.currentState,
       ).thenReturn(_proMonetizationState);
       when(sshClient.sftp).thenThrow(SSHStateError('Transport is closed'));
-      when(sshClient.close).thenReturn(null);
       addTearDown(session.close);
 
       await tester.pumpWidget(

@@ -9,6 +9,7 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/remote_file_service.dart';
+import 'package:monkeyssh/presentation/models/app_platform_file.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:xterm/xterm.dart';
 
@@ -264,13 +265,13 @@ void main() {
 
   group('resolvePickedTerminalUploadFileName', () {
     test('prefers the picker-provided name when present', () {
-      final file = PlatformFile(name: 'Screenshot.png', size: 0);
+      final file = AppPlatformFile(name: 'Screenshot.png', size: 0);
 
       expect(resolvePickedTerminalUploadFileName(file), 'Screenshot.png');
     });
 
     test('falls back to the local path basename when needed', () {
-      final file = PlatformFile(
+      final file = AppPlatformFile(
         name: '   ',
         path: '/tmp/copilot/screenshot.png',
         size: 0,
@@ -280,7 +281,7 @@ void main() {
     });
 
     test('uses a stable generated fallback when no name is available', () {
-      final file = PlatformFile(name: '', size: 0);
+      final file = AppPlatformFile(name: '', size: 0);
 
       expect(
         resolvePickedTerminalUploadFileName(file, index: 2),
@@ -299,7 +300,7 @@ void main() {
       final fileOnDisk = File('${tempDirectory.path}/notes.txt');
       await fileOnDisk.writeAsString('copilot');
 
-      final file = PlatformFile(
+      final file = AppPlatformFile(
         name: 'notes.txt',
         path: fileOnDisk.path,
         size: 7,
@@ -911,7 +912,7 @@ void main() {
 
       expect(file.name, 'photo.jpg');
       expect(file.path, mediaFile.path);
-      expect(file.size, 3);
+      expect(await file.length(), 3);
     });
   });
 

@@ -4,7 +4,6 @@ import 'dart:io' show Directory, File;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_auth/local_auth.dart';
@@ -15,64 +14,61 @@ import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/presentation/models/app_platform_file.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 
-const _filePickerChannel = MethodChannel(
-  'miguelruivo.flutter.plugins.filepicker',
-);
-
-void setFakeFilePickerResult({required FilePickerResult? result}) {
-  Future<List<String>?>? nativeFilePaths;
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(_filePickerChannel, (call) async {
-        if (call.method case 'pickFiles') {
-          return nativeFilePaths ??= _materializeNativeFilePaths(result);
-        }
-        if (call.method
-            case 'any' ||
-                'custom' ||
-                'image' ||
-                'video' ||
-                'media' ||
-                'audio') {
-          return result?.files.map(_serializePlatformFile).toList();
-        }
-        return null;
-      });
-  addTearDown(
-    () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(_filePickerChannel, null),
-  );
+void setFakeFilePickerResult({required List<PlatformFile> result}) {
+  final previous = FilePickerPlatform.instance;
+  FilePickerPlatform.instance = _FakeFilePickerPlatform(result);
+  addTearDown(() => FilePickerPlatform.instance = previous);
 }
 
-Future<List<String>?> _materializeNativeFilePaths(
-  FilePickerResult? result,
-) async {
-  if (result == null) {
-    return null;
-  }
+final class _FakeFilePickerPlatform extends FilePickerPlatform {
+  _FakeFilePickerPlatform(this._files);
 
-  final tempDirectory = await Directory.systemTemp.createTemp(
-    'flutty-file-picker-',
-  );
-  addTearDown(() => tempDirectory.delete(recursive: true));
+  final List<PlatformFile> _files;
+  Future<List<PlatformFile>>? _materializedFiles;
 
-  final filePaths = <String>[];
-  for (final file in result.files) {
-    final tempFile = File('${tempDirectory.path}/${file.name}');
-    await tempFile.writeAsBytes(file.bytes ?? const <int>[]);
-    filePaths.add(tempFile.path);
+  @override
+  Future<List<PlatformFile>> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    int compressionQuality = 0,
+    AndroidOptions androidOptions = const AndroidOptions(),
+    WindowsOptions windowsOptions = const WindowsOptions(),
+    LinuxOptions linuxOptions = const LinuxOptions(),
+    WebOptions webOptions = const WebOptions(),
+  }) => _materializedFiles ??= _materializeFiles();
+
+  Future<List<PlatformFile>> _materializeFiles() async {
+    if (_files.isEmpty) {
+      return const [];
+    }
+    final tempDirectory = await Directory.systemTemp.createTemp(
+      'monkeyssh-file-picker-',
+    );
+    addTearDown(() => tempDirectory.delete(recursive: true));
+
+    final files = <PlatformFile>[];
+    for (var index = 0; index < _files.length; index++) {
+      final pickedFile = _files[index];
+      final bytes = await pickedFile.readAsBytes();
+      final localFile = File('${tempDirectory.path}/$index-${pickedFile.name}');
+      await localFile.writeAsBytes(bytes);
+      files.add(
+        AppPlatformFile(
+          name: pickedFile.name,
+          path: localFile.path,
+          size: bytes.length,
+        ),
+      );
+    }
+    return files;
   }
-  return filePaths;
 }
-
-Map<String, Object?> _serializePlatformFile(PlatformFile file) => {
-  'path': file.path,
-  'name': file.name,
-  'bytes': file.bytes,
-  'size': file.size,
-  'identifier': file.identifier,
-};
 
 class EntityProviderProbe extends ConsumerWidget {
   const EntityProviderProbe({super.key});

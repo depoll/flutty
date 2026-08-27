@@ -9,7 +9,6 @@ import 'package:dartssh2/dartssh2.dart';
 // SSHUserInfoRequest/SSHUserInfoPrompt are not exported from the public API,
 // but are needed to exercise the keyboard-interactive auth handler.
 // ignore: implementation_imports
-import 'package:dartssh2/src/ssh_userauth.dart';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
@@ -6376,7 +6375,7 @@ LISTEN ::1:4201
         var promptCount = 0;
         var clientFactoryCalls = 0;
 
-        when(client.close).thenReturn(null);
+        when(client.close).thenAnswer((_) async {});
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
@@ -6501,7 +6500,7 @@ LISTEN ::1:4201
       var promptCount = 0;
       var clientFactoryCalls = 0;
 
-      when(client.close).thenReturn(null);
+      when(client.close).thenAnswer((_) async {});
 
       final service = SshService(
         knownHostsRepository: knownHostsRepository,
@@ -6565,7 +6564,7 @@ LISTEN ::1:4201
       SSHPasswordRequestHandler? capturedPassword;
       SSHUserInfoRequestHandler? capturedUserInfo;
 
-      when(client.close).thenReturn(null);
+      when(client.close).thenAnswer((_) async {});
 
       final service = SshService(
         knownHostsRepository: knownHostsRepository,
@@ -6635,7 +6634,7 @@ LISTEN ::1:4201
       SSHPasswordRequestHandler? capturedPassword;
       SSHUserInfoRequestHandler? capturedUserInfo;
 
-      when(client.close).thenReturn(null);
+      when(client.close).thenAnswer((_) async {});
 
       final service = SshService(
         knownHostsRepository: knownHostsRepository,
@@ -6710,7 +6709,7 @@ LISTEN ::1:4201
         SSHPasswordRequestHandler? capturedPassword;
         SSHUserInfoRequestHandler? capturedUserInfo;
 
-        when(client.close).thenReturn(null);
+        when(client.close).thenAnswer((_) async {});
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
@@ -6771,7 +6770,7 @@ LISTEN ::1:4201
         SshAuthChallenge? seenChallenge;
         SSHUserInfoRequestHandler? capturedUserInfo;
 
-        when(client.close).thenReturn(null);
+        when(client.close).thenAnswer((_) async {});
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
@@ -6849,7 +6848,7 @@ LISTEN ::1:4201
         var promptCalls = 0;
         SSHUserInfoRequestHandler? capturedUserInfo;
 
-        when(client.close).thenReturn(null);
+        when(client.close).thenAnswer((_) async {});
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
@@ -6943,7 +6942,7 @@ LISTEN ::1:4201
         var promptCalls = 0;
         SSHUserInfoRequestHandler? capturedUserInfo;
 
-        when(client.close).thenReturn(null);
+        when(client.close).thenAnswer((_) async {});
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
@@ -7032,8 +7031,8 @@ LISTEN ::1:4201
       var clientIndex = 0;
       var promptCount = 0;
 
-      when(firstClient.close).thenReturn(null);
-      when(retryClient.close).thenReturn(null);
+      when(firstClient.close).thenAnswer((_) async {});
+      when(retryClient.close).thenAnswer((_) async {});
 
       final service = SshService(
         knownHostsRepository: knownHostsRepository,
@@ -7121,7 +7120,7 @@ LISTEN ::1:4201
         var clientFactoryCalls = 0;
         var promptCount = 0;
 
-        when(client.close).thenReturn(null);
+        when(client.close).thenAnswer((_) async {});
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
@@ -7196,7 +7195,7 @@ LISTEN ::1:4201
       final client = _MockSshClient();
       var socketIndex = 0;
 
-      when(client.close).thenReturn(null);
+      when(client.close).thenAnswer((_) async {});
 
       final service = SshService(
         knownHostsRepository: knownHostsRepository,
@@ -7251,8 +7250,8 @@ LISTEN ::1:4201
       when(
         () => jumpClient.forwardLocal('target.example.com', 22),
       ).thenAnswer(_returnTargetSocket(targetSocket));
-      when(jumpClient.close).thenReturn(null);
-      when(targetClient.close).thenReturn(null);
+      when(jumpClient.close).thenAnswer((_) async {});
+      when(targetClient.close).thenAnswer((_) async {});
 
       final service = SshService(
         knownHostsRepository: knownHostsRepository,
@@ -7366,8 +7365,8 @@ LISTEN ::1:4201
         forwardCount++;
         return targetSocket;
       });
-      when(jumpClient.close).thenReturn(null);
-      when(targetClient.close).thenReturn(null);
+      when(jumpClient.close).thenAnswer((_) async {});
+      when(targetClient.close).thenAnswer((_) async {});
 
       final service = SshService(
         knownHostsRepository: knownHostsRepository,
@@ -7435,7 +7434,7 @@ LISTEN ::1:4201
         final socket = _FakeHostKeySocket(_ed25519HostKeyBlob([7, 8, 9]));
         final client = _MockSshClient();
 
-        when(client.close).thenReturn(null);
+        when(client.close).thenAnswer((_) async {});
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
@@ -7512,8 +7511,8 @@ LISTEN ::1:4201
         var socketIndex = 0;
         var clientIndex = 0;
 
-        when(firstClient.close).thenReturn(null);
-        when(retryClient.close).thenReturn(null);
+        when(firstClient.close).thenAnswer((_) async {});
+        when(retryClient.close).thenAnswer((_) async {});
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
@@ -7838,7 +7837,7 @@ LISTEN ::1:4201
         }
         return Completer<void>().future;
       });
-      when(client.close).thenReturn(null);
+      when(client.close).thenAnswer((_) async {});
 
       final service = SshService(
         knownHostsRepository: knownHostsRepository,

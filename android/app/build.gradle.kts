@@ -84,7 +84,7 @@ if (isReleaseBuildRequested && !allowUnsignedRelease) {
 
 extensions.configure<ApplicationExtension>("android") {
     namespace = "xyz.depollsoft.monkeyssh"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -187,7 +187,7 @@ Future<void> _savePayloadToFileDialog({
       !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
   if (shouldWriteFileDirectly) {
     try {
-      await File(targetPath).writeAsBytes(bytes, flush: true);
+      await File(targetPath.toFilePath()).writeAsBytes(bytes, flush: true);
     } on FileSystemException {
       if (!context.mounted) {
         return;
@@ -223,11 +223,11 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     ),
   );
 
-  if (result == null || result.files.isEmpty) {
+  if (result.isEmpty) {
     return null;
   }
 
-  final selectedFile = result.files.single;
+  final selectedFile = result.single;
   if (!platformFileMatchesExpectedExtension(
     selectedFile,
     monkeySshTransferFileExtension,

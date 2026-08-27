@@ -49,7 +49,7 @@ Future<String> _runRemoteCommand(String command) async {
     await session.done;
     return stdout.trim();
   } finally {
-    client.close();
+    await client.close();
   }
 }
 
@@ -167,7 +167,7 @@ void main() {
       await stdoutSubscription.cancel();
       await stderrSubscription.cancel();
       shell.close();
-      client.close();
+      await client.close();
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump(const Duration(milliseconds: 300));
     });
