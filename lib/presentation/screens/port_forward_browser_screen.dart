@@ -351,13 +351,10 @@ class _PortForwardBrowserScreenState
       final allowMultiple = params.mode == FileSelectorMode.openMultiple;
       final List<PlatformFile> files;
       if (allowMultiple) {
-        files =
-            (await FilePickerPlatform.instance.pickFiles(
-              type: filter.type,
-              allowedExtensions: filter.allowedExtensions,
-              allowMultiple: true,
-            ))?.files ??
-            const [];
+        files = await FilePicker.pickFiles(
+          type: filter.type,
+          allowedExtensions: filter.allowedExtensions,
+        );
       } else {
         final file = await FilePicker.pickFile(
           type: filter.type,

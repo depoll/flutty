@@ -73,6 +73,7 @@ import '../../domain/services/terminal_wake_lock_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../controllers/system_keyboard_visibility_controller.dart';
 import '../controllers/terminal_session_controller.dart';
+import '../models/app_platform_file.dart';
 import '../widgets/acp_composer.dart';
 import '../widgets/acp_concurrency_choice.dart';
 import '../widgets/acp_connection_support.dart';
@@ -1816,10 +1817,9 @@ Future<PlatformFile> platformFileFromPickedTerminalMedia(
   // sources), and `path.basename` only splits on the local platform's
   // separator, so split on both explicitly.
   name = name.split(RegExp(r'[/\\]')).last;
-  return PlatformFile(
+  return AppPlatformFile.fromXFile(
+    file,
     name: name.isEmpty ? 'selected-media-${index + 1}' : name,
-    path: filePath,
-    size: await file.length(),
   );
 }
 
@@ -18492,13 +18492,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) {
         return;
       }
-      if (result == null || result.files.isEmpty) {
+      if (result.isEmpty) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         return;
       }
 
       await _pasteSelectedFiles(
-        result.files,
+        result,
         itemLabelSingular: itemLabelSingular,
         itemLabelPlural: itemLabelPlural,
       );

@@ -2,8 +2,8 @@
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_test/flutter_test.dart';
-
 import 'package:monkeyssh/presentation/browser/browser_file_picker.dart';
+import 'package:monkeyssh/presentation/models/app_platform_file.dart';
 
 void main() {
   group('resolveBrowserFilePickerFilter', () {
@@ -76,11 +76,11 @@ void main() {
 
   group('browserUploadUriForPlatformFile', () {
     test('prefers a platform content URI', () {
-      final file = PlatformFile(
+      final file = AppPlatformFile(
         name: 'report.pdf',
         size: 12,
         path: '/tmp/report.pdf',
-        identifier: 'content://documents/report',
+        uri: Uri.parse('content://documents/report'),
       );
 
       expect(
@@ -90,7 +90,7 @@ void main() {
     });
 
     test('converts a filesystem path to a file URI', () {
-      final file = PlatformFile(
+      final file = AppPlatformFile(
         name: 'report.pdf',
         size: 12,
         path: '/tmp/report.pdf',

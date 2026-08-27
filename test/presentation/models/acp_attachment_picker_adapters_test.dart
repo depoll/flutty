@@ -1,16 +1,16 @@
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/presentation/models/acp_attachment_picker_adapters.dart';
+import 'package:monkeyssh/presentation/models/app_platform_file.dart';
 import 'package:monkeyssh/presentation/screens/sftp_screen.dart';
 
 void main() {
   test('adapts PlatformFile bytes into an in-memory candidate', () async {
     final candidate = await acpAttachmentCandidateFromPlatformFile(
-      PlatformFile(
+      AppPlatformFile(
         name: 'notes.txt',
         size: 5,
         bytes: Uint8List.fromList(<int>[104, 101, 108, 108, 111]),
@@ -26,7 +26,7 @@ void main() {
 
   test('keeps path-backed PlatformFile reads lazy', () async {
     final candidate = await acpAttachmentCandidateFromPlatformFile(
-      PlatformFile(name: 'notes.txt', path: 'unopened/notes.txt', size: 5),
+      AppPlatformFile(name: 'notes.txt', path: 'unopened/notes.txt', size: 5),
     );
 
     expect(candidate, isA<AcpLocalFileAttachmentCandidate>());

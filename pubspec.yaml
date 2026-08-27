@@ -15,18 +15,18 @@ dependencies:
     sdk: flutter
 
   # State management
-  flutter_riverpod: ^3.3.2
+  flutter_riverpod: ^3.4.2
 
   # Navigation
-  go_router: ^17.3.0
+  go_router: ^17.5.0
 
   # Database
-  drift: ^2.34.2
+  drift: ^2.34.3
   path_provider: ^2.1.6
   path: ^1.9.1
 
   # SSH
-  dartssh2: 2.22.3
+  dartssh2: ^3.3.1
 
   # Terminal
   # Vendored fork of xterm.dart 4.0.0 (upstream unmaintained since 2024-02).
@@ -39,13 +39,13 @@ dependencies:
   highlight: ^0.7.0
 
   # Secure storage
-  flutter_secure_storage: ^10.3.1
+  flutter_secure_storage: ^11.0.0
 
   # Biometrics
   local_auth: ^3.0.2
 
   # File handling
-  file_picker: ^12.0.0-beta.7
+  file_picker: ^12.1.1
   image_picker: ^1.2.3
   image_picker_android: ^0.8.13+19
   image_picker_platform_interface: ^2.11.1
@@ -57,42 +57,43 @@ dependencies:
   # UI
   cupertino_icons: ^1.0.9
   flutter_svg: ^2.3.0
-  google_fonts: ^8.2.0
+  google_fonts: ^8.2.1
   # Markdown rendering for ACP assistant messages. flutter_markdown_plus is the
   # maintained continuation of the discontinued official flutter_markdown; the
   # markdown parser is a direct dependency because custom code-block builders
   # reference its AST types.
   flutter_markdown_plus: ^1.0.12
   markdown: ^7.3.1
-  flutter_local_notifications: ^22.1.0
+  flutter_local_notifications: ^22.3.0
   webview_flutter: ^4.14.1
-  webview_flutter_android: ^4.13.0
+  webview_flutter_android: ^4.14.0
   webview_flutter_wkwebview: ^3.26.0
 
   # Utilities
   uuid: ^4.6.0
   intl: ^0.20.3
   collection: ^1.19.1
+  cross_file: ^0.3.5+5
   equatable: ^2.1.0
   pasteboard: ^0.5.0
   url_launcher: ^6.3.2
   package_info_plus: ^10.2.1
   in_app_purchase: ^3.3.0
   in_app_purchase_android: ^0.5.2
-  in_app_purchase_storekit: ^0.4.11
+  in_app_purchase_storekit: ^0.4.11+1
   quick_actions: ^1.1.0
-  video_player: ^2.13.0
+  video_player: ^2.14.0
   http: ^1.6.0
   xml: ^7.0.1
 
   # Network / connectivity
   network_info_plus: ^8.2.1
-  permission_handler: ^12.0.3
+  permission_handler: ^13.0.1
   wakelock_plus: ^1.7.0
-  sqlite3: ^3.5.0
-  firebase_core: ^4.12.1
-  firebase_analytics: ^12.4.5
-  firebase_crashlytics: ^5.2.6
+  sqlite3: ^3.5.2
+  firebase_core: ^4.14.0
+  firebase_analytics: ^12.5.0
+  firebase_crashlytics: ^5.3.0
   mime: ^2.0.0
 
 dev_dependencies:

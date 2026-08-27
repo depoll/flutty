@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:drift/native.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,6 +15,7 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/presentation/models/app_platform_file.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
 
@@ -55,13 +55,13 @@ void main() {
     );
 
     setFakeFilePickerResult(
-      result: FilePickerResult([
-        PlatformFile(
+      result: [
+        AppPlatformFile(
           name: 'migration.monkeysshx',
           size: 15,
           bytes: Uint8List.fromList(utf8.encode('encoded-payload')),
         ),
-      ]),
+      ],
     );
 
     var hostBuilds = 0;

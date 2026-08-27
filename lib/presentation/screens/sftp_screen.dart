@@ -83,13 +83,18 @@ Future<T> withSftpOperationTimeout<T>(
 String sftpTimeoutMessage(String action) =>
     'Timed out $action. The SSH connection may be stale; reconnect and try again.';
 
-int? _selectedUploadSizeBytes(List<PlatformFile> files) {
+Future<int?> _selectedUploadSizeBytes(List<PlatformFile> files) async {
   var total = 0;
-  for (final file in files) {
-    if (file.size < 0) {
-      return null;
+  try {
+    for (final file in files) {
+      final size = await file.length();
+      if (size < 0) {
+        return null;
+      }
+      total += size;
     }
-    total += file.size;
+  } on Object {
+    return null;
   }
   return total;
 }
@@ -2391,7 +2396,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           .downloadFile(
             sftp: _sftp!,
             remotePath: remotePath,
-            localPath: savePath,
+            localPath: savePath.toFilePath(),
           );
 
       if (mounted) {
@@ -2435,11 +2440,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     final result = await FilePicker.pickFiles();
-    if (result == null || result.files.isEmpty) {
+    if (result.isEmpty) {
       return;
     }
 
-    final selectedFiles = result.files;
+    final selectedFiles = result;
     final unsafeUploads = selectedFiles
         .where((file) => validateSftpUploadFileName(file.name) != null)
         .toList();
@@ -2450,7 +2455,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             .logSftpTransferFailed(
               direction: 'upload',
               fileCount: selectedFiles.length,
-              sizeBytes: _selectedUploadSizeBytes(selectedFiles),
+              sizeBytes: await _selectedUploadSizeBytes(selectedFiles),
               duration: Duration.zero,
               failureCategory: 'invalid_name',
             ),
@@ -2479,7 +2484,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             .logSftpTransferFailed(
               direction: 'upload',
               fileCount: selectedFiles.length,
-              sizeBytes: _selectedUploadSizeBytes(selectedFiles),
+              sizeBytes: await _selectedUploadSizeBytes(selectedFiles),
               duration: Duration.zero,
               failureCategory: 'unreadable',
             ),
@@ -2499,7 +2504,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     final startedAt = DateTime.now();
-    final sizeBytes = _selectedUploadSizeBytes(selectedFiles);
+    final sizeBytes = await _selectedUploadSizeBytes(selectedFiles);
     unawaited(
       ref
           .read(telemetryServiceProvider)
@@ -4006,7 +4011,7 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
     }
 
     try {
-      await widget.localFile.copy(savePath);
+      await widget.localFile.copy(savePath.toFilePath());
       _keepCachedFile = true;
       if (mounted) {
         ScaffoldMessenger.of(

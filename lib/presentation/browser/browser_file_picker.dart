@@ -83,12 +83,8 @@ BrowserMediaCaptureType? preferredBrowserMediaCaptureType(
 
 /// Returns a URI that Android WebView can use for an uploaded [file].
 String? browserUploadUriForPlatformFile(PlatformFile file) {
-  final identifier = file.identifier;
-  if (identifier != null && identifier.isNotEmpty) {
-    return identifier;
-  }
-  final path = file.path;
-  return path == null || path.isEmpty ? null : Uri.file(path).toString();
+  final uri = file.uri.toString();
+  return uri.isEmpty ? null : uri;
 }
 
 List<String> _normalizeAcceptTypes(Iterable<String> acceptTypes) => acceptTypes

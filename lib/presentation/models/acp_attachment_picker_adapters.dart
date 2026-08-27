@@ -16,7 +16,7 @@ Future<AcpAttachmentCandidate> acpAttachmentCandidateFromPlatformFile(
   if (localPath != null && localPath.isNotEmpty) {
     return AcpAttachmentCandidate.localFile(
       name: name,
-      sizeBytes: file.size,
+      sizeBytes: await file.length(),
       openRead: () => File(localPath).openRead(),
     );
   }

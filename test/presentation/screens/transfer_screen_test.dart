@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
-
 import 'package:monkeyssh/domain/services/auth_service.dart';
+import 'package:monkeyssh/presentation/models/app_platform_file.dart';
 import 'package:monkeyssh/presentation/screens/transfer_screen.dart';
 import 'package:monkeyssh/presentation/widgets/file_picker_helpers.dart';
 
@@ -95,21 +95,25 @@ void main() {
     test('validates extensions from file metadata, name, or path', () {
       expect(
         platformFileMatchesExpectedExtension(
-          PlatformFile(name: 'vault.MONKEYSSHX', size: 1),
+          AppPlatformFile(name: 'vault.MONKEYSSHX', size: 1),
           monkeySshTransferFileExtension,
         ),
         isTrue,
       );
       expect(
         platformFileMatchesExpectedExtension(
-          PlatformFile(name: 'vault', path: '/tmp/vault.monkeysshx', size: 1),
+          AppPlatformFile(
+            name: 'vault',
+            path: '/tmp/vault.monkeysshx',
+            size: 1,
+          ),
           monkeySshTransferFileExtension,
         ),
         isTrue,
       );
       expect(
         platformFileMatchesExpectedExtension(
-          PlatformFile(name: 'vault.txt', size: 1),
+          AppPlatformFile(name: 'vault.txt', size: 1),
           monkeySshTransferFileExtension,
         ),
         isFalse,

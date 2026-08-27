@@ -10,7 +10,10 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/services/port_forward_runtime_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
-class _MockSshClient extends Mock implements SSHClient {}
+class _MockSshClient extends Mock implements SSHClient {
+  @override
+  Future<void> close() async {}
+}
 
 class _MockRemoteForward extends Mock implements SSHRemoteForward {}
 

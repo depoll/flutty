@@ -1386,9 +1386,9 @@ class SshConnectionResult {
 
   /// Closes [client] and any dependent jump-host clients.
   Future<void> closeAll() async {
-    client?.close();
+    await client?.close();
     for (final dependentClient in dependentClients) {
-      dependentClient.close();
+      await dependentClient.close();
     }
   }
 }
@@ -2224,7 +2224,7 @@ class SshService {
           rethrow;
         }
 
-        client.close();
+        await client.close();
         client = null;
 
         report(
@@ -2322,8 +2322,8 @@ class SshService {
         'connect_cancelled',
         fields: {'isJumpHost': isJumpHost},
       );
-      client?.close();
-      _closeClients(dependentClients);
+      await client?.close();
+      await _closeClients(dependentClients);
       return const SshConnectionResult.userCancelled();
     } on HostKeyVerificationException catch (e) {
       DiagnosticsLogService.instance.warning(
@@ -2331,8 +2331,8 @@ class SshService {
         'connect_failed',
         fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
       );
-      client?.close();
-      _closeClients(dependentClients);
+      await client?.close();
+      await _closeClients(dependentClients);
       return SshConnectionResult(success: false, error: e.message);
     } on SSHHostkeyError catch (e) {
       DiagnosticsLogService.instance.warning(
@@ -2340,8 +2340,8 @@ class SshService {
         'connect_failed',
         fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
       );
-      client?.close();
-      _closeClients(dependentClients);
+      await client?.close();
+      await _closeClients(dependentClients);
       return SshConnectionResult(
         success: false,
         error: 'Host key verification failed: ${e.message}',
@@ -2352,8 +2352,8 @@ class SshService {
         'connect_failed',
         fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
       );
-      client?.close();
-      _closeClients(dependentClients);
+      await client?.close();
+      await _closeClients(dependentClients);
       return SshConnectionResult(
         success: false,
         error: 'Authentication failed: ${e.message}',
@@ -2364,8 +2364,8 @@ class SshService {
         'connect_failed',
         fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
       );
-      client?.close();
-      _closeClients(dependentClients);
+      await client?.close();
+      await _closeClients(dependentClients);
       return SshConnectionResult(
         success: false,
         error: 'Connection failed: ${e.message}',
@@ -2376,8 +2376,8 @@ class SshService {
         'connect_failed',
         fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
       );
-      client?.close();
-      _closeClients(dependentClients);
+      await client?.close();
+      await _closeClients(dependentClients);
       return SshConnectionResult(
         success: false,
         error: e.message ?? 'Connection timed out',
@@ -2388,8 +2388,8 @@ class SshService {
         'connect_failed',
         fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
       );
-      client?.close();
-      _closeClients(dependentClients);
+      await client?.close();
+      await _closeClients(dependentClients);
       return const SshConnectionResult(
         success: false,
         error: 'Connection failed. Check the host settings and try again.',
@@ -2661,7 +2661,7 @@ class SshService {
       if (probeAuthentication != null) {
         await probeAuthentication;
       }
-      probeClient?.close();
+      await probeClient?.close();
       await verificationSocket.socket.close();
     }
   }
@@ -2848,9 +2848,9 @@ class SshService {
     }
   }
 
-  static void _closeClients(List<SSHClient> clients) {
+  static Future<void> _closeClients(List<SSHClient> clients) async {
     for (final client in clients) {
-      client.close();
+      await client.close();
     }
   }
 
@@ -6435,9 +6435,9 @@ while($true){
     await _portForwardChanges.close();
     await _connectionHealthFailures.close();
     await _terminalNotifications.close();
-    client.close();
+    await client.close();
     for (final dependentClient in dependentClients) {
-      dependentClient.close();
+      await dependentClient.close();
     }
   }
 
@@ -6793,12 +6793,12 @@ class _AppReviewDemoSshClient implements SSHClient {
   }
 
   @override
-  void close() {
+  Future<void> close() async {
     if (_isClosed) {
       return;
     }
     _isClosed = true;
-    _sftp?.close();
+    await _sftp?.close();
     if (!_done.isCompleted) {
       _done.complete();
     }

@@ -648,12 +648,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     // pickFiles selects multiple files by default in the current file_picker
     // (the explicit allowMultiple flag is deprecated); adapters/limits are
     // preserved by the shared PlatformFile adapter below.
-    final result = await FilePicker.pickFiles();
-    if (result == null) {
-      return const [];
-    }
+    final files = await FilePicker.pickFiles();
     return [
-      for (final file in result.files)
+      for (final file in files)
         await acpAttachmentCandidateFromPlatformFile(file),
     ];
   }

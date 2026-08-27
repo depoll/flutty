@@ -23,7 +23,7 @@ plugins {
     // https://issuetracker.google.com/issues/522845800
     id("com.android.application") version "9.2.1" apply false
     id("com.google.gms.google-services") version "4.5.0" apply false
-    id("com.google.firebase.crashlytics") version "3.0.7" apply false
+    id("com.google.firebase.crashlytics") version "3.0.8" apply false
     id("org.jetbrains.kotlin.android") version "2.4.10" apply false
 }
 
