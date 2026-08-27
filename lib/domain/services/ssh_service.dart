@@ -3700,6 +3700,17 @@ class SshSession {
   /// foreground app.
   bool get terminalWin32InputMode => _runtime.terminalWin32InputMode;
 
+  /// Whether the current shell queried its ANSI palette at or after [instant].
+  ///
+  /// ConPTY forwards OSC 4 palette queries from foreground TUIs even when it
+  /// consumes their OSC 10/11 default-color queries. A bare Windows shell does
+  /// not interrogate the palette, so this is safe evidence that a delayed
+  /// default-color report belongs to a TUI rather than the command prompt.
+  bool hasTerminalPaletteQuerySince(DateTime instant) {
+    final lastQueryAt = _lastTerminalPaletteQueryAt;
+    return lastQueryAt != null && !lastQueryAt.isBefore(instant);
+  }
+
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
 
@@ -4167,6 +4178,7 @@ class SshSession {
     _terminalPreview = null;
     _terminalPreviewSnapshot = null;
     _windowTitle = null;
+    _lastTerminalPaletteQueryAt = null;
     _lastVolunteeredThemeDefaultsAt = null;
     if (hadMetadata || hadRemoteColors) {
       _notifyMetadataChanged();
@@ -4175,6 +4187,7 @@ class SshSession {
     }
   }
 
+  DateTime? _lastTerminalPaletteQueryAt;
   DateTime? _lastVolunteeredThemeDefaultsAt;
 
   /// A color interrogation arrives as a burst of palette queries; volunteer
@@ -4229,6 +4242,9 @@ class SshSession {
 
   void _handlePrivateOsc(String code, List<String> args) {
     final hasThemeQuery = args.any((arg) => arg.trim() == '?');
+    if (hasThemeQuery && code == '4') {
+      _lastTerminalPaletteQueryAt = DateTime.now();
+    }
     if (hasThemeQuery &&
         (code == '4' ||
             code == '10' ||

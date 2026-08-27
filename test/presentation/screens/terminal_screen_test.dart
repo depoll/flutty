@@ -2607,7 +2607,7 @@ void main() {
     );
 
     testWidgets(
-      'pushes updated default colors through Windows ConPTY on theme changes',
+      'does not push default colors into an idle Windows ConPTY shell',
       (tester) async {
         await pumpScreen(tester);
         shellStdoutController.add(
@@ -2633,6 +2633,47 @@ void main() {
           RegExp(r'\x1b\[0;0;(\d+);1;0;1_'),
           (match) => String.fromCharCode(int.parse(match.group(1)!)),
         );
+        expect(decodedWin32Input, contains('\x1b[O\x1b[I'));
+        expect(decodedWin32Input, isNot(contains('\x1b]10;')));
+        expect(decodedWin32Input, isNot(contains('\x1b]11;')));
+        expect(decodedWin32Input, isNot(contains('\x1b[?997;1n')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'pushes updated default colors through Windows ConPTY for a TUI',
+      (tester) async {
+        await pumpScreen(tester);
+        shellStdoutController.add(
+          Uint8List.fromList(utf8.encode('\x1b[?9001h\x1b[?1004h')),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+        expect(session.terminalWin32InputMode, isTrue);
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+
+        shellStdoutController.add(
+          Uint8List.fromList(utf8.encode('\x1b]4;0;?\x1b\\')),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+        shellWrites.clear();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        final decodedWin32Input = writtenShellText.replaceAllMapped(
+          RegExp(r'\x1b\[0;0;(\d+);1;0;1_'),
+          (match) => String.fromCharCode(int.parse(match.group(1)!)),
+        );
         expect(
           decodedWin32Input,
           contains(
@@ -2641,7 +2682,6 @@ void main() {
             ),
           ),
         );
-        expect(decodedWin32Input, contains('\x1b[O\x1b[I'));
         expect(decodedWin32Input, isNot(contains('\x1b[?997;1n')));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
