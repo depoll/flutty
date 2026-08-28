@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  FLUTTER_VERSION: '3.44.8'
+  FLUTTER_VERSION: "3.44.8"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
+          channel: "stable"
           cache: true
 
       - name: Install dependencies
@@ -212,7 +212,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
+          channel: "stable"
           cache: true
 
       - name: Install dependencies
@@ -331,8 +331,8 @@ jobs:
 
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: "temurin"
+          java-version: "17"
 
       - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
         with:
@@ -351,7 +351,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
+          channel: "stable"
           cache: true
 
       - name: Install dependencies
@@ -448,7 +448,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
+          channel: "stable"
           cache: true
 
       - name: Install dependencies
@@ -525,7 +525,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
+          channel: "stable"
           cache: true
 
       - name: Install dependencies
@@ -576,7 +576,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
+          channel: "stable"
           cache: true
 
       - name: Install dependencies
@@ -622,7 +622,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
+          channel: "stable"
           cache: true
 
       - name: Install dependencies
@@ -650,7 +650,19 @@ jobs:
   ci:
     name: CI
     if: ${{ always() && !cancelled() }}
-    needs: [changes, monkeymux-assets, check, test, go-test, build-android, build-ios, build-macos, build-windows, build-linux]
+    needs:
+      [
+        changes,
+        monkeymux-assets,
+        check,
+        test,
+        go-test,
+        build-android,
+        build-ios,
+        build-macos,
+        build-windows,
+        build-linux,
+      ]
     runs-on: [self-hosted, Linux]
     timeout-minutes: 2
     steps:
