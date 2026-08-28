@@ -19,6 +19,8 @@ permissions:
 
 env:
   FLUTTER_VERSION: "3.44.8"
+  # setup-go owns GOROOT; ignore a host-level toolchain override.
+  GOROOT: ""
 
 jobs:
   # ---------------------------------------------------------------------------
