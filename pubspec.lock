@@ -797,11 +797,9 @@ packages:
   in_app_purchase_android:
     dependency: "direct main"
     description:
-      path: "packages/in_app_purchase/in_app_purchase_android"
-      ref: "2d177abfe0255b27d05e93d1dd8b21c7a4214307"
-      resolved-ref: "2d177abfe0255b27d05e93d1dd8b21c7a4214307"
-      url: "https://github.com/eszter-varga/packages.git"
-    source: git
+      path: "third_party/in_app_purchase_android"
+      relative: true
+    source: path
     version: "0.5.4"
   in_app_purchase_platform_interface:
     dependency: transitive
