@@ -6134,7 +6134,8 @@ while($true){
       if (kDebugMode) {
         debugPrint('Port forward connection error: $e');
       }
-    } on Exception catch (e) {
+    } on Object catch (e) {
+      // dartssh2 operational errors do not implement Exception.
       DiagnosticsLogService.instance.warning(
         'ssh.forward',
         'local_connection_failed',
@@ -7095,6 +7096,9 @@ class _AppReviewDemoSftpClient implements SftpClient {
   }
 
   @override
+  Future<void> setStat(String path, SftpFileAttrs attrs) async {}
+
+  @override
   Future<void> rename(String oldPath, String newPath) async {
     final oldNormalized = _normalizeDemoSftpPath(oldPath);
     final content = _files.remove(oldNormalized);
@@ -7166,10 +7170,22 @@ class _AppReviewDemoSftpFile implements SftpFile {
   }
 
   @override
+  SftpFileWriter write(
+    Stream<Uint8List> stream, {
+    int offset = 0,
+    void Function(int total)? onProgress,
+  }) => SftpFileWriter(this, stream, offset, onProgress);
+
+  @override
   Future<void> writeBytes(Uint8List data, {int offset = 0}) async {
-    final text = utf8.decode(data, allowMalformed: true);
+    final previousBytes = Uint8List.fromList(utf8.encode(_readContent()));
+    final requiredLength = offset + data.length;
+    final bytes = Uint8List(math.max(previousBytes.length, requiredLength))
+      ..setRange(0, previousBytes.length, previousBytes)
+      ..setRange(offset, requiredLength, data);
+    final text = utf8.decode(bytes, allowMalformed: true);
     _writeContent(text);
-    _attrs = _demoFileAttrs(text.length);
+    _attrs = _demoFileAttrs(bytes.length);
   }
 
   @override

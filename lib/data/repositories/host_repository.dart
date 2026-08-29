@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/port_proxy_name.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
 import 'like_query.dart';
@@ -400,7 +401,17 @@ class HostRepository {
     String storedPassword,
   ) async {
     if (_secretEncryptionService.isValidEncryptedEnvelope(storedPassword)) {
-      return _cachedDecrypt(storedPassword);
+      try {
+        return await _cachedDecrypt(storedPassword);
+      } on FormatException catch (error) {
+        // Keep the host usable when secure storage loses its encryption key.
+        DiagnosticsLogService.instance.warning(
+          'host.secrets',
+          'password_decryption_failed',
+          fields: {'hostId': hostId, 'errorType': error.runtimeType},
+        );
+        return null;
+      }
     }
 
     final encryptedPassword = await _secretEncryptionService.encryptNullable(

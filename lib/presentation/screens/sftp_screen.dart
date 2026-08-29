@@ -24,6 +24,7 @@ import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
+import '../../domain/services/ssh_error_policy.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
@@ -1008,7 +1009,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       await _openFallbackDirectory(preferredPath: _fallbackDirectoryPath);
     } on SSHError catch (e) {
       _handleConnectFailure(e, pendingSftp, session);
-    } on Exception catch (e) {
+    } on Object catch (e) {
+      if (e is! Exception && !isExpectedSshOperationError(e)) {
+        rethrow;
+      }
       _handleConnectFailure(e, pendingSftp, session);
     }
   }
@@ -1192,7 +1196,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         showError: showError,
         allowReconnect: allowReconnect,
       );
-    } on Exception catch (e) {
+    } on Object catch (e) {
+      if (e is! Exception && !isExpectedSshOperationError(e)) {
+        rethrow;
+      }
       return _handleLoadDirectoryFailure(e, path, showError: showError);
     }
   }
@@ -1297,7 +1304,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         error,
         showError: showError,
       );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (error is! Exception && !isExpectedSshOperationError(error)) {
+        rethrow;
+      }
       return _handleSftpReconnectFailure(
         connectionId,
         error,
@@ -2281,7 +2291,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           ),
         );
       }
-    } on Exception catch (e) {
+    } on Object catch (e) {
+      if (e is! Exception && !isExpectedSshOperationError(e)) {
+        rethrow;
+      }
       _showSftpFailureSnackBar(
         message: 'Could not create folder. Check permissions and try again.',
         eventName: 'create_directory_failed',
@@ -2308,7 +2321,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             context,
           ).showSnackBar(SnackBar(content: Text('Renamed to "$newName"')));
         }
-      } on Exception catch (e) {
+      } on Object catch (e) {
+        if (e is! Exception && !isExpectedSshOperationError(e)) {
+          rethrow;
+        }
         _showSftpFailureSnackBar(
           message: 'Could not rename item. Check permissions and try again.',
           eventName: 'rename_failed',
@@ -2354,7 +2370,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             context,
           ).showSnackBar(SnackBar(content: Text('Deleted "${file.filename}"')));
         }
-      } on Exception catch (e) {
+      } on Object catch (e) {
+        if (e is! Exception && !isExpectedSshOperationError(e)) {
+          rethrow;
+        }
         _showSftpFailureSnackBar(
           message: 'Could not delete item. Check permissions and try again.',
           eventName: 'delete_failed',
@@ -2414,7 +2433,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               duration: DateTime.now().difference(startedAt),
             ),
       );
-    } on Exception catch (e) {
+    } on Object catch (e) {
+      if (e is! Exception && !isExpectedSshOperationError(e)) {
+        rethrow;
+      }
       unawaited(
         ref
             .read(telemetryServiceProvider)
@@ -2439,7 +2461,24 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final result = await FilePicker.pickFiles();
+    late final List<PlatformFile> result;
+    try {
+      result = await FilePicker.pickFiles();
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'sftp.upload',
+        'picker_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open the file picker. Try again.'),
+          ),
+        );
+      }
+      return;
+    }
     if (result.isEmpty) {
       return;
     }
@@ -2542,7 +2581,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               duration: DateTime.now().difference(startedAt),
             ),
       );
-    } on Exception catch (e) {
+    } on Object catch (e) {
+      if (e is! Exception && !isExpectedSshOperationError(e)) {
+        rethrow;
+      }
       unawaited(
         ref
             .read(telemetryServiceProvider)
@@ -2633,7 +2675,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           ),
         ),
       );
-    } on Exception catch (e) {
+    } on Object catch (e) {
+      if (e is! Exception && !isExpectedSshOperationError(e)) {
+        rethrow;
+      }
       if (!mounted) {
         return;
       }
@@ -3043,7 +3088,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           context,
         ).showSnackBar(SnackBar(content: Text('Saved "${file.filename}"')));
       }
-    } on Exception catch (e) {
+    } on Object catch (e) {
+      if (e is! Exception && !isExpectedSshOperationError(e)) {
+        rethrow;
+      }
       _showSftpFailureSnackBar(
         message: 'Could not save changes. Check permissions and try again.',
         eventName: 'edit_failed',

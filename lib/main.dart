@@ -115,11 +115,34 @@ void _installTelemetryErrorHandlers(TelemetryService telemetryService) {
       previousPlatformErrorHandler?.call(error, stackTrace);
       return true;
     }
+    if (isExpectedSshOperationError(error)) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.operation',
+        'unhandled_failure_absorbed',
+        fields: {'errorType': error.runtimeType},
+      );
+      previousPlatformErrorHandler?.call(error, stackTrace);
+      return true;
+    }
+    if (_isGoogleFontsLoadFailure(stackTrace)) {
+      DiagnosticsLogService.instance.warning(
+        'fonts',
+        'runtime_load_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      previousPlatformErrorHandler?.call(error, stackTrace);
+      return true;
+    }
     unawaited(
       telemetryService
           .recordError(error, stackTrace, fatal: true)
           .catchError((Object _) {}),
     );
-    return previousPlatformErrorHandler?.call(error, stackTrace) ?? false;
+    previousPlatformErrorHandler?.call(error, stackTrace);
+    return true;
   };
 }
+
+// Google Fonts falls back to the platform font after a runtime fetch failure.
+bool _isGoogleFontsLoadFailure(StackTrace stackTrace) =>
+    stackTrace.toString().contains('package:google_fonts/');

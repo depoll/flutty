@@ -63,6 +63,7 @@ import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/remote_multiplexer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/shell_completion_service.dart';
+import '../../domain/services/ssh_error_policy.dart';
 import '../../domain/services/ssh_exec_queue.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
@@ -7090,7 +7091,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             tmuxSessionName,
             extraFlags: _host?.tmuxExtraFlags,
           );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (error is! Exception && !isExpectedSshOperationError(error)) {
+        rethrow;
+      }
       DiagnosticsLogService.instance.debug(
         'shell_completion',
         'tmux_context_failed',
@@ -9575,7 +9579,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           },
         );
         return null;
-      } on Exception catch (error) {
+      } on Object catch (error) {
+        if (error is! Exception && !isExpectedSshOperationError(error)) {
+          rethrow;
+        }
         _suppressRemoteMuxDetectionConnectionId = session.connectionId;
         unawaited(
           ref
@@ -10250,7 +10257,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         startInYoloMode: _startClisInYoloMode,
         windows: installation.isWindows,
       );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (error is! Exception && !isExpectedSshOperationError(error)) {
+        rethrow;
+      }
       _suppressRemoteMuxDetectionConnectionId = session.connectionId;
       DiagnosticsLogService.instance.warning(
         'monkeymux.install',
@@ -11141,7 +11151,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         forceVisibleTmux: target.requiresVisibleSession,
         deferPostSwitchExec: false,
       );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (error is! Exception && !isExpectedSshOperationError(error)) {
+        rethrow;
+      }
       _showTmuxActionFailure(error, TmuxSwitchWindowAction(targetWindow.index));
     }
   }
@@ -11794,7 +11807,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             _nativeAcpScrollStates.remove(key.value);
           }
       }
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (error is! Exception && !isExpectedSshOperationError(error)) {
+        rethrow;
+      }
       DiagnosticsLogService.instance.warning(
         'tmux.ui',
         'navigator_action_failed',
@@ -12585,7 +12601,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _showTmuxActionFailure(Exception error, TmuxNavigatorAction action) {
+  void _showTmuxActionFailure(Object error, TmuxNavigatorAction action) {
     if (!mounted) return;
     final isAcpAction =
         action is TmuxNewAcpSessionAction ||
@@ -12659,7 +12675,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  bool _isExpectedMonkeyMuxFinalCloseError(Exception error) {
+  bool _isExpectedMonkeyMuxFinalCloseError(Object error) {
     if (error is! MonkeyMuxInstallException) {
       return false;
     }
@@ -12942,7 +12958,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     try {
       await _activeTerminalConnectionBackend(session).killWindow(windowIndex);
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (error is! Exception && !isExpectedSshOperationError(error)) {
+        rethrow;
+      }
       if (closesLastMonkeyMuxWindow &&
           _activeMuxBackend == RemoteMuxBackend.monkeyMux &&
           _isExpectedMonkeyMuxFinalCloseError(error)) {
@@ -13124,7 +13143,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sessionName,
         extraFlags: _activeTmuxExtraFlags,
       );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (error is! Exception && !isExpectedSshOperationError(error)) {
+        rethrow;
+      }
       if (!forceVisibleTmux) {
         DiagnosticsLogService.instance.warning(
           'tmux.ui',

@@ -380,6 +380,38 @@ void main() {
       },
     );
 
+    test('getById tolerates a password encrypted with a lost key', () async {
+      final previousEncryptionService = SecretEncryptionService.forTesting(
+        masterKey: List<int>.filled(32, 1),
+      );
+      final encryptedPassword = await previousEncryptionService.encryptNullable(
+        'unrecoverable-secret',
+      );
+      final id = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Recovered Host',
+              hostname: '192.168.1.14',
+              username: 'admin',
+              password: Value(encryptedPassword),
+            ),
+          );
+      repository = HostRepository(
+        db,
+        SecretEncryptionService.forTesting(masterKey: List<int>.filled(32, 2)),
+      );
+
+      final host = await repository.getById(id);
+
+      expect(host, isNotNull);
+      expect(host!.password, isNull);
+      final storedHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(storedHost.password, encryptedPassword);
+    });
+
     test('legacy password migration does not overwrite newer writes', () async {
       final encryptionService = _PausingSecretEncryptionService(
         pausePlaintext: 'legacy-secret',

@@ -71,6 +71,17 @@ void main() {
     final files = await sftp.listdir('/home/reviewer/work/monkeyssh-demo');
     expect(files.map((file) => file.filename), contains('README.md'));
 
+    const uploadedText = 'streamed demo upload';
+    const uploadedPath = '/home/reviewer/work/monkeyssh-demo/upload.txt';
+    await const RemoteFileService().uploadBytes(
+      sftp: sftp,
+      remotePath: uploadedPath,
+      bytes: Uint8List.fromList(utf8.encode(uploadedText)),
+    );
+    final uploadedFile = await sftp.open(uploadedPath);
+    expect(utf8.decode(await uploadedFile.readBytes()), uploadedText);
+    await uploadedFile.close();
+
     final mux = MonkeyMuxService(
       installer: MonkeyMuxInstallerService(
         manifestFuture: Future.value(

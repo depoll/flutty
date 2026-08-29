@@ -37,6 +37,7 @@ class SshConnectionService : Service() {
 
         private var latestStatus: ConnectionStatus? = null
         private var isAppForeground = true
+        @Volatile private var startRequested = false
 
         fun updateStatus(context: Context, status: ConnectionStatus) {
             latestStatus = status
@@ -56,17 +57,17 @@ class SshConnectionService : Service() {
 
         fun stop(context: Context) {
             latestStatus = null
-            context.stopService(Intent(context, SshConnectionService::class.java))
+            stopServiceUnlessStarting(context)
         }
 
         private fun syncServiceState(context: Context) {
             val status = latestStatus
             if (status == null || status.connectionCount <= 0 || isAppForeground) {
-                context.stopService(Intent(context, SshConnectionService::class.java))
+                stopServiceUnlessStarting(context)
                 return
             }
             if (!hasNotificationPermission(context)) {
-                context.stopService(Intent(context, SshConnectionService::class.java))
+                stopServiceUnlessStarting(context)
                 return
             }
 
@@ -75,13 +76,22 @@ class SshConnectionService : Service() {
                 putExtra(EXTRA_CONNECTION_COUNT, status.connectionCount)
                 putExtra(EXTRA_CONNECTED_COUNT, status.connectedCount)
             }
+            startRequested = true
             try {
                 ContextCompat.startForegroundService(context, intent)
             } catch (error: IllegalStateException) {
+                startRequested = false
                 Log.w(TAG, "Unable to start SSH foreground service", error)
                 context.stopService(Intent(context, SshConnectionService::class.java))
             } catch (error: SecurityException) {
+                startRequested = false
                 Log.w(TAG, "SSH foreground service start denied", error)
+                context.stopService(Intent(context, SshConnectionService::class.java))
+            }
+        }
+
+        private fun stopServiceUnlessStarting(context: Context) {
+            if (!startRequested) {
                 context.stopService(Intent(context, SshConnectionService::class.java))
             }
         }
@@ -110,9 +120,11 @@ class SshConnectionService : Service() {
         )
         startForeground(NOTIFICATION_ID, buildNotification(status))
         isPresenting = true
+        Companion.startRequested = false
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Companion.startRequested = false
         if (intent?.action == ACTION_SYNC) {
             latestStatus = extractStatus(intent) ?: latestStatus
         } else if (intent?.action == ACTION_RESHOW_NOTIFICATION) {
@@ -132,6 +144,7 @@ class SshConnectionService : Service() {
     }
 
     override fun onDestroy() {
+        Companion.startRequested = false
         hidePresentation()
         super.onDestroy()
     }
