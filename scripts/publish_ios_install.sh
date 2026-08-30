@@ -7,8 +7,14 @@
 #
 #   * the IPA is uploaded to a rolling prerelease (`ios-installs`), the same
 #     pattern `scripts/store_assets.sh` uses for large binaries; and
-#   * the manifest plist plus a small landing page are pushed to the `gh-pages`
-#     branch, which GitHub Pages serves from a stable, redirect-free URL.
+#   * the manifest plist plus a small landing page are pushed to the
+#     `ios-install-site` branch.
+#
+# Pages is configured with the GitHub Actions source, so a deployment replaces
+# the whole site instead of appending to it. That branch is therefore the
+# accumulated site state rather than the Pages source: this script commits into
+# it (git's push rejection is what makes concurrent preview builds safe), and a
+# separate workflow job publishes the branch to Pages.
 #
 # The landing page URL is what CI links from PR comments and deployments.
 set -euo pipefail
@@ -18,7 +24,7 @@ cd "$ROOT_DIR"
 
 RELEASE_TAG="${IOS_INSTALL_RELEASE_TAG:-ios-installs}"
 RELEASE_TITLE="${IOS_INSTALL_RELEASE_TITLE:-iOS ad hoc installs}"
-PAGES_BRANCH="${IOS_INSTALL_PAGES_BRANCH:-gh-pages}"
+PAGES_BRANCH="${IOS_INSTALL_PAGES_BRANCH:-ios-install-site}"
 KEEP_BUILDS="${IOS_INSTALL_KEEP_BUILDS:-25}"
 
 IPA_PATH=''
@@ -56,7 +62,7 @@ Options:
 Environment:
   GH_TOKEN                       Required; needs contents: write
   IOS_INSTALL_RELEASE_TAG        Rolling release tag (default: ios-installs)
-  IOS_INSTALL_PAGES_BRANCH       Pages branch (default: gh-pages)
+  IOS_INSTALL_PAGES_BRANCH       Site state branch (default: ios-install-site)
   IOS_INSTALL_PAGES_BASE_URL     Override the derived https://<owner>.github.io/<repo> base
   IOS_INSTALL_KEEP_BUILDS        How many install pages / IPAs to retain (default: 25)
 
@@ -196,8 +202,9 @@ publish_pages() {
     git -C "$PAGES_DIR" checkout -q --orphan "$PAGES_BRANCH"
   fi
 
-  # GitHub Pages runs Jekyll by default, which drops files it does not
-  # recognise and can rewrite the plist.
+  # actions/upload-pages-artifact does not run Jekyll, but keep .nojekyll so
+  # the same content also works if the Pages source is ever switched back to
+  # serving this branch directly.
   touch "$PAGES_DIR/.nojekyll"
 
   mkdir -p "$PAGES_DIR/install/$SLUG" || return 1

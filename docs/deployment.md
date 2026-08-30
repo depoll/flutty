@@ -210,7 +210,7 @@ therefore splits the payload across two public surfaces of this repository:
 | Piece | Location |
 |-------|----------|
 | Ad hoc IPA | Rolling `ios-installs` prerelease, asset `monkeyssh-<flavor>-<version>-<build>-adhoc.ipa` |
-| `manifest.plist` + landing page | `gh-pages` branch, under `install/<slug>/` |
+| `manifest.plist` + landing page | GitHub Pages, under `install/<slug>/` |
 
 The landing page carries the `itms-services://` link, so it is what gets linked
 from comments and deployments. Preview and `/deploy` builds share the slug
@@ -220,11 +220,27 @@ Private builds use `<flavor>-<build-number>`.
 The newest 25 builds are kept; older install pages and their release assets are
 pruned automatically, so links in old PRs eventually stop working.
 
+#### The `ios-install-site` branch
+
+Pages is configured with the **GitHub Actions** source, where each deployment
+replaces the entire site rather than adding to it. The site therefore has to be
+accumulated somewhere before it is published, and that somewhere is the
+`ios-install-site` branch.
+
+The iOS build job commits the new install page onto that branch, then the
+`Publish iOS Install Site` job checks the branch out and deploys it with
+`actions/deploy-pages`. Using a branch rather than, say, a tarball asset is
+deliberate: several preview builds can finish at once, and git's push rejection
+detects the collision so the losing run replays its change onto the winner
+instead of silently overwriting it.
+
+Do not edit `ios-install-site` by hand, and note that it is **not** the Pages
+source — pushing to it does not publish anything on its own.
+
 #### One-time repository setup
 
-1. Enable GitHub Pages: **Settings → Pages → Build and deployment →
-   Deploy from a branch → `gh-pages` / `(root)`**. The first CI run creates the
-   branch. Nothing secret is published — only a plist, an HTML page, and the
+1. Enable GitHub Pages: **Settings → Pages → Build and deployment → GitHub
+   Actions**. Nothing secret is published — only a plist, an HTML page, and the
    app icon.
 2. Generate the ad hoc match profiles (see
    [Fastlane Match](#fastlane-match-ios-certificates)).
@@ -471,7 +487,7 @@ disabled for that build.
 - [ ] `fastlane match init` run locally
 - [ ] Certificates generated for both bundle IDs
 - [ ] Ad hoc match profiles generated for both bundle IDs and their Live Activity extensions
-- [ ] GitHub Pages enabled on the `gh-pages` branch (over-the-air installs)
+- [ ] GitHub Pages enabled with the GitHub Actions source (over-the-air installs)
 - [ ] Test devices registered with `fastlane register_adhoc_device`
 - [ ] Android upload keystore generated
 - [ ] Google Play service account created with JSON key

@@ -116,6 +116,9 @@ jobs:
       contents: write
       deployments: write
       issues: write
+      # actions/deploy-pages publishes the accumulated install site.
+      pages: write
+      id-token: write
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.resolve.outputs.build-name }}
