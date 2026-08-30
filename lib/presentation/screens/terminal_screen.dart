@@ -9496,6 +9496,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     RemoteMuxBackend? preferredBackend,
     bool existingOnly = false,
   }) async {
+    final telemetryService = ref.read(telemetryServiceProvider);
     final configuredBackend =
         preferredBackend ??
         _configuredRemoteMuxBackend(host) ??
@@ -9563,12 +9564,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       } on MonkeyMuxInstallDeclinedException {
         _suppressRemoteMuxDetectionConnectionId = session.connectionId;
         unawaited(
-          ref
-              .read(telemetryServiceProvider)
-              .logMuxInstallFailed(
-                backend: 'monkeymux',
-                failureCategory: 'declined',
-              ),
+          telemetryService.logMuxInstallFailed(
+            backend: 'monkeymux',
+            failureCategory: 'declined',
+          ),
         );
         DiagnosticsLogService.instance.info(
           'monkeymux.install',
@@ -9585,12 +9584,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
         _suppressRemoteMuxDetectionConnectionId = session.connectionId;
         unawaited(
-          ref
-              .read(telemetryServiceProvider)
-              .logMuxInstallFailed(
-                backend: 'monkeymux',
-                failureCategory: 'unavailable',
-              ),
+          telemetryService.logMuxInstallFailed(
+            backend: 'monkeymux',
+            failureCategory: 'unavailable',
+          ),
         );
         DiagnosticsLogService.instance.warning(
           'monkeymux.install',

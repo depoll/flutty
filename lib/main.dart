@@ -124,7 +124,7 @@ void _installTelemetryErrorHandlers(TelemetryService telemetryService) {
       previousPlatformErrorHandler?.call(error, stackTrace);
       return true;
     }
-    if (_isGoogleFontsLoadFailure(stackTrace)) {
+    if (_isGoogleFontsLoadFailure(error, stackTrace)) {
       DiagnosticsLogService.instance.warning(
         'fonts',
         'runtime_load_failed',
@@ -138,11 +138,11 @@ void _installTelemetryErrorHandlers(TelemetryService telemetryService) {
           .recordError(error, stackTrace, fatal: true)
           .catchError((Object _) {}),
     );
-    previousPlatformErrorHandler?.call(error, stackTrace);
-    return true;
+    return previousPlatformErrorHandler?.call(error, stackTrace) ?? false;
   };
 }
 
-// Google Fonts falls back to the platform font after a runtime fetch failure.
-bool _isGoogleFontsLoadFailure(StackTrace stackTrace) =>
-    stackTrace.toString().contains('package:google_fonts/');
+// Google Fonts falls back to the platform font after an HTTP fetch failure.
+bool _isGoogleFontsLoadFailure(Object error, StackTrace stackTrace) =>
+    error is Exception &&
+    stackTrace.toString().contains('_httpFetchFontAndSaveToDevice');

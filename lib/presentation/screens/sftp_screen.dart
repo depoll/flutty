@@ -1211,6 +1211,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     bool showError = true,
     bool allowReconnect = true,
   }) async {
+    if (!mounted) {
+      return false;
+    }
     if (allowReconnect && _shouldReconnectSftpAfterDirectoryError(error)) {
       final reconnected = await _reconnectSftpAndLoadDirectory(
         path,
@@ -1250,6 +1253,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     List<String>? nextHistory,
     bool showError = true,
   }) async {
+    if (!mounted) {
+      return false;
+    }
     final connectionId = _connectionId ?? widget.connectionId;
     if (connectionId == null) {
       return false;
@@ -2388,11 +2394,31 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final savePath = await FilePicker.saveFile(
-      dialogTitle: 'Save ${file.filename}',
-      fileName: file.filename,
-      bytes: Uint8List(0),
-    );
+    final sftp = _sftp!;
+    final telemetryService = ref.read(telemetryServiceProvider);
+    final remoteFileService = ref.read(remoteFileServiceProvider);
+    late final Uri? savePath;
+    try {
+      savePath = await FilePicker.saveFile(
+        dialogTitle: 'Save ${file.filename}',
+        fileName: file.filename,
+        bytes: Uint8List(0),
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'sftp.download',
+        'picker_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open the save dialog. Try again.'),
+          ),
+        );
+      }
+      return;
+    }
     if (savePath == null) {
       return;
     }
@@ -2400,23 +2426,19 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     final startedAt = DateTime.now();
     final sizeBytes = file.attr.size;
     unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logSftpTransferStarted(
-            direction: 'download',
-            fileCount: 1,
-            sizeBytes: sizeBytes,
-          ),
+      telemetryService.logSftpTransferStarted(
+        direction: 'download',
+        fileCount: 1,
+        sizeBytes: sizeBytes,
+      ),
     );
     try {
       final remotePath = _joinRemotePath(_currentPath, file.filename);
-      await ref
-          .read(remoteFileServiceProvider)
-          .downloadFile(
-            sftp: _sftp!,
-            remotePath: remotePath,
-            localPath: savePath.toFilePath(),
-          );
+      await remoteFileService.downloadFile(
+        sftp: sftp,
+        remotePath: remotePath,
+        localPath: savePath.toFilePath(),
+      );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2424,29 +2446,25 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         );
       }
       unawaited(
-        ref
-            .read(telemetryServiceProvider)
-            .logSftpTransferCompleted(
-              direction: 'download',
-              fileCount: 1,
-              sizeBytes: sizeBytes,
-              duration: DateTime.now().difference(startedAt),
-            ),
+        telemetryService.logSftpTransferCompleted(
+          direction: 'download',
+          fileCount: 1,
+          sizeBytes: sizeBytes,
+          duration: DateTime.now().difference(startedAt),
+        ),
       );
     } on Object catch (e) {
       if (e is! Exception && !isExpectedSshOperationError(e)) {
         rethrow;
       }
       unawaited(
-        ref
-            .read(telemetryServiceProvider)
-            .logSftpTransferFailed(
-              direction: 'download',
-              fileCount: 1,
-              sizeBytes: sizeBytes,
-              duration: DateTime.now().difference(startedAt),
-              failureCategory: _sftpTelemetryFailureCategory(e),
-            ),
+        telemetryService.logSftpTransferFailed(
+          direction: 'download',
+          fileCount: 1,
+          sizeBytes: sizeBytes,
+          duration: DateTime.now().difference(startedAt),
+          failureCategory: _sftpTelemetryFailureCategory(e),
+        ),
       );
       _showSftpFailureSnackBar(
         message: 'Download failed. Check the connection and try again.',
@@ -2461,10 +2479,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
+    final sftp = _sftp!;
+    final telemetryService = ref.read(telemetryServiceProvider);
+    final remoteFileService = ref.read(remoteFileServiceProvider);
     late final List<PlatformFile> result;
     try {
       result = await FilePicker.pickFiles();
-    } on Object catch (error) {
+    } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
         'sftp.upload',
         'picker_failed',
@@ -2489,15 +2510,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         .toList();
     if (unsafeUploads.isNotEmpty) {
       unawaited(
-        ref
-            .read(telemetryServiceProvider)
-            .logSftpTransferFailed(
-              direction: 'upload',
-              fileCount: selectedFiles.length,
-              sizeBytes: await _selectedUploadSizeBytes(selectedFiles),
-              duration: Duration.zero,
-              failureCategory: 'invalid_name',
-            ),
+        telemetryService.logSftpTransferFailed(
+          direction: 'upload',
+          fileCount: selectedFiles.length,
+          sizeBytes: await _selectedUploadSizeBytes(selectedFiles),
+          duration: Duration.zero,
+          failureCategory: 'invalid_name',
+        ),
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2518,15 +2537,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         .toList();
     if (unreadableUploads.isNotEmpty) {
       unawaited(
-        ref
-            .read(telemetryServiceProvider)
-            .logSftpTransferFailed(
-              direction: 'upload',
-              fileCount: selectedFiles.length,
-              sizeBytes: await _selectedUploadSizeBytes(selectedFiles),
-              duration: Duration.zero,
-              failureCategory: 'unreadable',
-            ),
+        telemetryService.logSftpTransferFailed(
+          direction: 'upload',
+          fileCount: selectedFiles.length,
+          sizeBytes: await _selectedUploadSizeBytes(selectedFiles),
+          duration: Duration.zero,
+          failureCategory: 'unreadable',
+        ),
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2545,56 +2562,51 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     final startedAt = DateTime.now();
     final sizeBytes = await _selectedUploadSizeBytes(selectedFiles);
     unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logSftpTransferStarted(
-            direction: 'upload',
-            fileCount: selectedFiles.length,
-            sizeBytes: sizeBytes,
-          ),
+      telemetryService.logSftpTransferStarted(
+        direction: 'upload',
+        fileCount: selectedFiles.length,
+        sizeBytes: sizeBytes,
+      ),
     );
     try {
-      final remoteFileService = ref.read(remoteFileServiceProvider);
       for (final upload in uploads) {
         await remoteFileService.uploadStream(
-          sftp: _sftp!,
+          sftp: sftp,
           remotePath: _joinRemotePath(_currentPath, upload.file.name),
           stream: upload.readStream!,
         );
       }
-      await _loadDirectory(_currentPath);
       if (mounted) {
-        final message = selectedFiles.length == 1
-            ? 'Uploaded "${selectedFiles.single.name}"'
-            : 'Uploaded ${selectedFiles.length} files';
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(message)));
+        await _loadDirectory(_currentPath);
+        if (mounted) {
+          final message = selectedFiles.length == 1
+              ? 'Uploaded "${selectedFiles.single.name}"'
+              : 'Uploaded ${selectedFiles.length} files';
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(message)));
+        }
       }
       unawaited(
-        ref
-            .read(telemetryServiceProvider)
-            .logSftpTransferCompleted(
-              direction: 'upload',
-              fileCount: selectedFiles.length,
-              sizeBytes: sizeBytes,
-              duration: DateTime.now().difference(startedAt),
-            ),
+        telemetryService.logSftpTransferCompleted(
+          direction: 'upload',
+          fileCount: selectedFiles.length,
+          sizeBytes: sizeBytes,
+          duration: DateTime.now().difference(startedAt),
+        ),
       );
     } on Object catch (e) {
       if (e is! Exception && !isExpectedSshOperationError(e)) {
         rethrow;
       }
       unawaited(
-        ref
-            .read(telemetryServiceProvider)
-            .logSftpTransferFailed(
-              direction: 'upload',
-              fileCount: selectedFiles.length,
-              sizeBytes: sizeBytes,
-              duration: DateTime.now().difference(startedAt),
-              failureCategory: _sftpTelemetryFailureCategory(e),
-            ),
+        telemetryService.logSftpTransferFailed(
+          direction: 'upload',
+          fileCount: selectedFiles.length,
+          sizeBytes: sizeBytes,
+          duration: DateTime.now().difference(startedAt),
+          failureCategory: _sftpTelemetryFailureCategory(e),
+        ),
       );
       _showSftpFailureSnackBar(
         message: 'Upload failed. Check the connection and try again.',
@@ -4049,11 +4061,28 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
   );
 
   Future<void> _saveCachedCopy() async {
-    final savePath = await FilePicker.saveFile(
-      dialogTitle: 'Save ${widget.fileName}',
-      fileName: widget.fileName,
-      bytes: Uint8List(0),
-    );
+    late final Uri? savePath;
+    try {
+      savePath = await FilePicker.saveFile(
+        dialogTitle: 'Save ${widget.fileName}',
+        fileName: widget.fileName,
+        bytes: Uint8List(0),
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'sftp.preview',
+        'save_picker_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open the save dialog. Try again.'),
+          ),
+        );
+      }
+      return;
+    }
     if (savePath == null) {
       return;
     }

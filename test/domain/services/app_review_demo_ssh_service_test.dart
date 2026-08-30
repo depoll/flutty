@@ -78,9 +78,38 @@ void main() {
       remotePath: uploadedPath,
       bytes: Uint8List.fromList(utf8.encode(uploadedText)),
     );
-    final uploadedFile = await sftp.open(uploadedPath);
+    var uploadedFile = await sftp.open(uploadedPath);
     expect(utf8.decode(await uploadedFile.readBytes()), uploadedText);
     await uploadedFile.close();
+    expect(
+      (await sftp.listdir(
+        '/home/reviewer/work/monkeyssh-demo',
+      )).map((file) => file.filename),
+      contains('upload.txt'),
+    );
+
+    const shorterText = 'short';
+    await const RemoteFileService().uploadBytes(
+      sftp: sftp,
+      remotePath: uploadedPath,
+      bytes: Uint8List.fromList(utf8.encode(shorterText)),
+    );
+    uploadedFile = await sftp.open(uploadedPath);
+    expect(utf8.decode(await uploadedFile.readBytes()), shorterText);
+    await uploadedFile.close();
+
+    final binaryBytes = Uint8List.fromList(
+      List<int>.generate(20 * 1024, (index) => index % 256),
+    );
+    const binaryPath = '/home/reviewer/work/monkeyssh-demo/image.bin';
+    await const RemoteFileService().uploadBytes(
+      sftp: sftp,
+      remotePath: binaryPath,
+      bytes: binaryBytes,
+    );
+    final binaryFile = await sftp.open(binaryPath);
+    expect(await binaryFile.readBytes(), orderedEquals(binaryBytes));
+    await binaryFile.close();
 
     final mux = MonkeyMuxService(
       installer: MonkeyMuxInstallerService(
