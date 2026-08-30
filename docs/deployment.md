@@ -204,38 +204,44 @@ Ad hoc IPAs are also uploaded as workflow artifacts
 
 `itms-services://` requires the manifest and the IPA to be reachable over
 public HTTPS with no authentication, which Actions artifacts never are, and
-GitHub strips non-HTTP link schemes from comment bodies. `scripts/publish_ios_install.sh`
-therefore splits the payload across two public surfaces of this repository:
+GitHub strips non-HTTP link schemes from comment bodies.
 
-| Piece | Location |
-|-------|----------|
-| Ad hoc IPA | Rolling `ios-installs` prerelease, asset `monkeyssh-<flavor>-<version>-<build>-adhoc.ipa` |
-| `manifest.plist` + landing page | GitHub Pages, under `install/<slug>/` |
+Each install target therefore gets its own public prerelease holding the IPA
+and a metadata block describing the build:
 
-The landing page carries the `itms-services://` link, so it is what gets linked
-from comments and deployments. Preview and `/deploy` builds share the slug
-`pr-<number>`, so a PR's link always resolves to its newest build. Deploy
-Private builds use `<flavor>-<build-number>`.
+| Release tag | Holds |
+|-------------|-------|
+| `ios-install-pr-<number>` | The newest ad hoc build of that pull request |
+| `ios-install-private` | The newest Deploy Private build of `main` |
 
-The newest 25 builds are kept; older install pages and their release assets are
-pruned automatically, so links in old PRs eventually stop working.
+**Those releases are the source of truth.**
+`scripts/generate_ios_install_site.py` rebuilds the entire GitHub Pages site
+from them — one `install/<slug>/` directory per release, containing the
+`manifest.plist` and the landing page that carries the `itms-services://` link.
 
-#### The `ios-install-site` branch
+Because the site is a pure function of the release list, regeneration reads no
+previous state. That makes it idempotent, self-healing after a failed deploy,
+and safe to run from several builds at once: whichever run publishes last
+simply has the most complete view. It also means **retiring a build is just
+deleting its release**.
 
-Pages is configured with the **GitHub Actions** source, where each deployment
-replaces the entire site rather than adding to it. The site therefore has to be
-accumulated somewhere before it is published, and that somewhere is the
-`ios-install-site` branch.
+Each release holds exactly one IPA. Rebuilding a PR replaces it, and the
+superseded IPA is deleted.
 
-The iOS build job commits the new install page onto that branch, then the
-`Publish iOS Install Site` job checks the branch out and deploys it with
-`actions/deploy-pages`. Using a branch rather than, say, a tarball asset is
-deliberate: several preview builds can finish at once, and git's push rejection
-detects the collision so the losing run replays its change onto the winner
-instead of silently overwriting it.
+#### Retirement
 
-Do not edit `ios-install-site` by hand, and note that it is **not** the Pages
-source — pushing to it does not publish anything on its own.
+`Retire iOS Install Build` runs when a PR closes and republishes the site,
+which deletes `ios-install-pr-<number>` and its tag. The same sweep
+(`scripts/prune_ios_install_releases.py`) runs before *every* regeneration, so
+a missed or failed cleanup still converges — any per-PR release whose PR is no
+longer open is retired on the next publish.
+
+`Publish iOS Install Site` can also be run manually (`workflow_dispatch`) to
+force a regeneration.
+
+Note that `ios-install-*` tags are deliberately excluded from the release
+deploy pipeline: `release.yml` only treats `v*` tags as app releases, so
+publishing one of these prereleases cannot start a store deploy.
 
 #### One-time repository setup
 
@@ -284,6 +290,7 @@ view show the latest status for each supported channel:
 |-------------|------------|
 | `iOS Private / TestFlight` | PR `/deploy`, Deploy Private |
 | `iOS Ad Hoc / Private` | PR Preview iOS, PR `/deploy`, Deploy Private |
+| `github-pages` | Publish iOS Install Site |
 | `Android Private / Play Internal` | PR `/deploy`, Deploy Private |
 | `Android Private / Internal App Sharing` | PR Preview Internal App Sharing |
 | `iOS Production / TestFlight` | Release (`internal` channel) |

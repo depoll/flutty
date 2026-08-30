@@ -1440,16 +1440,20 @@ jobs:
           SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
         run: |
           set -euo pipefail
+          # One release per install target: a PR's release is replaced by its
+          # next build and deleted when the PR closes, and main rolls forward.
           if [ -n "$PR_NUMBER" ]; then
             SLUG="pr-$PR_NUMBER"
             SUBTITLE="PR #$PR_NUMBER · $BUILD_NAME (build $BUILD_NUMBER)"
           else
-            SLUG="${BUILD_FLAVOR}-${BUILD_NUMBER}"
+            SLUG="$BUILD_FLAVOR"
             SUBTITLE="$BUILD_NAME (build $BUILD_NUMBER)"
           fi
           scripts/publish_ios_install.sh \
             --ipa "$ADHOC_IPA_PATH" \
             --slug "$SLUG" \
+            --tag "ios-install-$SLUG" \
+            --pr-number "$PR_NUMBER" \
             --bundle-id "$BUNDLE_ID" \
             --title "$APP_TITLE" \
             --subtitle "$SUBTITLE" \
@@ -1505,47 +1509,19 @@ jobs:
               auto_inactive: false,
             });
 
-  # Pages uses the GitHub Actions source, so each deployment replaces the whole
-  # site rather than adding to it. build-ios accumulates the site on the
-  # ios-install-site branch, where git's push rejection keeps concurrent
-  # preview builds from clobbering each other; this job publishes that branch.
-  # It runs even when build-ios failed, because the ad hoc steps come last: a
-  # broken TestFlight upload should still leave an installable build behind.
-  publish-ios-install-pages:
+  # The ios-install-* releases are the source of truth for which builds are
+  # installable; this regenerates the whole Pages site from them. It runs even
+  # when build-ios failed, because the ad hoc steps come last: a broken
+  # TestFlight upload should still leave an installable build behind.
+  publish-ios-install-site:
     name: Publish iOS Install Site
     needs: build-ios
     if: always() && inputs.publish-ios-install && needs.build-ios.outputs.install-page-url != ''
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
     permissions:
-      contents: read
+      contents: write
       pages: write
       id-token: write
-    # Two preview builds finishing together would otherwise race the Pages
-    # deployment API against each other.
-    concurrency:
-      group: ios-install-pages
-      cancel-in-progress: false
-    steps:
-      - name: Checkout install site state
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ios-install-site
-          fetch-depth: 1
-          path: site
-
-      - name: Strip repository metadata
-        run: rm -rf site/.git
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: site
-
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+    uses: ./.github/workflows/publish-ios-install-site.yml
 
   deploy-status-summary:
     name: Summarize Deploy Status

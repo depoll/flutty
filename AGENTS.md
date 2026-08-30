@@ -22,7 +22,9 @@ Local Xcode builds with automatic signing pick up the new entitlement on next bu
 
 ## iOS over-the-air installs
 
-Every signed iOS build in CI is also re-signed ad hoc and published as an install link (PR comments, `/deploy` comments, and an `iOS Ad Hoc / Private` GitHub Deployment). Open the link in Safari on the device. See [docs/deployment.md](docs/deployment.md#over-the-air-ios-installs-ad-hoc) for hosting details and retention.
+Every signed iOS build in CI is also re-signed ad hoc and published as an install link (PR comments, `/deploy` comments, and an `iOS Ad Hoc / Private` GitHub Deployment). Open the link in Safari on the device.
+
+Each build lives in its own `ios-install-*` prerelease, and those releases are the source of truth: the GitHub Pages install site is regenerated from them, so retiring a build is just deleting its release. A PR's release is deleted when it closes. See [docs/deployment.md](docs/deployment.md#over-the-air-ios-installs-ad-hoc).
 
 An ad hoc build only launches on a device whose UDID is in the profile. Register one and refresh the profiles with:
 

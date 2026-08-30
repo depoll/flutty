@@ -1,0 +1,22 @@
+name: Retire iOS Install Build
+
+# A merged or closed PR's ad hoc build should stop being installable. The site
+# publish workflow deletes the release and regenerates the site without it.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  retire:
+    name: Retire Install Build
+    # Fork pull requests never get an ad hoc build, and their GITHUB_TOKEN is
+    # read-only, so there is nothing to delete.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/publish-ios-install-site.yml
