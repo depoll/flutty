@@ -29,7 +29,7 @@ updates:
       - "ci"
     multi-ecosystem-group: "all-dependencies"
 
-  # Ruby tooling (fastlane, CocoaPods)
+  # Ruby tooling (fastlane)
   - package-ecosystem: "bundler"
     directory: "/"
     patterns:

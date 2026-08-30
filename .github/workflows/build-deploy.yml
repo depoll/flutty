@@ -925,9 +925,6 @@ jobs:
       # iOS simulator runtime. Newer side-by-side Xcodes can drift ahead of the
       # available runtime and fail builds before Flutter starts.
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
-      # Flutter's SPM integration is still experimental in this project; keep
-      # Firebase on the CocoaPods path until the migration is intentional.
-      FLUTTER_SWIFT_PACKAGE_MANAGER: "false"
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
       FLUTTY_DIAGNOSTICS_ENABLED: ${{ inputs.enable-diagnostics || inputs.pr-number != '' }}
@@ -983,14 +980,32 @@ jobs:
           name: monkeymux-assets
           path: assets/monkeymux/
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+      # Restore only; CI's push-to-main run is the sole writer in this repository.
+      # GitHub scopes caches per ref, so writing here would store a ~440MB copy
+      # per PR ref against a shared 10GB budget and evict the ~2GB Flutter SDK
+      # caches. The restore-keys prefix means a deploy whose Package.resolved
+      # has moved still starts from main's copy and resolves the delta.
+      #
+      # The entry is shared with the macOS job: SwiftPM keys its cache on package
+      # identity, not platform, and the binary artifact bundles carry every
+      # platform slice. Hashing both Package.resolved files means either one
+      # moving invalidates it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
-          path: |
-            ios/Pods
-            ~/Library/Caches/CocoaPods
-          key: pods-ios-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
-          restore-keys: pods-ios-${{ runner.os }}-
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Drop cached SwiftPM manifest evaluations
+        # permission_handler_apple's Package.swift derives its PERMISSION_*
+        # macros from the app's Info.plist, which SwiftPM does not track as a
+        # manifest input, so a restored manifest cache can keep stale
+        # permissions compiled in after a usage-description change. Delete it
+        # after restore rather than excluding it from the cache: actions/cache
+        # exclusion patterns silently did not match here, and re-evaluating a
+        # handful of manifests costs seconds.
+        run: rm -rf ~/Library/Caches/org.swift.swiftpm/manifests
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.ios-reuse-ipa-artifact-name == ''
