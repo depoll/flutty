@@ -67,6 +67,10 @@ String buildMonkeyMuxAcpProviderCommand(
   const argumentsVariable = r'$__flAcpArgs';
   const argumentsSplat = '@__flAcpArgs';
   final windowsScript = [
+    // Probe and launch must see the same profile-managed PATH. Without this,
+    // detection can find an npm/fnm/asdf command that the provider process
+    // immediately fails to resolve.
+    powerShellProfilePathPreamble,
     r"$ErrorActionPreference='Stop';",
     '$executableVariable=${powerShellSingleQuote(launchArgv.first)};',
     '$argumentsVariable=@(',
