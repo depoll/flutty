@@ -30,6 +30,7 @@ import 'package:monkeyssh/domain/models/terminal_progress.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/acp_concurrency_policy.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
@@ -8168,7 +8169,7 @@ void main() {
     );
 
     testWidgets(
-      'retries an immediate native transport close without background preload',
+      'retries repeated immediate native transport closes without background preload',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 800));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -8184,7 +8185,18 @@ void main() {
           bridgeId: bridgeId,
           acpSessionId: 'codex-session',
         );
-        final acpManager = FakeAcpSessionManager()
+        final blockingKey = fakeAcpKey(
+          hostId: host.id,
+          providerId: AcpBuiltinProviderIds.pi,
+          bridgeId: siblingBridgeId,
+          acpSessionId: 'pi-session',
+        );
+        final acpManager = FakeAcpSessionManager(
+          sessions: [fakeAcpSession(key: blockingKey, providerLabel: 'Pi')],
+        );
+        // Keep construction separate so this large fixture stays readable.
+        // ignore: cascade_invocations
+        acpManager
           ..remoteBridges = [
             MonkeyMuxAcpBridgeMetadata(
               id: bridgeId,
@@ -8218,20 +8230,22 @@ void main() {
             ),
           ]
           ..reconnectSessionResults.addAll([
-            const AcpSessionLaunchFailed(
-              null,
-              AcpSessionError(
-                kind: AcpSessionErrorKind.transport,
-                message: 'The agent connection closed.',
+            AcpSessionLaunchBlocked(
+              AcpConcurrencyRequiresChoice(
+                blockingSessionKeys: [blockingKey.value],
               ),
             ),
+            for (var attempt = 0; attempt < 3; attempt++)
+              const AcpSessionLaunchFailed(
+                null,
+                AcpSessionError(
+                  kind: AcpSessionErrorKind.transport,
+                  message: 'The agent connection closed.',
+                  retryable: true,
+                ),
+              ),
             AcpSessionLaunchStarted(key),
           ])
-          ..reconnectSessionPendingState = fakeAcpSession(
-            key: key,
-            providerLabel: 'Codex',
-            status: AcpConnectionStatus.connecting,
-          )
           ..reconnectSessionState = fakeAcpSession(
             key: key,
             providerLabel: 'Codex',
@@ -8327,14 +8341,44 @@ void main() {
         await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
         for (
           var attempt = 0;
-          attempt < 10 && acpManager.reconnects.length < 2;
+          attempt < 10 &&
+              find.text('Stop and continue free').evaluate().isEmpty;
           attempt++
         ) {
           await tester.pump(const Duration(milliseconds: 50));
         }
-        expect(acpManager.reconnects, hasLength(2));
-        expect(acpManager.reconnectSelectOnSuccess, [true, true]);
-        expect(acpManager.reconnectKnownBridges, [isNull, isNull]);
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Stop and continue free'),
+            )
+            .onPressed!();
+        await tester.pump();
+        for (
+          var attempt = 0;
+          attempt < 40 && acpManager.reconnects.length < 5;
+          attempt++
+        ) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(acpManager.reconnects, hasLength(5));
+        expect(acpManager.reconnectSelectOnSuccess, [
+          true,
+          true,
+          true,
+          true,
+          true,
+        ]);
+        expect(acpManager.reconnectReplaceKeys, [
+          isEmpty,
+          [blockingKey],
+          isEmpty,
+          isEmpty,
+          isEmpty,
+        ]);
+        expect(
+          acpManager.reconnectKnownBridges,
+          everyElement(same(acpManager.remoteBridges.first)),
+        );
         expect(
           acpManager.state.sessions.single.status,
           AcpConnectionStatus.ready,
@@ -8342,8 +8386,14 @@ void main() {
 
         await tester.pump(const Duration(milliseconds: 300));
         expect(find.text('opening persistent agent session…'), findsNothing);
-        expect(acpManager.reconnects, hasLength(2));
-        expect(acpManager.reconnectSelectOnSuccess, [true, true]);
+        expect(acpManager.reconnects, hasLength(5));
+        expect(acpManager.reconnectSelectOnSuccess, [
+          true,
+          true,
+          true,
+          true,
+          true,
+        ]);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

@@ -38,9 +38,12 @@ class _FakeAcpServer implements AcpTransport {
     this.failNewSession = false,
     this.rejectInitialize = false,
     this.rejectResume = false,
+    this.rejectLoadAlreadyLoaded = false,
+    this.alreadyLoadedSessionId,
     this.newSessionErrorCode = -32000,
     this.promptErrorMessage,
     this.replayTextOnLoad,
+    this.replayTextOnResume,
     this.replayUpdateCountOnLoad = 0,
     this.replayUpdatesOnLoad = const <Map<String, Object?>>[],
     this.loadResponseGate,
@@ -61,6 +64,12 @@ class _FakeAcpServer implements AcpTransport {
   /// When true, `session/resume` rejects reconnect setup.
   final bool rejectResume;
 
+  /// When true, `session/load` reports that the live session is already loaded.
+  final bool rejectLoadAlreadyLoaded;
+
+  /// Optional session id named by the already-loaded error response.
+  final String? alreadyLoadedSessionId;
+
   /// When true, `session/delete` returns a provider error.
   bool failDelete = false;
 
@@ -73,6 +82,9 @@ class _FakeAcpServer implements AcpTransport {
   /// When set, a `session/load` pushes an agent message chunk with this text
   /// BEFORE replying, simulating synchronous history replay during the load.
   final String? replayTextOnLoad;
+
+  /// Optional history text synchronously replayed by `session/resume`.
+  final String? replayTextOnResume;
 
   /// Number of same-message content chunks synchronously replayed on load.
   final int replayUpdateCountOnLoad;
@@ -160,6 +172,13 @@ class _FakeAcpServer implements AcpTransport {
       case 'session/resume':
         final params = (message['params']! as Map).cast<String, Object?>();
         final sessionId = params['sessionId'] as String? ?? '';
+        if (replayTextOnResume != null) {
+          pushUpdate(sessionId, {
+            'sessionUpdate': 'agent_message_chunk',
+            'messageId': 'resume-replay',
+            'content': {'type': 'text', 'text': replayTextOnResume},
+          });
+        }
         if (permissionIdOnResume != null) {
           _pushPermission(permissionIdOnResume!, sessionId, 'replayed-tool');
         }
@@ -180,6 +199,11 @@ class _FakeAcpServer implements AcpTransport {
       case 'session/load':
         final params = (message['params']! as Map).cast<String, Object?>();
         final sessionId = params['sessionId'] as String? ?? '';
+        if (rejectLoadAlreadyLoaded) {
+          final loadedId = alreadyLoadedSessionId ?? sessionId;
+          _replyError(id, -32602, 'Session $loadedId is already loaded');
+          break;
+        }
         // Emit synchronous replay BEFORE replying to the load request.
         if (replayTextOnLoad != null) {
           pushUpdate(sessionId, {
@@ -705,6 +729,35 @@ void main() {
       expect(failure.error.message, contains('-32602'));
     },
   );
+
+  test('marks only transient bridge failures retryable', () async {
+    for (final testCase in <(MonkeyMuxAcpBridgeErrorKind, bool)>[
+      (MonkeyMuxAcpBridgeErrorKind.sshChannel, true),
+      (MonkeyMuxAcpBridgeErrorKind.closed, true),
+      (MonkeyMuxAcpBridgeErrorKind.nonWriter, false),
+      (MonkeyMuxAcpBridgeErrorKind.invalidFrame, false),
+    ]) {
+      final failingConnector = _FakeConnector()
+        ..startError = MonkeyMuxAcpBridgeException(
+          testCase.$1,
+          'Bridge failed.',
+        );
+      final failingManager = buildManagerWith(failingConnector);
+
+      final result = await failingManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+
+      expect(result, isA<AcpSessionLaunchFailed>());
+      expect(
+        (result as AcpSessionLaunchFailed).error.retryable,
+        testCase.$2,
+        reason: testCase.$1.name,
+      );
+    }
+  });
 
   test(
     'does not mistake a non-auth session error for required login',
@@ -1593,6 +1646,135 @@ void main() {
         AcpConnectionStatus.ready,
       );
     });
+
+    test(
+      'already-loaded history reconnect stays live and warns after app restart',
+      () async {
+        var rejectLoad = false;
+        final liveConnector = _FakeConnector(
+          serverFactory: (_, _) => _FakeAcpServer(
+            rejectLoadAlreadyLoaded: rejectLoad,
+            rejectResume: rejectLoad,
+          ),
+        );
+        final firstManager = buildManagerWith(liveConnector);
+        final started = await firstManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+        await firstManager.detachSession(key);
+        rejectLoad = true;
+        liveConnector.skippedHistoricalReplay = true;
+
+        // A fresh manager has no in-memory timeline from the prior app process.
+        final reconnectedManager = buildManagerWith(liveConnector);
+        final result = await reconnectedManager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
+
+        expect(result, isA<AcpSessionLaunchStarted>());
+        final attachedServer = liveConnector.servers[key.bridgeId]!;
+        expect(attachedServer.methods, contains('session/load'));
+        expect(attachedServer.methods, contains('session/resume'));
+        final state = reconnectedManager.state.byKeyValue(key.value)!;
+        expect(state.status, AcpConnectionStatus.ready);
+        expect(state.timeline.entries, isEmpty);
+        expect(state.warning?.kind, AcpSessionErrorKind.historyUnavailable);
+        expect(
+          state.warning?.message,
+          'Earlier messages could not be restored in this view.',
+        );
+
+        await reconnectedManager.detachSession(key);
+        rejectLoad = false;
+        final refreshed = await reconnectedManager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
+        expect(refreshed, isA<AcpSessionLaunchStarted>());
+        expect(reconnectedManager.state.byKeyValue(key.value)!.warning, isNull);
+      },
+    );
+
+    test('resume replay avoids a degraded-history warning', () async {
+      var reconnecting = false;
+      final liveConnector = _FakeConnector(
+        serverFactory: (_, _) => _FakeAcpServer(
+          rejectLoadAlreadyLoaded: reconnecting,
+          replayTextOnResume: reconnecting ? 'restored history' : null,
+        ),
+      );
+      final firstManager = buildManagerWith(liveConnector);
+      final started = await firstManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (started as AcpSessionLaunchStarted).key;
+      await firstManager.detachSession(key);
+      reconnecting = true;
+      liveConnector.skippedHistoricalReplay = true;
+
+      final reconnectedManager = buildManagerWith(liveConnector);
+      final result = await reconnectedManager.reconnectSession(
+        hostId: key.hostId,
+        providerId: key.providerId,
+        bridgeId: key.bridgeId,
+        acpSessionId: key.acpSessionId,
+        cwd: '/repo',
+      );
+
+      expect(result, isA<AcpSessionLaunchStarted>());
+      final state = reconnectedManager.state.byKeyValue(key.value)!;
+      expect(state.timeline.entries, isNotEmpty);
+      expect(state.warning, isNull);
+    });
+
+    test(
+      'already-loaded response with whitespace-different id still fails',
+      () async {
+        var rejectLoad = false;
+        final liveConnector = _FakeConnector(
+          serverFactory: (_, _) => _FakeAcpServer(
+            rejectLoadAlreadyLoaded: rejectLoad,
+            alreadyLoadedSessionId: 'SESSION-1',
+          ),
+        );
+        final firstManager = buildManagerWith(liveConnector);
+        final started = await firstManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+        await firstManager.detachSession(key);
+        rejectLoad = true;
+        liveConnector.skippedHistoricalReplay = true;
+
+        final reconnectedManager = buildManagerWith(liveConnector);
+        final result = await reconnectedManager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: ' SESSION-1',
+          cwd: '/repo',
+        );
+
+        expect(result, isA<AcpSessionLaunchFailed>());
+        final error = (result as AcpSessionLaunchFailed).error;
+        expect(error.kind, AcpSessionErrorKind.protocol);
+        expect(reconnectedManager.state.byKeyValue(key.value), isNull);
+      },
+    );
 
     test(
       'detach during a turn reattaches without resume and keeps progress live',

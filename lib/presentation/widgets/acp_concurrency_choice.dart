@@ -6,6 +6,8 @@
 /// live session(s) and continue for free, or unlock Pro to keep both running.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
@@ -33,12 +35,14 @@ Future<AcpConcurrencyChoice?> showAcpConcurrencyChoice(
   required AcpConcurrencyRequiresChoice decision,
   required AcpSessionManagerState managerState,
   bool allowStopAndContinue = true,
+  Future<void>? cancellation,
 }) {
   final blocking = decision.blockingSessionKeys
       .map(managerState.byKeyValue)
       .whereType<AcpSessionState>()
       .toList(growable: false);
-  return showModalBottomSheet<AcpConcurrencyChoice>(
+  final navigator = Navigator.of(context);
+  final sheet = showModalBottomSheet<AcpConcurrencyChoice>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
@@ -50,6 +54,17 @@ Future<AcpConcurrencyChoice?> showAcpConcurrencyChoice(
       allowStopAndContinue: allowStopAndContinue,
     ),
   );
+  if (cancellation == null) return sheet;
+
+  var sheetOpen = true;
+  unawaited(
+    cancellation.then((_) {
+      if (sheetOpen && navigator.mounted && navigator.canPop()) {
+        navigator.pop();
+      }
+    }),
+  );
+  return sheet.whenComplete(() => sheetOpen = false);
 }
 
 class _ConcurrencyChoiceSheet extends StatelessWidget {

@@ -1221,6 +1221,11 @@ class AcpSessionManager {
           MonkeyMuxAcpBridgeErrorKind.invalidLaunch =>
             AcpSessionErrorKind.bridgeUnavailable,
         },
+        retryable: switch (error.kind) {
+          MonkeyMuxAcpBridgeErrorKind.sshChannel ||
+          MonkeyMuxAcpBridgeErrorKind.closed => true,
+          _ => false,
+        },
         message: switch (error.kind) {
           MonkeyMuxAcpBridgeErrorKind.invalidMetadata ||
           MonkeyMuxAcpBridgeErrorKind.unsupportedVersion =>
@@ -1445,6 +1450,7 @@ class _SessionController {
   var _sessionUpdatesApplied = 0;
   var _coalescingSessionUpdateNotifications = false;
   var _historyReplayPublicationHeld = false;
+  var _historyRestoreUnavailable = false;
   var _managerNotificationPending = false;
   final Queue<_QueuedAcpPrompt> _promptQueue = Queue<_QueuedAcpPrompt>();
   var _queuedPromptBytes = 0;
@@ -1541,6 +1547,7 @@ class _SessionController {
     final reattachingActiveTurn =
         reattachingLiveBridge && liveBridge.inFlightTurnCount > 0;
     final holdHistoryReplay = existingSessionId != null;
+    _historyRestoreUnavailable = false;
     if (holdHistoryReplay) _historyReplayPublicationHeld = true;
     _subscribeTransport();
     if (reattachingLiveBridge) {
@@ -1585,7 +1592,10 @@ class _SessionController {
       resolvedSessionId = reattachingActiveTurn
           ? existingSessionId
           : await _establishSession(existingSessionId, init);
-      if (holdHistoryReplay) await _drainHistoryReplayNotifications();
+      if (holdHistoryReplay) {
+        await _drainHistoryReplayNotifications();
+        _applyHistoryUnavailableWarningIfNeeded();
+      }
     } finally {
       if (holdHistoryReplay) _finishHistoryReplayPublication();
     }
@@ -1654,20 +1664,39 @@ class _SessionController {
       if ((_freshBridge || attachment.skippedHistoricalReplay) &&
           caps.loadSession) {
         final historyLoad = Stopwatch()..start();
-        final result = await attachment.client.loadSession(
-          sessionId: existingSessionId,
-          cwd: _cwd,
-        );
-        _applySetupResult(result);
-        _diagnostics.info(
-          'acp.session',
-          'history_load_complete',
-          fields: {
-            'durationMs': historyLoad.elapsedMilliseconds,
-            'freshBridge': _freshBridge,
-            'skippedBridgeReplay': attachment.skippedHistoricalReplay,
-          },
-        );
+        final result = await _loadExistingSession(existingSessionId);
+        if (result != null) {
+          _clearHistoryUnavailableWarning();
+          _applySetupResult(result);
+          _diagnostics.info(
+            'acp.session',
+            'history_load_complete',
+            fields: {
+              'durationMs': historyLoad.elapsedMilliseconds,
+              'freshBridge': _freshBridge,
+              'skippedBridgeReplay': attachment.skippedHistoricalReplay,
+            },
+          );
+        } else {
+          if (caps.session.resume) {
+            try {
+              final resumed = await attachment.client.resumeSession(
+                sessionId: existingSessionId,
+                cwd: _cwd,
+              );
+              _applySetupResult(resumed);
+            } on AcpRemoteException catch (error) {
+              // The exact load response proved the live provider already owns
+              // this session. A provider-specific resume refusal only prevents
+              // optional setup refresh; transport/time-out failures still flow.
+              _diagnostics.info(
+                'acp.session',
+                'already_loaded_resume_rejected',
+                fields: {'errorCode': error.code},
+              );
+            }
+          }
+        }
         return existingSessionId;
       }
       if (caps.session.resume) {
@@ -1679,11 +1708,11 @@ class _SessionController {
         return existingSessionId;
       }
       if (caps.loadSession) {
-        final result = await attachment.client.loadSession(
-          sessionId: existingSessionId,
-          cwd: _cwd,
-        );
-        _applySetupResult(result);
+        final result = await _loadExistingSession(existingSessionId);
+        if (result != null) {
+          _clearHistoryUnavailableWarning();
+          _applySetupResult(result);
+        }
         return existingSessionId;
       }
       if (_freshBridge) {
@@ -1695,6 +1724,16 @@ class _SessionController {
     } on _LaunchException {
       rethrow;
     } on AcpRemoteException catch (error) {
+      if (existingSessionId != null &&
+          _isAcpSessionAlreadyLoadedError(error, existingSessionId)) {
+        _diagnostics.info(
+          'acp.session',
+          'already_loaded_reused',
+          fields: {'setupMethod': 'resume'},
+        );
+        _historyRestoreUnavailable = true;
+        return existingSessionId;
+      }
       if (init.authMethods.isNotEmpty && error.code == -32000) {
         _update(
           (s) => s.copyWith(
@@ -1724,6 +1763,45 @@ class _SessionController {
     } on Object catch (error) {
       throw _LaunchException(_key, _mapClientError(error));
     }
+  }
+
+  Future<AcpSessionSetupResult?> _loadExistingSession(String sessionId) async {
+    try {
+      return await attachment.client.loadSession(
+        sessionId: sessionId,
+        cwd: _cwd,
+      );
+    } on AcpRemoteException catch (error) {
+      if (!_isAcpSessionAlreadyLoadedError(error, sessionId)) rethrow;
+      _diagnostics.info(
+        'acp.session',
+        'already_loaded_reused',
+        fields: {'setupMethod': 'load'},
+      );
+      _historyRestoreUnavailable = true;
+      return null;
+    }
+  }
+
+  void _clearHistoryUnavailableWarning() {
+    if (_state.warning?.kind == AcpSessionErrorKind.historyUnavailable) {
+      _update((state) => state.copyWith(clearWarning: true));
+    }
+  }
+
+  void _applyHistoryUnavailableWarningIfNeeded() {
+    if (!_historyRestoreUnavailable ||
+        _timelineBuilder.snapshot().entries.isNotEmpty) {
+      return;
+    }
+    _update(
+      (state) => state.copyWith(
+        warning: const AcpSessionError(
+          kind: AcpSessionErrorKind.historyUnavailable,
+          message: 'Earlier messages could not be restored in this view.',
+        ),
+      ),
+    );
   }
 
   void _applySetupResult(AcpSessionSetupResult result) {
@@ -2531,11 +2609,13 @@ class _SessionController {
       _subscribeSessionStreams();
       final detachedTurnRunning =
           wasDetached && remoteBridge.inFlightTurnCount > 0;
+      _historyRestoreUnavailable = false;
       if (!detachedTurnRunning) {
         _historyReplayPublicationHeld = true;
         try {
           await _establishSession(sessionId, init);
           await _drainHistoryReplayNotifications();
+          _applyHistoryUnavailableWarningIfNeeded();
         } finally {
           _finishHistoryReplayPublication();
         }
@@ -2859,6 +2939,7 @@ class _SessionController {
     AcpConnectionClosedException() => const AcpSessionError(
       kind: AcpSessionErrorKind.transport,
       message: 'The agent connection closed.',
+      retryable: true,
     ),
     MonkeyMuxAcpBridgeException() => _manager._mapBridgeError(error),
     _ => const AcpSessionError(
@@ -2866,6 +2947,31 @@ class _SessionController {
       message: 'The agent session encountered an error.',
     ),
   };
+}
+
+bool _isAcpSessionAlreadyLoadedError(
+  AcpRemoteException error,
+  String sessionId,
+) {
+  if (error.code != -32602 || sessionId.isEmpty) return false;
+  final message = error.message.trim();
+  final lower = message.toLowerCase();
+  const prefix = 'session ';
+  if (!lower.startsWith(prefix)) return false;
+  for (final suffix in const <String>[
+    ' is already loaded',
+    ' is already loaded.',
+    ' is already loaded!',
+  ]) {
+    if (!lower.endsWith(suffix)) continue;
+    final namedSessionId = message.substring(
+      prefix.length,
+      message.length - suffix.length,
+    );
+    // Provider prose is case-insensitive; the opaque identity is byte-exact.
+    return namedSessionId == sessionId;
+  }
+  return false;
 }
 
 bool _isAcpAuthenticationRequired(String message) {
