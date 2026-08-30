@@ -59,10 +59,10 @@ jobs:
                   printf '%s\n' 'scan:pubspec.lock'
                   ;;
                 ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved)
-                  printf '%s\n' 'scan:ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved'
+                  printf '%s\n' 'skip:ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved'
                   ;;
                 macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved)
-                  printf '%s\n' 'scan:macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved'
+                  printf '%s\n' 'skip:macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved'
                   ;;
               esac
             done | awk '!seen[$0]++'
@@ -87,7 +87,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "${#unsupported_targets[@]}" -gt 0 ]; then
-            echo '- Skipping unsupported fallback lockfiles because the current OSV source scan cannot extract them:' >> "$GITHUB_STEP_SUMMARY"
+            echo '- Skipping unsupported fallback lockfiles because the current OSV source scan cannot extract Swift Package Manager `Package.resolved` files:' >> "$GITHUB_STEP_SUMMARY"
             for target in "${unsupported_targets[@]}"; do
               echo "  - \`${target}\`" >> "$GITHUB_STEP_SUMMARY"
             done
