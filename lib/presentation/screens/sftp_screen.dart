@@ -2394,7 +2394,6 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final sftp = _sftp!;
     final telemetryService = ref.read(telemetryServiceProvider);
     final remoteFileService = ref.read(remoteFileServiceProvider);
     late final Uri? savePath;
@@ -2419,10 +2418,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
       return;
     }
-    if (savePath == null) {
+    if (savePath == null || !mounted || _sftp == null) {
       return;
     }
 
+    final sftp = _sftp!;
     final startedAt = DateTime.now();
     final sizeBytes = file.attr.size;
     unawaited(
@@ -2479,7 +2479,6 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final sftp = _sftp!;
     final telemetryService = ref.read(telemetryServiceProvider);
     final remoteFileService = ref.read(remoteFileServiceProvider);
     late final List<PlatformFile> result;
@@ -2561,6 +2560,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     final startedAt = DateTime.now();
     final sizeBytes = await _selectedUploadSizeBytes(selectedFiles);
+    if (!mounted || _sftp == null) {
+      return;
+    }
+    final sftp = _sftp!;
     unawaited(
       telemetryService.logSftpTransferStarted(
         direction: 'upload',
