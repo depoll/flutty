@@ -983,23 +983,25 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            !~/Library/Caches/org.swift.swiftpm/manifests
+          path: ~/Library/Caches/org.swift.swiftpm
           # SwiftPM's cache is keyed on package identity, not platform: it holds
           # bare git clones and binary artifact bundles that carry every platform
           # slice. The iOS and macOS jobs therefore share one entry rather than
           # storing ~440MB twice each, which kept evicting the ~2GB Flutter SDK
           # cache from the repo's 10GB budget once a few PRs were open. Hashing
           # both Package.resolved files means either one moving invalidates it.
-          #
-          # manifests/ is excluded deliberately: permission_handler_apple's
-          # Package.swift derives its PERMISSION_* macros from the app's
-          # Info.plist, which SwiftPM does not track as a manifest input, so a
-          # restored manifest cache would keep stale permissions compiled in
-          # after a usage-description change.
           key: spm-${{ runner.os }}-${{ hashFiles('ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-
+
+      - name: Drop cached SwiftPM manifest evaluations
+        # permission_handler_apple's Package.swift derives its PERMISSION_*
+        # macros from the app's Info.plist, which SwiftPM does not track as a
+        # manifest input, so a restored manifest cache can keep stale
+        # permissions compiled in after a usage-description change. Delete it
+        # after restore rather than excluding it from the cache: actions/cache
+        # exclusion patterns silently did not match here, and re-evaluating a
+        # handful of manifests costs seconds.
+        run: rm -rf ~/Library/Caches/org.swift.swiftpm/manifests
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.ios-reuse-ipa-artifact-name == ''
