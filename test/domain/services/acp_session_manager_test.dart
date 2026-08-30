@@ -1682,39 +1682,42 @@ void main() {
       },
     );
 
-    test('already-loaded response for another session still fails', () async {
-      var rejectLoad = false;
-      final liveConnector = _FakeConnector(
-        serverFactory: (_, _) => _FakeAcpServer(
-          rejectLoadAlreadyLoaded: rejectLoad,
-          alreadyLoadedSessionId: 'different-session',
-        ),
-      );
-      final firstManager = buildManagerWith(liveConnector);
-      final started = await firstManager.startNewSession(
-        hostId: 1,
-        providerId: AcpBuiltinProviderIds.copilotCli,
-        cwd: '/repo',
-      );
-      final key = (started as AcpSessionLaunchStarted).key;
-      await firstManager.detachSession(key);
-      rejectLoad = true;
-      liveConnector.skippedHistoricalReplay = true;
+    test(
+      'already-loaded response with case-different id still fails',
+      () async {
+        var rejectLoad = false;
+        final liveConnector = _FakeConnector(
+          serverFactory: (_, _) => _FakeAcpServer(
+            rejectLoadAlreadyLoaded: rejectLoad,
+            alreadyLoadedSessionId: 'SESSION-1',
+          ),
+        );
+        final firstManager = buildManagerWith(liveConnector);
+        final started = await firstManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+        await firstManager.detachSession(key);
+        rejectLoad = true;
+        liveConnector.skippedHistoricalReplay = true;
 
-      final reconnectedManager = buildManagerWith(liveConnector);
-      final result = await reconnectedManager.reconnectSession(
-        hostId: key.hostId,
-        providerId: key.providerId,
-        bridgeId: key.bridgeId,
-        acpSessionId: key.acpSessionId,
-        cwd: '/repo',
-      );
+        final reconnectedManager = buildManagerWith(liveConnector);
+        final result = await reconnectedManager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
 
-      expect(result, isA<AcpSessionLaunchFailed>());
-      final error = (result as AcpSessionLaunchFailed).error;
-      expect(error.kind, AcpSessionErrorKind.protocol);
-      expect(reconnectedManager.state.byKeyValue(key.value), isNull);
-    });
+        expect(result, isA<AcpSessionLaunchFailed>());
+        final error = (result as AcpSessionLaunchFailed).error;
+        expect(error.kind, AcpSessionErrorKind.protocol);
+        expect(reconnectedManager.state.byKeyValue(key.value), isNull);
+      },
+    );
 
     test(
       'detach during a turn reattaches without resume and keeps progress live',

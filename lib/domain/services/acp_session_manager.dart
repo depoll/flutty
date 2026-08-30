@@ -2944,11 +2944,12 @@ bool _isAcpSessionAlreadyLoadedError(
 ) {
   if (error.code != -32602 || sessionId.trim().isEmpty) return false;
   final normalized = error.message.trim().replaceAll(RegExp(r'\s+'), ' ');
-  final escapedSessionId = RegExp.escape(sessionId.trim());
-  return RegExp(
-    '^session $escapedSessionId is already loaded[.!]?\$',
+  final match = RegExp(
+    r'^session (.+) is already loaded[.!]?$',
     caseSensitive: false,
-  ).hasMatch(normalized);
+  ).firstMatch(normalized);
+  // The provider phrase is case-insensitive, but the identity it names is not.
+  return match?.group(1) == sessionId.trim();
 }
 
 bool _isAcpAuthenticationRequired(String message) {
