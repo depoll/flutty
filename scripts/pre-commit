@@ -10,8 +10,14 @@ cd "$REPO_ROOT"
 
 echo 'Running pre-commit checks...'
 
+# analysis_options.yaml excludes third_party/**, where vendored upstream code
+# keeps its own lint rules. Honour that here too, or vendoring anything with
+# Dart sources becomes uncommittable.
 staged_dart_files=()
 while IFS= read -r file; do
+    case "$file" in
+        third_party/*) continue ;;
+    esac
     staged_dart_files+=("$file")
 done < <(git diff --cached --name-only --diff-filter=ACM -- '*.dart')
 
