@@ -986,6 +986,7 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             !~/Library/Caches/org.swift.swiftpm/manifests
+            !~/Library/Caches/org.swift.swiftpm/artifacts
           # SwiftPM's cache is keyed on package identity, not platform: it holds
           # bare git clones and binary artifact bundles that carry every platform
           # slice. The iOS and macOS jobs therefore share one entry rather than
