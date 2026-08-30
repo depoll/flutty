@@ -432,13 +432,13 @@ jobs:
           name: monkeymux-assets
           path: assets/monkeymux/
 
-      # Restore only. GitHub scopes caches per ref, so a cache written from a PR
-      # is invisible to every other PR -- each one would store its own ~440MB
-      # copy against a shared 10GB budget, evicting the ~2GB Flutter SDK caches
-      # and slowing every job. Only the push-to-main run below writes, so PRs
-      # all read that single entry. The restore-keys prefix means a PR that
-      # bumps Package.resolved still starts from main's copy and resolves the
-      # delta.
+      # GitHub scopes caches per ref, so an entry written from a PR is invisible
+      # to every other PR. Writing unconditionally gave each PR its own ~440MB
+      # copy against a shared 10GB budget, which evicts the ~2GB Flutter SDK
+      # caches and slows every job. The save step below therefore writes only
+      # when the exact key is missing, so as long as dependencies hold still
+      # there is exactly one entry -- written by a push to main -- that every PR
+      # restores.
       #
       # The entry is shared between the iOS and macOS jobs: SwiftPM keys its
       # cache on package identity, not platform, and the binary artifact bundles
@@ -514,11 +514,18 @@ jobs:
           retention-days: 5
 
       - name: Save SwiftPM cache
-        # Single writer for the whole repository: a push to main. Skipped on an
-        # exact hit, which would otherwise fail with "already exists".
-        if: >-
-          github.event_name == 'push' && github.ref == 'refs/heads/main'
-          && steps.spm-cache.outputs.cache-hit != 'true'
+        # Write only when this exact key is not stored yet. Steady state that is
+        # never: main holds the entry, every PR restores it, and nothing new is
+        # written. A PR that moves Package.resolved misses the exact key, falls
+        # back to main's entry via the prefix, and stores its resolved result
+        # under its own ref so the rest of that PR's runs hit exactly. Concurrent
+        # dependency-bumping PRs are rare enough that the extra copies are worth
+        # it, and they age out once the PR is done.
+        #
+        # cache-hit is only true for an exact primary-key match, so a prefix
+        # restore still saves. Skipping the exact hit also avoids the
+        # "already exists" failure a redundant save would produce.
+        if: steps.spm-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ~/Library/Caches/org.swift.swiftpm
@@ -541,13 +548,13 @@ jobs:
           name: monkeymux-assets
           path: assets/monkeymux/
 
-      # Restore only. GitHub scopes caches per ref, so a cache written from a PR
-      # is invisible to every other PR -- each one would store its own ~440MB
-      # copy against a shared 10GB budget, evicting the ~2GB Flutter SDK caches
-      # and slowing every job. Only the push-to-main run below writes, so PRs
-      # all read that single entry. The restore-keys prefix means a PR that
-      # bumps Package.resolved still starts from main's copy and resolves the
-      # delta.
+      # GitHub scopes caches per ref, so an entry written from a PR is invisible
+      # to every other PR. Writing unconditionally gave each PR its own ~440MB
+      # copy against a shared 10GB budget, which evicts the ~2GB Flutter SDK
+      # caches and slows every job. The save step below therefore writes only
+      # when the exact key is missing, so as long as dependencies hold still
+      # there is exactly one entry -- written by a push to main -- that every PR
+      # restores.
       #
       # The entry is shared between the iOS and macOS jobs: SwiftPM keys its
       # cache on package identity, not platform, and the binary artifact bundles
@@ -605,11 +612,18 @@ jobs:
           retention-days: 5
 
       - name: Save SwiftPM cache
-        # Single writer for the whole repository: a push to main. Skipped on an
-        # exact hit, which would otherwise fail with "already exists".
-        if: >-
-          github.event_name == 'push' && github.ref == 'refs/heads/main'
-          && steps.spm-cache.outputs.cache-hit != 'true'
+        # Write only when this exact key is not stored yet. Steady state that is
+        # never: main holds the entry, every PR restores it, and nothing new is
+        # written. A PR that moves Package.resolved misses the exact key, falls
+        # back to main's entry via the prefix, and stores its resolved result
+        # under its own ref so the rest of that PR's runs hit exactly. Concurrent
+        # dependency-bumping PRs are rare enough that the extra copies are worth
+        # it, and they age out once the PR is done.
+        #
+        # cache-hit is only true for an exact primary-key match, so a prefix
+        # restore still saves. Skipping the exact hit also avoids the
+        # "already exists" failure a redundant save would produce.
+        if: steps.spm-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ~/Library/Caches/org.swift.swiftpm
