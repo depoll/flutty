@@ -1654,20 +1654,25 @@ class _SessionController {
       if ((_freshBridge || attachment.skippedHistoricalReplay) &&
           caps.loadSession) {
         final historyLoad = Stopwatch()..start();
-        final result = await attachment.client.loadSession(
-          sessionId: existingSessionId,
-          cwd: _cwd,
-        );
-        _applySetupResult(result);
-        _diagnostics.info(
-          'acp.session',
-          'history_load_complete',
-          fields: {
-            'durationMs': historyLoad.elapsedMilliseconds,
-            'freshBridge': _freshBridge,
-            'skippedBridgeReplay': attachment.skippedHistoricalReplay,
-          },
-        );
+        final result = await _loadExistingSession(existingSessionId);
+        if (result != null) {
+          _applySetupResult(result);
+          _diagnostics.info(
+            'acp.session',
+            'history_load_complete',
+            fields: {
+              'durationMs': historyLoad.elapsedMilliseconds,
+              'freshBridge': _freshBridge,
+              'skippedBridgeReplay': attachment.skippedHistoricalReplay,
+            },
+          );
+        } else if (caps.session.resume) {
+          final resumed = await attachment.client.resumeSession(
+            sessionId: existingSessionId,
+            cwd: _cwd,
+          );
+          _applySetupResult(resumed);
+        }
         return existingSessionId;
       }
       if (caps.session.resume) {
@@ -1679,11 +1684,8 @@ class _SessionController {
         return existingSessionId;
       }
       if (caps.loadSession) {
-        final result = await attachment.client.loadSession(
-          sessionId: existingSessionId,
-          cwd: _cwd,
-        );
-        _applySetupResult(result);
+        final result = await _loadExistingSession(existingSessionId);
+        if (result != null) _applySetupResult(result);
         return existingSessionId;
       }
       if (_freshBridge) {
@@ -1695,6 +1697,14 @@ class _SessionController {
     } on _LaunchException {
       rethrow;
     } on AcpRemoteException catch (error) {
+      if (existingSessionId != null && _isAcpSessionAlreadyLoadedError(error)) {
+        _diagnostics.info(
+          'acp.session',
+          'already_loaded_reused',
+          fields: {'setupMethod': 'resume'},
+        );
+        return existingSessionId;
+      }
       if (init.authMethods.isNotEmpty && error.code == -32000) {
         _update(
           (s) => s.copyWith(
@@ -1723,6 +1733,23 @@ class _SessionController {
       );
     } on Object catch (error) {
       throw _LaunchException(_key, _mapClientError(error));
+    }
+  }
+
+  Future<AcpSessionSetupResult?> _loadExistingSession(String sessionId) async {
+    try {
+      return await attachment.client.loadSession(
+        sessionId: sessionId,
+        cwd: _cwd,
+      );
+    } on AcpRemoteException catch (error) {
+      if (!_isAcpSessionAlreadyLoadedError(error)) rethrow;
+      _diagnostics.info(
+        'acp.session',
+        'already_loaded_reused',
+        fields: {'setupMethod': 'load'},
+      );
+      return null;
     }
   }
 
@@ -2866,6 +2893,13 @@ class _SessionController {
       message: 'The agent session encountered an error.',
     ),
   };
+}
+
+bool _isAcpSessionAlreadyLoadedError(AcpRemoteException error) {
+  if (error.code != -32602) return false;
+  final normalized = error.message.trim().toLowerCase();
+  return normalized.contains('session') &&
+      normalized.contains('already loaded');
 }
 
 bool _isAcpAuthenticationRequired(String message) {

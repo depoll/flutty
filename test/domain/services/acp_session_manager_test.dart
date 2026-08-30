@@ -38,6 +38,7 @@ class _FakeAcpServer implements AcpTransport {
     this.failNewSession = false,
     this.rejectInitialize = false,
     this.rejectResume = false,
+    this.rejectLoadAlreadyLoaded = false,
     this.newSessionErrorCode = -32000,
     this.promptErrorMessage,
     this.replayTextOnLoad,
@@ -60,6 +61,9 @@ class _FakeAcpServer implements AcpTransport {
 
   /// When true, `session/resume` rejects reconnect setup.
   final bool rejectResume;
+
+  /// When true, `session/load` reports that the live session is already loaded.
+  final bool rejectLoadAlreadyLoaded;
 
   /// When true, `session/delete` returns a provider error.
   bool failDelete = false;
@@ -180,6 +184,10 @@ class _FakeAcpServer implements AcpTransport {
       case 'session/load':
         final params = (message['params']! as Map).cast<String, Object?>();
         final sessionId = params['sessionId'] as String? ?? '';
+        if (rejectLoadAlreadyLoaded) {
+          _replyError(id, -32602, 'Session $sessionId is already loaded');
+          break;
+        }
         // Emit synchronous replay BEFORE replying to the load request.
         if (replayTextOnLoad != null) {
           pushUpdate(sessionId, {
@@ -1590,6 +1598,41 @@ void main() {
       expect(attachedServer.methods, isNot(contains('session/resume')));
       expect(
         manager.state.byKeyValue(key.value)!.status,
+        AcpConnectionStatus.ready,
+      );
+    });
+
+    test('already-loaded history reconnect keeps the live session', () async {
+      var rejectLoad = false;
+      final liveConnector = _FakeConnector(
+        serverFactory: (_, _) =>
+            _FakeAcpServer(rejectLoadAlreadyLoaded: rejectLoad),
+      );
+      final liveManager = buildManagerWith(liveConnector);
+      final started = await liveManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (started as AcpSessionLaunchStarted).key;
+      await liveManager.detachSession(key);
+      rejectLoad = true;
+      liveConnector.skippedHistoricalReplay = true;
+
+      final result = await liveManager.reconnectSession(
+        hostId: key.hostId,
+        providerId: key.providerId,
+        bridgeId: key.bridgeId,
+        acpSessionId: key.acpSessionId,
+        cwd: '/repo',
+      );
+
+      expect(result, isA<AcpSessionLaunchStarted>());
+      final attachedServer = liveConnector.servers[key.bridgeId]!;
+      expect(attachedServer.methods, contains('session/load'));
+      expect(attachedServer.methods, contains('session/resume'));
+      expect(
+        liveManager.state.byKeyValue(key.value)!.status,
         AcpConnectionStatus.ready,
       );
     });
