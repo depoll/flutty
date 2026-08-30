@@ -1666,6 +1666,9 @@ class _SessionController {
         final historyLoad = Stopwatch()..start();
         final result = await _loadExistingSession(existingSessionId);
         if (result != null) {
+          if (_state.warning?.kind == AcpSessionErrorKind.historyUnavailable) {
+            _update((state) => state.copyWith(clearWarning: true));
+          }
           _applySetupResult(result);
           _diagnostics.info(
             'acp.session',

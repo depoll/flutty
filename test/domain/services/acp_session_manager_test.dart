@@ -1690,6 +1690,18 @@ void main() {
           state.warning?.message,
           'Earlier messages could not be restored in this view.',
         );
+
+        await reconnectedManager.detachSession(key);
+        rejectLoad = false;
+        final refreshed = await reconnectedManager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
+        expect(refreshed, isA<AcpSessionLaunchStarted>());
+        expect(reconnectedManager.state.byKeyValue(key.value)!.warning, isNull);
       },
     );
 

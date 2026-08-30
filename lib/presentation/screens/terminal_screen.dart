@@ -3822,6 +3822,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   _NativeAcpLaunchState? _nativeAcpLaunchState;
   var _nativeAcpLaunchGeneration = 0;
   var _nativeAcpWindowRequestGeneration = 0;
+  Completer<void>? _nativeAcpWindowCancellation;
   final Map<String, AcpChatScrollState> _nativeAcpScrollStates = {};
   String? _connectionOpenedWorkingDirectory;
   String? _tmuxLaunchWorkingDirectory;
@@ -12141,6 +12142,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (opening != null && _openingNativeAcpBridgeId == bridgeId) {
       return opening;
     }
+    if (opening != null && requestGeneration == null) {
+      final cancellation = _nativeAcpWindowCancellation;
+      if (cancellation != null && !cancellation.isCompleted) {
+        cancellation.complete();
+      }
+    }
     final requestedGeneration =
         requestGeneration ?? ++_nativeAcpWindowRequestGeneration;
     if (requestGeneration != null &&
@@ -12148,7 +12155,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return Future<void>.value();
     }
     if (opening != null) {
-      return opening.then(
+      final settledOpening = opening.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+      );
+      return settledOpening.then(
         (_) => _openServerOwnedNativeAcpWindow(
           sshSession,
           windowIndex: windowIndex,
@@ -12161,8 +12172,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final completer = Completer<void>();
+    final cancellation = Completer<void>();
     _openingNativeAcpBridgeId = bridgeId;
     _openingNativeAcpWindow = completer.future;
+    _nativeAcpWindowCancellation = cancellation;
     _autoOpenedNativeAcpBridgeId = bridgeId;
     final provider = acpBuiltinProviders
         .where((candidate) => candidate.id == providerId)
@@ -12188,6 +12201,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           providerId: providerId,
           workingDirectory: workingDirectory,
           requestGeneration: requestedGeneration,
+          cancellation: cancellation.future,
         );
         completer.complete();
       } on Object catch (error, stackTrace) {
@@ -12196,6 +12210,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (identical(_openingNativeAcpWindow, completer.future)) {
           _openingNativeAcpWindow = null;
           _openingNativeAcpBridgeId = null;
+        }
+        if (identical(_nativeAcpWindowCancellation, cancellation)) {
+          _nativeAcpWindowCancellation = null;
         }
         _finishNativeAcpLaunch(sshSession, generation);
       }
@@ -12209,6 +12226,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String bridgeId,
     required String providerId,
     required int requestGeneration,
+    required Future<void> cancellation,
     String? workingDirectory,
   }) async {
     bool requestIsCurrent() =>
@@ -12346,8 +12364,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'attempt': retryAttempt + 1,
           },
         );
-        await Future<void>.delayed(retryDelays[retryAttempt]);
-        if (!requestIsCurrent() ||
+        final canceled = await Future.any<bool>([
+          Future<void>.delayed(retryDelays[retryAttempt]).then((_) => false),
+          cancellation.then((_) => true),
+        ]);
+        if (canceled ||
+            !requestIsCurrent() ||
             _activeNativeAcpSessionKey != provisionalKey) {
           return result;
         }
