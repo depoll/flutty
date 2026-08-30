@@ -986,14 +986,20 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             !~/Library/Caches/org.swift.swiftpm/manifests
-          # Deliberately excludes manifests/: permission_handler_apple's
+          # SwiftPM's cache is keyed on package identity, not platform: it holds
+          # bare git clones and binary artifact bundles that carry every platform
+          # slice. The iOS and macOS jobs therefore share one entry rather than
+          # storing ~440MB twice each, which kept evicting the ~2GB Flutter SDK
+          # cache from the repo's 10GB budget once a few PRs were open. Hashing
+          # both Package.resolved files means either one moving invalidates it.
+          #
+          # manifests/ is excluded deliberately: permission_handler_apple's
           # Package.swift derives its PERMISSION_* macros from the app's
-          # Info.plist, which SwiftPM does not track as a manifest input. A
+          # Info.plist, which SwiftPM does not track as a manifest input, so a
           # restored manifest cache would keep stale permissions compiled in
-          # after a usage-description change. It is 2MB of the ~1GB cache; the
-          # repository clones are what actually cost time.
-          key: spm-ios-${{ runner.os }}-${{ hashFiles('ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-ios-${{ runner.os }}-
+          # after a usage-description change.
+          key: spm-${{ runner.os }}-${{ hashFiles('ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.ios-reuse-ipa-artifact-name == ''
