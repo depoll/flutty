@@ -360,7 +360,11 @@ Firebase's current Apple SDK requires iOS 15 or newer. iOS and macOS builds
 resolve every plugin and the Firebase SDK through Swift Package Manager, so
 there is no Podfile and no `pod install` step. The `Upload Crashlytics dSYMs`
 build phase reads the `run` script from the resolved SPM checkout under
-`$BUILD_DIR`; it warns instead of failing when Firebase config is absent.
+`$BUILD_DIR`. It handles two cases differently: with no Firebase config it
+logs a plain `Skipping Crashlytics dSYM upload` note, which is the expected
+state for unconfigured builds; if the config is present but the run script
+is missing it emits an Xcode `warning:`, because that means dSYMs silently
+did not reach Crashlytics. Neither case fails the build.
 
 GitHub Actions reads Firebase config from these repository secrets and writes
 the matching flavor file before each build:
