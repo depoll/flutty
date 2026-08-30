@@ -397,19 +397,38 @@ void main() {
               password: Value(encryptedPassword),
             ),
           );
-      repository = HostRepository(
-        db,
-        SecretEncryptionService.forTesting(masterKey: List<int>.filled(32, 2)),
+      final currentEncryptionService = SecretEncryptionService.forTesting(
+        masterKey: List<int>.filled(32, 2),
       );
+      repository = HostRepository(db, currentEncryptionService);
 
-      final host = await repository.getById(id);
+      var host = await repository.getById(id);
 
       expect(host, isNotNull);
       expect(host!.password, isNull);
-      final storedHost = await (db.select(
+      await repository.toggleFavorite(id);
+      await repository.updateLastConnected(id);
+      await repository.update(host.copyWith(label: 'Renamed Host'));
+
+      var storedHost = await (db.select(
         db.hosts,
       )..where((h) => h.id.equals(id))).getSingle();
       expect(storedHost.password, encryptedPassword);
+      host = await repository.getById(id);
+      expect(host!.label, 'Renamed Host');
+      expect(host.password, isNull);
+
+      await repository.update(
+        host.copyWith(password: const Value('replacement-secret')),
+      );
+      storedHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(storedHost.password, isNot(encryptedPassword));
+      await expectLater(
+        currentEncryptionService.decryptNullable(storedHost.password),
+        completion('replacement-secret'),
+      );
     });
 
     test('legacy password migration does not overwrite newer writes', () async {

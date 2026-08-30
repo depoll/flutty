@@ -24,10 +24,12 @@ class HostRepository {
   // Keyed by the full ENCv1:… envelope string; value is the decrypted
   // plaintext. Entries are bounded and cleared on auth lock / writes.
   final _decryptCache = <String, String>{};
+  final _undecryptablePasswordHostIds = <int>{};
 
   /// Clears cached decrypted secret plaintexts.
   void clearDecryptionCache() {
     _decryptCache.clear();
+    _undecryptablePasswordHostIds.clear();
   }
 
   /// Number of cached decrypted secret plaintexts.
@@ -293,13 +295,18 @@ class HostRepository {
   /// Update an existing host.
   Future<bool> update(Host host) async {
     final previousStoredPassword = await _storedPasswordForHost(host.id);
-    final encryptedPassword = await _secretEncryptionService.encryptNullable(
-      host.password,
-    );
+    final preservesUnreadablePassword =
+        _undecryptablePasswordHostIds.contains(host.id) &&
+        (host.password == null || host.password!.isEmpty) &&
+        previousStoredPassword != null;
+    final encryptedPassword = preservesUnreadablePassword
+        ? previousStoredPassword
+        : await _secretEncryptionService.encryptNullable(host.password);
     final updated = await _db
         .update(_db.hosts)
         .replace(host.copyWith(password: Value(encryptedPassword)));
-    if (updated) {
+    if (updated && !preservesUnreadablePassword) {
+      _undecryptablePasswordHostIds.remove(host.id);
       _evictDecrypted(previousStoredPassword);
       _rememberEncryptedPlaintext(encryptedPassword, host.password);
     }
@@ -323,6 +330,7 @@ class HostRepository {
     });
     if (deleted > 0) {
       _evictDecrypted(previousStoredPassword);
+      _undecryptablePasswordHostIds.remove(id);
     }
     return deleted;
   }
@@ -331,7 +339,10 @@ class HostRepository {
   Future<bool> toggleFavorite(int id) async {
     final host = await getById(id);
     if (host == null) return false;
-    return update(host.copyWith(isFavorite: !host.isFavorite));
+    return updateFields(
+      id,
+      HostsCompanion(isFavorite: Value(!host.isFavorite)),
+    );
   }
 
   /// Applies a partial column update to a single host.
@@ -356,11 +367,8 @@ class HostRepository {
       updateFields(id, HostsCompanion(autoForwardPorts: Value(enabled)));
 
   /// Update last connected timestamp.
-  Future<bool> updateLastConnected(int id) async {
-    final host = await getById(id);
-    if (host == null) return false;
-    return update(host.copyWith(lastConnectedAt: Value(DateTime.now())));
-  }
+  Future<bool> updateLastConnected(int id) =>
+      updateFields(id, HostsCompanion(lastConnectedAt: Value(DateTime.now())));
 
   Future<List<Host>> _decryptHosts(List<Host> hosts) =>
       Future.wait(hosts.map(_decryptHost));
@@ -402,9 +410,13 @@ class HostRepository {
   ) async {
     if (_secretEncryptionService.isValidEncryptedEnvelope(storedPassword)) {
       try {
-        return await _cachedDecrypt(storedPassword);
+        final decryptedPassword = await _cachedDecrypt(storedPassword);
+        _undecryptablePasswordHostIds.remove(hostId);
+        return decryptedPassword;
       } on FormatException catch (error) {
-        // Keep the host usable when secure storage loses its encryption key.
+        // Keep the host usable without allowing metadata writes to erase the
+        // ciphertext if secure storage loses its encryption key.
+        _undecryptablePasswordHostIds.add(hostId);
         DiagnosticsLogService.instance.warning(
           'host.secrets',
           'password_decryption_failed',
@@ -414,6 +426,7 @@ class HostRepository {
       }
     }
 
+    _undecryptablePasswordHostIds.remove(hostId);
     final encryptedPassword = await _secretEncryptionService.encryptNullable(
       storedPassword,
     );
