@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -486,6 +488,59 @@ void main() {
     expect(find.byKey(const ValueKey('store-progress-banner')), findsOneWidget);
     expect(find.textContaining('Processing your request with'), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsOneWidget);
+  });
+
+  testWidgets('purchase completion after disposal does not read ref', (
+    tester,
+  ) async {
+    final service = _MockMonetizationService();
+    final purchase = Completer<MonetizationActionResult>();
+    const state = MonetizationState(
+      billingAvailability: MonetizationBillingAvailability.available,
+      entitlements: MonetizationEntitlements.free(),
+      offers: [
+        MonetizationOffer(
+          id: 'monthly',
+          productId: 'monkeyssh_pro_monthly',
+          billingPeriod: MonetizationBillingPeriod.monthly,
+          planLabel: 'Monthly',
+          priceLabel: r'$5.00',
+          displayPriceLabel: r'$5.00 / month',
+          rawPrice: 5,
+          currencyCode: 'USD',
+          currencySymbol: r'$',
+        ),
+      ],
+      debugUnlockAvailable: false,
+      debugUnlocked: false,
+    );
+    when(() => service.currentState).thenReturn(state);
+    when(
+      () => service.purchaseOffer('monthly'),
+    ).thenAnswer((_) => purchase.future);
+    _stubRestorePurchases(service);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          monetizationServiceProvider.overrideWithValue(service),
+          monetizationStateProvider.overrideWith((ref) => Stream.value(state)),
+        ],
+        child: const MaterialApp(home: UpgradeScreen()),
+      ),
+    );
+    await tester.pump();
+    await tester.scrollUntilVisible(find.text('Subscribe monthly'), 300);
+    await tester.tap(find.text('Subscribe monthly'));
+    await tester.pump();
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    purchase.complete(
+      const MonetizationActionResult.cancelled('Purchase cancelled.'),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(

@@ -1,0 +1,14 @@
+include: ../../analysis_options.yaml
+
+# Keep the vendored Flutter package on its upstream lint style. MonkeySSH's
+# additional style lints do not apply to third-party source.
+linter:
+  rules:
+    always_put_required_named_parameters_first: false
+    cascade_invocations: false
+    close_sinks: false
+    constant_identifier_names: false
+    join_return_with_assignment: false
+    omit_local_variable_types: false
+    prefer_expression_function_bodies: false
+    unnecessary_lambdas: false

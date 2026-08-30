@@ -29,6 +29,24 @@ void main() {
     );
   });
 
+  test('recognizes SSH operation errors that do not extend Exception', () {
+    expect(
+      isExpectedSshOperationError(SSHChannelOpenError(1, 'denied')),
+      isTrue,
+    );
+    expect(isExpectedSshOperationError(SSHSocketError('closed')), isTrue);
+  });
+
+  test('recognizes SFTP status errors that do not extend Exception', () {
+    expect(
+      isExpectedSshOperationError(
+        SftpStatusError(SftpStatusCode.permissionDenied, 'denied'),
+      ),
+      isTrue,
+    );
+    expect(isExpectedSshOperationError(StateError('bug')), isFalse);
+  });
+
   test('recognizes channel EOF writes after the transport closes', () {
     final stackTrace = StackTrace.fromString(
       '#0 SSHTransport.sendPacket\n'

@@ -380,6 +380,57 @@ void main() {
       },
     );
 
+    test('getById tolerates a password encrypted with a lost key', () async {
+      final previousEncryptionService = SecretEncryptionService.forTesting(
+        masterKey: List<int>.filled(32, 1),
+      );
+      final encryptedPassword = await previousEncryptionService.encryptNullable(
+        'unrecoverable-secret',
+      );
+      final id = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Recovered Host',
+              hostname: '192.168.1.14',
+              username: 'admin',
+              password: Value(encryptedPassword),
+            ),
+          );
+      final currentEncryptionService = SecretEncryptionService.forTesting(
+        masterKey: List<int>.filled(32, 2),
+      );
+      repository = HostRepository(db, currentEncryptionService);
+
+      var host = await repository.getById(id);
+
+      expect(host, isNotNull);
+      expect(host!.password, isNull);
+      await repository.toggleFavorite(id);
+      await repository.updateLastConnected(id);
+      await repository.update(host.copyWith(label: 'Renamed Host'));
+
+      var storedHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(storedHost.password, encryptedPassword);
+      host = await repository.getById(id);
+      expect(host!.label, 'Renamed Host');
+      expect(host.password, isNull);
+
+      await repository.update(
+        host.copyWith(password: const Value('replacement-secret')),
+      );
+      storedHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(storedHost.password, isNot(encryptedPassword));
+      await expectLater(
+        currentEncryptionService.decryptNullable(storedHost.password),
+        completion('replacement-secret'),
+      );
+    });
+
     test('legacy password migration does not overwrite newer writes', () async {
       final encryptionService = _PausingSecretEncryptionService(
         pausePlaintext: 'legacy-secret',

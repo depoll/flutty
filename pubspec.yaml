@@ -96,6 +96,13 @@ dependencies:
   firebase_crashlytics: ^5.3.0
   mime: ^2.0.0
 
+dependency_overrides:
+  # Play Billing can invoke one callback twice and crash Android while the app
+  # is backgrounded. Use the vendored upstream single-reply guard until Flutter
+  # packages releases it: https://github.com/flutter/packages/pull/12640
+  in_app_purchase_android:
+    path: third_party/in_app_purchase_android
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

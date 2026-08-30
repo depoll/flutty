@@ -21,6 +21,7 @@ import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/remote_multiplexer_service.dart';
 import '../../domain/services/settings_service.dart';
+import '../../domain/services/ssh_error_policy.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/tmux_service.dart';
@@ -1027,14 +1028,17 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         _error = null;
         _isLoadingWindows = false;
       });
-    } on Exception catch (e) {
+    } on Object catch (error) {
+      if (error is! Exception && !isExpectedSshOperationError(error)) {
+        rethrow;
+      }
       DiagnosticsLogService.instance.warning(
         'tmux.navigator',
         'reload_failed',
         fields: {
           'connectionId': widget.session.connectionId,
           'generation': reloadGeneration,
-          'errorType': e.runtimeType,
+          'errorType': error.runtimeType,
         },
       );
       if (!mounted) return;
@@ -1044,7 +1048,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         _error = _windows?.isEmpty ?? true
             ? shouldShowRecoveryMessage
                   ? 'Could not refresh $_muxLabel windows yet. Retrying...'
-                  : e.toString()
+                  : error.toString()
             : null;
         _isLoadingWindows = false;
       });

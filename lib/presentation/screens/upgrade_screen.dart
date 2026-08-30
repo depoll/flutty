@@ -153,25 +153,17 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
   Future<void> _purchasePro(String offerId) async {
     final messenger = ScaffoldMessenger.of(context);
     final productType = _productTypeForOffer(offerId);
-    unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logPurchaseStarted(productType: productType),
-    );
-    final result = await ref
-        .read(monetizationServiceProvider)
-        .purchaseOffer(offerId);
+    final telemetryService = ref.read(telemetryServiceProvider);
+    final monetizationService = ref.read(monetizationServiceProvider);
+    unawaited(telemetryService.logPurchaseStarted(productType: productType));
+    final result = await monetizationService.purchaseOffer(offerId);
     unawaited(
       result.success
-          ? ref
-                .read(telemetryServiceProvider)
-                .logPurchaseCompleted(productType: productType)
-          : ref
-                .read(telemetryServiceProvider)
-                .logPurchaseFailed(
-                  productType: productType,
-                  failureCategory: result.cancelled ? 'cancelled' : 'failed',
-                ),
+          ? telemetryService.logPurchaseCompleted(productType: productType)
+          : telemetryService.logPurchaseFailed(
+              productType: productType,
+              failureCategory: result.cancelled ? 'cancelled' : 'failed',
+            ),
     );
     if (!mounted) {
       return;

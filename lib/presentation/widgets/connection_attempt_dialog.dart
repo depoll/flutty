@@ -5,6 +5,7 @@ import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/ssh_error_policy.dart';
 import '../../domain/services/ssh_service.dart';
 
 /// Runs a host connection while showing a live progress dialog.
@@ -36,14 +37,17 @@ Future<SshConnectionResult> connectToHostWithProgressDialog(
       useHostThemeOverrides: useHostThemeOverrides,
     );
   } catch (error, stackTrace) {
-    FlutterError.reportError(
-      FlutterErrorDetails(
-        exception: error,
-        stack: stackTrace,
-        library: 'connection_attempt_dialog',
-        context: ErrorDescription('while connecting to host ${host.id}'),
-      ),
-    );
+    // Authentication and transport failures already have an in-app result.
+    if (!isExpectedSshOperationError(error)) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'connection_attempt_dialog',
+          context: ErrorDescription('while connecting to host ${host.id}'),
+        ),
+      );
+    }
     const message = 'Connection failed. Check the host settings and try again.';
     sessionsNotifier.reportConnectionAttemptError(host.id, message);
     result = const SshConnectionResult(success: false, error: message);

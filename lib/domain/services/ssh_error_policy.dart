@@ -14,5 +14,12 @@ bool isExpectedSshChannelTeardownError(Object error, StackTrace stackTrace) =>
     (_containsFrame(stackTrace, _channelUploadLoopFrame) ||
         _containsFrame(stackTrace, _channelCloseFrame));
 
+/// Whether [error] is an operational SSH or SFTP failure.
+///
+/// dartssh2 models these as interface types rather than [Exception], so an
+/// `on Exception` clause does not catch them.
+bool isExpectedSshOperationError(Object error) =>
+    error is SSHError || error is SftpError;
+
 bool _containsFrame(StackTrace stackTrace, String frame) =>
     stackTrace.toString().contains(frame);

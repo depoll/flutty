@@ -7026,7 +7026,10 @@ class _AppReviewDemoSftpClient implements SftpClient {
 
   static const _home = '/home/reviewer';
   static const _workspace = '/home/reviewer/work/monkeyssh-demo';
-  final _files = Map<String, String>.from(_demoSftpFiles);
+  final _files = <String, Uint8List>{
+    for (final entry in _demoSftpFiles.entries)
+      entry.key: Uint8List.fromList(utf8.encode(entry.value)),
+  };
   bool _closed = false;
 
   @override
@@ -7040,7 +7043,7 @@ class _AppReviewDemoSftpClient implements SftpClient {
   Future<List<SftpName>> listdir(String path) async {
     final directory = _normalizeDemoSftpPath(path);
     final entries = <SftpName>[];
-    for (final child in _demoSftpDirectoryChildren(directory)) {
+    for (final child in _demoSftpDirectoryChildren(directory, _files.keys)) {
       final childPath = _joinDemoSftpPath(directory, child);
       final isDirectory = _demoSftpDirectories.contains(childPath);
       entries.add(
@@ -7075,11 +7078,15 @@ class _AppReviewDemoSftpClient implements SftpClient {
     SftpFileOpenMode mode = SftpFileOpenMode.read,
   }) async {
     final normalized = _normalizeDemoSftpPath(path);
-    _files.putIfAbsent(normalized, () => '');
+    if ((mode.flag & SftpFileOpenMode.truncate.flag) != 0) {
+      _files[normalized] = Uint8List(0);
+    } else {
+      _files.putIfAbsent(normalized, () => Uint8List(0));
+    }
     return _AppReviewDemoSftpFile(
       attrs: _demoFileAttrs(_files[normalized]!.length),
-      readContent: () => _files[normalized] ?? '',
-      writeContent: (value) => _files[normalized] = value,
+      readContent: () => _files[normalized] ?? Uint8List(0),
+      writeContent: (value) => _files[normalized] = Uint8List.fromList(value),
     );
   }
 
@@ -7093,6 +7100,9 @@ class _AppReviewDemoSftpClient implements SftpClient {
   Future<void> remove(String filename) async {
     _files.remove(_normalizeDemoSftpPath(filename));
   }
+
+  @override
+  Future<void> setStat(String path, SftpFileAttrs attrs) async {}
 
   @override
   Future<void> rename(String oldPath, String newPath) async {
@@ -7120,14 +7130,14 @@ class _AppReviewDemoSftpClient implements SftpClient {
 class _AppReviewDemoSftpFile implements SftpFile {
   _AppReviewDemoSftpFile({
     required SftpFileAttrs attrs,
-    required String Function() readContent,
-    required void Function(String value) writeContent,
+    required Uint8List Function() readContent,
+    required void Function(Uint8List value) writeContent,
   }) : _attrs = attrs,
        _readContent = readContent,
        _writeContent = writeContent;
 
-  final String Function() _readContent;
-  final void Function(String value) _writeContent;
+  final Uint8List Function() _readContent;
+  final void Function(Uint8List value) _writeContent;
   SftpFileAttrs _attrs;
   bool _isClosed = false;
 
@@ -7145,7 +7155,7 @@ class _AppReviewDemoSftpFile implements SftpFile {
     int chunkSize = 16 * 1024,
     int maxPendingRequests = 64,
   }) async* {
-    final bytes = Uint8List.fromList(utf8.encode(_readContent()));
+    final bytes = Uint8List.fromList(_readContent());
     final start = offset.clamp(0, bytes.length);
     final requestedLength = length ?? bytes.length - start;
     final end = (start + requestedLength).clamp(start, bytes.length);
@@ -7166,10 +7176,21 @@ class _AppReviewDemoSftpFile implements SftpFile {
   }
 
   @override
+  SftpFileWriter write(
+    Stream<Uint8List> stream, {
+    int offset = 0,
+    void Function(int total)? onProgress,
+  }) => SftpFileWriter(this, stream, offset, onProgress);
+
+  @override
   Future<void> writeBytes(Uint8List data, {int offset = 0}) async {
-    final text = utf8.decode(data, allowMalformed: true);
-    _writeContent(text);
-    _attrs = _demoFileAttrs(text.length);
+    final previousBytes = _readContent();
+    final requiredLength = offset + data.length;
+    final bytes = Uint8List(math.max(previousBytes.length, requiredLength))
+      ..setRange(0, previousBytes.length, previousBytes)
+      ..setRange(offset, requiredLength, data);
+    _writeContent(bytes);
+    _attrs = _demoFileAttrs(bytes.length);
   }
 
   @override
@@ -7362,9 +7383,12 @@ String _demoForwardHttpResponse(String remoteHost, int remotePort) {
       '$body';
 }
 
-List<String> _demoSftpDirectoryChildren(String directory) {
+List<String> _demoSftpDirectoryChildren(
+  String directory,
+  Iterable<String> filePaths,
+) {
   final children = <String>{};
-  for (final path in [..._demoSftpDirectories, ..._demoSftpFiles.keys]) {
+  for (final path in [..._demoSftpDirectories, ...filePaths]) {
     if (path == directory || !path.startsWith('$directory/')) {
       continue;
     }
