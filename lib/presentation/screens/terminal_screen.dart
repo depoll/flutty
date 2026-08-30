@@ -3817,6 +3817,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   AcpSessionKey? _activeNativeAcpSessionKey;
   String? _autoOpenedNativeAcpBridgeId;
   String? _openingNativeAcpBridgeId;
+  int? _openingNativeAcpRequestGeneration;
   String? _nativeAcpReconnectOwnedKeyValue;
   Future<void>? _openingNativeAcpWindow;
   _NativeAcpLaunchState? _nativeAcpLaunchState;
@@ -12139,7 +12140,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     int? requestGeneration,
   }) {
     final opening = _openingNativeAcpWindow;
-    if (opening != null && _openingNativeAcpBridgeId == bridgeId) {
+    if (opening != null &&
+        _openingNativeAcpBridgeId == bridgeId &&
+        _openingNativeAcpRequestGeneration ==
+            _nativeAcpWindowRequestGeneration) {
       return opening;
     }
     if (opening != null && requestGeneration == null) {
@@ -12174,6 +12178,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final completer = Completer<void>();
     final cancellation = Completer<void>();
     _openingNativeAcpBridgeId = bridgeId;
+    _openingNativeAcpRequestGeneration = requestedGeneration;
     _openingNativeAcpWindow = completer.future;
     _nativeAcpWindowCancellation = cancellation;
     _autoOpenedNativeAcpBridgeId = bridgeId;
@@ -12210,6 +12215,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (identical(_openingNativeAcpWindow, completer.future)) {
           _openingNativeAcpWindow = null;
           _openingNativeAcpBridgeId = null;
+          _openingNativeAcpRequestGeneration = null;
         }
         if (identical(_nativeAcpWindowCancellation, cancellation)) {
           _nativeAcpWindowCancellation = null;
@@ -12427,8 +12433,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           context,
           decision: result.decision,
           managerState: manager.state,
+          cancellation: cancellation,
         );
-        if (!mounted || choice == null) {
+        if (!mounted ||
+            requestGeneration != _nativeAcpWindowRequestGeneration) {
+          await restoreTerminalAfterFailedHandoff(allowSuperseded: true);
+          return;
+        }
+        if (choice == null) {
           await restoreTerminalAfterFailedHandoff();
           return;
         }
