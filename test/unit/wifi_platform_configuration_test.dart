@@ -19,7 +19,6 @@ void main() {
         'ios/Runner/Runner.entitlements',
       ).readAsStringSync();
       final infoPlist = File('ios/Runner/Info.plist').readAsStringSync();
-      final podfile = File('ios/Podfile').readAsStringSync();
 
       expect(
         entitlements,
@@ -29,11 +28,12 @@ void main() {
         infoPlist,
         contains('NSLocationAlwaysAndWhenInUseUsageDescription'),
       );
+      // permission_handler_apple's Package.swift derives its PERMISSION_*
+      // macros from the host Info.plist, so this key is what compiles the
+      // when-in-use location strategy into the plugin under Swift Package
+      // Manager. Dropping it would silently disable Wi-Fi SSID lookup.
       expect(infoPlist, contains('NSLocationWhenInUseUsageDescription'));
       expect(infoPlist, contains('current Wi-Fi network name'));
-      expect(podfile, contains('PERMISSION_LOCATION=0'));
-      expect(podfile, contains('PERMISSION_LOCATION_ALWAYS=0'));
-      expect(podfile, contains('PERMISSION_LOCATION_WHENINUSE=1'));
     });
   });
 }

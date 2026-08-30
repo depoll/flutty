@@ -58,11 +58,11 @@ jobs:
                 pubspec.yaml|pubspec.lock)
                   printf '%s\n' 'scan:pubspec.lock'
                   ;;
-                ios/Podfile|ios/Podfile.lock)
-                  printf '%s\n' 'skip:ios/Podfile.lock'
+                ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved)
+                  printf '%s\n' 'scan:ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved'
                   ;;
-                macos/Podfile|macos/Podfile.lock)
-                  printf '%s\n' 'skip:macos/Podfile.lock'
+                macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved)
+                  printf '%s\n' 'scan:macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved'
                   ;;
               esac
             done | awk '!seen[$0]++'
@@ -87,7 +87,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "${#unsupported_targets[@]}" -gt 0 ]; then
-            echo '- Skipping unsupported fallback lockfiles because the current OSV source scan cannot extract CocoaPods `Podfile.lock` files:' >> "$GITHUB_STEP_SUMMARY"
+            echo '- Skipping unsupported fallback lockfiles because the current OSV source scan cannot extract them:' >> "$GITHUB_STEP_SUMMARY"
             for target in "${unsupported_targets[@]}"; do
               echo "  - \`${target}\`" >> "$GITHUB_STEP_SUMMARY"
             done

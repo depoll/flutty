@@ -356,9 +356,11 @@ The in-app Settings toggle controls both Firebase Analytics collection and
 Crashlytics collection; collection defaults to off for existing and new installs.
 The Android manifest and iOS Info.plist also disable Firebase collection by
 default so native startup cannot collect before Dart applies the saved setting.
-Firebase's current iOS pods require iOS 15 or newer. iOS builds use CocoaPods
-with `FLUTTER_SWIFT_PACKAGE_MANAGER=false` until the project intentionally
-migrates to Flutter's Swift Package Manager integration.
+Firebase's current Apple SDK requires iOS 15 or newer. iOS and macOS builds
+resolve every plugin and the Firebase SDK through Swift Package Manager, so
+there is no Podfile and no `pod install` step. The `Upload Crashlytics dSYMs`
+build phase reads the `run` script from the resolved SPM checkout under
+`$BUILD_DIR`; it warns instead of failing when Firebase config is absent.
 
 GitHub Actions reads Firebase config from these repository secrets and writes
 the matching flavor file before each build:

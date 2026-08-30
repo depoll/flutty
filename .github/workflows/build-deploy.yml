@@ -925,9 +925,6 @@ jobs:
       # iOS simulator runtime. Newer side-by-side Xcodes can drift ahead of the
       # available runtime and fail builds before Flutter starts.
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
-      # Flutter's SPM integration is still experimental in this project; keep
-      # Firebase on the CocoaPods path until the migration is intentional.
-      FLUTTER_SWIFT_PACKAGE_MANAGER: "false"
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
       FLUTTY_DIAGNOSTICS_ENABLED: ${{ inputs.enable-diagnostics || inputs.pr-number != '' }}
@@ -986,11 +983,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
-          path: |
-            ios/Pods
-            ~/Library/Caches/CocoaPods
-          key: pods-ios-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
-          restore-keys: pods-ios-${{ runner.os }}-
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-ios-${{ runner.os }}-${{ hashFiles('ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-ios-${{ runner.os }}-
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.ios-reuse-ipa-artifact-name == ''
