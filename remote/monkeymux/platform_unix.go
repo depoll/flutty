@@ -398,6 +398,10 @@ func shellArgument(value string) (string, bool) {
 	return shellQuote(value), true
 }
 
+func shellExecutableCommand(value string) (string, bool) {
+	return shellArgument(value)
+}
+
 func piResumeCommandWithFreshFallback(resume string, launch string) string {
 	resume = strings.TrimSpace(resume)
 	launch = strings.TrimSpace(launch)

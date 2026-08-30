@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.178"
+	monkeyMuxVersion                  = "0.1.179"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -15472,8 +15472,8 @@ func monkeyMuxAgentLaunchCommand(command string) string {
 func monkeyMuxPiAgentLaunchCommand() string {
 	executable, err := os.Executable()
 	if err == nil {
-		if argument, ok := shellArgument(executable); ok {
-			return argument + " pi-agent"
+		if invocation, ok := shellExecutableCommand(executable); ok {
+			return invocation + " pi-agent"
 		}
 	}
 	return "monkeymux pi-agent"

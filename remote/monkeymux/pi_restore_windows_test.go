@@ -4,6 +4,18 @@ package main
 
 import "testing"
 
+func TestShellExecutableCommandUsesPowerShellCallOperator(t *testing.T) {
+	t.Setenv("MONKEYMUX_SHELL", "powershell.exe")
+	if got, ok := shellExecutableCommand(`C:\Program Files\MonkeyMux\monkeymux.exe`); !ok || got != `& 'C:\Program Files\MonkeyMux\monkeymux.exe'` {
+		t.Fatalf("PowerShell executable command = %q, %v", got, ok)
+	}
+
+	t.Setenv("MONKEYMUX_SHELL", "cmd.exe")
+	if got, ok := shellExecutableCommand(`C:\Program Files\MonkeyMux\monkeymux.exe`); !ok || got != `"C:\Program Files\MonkeyMux\monkeymux.exe"` {
+		t.Fatalf("cmd executable command = %q, %v", got, ok)
+	}
+}
+
 func TestPiRestoreTreatsWindowsShellsAsShells(t *testing.T) {
 	for _, command := range []string{"cmd.exe", "powershell.exe", "pwsh.exe"} {
 		state := restoreWindowState{

@@ -15,11 +15,11 @@ func TestMonkeyMuxAgentLaunchCommandWrapsPiWithCurrentExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	argument, ok := shellArgument(executable)
+	invocation, ok := shellExecutableCommand(executable)
 	if !ok {
 		t.Fatalf("current executable is not shell-safe: %q", executable)
 	}
-	if got, want := monkeyMuxAgentLaunchCommand("pi --session-dir sessions"), argument+" pi-agent --session-dir sessions"; got != want {
+	if got, want := monkeyMuxAgentLaunchCommand("pi --session-dir sessions"), invocation+" pi-agent --session-dir sessions"; got != want {
 		t.Fatalf("Pi create command = %q, want %q", got, want)
 	}
 	if got := monkeyMuxAgentLaunchCommand("opencode"); got != "opencode" {

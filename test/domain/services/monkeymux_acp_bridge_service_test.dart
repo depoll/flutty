@@ -202,6 +202,7 @@ void main() {
       'x y',
     ], isWindows: true);
     final script = _decodePowerShellScript(windows);
+    expect(script, contains(powerShellProfilePathPreamble));
     expect(
       script,
       contains(r"$__flAcpExe='C:\Program Files\Copilot\copilot.exe'"),

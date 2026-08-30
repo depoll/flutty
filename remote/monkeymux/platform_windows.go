@@ -832,6 +832,20 @@ func shellArgument(value string) (string, bool) {
 	return "\"" + value + "\"", true
 }
 
+func shellExecutableCommand(value string) (string, bool) {
+	argument, ok := shellArgument(value)
+	if !ok {
+		return "", false
+	}
+	if isCmdShell(defaultShellPath()) {
+		return argument, true
+	}
+	// A quoted path is only a string expression in PowerShell. The call
+	// operator makes it an executable invocation while preserving literal
+	// quoting for spaces and apostrophes.
+	return "& " + argument, true
+}
+
 func piResumeCommandWithFreshFallback(resume string, launch string) string {
 	resume = strings.TrimSpace(resume)
 	launch = strings.TrimSpace(launch)
