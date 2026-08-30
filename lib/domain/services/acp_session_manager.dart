@@ -1780,7 +1780,8 @@ class _SessionController {
   }
 
   void _applyHistoryUnavailableWarningIfNeeded() {
-    if (!_historyRestoreUnavailable || _state.timeline.entries.isNotEmpty) {
+    if (!_historyRestoreUnavailable ||
+        _timelineBuilder.snapshot().entries.isNotEmpty) {
       return;
     }
     _update(

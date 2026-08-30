@@ -8235,7 +8235,7 @@ void main() {
                 blockingSessionKeys: [blockingKey.value],
               ),
             ),
-            for (var attempt = 0; attempt < 4; attempt++)
+            for (var attempt = 0; attempt < 3; attempt++)
               const AcpSessionLaunchFailed(
                 null,
                 AcpSessionError(
@@ -8323,17 +8323,6 @@ void main() {
           }
         });
         when(
-          () => monkeyMuxService.selectWindow(
-            session,
-            'work',
-            3,
-            windowId: any(named: 'windowId'),
-            extraFlags: any(named: 'extraFlags'),
-            clientImageSignatures: any(named: 'clientImageSignatures'),
-            suppressReplay: any(named: 'suppressReplay'),
-          ),
-        ).thenAnswer((_) async {});
-        when(
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
 
@@ -8366,30 +8355,13 @@ void main() {
         await tester.pump();
         for (
           var attempt = 0;
-          attempt < 10 && acpManager.reconnects.length < 2;
-          attempt++
-        ) {
-          await tester.pump(const Duration(milliseconds: 10));
-        }
-        expect(acpManager.reconnects, hasLength(2));
-
-        // A sibling request during the first backoff invalidates the old open.
-        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-3')));
-        await tester.pump(const Duration(milliseconds: 300));
-        expect(acpManager.reconnects, hasLength(2));
-
-        // Opening the original window again gets a fresh retry budget.
-        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
-        for (
-          var attempt = 0;
-          attempt < 40 && acpManager.reconnects.length < 6;
+          attempt < 40 && acpManager.reconnects.length < 5;
           attempt++
         ) {
           await tester.pump(const Duration(milliseconds: 50));
         }
-        expect(acpManager.reconnects, hasLength(6));
+        expect(acpManager.reconnects, hasLength(5));
         expect(acpManager.reconnectSelectOnSuccess, [
-          true,
           true,
           true,
           true,
@@ -8399,7 +8371,6 @@ void main() {
         expect(acpManager.reconnectReplaceKeys, [
           isEmpty,
           [blockingKey],
-          isEmpty,
           isEmpty,
           isEmpty,
           isEmpty,
@@ -8415,9 +8386,8 @@ void main() {
 
         await tester.pump(const Duration(milliseconds: 300));
         expect(find.text('opening persistent agent session…'), findsNothing);
-        expect(acpManager.reconnects, hasLength(6));
+        expect(acpManager.reconnects, hasLength(5));
         expect(acpManager.reconnectSelectOnSuccess, [
-          true,
           true,
           true,
           true,

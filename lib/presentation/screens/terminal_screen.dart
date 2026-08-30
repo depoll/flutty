@@ -12366,8 +12366,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       fields: {'hostId': sshSession.hostId},
     );
 
-    Future<bool> restoreTerminalAfterFailedHandoff() async {
-      if (!requestIsCurrent() || _activeNativeAcpSessionKey != provisionalKey) {
+    Future<bool> restoreTerminalAfterFailedHandoff({
+      bool allowSuperseded = false,
+    }) async {
+      if (!mounted ||
+          (!allowSuperseded &&
+              requestGeneration != _nativeAcpWindowRequestGeneration) ||
+          _activeNativeAcpSessionKey != provisionalKey) {
         return false;
       }
       try {
@@ -12391,6 +12396,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     try {
       var result = await reconnectWithTransportRetry();
+      if (!requestIsCurrent()) {
+        await restoreTerminalAfterFailedHandoff(allowSuperseded: true);
+        return;
+      }
       if (result is AcpSessionLaunchBlocked && mounted) {
         final choice = await showAcpConcurrencyChoice(
           context,
@@ -12428,7 +12437,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             result = await reconnectWithTransportRetry();
         }
       }
-      if (!mounted || requestGeneration != _nativeAcpWindowRequestGeneration) {
+      if (!mounted) return;
+      if (requestGeneration != _nativeAcpWindowRequestGeneration) {
+        await restoreTerminalAfterFailedHandoff(allowSuperseded: true);
         return;
       }
       switch (result) {

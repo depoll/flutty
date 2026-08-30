@@ -43,6 +43,7 @@ class _FakeAcpServer implements AcpTransport {
     this.newSessionErrorCode = -32000,
     this.promptErrorMessage,
     this.replayTextOnLoad,
+    this.replayTextOnResume,
     this.replayUpdateCountOnLoad = 0,
     this.replayUpdatesOnLoad = const <Map<String, Object?>>[],
     this.loadResponseGate,
@@ -81,6 +82,9 @@ class _FakeAcpServer implements AcpTransport {
   /// When set, a `session/load` pushes an agent message chunk with this text
   /// BEFORE replying, simulating synchronous history replay during the load.
   final String? replayTextOnLoad;
+
+  /// Optional history text synchronously replayed by `session/resume`.
+  final String? replayTextOnResume;
 
   /// Number of same-message content chunks synchronously replayed on load.
   final int replayUpdateCountOnLoad;
@@ -168,6 +172,13 @@ class _FakeAcpServer implements AcpTransport {
       case 'session/resume':
         final params = (message['params']! as Map).cast<String, Object?>();
         final sessionId = params['sessionId'] as String? ?? '';
+        if (replayTextOnResume != null) {
+          pushUpdate(sessionId, {
+            'sessionUpdate': 'agent_message_chunk',
+            'messageId': 'resume-replay',
+            'content': {'type': 'text', 'text': replayTextOnResume},
+          });
+        }
         if (permissionIdOnResume != null) {
           _pushPermission(permissionIdOnResume!, sessionId, 'replayed-tool');
         }
@@ -1681,6 +1692,40 @@ void main() {
         );
       },
     );
+
+    test('resume replay avoids a degraded-history warning', () async {
+      var reconnecting = false;
+      final liveConnector = _FakeConnector(
+        serverFactory: (_, _) => _FakeAcpServer(
+          rejectLoadAlreadyLoaded: reconnecting,
+          replayTextOnResume: reconnecting ? 'restored history' : null,
+        ),
+      );
+      final firstManager = buildManagerWith(liveConnector);
+      final started = await firstManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (started as AcpSessionLaunchStarted).key;
+      await firstManager.detachSession(key);
+      reconnecting = true;
+      liveConnector.skippedHistoricalReplay = true;
+
+      final reconnectedManager = buildManagerWith(liveConnector);
+      final result = await reconnectedManager.reconnectSession(
+        hostId: key.hostId,
+        providerId: key.providerId,
+        bridgeId: key.bridgeId,
+        acpSessionId: key.acpSessionId,
+        cwd: '/repo',
+      );
+
+      expect(result, isA<AcpSessionLaunchStarted>());
+      final state = reconnectedManager.state.byKeyValue(key.value)!;
+      expect(state.timeline.entries, isNotEmpty);
+      expect(state.warning, isNull);
+    });
 
     test(
       'already-loaded response with case-different id still fails',
