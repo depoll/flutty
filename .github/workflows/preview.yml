@@ -130,7 +130,7 @@ jobs:
             ### Install
             | Platform | Link |
             |----------|------|
-            | 🍎 **iOS** | Builds in a separate run; available after a PR preview deploy |
+            | 🍎 **iOS** | Builds in a separate run; the install link lands in the iOS preview comment |
             | 🤖 **Android** | [View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
 
             ### Promote
@@ -257,7 +257,7 @@ jobs:
             ### Install
             | Platform | Link |
             |----------|------|
-            | 🍎 **iOS** | Builds in a separate run; available after a PR preview deploy |
+            | 🍎 **iOS** | Builds in a separate run; the install link lands in the iOS preview comment |
             | 🤖 **Android** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote

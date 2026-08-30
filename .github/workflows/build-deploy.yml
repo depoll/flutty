@@ -85,6 +85,11 @@ on:
         type: boolean
         default: false
         description: 'Whether to package an unsigned iOS IPA artifact'
+      publish-ios-install:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether to ad hoc sign the iOS build and publish an over-the-air install page'
       run-android-deploy:
         required: false
         type: boolean
@@ -205,6 +210,9 @@ on:
       ios-deploy-status:
         description: 'Final iOS deploy status summary for preview deploy comments'
         value: ${{ jobs.deploy-status-summary.outputs.ios-deploy-status }}
+      ios-install-page-url:
+        description: 'Public install page for the ad hoc signed iOS build, when published'
+        value: ${{ jobs.build-ios.outputs.install-page-url }}
 
 env:
   FLUTTER_VERSION: '3.44.8'
@@ -934,6 +942,7 @@ jobs:
       FLUTTY_FIREBASE_ENABLED: 'false'
     outputs:
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
+      install-page-url: ${{ steps.publish-ios-install.outputs.page-url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1362,6 +1371,139 @@ jobs:
         with:
           path: build/ios/ipa/ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}-${{ steps.resolved-source-sha.outputs.value }}.ipa
           archive: false
+
+      # Ad hoc signing runs last: it installs ad hoc provisioning profiles into
+      # the runner keychain, and an App Store archive earlier in the job must
+      # not pick those up. Every step here is best-effort so a broken install
+      # page never fails a TestFlight or App Store deploy.
+      - name: Resolve ad hoc source IPA
+        id: adhoc-source
+        if: inputs.publish-ios-install
+        continue-on-error: true
+        env:
+          PREPARED_IPA_PATH: ${{ steps.signed-ipa-artifact.outputs.path }}
+          SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
+        run: |
+          set -euo pipefail
+          CANDIDATES=(
+            "$PREPARED_IPA_PATH"
+            "build/ios/ipa/resigned-${BUILD_FLAVOR}.ipa"
+            "build/ios/ipa/ios-unsigned-${BUILD_FLAVOR}-${BUILD_NAME}-${BUILD_NUMBER}-${SOURCE_SHA}.ipa"
+          )
+          for candidate in "${CANDIDATES[@]}"; do
+            if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+              echo "path=$candidate" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "::error title=No iOS install source::Could not find an IPA to ad hoc sign."
+          find build/ios/ipa -maxdepth 2 -print || true
+          exit 1
+
+      - name: Ad hoc sign IPA
+        id: adhoc-sign
+        if: inputs.publish-ios-install && steps.adhoc-source.outputs.path != ''
+        continue-on-error: true
+        env:
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
+          SOURCE_IPA_PATH: ${{ steps.adhoc-source.outputs.path }}
+          SCHEME: ${{ inputs.flavor == 'private' && 'Private' || 'Production' }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios/adhoc
+          SOURCE_IPA="$(cd "$(dirname "$SOURCE_IPA_PATH")" && pwd)/$(basename "$SOURCE_IPA_PATH")"
+          OUTPUT_IPA="$(pwd)/build/ios/adhoc/monkeyssh-${BUILD_FLAVOR}-${BUILD_NAME}-${BUILD_NUMBER}-adhoc.ipa"
+          cd ios
+          bundle exec fastlane resign_ipa \
+            type:adhoc \
+            scheme:"$SCHEME" \
+            unsigned_ipa_path:"$SOURCE_IPA" \
+            output_ipa_path:"$OUTPUT_IPA"
+          echo "path=$OUTPUT_IPA" >> "$GITHUB_OUTPUT"
+
+      - name: Publish ad hoc install page
+        id: publish-ios-install
+        if: inputs.publish-ios-install && steps.adhoc-sign.outputs.path != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADHOC_IPA_PATH: ${{ steps.adhoc-sign.outputs.path }}
+          BUNDLE_ID: xyz.depollsoft.monkeyssh${{ inputs.flavor == 'private' && '.private' || '' }}
+          APP_TITLE: MonkeySSH${{ inputs.flavor == 'private' && ' β' || '' }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PR_NUMBER" ]; then
+            SLUG="pr-$PR_NUMBER"
+            SUBTITLE="PR #$PR_NUMBER · $BUILD_NAME (build $BUILD_NUMBER)"
+          else
+            SLUG="${BUILD_FLAVOR}-${BUILD_NUMBER}"
+            SUBTITLE="$BUILD_NAME (build $BUILD_NUMBER)"
+          fi
+          scripts/publish_ios_install.sh \
+            --ipa "$ADHOC_IPA_PATH" \
+            --slug "$SLUG" \
+            --bundle-id "$BUNDLE_ID" \
+            --title "$APP_TITLE" \
+            --subtitle "$SUBTITLE" \
+            --build-name "$BUILD_NAME" \
+            --build-number "$BUILD_NUMBER" \
+            --flavor "$BUILD_FLAVOR" \
+            --source-sha "$SOURCE_SHA" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --stage-dir build/ios/adhoc
+
+      - name: Upload ad hoc IPA and manifest artifact
+        if: inputs.publish-ios-install && steps.adhoc-sign.outputs.path != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-adhoc-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          path: build/ios/adhoc
+          if-no-files-found: error
+
+      - name: Record ad hoc install deployment
+        if: inputs.publish-ios-install && steps.publish-ios-install.outputs.page-url != ''
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
+          DEPLOYMENT_ENVIRONMENT: iOS Ad Hoc / ${{ inputs.flavor == 'private' && 'Private' || 'Production' }}
+          DEPLOYMENT_DESCRIPTION: Ad hoc install for iOS ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }})
+          DEPLOYMENT_URL: ${{ steps.publish-ios-install.outputs.page-url }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const deployment = await github.rest.repos.createDeployment({
+              owner,
+              repo,
+              ref: process.env.DEPLOYMENT_REF,
+              environment: process.env.DEPLOYMENT_ENVIRONMENT,
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              required_contexts: [],
+              auto_merge: false,
+              production_environment: false,
+            });
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: deployment.data.id,
+              state: 'success',
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              environment_url: process.env.DEPLOYMENT_URL,
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              // Each build keeps its own install link instead of superseding the
+              // previous one, so older deployments stay resolvable.
+              auto_inactive: false,
+            });
 
   deploy-status-summary:
     name: Summarize Deploy Status

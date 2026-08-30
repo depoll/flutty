@@ -18,6 +18,21 @@ bundle exec fastlane regenerate_profiles scheme:Private
 
 Local Xcode builds with automatic signing pick up the new entitlement on next build without any extra step (Xcode regenerates dev profiles via the developer portal automatically).
 
+`regenerate_profiles` refreshes both the App Store and the ad hoc profiles, because ad hoc profiles back the over-the-air install links in PR comments and carry the same entitlements.
+
+## iOS over-the-air installs
+
+Every signed iOS build in CI is also re-signed ad hoc and published as an install link (PR comments, `/deploy` comments, and an `iOS Ad Hoc / Private` GitHub Deployment). Open the link in Safari on the device. See [docs/deployment.md](docs/deployment.md#over-the-air-ios-installs-ad-hoc) for hosting details and retention.
+
+An ad hoc build only launches on a device whose UDID is in the profile. Register one and refresh the profiles with:
+
+```bash
+cd ios
+bundle exec fastlane register_adhoc_device udid:<udid> name:"David's iPhone"
+```
+
+Already-published builds are not re-signed; trigger a new build after registering a device.
+
 ## MonkeyMux Go tests on a Windows dev machine
 
 CI runs the MonkeyMux Go suite on both Linux and Windows (the `go-test` job), because the two platforms cover disjoint sets: most of the suite is `//go:build !windows` and needs `creack/pty` plus the `unixPty` type, while the ConPTY backend tests are `//go:build windows`.

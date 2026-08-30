@@ -111,7 +111,10 @@ jobs:
     if: needs.resolve.outputs.should-build == 'true'
     permissions:
       actions: read
-      contents: read
+      # contents: write publishes the ad hoc IPA to the rolling `ios-installs`
+      # release and the install page to the Pages branch.
+      contents: write
+      deployments: write
       issues: write
     uses: ./.github/workflows/build-deploy.yml
     with:
@@ -128,8 +131,15 @@ jobs:
       build-ios: true
       build-android: false
       build-ios-unsigned-ipa: true
+      publish-ios-install: true
     secrets:
       FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST }}
+      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
 
   comment-ios:
     name: PR Comment (iOS)
@@ -144,6 +154,8 @@ jobs:
       - name: Resolve iOS status
         id: ios-status
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INSTALL_PAGE_URL: ${{ needs.build-ios.outputs.ios-install-page-url }}
         with:
           script: |
             const result = '${{ needs.build-ios.result }}';
@@ -154,8 +166,15 @@ jobs:
               cancelled: '⛔ Cancelled',
               skipped: '⏭️ Skipped',
             };
+            const installPageUrl = process.env.INSTALL_PAGE_URL ?? '';
             core.setOutput('status', statuses[result] ?? `⏳ ${result}`);
             core.setOutput('run-url', runUrl);
+            core.setOutput(
+              'install-link',
+              installPageUrl
+                ? `[Install on iPhone or iPad](${installPageUrl}) — open in Safari on the device`
+                : 'Unavailable for this build',
+            );
 
       - name: Comment iOS status on PR
         uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3
@@ -170,8 +189,9 @@ jobs:
             |---|---|
             | **Version** | `${{ needs.resolve.outputs.build-name }}` (build `${{ needs.resolve.outputs.build-number }}`) |
             | **iOS Status** | ${{ steps.ios-status.outputs.status }} |
+            | **Install** | ${{ steps.ios-status.outputs.install-link }} |
             | **Run** | [View iOS build run](${{ steps.ios-status.outputs.run-url }}) |
 
-            iOS installs become available after a `/deploy` PR preview deploy.
+            The install link is an ad hoc build: it only runs on devices registered in the MonkeySSH Apple Developer account, and it replaces any ad hoc `MonkeySSH β` already on the device. Comment `/deploy` to also push this PR to TestFlight.
 
             > Built from ${{ needs.resolve.outputs.source-sha }}

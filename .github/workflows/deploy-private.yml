@@ -47,7 +47,9 @@ jobs:
     needs: compute-version
     permissions:
       actions: read
-      contents: read
+      # contents: write publishes the ad hoc IPA to the rolling `ios-installs`
+      # release and the install page to the Pages branch.
+      contents: write
       deployments: write
     uses: ./.github/workflows/build-deploy.yml
     with:
@@ -58,6 +60,7 @@ jobs:
       flavor: private
       deploy-ios-to: testflight
       deploy-android-to: internal
+      publish-ios-install: true
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
