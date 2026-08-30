@@ -980,16 +980,20 @@ jobs:
           name: monkeymux-assets
           path: assets/monkeymux/
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+      # Restore only; CI's push-to-main run is the sole writer in this repository.
+      # GitHub scopes caches per ref, so writing here would store a ~440MB copy
+      # per PR ref against a shared 10GB budget and evict the ~2GB Flutter SDK
+      # caches. The restore-keys prefix means a deploy whose Package.resolved
+      # has moved still starts from main's copy and resolves the delta.
+      #
+      # The entry is shared with the macOS job: SwiftPM keys its cache on package
+      # identity, not platform, and the binary artifact bundles carry every
+      # platform slice. Hashing both Package.resolved files means either one
+      # moving invalidates it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
           path: ~/Library/Caches/org.swift.swiftpm
-          # SwiftPM's cache is keyed on package identity, not platform: it holds
-          # bare git clones and binary artifact bundles that carry every platform
-          # slice. The iOS and macOS jobs therefore share one entry rather than
-          # storing ~440MB twice each, which kept evicting the ~2GB Flutter SDK
-          # cache from the repo's 10GB budget once a few PRs were open. Hashing
-          # both Package.resolved files means either one moving invalidates it.
           key: spm-${{ runner.os }}-${{ hashFiles('ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-
 
