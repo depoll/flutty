@@ -113,6 +113,22 @@ void main() {
       expect(yolo, isNot(ask));
     });
 
+    test('distinguishes retryable transport failures', () {
+      const terminal = AcpSessionError(
+        kind: AcpSessionErrorKind.transport,
+        message: 'Connection failed.',
+      );
+      const transient = AcpSessionError(
+        kind: AcpSessionErrorKind.transport,
+        message: 'Connection failed.',
+        retryable: true,
+      );
+
+      expect(terminal.retryable, isFalse);
+      expect(transient.retryable, isTrue);
+      expect(transient, isNot(terminal));
+    });
+
     test('tracks warning independently of error', () {
       const warning = AcpSessionError(
         kind: AcpSessionErrorKind.replayOverflow,

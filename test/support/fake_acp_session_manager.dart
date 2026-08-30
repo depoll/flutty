@@ -56,6 +56,8 @@ class FakeAcpSessionManager extends AcpSessionManager {
   final List<AcpLaunchCommand?> reconnectLaunchOverrides =
       <AcpLaunchCommand?>[];
   final List<bool> reconnectSelectOnSuccess = <bool>[];
+  final List<List<AcpSessionKey>> reconnectReplaceKeys =
+      <List<AcpSessionKey>>[];
   final List<MonkeyMuxAcpBridgeMetadata?> reconnectKnownBridges =
       <MonkeyMuxAcpBridgeMetadata?>[];
   final List<(String, String)> permissionResponses = <(String, String)>[];
@@ -248,6 +250,7 @@ class FakeAcpSessionManager extends AcpSessionManager {
   }) async {
     reconnectLaunchOverrides.add(launchCommandOverride);
     reconnectSelectOnSuccess.add(selectOnSuccess);
+    reconnectReplaceKeys.add(List<AcpSessionKey>.unmodifiable(replace));
     reconnectKnownBridges.add(knownRemoteBridge);
     reconnects.add((
       hostId: hostId,

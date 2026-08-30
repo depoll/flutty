@@ -90,6 +90,12 @@ enum AcpSessionErrorKind {
   /// never a fatal transport failure.
   replayOverflow,
 
+  /// The live provider retained the session but could not replay its earlier
+  /// messages into this client view.
+  ///
+  /// This is non-fatal. New prompts still target the existing remote session.
+  historyUnavailable,
+
   /// The ACP protocol was violated by the peer.
   protocol,
 
@@ -110,7 +116,11 @@ enum AcpSessionErrorKind {
 @immutable
 final class AcpSessionError {
   /// Creates a session error.
-  const AcpSessionError({required this.kind, required this.message});
+  const AcpSessionError({
+    required this.kind,
+    required this.message,
+    this.retryable = false,
+  });
 
   /// Stable error category.
   final AcpSessionErrorKind kind;
@@ -118,15 +128,19 @@ final class AcpSessionError {
   /// Short, safe description.
   final String message;
 
+  /// Whether retrying the same operation may recover without user action.
+  final bool retryable;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is AcpSessionError &&
           kind == other.kind &&
-          message == other.message;
+          message == other.message &&
+          retryable == other.retryable;
 
   @override
-  int get hashCode => Object.hash(kind, message);
+  int get hashCode => Object.hash(kind, message, retryable);
 
   @override
   String toString() => 'AcpSessionError(${kind.name})';

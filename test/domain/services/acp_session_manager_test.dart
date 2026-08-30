@@ -39,6 +39,7 @@ class _FakeAcpServer implements AcpTransport {
     this.rejectInitialize = false,
     this.rejectResume = false,
     this.rejectLoadAlreadyLoaded = false,
+    this.alreadyLoadedSessionId,
     this.newSessionErrorCode = -32000,
     this.promptErrorMessage,
     this.replayTextOnLoad,
@@ -64,6 +65,9 @@ class _FakeAcpServer implements AcpTransport {
 
   /// When true, `session/load` reports that the live session is already loaded.
   final bool rejectLoadAlreadyLoaded;
+
+  /// Optional session id named by the already-loaded error response.
+  final String? alreadyLoadedSessionId;
 
   /// When true, `session/delete` returns a provider error.
   bool failDelete = false;
@@ -185,7 +189,8 @@ class _FakeAcpServer implements AcpTransport {
         final params = (message['params']! as Map).cast<String, Object?>();
         final sessionId = params['sessionId'] as String? ?? '';
         if (rejectLoadAlreadyLoaded) {
-          _replyError(id, -32602, 'Session $sessionId is already loaded');
+          final loadedId = alreadyLoadedSessionId ?? sessionId;
+          _replyError(id, -32602, 'Session $loadedId is already loaded');
           break;
         }
         // Emit synchronous replay BEFORE replying to the load request.
@@ -713,6 +718,35 @@ void main() {
       expect(failure.error.message, contains('-32602'));
     },
   );
+
+  test('marks only transient bridge failures retryable', () async {
+    for (final testCase in <(MonkeyMuxAcpBridgeErrorKind, bool)>[
+      (MonkeyMuxAcpBridgeErrorKind.sshChannel, true),
+      (MonkeyMuxAcpBridgeErrorKind.closed, true),
+      (MonkeyMuxAcpBridgeErrorKind.nonWriter, false),
+      (MonkeyMuxAcpBridgeErrorKind.invalidFrame, false),
+    ]) {
+      final failingConnector = _FakeConnector()
+        ..startError = MonkeyMuxAcpBridgeException(
+          testCase.$1,
+          'Bridge failed.',
+        );
+      final failingManager = buildManagerWith(failingConnector);
+
+      final result = await failingManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+
+      expect(result, isA<AcpSessionLaunchFailed>());
+      expect(
+        (result as AcpSessionLaunchFailed).error.retryable,
+        testCase.$2,
+        reason: testCase.$1.name,
+      );
+    }
+  });
 
   test(
     'does not mistake a non-auth session error for required login',
@@ -1602,24 +1636,73 @@ void main() {
       );
     });
 
-    test('already-loaded history reconnect keeps the live session', () async {
+    test(
+      'already-loaded history reconnect stays live and warns after app restart',
+      () async {
+        var rejectLoad = false;
+        final liveConnector = _FakeConnector(
+          serverFactory: (_, _) => _FakeAcpServer(
+            rejectLoadAlreadyLoaded: rejectLoad,
+            rejectResume: rejectLoad,
+          ),
+        );
+        final firstManager = buildManagerWith(liveConnector);
+        final started = await firstManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final key = (started as AcpSessionLaunchStarted).key;
+        await firstManager.detachSession(key);
+        rejectLoad = true;
+        liveConnector.skippedHistoricalReplay = true;
+
+        // A fresh manager has no in-memory timeline from the prior app process.
+        final reconnectedManager = buildManagerWith(liveConnector);
+        final result = await reconnectedManager.reconnectSession(
+          hostId: key.hostId,
+          providerId: key.providerId,
+          bridgeId: key.bridgeId,
+          acpSessionId: key.acpSessionId,
+          cwd: '/repo',
+        );
+
+        expect(result, isA<AcpSessionLaunchStarted>());
+        final attachedServer = liveConnector.servers[key.bridgeId]!;
+        expect(attachedServer.methods, contains('session/load'));
+        expect(attachedServer.methods, contains('session/resume'));
+        final state = reconnectedManager.state.byKeyValue(key.value)!;
+        expect(state.status, AcpConnectionStatus.ready);
+        expect(state.timeline.entries, isEmpty);
+        expect(state.warning?.kind, AcpSessionErrorKind.historyUnavailable);
+        expect(
+          state.warning?.message,
+          'Earlier messages could not be restored in this view.',
+        );
+      },
+    );
+
+    test('already-loaded response for another session still fails', () async {
       var rejectLoad = false;
       final liveConnector = _FakeConnector(
-        serverFactory: (_, _) =>
-            _FakeAcpServer(rejectLoadAlreadyLoaded: rejectLoad),
+        serverFactory: (_, _) => _FakeAcpServer(
+          rejectLoadAlreadyLoaded: rejectLoad,
+          alreadyLoadedSessionId: 'different-session',
+        ),
       );
-      final liveManager = buildManagerWith(liveConnector);
-      final started = await liveManager.startNewSession(
+      final firstManager = buildManagerWith(liveConnector);
+      final started = await firstManager.startNewSession(
         hostId: 1,
         providerId: AcpBuiltinProviderIds.copilotCli,
         cwd: '/repo',
       );
       final key = (started as AcpSessionLaunchStarted).key;
-      await liveManager.detachSession(key);
+      await firstManager.detachSession(key);
       rejectLoad = true;
       liveConnector.skippedHistoricalReplay = true;
 
-      final result = await liveManager.reconnectSession(
+      final reconnectedManager = buildManagerWith(liveConnector);
+      final result = await reconnectedManager.reconnectSession(
         hostId: key.hostId,
         providerId: key.providerId,
         bridgeId: key.bridgeId,
@@ -1627,14 +1710,10 @@ void main() {
         cwd: '/repo',
       );
 
-      expect(result, isA<AcpSessionLaunchStarted>());
-      final attachedServer = liveConnector.servers[key.bridgeId]!;
-      expect(attachedServer.methods, contains('session/load'));
-      expect(attachedServer.methods, contains('session/resume'));
-      expect(
-        liveManager.state.byKeyValue(key.value)!.status,
-        AcpConnectionStatus.ready,
-      );
+      expect(result, isA<AcpSessionLaunchFailed>());
+      final error = (result as AcpSessionLaunchFailed).error;
+      expect(error.kind, AcpSessionErrorKind.protocol);
+      expect(reconnectedManager.state.byKeyValue(key.value), isNull);
     });
 
     test(

@@ -3821,6 +3821,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void>? _openingNativeAcpWindow;
   _NativeAcpLaunchState? _nativeAcpLaunchState;
   var _nativeAcpLaunchGeneration = 0;
+  var _nativeAcpWindowRequestGeneration = 0;
   final Map<String, AcpChatScrollState> _nativeAcpScrollStates = {};
   String? _connectionOpenedWorkingDirectory;
   String? _tmuxLaunchWorkingDirectory;
@@ -12134,10 +12135,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String bridgeId,
     required String providerId,
     String? workingDirectory,
+    int? requestGeneration,
   }) {
     final opening = _openingNativeAcpWindow;
+    if (opening != null && _openingNativeAcpBridgeId == bridgeId) {
+      return opening;
+    }
+    final requestedGeneration =
+        requestGeneration ?? ++_nativeAcpWindowRequestGeneration;
+    if (requestGeneration != null &&
+        requestGeneration != _nativeAcpWindowRequestGeneration) {
+      return Future<void>.value();
+    }
     if (opening != null) {
-      if (_openingNativeAcpBridgeId == bridgeId) return opening;
       return opening.then(
         (_) => _openServerOwnedNativeAcpWindow(
           sshSession,
@@ -12145,6 +12155,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           bridgeId: bridgeId,
           providerId: providerId,
           workingDirectory: workingDirectory,
+          requestGeneration: requestedGeneration,
         ),
       );
     }
@@ -12176,6 +12187,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           bridgeId: bridgeId,
           providerId: providerId,
           workingDirectory: workingDirectory,
+          requestGeneration: requestedGeneration,
         );
         completer.complete();
       } on Object catch (error, stackTrace) {
@@ -12196,8 +12208,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required int windowIndex,
     required String bridgeId,
     required String providerId,
+    required int requestGeneration,
     String? workingDirectory,
   }) async {
+    bool requestIsCurrent() =>
+        mounted && requestGeneration == _nativeAcpWindowRequestGeneration;
+    if (!requestIsCurrent()) return;
     final manager = ref.read(acpSessionManagerProvider);
     final tracked = manager.state.sessions
         .where(
@@ -12213,7 +12229,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         windowIndex,
         suppressTerminalReplay: true,
       );
-      if (mounted) _openNativeAcpSession(tracked.key);
+      if (!mounted || requestGeneration != _nativeAcpWindowRequestGeneration) {
+        return;
+      }
+      _openNativeAcpSession(tracked.key);
       return;
     }
 
@@ -12221,7 +12240,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     try {
       bridges = await manager.listRemoteBridges(sshSession.hostId);
     } on Object catch (error) {
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _nativeAcpWindowRequestGeneration) {
+        return;
+      }
       DiagnosticsLogService.instance.warning(
         'acp.window',
         'remote_lookup_failed',
@@ -12234,7 +12255,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       return;
     }
-    if (!mounted) return;
+    if (!mounted || requestGeneration != _nativeAcpWindowRequestGeneration) {
+      return;
+    }
     final bridge = bridges
         .where((candidate) => candidate.id == bridgeId)
         .firstOrNull;
@@ -12258,7 +12281,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       windowIndex,
       suppressTerminalReplay: true,
     );
-    if (!mounted) return;
+    if (!mounted || requestGeneration != _nativeAcpWindowRequestGeneration) {
+      return;
+    }
 
     final cwd = bridge.cwd?.trim().isNotEmpty ?? false
         ? bridge.cwd!.trim()
@@ -12275,7 +12300,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       cwd: cwd,
       confirmInstall: (request) => confirmAcpMonkeyMuxInstall(context, request),
       autoApprovePermissions: _startClisInYoloMode,
+      knownRemoteBridge: bridge,
       replace: replace,
+    );
+
+    final provisionalKey = AcpSessionKey.of(
+      hostId: sshSession.hostId,
+      providerId: providerId,
+      bridgeId: bridgeId,
+      acpSessionId: acpSessionId,
     );
 
     Future<AcpSessionLaunchResult> reconnectWithTransportRetry({
@@ -12289,7 +12322,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       bool isTransportFailure(AcpSessionLaunchResult candidate) =>
           switch (candidate) {
             AcpSessionLaunchFailed(
-              error: AcpSessionError(kind: AcpSessionErrorKind.transport),
+              error: AcpSessionError(
+                kind: AcpSessionErrorKind.transport,
+                retryable: true,
+              ),
             ) =>
               true,
             _ => false,
@@ -12311,18 +12347,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           },
         );
         await Future<void>.delayed(retryDelays[retryAttempt]);
-        if (!mounted) return result;
-        result = await reconnect(replace: replace);
+        if (!requestIsCurrent() ||
+            _activeNativeAcpSessionKey != provisionalKey) {
+          return result;
+        }
+        // Replacement is a destructive concurrency resolution. Apply it once;
+        // transport retries must not stop a session that reconnected meanwhile.
+        result = await reconnect();
       }
       return result;
     }
 
-    final provisionalKey = AcpSessionKey.of(
-      hostId: sshSession.hostId,
-      providerId: providerId,
-      bridgeId: bridgeId,
-      acpSessionId: acpSessionId,
-    );
     _nativeAcpReconnectOwnedKeyValue = provisionalKey.value;
     _openNativeAcpSession(provisionalKey);
     DiagnosticsLogService.instance.info(
@@ -12331,8 +12366,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       fields: {'hostId': sshSession.hostId},
     );
 
-    Future<void> restoreTerminalAfterFailedHandoff() async {
-      if (!mounted || _activeNativeAcpSessionKey != provisionalKey) return;
+    Future<bool> restoreTerminalAfterFailedHandoff() async {
+      if (!requestIsCurrent() || _activeNativeAcpSessionKey != provisionalKey) {
+        return false;
+      }
       try {
         // The native selection suppressed its hidden placeholder replay. Before
         // exposing the terminal again, select normally so MonkeyMux sends a
@@ -12347,7 +12384,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       if (mounted && _activeNativeAcpSessionKey == provisionalKey) {
         _showTerminalViewport();
+        return true;
       }
+      return false;
     }
 
     try {
@@ -12389,7 +12428,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             result = await reconnectWithTransportRetry();
         }
       }
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _nativeAcpWindowRequestGeneration) {
+        return;
+      }
       switch (result) {
         case AcpSessionLaunchStarted(:final key):
           if (_activeNativeAcpSessionKey == provisionalKey &&
@@ -12397,8 +12438,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             _openNativeAcpSession(key);
           }
         case AcpSessionLaunchFailed(:final error):
-          await restoreTerminalAfterFailedHandoff();
-          if (!mounted) return;
+          final restored = await restoreTerminalAfterFailedHandoff();
+          if (!mounted || !restored) return;
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text(error.message)));
