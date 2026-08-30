@@ -1740,7 +1740,7 @@ void main() {
     });
 
     test(
-      'already-loaded response with case-different id still fails',
+      'already-loaded response with whitespace-different id still fails',
       () async {
         var rejectLoad = false;
         final liveConnector = _FakeConnector(
@@ -1765,7 +1765,7 @@ void main() {
           hostId: key.hostId,
           providerId: key.providerId,
           bridgeId: key.bridgeId,
-          acpSessionId: key.acpSessionId,
+          acpSessionId: ' SESSION-1',
           cwd: '/repo',
         );
 

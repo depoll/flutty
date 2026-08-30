@@ -1666,9 +1666,7 @@ class _SessionController {
         final historyLoad = Stopwatch()..start();
         final result = await _loadExistingSession(existingSessionId);
         if (result != null) {
-          if (_state.warning?.kind == AcpSessionErrorKind.historyUnavailable) {
-            _update((state) => state.copyWith(clearWarning: true));
-          }
+          _clearHistoryUnavailableWarning();
           _applySetupResult(result);
           _diagnostics.info(
             'acp.session',
@@ -1711,7 +1709,10 @@ class _SessionController {
       }
       if (caps.loadSession) {
         final result = await _loadExistingSession(existingSessionId);
-        if (result != null) _applySetupResult(result);
+        if (result != null) {
+          _clearHistoryUnavailableWarning();
+          _applySetupResult(result);
+        }
         return existingSessionId;
       }
       if (_freshBridge) {
@@ -1779,6 +1780,12 @@ class _SessionController {
       );
       _historyRestoreUnavailable = true;
       return null;
+    }
+  }
+
+  void _clearHistoryUnavailableWarning() {
+    if (_state.warning?.kind == AcpSessionErrorKind.historyUnavailable) {
+      _update((state) => state.copyWith(clearWarning: true));
     }
   }
 
@@ -2946,14 +2953,25 @@ bool _isAcpSessionAlreadyLoadedError(
   AcpRemoteException error,
   String sessionId,
 ) {
-  if (error.code != -32602 || sessionId.trim().isEmpty) return false;
-  final normalized = error.message.trim().replaceAll(RegExp(r'\s+'), ' ');
-  final match = RegExp(
-    r'^session (.+) is already loaded[.!]?$',
-    caseSensitive: false,
-  ).firstMatch(normalized);
-  // The provider phrase is case-insensitive, but the identity it names is not.
-  return match?.group(1) == sessionId.trim();
+  if (error.code != -32602 || sessionId.isEmpty) return false;
+  final message = error.message.trim();
+  final lower = message.toLowerCase();
+  const prefix = 'session ';
+  if (!lower.startsWith(prefix)) return false;
+  for (final suffix in const <String>[
+    ' is already loaded',
+    ' is already loaded.',
+    ' is already loaded!',
+  ]) {
+    if (!lower.endsWith(suffix)) continue;
+    final namedSessionId = message.substring(
+      prefix.length,
+      message.length - suffix.length,
+    );
+    // Provider prose is case-insensitive; the opaque identity is byte-exact.
+    return namedSessionId == sessionId;
+  }
+  return false;
 }
 
 bool _isAcpAuthenticationRequired(String message) {
