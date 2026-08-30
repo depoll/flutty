@@ -8168,7 +8168,7 @@ void main() {
     );
 
     testWidgets(
-      'retries an immediate native transport close without background preload',
+      'retries repeated immediate native transport closes without background preload',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 800));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -8218,13 +8218,14 @@ void main() {
             ),
           ]
           ..reconnectSessionResults.addAll([
-            const AcpSessionLaunchFailed(
-              null,
-              AcpSessionError(
-                kind: AcpSessionErrorKind.transport,
-                message: 'The agent connection closed.',
+            for (var attempt = 0; attempt < 3; attempt++)
+              const AcpSessionLaunchFailed(
+                null,
+                AcpSessionError(
+                  kind: AcpSessionErrorKind.transport,
+                  message: 'The agent connection closed.',
+                ),
               ),
-            ),
             AcpSessionLaunchStarted(key),
           ])
           ..reconnectSessionPendingState = fakeAcpSession(
@@ -8327,14 +8328,19 @@ void main() {
         await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
         for (
           var attempt = 0;
-          attempt < 10 && acpManager.reconnects.length < 2;
+          attempt < 40 && acpManager.reconnects.length < 4;
           attempt++
         ) {
           await tester.pump(const Duration(milliseconds: 50));
         }
-        expect(acpManager.reconnects, hasLength(2));
-        expect(acpManager.reconnectSelectOnSuccess, [true, true]);
-        expect(acpManager.reconnectKnownBridges, [isNull, isNull]);
+        expect(acpManager.reconnects, hasLength(4));
+        expect(acpManager.reconnectSelectOnSuccess, [true, true, true, true]);
+        expect(acpManager.reconnectKnownBridges, [
+          isNull,
+          isNull,
+          isNull,
+          isNull,
+        ]);
         expect(
           acpManager.state.sessions.single.status,
           AcpConnectionStatus.ready,
@@ -8342,8 +8348,8 @@ void main() {
 
         await tester.pump(const Duration(milliseconds: 300));
         expect(find.text('opening persistent agent session…'), findsNothing);
-        expect(acpManager.reconnects, hasLength(2));
-        expect(acpManager.reconnectSelectOnSuccess, [true, true]);
+        expect(acpManager.reconnects, hasLength(4));
+        expect(acpManager.reconnectSelectOnSuccess, [true, true, true, true]);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

@@ -12281,17 +12281,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Future<AcpSessionLaunchResult> reconnectWithTransportRetry({
       List<AcpSessionKey> replace = const <AcpSessionKey>[],
     }) async {
+      const retryDelays = <Duration>[
+        Duration(milliseconds: 150),
+        Duration(milliseconds: 350),
+        Duration(milliseconds: 700),
+      ];
+      bool isTransportFailure(AcpSessionLaunchResult candidate) =>
+          switch (candidate) {
+            AcpSessionLaunchFailed(
+              error: AcpSessionError(kind: AcpSessionErrorKind.transport),
+            ) =>
+              true,
+            _ => false,
+          };
+
       var result = await reconnect(replace: replace);
-      if (result case AcpSessionLaunchFailed(
-        error: AcpSessionError(kind: AcpSessionErrorKind.transport),
-      )) {
+      for (
+        var retryAttempt = 0;
+        retryAttempt < retryDelays.length && isTransportFailure(result);
+        retryAttempt++
+      ) {
         DiagnosticsLogService.instance.info(
           'acp.window',
           'foreground_transport_retry',
-          fields: {'hostId': sshSession.hostId, 'bridgeId': bridgeId},
+          fields: {
+            'hostId': sshSession.hostId,
+            'bridgeId': bridgeId,
+            'attempt': retryAttempt + 1,
+          },
         );
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        if (mounted) result = await reconnect(replace: replace);
+        await Future<void>.delayed(retryDelays[retryAttempt]);
+        if (!mounted) return result;
+        result = await reconnect(replace: replace);
       }
       return result;
     }
