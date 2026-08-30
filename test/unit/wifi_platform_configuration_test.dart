@@ -28,10 +28,13 @@ void main() {
         infoPlist,
         contains('NSLocationAlwaysAndWhenInUseUsageDescription'),
       );
-      // permission_handler_apple's Package.swift derives its PERMISSION_*
-      // macros from the host Info.plist, so this key is what compiles the
-      // when-in-use location strategy into the plugin under Swift Package
-      // Manager. Dropping it would silently disable Wi-Fi SSID lookup.
+      // LocationPermissionStrategy stays compiled in as long as any location
+      // macro is set, and the always-key above already sets PERMISSION_LOCATION,
+      // so dropping this key would not remove the strategy. It would instead
+      // fail at runtime: the PermissionGroupLocationWhenInUse branch reads
+      // NSLocationWhenInUseUsageDescription from the bundle before calling
+      // requestWhenInUseAuthorization, and errors with MISSING_USAGE_DESCRIPTION
+      // when it is absent -- which breaks Wi-Fi SSID lookup.
       expect(infoPlist, contains('NSLocationWhenInUseUsageDescription'));
       expect(infoPlist, contains('current Wi-Fi network name'));
     });

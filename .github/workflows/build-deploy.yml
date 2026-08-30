@@ -983,7 +983,15 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
-          path: ~/Library/Caches/org.swift.swiftpm
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            !~/Library/Caches/org.swift.swiftpm/manifests
+          # Deliberately excludes manifests/: permission_handler_apple's
+          # Package.swift derives its PERMISSION_* macros from the app's
+          # Info.plist, which SwiftPM does not track as a manifest input. A
+          # restored manifest cache would keep stale permissions compiled in
+          # after a usage-description change. It is 2MB of the ~1GB cache; the
+          # repository clones are what actually cost time.
           key: spm-ios-${{ runner.os }}-${{ hashFiles('ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-ios-${{ runner.os }}-
 
