@@ -406,6 +406,7 @@ final class MonkeyMuxAcpBridgeService {
     ],
     Duration handshakeTimeout = const Duration(seconds: 10),
     int lastAcknowledgedSequence = 0,
+    bool forcePendingReplay = false,
   }) {
     _validateBridgeId(bridgeId);
     if (lastAcknowledgedSequence < 0) {
@@ -424,6 +425,7 @@ final class MonkeyMuxAcpBridgeService {
       reconnectBackoff: reconnectBackoff,
       handshakeTimeout: handshakeTimeout,
       lastAcknowledgedSequence: lastAcknowledgedSequence,
+      forcePendingReplay: forcePendingReplay,
     );
   }
 
@@ -484,6 +486,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     required List<Duration> reconnectBackoff,
     required Duration handshakeTimeout,
     required int lastAcknowledgedSequence,
+    required bool forcePendingReplay,
   }) : _installer = installer,
        _sessionProvider = sessionProvider,
        _bridgeId = bridgeId,
@@ -491,6 +494,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
        _diagnostics = diagnostics,
        _reconnectBackoff = List.unmodifiable(reconnectBackoff),
        _handshakeTimeout = handshakeTimeout,
+       _forcePendingReplay = forcePendingReplay,
        _lastDeliveredSequence = lastAcknowledgedSequence,
        _freshBaselineEstablished = lastAcknowledgedSequence > 0 {
     scheduleMicrotask(() {
@@ -506,6 +510,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   final DiagnosticsLogger _diagnostics;
   final List<Duration> _reconnectBackoff;
   final Duration _handshakeTimeout;
+  final bool _forcePendingReplay;
   final _incoming = StreamController<List<int>>(sync: true);
   final _states = StreamController<MonkeyMuxAcpTransportState>.broadcast(
     sync: true,
@@ -659,7 +664,8 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
         'type': 'hello',
         'bridgeId': _bridgeId,
         'lastAck': _lastDeliveredSequence,
-        if (_pendingOnlyHandshakeRequested) 'replayMode': 'adaptive',
+        if (_pendingOnlyHandshakeRequested)
+          'replayMode': _forcePendingReplay ? 'pending' : 'adaptive',
       });
       _diagnostics.debug(
         'acp.transport',

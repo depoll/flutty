@@ -29,6 +29,7 @@ import 'diagnostics_log_service.dart';
 import 'monetization_service.dart';
 import 'monkeymux_acp_bridge_service.dart';
 import 'monkeymux_installer_service.dart';
+import 'native_agent_client.dart';
 import 'ssh_service.dart';
 import 'telemetry_service.dart';
 
@@ -371,6 +372,8 @@ class AcpSessionManager {
     }
     final bridgeCanResume =
         remoteBridge != null &&
+        !(resolved.providerId == AcpBuiltinProviderIds.pi &&
+            remoteBridge.providerId == AcpBuiltinProviderIds.legacyPiAcp) &&
         remoteBridge.state != MonkeyMuxAcpProviderState.exited &&
         remoteBridge.state != MonkeyMuxAcpProviderState.stopped &&
         remoteBridge.state != MonkeyMuxAcpProviderState.protocolError;
@@ -699,7 +702,10 @@ class AcpSessionManager {
         hostId: hostId,
         providerId: launch.providerId,
         providerLabel: launch.label,
-        launchArgv: launch.argv,
+        launchArgv:
+            isPiRpcProviderId(launch.providerId) && existingSessionId != null
+            ? <String>[...launch.argv, '--session-id', existingSessionId]
+            : launch.argv,
         cwd: cwd,
         confirmInstall: confirmInstall,
       );
@@ -750,6 +756,7 @@ class AcpSessionManager {
             hostId: hostId,
             bridgeId: bridgeId,
             providerId: launch.providerId,
+            expectedSessionId: existingSessionId,
           ),
           capabilityServiceFactory: _capabilityServiceFactory(
             hostId: hostId,
@@ -1089,8 +1096,9 @@ class AcpSessionManager {
     String providerId, {
     AcpLaunchCommand? launchCommandOverride,
   }) async {
+    final normalizedProviderId = normalizeAcpProviderId(providerId);
     final builtin = acpBuiltinProviders.firstWhereOrNull(
-      (provider) => provider.id == providerId,
+      (provider) => provider.id == normalizedProviderId,
     );
     if (builtin != null) {
       if (launchCommandOverride != null &&
@@ -1285,7 +1293,7 @@ class _BridgeAttachment {
   AcpClientCapabilityService? _capabilityService;
   var _terminated = false;
 
-  AcpClient get client => _session.client;
+  NativeAgentClient get client => _session.client;
   Stream<AcpSessionNotification> get notifications => client.updates;
   Stream<MonkeyMuxAcpTransportState> get transportStates =>
       _session.transportStates;
@@ -1357,13 +1365,19 @@ class _BridgeAttachment {
       _initializeFuture ??= _doInitialize();
 
   Future<AcpInitializeResult> _doInitialize() async {
+    final nativeClient = client;
+    if (nativeClient is! AcpClient) {
+      final result = await nativeClient.initialize();
+      _initialization = result;
+      return result;
+    }
     final service = _capabilityService ??= await _capabilityServiceFactory();
     final retainedInitialization = _initialization;
     if (retainedInitialization != null) {
-      service.attach(client);
+      service.attach(nativeClient);
       return retainedInitialization;
     }
-    final result = await service.initialize(client);
+    final result = await service.initialize(nativeClient);
     _initialization = result;
     return result;
   }
@@ -2580,6 +2594,7 @@ class _SessionController {
           bridgeId: bridgeId,
           providerId: providerId,
           lastAcknowledgedSequence: _lastAcknowledgedBridgeSequence,
+          expectedSessionId: _key.acpSessionId,
         ),
         capabilityServiceFactory: _manager._capabilityServiceFactory(
           hostId: hostId,

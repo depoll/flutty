@@ -859,7 +859,9 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         ),
       );
     }
-    if (permissionOption == null && permissionToggle == null) {
+    if (permissionOption == null &&
+        permissionToggle == null &&
+        !isPiRpcProviderId(_key.providerId)) {
       selectors.add(
         _AcpQuickSelectorData(
           label: 'Permission',

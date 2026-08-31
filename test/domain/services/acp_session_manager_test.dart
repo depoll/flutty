@@ -407,6 +407,8 @@ class _FakeConnector implements AcpBridgeConnector {
   final AcpHostCapabilityBinding? capabilityBinding;
 
   final List<String> startedBridges = <String>[];
+  final List<List<String>> startedLaunchArgv = <List<String>>[];
+  final List<String?> expectedSessionIds = <String?>[];
   final List<String> stoppedBridges = <String>[];
   final Set<String> availableBridges = <String>{};
   final Map<String, _FakeAcpServer> servers = <String, _FakeAcpServer>{};
@@ -440,6 +442,7 @@ class _FakeConnector implements AcpBridgeConnector {
     if (startError case final error?) throw error;
     final bridgeId = 'bridge-${++_bridgeCounter}';
     startedBridges.add(bridgeId);
+    startedLaunchArgv.add(List<String>.of(launchArgv));
     availableBridges.add(bridgeId);
     return MonkeyMuxAcpBridgeStartResult(bridgeId: bridgeId);
   }
@@ -521,7 +524,9 @@ class _FakeConnector implements AcpBridgeConnector {
     required String bridgeId,
     required String providerId,
     int lastAcknowledgedSequence = 0,
+    String? expectedSessionId,
   }) {
+    expectedSessionIds.add(expectedSessionId);
     connectionAcknowledgements
         .putIfAbsent(bridgeId, () => <int>[])
         .add(lastAcknowledgedSequence);
@@ -2666,6 +2671,28 @@ void main() {
       expect(failConnector.startedBridges, hasLength(1));
       expect(failConnector.stoppedBridges, failConnector.startedBridges);
     });
+  });
+
+  test('Pi RPC resume launches the durable session id directly', () async {
+    final piConnector = _FakeConnector();
+    final piManager = buildManagerWith(piConnector);
+
+    final result = await piManager.resumeProviderSession(
+      hostId: 1,
+      providerId: AcpBuiltinProviderIds.pi,
+      acpSessionId: 'pi-session-123',
+      cwd: '/repo',
+    );
+
+    expect(result, isA<AcpSessionLaunchStarted>());
+    expect(piConnector.startedLaunchArgv.single, <String>[
+      'pi',
+      '--mode',
+      'rpc',
+      '--session-id',
+      'pi-session-123',
+    ]);
+    expect(piConnector.expectedSessionIds.single, 'pi-session-123');
   });
 
   group('telemetry allowlist', () {

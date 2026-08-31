@@ -166,6 +166,22 @@ void main() {
     expect(manager.autoApprovePermissionSets, [true]);
   });
 
+  testWidgets('Pi RPC hides the unsupported ACP permission selector', (
+    tester,
+  ) async {
+    final key = fakeAcpKey(providerId: AcpBuiltinProviderIds.pi);
+    final manager = FakeAcpSessionManager(
+      sessions: [fakeAcpSession(key: key, providerLabel: 'Pi')],
+    );
+
+    await tester.pumpWidget(_wrap(manager, routeKey: key));
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('Change permission'), findsNothing);
+    expect(find.text('YOLO'), findsNothing);
+    expect(manager.autoApprovePermissionSets, isEmpty);
+  });
+
   testWidgets('publishes a throttled native connection preview', (
     tester,
   ) async {

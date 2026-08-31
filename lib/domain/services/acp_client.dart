@@ -6,6 +6,7 @@ import '../models/acp_json.dart';
 import '../models/acp_protocol.dart';
 import '../models/acp_updates.dart';
 import 'acp_json_rpc_connection.dart';
+import 'native_agent_client.dart';
 
 /// A requested operation is not advertised by the initialized ACP agent.
 final class AcpUnsupportedCapabilityException implements Exception {
@@ -56,7 +57,7 @@ final class AcpUnknownServerRequest extends AcpServerRequest {
 }
 
 /// High-level typed ACP v1 client.
-final class AcpClient {
+final class AcpClient implements NativeAgentClient {
   /// Creates a client over an active JSON-RPC connection.
   AcpClient(this.connection) {
     _serverRequests = StreamController<AcpServerRequest>.broadcast(
@@ -97,6 +98,7 @@ final class AcpClient {
   AcpInitializeResult? get initialization => _initialization;
 
   /// Typed `session/update` notifications.
+  @override
   Stream<AcpSessionNotification> get updates => _updates.stream;
 
   /// Typed incoming server requests.
@@ -107,6 +109,7 @@ final class AcpClient {
       _otherNotifications.stream;
 
   /// Initializes the ACP connection.
+  @override
   Future<AcpInitializeResult> initialize({
     int protocolVersion = 1,
     AcpClientCapabilities capabilities = const AcpClientCapabilities(
@@ -157,6 +160,7 @@ final class AcpClient {
   }
 
   /// Creates a new ACP session.
+  @override
   Future<AcpSessionSetupResult> newSession({
     required String cwd,
     List<String> additionalDirectories = const <String>[],
@@ -229,6 +233,7 @@ final class AcpClient {
   }
 
   /// Loads a stored ACP session and requests history replay.
+  @override
   Future<AcpSessionSetupResult> loadSession({
     required String sessionId,
     required String cwd,
@@ -257,6 +262,7 @@ final class AcpClient {
   }
 
   /// Resumes a stored ACP session without requiring history replay.
+  @override
   Future<AcpSessionSetupResult> resumeSession({
     required String sessionId,
     required String cwd,
@@ -285,6 +291,7 @@ final class AcpClient {
   }
 
   /// Forks a session using the unstable ACP v1 extension.
+  @override
   Future<AcpSessionSetupResult> forkSession({
     required String sessionId,
     required String cwd,
@@ -308,6 +315,7 @@ final class AcpClient {
   }
 
   /// Closes an active session when supported.
+  @override
   Future<void> closeSession(String sessionId, {Duration? timeout}) async {
     _requireCapability(
       'session/close',
@@ -321,6 +329,7 @@ final class AcpClient {
   }
 
   /// Deletes a stored session when supported.
+  @override
   Future<void> deleteSession(String sessionId, {Duration? timeout}) async {
     _requireCapability(
       'session/delete',
@@ -334,6 +343,7 @@ final class AcpClient {
   }
 
   /// Sends a prompt turn.
+  @override
   Future<AcpPromptResult> prompt({
     required String sessionId,
     required List<AcpContentBlock> content,
@@ -357,12 +367,14 @@ final class AcpClient {
   }
 
   /// Cancels the active prompt turn for [sessionId].
+  @override
   Future<void> cancel(String sessionId) => connection.notify(
     'session/cancel',
     params: <String, Object?>{'sessionId': sessionId},
   );
 
   /// Sets a generic session configuration option.
+  @override
   Future<List<AcpSessionConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
@@ -386,6 +398,7 @@ final class AcpClient {
   }
 
   /// Sets the legacy ACP session mode.
+  @override
   Future<void> setMode({
     required String sessionId,
     required String modeId,
@@ -399,6 +412,7 @@ final class AcpClient {
   }
 
   /// Sets a provider's legacy ACP model extension.
+  @override
   Future<void> setModel({
     required String sessionId,
     required String modelId,
@@ -412,6 +426,7 @@ final class AcpClient {
   }
 
   /// Closes the client and its underlying connection.
+  @override
   Future<void> close() async {
     if (_closed) return;
     _closed = true;

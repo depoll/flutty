@@ -53,8 +53,11 @@ abstract final class AcpBuiltinProviderIds {
   static const antigravity =
       '${acpCustomProviderReservedIdPrefix}antigravity-acp';
 
-  /// Pi's standalone ACP adapter.
-  static const pi = '${acpCustomProviderReservedIdPrefix}pi-acp';
+  /// Pi's native RPC mode.
+  static const pi = '${acpCustomProviderReservedIdPrefix}pi-rpc';
+
+  /// Provider ID used by releases that launched the standalone pi-acp adapter.
+  static const legacyPiAcp = '${acpCustomProviderReservedIdPrefix}pi-acp';
 
   /// xAI Grok Build's official ACP stdio server.
   static const grokBuild = '${acpCustomProviderReservedIdPrefix}grok-build';
@@ -66,6 +69,16 @@ abstract final class AcpBuiltinProviderIds {
   static const openClaw = '${acpCustomProviderReservedIdPrefix}openclaw-acp';
 }
 
+/// Whether [providerId] uses Pi's native RPC protocol.
+bool isPiRpcProviderId(String providerId) =>
+    providerId == AcpBuiltinProviderIds.pi;
+
+/// Normalizes provider IDs renamed during protocol migrations.
+String normalizeAcpProviderId(String providerId) =>
+    providerId == AcpBuiltinProviderIds.legacyPiAcp
+    ? AcpBuiltinProviderIds.pi
+    : providerId;
+
 /// Resolves the terminal-agent identity sharing a built-in ACP provider.
 AgentLaunchTool? agentLaunchToolForBuiltinAcpProviderId(String providerId) =>
     switch (providerId) {
@@ -75,7 +88,8 @@ AgentLaunchTool? agentLaunchToolForBuiltinAcpProviderId(String providerId) =>
       AcpBuiltinProviderIds.openCode => AgentLaunchTool.openCode,
       AcpBuiltinProviderIds.cursorAgent => AgentLaunchTool.cursorAgent,
       AcpBuiltinProviderIds.antigravity => AgentLaunchTool.antigravity,
-      AcpBuiltinProviderIds.pi => AgentLaunchTool.pi,
+      AcpBuiltinProviderIds.pi ||
+      AcpBuiltinProviderIds.legacyPiAcp => AgentLaunchTool.pi,
       AcpBuiltinProviderIds.hermes => AgentLaunchTool.hermes,
       AcpBuiltinProviderIds.openClaw => AgentLaunchTool.openclaw,
       AcpBuiltinProviderIds.grokBuild => AgentLaunchTool.grokBuild,
@@ -742,18 +756,15 @@ final acpGrokBuildProvider = AcpBuiltinProvider(
   ),
 );
 
-/// Built-in Pi ACP provider.
+/// Built-in Pi native RPC provider.
 final acpPiProvider = AcpBuiltinProvider(
   id: AcpBuiltinProviderIds.pi,
   label: 'Pi',
-  launchCommand: AcpLaunchCommand(executable: 'pi-acp'),
-  executableProbe: AcpExecutableProbe(
-    candidateExecutableNames: const ['pi-acp'],
+  launchCommand: AcpLaunchCommand(
+    executable: 'pi',
+    arguments: const ['--mode', 'rpc'],
   ),
-  adapterFallbackCommand: AcpLaunchCommand(
-    executable: 'npx',
-    arguments: const ['--yes', 'pi-acp@0.0.33'],
-  ),
+  executableProbe: AcpExecutableProbe(candidateExecutableNames: const ['pi']),
 );
 
 /// All built-in ACP providers bundled with the app, in display order.

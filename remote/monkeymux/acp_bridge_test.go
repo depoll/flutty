@@ -1510,3 +1510,100 @@ func readTestAcpFrame(
 	}
 	return message
 }
+
+func TestPiRPCBridgeTracksSessionAndTurnLifecycle(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	bridge.providerID = piRpcProviderID
+	bridge.cwd = "/repo"
+
+	bridge.observeClientMessage(json.RawMessage(
+		`{"id":"prompt-1","type":"prompt","message":"hello"}`,
+	))
+	if got := bridge.snapshot().InFlightTurn; got != 1 {
+		t.Fatalf("in-flight turns after prompt = %d, want 1", got)
+	}
+
+	bridge.publish("output", json.RawMessage(
+		`{"id":"prompt-1","type":"response","command":"prompt","success":true}`,
+	), "", nil)
+	bridge.publish("output", json.RawMessage(`{"type":"agent_start"}`), "", nil)
+	if got := bridge.snapshot().InFlightTurn; got != 1 {
+		t.Fatalf("in-flight turns after agent start = %d, want 1", got)
+	}
+
+	bridge.publish("output", json.RawMessage(
+		`{"id":"state-1","type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-session-7"}}`,
+	), "", nil)
+	info := bridge.snapshot()
+	if info.ProviderID != piRpcProviderID || info.SessionID != "pi-session-7" ||
+		info.Cwd != "/repo" {
+		t.Fatalf("Pi RPC durable metadata = %#v", info)
+	}
+
+	bridge.publish("output", json.RawMessage(`{"type":"agent_settled"}`), "", nil)
+	if got := bridge.snapshot().InFlightTurn; got != 0 {
+		t.Fatalf("in-flight turns after settle = %d, want 0", got)
+	}
+}
+
+func TestPiRPCExtensionDialogStaysPendingUntilClientResponse(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	bridge.providerID = piRpcProviderID
+	dialog := json.RawMessage(
+		`{"type":"extension_ui_request","id":"dialog-1","method":"confirm","title":"Continue?","message":"Proceed?"}`,
+	)
+	if !bridge.publish("output", dialog, "", nil) {
+		t.Fatal("Pi RPC extension dialog was rejected")
+	}
+
+	bridge.mu.Lock()
+	_, pending := bridge.pendingRequests["dialog-1"]
+	retained := len(bridge.replay) == 1 && bridge.replay[0].pendingID == "dialog-1"
+	bridge.mu.Unlock()
+	if !pending || !retained {
+		t.Fatal("Pi RPC extension dialog was not retained as pending")
+	}
+
+	bridge.observeClientMessage(json.RawMessage(
+		`{"type":"extension_ui_response","id":"dialog-1","cancelled":true}`,
+	))
+	bridge.mu.Lock()
+	_, pending = bridge.pendingRequests["dialog-1"]
+	retained = bridge.replay[0].pendingID != ""
+	bridge.mu.Unlock()
+	if pending || retained {
+		t.Fatal("Pi RPC extension dialog remained pending after response")
+	}
+}
+
+func TestPiRPCOutputIdentityIgnoresFireAndForgetExtensionUI(t *testing.T) {
+	pending, response, eventType := piRPCOutputIdentity(json.RawMessage(
+		`{"type":"extension_ui_request","id":"notice-1","method":"notify","message":"done"}`,
+	))
+	if pending != "" || response != "" || eventType != "extension_ui_request" {
+		t.Fatalf("fire-and-forget identity = %q, %q, %q", pending, response, eventType)
+	}
+}
+
+func TestPiRPCExtensionDialogTimeoutReleasesReplay(t *testing.T) {
+	bridge := newOrderingTestBridge()
+	bridge.providerID = piRpcProviderID
+	if !bridge.publish("output", json.RawMessage(
+		`{"type":"extension_ui_request","id":"dialog-timeout","method":"input","title":"Value","timeout":1}`,
+	), "", nil) {
+		t.Fatal("Pi RPC timed extension dialog was rejected")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		bridge.mu.Lock()
+		_, pending := bridge.pendingRequests["dialog-timeout"]
+		retained := bridge.replay[0].pendingID != ""
+		bridge.mu.Unlock()
+		if !pending && !retained {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed extension dialog remained pinned")
+}
