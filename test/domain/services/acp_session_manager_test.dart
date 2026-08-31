@@ -77,7 +77,7 @@ class _FakeAcpServer implements AcpTransport {
   final int newSessionErrorCode;
 
   /// When set, session/prompt returns this remote error message.
-  final String? promptErrorMessage;
+  String? promptErrorMessage;
 
   /// When set, a `session/load` pushes an agent message chunk with this text
   /// BEFORE replying, simulating synchronous history replay during the load.
@@ -1394,6 +1394,42 @@ void main() {
           .whereType<AcpMessageEntry>()
           .singleWhere((entry) => entry.role == AcpMessageRole.user);
       expect((userMessage.content.single as AcpTextContent).text, 'Hi there');
+    });
+
+    test('clears a stale prompt error when the next prompt starts', () async {
+      final transientConnector = _FakeConnector(
+        serverFactory: (_, _) =>
+            _FakeAcpServer(promptErrorMessage: 'Session limit reached'),
+      );
+      final transientManager = buildManagerWith(transientConnector);
+      final started = await transientManager.startNewSession(
+        hostId: 1,
+        providerId: AcpBuiltinProviderIds.copilotCli,
+        cwd: '/repo',
+      );
+      final key = (started as AcpSessionLaunchStarted).key;
+      final server = transientConnector.servers[key.bridgeId]!;
+
+      await expectLater(
+        transientManager.prompt(key, const [AcpTextContent('first')]),
+        throwsA(isA<AcpRemoteException>()),
+      );
+      expect(transientManager.state.byKeyValue(key.value)!.error, isNotNull);
+
+      server
+        ..promptErrorMessage = null
+        ..holdPrompts = true;
+      final retry = transientManager.prompt(key, const [
+        AcpTextContent('retry'),
+      ]);
+      await _pump();
+
+      final retrying = transientManager.state.byKeyValue(key.value)!;
+      expect(retrying.promptStatus, AcpPromptStatus.streaming);
+      expect(retrying.error, isNull);
+
+      server.completeNextPrompt();
+      await retry;
     });
 
     test('queues follow-up prompts and dispatches them sequentially', () async {
