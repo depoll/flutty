@@ -59,6 +59,16 @@ func TestStartAcpBridgeInProcessHostsProviderInServer(t *testing.T) {
 	_ = conn.Close()
 }
 
+func TestRequestAcpBridgeStopAndWaitTreatsMissingBridgeAsStopped(t *testing.T) {
+	runtimeRoot := testAcpRuntimeDirectory(t)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeRoot)
+
+	const bridgeID = "0123456789abcdef0123456789abcdef"
+	if err := requestAcpBridgeStopAndWait(bridgeID); err != nil {
+		t.Fatalf("missing bridge stop = %v, want success", err)
+	}
+}
+
 func TestAcpWireFramingRoundTrip(t *testing.T) {
 	var buffer bytes.Buffer
 	want := acpWireMessage{

@@ -375,6 +375,15 @@ func requestAcpBridgeStop(id string) error {
 
 func requestAcpBridgeStopAndWait(id string) error {
 	if err := requestAcpBridgeStop(id); err != nil {
+		// Closing a restored native window is idempotent. If its bridge socket is
+		// conclusively gone or abandoned, the provider is already stopped and the
+		// stale MonkeyMux placeholder can be removed safely.
+		if errors.Is(err, os.ErrNotExist) || isStaleUnixSocketError(err) {
+			if socket, pathErr := acpSocketPath(id); pathErr == nil {
+				_ = os.Remove(socket)
+			}
+			return nil
+		}
 		return err
 	}
 	deadline := time.Now().Add(3 * time.Second)
