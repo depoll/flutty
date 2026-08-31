@@ -40,12 +40,14 @@ permissions:
 jobs:
   compute-version:
     name: Compute Version
-    # `store-assets` is a rolling prerelease that re-hosts regenerated store
-    # media. Publishing it fires `release: published`, but it is not an app
-    # release and its tag is not an x.y.z version, so skip the deploy entirely.
+    # Several non-app prereleases live in this repository: `store-assets`
+    # re-hosts regenerated store media, and `ios-install-*` hosts ad hoc iOS
+    # builds. Publishing any of them fires `release: published`, and their tags
+    # are not x.y.z versions, so only deploy for real `v*` release tags rather
+    # than excluding each non-app tag as it is added.
     if: >-
       github.event_name != 'release' ||
-      github.event.release.tag_name != 'store-assets'
+      startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     outputs:
       build-name: ${{ steps.version.outputs.build-name }}

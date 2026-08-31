@@ -1,0 +1,56 @@
+name: Publish iOS Install Site
+
+# Rebuilds the GitHub Pages install site from the `ios-install-*` releases,
+# which are the source of truth for which ad hoc builds are installable.
+#
+# Regeneration is idempotent and reads no previous site state, so it is safe to
+# run from several builds at once and it self-heals after a failed deploy. It
+# also runs the retirement sweep, so a merged PR's build disappears even if the
+# PR-closed run was missed.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Regenerate & Deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      # contents: write deletes releases for pull requests that have closed.
+      contents: write
+      pages: write
+      id-token: write
+    # Pages allows one deployment at a time. Superseding a queued regeneration
+    # is harmless: the newest one sees every release the older one would have.
+    concurrency:
+      group: ios-install-site
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Retire builds for closed pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/prune_ios_install_releases.py
+
+      - name: Generate install site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/generate_ios_install_site.py --output site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

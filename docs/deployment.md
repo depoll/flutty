@@ -54,6 +54,16 @@ Both variants install side-by-side on the same device.
     bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity
     bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.private.ConnectionStatusLiveActivity
     ```
+4. Generate the matching **ad hoc** profiles, which back the over-the-air
+   install links described in [Over-the-Air iOS Installs](#over-the-air-ios-installs-ad-hoc).
+   These reuse the same distribution certificate and add the registered device
+   allowlist:
+    ```bash
+    bundle exec fastlane match adhoc --app_identifier xyz.depollsoft.monkeyssh
+    bundle exec fastlane match adhoc --app_identifier xyz.depollsoft.monkeyssh.private
+    bundle exec fastlane match adhoc --app_identifier xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity
+    bundle exec fastlane match adhoc --app_identifier xyz.depollsoft.monkeyssh.private.ConnectionStatusLiveActivity
+    ```
 
 ### Android Upload Keystore
 
@@ -99,7 +109,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### PR Preview (`preview.yml`)
 
 Triggered automatically on PRs to `main` and `develop`. Builds the **private** flavor and:
-- **iOS**: Builds an unsigned release IPA for `/deploy` promotion to TestFlight
+- **iOS**: Builds an unsigned release IPA for `/deploy` promotion to TestFlight, then ad hoc signs it and posts an over-the-air install link (see [Over-the-Air iOS Installs](#over-the-air-ios-installs-ad-hoc))
 - **Android**: Builds an unsigned release AAB plus a debug-signed APK for direct download in the PR comment
 
 When `/deploy` promotes a PR preview, it reuses the existing unsigned preview artifacts when their build number is still ahead of the latest private deploy. If a newer private build has already been deployed, the workflow automatically rebuilds with a fresh build number before uploading to TestFlight and Play internal.
@@ -170,6 +180,107 @@ prefer:
 ./scripts/store_assets.sh publish --generate all --platform both --sync
 ```
 
+### Over-the-Air iOS Installs (Ad Hoc)
+
+TestFlight processing adds anywhere from several minutes to a few hours before
+a build is installable. Every iOS build that CI signs is therefore also
+re-signed with an **ad hoc** distribution profile and published so it can be
+installed immediately from Safari, without waiting for TestFlight. TestFlight
+uploads are unchanged and still happen for `/deploy`, Deploy Private, and
+releases.
+
+The install link shows up in three places:
+
+- the **🍎 iOS Preview Build** PR comment, for every PR preview build;
+- the **🚀 Preview Deploy** PR comment, for `/deploy`; and
+- an `iOS Ad Hoc / Private` GitHub Deployment, whose *View deployment* button
+  opens the install page.
+
+Ad hoc IPAs are also uploaded as workflow artifacts
+(`ios-adhoc-<flavor>-<version>-<build>`) alongside the generated
+`manifest.plist`.
+
+#### How it is hosted
+
+`itms-services://` requires the manifest and the IPA to be reachable over
+public HTTPS with no authentication, which Actions artifacts never are, and
+GitHub strips non-HTTP link schemes from comment bodies.
+
+Each install target therefore gets its own public prerelease holding the IPA
+and a metadata block describing the build:
+
+| Release tag | Holds |
+|-------------|-------|
+| `ios-install-pr-<number>` | The newest ad hoc build of that pull request |
+| `ios-install-private` | The newest Deploy Private build of `main` |
+
+**Those releases are the source of truth.**
+`scripts/generate_ios_install_site.py` rebuilds the entire GitHub Pages site
+from them — one `install/<slug>/` directory per release, containing the
+`manifest.plist` and the landing page that carries the `itms-services://` link.
+
+Because the site is a pure function of the release list, regeneration reads no
+previous state. That makes it idempotent, self-healing after a failed deploy,
+and safe to run from several builds at once: whichever run publishes last
+simply has the most complete view. It also means **retiring a build is just
+deleting its release**.
+
+Each release holds exactly one IPA. Rebuilding a PR replaces it, and the
+superseded IPA is deleted.
+
+#### Retirement
+
+`Retire iOS Install Build` runs when a PR closes and republishes the site,
+which deletes `ios-install-pr-<number>` and its tag. The same sweep
+(`scripts/prune_ios_install_releases.py`) runs before *every* regeneration, so
+a missed or failed cleanup still converges — any per-PR release whose PR is no
+longer open is retired on the next publish.
+
+`Publish iOS Install Site` can also be run manually (`workflow_dispatch`) to
+force a regeneration.
+
+Note that `ios-install-*` tags are deliberately excluded from the release
+deploy pipeline: `release.yml` only treats `v*` tags as app releases, so
+publishing one of these prereleases cannot start a store deploy.
+
+#### One-time repository setup
+
+1. Enable GitHub Pages: **Settings → Pages → Build and deployment → GitHub
+   Actions**. Nothing secret is published — only a plist, an HTML page, and the
+   app icon.
+2. Generate the ad hoc match profiles (see
+   [Fastlane Match](#fastlane-match-ios-certificates)).
+3. Register each device that should be able to run these builds.
+
+#### Registering a device
+
+An ad hoc build installs on any device but only launches on one whose UDID is
+in the profile. Find the UDID in Finder (connect the device, click its name
+under the device name in the sidebar) or in **Xcode → Window → Devices and
+Simulators**, then:
+
+```bash
+cd ios
+bundle exec fastlane register_adhoc_device udid:<udid> name:"David's iPhone"
+```
+
+The lane registers the device with Apple and regenerates the ad hoc profiles so
+the next CI build includes it. Existing published builds are *not* re-signed —
+trigger a new build to pick up a newly registered device.
+
+#### Installing
+
+Open the install link in **Safari** on the device; other browsers cannot start
+an over-the-air install. iOS prompts to install, and the app appears on the
+home screen.
+
+If the install fails, delete the existing app first. iOS will not replace a
+TestFlight or App Store copy of a bundle ID in place with an ad hoc build, and
+doing so discards that app's local data.
+
+Because this repository is public, anyone can download the published IPA. Only
+registered devices can run it, but treat the binary itself as public.
+
 ### GitHub Deployment Environments
 
 Store uploads create GitHub Deployments so PRs and the repository deployment
@@ -178,6 +289,8 @@ view show the latest status for each supported channel:
 | Environment | Updated by |
 |-------------|------------|
 | `iOS Private / TestFlight` | PR `/deploy`, Deploy Private |
+| `iOS Ad Hoc / Private` | PR Preview iOS, PR `/deploy`, Deploy Private |
+| `github-pages` | Publish iOS Install Site |
 | `Android Private / Play Internal` | PR `/deploy`, Deploy Private |
 | `Android Private / Internal App Sharing` | PR Preview Internal App Sharing |
 | `iOS Production / TestFlight` | Release (`internal` channel) |
@@ -386,6 +499,9 @@ disabled for that build.
 - [ ] Private Git repo created for fastlane match
 - [ ] `fastlane match init` run locally
 - [ ] Certificates generated for both bundle IDs
+- [ ] Ad hoc match profiles generated for both bundle IDs and their Live Activity extensions
+- [ ] GitHub Pages enabled with the GitHub Actions source (over-the-air installs)
+- [ ] Test devices registered with `fastlane register_adhoc_device`
 - [ ] Android upload keystore generated
 - [ ] Google Play service account created with JSON key
 - [ ] App Store Connect API key created with .p8 file

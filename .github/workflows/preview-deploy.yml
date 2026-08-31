@@ -661,10 +661,15 @@ jobs:
     needs: [validate-pr, finalize-version, resolve-preview-artifacts]
     permissions:
       actions: read
-      contents: read
+      # contents: write publishes the ad hoc IPA to this build's
+      # `ios-install-*` prerelease.
+      contents: write
       deployments: write
       issues: write
       pull-requests: write
+      # actions/deploy-pages publishes the accumulated install site.
+      pages: write
+      id-token: write
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.finalize-version.outputs.build-name }}
@@ -682,6 +687,7 @@ jobs:
       ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' }}
       ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       update-pr-deploy-comment: true
+      publish-ios-install: true
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -938,6 +944,8 @@ jobs:
                   : deployResult !== 'success'
                     ? '❌ Android deploy failed'
                     : '⏳ Android status unavailable');
+            const iosInstallPageUrl =
+              ${{ toJSON(needs.deploy.outputs.ios-install-page-url) }} || '';
             const iosPlatformStatus =
               ${{ toJSON(needs.deploy.outputs.ios-deploy-status) }} ||
               (validationResult !== 'success'
@@ -964,6 +972,9 @@ jobs:
                 : null,
               `| **Android Status** | ${androidPlatformStatus} |`,
               `| **iOS Status** | ${iosPlatformStatus} |`,
+              iosInstallPageUrl
+                ? `| **iOS Install** | [Install on iPhone or iPad](${iosInstallPageUrl}) — open in Safari on the device |`
+                : null,
               artifactDetails,
               requestCommentUrl
                 ? `| **Request** | [View /deploy comment](${requestCommentUrl}) |`

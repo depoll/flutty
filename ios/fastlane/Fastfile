@@ -195,6 +195,10 @@ platform :ios do
     match_type = options[:type] || 'appstore'
     readonly = options.key?(:readonly) ? options[:readonly] : true
     force = options[:force] == true
+    # Ad hoc profiles embed the device allowlist, so a profile minted before a
+    # tester registered their iPhone silently omits it. Regenerate whenever the
+    # portal's device list has grown.
+    force_for_new_devices = match_type == 'adhoc'
 
     api_key = get_api_key
 
@@ -204,6 +208,7 @@ platform :ios do
       api_key: api_key,
       readonly: readonly,
       force: force,
+      force_for_new_devices: force_for_new_devices,
     )
   end
 
@@ -280,8 +285,9 @@ platform :ios do
 
   private_lane :resolved_profile_path do |options|
     app_id = options[:app_identifier]
-    profile_path = ENV["sigh_#{app_id}_appstore_profile-path"] ||
-                   ENV["sigh_#{app_id}_appstore_profile_path"]
+    match_type = options[:type] || 'appstore'
+    profile_path = ENV["sigh_#{app_id}_#{match_type}_profile-path"] ||
+                   ENV["sigh_#{app_id}_#{match_type}_profile_path"]
 
     UI.user_error!("Missing installed provisioning profile path for #{app_id}") if profile_path.to_s.empty?
     UI.user_error!("Provisioning profile not found at #{profile_path} for #{app_id}") unless File.exist?(profile_path)
@@ -291,8 +297,9 @@ platform :ios do
 
   private_lane :resolved_certificate_name do |options|
     app_id = options[:app_identifier]
-    certificate_name = ENV["sigh_#{app_id}_appstore_certificate-name"] ||
-                       ENV["sigh_#{app_id}_appstore_certificate_name"]
+    match_type = options[:type] || 'appstore'
+    certificate_name = ENV["sigh_#{app_id}_#{match_type}_certificate-name"] ||
+                       ENV["sigh_#{app_id}_#{match_type}_certificate_name"]
 
     UI.user_error!("Missing installed certificate name for #{app_id}") if certificate_name.to_s.empty?
 
@@ -410,11 +417,40 @@ platform :ios do
       live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
       UI.user_error!("Unknown scheme '#{scheme}'") unless app_id && live_activity_app_id
 
+      # Ad hoc profiles back the over-the-air install links and carry the same
+      # entitlements, so they go stale on a capability change just like the
+      # App Store ones.
+      %w[appstore adhoc].each do |match_type|
+        sync_certs(
+          app_identifier: [app_id, live_activity_app_id],
+          type: match_type,
+          readonly: false,
+          force: true,
+        )
+      end
+    end
+  end
+
+  desc 'Register a device for over-the-air ad hoc installs and refresh the ' \
+       'ad hoc provisioning profiles so the new UDID is included.'
+  lane :register_adhoc_device do |options|
+    udid = options[:udid].to_s
+    name = options[:name].to_s
+    UI.user_error!('udid is required') if udid.empty?
+    UI.user_error!('name is required') if name.empty?
+
+    register_device(
+      udid: udid,
+      name: name,
+      platform: 'ios',
+      api_key: get_api_key,
+    )
+
+    APP_IDS.each_key do |scheme|
       sync_certs(
-        app_identifier: [app_id, live_activity_app_id],
-        type: 'appstore',
+        app_identifier: [APP_IDS[scheme], LIVE_ACTIVITY_APP_IDS[scheme]],
+        type: 'adhoc',
         readonly: false,
-        force: true,
       )
     end
   end
@@ -425,9 +461,13 @@ platform :ios do
     build_and_sign(scheme: scheme)
   end
 
-  desc 'Re-sign an existing IPA for App Store Connect upload'
+  desc 'Re-sign an existing IPA with match certificates (type: appstore or adhoc)'
   lane :resign_ipa do |options|
     scheme = options[:scheme] || 'Private'
+    match_type = options[:type].to_s.empty? ? 'appstore' : options[:type].to_s
+    unless %w[appstore adhoc].include?(match_type)
+      UI.user_error!("Unsupported match type '#{match_type}'. Supported types: appstore, adhoc")
+    end
     unsigned_ipa_path = options[:unsigned_ipa_path].to_s
     output_ipa_path = options[:output_ipa_path].to_s
     supported_schemes = APP_IDS.keys & LIVE_ACTIVITY_APP_IDS.keys
@@ -444,7 +484,7 @@ platform :ios do
 
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
-      type: 'appstore',
+      type: match_type,
       readonly: false,
     )
 
@@ -455,9 +495,12 @@ platform :ios do
       resigned_ipa_path = output_ipa_path
     end
 
-    signing_identity = resolved_certificate_name(app_identifier: app_id)
-    app_profile_path = resolved_profile_path(app_identifier: app_id)
-    live_activity_profile_path = resolved_profile_path(app_identifier: live_activity_app_id)
+    signing_identity = resolved_certificate_name(app_identifier: app_id, type: match_type)
+    app_profile_path = resolved_profile_path(app_identifier: app_id, type: match_type)
+    live_activity_profile_path = resolved_profile_path(
+      app_identifier: live_activity_app_id,
+      type: match_type,
+    )
 
     Dir.mktmpdir('flutty-resign-ipa') do |tmpdir|
       sh("unzip -q #{resigned_ipa_path.shellescape} -d #{tmpdir.shellescape}")

@@ -47,8 +47,13 @@ jobs:
     needs: compute-version
     permissions:
       actions: read
-      contents: read
+      # contents: write publishes the ad hoc IPA to this build's
+      # `ios-install-*` prerelease.
+      contents: write
       deployments: write
+      # actions/deploy-pages publishes the accumulated install site.
+      pages: write
+      id-token: write
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
@@ -58,6 +63,7 @@ jobs:
       flavor: private
       deploy-ios-to: testflight
       deploy-android-to: internal
+      publish-ios-install: true
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
