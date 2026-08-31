@@ -56,17 +56,20 @@ project `monkeyssh`:
    a JSON key — this becomes the `FIREBASE_SERVICE_ACCOUNT_JSON` secret
 4. **iOS only:** App Distribution installs ad hoc builds, so every tester
    device UDID must be registered in the Apple Developer portal. Have testers
-   register through the invite link (Firebase collects the UDID), add the
-   device in the developer portal, then refresh the ad hoc profiles:
+   register through the invite link (Firebase collects the UDID), then add the
+   device in the developer portal.
+
+   Apple requires **at least one registered device** before it will issue an
+   ad hoc profile, so register a device before the first firebase deploy. The
+   first deploy then creates the `AdHoc_*` match profiles automatically,
+   reusing the existing distribution certificate. Later device registrations
+   are picked up automatically too (`force_for_new_devices`), so no manual
+   step is normally needed. To force a refresh anyway:
 
    ```bash
    cd ios
    bundle exec fastlane regenerate_profiles type:adhoc
    ```
-
-   The first firebase deploy creates the ad hoc match profiles automatically,
-   but Apple requires at least one registered device before an ad hoc profile
-   can be issued.
 
 ### Fastlane Match (iOS Certificates)
 

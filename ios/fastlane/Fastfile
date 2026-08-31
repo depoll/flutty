@@ -204,6 +204,11 @@ platform :ios do
       api_key: api_key,
       readonly: readonly,
       force: force,
+      # Ad hoc profiles embed the registered device list, so a profile minted
+      # before a tester registered their device cannot install on it. Let match
+      # regenerate when the device count changes; App Store profiles have no
+      # device list and ignore this.
+      force_for_new_devices: match_type == 'adhoc',
     )
   end
 
