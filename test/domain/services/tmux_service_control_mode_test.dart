@@ -1739,6 +1739,73 @@ void main() {
       },
     );
 
+    test('selectWindow ignores the target window redraw activity', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 1070);
+      const service = TmuxService(
+        windowSwitchActivityGracePeriod: Duration(milliseconds: 20),
+      );
+      const sep = tmuxWindowFieldSeparator;
+      var listCalls = 0;
+      final redrawActivity = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+      String windowLine(int activity) => [
+        '1',
+        'shell',
+        '0',
+        'zsh',
+        '/home/user/project',
+        '',
+        'shell',
+        '$activity',
+        'zsh',
+        '',
+        '@2',
+        '',
+        '',
+        '',
+        '',
+      ].join(sep);
+
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.single as String;
+        if (command.contains('command -v tmux')) {
+          return _buildOpenExecSession(
+            stdout: '/usr/bin/tmux\n${_doneMarker()}',
+          );
+        }
+        if (command.contains('list-windows')) {
+          listCalls += 1;
+          final activity = listCalls < 4 ? redrawActivity : redrawActivity + 1;
+          final reportedActivity = listCalls == 1 ? 100 : activity;
+          return _buildOpenExecSession(
+            stdout: '${windowLine(reportedActivity)}\n${_doneMarker()}',
+          );
+        }
+        return _buildOpenExecSession(stdout: _doneMarker());
+      });
+      addTearDown(() => service.clearCache(session.connectionId));
+
+      final beforeSwitch = await service.listWindows(session, 'main');
+      expect(beforeSwitch.single.lastActivityEpochSeconds, 100);
+
+      await service.selectWindow(session, 'main', 1, windowId: '@2');
+      final afterRedraw = await service.listWindows(session, 'main');
+      expect(afterRedraw.single.lastActivityEpochSeconds, 100);
+
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final afterGracePeriod = await service.listWindows(session, 'main');
+      expect(afterGracePeriod.single.lastActivityEpochSeconds, 100);
+
+      final afterRealOutput = await service.listWindows(session, 'main');
+      expect(
+        afterRealOutput.single.lastActivityEpochSeconds,
+        redrawActivity + 1,
+      );
+    });
+
     test('selectWindow uses an active control-mode watcher', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 70);

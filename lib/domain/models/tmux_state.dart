@@ -300,6 +300,7 @@ class TmuxWindow {
     bool clearTerminalProgress = false,
     bool clearActiveAgentSessionMetadata = false,
     int? lastActivityEpochSeconds,
+    bool clearLastActivityEpochSeconds = false,
   }) => TmuxWindow(
     index: index,
     id: id ?? this.id,
@@ -333,8 +334,9 @@ class TmuxWindow {
         ? null
         : terminalProgress ?? this.terminalProgress,
     idleSeconds: _snapshotIdleSeconds,
-    lastActivityEpochSeconds:
-        lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
+    lastActivityEpochSeconds: clearLastActivityEpochSeconds
+        ? null
+        : lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
   );
 
   /// A best-effort coding-agent session identifier found in tmux metadata.
