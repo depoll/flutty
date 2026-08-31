@@ -8177,6 +8177,8 @@ void main() {
 
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
         const staleBridgeId = '0123456789abcdef0123456789abcdef';
         const replacementBridgeId = 'abcdef0123456789abcdef0123456789';
         final staleKey = fakeAcpKey(
@@ -8237,7 +8239,7 @@ void main() {
         ).thenAnswer((_) async => windows);
         when(
           () => monkeyMuxService.watchWindowChanges(session, 'work'),
-        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        ).thenAnswer((_) => windowEvents.stream);
         when(
           () => monkeyMuxService.selectWindow(
             session,
@@ -8261,13 +8263,17 @@ void main() {
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
 
+        final activeSessions = _TestActiveSessionsNotifier(session);
         await pumpScreen(
           tester,
+          activeSessions: activeSessions,
           tmuxService: tmuxService,
           monkeyMuxService: monkeyMuxService,
           acpSessionManager: acpManager,
         );
         await tester.pump(const Duration(milliseconds: 100));
+        windowEvents.add(TmuxWindowListEvent([windows.last]));
+        await tester.pump();
         await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
         for (
           var attempt = 0;
@@ -8295,6 +8301,7 @@ void main() {
           ),
         ).called(1);
         expect(session.activeNativeAcpSessionKey, replacementKey);
+        expect(activeSessions.disconnectedConnectionIds, isEmpty);
         expect(
           find.text('The native agent window is no longer running.'),
           findsNothing,
