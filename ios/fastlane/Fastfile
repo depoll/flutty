@@ -579,11 +579,28 @@ platform :ios do
     groups = ENV['FIREBASE_TESTER_GROUPS'].to_s if groups.empty?
     UI.user_error!('Set FIREBASE_TESTER_GROUPS or pass groups: to distribute') if groups.empty?
 
+    # Resolve the Firebase app id up front so a misconfigured plist fails in
+    # seconds rather than after the archive. Passing :app also avoids the
+    # plugin's archive-relative plist lookup, which resolves
+    # googleservice_info_plist_path inside the built .app bundle rather than
+    # against the source tree.
+    flavor_dir = scheme == 'Private' ? 'private' : 'production'
+    plist_path = File.expand_path(
+      "../Runner/Firebase/#{flavor_dir}/GoogleService-Info.plist",
+      __dir__,
+    )
+    UI.user_error!("Missing Firebase iOS config at #{plist_path}") unless File.exist?(plist_path)
+
+    app_id = sh(
+      "/usr/libexec/PlistBuddy -c 'Print :GOOGLE_APP_ID' #{plist_path.shellescape}",
+      log: false,
+    ).strip
+    UI.user_error!("No GOOGLE_APP_ID in #{plist_path}") if app_id.empty?
+
     build_and_sign(scheme: scheme, export_method: 'ad-hoc')
 
-    flavor_dir = scheme == 'Private' ? 'private' : 'production'
     firebase_app_distribution(
-      googleservice_info_plist_path: "Runner/Firebase/#{flavor_dir}/GoogleService-Info.plist",
+      app: app_id,
       ipa_path: lane_context[SharedValues::IPA_OUTPUT_PATH],
       groups: groups,
       release_notes: firebase_release_notes,
