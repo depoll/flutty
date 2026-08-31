@@ -209,22 +209,25 @@ platform :ios do
 
   private_lane :build_and_sign do |options|
     scheme = options[:scheme]
+    export_method = options[:export_method] || 'app-store'
+    match_type = export_method == 'ad-hoc' ? 'adhoc' : 'appstore'
+    match_profile_prefix = export_method == 'ad-hoc' ? 'AdHoc' : 'AppStore'
     app_id = APP_IDS[scheme]
     live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
 
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
-      type: 'appstore',
+      type: match_type,
       readonly: false,
     )
 
-    profile_name = ENV["sigh_#{app_id}_appstore_profile-name"] ||
-                   ENV["sigh_#{app_id}_appstore_profile_name"] ||
-                   "match AppStore #{app_id}"
+    profile_name = ENV["sigh_#{app_id}_#{match_type}_profile-name"] ||
+                   ENV["sigh_#{app_id}_#{match_type}_profile_name"] ||
+                   "match #{match_profile_prefix} #{app_id}"
     live_activity_profile_name =
-      ENV["sigh_#{live_activity_app_id}_appstore_profile-name"] ||
-      ENV["sigh_#{live_activity_app_id}_appstore_profile_name"] ||
-      "match AppStore #{live_activity_app_id}"
+      ENV["sigh_#{live_activity_app_id}_#{match_type}_profile-name"] ||
+      ENV["sigh_#{live_activity_app_id}_#{match_type}_profile_name"] ||
+      "match #{match_profile_prefix} #{live_activity_app_id}"
 
     update_code_signing_settings(
       use_automatic_signing: false,
@@ -252,7 +255,7 @@ platform :ios do
       workspace: 'Runner.xcworkspace',
       scheme: scheme,
       configuration: "Release-#{scheme}",
-      export_method: 'app-store',
+      export_method: export_method,
       output_directory: '../build/ios/ipa',
       archive_path: '../build/ios/archive/Runner.xcarchive',
       xcargs: "DEVELOPMENT_TEAM=#{TEAM_ID}",
@@ -276,6 +279,11 @@ platform :ios do
         },
       },
     ]
+  end
+
+  private_lane :firebase_release_notes do
+    notes = ENV['FLUTTY_DISTRIBUTION_RELEASE_NOTES'].to_s.strip
+    notes.empty? ? PreviewReleaseNotes.current(max_length: 16_000) : notes
   end
 
   private_lane :resolved_profile_path do |options|
@@ -402,9 +410,12 @@ platform :ios do
   desc 'Force-regenerate provisioning profiles for both bundle IDs and their ' \
        'live activity extensions. Run this after enabling a new App ID ' \
        'capability (e.g. Access WiFi Information) so the new entitlement is ' \
-       'baked into the profile stored in the match git repo.'
+       'baked into the profile stored in the match git repo. Pass type:adhoc ' \
+       'to refresh the Firebase App Distribution profiles (e.g. after ' \
+       'registering a new tester device).'
   lane :regenerate_profiles do |options|
     schemes = options[:scheme] ? [options[:scheme]] : APP_IDS.keys
+    match_type = options[:type] || 'appstore'
     schemes.each do |scheme|
       app_id = APP_IDS[scheme]
       live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
@@ -412,7 +423,7 @@ platform :ios do
 
       sync_certs(
         app_identifier: [app_id, live_activity_app_id],
-        type: 'appstore',
+        type: match_type,
         readonly: false,
         force: true,
       )
@@ -554,6 +565,24 @@ platform :ios do
       app_identifier: app_id,
       app_version: ENV['FLUTTY_BUILD_NAME'],
     ) unless skip_meta
+  end
+
+  desc 'Build, sign with ad hoc profiles, and upload to Firebase App Distribution'
+  lane :firebase do |options|
+    scheme = options[:scheme] || 'Private'
+    groups = options[:groups].to_s
+    groups = ENV['FIREBASE_TESTER_GROUPS'].to_s if groups.empty?
+    UI.user_error!('Set FIREBASE_TESTER_GROUPS or pass groups: to distribute') if groups.empty?
+
+    build_and_sign(scheme: scheme, export_method: 'ad-hoc')
+
+    flavor_dir = scheme == 'Private' ? 'private' : 'production'
+    firebase_app_distribution(
+      googleservice_info_plist_path: "Runner/Firebase/#{flavor_dir}/GoogleService-Info.plist",
+      ipa_path: lane_context[SharedValues::IPA_OUTPUT_PATH],
+      groups: groups,
+      release_notes: firebase_release_notes,
+    )
   end
 
   desc 'Build, sign, and upload to App Store'
