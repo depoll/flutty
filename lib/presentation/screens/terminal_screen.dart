@@ -12540,7 +12540,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             try {
               // A recreated bridge owns a new MonkeyMux window. Remove the
               // dead placeholder so selecting it cannot start another copy.
-              await _closeTmuxWindow(sshSession, windowIndex);
+              await _closeTmuxWindow(
+                sshSession,
+                windowIndex,
+                preserveMuxSession: true,
+              );
               DiagnosticsLogService.instance.info(
                 'acp.window',
                 'stale_window_removed',
@@ -13113,15 +13117,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   /// Closes a tmux window via exec channel.
-  Future<void> _closeTmuxWindow(SshSession session, int windowIndex) async {
+  Future<void> _closeTmuxWindow(
+    SshSession session,
+    int windowIndex, {
+    bool preserveMuxSession = false,
+  }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    final closesLastMonkeyMuxWindow = await _isClosingLastMonkeyMuxWindow(
-      session,
-      sessionName,
-      windowIndex,
-    );
+    final closesLastMonkeyMuxWindow =
+        !preserveMuxSession &&
+        await _isClosingLastMonkeyMuxWindow(session, sessionName, windowIndex);
     try {
       await _activeTerminalConnectionBackend(session).killWindow(windowIndex);
     } on Object catch (error) {
