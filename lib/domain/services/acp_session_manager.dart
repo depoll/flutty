@@ -2259,6 +2259,7 @@ class _SessionController {
           (s) => s.copyWith(
             promptStatus: AcpPromptStatus.streaming,
             clearLastStopReason: true,
+            clearError: true,
             lastActivityAt: _clock(),
             timeline: dispatchedTimeline,
           ),
