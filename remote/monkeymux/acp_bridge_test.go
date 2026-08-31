@@ -69,6 +69,49 @@ func TestRequestAcpBridgeStopAndWaitTreatsMissingBridgeAsStopped(t *testing.T) {
 	}
 }
 
+func TestRequestAcpBridgeStopAndWaitPropagatesRuntimePathFailure(t *testing.T) {
+	runtimeRoot := testAcpRuntimeDirectory(t)
+	brokenRuntime := filepath.Join(runtimeRoot, "broken-runtime")
+	if err := os.Symlink(filepath.Join(runtimeRoot, "missing", "runtime"), brokenRuntime); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", brokenRuntime)
+
+	const bridgeID = "fedcba9876543210fedcba9876543210"
+	if err := requestAcpBridgeStopAndWait(bridgeID); err == nil {
+		t.Fatal("runtime path failure was treated as an already-stopped bridge")
+	}
+}
+
+func TestRequestAcpBridgeStopAndWaitRemovesAbandonedSocket(t *testing.T) {
+	runtimeRoot := testAcpRuntimeDirectory(t)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeRoot)
+
+	const bridgeID = "abcdef0123456789abcdef0123456789"
+	socket, err := acpSocketPath(bridgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(socket); err != nil {
+		t.Fatalf("abandoned socket was not retained: %v", err)
+	}
+
+	if err := requestAcpBridgeStopAndWait(bridgeID); err != nil {
+		t.Fatalf("abandoned bridge stop = %v, want success", err)
+	}
+	if _, err := os.Stat(socket); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("abandoned socket stat = %v, want not exist", err)
+	}
+}
+
 func TestAcpWireFramingRoundTrip(t *testing.T) {
 	var buffer bytes.Buffer
 	want := acpWireMessage{

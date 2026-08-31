@@ -374,15 +374,23 @@ func requestAcpBridgeStop(id string) error {
 }
 
 func requestAcpBridgeStopAndWait(id string) error {
+	socket, err := acpSocketPath(id)
+	if err != nil {
+		return err
+	}
 	if err := requestAcpBridgeStop(id); err != nil {
-		// Closing a restored native window is idempotent. If its bridge socket is
-		// conclusively gone or abandoned, the provider is already stopped and the
-		// stale MonkeyMux placeholder can be removed safely.
-		if errors.Is(err, os.ErrNotExist) || isStaleUnixSocketError(err) {
-			if socket, pathErr := acpSocketPath(id); pathErr == nil {
-				_ = os.Remove(socket)
-			}
+		// Closing a restored native window is idempotent only when its resolved
+		// socket is conclusively gone or abandoned. A path-resolution failure can
+		// also wrap os.ErrNotExist while the provider is still running, so resolve
+		// first and verify the socket itself before discarding the placeholder.
+		if isStaleUnixSocketError(err) {
+			_ = os.Remove(socket)
 			return nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			if _, statErr := os.Stat(socket); errors.Is(statErr, os.ErrNotExist) {
+				return nil
+			}
 		}
 		return err
 	}
