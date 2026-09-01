@@ -22,6 +22,7 @@ import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/agent_runtime_info.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
@@ -34,6 +35,7 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/acp_concurrency_policy.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/agent_management_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/device_debug_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
@@ -101,6 +103,9 @@ class _MockSshClient extends Mock implements SSHClient {
 class _MockShellChannel extends Mock implements SSHSession {}
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
+
+class _MockAgentManagementService extends Mock
+    implements AgentManagementService {}
 
 Future<void> _completeSftpClose(Invocation _) async {}
 
@@ -1483,6 +1488,7 @@ void main() {
       ShellCompletionService? shellCompletionService,
       AndroidDeviceDebugPlatform? deviceDebugPlatform,
       RemoteAdbCommandRunner? remoteAdbCommandRunner,
+      AgentManagementService? agentManagementService,
     }) async {
       await tester.pumpWidget(
         ProviderScope(
@@ -1509,6 +1515,10 @@ void main() {
             if (shellCompletionService != null)
               shellCompletionServiceProvider.overrideWithValue(
                 shellCompletionService,
+              ),
+            if (agentManagementService != null)
+              agentManagementServiceProvider.overrideWithValue(
+                agentManagementService,
               ),
             androidDeviceDebugPlatformProvider.overrideWithValue(
               deviceDebugPlatform ?? _FakeAndroidDeviceDebugPlatform(),
@@ -2139,6 +2149,40 @@ void main() {
 
       expect(firstOffset, scrollController.position.maxScrollExtent);
       expect(secondOffset, lessThan(firstOffset));
+    });
+
+    testWidgets('agent update banner opens agent management', (tester) async {
+      final management = _MockAgentManagementService();
+      final update = AgentRuntimeInfo(
+        definition: agentCliRuntimeDefinitions.first,
+        status: AgentRuntimeStatus.updateAvailable,
+        installedVersion: '1.0.0',
+        latestVersion: '1.1.0',
+      );
+      when(
+        () => management.checkForUpdates(session),
+      ).thenAnswer((_) async => [update]);
+      when(
+        () => management.refreshAll(session),
+      ).thenAnswer((_) async => [update]);
+
+      await pumpScreen(tester, agentManagementService: management);
+      await tester.pump(const Duration(milliseconds: 1600));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Claude Code update available'), findsOneWidget);
+      await tester.tap(find.text('Manage'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Agent management'), findsOneWidget);
+    });
+
+    testWidgets('terminal overflow lists agent management', (tester) async {
+      await pumpScreen(tester);
+
+      await openTerminalOverflowMenu(tester);
+
+      expect(terminalMenuItemButton('Agent Management'), findsOneWidget);
     });
 
     testWidgets('terminal overflow menu folds out paste actions', (

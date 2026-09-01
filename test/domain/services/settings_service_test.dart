@@ -452,6 +452,31 @@ void main() {
       });
     });
 
+    group('agentUpdateNotificationsNotifierProvider', () {
+      test('defaults to enabled and persists changes', () async {
+        final notifier = container.read(
+          agentUpdateNotificationsNotifierProvider.notifier,
+        );
+
+        expect(await notifier.initializedValue(), isTrue);
+        await notifier.setEnabled(enabled: false);
+
+        expect(
+          container.read(agentUpdateNotificationsNotifierProvider),
+          isFalse,
+        );
+        expect(
+          await container
+              .read(settingsServiceProvider)
+              .getBool(
+                SettingKeys.agentUpdateNotifications,
+                defaultValue: true,
+              ),
+          isFalse,
+        );
+      });
+    });
+
     group('shellCompletionsNotifierProvider', () {
       test('defaults to enabled and persists changes', () async {
         final notifier = container.read(

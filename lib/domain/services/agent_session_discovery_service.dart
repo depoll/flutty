@@ -1699,6 +1699,25 @@ class AgentSessionDiscoveryService {
   final Map<_AgentSessionDiscoveryScopeKey, Future<List<String>>>
   _inFlightRelatedWorkingDirectories =
       <_AgentSessionDiscoveryScopeKey, Future<List<String>>>{};
+  int _cacheGeneration = 0;
+
+  /// Invalidates cached and in-flight discovery state for [session].
+  ///
+  /// The next picker load starts fresh without reconnecting the SSH session.
+  void invalidateSession(SshSession session) {
+    bool matches(_AgentSessionDiscoveryScopeKey key) =>
+        key.hostId == session.hostId &&
+        key.hostname == session.config.hostname &&
+        key.port == session.config.port &&
+        key.username == session.config.username;
+
+    _cacheGeneration += 1;
+    _discoveryCache.removeWhere((key, _) => matches(key.scopeKey));
+    _inFlightDiscoveries.removeWhere((key, _) => matches(key.scopeKey));
+    _inFlightDiscoverySnapshots.removeWhere((key, _) => matches(key.scopeKey));
+    _relatedWorkingDirectoriesCache.removeWhere((key, _) => matches(key));
+    _inFlightRelatedWorkingDirectories.removeWhere((key, _) => matches(key));
+  }
 
   /// Discovers recent sessions across all supported tools for the given
   /// [workingDirectory] on the remote host.
@@ -1843,7 +1862,9 @@ class AgentSessionDiscoveryService {
     required String? toolName,
   }) {
     final controller = StreamController<DiscoveredSessionsResult>.broadcast();
-    _inFlightDiscoveries[key] = controller.stream;
+    final stream = controller.stream;
+    final cacheGeneration = _cacheGeneration;
+    _inFlightDiscoveries[key] = stream;
 
     unawaited(() async {
       try {
@@ -1903,20 +1924,24 @@ class AgentSessionDiscoveryService {
         _inFlightDiscoverySnapshots[key] = latestResult;
         controller.add(latestResult);
 
-        _discoveryCache[key] = _CachedDiscoveryResult(
-          result: latestResult,
-          cachedAt: _now(),
-        );
+        if (cacheGeneration == _cacheGeneration) {
+          _discoveryCache[key] = _CachedDiscoveryResult(
+            result: latestResult,
+            cachedAt: _now(),
+          );
+        }
       } on Object catch (error, stackTrace) {
         controller.addError(error, stackTrace);
       } finally {
-        _inFlightDiscoveries.remove(key);
-        _inFlightDiscoverySnapshots.remove(key);
+        if (identical(_inFlightDiscoveries[key], stream)) {
+          _inFlightDiscoveries.remove(key);
+          _inFlightDiscoverySnapshots.remove(key);
+        }
         await controller.close();
       }
     }());
 
-    return controller.stream;
+    return stream;
   }
 
   DiscoveredSessionsResult? _lookupCachedDiscoveryResult(
@@ -4896,21 +4921,26 @@ print(json.dumps(sessions))
       return inFlight;
     }
 
-    final future =
-        _resolveRelatedWorkingDirectories(session, key.workingDirectory).then((
-          directories,
-        ) {
-          _relatedWorkingDirectoriesCache[key] =
-              _CachedRelatedWorkingDirectories(
-                directories: directories,
-                cachedAt: _now(),
-              );
+    final cacheGeneration = _cacheGeneration;
+    late final Future<List<String>> future;
+    future = _resolveRelatedWorkingDirectories(session, key.workingDirectory)
+        .then((directories) {
+          if (cacheGeneration == _cacheGeneration) {
+            _relatedWorkingDirectoriesCache[key] =
+                _CachedRelatedWorkingDirectories(
+                  directories: directories,
+                  cachedAt: _now(),
+                );
+          }
           return directories;
+        })
+        .whenComplete(() {
+          if (identical(_inFlightRelatedWorkingDirectories[key], future)) {
+            _inFlightRelatedWorkingDirectories.remove(key);
+          }
         });
     _inFlightRelatedWorkingDirectories[key] = future;
-    return future.whenComplete(
-      () => _inFlightRelatedWorkingDirectories.remove(key),
-    );
+    return future;
   }
 
   Future<List<String>> _resolveRelatedWorkingDirectories(

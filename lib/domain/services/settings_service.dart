@@ -105,6 +105,9 @@ abstract final class SettingKeys {
   /// Saved host-scoped coding-agent launch presets.
   static const agentLaunchPresets = 'agent_launch_presets';
 
+  /// Show update prompts for agent CLIs and ACP adapters.
+  static const agentUpdateNotifications = 'agent_update_notifications';
+
   /// Saved host IDs pinned into the app's home-screen shortcut set.
   static const homeScreenShortcutHostIds = 'home_screen_shortcut_host_ids';
 
@@ -620,6 +623,33 @@ class TerminalNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
 final terminalNotificationsNotifierProvider =
     NotifierProvider<TerminalNotificationsNotifier, bool>(
       TerminalNotificationsNotifier.new,
+    );
+
+/// Notifier for coding-agent update prompts.
+class AgentUpdateNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
+
+  @override
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.agentUpdateNotifications,
+    defaultValue: true,
+  );
+
+  /// Sets whether active terminals may prompt for agent updates.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settingsService.setBool(
+      SettingKeys.agentUpdateNotifications,
+      value: enabled,
+    );
+    state = enabled;
+  }
+}
+
+/// Provider for coding-agent update prompts.
+final agentUpdateNotificationsNotifierProvider =
+    NotifierProvider<AgentUpdateNotificationsNotifier, bool>(
+      AgentUpdateNotificationsNotifier.new,
     );
 
 /// Notifier for terminal wake lock with write capability.

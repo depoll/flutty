@@ -686,6 +686,9 @@ class _TerminalSection extends ConsumerWidget {
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
+    final agentUpdateNotifications = ref.watch(
+      agentUpdateNotificationsNotifierProvider,
+    );
     final terminalNotifications = ref.watch(
       terminalNotificationsNotifierProvider,
     );
@@ -764,6 +767,22 @@ class _TerminalSection extends ConsumerWidget {
           ),
           onTap: () =>
               _showAgentWindowModeDialog(context, ref, agentWindowMode),
+        ),
+        SwitchListTile(
+          key: const ValueKey('settings-agent-update-notifications'),
+          secondary: const Icon(Icons.system_update_alt_rounded),
+          title: const Text('Agent update prompts'),
+          subtitle: const Text(
+            'Show a terminal banner when an agent CLI or ACP adapter has an update',
+          ),
+          value: agentUpdateNotifications,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(agentUpdateNotificationsNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
+          },
         ),
         ListTile(
           leading: const Icon(Icons.text_fields),

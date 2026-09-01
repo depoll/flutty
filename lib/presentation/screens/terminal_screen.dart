@@ -47,6 +47,7 @@ import '../../domain/models/tmux_state.dart';
 import '../../domain/services/acp_launch_profile_service.dart';
 import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
+import '../../domain/services/agent_management_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/app_review_demo_service.dart';
 import '../../domain/services/clipboard_content_service.dart';
@@ -106,6 +107,7 @@ import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
 import 'agent_chat_screen.dart';
+import 'agent_management_screen.dart';
 import 'port_forward_browser_screen.dart';
 import 'sftp_screen.dart';
 import 'snippet_edit_screen.dart';
@@ -4060,6 +4062,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _deviceDebugConnectionId;
   RemoteMuxBackend _activeMuxBackend = RemoteMuxBackend.tmux;
   AgentLaunchTool? _remoteMuxStartupTool;
+  final Set<int> _agentUpdatePromptedConnectionIds = <int>{};
+  Timer? _agentUpdatePromptTimer;
 
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
@@ -7721,6 +7725,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           forceShowSystemKeyboard: widget.initiallyShowKeyboard,
         );
         _maybePasteStoreDemoImage();
+        _scheduleAgentUpdatePrompt(session);
 
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
@@ -7853,6 +7858,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         forceShowSystemKeyboard: widget.initiallyShowKeyboard,
       );
       _maybePasteStoreDemoImage();
+      _scheduleAgentUpdatePrompt(session);
 
       // Start port forwards
       await _startPortForwards(session);
@@ -13821,6 +13827,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalThemeSettingsSubscription.close();
     _themeModeSubscription.close();
     _shellCompletionsSubscription.close();
+    _agentUpdatePromptTimer?.cancel();
     _cancelTerminalThemeRefreshTimers();
     _sessionController.dispose();
     _stopSharedClipboardSync();
@@ -14331,6 +14338,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   icon: Icons.palette_outlined,
                   label: 'Change Theme',
                   action: 'change_theme',
+                ),
+                _terminalOverflowMenuItem(
+                  context: context,
+                  icon: Icons.smart_toy_outlined,
+                  label: 'Agent Management',
+                  action: 'agent_management',
+                  enabled:
+                      _connectionId != null &&
+                      connectionState == SshConnectionState.connected,
                 ),
                 _terminalOverflowMenuItem(
                   context: context,
@@ -15692,6 +15708,62 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<void> _openAgentManagement() async {
+    final connectionId = _connectionId;
+    if (connectionId == null) return;
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null || !mounted) return;
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => AgentManagementScreen(
+          session: session,
+          onProvidersRefreshed: () {
+            if (mounted) setState(() {});
+          },
+        ),
+      ),
+    );
+  }
+
+  void _scheduleAgentUpdatePrompt(SshSession session) {
+    _agentUpdatePromptTimer?.cancel();
+    _agentUpdatePromptTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted && _connectionId == session.connectionId) {
+        unawaited(_maybePromptAgentUpdates(session));
+      }
+    });
+  }
+
+  Future<void> _maybePromptAgentUpdates(SshSession session) async {
+    if (_agentUpdatePromptedConnectionIds.contains(session.connectionId) ||
+        !ref.read(agentUpdateNotificationsNotifierProvider)) {
+      return;
+    }
+    _agentUpdatePromptedConnectionIds.add(session.connectionId);
+    final runtimes = await ref
+        .read(agentManagementServiceProvider)
+        .checkForUpdates(session);
+    if (!mounted ||
+        _connectionId != session.connectionId ||
+        !ref.read(agentUpdateNotificationsNotifierProvider)) {
+      return;
+    }
+    final updates = runtimes.where((runtime) => runtime.hasUpdate).toList();
+    if (updates.isEmpty) return;
+    final first = updates.first;
+    final suffix = updates.length == 1 ? '' : ' and ${updates.length - 1} more';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${first.definition.label} update available$suffix'),
+        action: SnackBarAction(
+          label: 'Manage',
+          onPressed: () => unawaited(_openAgentManagement()),
+        ),
+      ),
+    );
+  }
+
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
       case 'snippets':
@@ -15699,6 +15771,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'change_theme':
         unawaited(_showThemePicker());
+        break;
+      case 'agent_management':
+        await _openAgentManagement();
         break;
       case 'open_port_forward_browser':
         await _openPortForwardBrowserFromTerminal();

@@ -203,6 +203,37 @@ void main() {
       );
     });
 
+    testWidgets('shows and persists the agent update prompt toggle', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+      final tile = find.byKey(
+        const ValueKey('settings-agent-update-notifications'),
+      );
+      await tester.scrollUntilVisible(
+        tile,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Agent update prompts'), findsOneWidget);
+      expect(tester.widget<SwitchListTile>(tile).value, isTrue);
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<SwitchListTile>(tile).value, isFalse);
+      expect(
+        await SettingsService(
+          db,
+        ).getBool(SettingKeys.agentUpdateNotifications, defaultValue: true),
+        isFalse,
+      );
+    });
+
     testWidgets('sets the app-wide agent window mode', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
