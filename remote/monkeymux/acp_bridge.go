@@ -503,6 +503,11 @@ func validAcpBridgeID(id string) bool {
 }
 
 const cursorAgentAcpProviderID = "builtin:cursor-agent-acp"
+const piRpcProviderID = "builtin:pi-rpc"
+
+func isPiRpcProviderID(providerID string) bool {
+	return providerID == piRpcProviderID
+}
 
 var errCursorAgentKeychainLocked = errors.New("Cursor Agent login keychain is locked")
 var acpRuntimeGOOS = runtime.GOOS
@@ -591,6 +596,7 @@ func newAcpBridge(
 	hash := sha256.Sum256([]byte(command))
 	bridge := &acpBridge{
 		id:                   id,
+		providerID:           providerID,
 		provider:             provider,
 		commandHash:          hex.EncodeToString(hash[:]),
 		cwd:                  expandedCwd,
@@ -873,6 +879,10 @@ func (b *acpBridge) cachedInitializeResponse(raw json.RawMessage) json.RawMessag
 }
 
 func (b *acpBridge) observeClientMessage(raw json.RawMessage) {
+	if isPiRpcProviderID(b.providerID) {
+		b.observePiRpcClientMessage(raw)
+		return
+	}
 	id, hasID, hasMethod := acpJSONRPCIdentity(raw)
 	if !hasID {
 		return
@@ -893,6 +903,98 @@ func (b *acpBridge) observeClientMessage(raw json.RawMessage) {
 		b.releasePendingReplayLocked(id)
 	}
 	b.lastActivity = time.Now()
+}
+
+func (b *acpBridge) observePiRpcClientMessage(raw json.RawMessage) {
+	var envelope struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.ID == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch envelope.Type {
+	case "prompt", "steer", "follow_up":
+		b.inFlightTurns[envelope.ID] = struct{}{}
+	case "extension_ui_response":
+		delete(b.pendingRequests, envelope.ID)
+		b.releasePendingReplayLocked(envelope.ID)
+	}
+	b.lastActivity = time.Now()
+}
+
+func piRPCOutputIdentity(raw json.RawMessage) (string, string, string) {
+	var envelope struct {
+		ID     string `json:"id"`
+		Type   string `json:"type"`
+		Method string `json:"method"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return "", "", ""
+	}
+	if envelope.Type == "extension_ui_request" && envelope.ID != "" {
+		switch envelope.Method {
+		case "select", "confirm", "input", "editor":
+			return envelope.ID, "", envelope.Type
+		}
+	}
+	if envelope.Type == "response" && envelope.ID != "" {
+		return "", envelope.ID, envelope.Type
+	}
+	return "", "", envelope.Type
+}
+
+func piRPCResponseKeepsTurn(raw json.RawMessage) bool {
+	var envelope struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Success bool   `json:"success"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Type != "response" ||
+		!envelope.Success {
+		return false
+	}
+	switch envelope.Command {
+	case "prompt", "steer", "follow_up":
+		return true
+	default:
+		return false
+	}
+}
+
+func piRPCDialogTimeout(raw json.RawMessage) time.Duration {
+	var envelope struct {
+		Type    string `json:"type"`
+		Timeout int64  `json:"timeout"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil ||
+		envelope.Type != "extension_ui_request" || envelope.Timeout <= 0 {
+		return 0
+	}
+	const maxTimeout = int64((24 * time.Hour) / time.Millisecond)
+	if envelope.Timeout > maxTimeout {
+		envelope.Timeout = maxTimeout
+	}
+	return time.Duration(envelope.Timeout) * time.Millisecond
+}
+
+func piRPCResponseSessionID(raw json.RawMessage) string {
+	var envelope struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Success bool   `json:"success"`
+		Data    struct {
+			SessionID string `json:"sessionId"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Type != "response" ||
+		envelope.Command != "get_state" || !envelope.Success ||
+		!validAcpSessionID(envelope.Data.SessionID) {
+		return ""
+	}
+	return envelope.Data.SessionID
 }
 
 func acpJSONRPCRequestSession(raw json.RawMessage) (string, string) {
@@ -967,8 +1069,15 @@ func (b *acpBridge) publish(
 ) bool {
 	pendingID := ""
 	providerResponseID := ""
+	piEventType := ""
+	pendingTimeout := time.Duration(0)
 	if eventType == "output" {
-		if id, hasID, hasMethod := acpJSONRPCIdentity(data); hasID {
+		if isPiRpcProviderID(b.providerID) {
+			pendingID, providerResponseID, piEventType = piRPCOutputIdentity(data)
+			if pendingID != "" {
+				pendingTimeout = piRPCDialogTimeout(data)
+			}
+		} else if id, hasID, hasMethod := acpJSONRPCIdentity(data); hasID {
 			if hasMethod {
 				pendingID = id
 			} else {
@@ -987,8 +1096,23 @@ func (b *acpBridge) publish(
 	if pendingID != "" {
 		b.pendingRequests[pendingID] = struct{}{}
 	}
+	if piEventType == "agent_start" && len(b.inFlightTurns) == 0 {
+		b.inFlightTurns["pi-agent"] = struct{}{}
+	}
+	if piEventType == "agent_settled" {
+		for id := range b.inFlightTurns {
+			delete(b.inFlightTurns, id)
+		}
+	}
 	if providerResponseID != "" {
-		delete(b.inFlightTurns, providerResponseID)
+		if !isPiRpcProviderID(b.providerID) || !piRPCResponseKeepsTurn(data) {
+			delete(b.inFlightTurns, providerResponseID)
+		}
+		if isPiRpcProviderID(b.providerID) {
+			if sessionID := piRPCResponseSessionID(data); sessionID != "" {
+				b.sessionID = sessionID
+			}
+		}
 		if _, ok := b.initializeRequestIDs[providerResponseID]; ok {
 			if result, valid := acpJSONRPCResponseResult(data); valid {
 				b.initializeResult = result
@@ -1031,6 +1155,17 @@ func (b *acpBridge) publish(
 	b.mu.Unlock()
 	for _, client := range detached {
 		client.cancel()
+	}
+	if pendingID != "" && pendingTimeout > 0 {
+		time.AfterFunc(pendingTimeout, func() {
+			b.mu.Lock()
+			if _, ok := b.pendingRequests[pendingID]; ok {
+				delete(b.pendingRequests, pendingID)
+				b.releasePendingReplayLocked(pendingID)
+				b.lastActivity = time.Now()
+			}
+			b.mu.Unlock()
+		})
 	}
 	return true
 }
@@ -1323,9 +1458,11 @@ func (b *acpBridge) handleAttach(
 				})
 				continue
 			}
-			if response := b.cachedInitializeResponse(message.Data); len(response) > 0 {
-				b.publish("output", response, "", nil)
-				continue
+			if !isPiRpcProviderID(b.providerID) {
+				if response := b.cachedInitializeResponse(message.Data); len(response) > 0 {
+					b.publish("output", response, "", nil)
+					continue
+				}
 			}
 			initializeID, trackedInitialize := b.trackInitializeRequest(message.Data)
 			if err := b.writeProvider(message.Data); err != nil {

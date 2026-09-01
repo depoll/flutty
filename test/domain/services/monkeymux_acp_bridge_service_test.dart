@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/models/monkeymux_acp_bridge.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_backend.dart';
@@ -817,6 +818,48 @@ void main() {
     expect(transport.lastDeliveredSequence, 2);
     expect(transport.didSkipHistoricalReplay(), isFalse);
   });
+
+  test(
+    'forced pending replay establishes a snapshot hydration baseline',
+    () async {
+      late _TestChannel channel;
+      channel = _TestChannel(
+        onWrite: (value) {
+          final message = jsonDecode(value) as Map<String, dynamic>;
+          if (message['type'] != 'hello') return;
+          expect(message['lastAck'], 0);
+          expect(message['replayMode'], 'pending');
+          channel.addText(
+            '${_frame({'version': 1, 'type': 'hello', 'bridgeId': _bridgeId, 'clientId': _otherBridgeId, 'canSend': true, 'replayMode': 'pending', 'bridge': _metadata(nextSequence: 2, pendingRequestCount: 0)})}${_frame({'version': 1, 'type': 'replay_end', 'bridgeId': _bridgeId, 'replayMode': 'pending'})}',
+          );
+        },
+      );
+      final client = _MockSshClient();
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => channel.session);
+      final transport =
+          MonkeyMuxAcpBridgeService(
+            installer: _FakeInstaller(
+              const MonkeyMuxInstallation(
+                executablePath: '/helper',
+                platform: 'linux-amd64',
+                version: 'test',
+              ),
+            ),
+          ).connect(
+            sessionProvider: () async => _sshSession(client),
+            bridgeId: _bridgeId,
+            providerId: AcpBuiltinProviderIds.pi,
+            forcePendingReplay: true,
+          );
+      addTearDown(transport.close);
+
+      await _waitUntil(() => transport.isConnected);
+      expect(transport.lastDeliveredSequence, 2);
+      expect(transport.didSkipHistoricalReplay(), isTrue);
+    },
+  );
 
   test('direct replay resumes before flushing input after channel loss', () async {
     final channels = <_TestChannel>[];

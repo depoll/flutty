@@ -1,11 +1,15 @@
 import 'dart:async';
 
+import '../models/acp_provider.dart';
 import '../models/monkeymux_acp_bridge.dart';
 import 'acp_client.dart';
 import 'acp_client_capability_service.dart';
 import 'acp_json_rpc_connection.dart';
 import 'monkeymux_acp_bridge_service.dart';
 import 'monkeymux_installer_service.dart';
+import 'native_agent_client.dart';
+import 'pi_rpc_client.dart';
+import 'pi_rpc_connection.dart';
 import 'remote_file_service.dart';
 import 'ssh_service.dart';
 
@@ -55,7 +59,7 @@ final class AcpBridgeSession {
        _lastDeliveredSequence = lastDeliveredSequence;
 
   /// Typed ACP client bound to the bridge transport.
-  final AcpClient client;
+  final NativeAgentClient client;
 
   /// Transport lifecycle updates (connecting, reconnecting, exited, ...).
   final Stream<MonkeyMuxAcpTransportState> transportStates;
@@ -124,6 +128,7 @@ abstract interface class AcpBridgeConnector {
     required String bridgeId,
     required String providerId,
     int lastAcknowledgedSequence = 0,
+    String? expectedSessionId,
   });
 
   /// Resolves the same-host filesystem/terminal binding used to answer ACP
@@ -239,6 +244,7 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
     required String bridgeId,
     required String providerId,
     int lastAcknowledgedSequence = 0,
+    String? expectedSessionId,
   }) {
     // A replacement local attachment continues the same logical replay cursor.
     final transport = _bridgeService.connect(
@@ -246,12 +252,25 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
       bridgeId: bridgeId,
       providerId: providerId,
       lastAcknowledgedSequence: lastAcknowledgedSequence,
+      forcePendingReplay: isPiRpcProviderId(providerId),
     );
-    final connection = AcpJsonRpcConnection(
-      transport: transport,
-      defaultRequestTimeout: defaultRequestTimeout,
-    );
-    final client = AcpClient(connection);
+    final NativeAgentClient client;
+    if (isPiRpcProviderId(providerId)) {
+      client = PiRpcClient(
+        PiRpcConnection(
+          transport: transport,
+          defaultRequestTimeout: defaultRequestTimeout,
+        ),
+        initialSessionId: expectedSessionId,
+      );
+    } else {
+      client = AcpClient(
+        AcpJsonRpcConnection(
+          transport: transport,
+          defaultRequestTimeout: defaultRequestTimeout,
+        ),
+      );
+    }
     return AcpBridgeSession(
       client: client,
       transportStates: transport.states,

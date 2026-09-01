@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/acp_json.dart';
+import '../models/acp_provider.dart';
 import '../models/acp_recent_session.dart';
 import '../models/acp_session_keys.dart';
 import 'settings_service.dart';
@@ -173,7 +174,7 @@ class AcpRecentSessionsService {
     }
     return AcpSessionKey.of(
       hostId: hostId,
-      providerId: providerId,
+      providerId: normalizeAcpProviderId(providerId),
       bridgeId: bridgeId,
       acpSessionId: acpSessionId,
     );

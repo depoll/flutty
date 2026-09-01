@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'acp_json.dart';
+import 'acp_provider.dart';
 import 'acp_session_keys.dart';
 
 /// Maximum persisted provider-title characters for one recent session.
@@ -50,7 +51,7 @@ final class AcpRecentSessionRef {
     if (createdAt == null || lastActivityAt == null) return null;
     return AcpRecentSessionRef(
       hostId: hostId,
-      providerId: providerId,
+      providerId: normalizeAcpProviderId(providerId),
       bridgeId: bridgeId,
       acpSessionId: acpSessionId,
       createdAt: createdAt,

@@ -333,7 +333,7 @@ void main() {
       expect(acpOpenCodeProvider.id, 'builtin:opencode');
       expect(acpCursorAgentProvider.id, 'builtin:cursor-agent-acp');
       expect(acpAntigravityProvider.id, 'builtin:antigravity-acp');
-      expect(acpPiProvider.id, 'builtin:pi-acp');
+      expect(acpPiProvider.id, 'builtin:pi-rpc');
       expect(acpHermesProvider.id, 'builtin:hermes-acp');
       expect(acpOpenClawProvider.id, 'builtin:openclaw-acp');
       expect(acpGrokBuildProvider.id, 'builtin:grok-build');
@@ -343,6 +343,15 @@ void main() {
           isTrue,
         );
       }
+    });
+
+    test("normalizes Pi's retired ACP adapter provider ID", () {
+      expect(
+        normalizeAcpProviderId(AcpBuiltinProviderIds.legacyPiAcp),
+        AcpBuiltinProviderIds.pi,
+      );
+      expect(isPiRpcProviderId(AcpBuiltinProviderIds.pi), isTrue);
+      expect(isPiRpcProviderId(AcpBuiltinProviderIds.legacyPiAcp), isFalse);
     });
 
     test('built-in launch commands are valid and exclude a cwd concept', () {
@@ -384,9 +393,10 @@ void main() {
       ]);
       expect(
         acpPiProvider.executableProbe.candidateExecutableNames,
-        contains('pi-acp'),
+        contains('pi'),
       );
-      expect(acpPiProvider.launchCommand.argv, ['pi-acp']);
+      expect(acpPiProvider.launchCommand.argv, ['pi', '--mode', 'rpc']);
+      expect(acpPiProvider.adapterFallbackCommand, isNull);
       expect(acpHermesProvider.launchCommand.argv, ['hermes', 'acp']);
       expect(
         acpHermesProvider.launchProfileSupport?.discoveryKind,
