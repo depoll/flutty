@@ -17,6 +17,7 @@ import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
+import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
@@ -8164,6 +8165,147 @@ void main() {
         expect(acpManager.releasedMuxBridges, [
           (hostId: host.id, bridgeId: bridgeId),
         ]);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
+      'recreates an expired native bridge from recents and removes its stale mux window',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1100, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const staleBridgeId = '0123456789abcdef0123456789abcdef';
+        const replacementBridgeId = 'abcdef0123456789abcdef0123456789';
+        final staleKey = fakeAcpKey(
+          hostId: host.id,
+          providerId: AcpBuiltinProviderIds.claudeAgent,
+          bridgeId: staleBridgeId,
+          acpSessionId: 'claude-session',
+        );
+        final replacementKey = fakeAcpKey(
+          hostId: host.id,
+          providerId: AcpBuiltinProviderIds.claudeAgent,
+          bridgeId: replacementBridgeId,
+          acpSessionId: staleKey.acpSessionId,
+        );
+        final acpManager =
+            FakeAcpSessionManager(
+                recents: [
+                  AcpRecentSessionRef(
+                    hostId: staleKey.hostId,
+                    providerId: staleKey.providerId,
+                    bridgeId: staleKey.bridgeId,
+                    acpSessionId: staleKey.acpSessionId,
+                    cwd: '/home/dev/project',
+                    createdAt: DateTime(2025),
+                    lastActivityAt: DateTime(2026),
+                  ),
+                ],
+              )
+              ..reconnectSessionResult = AcpSessionLaunchStarted(replacementKey)
+              ..reconnectSessionState = fakeAcpSession(
+                key: replacementKey,
+                providerLabel: 'Claude Agent',
+              );
+        addTearDown(acpManager.dispose);
+
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, id: '@1', name: 'shell', isActive: true),
+          TmuxWindow(
+            index: 2,
+            id: '@3',
+            name: 'Claude Agent',
+            isActive: false,
+            currentPath: '/home/dev/project',
+            nativeAcpBridgeId: staleBridgeId,
+            nativeAcpProviderId: AcpBuiltinProviderIds.claudeAgent,
+          ),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: 'work',
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(session, 'work'),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, 'work'),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, 'work'),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.selectWindow(
+            session,
+            'work',
+            2,
+            windowId: any(named: 'windowId'),
+            extraFlags: any(named: 'extraFlags'),
+            clientImageSignatures: any(named: 'clientImageSignatures'),
+            suppressReplay: any(named: 'suppressReplay'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.killWindow(
+            session,
+            'work',
+            2,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        final activeSessions = _TestActiveSessionsNotifier(session);
+        await pumpScreen(
+          tester,
+          activeSessions: activeSessions,
+          tmuxService: tmuxService,
+          monkeyMuxService: monkeyMuxService,
+          acpSessionManager: acpManager,
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+        windowEvents.add(TmuxWindowListEvent([windows.last]));
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-2')));
+        for (
+          var attempt = 0;
+          attempt < 20 && acpManager.reconnects.isEmpty;
+          attempt++
+        ) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+
+        expect(acpManager.reconnects, hasLength(1));
+        expect(acpManager.reconnects.single.bridgeId, staleBridgeId);
+        expect(
+          acpManager.reconnects.single.acpSessionId,
+          staleKey.acpSessionId,
+        );
+        expect(acpManager.reconnectKnownBridges.single, isNull);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        verify(
+          () => monkeyMuxService.killWindow(
+            session,
+            'work',
+            2,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+        expect(session.activeNativeAcpSessionKey, replacementKey);
+        expect(activeSessions.disconnectedConnectionIds, isEmpty);
+        expect(
+          find.text('The native agent window is no longer running.'),
+          findsNothing,
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

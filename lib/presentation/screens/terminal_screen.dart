@@ -30,6 +30,7 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/acp_native_preview.dart';
 import '../../domain/models/acp_provider.dart';
+import '../../domain/models/acp_recent_session.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
@@ -12298,19 +12299,52 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final bridge = bridges
         .where((candidate) => candidate.id == bridgeId)
         .firstOrNull;
-    final acpSessionId = bridge?.sessionId?.trim();
-    if (bridge == null ||
-        bridge.state == MonkeyMuxAcpProviderState.exited ||
-        bridge.state == MonkeyMuxAcpProviderState.stopped ||
-        bridge.state == MonkeyMuxAcpProviderState.protocolError ||
-        acpSessionId == null ||
-        acpSessionId.isEmpty) {
+    final remoteSessionId = bridge?.sessionId?.trim();
+    AcpRecentSessionRef? recent;
+    if ((remoteSessionId == null || remoteSessionId.isEmpty) &&
+        tracked == null) {
+      final recents = await manager.loadRecentSessions();
+      if (!requestIsCurrent()) return;
+      recent = recents
+          .where(
+            (candidate) =>
+                candidate.hostId == sshSession.hostId &&
+                candidate.bridgeId == bridgeId &&
+                candidate.providerId == providerId,
+          )
+          .firstOrNull;
+    }
+    if (!mounted || requestGeneration != _nativeAcpWindowRequestGeneration) {
+      return;
+    }
+    final acpSessionId = remoteSessionId?.isNotEmpty ?? false
+        ? remoteSessionId!
+        : tracked?.key.acpSessionId ?? recent?.acpSessionId;
+    if (acpSessionId == null || acpSessionId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('The native agent window is no longer running.'),
         ),
       );
       return;
+    }
+
+    final bridgeNeedsReplacement =
+        bridge == null ||
+        bridge.state == MonkeyMuxAcpProviderState.exited ||
+        bridge.state == MonkeyMuxAcpProviderState.stopped ||
+        bridge.state == MonkeyMuxAcpProviderState.protocolError;
+    if (bridgeNeedsReplacement) {
+      DiagnosticsLogService.instance.info(
+        'acp.window',
+        'stale_bridge_recovery_start',
+        fields: {
+          'hostId': sshSession.hostId,
+          'hadRemoteBridge': bridge != null,
+          'hadTrackedSession': tracked != null,
+          'hadRecentSession': recent != null,
+        },
+      );
     }
 
     await _switchTmuxWindow(
@@ -12322,8 +12356,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final cwd = bridge.cwd?.trim().isNotEmpty ?? false
-        ? bridge.cwd!.trim()
+    final bridgeCwd = bridge?.cwd?.trim();
+    final trackedCwd = tracked?.cwd.trim();
+    final recentCwd = recent?.cwd?.trim();
+    final cwd = bridgeCwd?.isNotEmpty ?? false
+        ? bridgeCwd!
+        : (trackedCwd?.isNotEmpty ?? false)
+        ? trackedCwd!
+        : (recentCwd?.isNotEmpty ?? false)
+        ? recentCwd!
         : (workingDirectory?.trim().isNotEmpty ?? false)
         ? workingDirectory!.trim()
         : (_workingDirectoryPath ?? _host?.tmuxWorkingDirectory ?? '~');
@@ -12494,6 +12535,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (_activeNativeAcpSessionKey == provisionalKey &&
               key != provisionalKey) {
             _openNativeAcpSession(key);
+          }
+          if (key.bridgeId != bridgeId) {
+            try {
+              // A recreated bridge owns a new MonkeyMux window. Remove the
+              // dead placeholder so selecting it cannot start another copy.
+              await _closeTmuxWindow(
+                sshSession,
+                windowIndex,
+                preserveMuxSession: true,
+              );
+              DiagnosticsLogService.instance.info(
+                'acp.window',
+                'stale_window_removed',
+                fields: {'hostId': sshSession.hostId},
+              );
+            } on Object catch (error) {
+              DiagnosticsLogService.instance.warning(
+                'acp.window',
+                'stale_window_remove_failed',
+                fields: {
+                  'hostId': sshSession.hostId,
+                  'errorType': error.runtimeType,
+                },
+              );
+            }
           }
         case AcpSessionLaunchFailed(:final error):
           final restored = await restoreTerminalAfterFailedHandoff();
@@ -13051,15 +13117,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   /// Closes a tmux window via exec channel.
-  Future<void> _closeTmuxWindow(SshSession session, int windowIndex) async {
+  Future<void> _closeTmuxWindow(
+    SshSession session,
+    int windowIndex, {
+    bool preserveMuxSession = false,
+  }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    final closesLastMonkeyMuxWindow = await _isClosingLastMonkeyMuxWindow(
-      session,
-      sessionName,
-      windowIndex,
-    );
+    final closesLastMonkeyMuxWindow =
+        !preserveMuxSession &&
+        await _isClosingLastMonkeyMuxWindow(session, sessionName, windowIndex);
     try {
       await _activeTerminalConnectionBackend(session).killWindow(windowIndex);
     } on Object catch (error) {
