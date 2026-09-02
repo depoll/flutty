@@ -186,6 +186,13 @@ jobs:
       - name: Analyze code
         run: flutter analyze --fatal-warnings --fatal-infos --no-pub
 
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '3.3'
+
+      - name: Test release-note metadata
+        run: ruby test/scripts/preview_release_notes_test.rb
+
   test:
     name: Test (Shard ${{ matrix.shard-index }}/4)
     needs: [changes, monkeymux-assets]

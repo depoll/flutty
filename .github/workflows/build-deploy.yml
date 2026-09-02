@@ -44,12 +44,17 @@ on:
         required: false
         type: string
         default: 'none'
-        description: 'iOS deploy target: testflight, appstore, or none'
+        description: 'iOS deploy target: testflight, appstore, firebase, or none'
       deploy-android-to:
         required: false
         type: string
         default: 'none'
-        description: 'Android deploy target: internal, production, or none'
+        description: 'Android deploy target: internal, production, firebase, or none'
+      firebase-tester-groups:
+        required: false
+        type: string
+        default: 'testers'
+        description: 'Comma-separated Firebase App Distribution tester group aliases for firebase deploy targets'
       build-android:
         required: false
         type: boolean
@@ -188,6 +193,8 @@ on:
       FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST:
         required: false
       FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST:
+        required: false
+      FIREBASE_SERVICE_ACCOUNT_JSON:
         required: false
     outputs:
       apk-artifact-id:
@@ -524,7 +531,7 @@ jobs:
           EOF_KEY_PROPERTIES
 
       - name: Build signed AAB
-        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.deploy-android-to != 'none' && inputs.deploy-android-to != 'firebase' && inputs.android-reuse-aab-artifact-name == ''
         env:
           ANDROID_TARGET_PLATFORM: ${{ inputs.android-target-platform }}
         run: |
@@ -543,8 +550,31 @@ jobs:
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
             --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
 
+      # Firebase App Distribution serves APKs directly to testers without
+      # requiring the Firebase app to be linked to a Play account, so firebase
+      # deploys build a release-signed universal APK instead of an AAB.
+      - name: Build signed APK for Firebase App Distribution
+        if: inputs.deploy-android-to == 'firebase' && inputs.android-reuse-aab-artifact-name == ''
+        env:
+          ANDROID_TARGET_PLATFORM: ${{ inputs.android-target-platform }}
+        run: |
+          EXTRA_ANDROID_FLAGS=()
+          if [ -n "$ANDROID_TARGET_PLATFORM" ]; then
+            EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
+          fi
+          flutter build apk \
+            --flavor "$BUILD_FLAVOR" \
+            --release \
+            "${EXTRA_ANDROID_FLAGS[@]}" \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
+
       - name: Verify AD_ID permission in AAB
-        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.deploy-android-to != 'none' && inputs.deploy-android-to != 'firebase' && inputs.android-reuse-aab-artifact-name == ''
         env:
           AAB_PATH: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
         run: |
@@ -720,7 +750,7 @@ jobs:
           mv "$SIGNED_AAB_PATH" "$AAB_PATH"
 
       - name: Upload signed AAB artifact
-        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.deploy-android-to != 'none' && inputs.deploy-android-to != 'firebase' && inputs.android-reuse-aab-artifact-name == ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
@@ -795,8 +825,9 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
-          DEPLOYMENT_ENVIRONMENT: Android ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / Play ${{ inputs.deploy-android-to == 'production' && 'Production' || 'Internal' }}
-          DEPLOYMENT_DESCRIPTION: Android ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }}) to Play ${{ inputs.deploy-android-to }}
+          DEPLOYMENT_ENVIRONMENT: Android ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-android-to == 'firebase' && 'Firebase App Distribution' || inputs.deploy-android-to == 'production' && 'Play Production' || 'Play Internal' }}
+          DEPLOYMENT_DESCRIPTION: Android ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }}) to ${{ inputs.deploy-android-to == 'firebase' && 'Firebase App Distribution' || format('Play {0}', inputs.deploy-android-to) }}
+          DEPLOYMENT_PROGRESS_DESCRIPTION: ${{ inputs.deploy-android-to == 'firebase' && 'Android Firebase App Distribution upload started.' || 'Android Play upload started.' }}
           DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
           DEPLOYMENT_PRODUCTION_ENVIRONMENT: ${{ inputs.deploy-android-to == 'production' }}
         with:
@@ -819,7 +850,7 @@ jobs:
               repo,
               deployment_id: deployment.data.id,
               state: 'in_progress',
-              description: 'Android Play upload started.',
+              description: process.env.DEPLOYMENT_PROGRESS_DESCRIPTION,
               log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
               auto_inactive: false,
               ...(environmentUrl ? {environment_url: environmentUrl} : {}),
@@ -827,12 +858,22 @@ jobs:
             core.setOutput('deployment-id', String(deployment.data.id));
 
       - name: Validate Play Store service account
-        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
+        if: inputs.deploy-android-to != 'none' && inputs.deploy-android-to != 'firebase' && inputs.run-android-deploy
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
         run: |
           if [ -z "$PLAY_STORE_SERVICE_ACCOUNT_JSON" ]; then
             echo "::error title=Missing Play Store service account::PLAY_STORE_SERVICE_ACCOUNT_JSON is required for Android Play uploads."
+            exit 1
+          fi
+
+      - name: Validate Firebase App Distribution credentials
+        if: inputs.deploy-android-to == 'firebase' && inputs.run-android-deploy
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::error title=Missing Firebase service account::FIREBASE_SERVICE_ACCOUNT_JSON is required for Firebase App Distribution uploads."
             exit 1
           fi
 
@@ -867,13 +908,28 @@ jobs:
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_TESTER_GROUPS: ${{ inputs.firebase-tester-groups }}
           AAB_PATH: ../build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
+          APK_PATH: ../build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-release.apk
           ANDROID_VERSION_CODE: ${{ inputs.build-number }}
           FLUTTY_BUILD_NAME: ${{ inputs.build-name }}
           FLUTTY_VERSION_CODENAME: ${{ inputs.build-codename }}
           FLUTTY_SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
+          if [ "${{ inputs.deploy-android-to }}" = "firebase" ]; then
+            umask 077
+            printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-service-account.json"
+            export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/firebase-service-account.json"
+            COMMIT_SUBJECT="$(git log -1 --format=%s 2>/dev/null || true)"
+            FLUTTY_BRANCH_NAME="$GITHUB_REF_NAME"
+            export FLUTTY_BRANCH_NAME
+            if [ -z "${FLUTTY_PR_COMMITS:-}" ]; then
+              FLUTTY_LAST_COMMIT="$(printf '%.7s %s' "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
+              export FLUTTY_LAST_COMMIT
+            fi
+          fi
           cd android
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
           PACKAGE_NAME="${{ inputs.flavor == 'private' && 'xyz.depollsoft.monkeyssh.private' || 'xyz.depollsoft.monkeyssh' }}"
@@ -881,6 +937,8 @@ jobs:
             bundle exec fastlane internal package_name:"$PACKAGE_NAME" skip_metadata:"$SKIP_META" version_code:"$ANDROID_VERSION_CODE"
           elif [ "${{ inputs.deploy-android-to }}" = "production" ]; then
             bundle exec fastlane release skip_metadata:"$SKIP_META" version_code:"$ANDROID_VERSION_CODE"
+          elif [ "${{ inputs.deploy-android-to }}" = "firebase" ]; then
+            bundle exec fastlane firebase package_name:"$PACKAGE_NAME"
           fi
 
       - name: Finish Android GitHub deployment
@@ -891,7 +949,7 @@ jobs:
           DEPLOYMENT_ID: ${{ steps.start-android-deployment.outputs['deployment-id'] }}
           DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
           DEPLOYMENT_STATE: ${{ steps.android-deploy.outcome == 'success' && 'success' || 'failure' }}
-          DEPLOYMENT_DESCRIPTION: ${{ steps.android-deploy.outcome == 'success' && 'Android Play upload completed.' || 'Android Play upload failed.' }}
+          DEPLOYMENT_DESCRIPTION: ${{ inputs.deploy-android-to == 'firebase' && (steps.android-deploy.outcome == 'success' && 'Android Firebase App Distribution upload completed.' || 'Android Firebase App Distribution upload failed.') || (steps.android-deploy.outcome == 'success' && 'Android Play upload completed.' || 'Android Play upload failed.') }}
         with:
           script: |
             const owner = context.repo.owner;
@@ -910,7 +968,7 @@ jobs:
 
       - name: Remove Android signing material
         if: always() && inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
-        run: rm -f android/app/upload-keystore.jks android/app/key.properties
+        run: rm -f android/app/upload-keystore.jks android/app/key.properties "$RUNNER_TEMP/firebase-service-account.json"
 
   build-ios:
     name: Build & Deploy iOS (${{ inputs.flavor }})
@@ -1050,8 +1108,10 @@ jobs:
           printf '%s' "$GOOGLE_SERVICE_INFO_PLIST" > "ios/Runner/Firebase/${{ inputs.flavor }}/GoogleService-Info.plist"
           echo "FLUTTY_FIREBASE_ENABLED=true" >> "$GITHUB_ENV"
 
+      # The firebase target skips this readonly App Store profile sync; the
+      # fastlane firebase lane syncs the ad hoc certificates itself.
       - name: Setup code signing
-        if: inputs.deploy-ios-to != 'none' && (inputs.ios-reuse-ipa-artifact-name == '' || inputs.ios-reuse-ipa-is-unsigned)
+        if: inputs.deploy-ios-to != 'none' && inputs.deploy-ios-to != 'firebase' && (inputs.ios-reuse-ipa-artifact-name == '' || inputs.ios-reuse-ipa-is-unsigned)
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
@@ -1211,6 +1271,16 @@ jobs:
               print(f'Warning: failed to fetch PR commits: {e}', file=sys.stderr)
           SCRIPT
 
+      - name: Validate Firebase App Distribution credentials
+        if: inputs.deploy-ios-to == 'firebase' && inputs.run-ios-deploy
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::error title=Missing Firebase service account::FIREBASE_SERVICE_ACCOUNT_JSON is required for Firebase App Distribution uploads."
+            exit 1
+          fi
+
       - name: Start iOS GitHub deployment
         id: start-ios-deployment
         if: inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy
@@ -1218,8 +1288,9 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
-          DEPLOYMENT_ENVIRONMENT: iOS ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-ios-to == 'appstore' && 'App Store' || 'TestFlight' }}
+          DEPLOYMENT_ENVIRONMENT: iOS ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-ios-to == 'firebase' && 'Firebase App Distribution' || inputs.deploy-ios-to == 'appstore' && 'App Store' || 'TestFlight' }}
           DEPLOYMENT_DESCRIPTION: iOS ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }}) to ${{ inputs.deploy-ios-to }}
+          DEPLOYMENT_PROGRESS_DESCRIPTION: ${{ inputs.deploy-ios-to == 'firebase' && 'iOS Firebase App Distribution upload started.' || 'iOS App Store Connect upload started.' }}
           DEPLOYMENT_PRODUCTION_ENVIRONMENT: ${{ inputs.deploy-ios-to == 'appstore' }}
         with:
           script: |
@@ -1240,7 +1311,7 @@ jobs:
               repo,
               deployment_id: deployment.data.id,
               state: 'in_progress',
-              description: 'iOS App Store Connect upload started.',
+              description: process.env.DEPLOYMENT_PROGRESS_DESCRIPTION,
               log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
               auto_inactive: false,
             });
@@ -1268,11 +1339,25 @@ jobs:
           APP_REVIEW_CONTACT_LAST_NAME: ${{ secrets.APP_REVIEW_CONTACT_LAST_NAME }}
           APP_REVIEW_CONTACT_EMAIL: ${{ secrets.APP_REVIEW_CONTACT_EMAIL }}
           APP_REVIEW_CONTACT_PHONE: ${{ secrets.APP_REVIEW_CONTACT_PHONE }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_TESTER_GROUPS: ${{ inputs.firebase-tester-groups }}
           FLUTTY_BUILD_NAME: ${{ inputs.build-name }}
           FLUTTY_VERSION_CODENAME: ${{ inputs.build-codename }}
           FLUTTY_SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
+          if [ "${{ inputs.deploy-ios-to }}" = "firebase" ]; then
+            umask 077
+            printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-service-account.json"
+            export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/firebase-service-account.json"
+            COMMIT_SUBJECT="$(git log -1 --format=%s 2>/dev/null || true)"
+            FLUTTY_BRANCH_NAME="$GITHUB_REF_NAME"
+            export FLUTTY_BRANCH_NAME
+            if [ -z "${FLUTTY_PR_COMMITS:-}" ]; then
+              FLUTTY_LAST_COMMIT="$(printf '%.7s %s' "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
+              export FLUTTY_LAST_COMMIT
+            fi
+          fi
           cd ios
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
@@ -1301,7 +1386,9 @@ jobs:
           fi
 
           if [ "${{ inputs.run-ios-deploy }}" = "true" ]; then
-            if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
+            if [ "${{ inputs.deploy-ios-to }}" = "firebase" ]; then
+              bundle exec fastlane firebase scheme:"$SCHEME"
+            elif [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
               bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META" ipa_path:"$REUSED_IPA_PATH"
             elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
               APP_STORE_VERSION_OUTPUT="$RUNNER_TEMP/app-store-release-version"
@@ -1329,7 +1416,7 @@ jobs:
         env:
           DEPLOYMENT_ID: ${{ steps.start-ios-deployment.outputs['deployment-id'] }}
           DEPLOYMENT_STATE: ${{ steps.ios-deploy.outcome == 'success' && 'success' || 'failure' }}
-          DEPLOYMENT_DESCRIPTION: ${{ steps.ios-deploy.outcome == 'success' && 'iOS App Store Connect upload completed.' || 'iOS App Store Connect upload failed.' }}
+          DEPLOYMENT_DESCRIPTION: ${{ inputs.deploy-ios-to == 'firebase' && (steps.ios-deploy.outcome == 'success' && 'iOS Firebase App Distribution upload completed.' || 'iOS Firebase App Distribution upload failed.') || (steps.ios-deploy.outcome == 'success' && 'iOS App Store Connect upload completed.' || 'iOS App Store Connect upload failed.') }}
         with:
           script: |
             const owner = context.repo.owner;
@@ -1344,9 +1431,15 @@ jobs:
               auto_inactive: process.env.DEPLOYMENT_STATE === 'success',
             });
 
+      - name: Remove Firebase distribution credentials
+        if: always() && inputs.deploy-ios-to == 'firebase'
+        run: rm -f "$RUNNER_TEMP/firebase-service-account.json"
+
+      # Firebase deploys skip the IPA artifact upload; Firebase App
+      # Distribution already hosts the build for testers.
       - name: Prepare signed IPA artifact
         id: signed-ipa-artifact
-        if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
+        if: inputs.deploy-ios-to != 'none' && inputs.deploy-ios-to != 'firebase' && inputs.ios-reuse-ipa-artifact-name == ''
         run: |
           set -euo pipefail
 
@@ -1365,7 +1458,7 @@ jobs:
           echo "path=$ARTIFACT_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Upload signed IPA artifact
-        if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
+        if: inputs.deploy-ios-to != 'none' && inputs.deploy-ios-to != 'firebase' && inputs.ios-reuse-ipa-artifact-name == ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           path: ${{ steps.signed-ipa-artifact.outputs.path }}
@@ -1408,6 +1501,8 @@ jobs:
                 success)
                   if [ "$ANDROID_TARGET" = 'production' ]; then
                     android_status='✅ Deployed to Play production'
+                  elif [ "$ANDROID_TARGET" = 'firebase' ]; then
+                    android_status='✅ Distributed via Firebase App Distribution'
                   else
                     android_status='✅ Deployed to Play internal'
                   fi
@@ -1434,6 +1529,8 @@ jobs:
                 success)
                   if [ "$IOS_TARGET" = 'appstore' ]; then
                     ios_status='✅ Uploaded to App Store Connect'
+                  elif [ "$IOS_TARGET" = 'firebase' ]; then
+                    ios_status='✅ Distributed via Firebase App Distribution'
                   else
                     ios_status='✅ Uploaded to TestFlight'
                   fi
@@ -1578,10 +1675,14 @@ jobs:
               body: updatedBody,
             });
 
+  # Firebase App Distribution deploys are excluded on purpose: this marker
+  # tracks the latest TestFlight/Play private build number so /deploy knows
+  # when preview intermediates are still ahead of the deployed build, and
+  # every-push firebase distributions would keep bumping it.
   record-private-deploy-build-number:
     name: Record Private Deploy Build Number
     needs: [build-android, build-ios]
-    if: inputs.flavor == 'private' && (inputs.deploy-ios-to != 'none' || inputs.deploy-android-to != 'none') && needs.build-android.result == 'success' && needs.build-ios.result == 'success'
+    if: inputs.flavor == 'private' && (inputs.deploy-ios-to == 'testflight' || inputs.deploy-ios-to == 'appstore' || inputs.deploy-android-to == 'internal' || inputs.deploy-android-to == 'production') && needs.build-android.result == 'success' && needs.build-ios.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Write private deploy build marker

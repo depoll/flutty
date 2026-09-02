@@ -1,7 +1,7 @@
 # Deployment Guide
 
 This guide covers automated deployment to TestFlight, Play Store internal
-testing, and public store releases.
+testing, Firebase App Distribution, and public store releases.
 
 ## App Variants
 
@@ -38,6 +38,40 @@ Both variants install side-by-side on the same device.
    - Grant "Service Account User" role
    - Create and download a JSON key
    - Back in Play Console, grant the service account access with "Release manager" permissions
+
+### Firebase App Distribution
+
+Every push to `main` distributes the **private** flavor to Firebase App
+Distribution testers (see the Firebase Distribution workflow below). Keeping
+signing and upload secrets on `main` prevents unreviewed branch code from
+accessing long-lived credentials. One-time
+setup in the [Firebase console](https://console.firebase.google.com/) for
+project `monkeyssh`:
+
+1. Open **App Distribution** and press **Get started** for both private apps
+   (`xyz.depollsoft.monkeyssh.private` on Android and iOS)
+2. Create a tester **group** with alias `testers` (or set the
+   `FIREBASE_TESTER_GROUPS` repository *variable* to a comma-separated list of
+   your group aliases) and add tester emails to it
+3. Create a **service account** in the Google Cloud console for the Firebase
+   project, grant it the **Firebase App Distribution Admin** role, and download
+   a JSON key — this becomes the `FIREBASE_SERVICE_ACCOUNT_JSON` secret
+4. **iOS only:** App Distribution installs ad hoc builds, so every tester
+   device UDID must be registered in the Apple Developer portal. Have testers
+   register through the invite link (Firebase collects the UDID), then add the
+   device in the developer portal.
+
+   Apple requires **at least one registered device** before it will issue an
+   ad hoc profile, so register a device before the first firebase deploy. The
+   first deploy then creates the `AdHoc_*` match profiles automatically,
+   reusing the existing distribution certificate. Later device registrations
+   are picked up automatically too (`force_for_new_devices`), so no manual
+   step is normally needed. To force a refresh anyway:
+
+   ```bash
+   cd ios
+   bundle exec fastlane regenerate_profiles type:adhoc
+   ```
 
 ### Fastlane Match (iOS Certificates)
 
@@ -94,6 +128,15 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 | `ANDROID_STORE_PASSWORD` | Keystore password | Set during `keytool -genkey` |
 | `PLAY_STORE_SERVICE_ACCOUNT_JSON` | Service account JSON key content | Downloaded from Google Cloud Console |
 
+### Firebase App Distribution
+
+| Secret | Description | How to get it |
+|--------|-------------|---------------|
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Service account JSON key with the Firebase App Distribution Admin role | Google Cloud Console for the `monkeyssh` Firebase project |
+
+Optionally set the `FIREBASE_TESTER_GROUPS` repository **variable** (not a
+secret) to override the default `testers` group alias.
+
 ## Workflows
 
 ### PR Preview (`preview.yml`)
@@ -111,6 +154,23 @@ Triggered on push to `main`. Builds the **private** flavor and deploys to:
 - **Android**: Play Store internal testing track
 
 This ensures TestFlight and Play Store internal testing always reflect the latest `main`.
+
+### Firebase Distribution (`firebase-distribution.yml`)
+
+Triggered when a push to `main` touches app code. Builds the **private** flavor
+and uploads both platforms to Firebase App Distribution for the configured
+tester groups:
+
+- **iOS**: ad hoc signed IPA (match `adhoc` profiles; tester devices must be
+  registered in the Apple Developer portal)
+- **Android**: release-signed universal APK (no Play account link required)
+
+Release notes carry the associated PR number and title, branch, version, and
+latest commit SHA and subject. Direct pushes without an associated PR retain the
+branch and commit details. Distribution runs are serialized because iOS ad hoc
+profile refreshes can update the shared match repository. TestFlight and Play
+uploads are unaffected: `/deploy` on a PR still promotes to TestFlight + Play
+internal, and pushes to `main` still run Deploy Private.
 
 ### Release (`release.yml`)
 
@@ -179,6 +239,8 @@ view show the latest status for each supported channel:
 |-------------|------------|
 | `iOS Private / TestFlight` | PR `/deploy`, Deploy Private |
 | `Android Private / Play Internal` | PR `/deploy`, Deploy Private |
+| `iOS Private / Firebase App Distribution` | Firebase Distribution (push to `main`) |
+| `Android Private / Firebase App Distribution` | Firebase Distribution (push to `main`) |
 | `Android Private / Internal App Sharing` | PR Preview Internal App Sharing |
 | `iOS Production / TestFlight` | Release (`internal` channel) |
 | `Android Production / Play Internal` | Release (`internal` channel) |
@@ -391,3 +453,6 @@ disabled for that build.
 - [ ] App Store Connect API key created with .p8 file
 - [ ] All GitHub Secrets configured
 - [ ] First manual upload to Play Store done (required before API uploads work)
+- [ ] Firebase App Distribution enabled for both private apps, tester group created
+- [ ] Firebase service account created with App Distribution Admin role (`FIREBASE_SERVICE_ACCOUNT_JSON`)
+- [ ] At least one iOS tester device UDID registered (required for ad hoc profiles)

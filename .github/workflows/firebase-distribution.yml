@@ -1,0 +1,111 @@
+name: Firebase Distribution
+
+# Distributes the private flavor to Firebase App Distribution testers after
+# changes land on main. Keeping signing and upload secrets on the trusted branch
+# prevents arbitrary branch code from reading long-lived credentials.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.dart'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'android/**'
+      - 'ios/**'
+
+concurrency:
+  group: firebase-distribution
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  compute-version:
+    name: Compute Version
+    runs-on: ubuntu-latest
+    outputs:
+      build-name: ${{ steps.version.outputs.build-name }}
+      build-number: ${{ steps.version.outputs.build-number }}
+      build-codename: ${{ steps.version.outputs.build-codename }}
+      pr-number: ${{ steps.pr-metadata.outputs.pr-number }}
+      pr-title: ${{ steps.pr-metadata.outputs.pr-title }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compute version
+        id: version
+        run: |
+          BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          BUILD_NUMBER=$(( $(date +%s) / 10 ))
+          BUILD_CODENAME=$(python3 scripts/version_codename.py "$BASE_VERSION")
+
+          {
+            echo "build-name=${BASE_VERSION}"
+            echo "build-number=${BUILD_NUMBER}"
+            echo "build-codename=${BUILD_CODENAME}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve associated PR metadata
+        id: pr-metadata
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const pulls = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha,
+                per_page: 100,
+              },
+            );
+            const pull =
+              pulls.find((candidate) => candidate.merge_commit_sha === context.sha) ??
+              pulls.find((candidate) => candidate.merged_at) ??
+              pulls[0];
+            core.setOutput('pr-number', pull ? String(pull.number) : '');
+            core.setOutput('pr-title', pull?.title ?? '');
+
+  distribute:
+    name: Build & Distribute
+    needs: compute-version
+    permissions:
+      actions: read
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/build-deploy.yml
+    with:
+      build-name: ${{ needs.compute-version.outputs.build-name }}
+      build-number: ${{ needs.compute-version.outputs.build-number }}
+      build-codename: ${{ needs.compute-version.outputs.build-codename }}
+      pr-number: ${{ needs.compute-version.outputs.pr-number }}
+      pr-title: ${{ needs.compute-version.outputs.pr-title }}
+      enable-diagnostics: true
+      flavor: private
+      source-ref: ${{ github.sha }}
+      deploy-ios-to: firebase
+      deploy-android-to: firebase
+      firebase-tester-groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+      FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON }}
+      FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON }}
+      FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST }}
+      FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST }}
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
