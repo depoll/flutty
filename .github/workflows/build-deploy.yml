@@ -923,9 +923,12 @@ jobs:
             printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-service-account.json"
             export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/firebase-service-account.json"
             COMMIT_SUBJECT="$(git log -1 --format=%s 2>/dev/null || true)"
-            FLUTTY_DISTRIBUTION_RELEASE_NOTES="$(printf 'Branch: %s\nVersion: %s (%s)\nCommit: %.7s %s' \
-              "$GITHUB_REF_NAME" "$FLUTTY_BUILD_NAME" "$ANDROID_VERSION_CODE" "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
-            export FLUTTY_DISTRIBUTION_RELEASE_NOTES
+            FLUTTY_BRANCH_NAME="$GITHUB_REF_NAME"
+            export FLUTTY_BRANCH_NAME
+            if [ -z "${FLUTTY_PR_COMMITS:-}" ]; then
+              FLUTTY_LAST_COMMIT="$(printf '%.7s %s' "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
+              export FLUTTY_LAST_COMMIT
+            fi
           fi
           cd android
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
@@ -946,7 +949,7 @@ jobs:
           DEPLOYMENT_ID: ${{ steps.start-android-deployment.outputs['deployment-id'] }}
           DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
           DEPLOYMENT_STATE: ${{ steps.android-deploy.outcome == 'success' && 'success' || 'failure' }}
-          DEPLOYMENT_DESCRIPTION: ${{ steps.android-deploy.outcome == 'success' && 'Android Play upload completed.' || 'Android Play upload failed.' }}
+          DEPLOYMENT_DESCRIPTION: ${{ inputs.deploy-android-to == 'firebase' && (steps.android-deploy.outcome == 'success' && 'Android Firebase App Distribution upload completed.' || 'Android Firebase App Distribution upload failed.') || (steps.android-deploy.outcome == 'success' && 'Android Play upload completed.' || 'Android Play upload failed.') }}
         with:
           script: |
             const owner = context.repo.owner;
@@ -1348,9 +1351,12 @@ jobs:
             printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-service-account.json"
             export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/firebase-service-account.json"
             COMMIT_SUBJECT="$(git log -1 --format=%s 2>/dev/null || true)"
-            FLUTTY_DISTRIBUTION_RELEASE_NOTES="$(printf 'Branch: %s\nVersion: %s (%s)\nCommit: %.7s %s' \
-              "$GITHUB_REF_NAME" "$FLUTTY_BUILD_NAME" "$BUILD_NUMBER" "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
-            export FLUTTY_DISTRIBUTION_RELEASE_NOTES
+            FLUTTY_BRANCH_NAME="$GITHUB_REF_NAME"
+            export FLUTTY_BRANCH_NAME
+            if [ -z "${FLUTTY_PR_COMMITS:-}" ]; then
+              FLUTTY_LAST_COMMIT="$(printf '%.7s %s' "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
+              export FLUTTY_LAST_COMMIT
+            fi
           fi
           cd ios
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"

@@ -1,11 +1,11 @@
 name: Firebase Distribution
 
-# Distributes the private flavor to Firebase App Distribution testers on every
-# branch push. TestFlight and Play uploads stay on their existing triggers:
-# push-to-main (Deploy Private) and the /deploy PR comment (Deploy PR Preview).
+# Distributes the private flavor to Firebase App Distribution testers after
+# changes land on main. Keeping signing and upload secrets on the trusted branch
+# prevents arbitrary branch code from reading long-lived credentials.
 on:
   push:
-    branches: ['**']
+    branches: [main]
     paths:
       - '**.dart'
       - 'pubspec.yaml'
@@ -14,8 +14,8 @@ on:
       - 'ios/**'
 
 concurrency:
-  group: firebase-distribution-${{ github.ref }}
-  cancel-in-progress: true
+  group: firebase-distribution
+  cancel-in-progress: false
 
 permissions:
   actions: read
@@ -29,6 +29,11 @@ jobs:
       build-name: ${{ steps.version.outputs.build-name }}
       build-number: ${{ steps.version.outputs.build-number }}
       build-codename: ${{ steps.version.outputs.build-codename }}
+      pr-number: ${{ steps.pr-metadata.outputs.pr-number }}
+      pr-title: ${{ steps.pr-metadata.outputs.pr-title }}
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,9 +46,32 @@ jobs:
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
           BUILD_CODENAME=$(python3 scripts/version_codename.py "$BASE_VERSION")
 
-          echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "build-codename=${BUILD_CODENAME}" >> "$GITHUB_OUTPUT"
+          {
+            echo "build-name=${BASE_VERSION}"
+            echo "build-number=${BUILD_NUMBER}"
+            echo "build-codename=${BUILD_CODENAME}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve associated PR metadata
+        id: pr-metadata
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const pulls = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha,
+                per_page: 100,
+              },
+            );
+            const pull =
+              pulls.find((candidate) => candidate.merge_commit_sha === context.sha) ??
+              pulls.find((candidate) => candidate.merged_at) ??
+              pulls[0];
+            core.setOutput('pr-number', pull ? String(pull.number) : '');
+            core.setOutput('pr-title', pull?.title ?? '');
 
   distribute:
     name: Build & Distribute
@@ -57,6 +85,8 @@ jobs:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
       build-codename: ${{ needs.compute-version.outputs.build-codename }}
+      pr-number: ${{ needs.compute-version.outputs.pr-number }}
+      pr-title: ${{ needs.compute-version.outputs.pr-title }}
       enable-diagnostics: true
       flavor: private
       source-ref: ${{ github.sha }}
