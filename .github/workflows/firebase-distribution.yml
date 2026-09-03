@@ -5,7 +5,6 @@ name: Firebase Distribution
 # never receive signing or upload secrets.
 on:
   pull_request:
-    branches: [main]
     types: [opened, reopened, synchronize]
   push:
     branches: [main]
