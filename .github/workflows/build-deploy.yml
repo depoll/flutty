@@ -165,6 +165,16 @@ on:
         type: boolean
         default: false
         description: 'Whether to sync store metadata alongside the deploy'
+      deployment-concurrency-group:
+        required: false
+        type: string
+        default: ''
+        description: 'Optional concurrency group for this complete build/deploy call'
+      deployment-cancel-in-progress:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether a newer call in the deployment concurrency group cancels this one'
     secrets:
       ANDROID_KEYSTORE_BASE64:
         required: false
@@ -222,6 +232,10 @@ on:
       ios-deploy-status:
         description: 'Final iOS deploy status summary for preview deploy comments'
         value: ${{ jobs.deploy-status-summary.outputs.ios-deploy-status }}
+
+concurrency:
+  group: ${{ inputs.deployment-concurrency-group != '' && inputs.deployment-concurrency-group || format('build-deploy-{0}', github.run_id) }}
+  cancel-in-progress: ${{ inputs.deployment-cancel-in-progress }}
 
 env:
   FLUTTER_VERSION: '3.44.8'

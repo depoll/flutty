@@ -16,12 +16,9 @@ on:
     workflows: [PR Preview, PR Preview iOS]
     types: [completed]
 
-# Main may update ad hoc profiles and remains serialized. Trusted PR artifact
-# consumers use immutable profiles in read-only mode, so each event gets its own
-# group and GitHub cannot replace an unrelated pending distribution.
-concurrency:
-  group: ${{ github.event_name == 'push' && 'firebase-distribution-main' || format('firebase-preview-{0}', github.event.workflow_run.id) }}
-  cancel-in-progress: false
+# Concurrency is applied by the reusable deployment call after PR identity and
+# platform are known. This keeps main serialized and only cancels an older run
+# for the same PR platform.
 
 permissions:
   actions: read
@@ -102,6 +99,7 @@ jobs:
       deploy-ios-to: firebase
       deploy-android-to: firebase
       firebase-tester-groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
+      deployment-concurrency-group: firebase-distribution-main
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -310,6 +308,8 @@ jobs:
       android-reuse-aab-is-unsigned: true
       android-reuse-source-sha: ${{ needs.resolve-preview.outputs.source-sha }}
       firebase-tester-groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
+      deployment-concurrency-group: firebase-preview-${{ needs.resolve-preview.outputs.pr-number }}-android
+      deployment-cancel-in-progress: true
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -348,6 +348,8 @@ jobs:
       ios-resign-match-readonly: true
       ios-reuse-source-sha: ${{ needs.resolve-preview.outputs.source-sha }}
       firebase-tester-groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
+      deployment-concurrency-group: firebase-preview-${{ needs.resolve-preview.outputs.pr-number }}-ios
+      deployment-cancel-in-progress: true
     secrets:
       MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
       MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
