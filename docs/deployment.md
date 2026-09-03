@@ -6,7 +6,7 @@ testing, Firebase App Distribution, and public store releases.
 ## App Variants
 
 | Variant | Android Package | iOS Bundle ID | Display Name | Purpose |
-|---------|----------------|---------------|--------------|---------|
+| --------- | ---------------- | --------------- | -------------- | --------- |
 | **private** | `xyz.depollsoft.monkeyssh.private` | `xyz.depollsoft.monkeyssh.private` | MonkeySSH β | PR previews, internal testing |
 | **production** | `xyz.depollsoft.monkeyssh` | `xyz.depollsoft.monkeyssh` | MonkeySSH | App Store / Play Store releases |
 
@@ -41,10 +41,11 @@ Both variants install side-by-side on the same device.
 
 ### Firebase App Distribution
 
-Every push to `main` distributes the **private** flavor to Firebase App
-Distribution testers (see the Firebase Distribution workflow below). Keeping
-signing and upload secrets on `main` prevents unreviewed branch code from
-accessing long-lived credentials. One-time
+Every push to a same-repository pull request, plus app changes pushed to
+`main`, distributes the **private** flavor to Firebase App Distribution testers
+(see the Firebase Distribution workflow below). Pull requests build unsigned
+artifacts without deployment credentials; a trusted `workflow_run` validates
+and distributes the immutable artifacts. Fork pull requests are skipped. One-time
 setup in the [Firebase console](https://console.firebase.google.com/) for
 project `monkeyssh`:
 
@@ -77,11 +78,14 @@ project `monkeyssh`:
 
 1. Create a **private Git repository** for storing certificates (e.g., `github.com/yourorg/certificates`)
 2. Initialize match locally:
+
    ```bash
    cd ios
    bundle exec fastlane match init
    ```
+
 3. Generate certificates for every shipped iOS bundle ID, including the Live Activity extension:
+
     ```bash
     bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh
     bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.private
@@ -92,6 +96,7 @@ project `monkeyssh`:
 ### Android Upload Keystore
 
 Generate a release keystore:
+
 ```bash
 keytool -genkey -v \
   -keystore upload-keystore.jks \
@@ -110,7 +115,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### iOS / Apple
 
 | Secret | Description | How to get it |
-|--------|-------------|---------------|
+| -------- | ------------- | --------------- |
 | `MATCH_GIT_URL` | Private Git repo URL for certificates | `https://github.com/yourorg/certificates.git` |
 | `MATCH_PASSWORD` | Encryption password for match | Set during `fastlane match init` |
 | `MATCH_GIT_BASIC_AUTHORIZATION` | Base64-encoded `username:PAT` | `echo -n "username:ghp_token" \| base64` |
@@ -121,7 +126,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### Android / Google Play
 
 | Secret | Description | How to get it |
-|--------|-------------|---------------|
+| -------- | ------------- | --------------- |
 | `ANDROID_KEYSTORE_BASE64` | Base64-encoded keystore | `base64 -i upload-keystore.jks` |
 | `ANDROID_KEY_ALIAS` | Keystore key alias | Set during `keytool -genkey` |
 | `ANDROID_KEY_PASSWORD` | Key password | Set during `keytool -genkey` |
@@ -142,6 +147,7 @@ secret) to override the default `testers` group alias.
 ### PR Preview (`preview.yml`)
 
 Triggered automatically on PRs to `main` and `develop`. Builds the **private** flavor and:
+
 - **iOS**: Builds an unsigned release IPA for `/deploy` promotion to TestFlight
 - **Android**: Builds an unsigned release AAB plus a debug-signed APK for direct download in the PR comment
 
@@ -150,6 +156,7 @@ When `/deploy` promotes a PR preview, it reuses the existing unsigned preview ar
 ### Deploy Private (`deploy-private.yml`)
 
 Triggered on push to `main`. Builds the **private** flavor and deploys to:
+
 - **iOS**: TestFlight (MonkeySSH β)
 - **Android**: Play Store internal testing track
 
@@ -157,24 +164,29 @@ This ensures TestFlight and Play Store internal testing always reflect the lates
 
 ### Firebase Distribution (`firebase-distribution.yml`)
 
-Triggered when a push to `main` touches app code. Builds the **private** flavor
-and uploads both platforms to Firebase App Distribution for the configured
-tester groups:
+Triggered after each successful **PR Preview** and **PR Preview iOS** run, and
+whenever a push to `main` touches app code. PR code runs only in the
+unprivileged preview workflows. The trusted default-branch workflow verifies
+that the artifact SHA is still the PR head, checks out trusted deployment code,
+then signs and uploads the immutable artifact using the **private** flavor:
 
 - **iOS**: ad hoc signed IPA (match `adhoc` profiles; tester devices must be
   registered in the Apple Developer portal)
 - **Android**: release-signed universal APK (no Play account link required)
 
-Release notes carry the associated PR number and title, branch, version, and
-latest commit SHA and subject. Direct pushes without an associated PR retain the
-branch and commit details. Distribution runs are serialized because iOS ad hoc
-profile refreshes can update the shared match repository. TestFlight and Play
+Release notes carry the associated PR number and title, source branch, version,
+and latest commit SHA and subject. Direct pushes without an associated PR retain
+the branch and commit details. Main distributions serialize because they may
+refresh the shared match repository. PR artifacts use existing ad hoc profiles
+in read-only mode, so each trusted artifact consumer can run independently.
+Stale PR artifacts are rejected before signing. TestFlight and Play
 uploads are unaffected: `/deploy` on a PR still promotes to TestFlight + Play
 internal, and pushes to `main` still run Deploy Private.
 
 ### Release (`release.yml`)
 
 Triggered by:
+
 - Creating a GitHub Release (tag format: `vX.Y.Z`)
 - Manual workflow dispatch
 
@@ -216,6 +228,7 @@ Assets workflow) before validation and Fastlane upload, and re-hosts that media
 as workflow artifacts.
 
 Supports selecting:
+
 - **Platform**: iOS, Android, or both
 - **App**: private, production, or both
 
@@ -236,11 +249,11 @@ Store uploads create GitHub Deployments so PRs and the repository deployment
 view show the latest status for each supported channel:
 
 | Environment | Updated by |
-|-------------|------------|
+| ------------- | ------------ |
 | `iOS Private / TestFlight` | PR `/deploy`, Deploy Private |
 | `Android Private / Play Internal` | PR `/deploy`, Deploy Private |
-| `iOS Private / Firebase App Distribution` | Firebase Distribution (push to `main`) |
-| `Android Private / Firebase App Distribution` | Firebase Distribution (push to `main`) |
+| `iOS Private / Firebase App Distribution` | Firebase Distribution (PR revision or push to `main`) |
+| `Android Private / Firebase App Distribution` | Firebase Distribution (PR revision or push to `main`) |
 | `Android Private / Internal App Sharing` | PR Preview Internal App Sharing |
 | `iOS Production / TestFlight` | Release (`internal` channel) |
 | `Android Production / Play Internal` | Release (`internal` channel) |
