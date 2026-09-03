@@ -293,8 +293,9 @@ platform :ios do
 
   private_lane :resolved_profile_path do |options|
     app_id = options[:app_identifier]
-    profile_path = ENV["sigh_#{app_id}_appstore_profile-path"] ||
-                   ENV["sigh_#{app_id}_appstore_profile_path"]
+    match_type = options[:type] || 'appstore'
+    profile_path = ENV["sigh_#{app_id}_#{match_type}_profile-path"] ||
+                   ENV["sigh_#{app_id}_#{match_type}_profile_path"]
 
     UI.user_error!("Missing installed provisioning profile path for #{app_id}") if profile_path.to_s.empty?
     UI.user_error!("Provisioning profile not found at #{profile_path} for #{app_id}") unless File.exist?(profile_path)
@@ -304,8 +305,9 @@ platform :ios do
 
   private_lane :resolved_certificate_name do |options|
     app_id = options[:app_identifier]
-    certificate_name = ENV["sigh_#{app_id}_appstore_certificate-name"] ||
-                       ENV["sigh_#{app_id}_appstore_certificate_name"]
+    match_type = options[:type] || 'appstore'
+    certificate_name = ENV["sigh_#{app_id}_#{match_type}_certificate-name"] ||
+                       ENV["sigh_#{app_id}_#{match_type}_certificate_name"]
 
     UI.user_error!("Missing installed certificate name for #{app_id}") if certificate_name.to_s.empty?
 
@@ -441,11 +443,15 @@ platform :ios do
     build_and_sign(scheme: scheme)
   end
 
-  desc 'Re-sign an existing IPA for App Store Connect upload'
+  desc 'Re-sign an existing IPA with App Store or ad hoc match profiles'
   lane :resign_ipa do |options|
     scheme = options[:scheme] || 'Private'
     unsigned_ipa_path = options[:unsigned_ipa_path].to_s
     output_ipa_path = options[:output_ipa_path].to_s
+    match_type = options[:match_type].to_s
+    match_type = 'appstore' if match_type.empty?
+    match_readonly = options[:match_readonly].to_s == 'true'
+    UI.user_error!("Unsupported match_type '#{match_type}'") unless %w[appstore adhoc].include?(match_type)
     supported_schemes = APP_IDS.keys & LIVE_ACTIVITY_APP_IDS.keys
     unless APP_IDS.key?(scheme) && LIVE_ACTIVITY_APP_IDS.key?(scheme)
       UI.user_error!("Unknown scheme '#{scheme}'. Supported schemes: #{supported_schemes.join(', ')}")
@@ -460,8 +466,9 @@ platform :ios do
 
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
-      type: 'appstore',
-      readonly: false,
+      type: match_type,
+      readonly: match_readonly,
+      force_for_new_devices: match_type == 'adhoc' && !match_readonly,
     )
 
     resigned_ipa_path = unsigned_ipa_path
@@ -471,9 +478,15 @@ platform :ios do
       resigned_ipa_path = output_ipa_path
     end
 
-    signing_identity = resolved_certificate_name(app_identifier: app_id)
-    app_profile_path = resolved_profile_path(app_identifier: app_id)
-    live_activity_profile_path = resolved_profile_path(app_identifier: live_activity_app_id)
+    signing_identity = resolved_certificate_name(
+      app_identifier: app_id,
+      type: match_type,
+    )
+    app_profile_path = resolved_profile_path(app_identifier: app_id, type: match_type)
+    live_activity_profile_path = resolved_profile_path(
+      app_identifier: live_activity_app_id,
+      type: match_type,
+    )
 
     Dir.mktmpdir('flutty-resign-ipa') do |tmpdir|
       sh("unzip -q #{resigned_ipa_path.shellescape} -d #{tmpdir.shellescape}")
@@ -575,6 +588,7 @@ platform :ios do
   desc 'Build, sign with ad hoc profiles, and upload to Firebase App Distribution'
   lane :firebase do |options|
     scheme = options[:scheme] || 'Private'
+    provided_ipa_path = options[:ipa_path].to_s
     groups = options[:groups].to_s
     groups = ENV['FIREBASE_TESTER_GROUPS'].to_s if groups.empty?
     UI.user_error!('Set FIREBASE_TESTER_GROUPS or pass groups: to distribute') if groups.empty?
@@ -597,11 +611,11 @@ platform :ios do
     ).strip
     UI.user_error!("No GOOGLE_APP_ID in #{plist_path}") if app_id.empty?
 
-    build_and_sign(scheme: scheme, export_method: 'ad-hoc')
+    build_and_sign(scheme: scheme, export_method: 'ad-hoc') if provided_ipa_path.empty?
 
     firebase_app_distribution(
       app: app_id,
-      ipa_path: lane_context[SharedValues::IPA_OUTPUT_PATH],
+      ipa_path: resolved_ipa_path(ipa_path: provided_ipa_path),
       groups: groups,
       release_notes: firebase_release_notes,
     )
