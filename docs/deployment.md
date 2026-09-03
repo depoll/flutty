@@ -6,7 +6,7 @@ testing, Firebase App Distribution, and public store releases.
 ## App Variants
 
 | Variant | Android Package | iOS Bundle ID | Display Name | Purpose |
-|---------|----------------|---------------|--------------|---------|
+| --------- | ---------------- | --------------- | -------------- | --------- |
 | **private** | `xyz.depollsoft.monkeyssh.private` | `xyz.depollsoft.monkeyssh.private` | MonkeySSH β | PR previews, internal testing |
 | **production** | `xyz.depollsoft.monkeyssh` | `xyz.depollsoft.monkeyssh` | MonkeySSH | App Store / Play Store releases |
 
@@ -77,11 +77,14 @@ project `monkeyssh`:
 
 1. Create a **private Git repository** for storing certificates (e.g., `github.com/yourorg/certificates`)
 2. Initialize match locally:
+
    ```bash
    cd ios
    bundle exec fastlane match init
    ```
+
 3. Generate certificates for every shipped iOS bundle ID, including the Live Activity extension:
+
     ```bash
     bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh
     bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.private
@@ -92,6 +95,7 @@ project `monkeyssh`:
 ### Android Upload Keystore
 
 Generate a release keystore:
+
 ```bash
 keytool -genkey -v \
   -keystore upload-keystore.jks \
@@ -110,7 +114,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### iOS / Apple
 
 | Secret | Description | How to get it |
-|--------|-------------|---------------|
+| -------- | ------------- | --------------- |
 | `MATCH_GIT_URL` | Private Git repo URL for certificates | `https://github.com/yourorg/certificates.git` |
 | `MATCH_PASSWORD` | Encryption password for match | Set during `fastlane match init` |
 | `MATCH_GIT_BASIC_AUTHORIZATION` | Base64-encoded `username:PAT` | `echo -n "username:ghp_token" \| base64` |
@@ -121,7 +125,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### Android / Google Play
 
 | Secret | Description | How to get it |
-|--------|-------------|---------------|
+| -------- | ------------- | --------------- |
 | `ANDROID_KEYSTORE_BASE64` | Base64-encoded keystore | `base64 -i upload-keystore.jks` |
 | `ANDROID_KEY_ALIAS` | Keystore key alias | Set during `keytool -genkey` |
 | `ANDROID_KEY_PASSWORD` | Key password | Set during `keytool -genkey` |
@@ -142,6 +146,7 @@ secret) to override the default `testers` group alias.
 ### PR Preview (`preview.yml`)
 
 Triggered automatically on PRs to `main` and `develop`. Builds the **private** flavor and:
+
 - **iOS**: Builds an unsigned release IPA for `/deploy` promotion to TestFlight
 - **Android**: Builds an unsigned release AAB plus a debug-signed APK for direct download in the PR comment
 
@@ -150,6 +155,7 @@ When `/deploy` promotes a PR preview, it reuses the existing unsigned preview ar
 ### Deploy Private (`deploy-private.yml`)
 
 Triggered on push to `main`. Builds the **private** flavor and deploys to:
+
 - **iOS**: TestFlight (MonkeySSH β)
 - **Android**: Play Store internal testing track
 
@@ -177,6 +183,7 @@ internal, and pushes to `main` still run Deploy Private.
 ### Release (`release.yml`)
 
 Triggered by:
+
 - Creating a GitHub Release (tag format: `vX.Y.Z`)
 - Manual workflow dispatch
 
@@ -218,6 +225,7 @@ Assets workflow) before validation and Fastlane upload, and re-hosts that media
 as workflow artifacts.
 
 Supports selecting:
+
 - **Platform**: iOS, Android, or both
 - **App**: private, production, or both
 
@@ -238,7 +246,7 @@ Store uploads create GitHub Deployments so PRs and the repository deployment
 view show the latest status for each supported channel:
 
 | Environment | Updated by |
-|-------------|------------|
+| ------------- | ------------ |
 | `iOS Private / TestFlight` | PR `/deploy`, Deploy Private |
 | `Android Private / Play Internal` | PR `/deploy`, Deploy Private |
 | `iOS Private / Firebase App Distribution` | Firebase Distribution (PR revision or push to `main`) |
