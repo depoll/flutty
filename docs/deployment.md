@@ -41,10 +41,10 @@ Both variants install side-by-side on the same device.
 
 ### Firebase App Distribution
 
-Every push to `main` distributes the **private** flavor to Firebase App
-Distribution testers (see the Firebase Distribution workflow below). Keeping
-signing and upload secrets on `main` prevents unreviewed branch code from
-accessing long-lived credentials. One-time
+Every push to a same-repository pull request, plus app changes pushed to
+`main`, distributes the **private** flavor to Firebase App Distribution testers
+(see the Firebase Distribution workflow below). Fork pull requests do not run
+the secret-bearing distribution job. One-time
 setup in the [Firebase console](https://console.firebase.google.com/) for
 project `monkeyssh`:
 
@@ -157,9 +157,10 @@ This ensures TestFlight and Play Store internal testing always reflect the lates
 
 ### Firebase Distribution (`firebase-distribution.yml`)
 
-Triggered when a push to `main` touches app code. Builds the **private** flavor
-and uploads both platforms to Firebase App Distribution for the configured
-tester groups:
+Triggered for every new revision of a same-repository pull request and whenever
+a push to `main` touches app code. It builds the exact PR head or main commit
+using the **private** flavor and uploads both platforms to Firebase App
+Distribution for the configured tester groups:
 
 - **iOS**: ad hoc signed IPA (match `adhoc` profiles; tester devices must be
   registered in the Apple Developer portal)
@@ -167,8 +168,9 @@ tester groups:
 
 Release notes carry the associated PR number and title, branch, version, and
 latest commit SHA and subject. Direct pushes without an associated PR retain the
-branch and commit details. Distribution runs are serialized because iOS ad hoc
-profile refreshes can update the shared match repository. TestFlight and Play
+branch and commit details. A newer revision cancels an older distribution for
+the same PR; main runs remain serialized because iOS ad hoc profile refreshes
+can update the shared match repository. TestFlight and Play
 uploads are unaffected: `/deploy` on a PR still promotes to TestFlight + Play
 internal, and pushes to `main` still run Deploy Private.
 
@@ -239,8 +241,8 @@ view show the latest status for each supported channel:
 |-------------|------------|
 | `iOS Private / TestFlight` | PR `/deploy`, Deploy Private |
 | `Android Private / Play Internal` | PR `/deploy`, Deploy Private |
-| `iOS Private / Firebase App Distribution` | Firebase Distribution (push to `main`) |
-| `Android Private / Firebase App Distribution` | Firebase Distribution (push to `main`) |
+| `iOS Private / Firebase App Distribution` | Firebase Distribution (PR revision or push to `main`) |
+| `Android Private / Firebase App Distribution` | Firebase Distribution (PR revision or push to `main`) |
 | `Android Private / Internal App Sharing` | PR Preview Internal App Sharing |
 | `iOS Production / TestFlight` | Release (`internal` channel) |
 | `Android Production / Play Internal` | Release (`internal` channel) |
