@@ -1,9 +1,12 @@
 name: Firebase Distribution
 
-# Distributes the private flavor to Firebase App Distribution testers after
-# changes land on main. Keeping signing and upload secrets on the trusted branch
-# prevents arbitrary branch code from reading long-lived credentials.
+# Distributes the private flavor to Firebase App Distribution testers for every
+# same-repository PR revision and for app changes that land on main. Fork PRs
+# never receive signing or upload secrets.
 on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
   push:
     branches: [main]
     paths:
@@ -14,8 +17,8 @@ on:
       - 'ios/**'
 
 concurrency:
-  group: firebase-distribution
-  cancel-in-progress: false
+  group: firebase-distribution-${{ github.event.pull_request.number || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   actions: read
@@ -38,6 +41,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Compute version
         id: version
@@ -57,6 +61,13 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
+            if (context.eventName === 'pull_request') {
+              const pull = context.payload.pull_request;
+              core.setOutput('pr-number', String(pull.number));
+              core.setOutput('pr-title', pull.title);
+              return;
+            }
+
             const pulls = await github.paginate(
               github.rest.repos.listPullRequestsAssociatedWithCommit,
               {
@@ -76,6 +87,7 @@ jobs:
   distribute:
     name: Build & Distribute
     needs: compute-version
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       actions: read
       contents: read
@@ -89,7 +101,7 @@ jobs:
       pr-title: ${{ needs.compute-version.outputs.pr-title }}
       enable-diagnostics: true
       flavor: private
-      source-ref: ${{ github.sha }}
+      source-ref: ${{ github.event.pull_request.head.sha || github.sha }}
       deploy-ios-to: firebase
       deploy-android-to: firebase
       firebase-tester-groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
