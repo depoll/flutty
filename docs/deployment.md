@@ -43,8 +43,9 @@ Both variants install side-by-side on the same device.
 
 Every push to a same-repository pull request, plus app changes pushed to
 `main`, distributes the **private** flavor to Firebase App Distribution testers
-(see the Firebase Distribution workflow below). Fork pull requests do not run
-the secret-bearing distribution job. One-time
+(see the Firebase Distribution workflow below). Pull requests build unsigned
+artifacts without deployment credentials; a trusted `workflow_run` validates
+and distributes the immutable artifacts. Fork pull requests are skipped. One-time
 setup in the [Firebase console](https://console.firebase.google.com/) for
 project `monkeyssh`:
 
@@ -163,20 +164,21 @@ This ensures TestFlight and Play Store internal testing always reflect the lates
 
 ### Firebase Distribution (`firebase-distribution.yml`)
 
-Triggered for every new revision of a same-repository pull request and whenever
-a push to `main` touches app code. It builds the exact PR head or main commit
-using the **private** flavor and uploads both platforms to Firebase App
-Distribution for the configured tester groups:
+Triggered after each successful **PR Preview** and **PR Preview iOS** run, and
+whenever a push to `main` touches app code. PR code runs only in the
+unprivileged preview workflows. The trusted default-branch workflow verifies
+that the artifact SHA is still the PR head, checks out trusted deployment code,
+then signs and uploads the immutable artifact using the **private** flavor:
 
 - **iOS**: ad hoc signed IPA (match `adhoc` profiles; tester devices must be
   registered in the Apple Developer portal)
 - **Android**: release-signed universal APK (no Play account link required)
 
-Release notes carry the associated PR number and title, branch, version, and
-latest commit SHA and subject. Direct pushes without an associated PR retain the
-branch and commit details. A newer revision cancels an older distribution for
-the same PR; main runs remain serialized because iOS ad hoc profile refreshes
-can update the shared match repository. TestFlight and Play
+Release notes carry the associated PR number and title, source branch, version,
+and latest commit SHA and subject. Direct pushes without an associated PR retain
+the branch and commit details. All Firebase distribution runs are serialized
+because iOS ad hoc profile refreshes can update the shared match repository.
+Queued stale PR artifacts are rejected before signing. TestFlight and Play
 uploads are unaffected: `/deploy` on a PR still promotes to TestFlight + Play
 internal, and pushes to `main` still run Deploy Private.
 
