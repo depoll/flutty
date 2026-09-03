@@ -195,15 +195,17 @@ void main() {
         final command = invocation.positionalArguments.first as String;
         if (command.contains('command -v')) {
           return _execOutput(
-            '__monkeyssh_agent_path__=/usr/local/bin/claude\n'
-            '__monkeyssh_agent_version__=claude 1.0.0\n',
+            '__monkeyssh_agent_path__=/usr/local/bin/claude\n',
           );
         }
-        if (command.contains('npm list -g')) {
-          return _execOutput('@anthropic-ai/claude-code@1.0.0');
-        }
-        if (command.contains('npm view')) {
-          return _execOutput('1.1.0');
+        if (command.contains('__monkeyssh_agent_source__')) {
+          return _execOutput(
+            '__monkeyssh_agent_runtime__=cli:claude\n'
+            '__monkeyssh_agent_source__=npm global\n'
+            '__monkeyssh_agent_installed__=1.0.0\n'
+            '__monkeyssh_agent_latest__=1.1.0\n'
+            '__monkeyssh_agent_runtime_end__\n',
+          );
         }
         return _execOutput('', exitCode: 1);
       });
@@ -217,6 +219,43 @@ void main() {
       expect(runtime.latestVersion, '1.1.0');
       expect(runtime.detectionSource, 'npm global');
       expect(runtime.managedByPackageManager, isTrue);
+    });
+
+    test('automatic update checks include CLIs only', () async {
+      final client = _MockSshClient();
+      final discovery = _MockDiscovery();
+      final session = _remoteSession(client);
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+      var executeCount = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        executeCount += 1;
+        final output = StringBuffer();
+        for (final definition in agentCliRuntimeDefinitions) {
+          output
+            ..writeln('__monkeyssh_agent_runtime__=${definition.id}')
+            ..writeln('__monkeyssh_agent_runtime_end__');
+        }
+        return _execOutput(output.toString());
+      });
+
+      final runtimes = await AgentManagementService(
+        discovery,
+      ).checkForUpdates(session);
+
+      expect(runtimes, hasLength(agentCliRuntimeDefinitions.length));
+      expect(
+        runtimes,
+        everyElement(
+          isA<AgentRuntimeInfo>().having(
+            (runtime) => runtime.definition.kind,
+            'kind',
+            AgentRuntimeKind.cli,
+          ),
+        ),
+      );
+      expect(executeCount, 1);
     });
 
     test('refresh probes all runtimes through one SSH channel', () async {
@@ -285,18 +324,19 @@ void main() {
               ),
             ]) {
               output.writeln('__monkeyssh_agent_runtime__=${definition.id}');
-              if (definition.id == 'cli:claude') {
-                output
-                  ..writeln('__monkeyssh_agent_path__=/usr/local/bin/claude')
-                  ..writeln('__monkeyssh_agent_version__=claude 1.0.0');
+              if (definition.id == 'cli:copilot') {
+                output.writeln(
+                  '__monkeyssh_agent_path__=/usr/local/bin/copilot',
+                );
               }
               output.writeln('__monkeyssh_agent_runtime_end__');
             }
             return _execOutput(output.toString());
           }
           return _execOutput(
-            '__monkeyssh_agent_runtime__=cli:claude\n'
+            '__monkeyssh_agent_runtime__=cli:copilot\n'
             '__monkeyssh_agent_source__=npm global\n'
+            '__monkeyssh_agent_installed__=1.0.0\n'
             '__monkeyssh_agent_latest__=1.1.0\n'
             '__monkeyssh_agent_runtime_end__\n',
           );
@@ -306,16 +346,27 @@ void main() {
           discovery,
         ).refreshAll(session);
 
-        final claude = runtimes.firstWhere(
-          (runtime) => runtime.definition.id == 'cli:claude',
+        final copilot = runtimes.firstWhere(
+          (runtime) => runtime.definition.id == 'cli:copilot',
         );
-        final claudeAcp = runtimes.firstWhere(
-          (runtime) => runtime.definition.id == 'acp:claude',
+        final copilotAcp = runtimes.firstWhere(
+          (runtime) => runtime.definition.id == 'acp:copilot',
         );
-        expect(claude.status, AgentRuntimeStatus.updateAvailable);
-        expect(claude.detectionSource, 'npm global');
-        expect(claude.latestVersion, '1.1.0');
-        expect(claudeAcp.status, AgentRuntimeStatus.notInstalled);
+        expect(copilot.status, AgentRuntimeStatus.updateAvailable);
+        expect(copilot.detectionSource, 'npm global');
+        expect(copilot.installedVersion, '1.0.0');
+        expect(copilot.latestVersion, '1.1.0');
+        expect(copilotAcp.status, AgentRuntimeStatus.installed);
+        expect(copilotAcp.latestVersion, isNull);
+        expect(
+          runtimes
+              .where(
+                (runtime) =>
+                    runtime.definition.kind == AgentRuntimeKind.acpAdapter,
+              )
+              .where((runtime) => runtime.hasUpdate),
+          isEmpty,
+        );
         expect(executeCount, 2);
       },
     );
@@ -371,11 +422,13 @@ void main() {
       final snapshots = parseAgentMetadataProbeOutput(
         '__monkeyssh_agent_runtime__=cli:claude\n'
         '__monkeyssh_agent_source__=npm global\n'
+        '__monkeyssh_agent_installed__=2.0.0\n'
         '__monkeyssh_agent_latest__=2.1.3\n'
         '__monkeyssh_agent_runtime_end__\n',
       );
 
       expect(snapshots['cli:claude']?.detectionSource, 'npm global');
+      expect(snapshots['cli:claude']?.installedVersionOutput, '2.0.0');
       expect(snapshots['cli:claude']?.latestVersionOutput, '2.1.3');
     });
 
@@ -407,6 +460,15 @@ void main() {
       }
     });
 
+    test('does not query latest versions for ACP adapters', () {
+      final command = buildAgentMetadataProbeCommand([
+        agentAcpRuntimeDefinitions[1],
+      ], windows: false);
+
+      expect(command, isNot(contains('npm view')));
+      expect(command, contains('npm list -g'));
+    });
+
     test('builds one POSIX script containing every requested runtime', () {
       final command = buildAgentBatchProbeCommand(
         agentCliRuntimeDefinitions.take(2).toList(),
@@ -429,8 +491,8 @@ void main() {
       expect(command, contains('~/.zprofile'));
       expect(command, contains("'claude' 'claude-code'"));
       expect(command, contains('command -v'));
-      expect(command, contains('__monkeyssh_agent_version__='));
-      expect(command, contains('tr'));
+      expect(command, isNot(contains('__monkeyssh_agent_version__=')));
+      expect(command, isNot(contains('--version')));
     });
 
     test('uses Get-Command and one-line markers on Windows', () {
@@ -445,8 +507,7 @@ void main() {
         script,
         contains(r"'__monkeyssh_agent_path__=' + $__flCommand.Source"),
       );
-      expect(script, contains(r'$__flVersion='));
-      expect(script, contains('-join " "'));
+      expect(script, isNot(contains(r'$__flVersion=')));
     });
   });
 }

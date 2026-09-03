@@ -34,6 +34,7 @@ import '../../domain/models/acp_recent_session.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
+import '../../domain/models/agent_runtime_info.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
@@ -15728,7 +15729,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _scheduleAgentUpdatePrompt(SshSession session) {
     _agentUpdatePromptTimer?.cancel();
-    _agentUpdatePromptTimer = Timer(const Duration(milliseconds: 1500), () {
+    _agentUpdatePromptTimer = Timer(const Duration(seconds: 10), () {
       if (mounted && _connectionId == session.connectionId) {
         unawaited(_maybePromptAgentUpdates(session));
       }
@@ -15749,7 +15750,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !ref.read(agentUpdateNotificationsNotifierProvider)) {
       return;
     }
-    final updates = runtimes.where((runtime) => runtime.hasUpdate).toList();
+    final updates = runtimes
+        .where(
+          (runtime) =>
+              runtime.definition.kind == AgentRuntimeKind.cli &&
+              runtime.hasUpdate,
+        )
+        .toList();
     if (updates.isEmpty) return;
     final first = updates.first;
     final suffix = updates.length == 1 ? '' : ' and ${updates.length - 1} more';

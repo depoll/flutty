@@ -2167,7 +2167,7 @@ void main() {
       ).thenAnswer((_) async => [update]);
 
       await pumpScreen(tester, agentManagementService: management);
-      await tester.pump(const Duration(milliseconds: 1600));
+      await tester.pump(const Duration(seconds: 10));
       await tester.pumpAndSettle();
 
       expect(find.text('Claude Code update available'), findsOneWidget);
