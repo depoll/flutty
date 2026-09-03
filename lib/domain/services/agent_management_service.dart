@@ -21,6 +21,10 @@ const _profilePrefix =
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _pathMarker = '__monkeyssh_agent_path__=';
 const _versionMarker = '__monkeyssh_agent_version__=';
+const _runtimeMarker = '__monkeyssh_agent_runtime__=';
+const _runtimeEndMarker = '__monkeyssh_agent_runtime_end__';
+const _sourceMarker = '__monkeyssh_agent_source__=';
+const _latestMarker = '__monkeyssh_agent_latest__=';
 
 /// Supported remote coding-agent CLIs.
 const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
@@ -271,7 +275,9 @@ String? buildAgentInstallCommand(
   if (update && detectionSource == 'PATH') return null;
   final formula = definition.homebrewFormula;
   if (update && detectionSource == 'Homebrew' && formula != null) {
-    return windows ? null : 'brew upgrade ${_shellQuote(formula)}';
+    return windows
+        ? null
+        : '$_profilePrefix brew upgrade ${_shellQuote(formula)}';
   }
   final package = definition.packageName;
   if (package == null) return null;
@@ -303,11 +309,12 @@ String? buildAgentInstallCommand(
     return script == null ? null : buildWindowsPowerShellCommand(script);
   }
   return switch (definition.registry) {
-    AgentPackageRegistry.npm => 'npm install -g ${_shellQuote(package)}@latest',
+    AgentPackageRegistry.npm =>
+      '$_profilePrefix npm install -g ${_shellQuote(package)}@latest',
     AgentPackageRegistry.pipx =>
       update
-          ? 'pipx upgrade ${_shellQuote(package)} || python3 -m pip install --user --upgrade ${_shellQuote(package)}'
-          : 'pipx install ${_shellQuote(package)} || python3 -m pip install --user ${_shellQuote(package)}',
+          ? '$_profilePrefix pipx upgrade ${_shellQuote(package)} || python3 -m pip install --user --upgrade ${_shellQuote(package)}'
+          : '$_profilePrefix pipx install ${_shellQuote(package)} || python3 -m pip install --user ${_shellQuote(package)}',
     null => null,
   };
 }
@@ -364,25 +371,93 @@ class AgentManagementService {
     SshSession session, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
-    final cliRuntimes = await Future.wait(
-      agentCliRuntimeDefinitions.map(
-        (definition) => inspect(session, definition, priority: priority),
+    final definitions = <AgentRuntimeDefinition>[
+      ...agentCliRuntimeDefinitions,
+      ...agentAcpRuntimeDefinitions.where(
+        (definition) => !definition.sharesCliInstallation,
+      ),
+    ];
+    final AgentRuntimeActionResult batch;
+    try {
+      batch = await _run(
+        session,
+        buildAgentBatchProbeCommand(
+          definitions,
+          windows: session.remoteIsWindows,
+        ),
+        priority: priority,
+      );
+    } on Object catch (error) {
+      final failed = [
+        for (final definition in definitions)
+          AgentRuntimeInfo(
+            definition: definition,
+            status: AgentRuntimeStatus.failed,
+            message: error.toString(),
+          ),
+      ];
+      return _assembleRuntimeList(session, failed);
+    }
+    final snapshots = parseAgentBatchProbeOutput(batch.output);
+    final installedDefinitions = definitions
+        .where((definition) => snapshots[definition.id]?.executablePath != null)
+        .toList(growable: false);
+    var metadata = <String, AgentMetadataSnapshot>{};
+    if (installedDefinitions.isNotEmpty) {
+      try {
+        final metadataOutput = await _run(
+          session,
+          buildAgentMetadataProbeCommand(
+            installedDefinitions,
+            windows: session.remoteIsWindows,
+          ),
+          priority: priority,
+        );
+        metadata = parseAgentMetadataProbeOutput(metadataOutput.output);
+      } on Object {
+        // Registry metadata is best-effort; installed tools remain visible.
+      }
+    }
+    final uniqueRuntimes = await Future.wait(
+      definitions.map(
+        (definition) => _resolveRuntimeInfo(
+          session,
+          definition,
+          snapshots[definition.id] ?? const AgentProbeSnapshot(),
+          priority: priority,
+          metadata: metadata[definition.id],
+          metadataWasBatched: true,
+        ),
       ),
     );
-    final cliByTool = {
-      for (final runtime in cliRuntimes) ?runtime.definition.tool: runtime,
+    return _assembleRuntimeList(session, uniqueRuntimes);
+  }
+
+  List<AgentRuntimeInfo> _assembleRuntimeList(
+    SshSession session,
+    List<AgentRuntimeInfo> uniqueRuntimes,
+  ) {
+    final byId = {
+      for (final runtime in uniqueRuntimes) runtime.definition.id: runtime,
     };
-    final acpRuntimes = await Future.wait(
-      agentAcpRuntimeDefinitions.map((definition) {
-        final shared = definition.sharesCliInstallation
-            ? cliByTool[definition.tool]
-            : null;
-        return shared == null
-            ? inspect(session, definition, priority: priority)
-            : Future.value(_copyRuntimeInfo(shared, definition));
-      }),
-    );
-    final runtimes = <AgentRuntimeInfo>[...cliRuntimes, ...acpRuntimes];
+    final cliByTool = <AgentLaunchTool, AgentRuntimeInfo>{};
+    final runtimes = <AgentRuntimeInfo>[];
+    for (final definition in agentCliRuntimeDefinitions) {
+      final runtime = byId[definition.id];
+      if (runtime == null) continue;
+      runtimes.add(runtime);
+      final tool = definition.tool;
+      if (tool != null) cliByTool[tool] = runtime;
+    }
+    for (final definition in agentAcpRuntimeDefinitions) {
+      final shared = definition.sharesCliInstallation
+          ? cliByTool[definition.tool]
+          : null;
+      final runtime = shared == null
+          ? byId[definition.id]
+          : _copyRuntimeInfo(shared, definition);
+      if (runtime != null) runtimes.add(runtime);
+    }
     _runtimeCache[session.connectionId] = (
       checkedAt: DateTime.now(),
       runtimes: runtimes,
@@ -402,20 +477,46 @@ class AgentManagementService {
         buildAgentProbeCommand(definition, windows: session.remoteIsWindows),
         priority: priority,
       );
-      final path = _markerValue(probeOutput.output, _pathMarker);
-      final installed = parseAgentVersion(
-        _markerValue(probeOutput.output, _versionMarker) ?? '',
+      return _resolveRuntimeInfo(
+        session,
+        definition,
+        AgentProbeSnapshot(
+          executablePath: _markerValue(probeOutput.output, _pathMarker),
+          versionOutput: _markerValue(probeOutput.output, _versionMarker),
+        ),
+        priority: priority,
       );
-      if (path == null) {
-        return AgentRuntimeInfo(
-          definition: definition,
-          status: AgentRuntimeStatus.notInstalled,
-          message: definition.supportsManagedInstall
-              ? null
-              : 'Install this tool using its official installer.',
-        );
-      }
-      var source = _detectionSourceFromPath(path);
+    } on Object catch (error) {
+      return AgentRuntimeInfo(
+        definition: definition,
+        status: AgentRuntimeStatus.failed,
+        message: error.toString(),
+      );
+    }
+  }
+
+  Future<AgentRuntimeInfo> _resolveRuntimeInfo(
+    SshSession session,
+    AgentRuntimeDefinition definition,
+    AgentProbeSnapshot snapshot, {
+    required SshExecPriority priority,
+    AgentMetadataSnapshot? metadata,
+    bool metadataWasBatched = false,
+  }) async {
+    final path = snapshot.executablePath;
+    final installed = parseAgentVersion(snapshot.versionOutput ?? '');
+    if (path == null) {
+      return AgentRuntimeInfo(
+        definition: definition,
+        status: AgentRuntimeStatus.notInstalled,
+        message: definition.supportsManagedInstall
+            ? null
+            : 'Install this tool using its official installer.',
+      );
+    }
+    var source = metadata?.detectionSource ?? _detectionSourceFromPath(path);
+    var latest = parseAgentVersion(metadata?.latestVersionOutput ?? '');
+    if (!metadataWasBatched) {
       try {
         source = await _detectInstallationSource(
           session,
@@ -426,7 +527,6 @@ class AgentManagementService {
       } on Object {
         // Ownership lookup is best-effort; the executable itself was found.
       }
-      String? latest;
       try {
         latest = await _readLatestVersion(
           session,
@@ -436,33 +536,27 @@ class AgentManagementService {
       } on Object {
         // An offline registry must not hide an installed runtime.
       }
-      final hasUpdate =
-          installed != null &&
-          latest != null &&
-          compareAgentVersions(installed, latest) < 0;
-      final managed =
-          source == 'Homebrew' || source == 'npm global' || source == 'pipx';
-      return AgentRuntimeInfo(
-        definition: definition,
-        status: hasUpdate
-            ? AgentRuntimeStatus.updateAvailable
-            : AgentRuntimeStatus.installed,
-        installedVersion: installed,
-        latestVersion: latest,
-        executablePath: path,
-        detectionSource: source,
-        managedByPackageManager: managed,
-        message: hasUpdate && !managed
-            ? 'Update this PATH installation with its original installer, then re-check.'
-            : null,
-      );
-    } on Object catch (error) {
-      return AgentRuntimeInfo(
-        definition: definition,
-        status: AgentRuntimeStatus.failed,
-        message: error.toString(),
-      );
     }
+    final hasUpdate =
+        installed != null &&
+        latest != null &&
+        compareAgentVersions(installed, latest) < 0;
+    final managed =
+        source == 'Homebrew' || source == 'npm global' || source == 'pipx';
+    return AgentRuntimeInfo(
+      definition: definition,
+      status: hasUpdate
+          ? AgentRuntimeStatus.updateAvailable
+          : AgentRuntimeStatus.installed,
+      installedVersion: installed,
+      latestVersion: latest,
+      executablePath: path,
+      detectionSource: source,
+      managedByPackageManager: managed,
+      message: hasUpdate && !managed
+          ? 'Update this PATH installation with its original installer, then re-check.'
+          : null,
+    );
   }
 
   /// Installs or updates [definition], forwarding command output as it arrives.
@@ -628,35 +722,274 @@ String _windowsExecutableCommand(String executable, List<String> arguments) {
   );
 }
 
+/// Parsed executable and version output for one runtime probe.
+class AgentProbeSnapshot {
+  /// Creates a probe snapshot.
+  const AgentProbeSnapshot({this.executablePath, this.versionOutput});
+
+  /// Resolved remote executable path.
+  final String? executablePath;
+
+  /// Raw normalized output from the runtime's version command.
+  final String? versionOutput;
+}
+
+/// Package ownership and latest-version output for one runtime.
+class AgentMetadataSnapshot {
+  /// Creates a metadata snapshot.
+  const AgentMetadataSnapshot({this.detectionSource, this.latestVersionOutput});
+
+  /// Package manager that owns the installed executable.
+  final String? detectionSource;
+
+  /// Raw output from the upstream version lookup.
+  final String? latestVersionOutput;
+}
+
+/// Parses marker-delimited package ownership and latest-version output.
+Map<String, AgentMetadataSnapshot> parseAgentMetadataProbeOutput(
+  String output,
+) {
+  final snapshots = <String, AgentMetadataSnapshot>{};
+  String? id;
+  String? source;
+  String? latest;
+  for (final rawLine in const LineSplitter().convert(output)) {
+    final line = rawLine.trim();
+    if (line.startsWith(_runtimeMarker)) {
+      id = line.substring(_runtimeMarker.length);
+      source = null;
+      latest = null;
+    } else if (id != null && line.startsWith(_sourceMarker)) {
+      source = line.substring(_sourceMarker.length).trim();
+    } else if (id != null && line.startsWith(_latestMarker)) {
+      latest = line.substring(_latestMarker.length).trim();
+    } else if (id != null && line == _runtimeEndMarker) {
+      snapshots[id] = AgentMetadataSnapshot(
+        detectionSource: source == null || source.isEmpty ? null : source,
+        latestVersionOutput: latest == null || latest.isEmpty ? null : latest,
+      );
+      id = null;
+    }
+  }
+  return snapshots;
+}
+
+/// Parses the marker-delimited output from [buildAgentBatchProbeCommand].
+Map<String, AgentProbeSnapshot> parseAgentBatchProbeOutput(String output) {
+  final snapshots = <String, AgentProbeSnapshot>{};
+  String? id;
+  String? path;
+  String? version;
+  for (final rawLine in const LineSplitter().convert(output)) {
+    final line = rawLine.trim();
+    if (line.startsWith(_runtimeMarker)) {
+      id = line.substring(_runtimeMarker.length);
+      path = null;
+      version = null;
+    } else if (id != null && line.startsWith(_pathMarker)) {
+      path = line.substring(_pathMarker.length).trim();
+    } else if (id != null && line.startsWith(_versionMarker)) {
+      version = line.substring(_versionMarker.length).trim();
+    } else if (id != null && line == _runtimeEndMarker) {
+      snapshots[id] = AgentProbeSnapshot(
+        executablePath: path == null || path.isEmpty ? null : path,
+        versionOutput: version == null || version.isEmpty ? null : version,
+      );
+      id = null;
+    }
+  }
+  return snapshots;
+}
+
+/// Builds one remote command that probes every [definition].
+String buildAgentBatchProbeCommand(
+  List<AgentRuntimeDefinition> definitions, {
+  required bool windows,
+}) {
+  if (windows) {
+    final body = StringBuffer(powerShellProfilePathPreamble);
+    for (final definition in definitions) {
+      body
+        ..write(
+          r'[void]$__flOut.AppendLine('
+          '${powerShellSingleQuote('$_runtimeMarker${definition.id}')});',
+        )
+        ..write(_buildWindowsProbeBody(definition))
+        ..write(
+          r'[void]$__flOut.AppendLine('
+          '${powerShellSingleQuote(_runtimeEndMarker)});',
+        );
+    }
+    return buildWindowsPowerShellCommand(
+      powerShellUtf8OutputScript(body.toString()),
+    );
+  }
+
+  final command = StringBuffer(_profilePrefix);
+  for (final definition in definitions) {
+    command
+      ..write('printf ${_shellQuote('$_runtimeMarker%s\\n')} ')
+      ..write('${_shellQuote(definition.id)}; ')
+      ..write(_buildPosixProbeBody(definition))
+      ..write('; printf ${_shellQuote('$_runtimeEndMarker\\n')}; ');
+  }
+  return command.toString();
+}
+
+/// Builds one remote command for package ownership and upstream versions.
+String buildAgentMetadataProbeCommand(
+  List<AgentRuntimeDefinition> definitions, {
+  required bool windows,
+}) {
+  if (windows) {
+    final body = StringBuffer(powerShellProfilePathPreamble)
+      ..write(
+        r'$__flNpmGlobal=((& npm list -g --depth=0 2>$null | ForEach-Object {$_.ToString()}) -join "`n");',
+      )
+      ..write(
+        r'$__flPipxGlobal=((& pipx list --short 2>$null | ForEach-Object {$_.ToString()}) -join "`n");',
+      );
+    for (final definition in definitions) {
+      final package = definition.packageName;
+      body.write(
+        r'[void]$__flOut.AppendLine('
+        '${powerShellSingleQuote('$_runtimeMarker${definition.id}')});',
+      );
+      if (package != null && definition.registry == AgentPackageRegistry.npm) {
+        final needle = powerShellSingleQuote('$package@');
+        body
+          ..write(
+            'if(\$__flNpmGlobal.Contains($needle)){'
+            r'[void]$__flOut.AppendLine('
+            '${powerShellSingleQuote('$_sourceMarker npm global')})};',
+          )
+          ..write(
+            '\$__flLatest=(& npm view ${powerShellSingleQuote(package)} version 2>\$null | Select-Object -First 1);',
+          );
+      } else if (package != null &&
+          definition.registry == AgentPackageRegistry.pipx) {
+        final needle = powerShellSingleQuote(package);
+        body
+          ..write(
+            'if(\$__flPipxGlobal.Contains($needle)){'
+            r'[void]$__flOut.AppendLine('
+            '${powerShellSingleQuote('$_sourceMarker pipx')})};',
+          )
+          ..write(
+            '\$__flLatest=(& py -m pip index versions ${powerShellSingleQuote(package)} 2>\$null | Select-Object -First 1);',
+          );
+      } else {
+        body.write(r'$__flLatest=$null;');
+      }
+      body
+        ..write(
+          r'if($null -ne $__flLatest){[void]$__flOut.AppendLine('
+          '${powerShellSingleQuote(_latestMarker)} + \$__flLatest)};',
+        )
+        ..write(
+          r'[void]$__flOut.AppendLine('
+          '${powerShellSingleQuote(_runtimeEndMarker)});',
+        );
+    }
+    return buildWindowsPowerShellCommand(
+      powerShellUtf8OutputScript(body.toString()),
+    );
+  }
+
+  final command = StringBuffer(_profilePrefix)
+    ..write(r'__fl_npm_global=$(npm list -g --depth=0 2>/dev/null || true); ')
+    ..write(r'__fl_pipx_global=$(pipx list --short 2>/dev/null || true); ')
+    ..write(r'__fl_brew_global=$(brew list --versions 2>/dev/null || true); ');
+  for (final definition in definitions) {
+    final package = definition.packageName;
+    final formula = definition.homebrewFormula;
+    command
+      ..write('printf ${_shellQuote('$_runtimeMarker%s\\n')} ')
+      ..write('${_shellQuote(definition.id)}; ')
+      ..write('__fl_source=; ');
+    if (formula != null) {
+      command.write(
+        'printf ${_shellQuote(r'%s\n')} "\$__fl_brew_global" | '
+        'grep -Eq ${_shellQuote('^$formula([[:space:]]|\$)')} && '
+        '__fl_source=${_shellQuote('Homebrew')}; ',
+      );
+    }
+    if (package != null && definition.registry == AgentPackageRegistry.npm) {
+      command
+        ..write(
+          '[ -z "\$__fl_source" ] && printf ${_shellQuote(r'%s\n')} '
+          '"\$__fl_npm_global" | grep -Fq -- ${_shellQuote('$package@')} && '
+          '__fl_source=${_shellQuote('npm global')}; ',
+        )
+        ..write(
+          '__fl_latest=\$(npm view ${_shellQuote(package)} version 2>/dev/null | head -n 1); ',
+        );
+    } else if (package != null &&
+        definition.registry == AgentPackageRegistry.pipx) {
+      command
+        ..write(
+          '[ -z "\$__fl_source" ] && printf ${_shellQuote(r'%s\n')} '
+          '"\$__fl_pipx_global" | grep -Fq -- ${_shellQuote(package)} && '
+          '__fl_source=${_shellQuote('pipx')}; ',
+        )
+        ..write(
+          '__fl_latest=\$(python3 -m pip index versions ${_shellQuote(package)} 2>/dev/null | head -n 1); ',
+        );
+    } else {
+      command.write('__fl_latest=; ');
+    }
+    command
+      ..write(
+        '[ -n "\$__fl_source" ] && printf ${_shellQuote('$_sourceMarker%s\\n')} "\$__fl_source"; ',
+      )
+      ..write(
+        '[ -n "\$__fl_latest" ] && printf ${_shellQuote('$_latestMarker%s\\n')} "\$__fl_latest"; ',
+      )
+      ..write('printf ${_shellQuote('$_runtimeEndMarker\\n')}; ');
+  }
+  return command.toString();
+}
+
 /// Builds a non-disruptive executable and version probe for the remote OS.
 String buildAgentProbeCommand(
   AgentRuntimeDefinition definition, {
   required bool windows,
 }) {
-  final names = definition.executableNames;
   if (windows) {
-    final quotedNames = names.map(powerShellSingleQuote).join(',');
-    final quotedArgs = definition.versionArguments
-        .map(powerShellSingleQuote)
-        .join(',');
-    final body = [
-      powerShellProfilePathPreamble,
-      '\$__flNames=@($quotedNames);',
-      '\$__flArgs=@($quotedArgs);',
-      r'foreach($__flName in $__flNames){',
-      r'$__flCommand=Get-Command $__flName -ErrorAction SilentlyContinue | Select-Object -First 1;',
-      r'if($null -eq $__flCommand){continue};',
-      '[void]\$__flOut.AppendLine(${powerShellSingleQuote(_pathMarker)} + \$__flCommand.Source);',
-      r'$__flVersion=(& $__flCommand.Source @__flArgs 2>&1 | Select-Object -First 4 | ForEach-Object {$_.ToString()}) -join " ";',
-      '[void]\$__flOut.AppendLine(${powerShellSingleQuote(_versionMarker)} + \$__flVersion);',
-      'break}',
-    ].join();
-    return buildWindowsPowerShellCommand(powerShellUtf8OutputScript(body));
+    return buildWindowsPowerShellCommand(
+      powerShellUtf8OutputScript(
+        '$powerShellProfilePathPreamble${_buildWindowsProbeBody(definition)}',
+      ),
+    );
   }
-  final candidates = names.map(_shellQuote).join(' ');
+  return '$_profilePrefix${_buildPosixProbeBody(definition)}';
+}
+
+String _buildWindowsProbeBody(AgentRuntimeDefinition definition) {
+  final quotedNames = definition.executableNames
+      .map(powerShellSingleQuote)
+      .join(',');
+  final quotedArgs = definition.versionArguments
+      .map(powerShellSingleQuote)
+      .join(',');
+  return [
+    '\$__flNames=@($quotedNames);',
+    '\$__flArgs=@($quotedArgs);',
+    r'foreach($__flName in $__flNames){',
+    r'$__flCommand=Get-Command $__flName -ErrorAction SilentlyContinue | Select-Object -First 1;',
+    r'if($null -eq $__flCommand){continue};',
+    '[void]\$__flOut.AppendLine(${powerShellSingleQuote(_pathMarker)} + \$__flCommand.Source);',
+    r'$__flVersion=(& $__flCommand.Source @__flArgs 2>&1 | Select-Object -First 4 | ForEach-Object {$_.ToString()}) -join " ";',
+    '[void]\$__flOut.AppendLine(${powerShellSingleQuote(_versionMarker)} + \$__flVersion);',
+    'break}',
+  ].join();
+}
+
+String _buildPosixProbeBody(AgentRuntimeDefinition definition) {
+  final candidates = definition.executableNames.map(_shellQuote).join(' ');
   final args = definition.versionArguments.map(_shellQuote).join(' ');
-  return '$_profilePrefix'
-      'for candidate in $candidates; do '
+  return 'for candidate in $candidates; do '
       r'resolved=$(command -v "$candidate" 2>/dev/null || true); '
       r'[ -z "$resolved" ] && continue; '
       'printf ${_shellQuote('$_pathMarker%s\\n')} "\$resolved"; '
