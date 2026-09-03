@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -376,6 +377,34 @@ void main() {
 
       expect(snapshots['cli:claude']?.detectionSource, 'npm global');
       expect(snapshots['cli:claude']?.latestVersionOutput, '2.1.3');
+    });
+
+    test('generated POSIX scripts pass bash syntax validation', () async {
+      final definitions = <AgentRuntimeDefinition>[
+        ...agentCliRuntimeDefinitions,
+        ...agentAcpRuntimeDefinitions.where(
+          (definition) => !definition.sharesCliInstallation,
+        ),
+      ];
+      final scripts = [
+        buildAgentBatchProbeCommand(definitions, windows: false),
+        buildAgentMetadataProbeCommand(definitions, windows: false),
+        buildAgentInstallCommand(
+          agentCliRuntimeDefinitions.first,
+          windows: false,
+          update: true,
+          detectionSource: 'npm global',
+        )!,
+      ];
+      for (var index = 0; index < scripts.length; index += 1) {
+        final file = File(
+          '${Directory.systemTemp.path}/monkeyssh-agent-$index.sh',
+        );
+        await file.writeAsString(scripts[index]);
+        addTearDown(() => file.delete().ignore());
+        final result = await Process.run('bash', ['-n', file.path]);
+        expect(result.exitCode, 0, reason: 'script $index: ${result.stderr}');
+      }
     });
 
     test('builds one POSIX script containing every requested runtime', () {
