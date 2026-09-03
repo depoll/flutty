@@ -138,7 +138,6 @@ jobs:
       build-name: ${{ steps.preview.outputs.build-name }}
       build-number: ${{ steps.preview.outputs.build-number }}
       android-aab-artifact: ${{ steps.preview.outputs.android-aab-artifact }}
-      android-apk-artifact: ${{ steps.preview.outputs.android-apk-artifact }}
       ios-ipa-artifact: ${{ steps.preview.outputs.ios-ipa-artifact }}
       preview-run-id: ${{ steps.preview.outputs.preview-run-id }}
     steps:
@@ -161,7 +160,6 @@ jobs:
             let buildName;
             let buildNumber;
             let androidAabArtifact = '';
-            let androidApkArtifact = '';
             let iosIpaArtifact = '';
             let pullRequest;
 
@@ -186,10 +184,7 @@ jobs:
                 aabArtifacts.find((artifact) =>
                   !/-android-(?:arm|arm64|x64|ia32)$/.test(artifact.name),
                 ) ?? aabArtifacts[0];
-              const apk = activeArtifacts.find((artifact) =>
-                artifact.name.startsWith('android-apk-private-'),
-              );
-              if (!aab || !apk) {
+              if (!aab) {
                 core.setFailed(`Preview run ${workflowRun.id} is missing Android artifacts.`);
                 return;
               }
@@ -202,7 +197,6 @@ jobs:
               }
               [, buildName, buildNumber] = match;
               androidAabArtifact = aab.name;
-              androidApkArtifact = apk.name;
             } else if (sourceWorkflow === 'PR Preview iOS') {
               platform = 'ios';
               const ipa = activeArtifacts.find((artifact) =>
@@ -267,7 +261,6 @@ jobs:
             core.setOutput('build-name', buildName);
             core.setOutput('build-number', buildNumber);
             core.setOutput('android-aab-artifact', androidAabArtifact);
-            core.setOutput('android-apk-artifact', androidApkArtifact);
             core.setOutput('ios-ipa-artifact', iosIpaArtifact);
             core.setOutput('preview-run-id', String(workflowRun.id));
 
@@ -297,10 +290,14 @@ jobs:
       build-android: true
       android-reuse-run-id: ${{ needs.resolve-preview.outputs.preview-run-id }}
       android-reuse-aab-artifact-name: ${{ needs.resolve-preview.outputs.android-aab-artifact }}
-      android-reuse-apk-artifact-name: ${{ needs.resolve-preview.outputs.android-apk-artifact }}
+      android-reuse-aab-is-unsigned: true
       android-reuse-source-sha: ${{ needs.resolve-preview.outputs.source-sha }}
       firebase-tester-groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
     secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
       FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON }}
       FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
 

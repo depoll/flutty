@@ -729,17 +729,6 @@ jobs:
           name: ${{ inputs.android-reuse-apk-artifact-name }}
           path: build/app/outputs/flutter-apk
 
-      - name: Normalize reusable APK for Firebase App Distribution
-        if: inputs.deploy-android-to == 'firebase' && inputs.android-reuse-apk-artifact-name != ''
-        run: |
-          set -euo pipefail
-          REUSED_APK=$(find build/app/outputs/flutter-apk -maxdepth 1 -name '*.apk' -print -quit)
-          if [ -z "$REUSED_APK" ]; then
-            echo "::error title=Missing reusable APK::The preview artifact did not contain an APK."
-            exit 1
-          fi
-          cp "$REUSED_APK" "build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-release.apk"
-
       - name: Sign reusable unsigned AAB
         if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name != '' && inputs.android-reuse-aab-is-unsigned
         env:
@@ -765,6 +754,45 @@ jobs:
             "$ANDROID_KEY_ALIAS"
           jarsigner -verify "$SIGNED_AAB_PATH"
           mv "$SIGNED_AAB_PATH" "$AAB_PATH"
+
+      - name: Generate release-signed Firebase APK from reusable AAB
+        if: inputs.deploy-android-to == 'firebase' && inputs.android-reuse-aab-artifact-name != '' && inputs.android-reuse-aab-is-unsigned
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          BUNDLETOOL_VERSION: '1.18.3'
+        run: |
+          set -euo pipefail
+          AAB_PATH=$(find build/app/outputs/bundle/${{ inputs.flavor }}Release -maxdepth 1 -name '*.aab' -print -quit)
+          if [ -z "$AAB_PATH" ]; then
+            echo "::error title=Missing reusable AAB::The preview artifact did not contain an AAB."
+            exit 1
+          fi
+
+          BUNDLETOOL_JAR="$RUNNER_TEMP/bundletool.jar"
+          APKS_PATH="$RUNNER_TEMP/app-${{ inputs.flavor }}-firebase.apks"
+          APK_DIR="$RUNNER_TEMP/app-${{ inputs.flavor }}-firebase-apks"
+          APK_PATH="build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-release.apk"
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output "$BUNDLETOOL_JAR" \
+            "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar"
+          java -jar "$BUNDLETOOL_JAR" build-apks \
+            --bundle="$AAB_PATH" \
+            --output="$APKS_PATH" \
+            --mode=universal \
+            --ks=android/app/upload-keystore.jks \
+            --ks-pass="pass:$ANDROID_STORE_PASSWORD" \
+            --ks-key-alias="$ANDROID_KEY_ALIAS" \
+            --key-pass="pass:$ANDROID_KEY_PASSWORD" \
+            --overwrite
+          rm -rf "$APK_DIR"
+          mkdir -p "$APK_DIR" "$(dirname "$APK_PATH")"
+          unzip -q "$APKS_PATH" universal.apk -d "$APK_DIR"
+          mv "$APK_DIR/universal.apk" "$APK_PATH"
 
       - name: Upload signed AAB artifact
         if: inputs.deploy-android-to != 'none' && inputs.deploy-android-to != 'firebase' && inputs.android-reuse-aab-artifact-name == ''
