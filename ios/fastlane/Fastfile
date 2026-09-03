@@ -443,13 +443,14 @@ platform :ios do
     build_and_sign(scheme: scheme)
   end
 
-  desc 'Re-sign an existing IPA for App Store Connect upload'
+  desc 'Re-sign an existing IPA with App Store or ad hoc match profiles'
   lane :resign_ipa do |options|
     scheme = options[:scheme] || 'Private'
     unsigned_ipa_path = options[:unsigned_ipa_path].to_s
     output_ipa_path = options[:output_ipa_path].to_s
     match_type = options[:match_type].to_s
     match_type = 'appstore' if match_type.empty?
+    match_readonly = options[:match_readonly].to_s == 'true'
     UI.user_error!("Unsupported match_type '#{match_type}'") unless %w[appstore adhoc].include?(match_type)
     supported_schemes = APP_IDS.keys & LIVE_ACTIVITY_APP_IDS.keys
     unless APP_IDS.key?(scheme) && LIVE_ACTIVITY_APP_IDS.key?(scheme)
@@ -466,8 +467,8 @@ platform :ios do
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
       type: match_type,
-      readonly: false,
-      force_for_new_devices: match_type == 'adhoc',
+      readonly: match_readonly,
+      force_for_new_devices: match_type == 'adhoc' && !match_readonly,
     )
 
     resigned_ipa_path = unsigned_ipa_path

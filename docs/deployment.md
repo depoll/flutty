@@ -176,9 +176,10 @@ then signs and uploads the immutable artifact using the **private** flavor:
 
 Release notes carry the associated PR number and title, source branch, version,
 and latest commit SHA and subject. Direct pushes without an associated PR retain
-the branch and commit details. All Firebase distribution runs are serialized
-because iOS ad hoc profile refreshes can update the shared match repository.
-Queued stale PR artifacts are rejected before signing. TestFlight and Play
+the branch and commit details. Main distributions serialize because they may
+refresh the shared match repository. PR artifacts use existing ad hoc profiles
+in read-only mode, so each trusted artifact consumer can run independently.
+Stale PR artifacts are rejected before signing. TestFlight and Play
 uploads are unaffected: `/deploy` on a PR still promotes to TestFlight + Play
 internal, and pushes to `main` still run Deploy Private.
 

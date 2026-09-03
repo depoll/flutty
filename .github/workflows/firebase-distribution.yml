@@ -16,10 +16,11 @@ on:
     workflows: [PR Preview, PR Preview iOS]
     types: [completed]
 
-# iOS ad hoc signing can update the shared match repository. Serialize every
-# Firebase distribution, including main and all PR platforms, to prevent races.
+# Main may update ad hoc profiles and remains serialized. Trusted PR artifact
+# consumers use immutable profiles in read-only mode, so each event gets its own
+# group and GitHub cannot replace an unrelated pending distribution.
 concurrency:
-  group: firebase-distribution
+  group: ${{ github.event_name == 'push' && 'firebase-distribution-main' || format('firebase-preview-{0}', github.event.workflow_run.id) }}
   cancel-in-progress: false
 
 permissions:
@@ -177,6 +178,19 @@ jobs:
                 repo,
                 pull_number: pullRequestSummary.number,
               }));
+              if (pullRequest.head.repo?.full_name !== `${owner}/${repo}`) {
+                core.notice(`Skipping fork PR #${pullRequest.number}.`);
+                core.setOutput('should-distribute', 'false');
+                return;
+              }
+              if (pullRequest.head.sha !== sourceSha) {
+                core.notice(
+                  `Skipping stale PR Preview run ${workflowRun.id}; ` +
+                  `PR #${pullRequest.number} now points at ${pullRequest.head.sha}.`,
+                );
+                core.setOutput('should-distribute', 'false');
+                return;
+              }
               const aabArtifacts = activeArtifacts.filter((artifact) =>
                 artifact.name.startsWith('android-unsigned-private-'),
               );
@@ -203,7 +217,10 @@ jobs:
                 artifact.name.startsWith('ios-unsigned-private-'),
               );
               if (!ipa) {
-                core.setFailed(`Preview run ${workflowRun.id} is missing an unsigned iOS IPA.`);
+                core.notice(
+                  `Skipping PR Preview iOS run ${workflowRun.id}; no unsigned IPA was produced.`,
+                );
+                core.setOutput('should-distribute', 'false');
                 return;
               }
               const match = ipa.name.match(
@@ -328,6 +345,7 @@ jobs:
       ios-reuse-run-id: ${{ needs.resolve-preview.outputs.preview-run-id }}
       ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview.outputs.ios-ipa-artifact }}
       ios-reuse-ipa-is-unsigned: true
+      ios-resign-match-readonly: true
       ios-reuse-source-sha: ${{ needs.resolve-preview.outputs.source-sha }}
       firebase-tester-groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
     secrets:

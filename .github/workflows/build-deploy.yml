@@ -150,6 +150,11 @@ on:
         type: boolean
         default: false
         description: 'Whether the reusable iOS IPA must be signed in this workflow'
+      ios-resign-match-readonly:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether re-signing must use existing match profiles without updates'
       ios-reuse-source-sha:
         required: false
         type: string
@@ -1431,6 +1436,7 @@ jobs:
             bundle exec fastlane resign_ipa \
               scheme:"$SCHEME" \
               match_type:"$MATCH_TYPE" \
+              match_readonly:"${{ inputs.ios-resign-match-readonly }}" \
               unsigned_ipa_path:"$REUSED_IPA_PATH" \
               output_ipa_path:"$SIGNED_IPA_PATH"
             REUSED_IPA_PATH="$SIGNED_IPA_PATH"
