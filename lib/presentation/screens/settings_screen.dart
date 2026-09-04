@@ -773,7 +773,7 @@ class _TerminalSection extends ConsumerWidget {
           secondary: const Icon(Icons.system_update_alt_rounded),
           title: const Text('Agent update prompts'),
           subtitle: const Text(
-            'Show a terminal banner when an agent CLI or ACP adapter has an update',
+            'Show one agent update prompt when opening a new SSH connection',
           ),
           value: agentUpdateNotifications,
           onChanged: (value) {

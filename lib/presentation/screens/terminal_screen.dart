@@ -3617,6 +3617,27 @@ class _NativeAcpLaunchState {
       );
 }
 
+/// Builds concise in-app copy for waiting agent updates.
+@visibleForTesting
+String agentUpdateNotificationSummary(List<AgentRuntimeInfo> updates) {
+  final count = updates.length;
+  if (count == 0) return 'No agent updates waiting';
+  final labels = updates
+      .map((runtime) => runtime.definition.label)
+      .toList(growable: false);
+  final names = switch (labels) {
+    [final only] => only,
+    [final first, final second] => '$first and $second',
+    [final first, final second, final third] => '$first, $second, and $third',
+    _ => '${labels[0]}, ${labels[1]}, and ${count - 2} more',
+  };
+  return '$count ${count == 1 ? 'update' : 'updates'} waiting: $names';
+}
+
+final Expando<bool> _agentUpdatePromptShown = Expando<bool>(
+  'agentUpdatePromptShown',
+);
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -4063,7 +4084,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _deviceDebugConnectionId;
   RemoteMuxBackend _activeMuxBackend = RemoteMuxBackend.tmux;
   AgentLaunchTool? _remoteMuxStartupTool;
-  final Set<int> _agentUpdatePromptedConnectionIds = <int>{};
   Timer? _agentUpdatePromptTimer;
 
   // Track whether the app is in the background so we can auto-reconnect
@@ -7726,7 +7746,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           forceShowSystemKeyboard: widget.initiallyShowKeyboard,
         );
         _maybePasteStoreDemoImage();
-        _scheduleAgentUpdatePrompt(session);
 
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
@@ -15739,11 +15758,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _maybePromptAgentUpdates(SshSession session) async {
-    if (_agentUpdatePromptedConnectionIds.contains(session.connectionId) ||
+    if ((_agentUpdatePromptShown[session] ?? false) ||
         !ref.read(agentUpdateNotificationsNotifierProvider)) {
       return;
     }
-    _agentUpdatePromptedConnectionIds.add(session.connectionId);
+    _agentUpdatePromptShown[session] = true;
     final runtimes = await ref
         .read(agentManagementServiceProvider)
         .checkForUpdates(session);
@@ -15760,17 +15779,110 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         )
         .toList();
     if (updates.isEmpty) return;
-    final first = updates.first;
-    final suffix = updates.length == 1 ? '' : ' and ${updates.length - 1} more';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${first.definition.label} update available$suffix'),
-        action: SnackBarAction(
-          label: 'Manage',
-          onPressed: () => unawaited(_openAgentManagement()),
-        ),
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showMaterialBanner(
+      MaterialBanner(
+        leading: const Icon(Icons.system_update_alt_rounded),
+        content: Text(agentUpdateNotificationSummary(updates)),
+        actions: [
+          TextButton(
+            onPressed: () {
+              messenger.clearMaterialBanners();
+              unawaited(_updateAgentsNow(session, updates));
+            },
+            child: const Text('Update now'),
+          ),
+          TextButton(
+            onPressed: () {
+              messenger.clearMaterialBanners();
+              unawaited(_openAgentManagement());
+            },
+            child: const Text('Manager'),
+          ),
+          IconButton(
+            tooltip: 'Dismiss agent updates',
+            onPressed: messenger.clearMaterialBanners,
+            icon: const Icon(Icons.close_rounded),
+          ),
+        ],
       ),
     );
+  }
+
+  Future<void> _updateAgentsNow(
+    SshSession session,
+    List<AgentRuntimeInfo> updates,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
+      ..clearMaterialBanners()
+      ..showMaterialBanner(
+        MaterialBanner(
+          leading: const SizedBox.square(
+            dimension: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          content: Text(
+            'Updating ${updates.length} ${updates.length == 1 ? 'agent' : 'agents'}…',
+          ),
+          actions: [
+            TextButton(
+              onPressed: messenger.clearMaterialBanners,
+              child: const Text('Hide'),
+            ),
+          ],
+        ),
+      );
+    final failures = <String>[];
+    for (final runtime in updates) {
+      try {
+        final result = await ref
+            .read(agentManagementServiceProvider)
+            .installOrUpdate(
+              session,
+              runtime.definition,
+              update: true,
+              current: runtime,
+            );
+        if (!result.succeeded) failures.add(runtime.definition.label);
+      } on Object {
+        failures.add(runtime.definition.label);
+      }
+    }
+    if (!mounted || _connectionId != session.connectionId) return;
+    final succeeded = updates.length - failures.length;
+    _tmuxService.invalidateInstalledAgentTools(session.connectionId);
+    unawaited(_tmuxService.prefetchInstalledAgentTools(session));
+    messenger
+      ..clearMaterialBanners()
+      ..showMaterialBanner(
+        MaterialBanner(
+          leading: Icon(
+            failures.isEmpty
+                ? Icons.check_circle_outline_rounded
+                : Icons.error_outline_rounded,
+          ),
+          content: Text(
+            failures.isEmpty
+                ? '$succeeded ${succeeded == 1 ? 'agent' : 'agents'} updated'
+                : 'Updated $succeeded of ${updates.length} agents',
+          ),
+          actions: [
+            if (failures.isNotEmpty)
+              TextButton(
+                onPressed: () {
+                  messenger.hideCurrentMaterialBanner();
+                  unawaited(_openAgentManagement());
+                },
+                child: const Text('Manager'),
+              ),
+            TextButton(
+              onPressed: messenger.clearMaterialBanners,
+              child: const Text('Dismiss'),
+            ),
+          ],
+        ),
+      );
   }
 
   Future<void> _handleMenuAction(String action) async {

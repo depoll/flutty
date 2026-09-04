@@ -120,24 +120,16 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
     if (!mounted) return;
     setState(() => _updatingAll = false);
     await _refresh();
-    if (!mounted) return;
+    if (!mounted || failures.isEmpty) return;
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         icon: Icon(
-          failures.isEmpty ? Icons.check_circle_outline : Icons.error_outline,
-          color: failures.isEmpty
-              ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.error,
+          Icons.error_outline,
+          color: Theme.of(context).colorScheme.error,
         ),
-        title: Text(
-          failures.isEmpty ? 'All agents updated' : 'Some updates failed',
-        ),
-        content: Text(
-          failures.isEmpty
-              ? '${updates.length} ${updates.length == 1 ? 'agent is' : 'agents are'} up to date.'
-              : 'Could not update ${failures.join(', ')}.',
-        ),
+        title: const Text('Some updates failed'),
+        content: Text('Could not update ${failures.join(', ')}.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -185,8 +177,10 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
       }
     }
     if (!mounted) return;
-    await _showActionResult(runtime, result);
-    if (!mounted) return;
+    if (!result.succeeded) {
+      await _showActionResult(runtime, result);
+      if (!mounted) return;
+    }
     await _refresh();
   }
 

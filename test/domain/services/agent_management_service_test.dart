@@ -87,6 +87,10 @@ void main() {
       agentStandaloneAcpRuntimeDefinitions.map((definition) => definition.id),
       <String>['acp:claude', 'acp:codex', 'acp:antigravity', 'acp:pi'],
     );
+    final antigravityAcp = agentStandaloneAcpRuntimeDefinitions.firstWhere(
+      (definition) => definition.id == 'acp:antigravity',
+    );
+    expect(antigravityAcp.executableNames, contains('npx'));
     expect(
       agentCliRuntimeDefinitions.map((definition) => definition.label),
       containsAll(<String>[
@@ -393,6 +397,37 @@ void main() {
       expect(runtime.status, AgentRuntimeStatus.needsRepair);
       expect(runtime.executablePath, '/usr/local/bin/opencode');
       expect(runtime.message, contains('Required setup scripts'));
+    });
+
+    test('detects Antigravity ACP through its npx launcher', () async {
+      final client = _MockSshClient();
+      final discovery = _MockDiscovery();
+      final session = _remoteSession(client);
+      final definition = agentStandaloneAcpRuntimeDefinitions.firstWhere(
+        (runtime) => runtime.id == 'acp:antigravity',
+      );
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+      var executeCount = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        executeCount += 1;
+        if (executeCount == 1) {
+          return _execOutput('__monkeyssh_agent_path__=/usr/local/bin/npx\n');
+        }
+        return _execOutput(
+          '__monkeyssh_agent_runtime__=acp:antigravity\n'
+          '__monkeyssh_agent_runtime_end__\n',
+        );
+      });
+
+      final runtime = await AgentManagementService(
+        discovery,
+      ).inspect(session, definition);
+
+      expect(runtime.status, AgentRuntimeStatus.installed);
+      expect(runtime.executablePath, '/usr/local/bin/npx');
+      expect(runtime.detectionSource, 'npx on demand');
     });
 
     test('automatic update checks include CLIs only', () async {

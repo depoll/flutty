@@ -116,17 +116,29 @@ void main() {
         current: broken,
         onOutput: any(named: 'onOutput'),
       ),
-    ).thenAnswer(
-      (_) async =>
-          const AgentRuntimeActionResult(succeeded: true, output: 'repaired'),
-    );
+    ).thenAnswer((_) async {
+      runtimes[1] = AgentRuntimeInfo(
+        definition: broken.definition,
+        status: AgentRuntimeStatus.installed,
+        installedVersion: '0.5.2',
+        executablePath: '/usr/local/bin/opencode',
+        detectionSource: 'npm global',
+        managedByPackageManager: true,
+      );
+      return const AgentRuntimeActionResult(
+        succeeded: true,
+        output: 'repaired',
+      );
+    });
     await pumpScreen(tester);
 
     expect(find.text('Needs repair'), findsOneWidget);
     await tester.tap(find.text('Repair'));
     await tester.pumpAndSettle();
 
-    expect(find.text('OpenCode ready'), findsOneWidget);
+    expect(find.text('OpenCode ready'), findsNothing);
+    expect(find.text('Needs repair'), findsNothing);
+    expect(find.text('Installed v0.5.2'), findsOneWidget);
     verify(
       () => service.installOrUpdate(
         session,
@@ -195,7 +207,8 @@ void main() {
       managedByPackageManager: true,
     );
     runtimes[1] = second;
-    for (final runtime in [runtimes.first, second]) {
+    final updates = [runtimes.first, second];
+    for (final runtime in updates) {
       when(
         () => service.installOrUpdate(
           session,
@@ -204,10 +217,23 @@ void main() {
           current: runtime,
           onOutput: any(named: 'onOutput'),
         ),
-      ).thenAnswer(
-        (_) async =>
-            const AgentRuntimeActionResult(succeeded: true, output: 'updated'),
-      );
+      ).thenAnswer((_) async {
+        final index = runtimes.indexWhere(
+          (entry) => entry.definition.id == runtime.definition.id,
+        );
+        runtimes[index] = AgentRuntimeInfo(
+          definition: runtime.definition,
+          status: AgentRuntimeStatus.installed,
+          installedVersion: runtime.latestVersion,
+          executablePath: runtime.executablePath,
+          detectionSource: runtime.detectionSource,
+          managedByPackageManager: true,
+        );
+        return const AgentRuntimeActionResult(
+          succeeded: true,
+          output: 'updated',
+        );
+      });
     }
     await pumpScreen(tester);
 
@@ -215,9 +241,9 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('agent-update-all')));
     await tester.pumpAndSettle();
 
-    expect(find.text('All agents updated'), findsOneWidget);
-    expect(find.text('2 agents are up to date.'), findsOneWidget);
-    for (final runtime in [runtimes.first, second]) {
+    expect(find.text('All agents updated'), findsNothing);
+    expect(find.byType(AlertDialog), findsNothing);
+    for (final runtime in updates) {
       verify(
         () => service.installOrUpdate(
           session,
@@ -257,21 +283,30 @@ void main() {
     );
   });
 
-  testWidgets('update action shows result and refreshes providers', (
+  testWidgets('successful update refreshes inline without a dialog', (
     tester,
   ) async {
+    final current = runtimes.first;
     when(
       () => service.installOrUpdate(
         session,
         agentCliRuntimeDefinitions.first,
         update: true,
-        current: runtimes.first,
+        current: current,
         onOutput: any(named: 'onOutput'),
       ),
     ).thenAnswer((invocation) async {
       final onOutput =
           invocation.namedArguments[#onOutput] as ValueChanged<String>?;
       onOutput?.call('updated package');
+      runtimes[0] = AgentRuntimeInfo(
+        definition: agentCliRuntimeDefinitions.first,
+        status: AgentRuntimeStatus.installed,
+        installedVersion: '1.1.0',
+        executablePath: '/opt/homebrew/bin/claude',
+        detectionSource: 'Homebrew',
+        managedByPackageManager: true,
+      );
       return const AgentRuntimeActionResult(
         succeeded: true,
         output: 'updated package',
@@ -283,17 +318,17 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('agent-action-cli:claude')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Claude Code ready'), findsOneWidget);
-    expect(find.text('updated package'), findsOneWidget);
-    await tester.tap(find.text('Close'));
-    await tester.pumpAndSettle();
+    expect(find.text('Claude Code ready'), findsNothing);
+    expect(find.text('updated package'), findsNothing);
+    expect(find.text('Installed v1.1.0'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsNothing);
 
     verify(
       () => service.installOrUpdate(
         session,
         agentCliRuntimeDefinitions.first,
         update: true,
-        current: runtimes.first,
+        current: current,
         onOutput: any(named: 'onOutput'),
       ),
     ).called(1);

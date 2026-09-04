@@ -2151,7 +2151,42 @@ void main() {
       expect(secondOffset, lessThan(firstOffset));
     });
 
-    testWidgets('agent update banner opens agent management', (tester) async {
+    test('agent update summaries include names without becoming long', () {
+      List<AgentRuntimeInfo> updates(int count) => [
+        for (final definition in agentCliRuntimeDefinitions.take(count))
+          AgentRuntimeInfo(
+            definition: definition,
+            status: AgentRuntimeStatus.updateAvailable,
+          ),
+      ];
+
+      expect(
+        agentUpdateNotificationSummary(updates(1)),
+        '1 update waiting: Claude Code',
+      );
+      expect(
+        agentUpdateNotificationSummary(updates(3)),
+        '3 updates waiting: Claude Code, Copilot CLI, and Codex',
+      );
+      expect(
+        agentUpdateNotificationSummary(updates(5)),
+        '5 updates waiting: Claude Code, Copilot CLI, and 3 more',
+      );
+    });
+
+    testWidgets('new session update prompt opens agent management once', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      session = SshSession(
+        connectionId: session.connectionId,
+        hostId: session.hostId,
+        client: sshClient,
+        config: session.config,
+      );
       final management = _MockAgentManagementService();
       final tmuxService = _MockTmuxService();
       when(
@@ -2160,18 +2195,21 @@ void main() {
       when(
         () => tmuxService.prefetchInstalledAgentTools(any()),
       ).thenAnswer((_) async {});
-      final update = AgentRuntimeInfo(
-        definition: agentCliRuntimeDefinitions.first,
-        status: AgentRuntimeStatus.updateAvailable,
-        installedVersion: '1.0.0',
-        latestVersion: '1.1.0',
-      );
+      final updates = [
+        for (final definition in agentCliRuntimeDefinitions.take(5))
+          AgentRuntimeInfo(
+            definition: definition,
+            status: AgentRuntimeStatus.updateAvailable,
+            installedVersion: '1.0.0',
+            latestVersion: '1.1.0',
+          ),
+      ];
       when(
         () => management.checkForUpdates(session),
-      ).thenAnswer((_) async => [update]);
+      ).thenAnswer((_) async => updates);
       when(
         () => management.refreshAll(session),
-      ).thenAnswer((_) async => [update]);
+      ).thenAnswer((_) async => updates);
 
       await pumpScreen(
         tester,
@@ -2181,8 +2219,15 @@ void main() {
       await tester.pump(const Duration(seconds: 10));
       await tester.pumpAndSettle();
 
-      expect(find.text('Claude Code update available'), findsOneWidget);
-      await tester.tap(find.text('Manage'));
+      expect(
+        find.text('5 updates waiting: Claude Code, Copilot CLI, and 3 more'),
+        findsOneWidget,
+      );
+      expect(find.text('Update now'), findsOneWidget);
+      expect(find.text('Manager'), findsOneWidget);
+      verify(() => management.checkForUpdates(session)).called(1);
+
+      await tester.tap(find.text('Manager'));
       await tester.pumpAndSettle();
 
       expect(find.text('Agent Management'), findsOneWidget);
@@ -2190,6 +2235,109 @@ void main() {
         () => tmuxService.invalidateInstalledAgentTools(session.connectionId),
       ).called(1);
       verify(() => tmuxService.prefetchInstalledAgentTools(session)).called(1);
+    });
+
+    testWidgets('Update now installs every waiting update', (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      session = SshSession(
+        connectionId: session.connectionId,
+        hostId: session.hostId,
+        client: sshClient,
+        config: session.config,
+      );
+      final management = _MockAgentManagementService();
+      final tmuxService = _MockTmuxService();
+      when(
+        () => tmuxService.invalidateInstalledAgentTools(any()),
+      ).thenReturn(null);
+      when(
+        () => tmuxService.prefetchInstalledAgentTools(any()),
+      ).thenAnswer((_) async {});
+      final updates = [
+        for (final definition in agentCliRuntimeDefinitions.take(2))
+          AgentRuntimeInfo(
+            definition: definition,
+            status: AgentRuntimeStatus.updateAvailable,
+            installedVersion: '1.0.0',
+            latestVersion: '1.1.0',
+            executablePath:
+                '/usr/local/bin/${definition.executableNames.first}',
+            managedByPackageManager: true,
+          ),
+      ];
+      when(
+        () => management.checkForUpdates(session),
+      ).thenAnswer((_) async => updates);
+      for (final update in updates) {
+        when(
+          () => management.installOrUpdate(
+            session,
+            update.definition,
+            update: true,
+            current: update,
+          ),
+        ).thenAnswer(
+          (_) async => const AgentRuntimeActionResult(
+            succeeded: true,
+            output: 'updated',
+          ),
+        );
+      }
+
+      await pumpScreen(
+        tester,
+        agentManagementService: management,
+        tmuxService: tmuxService,
+      );
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Update now'));
+      for (var attempt = 0; attempt < 20; attempt++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        if (find.text('2 agents updated').evaluate().isNotEmpty) break;
+      }
+
+      expect(
+        find.text('2 agents updated'),
+        findsOneWidget,
+        reason: tester
+            .widgetList<Text>(find.byType(Text))
+            .map((text) => text.data)
+            .whereType<String>()
+            .join(' | '),
+      );
+      for (final update in updates) {
+        verify(
+          () => management.installOrUpdate(
+            session,
+            update.definition,
+            update: true,
+            current: update,
+          ),
+        ).called(1);
+      }
+      verify(
+        () => tmuxService.invalidateInstalledAgentTools(session.connectionId),
+      ).called(1);
+    });
+
+    testWidgets('resuming a live terminal does not show update prompts', (
+      tester,
+    ) async {
+      final management = _MockAgentManagementService();
+      when(
+        () => management.checkForUpdates(session),
+      ).thenAnswer((_) async => const <AgentRuntimeInfo>[]);
+
+      await pumpScreen(tester, agentManagementService: management);
+      await tester.pump(const Duration(seconds: 12));
+      await tester.pump();
+
+      expect(find.text('Update now'), findsNothing);
+      verifyNever(() => management.checkForUpdates(session));
     });
 
     testWidgets('terminal overflow lists agent management', (tester) async {

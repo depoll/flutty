@@ -205,7 +205,7 @@ const agentAcpRuntimeDefinitions = <AgentRuntimeDefinition>[
     label: 'Antigravity ACP',
     kind: AgentRuntimeKind.acpAdapter,
     tool: AgentLaunchTool.antigravity,
-    executableNames: ['agy-acp', 'antigravity-acp'],
+    executableNames: ['agy-acp', 'antigravity-acp', 'npx'],
     registry: AgentPackageRegistry.npm,
     packageName: 'agy-acp',
   ),
@@ -616,7 +616,11 @@ class AgentManagementService {
             'Required setup scripts did not run. Repair the installation before launching this agent.',
       );
     }
-    var source = metadata?.detectionSource ?? _detectionSourceFromPath(path);
+    var source = metadata?.detectionSource;
+    source ??=
+        definition.id == 'acp:antigravity' && _executableBasename(path) == 'npx'
+        ? 'npx on demand'
+        : _detectionSourceFromPath(path);
     installed ??= parseAgentVersion(metadata?.installedVersionOutput ?? '');
     var latest = definition.kind == AgentRuntimeKind.cli
         ? parseAgentVersion(metadata?.latestVersionOutput ?? '')
@@ -1219,6 +1223,9 @@ String? _markerValue(String output, String marker) {
   final value = output.substring(start, end < 0 ? output.length : end).trim();
   return value.isEmpty ? null : value;
 }
+
+String _executableBasename(String path) =>
+    path.replaceAll('\\', '/').split('/').last.toLowerCase();
 
 String _detectionSourceFromPath(String path) {
   final normalized = path.toLowerCase();
