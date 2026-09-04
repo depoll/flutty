@@ -70,6 +70,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     executableNames: ['gemini', 'gemini-cli'],
     registry: AgentPackageRegistry.npm,
     packageName: '@google/gemini-cli',
+    selfUpdateArguments: ['update'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:opencode',
@@ -80,6 +81,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     registry: AgentPackageRegistry.npm,
     packageName: 'opencode-ai',
     homebrewFormula: 'opencode',
+    selfUpdateArguments: ['upgrade'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:antigravity',
@@ -87,6 +89,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     kind: AgentRuntimeKind.cli,
     tool: AgentLaunchTool.antigravity,
     executableNames: ['agy', 'antigravity', 'antigravity-cli'],
+    selfUpdateArguments: ['update'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:cursor',
@@ -94,6 +97,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     kind: AgentRuntimeKind.cli,
     tool: AgentLaunchTool.cursorAgent,
     executableNames: ['cursor-agent'],
+    selfUpdateArguments: ['update'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:pi',
@@ -103,6 +107,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     executableNames: ['pi'],
     registry: AgentPackageRegistry.npm,
     packageName: '@mariozechner/pi-coding-agent',
+    selfUpdateArguments: ['update', '--self'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:hermes',
@@ -112,6 +117,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     executableNames: ['hermes', 'hermes-agent'],
     registry: AgentPackageRegistry.pipx,
     packageName: 'hermes-agent',
+    selfUpdateArguments: ['update', '--yes'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:openclaw',
@@ -121,6 +127,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     executableNames: ['openclaw'],
     registry: AgentPackageRegistry.npm,
     packageName: 'openclaw',
+    selfUpdateArguments: ['update', '--yes'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:grok',
@@ -128,6 +135,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     kind: AgentRuntimeKind.cli,
     tool: AgentLaunchTool.grokBuild,
     executableNames: ['grok'],
+    selfUpdateArguments: ['update'],
   ),
 ];
 

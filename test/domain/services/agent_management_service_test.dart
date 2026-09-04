@@ -123,15 +123,30 @@ void main() {
       expect(script, contains("'@anthropic-ai/claude-code@latest'"));
     });
 
-    test('uses built-in updaters for Claude, Copilot, and Codex', () {
-      for (final entry in <(String, String)>[
-        ('cli:claude', '/opt/tools/claude'),
-        ('cli:copilot', '/opt/tools/copilot'),
-        ('cli:codex', '/opt/tools/codex'),
-      ]) {
+    test('uses every supported CLI built-in updater', () {
+      final cases = <(String, String, List<String>)>[
+        ('cli:claude', '/opt/tools/claude', ['update']),
+        ('cli:copilot', '/opt/tools/copilot', ['update']),
+        ('cli:codex', '/opt/tools/codex', ['update']),
+        ('cli:gemini', '/opt/tools/gemini', ['update']),
+        ('cli:opencode', '/opt/tools/opencode', ['upgrade']),
+        ('cli:antigravity', '/opt/tools/agy', ['update']),
+        ('cli:cursor', '/opt/tools/cursor-agent', ['update']),
+        ('cli:pi', '/opt/tools/pi', ['update', '--self']),
+        ('cli:hermes', '/opt/tools/hermes', ['update', '--yes']),
+        ('cli:openclaw', '/opt/tools/openclaw', ['update', '--yes']),
+        ('cli:grok', '/opt/tools/grok', ['update']),
+      ];
+      expect(cases, hasLength(agentCliRuntimeDefinitions.length));
+
+      for (final entry in cases) {
         final definition = agentCliRuntimeDefinitions.firstWhere(
           (runtime) => runtime.id == entry.$1,
         );
+        expect(definition.selfUpdateArguments, entry.$3);
+        final quotedArguments = entry.$3
+            .map((argument) => "'$argument'")
+            .join(' ');
         final posix = buildAgentInstallCommand(
           definition,
           windows: false,
@@ -139,7 +154,7 @@ void main() {
           detectionSource: 'PATH',
           executablePath: entry.$2,
         );
-        expect(posix, endsWith("'${entry.$2}' 'update'"));
+        expect(posix, endsWith("'${entry.$2}' $quotedArguments"));
 
         final windows = buildAgentInstallCommand(
           definition,
@@ -149,7 +164,7 @@ void main() {
           executablePath: entry.$2,
         );
         final script = _decodePowerShellCommand(windows!);
-        expect(script, contains("& '${entry.$2}' 'update'"));
+        expect(script, contains("& '${entry.$2}' $quotedArguments"));
       }
     });
 
