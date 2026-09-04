@@ -38,6 +38,7 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
   final Set<String> _runningActions = <String>{};
   final Map<String, String> _actionOutput = <String, String>{};
   bool _refreshing = false;
+  bool _updatingAll = false;
   String? _refreshError;
 
   AgentManagementService get _service =>
@@ -73,6 +74,78 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
     } finally {
       if (mounted) setState(() => _refreshing = false);
     }
+  }
+
+  Future<void> _updateAll() async {
+    final updates = _runtimes
+        .where(
+          (runtime) => runtime.status == AgentRuntimeStatus.updateAvailable,
+        )
+        .toList(growable: false);
+    if (updates.isEmpty || _updatingAll) return;
+
+    setState(() {
+      _updatingAll = true;
+      for (final runtime in updates) {
+        _runningActions.add(runtime.definition.id);
+        _actionOutput[runtime.definition.id] = '';
+      }
+    });
+    final failures = <String>[];
+    for (final runtime in updates) {
+      final id = runtime.definition.id;
+      try {
+        final result = await _service.installOrUpdate(
+          widget.session,
+          runtime.definition,
+          update: true,
+          current: runtime,
+          onOutput: (chunk) {
+            if (!mounted) return;
+            setState(() {
+              final combined = '${_actionOutput[id] ?? ''}$chunk';
+              _actionOutput[id] = combined.length <= 1200
+                  ? combined
+                  : combined.substring(combined.length - 1200);
+            });
+          },
+        );
+        if (!result.succeeded) failures.add(runtime.definition.label);
+      } on Object {
+        failures.add(runtime.definition.label);
+      } finally {
+        if (mounted) setState(() => _runningActions.remove(id));
+      }
+    }
+    if (!mounted) return;
+    setState(() => _updatingAll = false);
+    await _refresh();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: Icon(
+          failures.isEmpty ? Icons.check_circle_outline : Icons.error_outline,
+          color: failures.isEmpty
+              ? Theme.of(context).colorScheme.primary
+              : Theme.of(context).colorScheme.error,
+        ),
+        title: Text(
+          failures.isEmpty ? 'All agents updated' : 'Some updates failed',
+        ),
+        content: Text(
+          failures.isEmpty
+              ? '${updates.length} ${updates.length == 1 ? 'agent is' : 'agents are'} up to date.'
+              : 'Could not update ${failures.join(', ')}.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _runAction(AgentRuntimeInfo runtime) async {
@@ -212,6 +285,43 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
               children: [
                 if (_refreshError != null)
                   _ErrorBanner(message: _refreshError!, onRetry: _refresh),
+                if (_runtimes.where((runtime) => runtime.hasUpdate).toList()
+                    case final updates when updates.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: colorScheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: colorScheme.primary),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.system_update_alt_rounded,
+                          color: colorScheme.onPrimaryContainer,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            '${updates.length} ${updates.length == 1 ? 'update' : 'updates'} available',
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(
+                                  color: colorScheme.onPrimaryContainer,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                        ),
+                        FilledButton(
+                          key: const ValueKey('agent-update-all'),
+                          onPressed: _updatingAll ? null : _updateAll,
+                          child: Text(
+                            _updatingAll ? 'Updating...' : 'Update all',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 _RuntimeSection(
                   title: 'agent CLIs',
                   subtitle: 'Launch and resume tools available on this host',

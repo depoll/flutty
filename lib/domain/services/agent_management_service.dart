@@ -14,6 +14,20 @@ import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'windows_remote_powershell.dart';
 
+const _posixVersionRunner = r'''
+__fl_agent_version() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 2 "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout 2 "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e '$t=shift; alarm $t; exec @ARGV' 2 "$@"
+  else
+    return 124
+  fi
+}
+''';
+
 const _profilePrefix =
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
     '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } >/dev/null 2>&1; '
@@ -894,14 +908,28 @@ String buildAgentBatchProbeCommand(
     );
   }
 
-  final command = StringBuffer(_profilePrefix);
-  for (final definition in definitions) {
+  final command = StringBuffer('$_profilePrefix$_posixVersionRunner')
+    ..write(
+      r'__fl_probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/monkeyssh-agent.XXXXXX") || exit 1; ',
+    )
+    ..write('__fl_probe_pids=; ');
+  for (var index = 0; index < definitions.length; index += 1) {
+    final definition = definitions[index];
     command
-      ..write('printf ${_shellQuote('$_runtimeMarker%s\\n')} ')
+      ..write('( printf ${_shellQuote('$_runtimeMarker%s\\n')} ')
       ..write('${_shellQuote(definition.id)}; ')
       ..write(_buildPosixProbeBody(definition))
-      ..write('; printf ${_shellQuote('$_runtimeEndMarker\\n')}; ');
+      ..write('; printf ${_shellQuote('$_runtimeEndMarker\\n')} ) ')
+      ..write('> "\$__fl_probe_dir/$index" 2>&1 & ')
+      ..write('__fl_probe_pids="\$__fl_probe_pids \$!"; ');
   }
+  command.write(
+    r'for __fl_pid in $__fl_probe_pids; do wait "$__fl_pid" 2>/dev/null || true; done; ',
+  );
+  for (var index = 0; index < definitions.length; index += 1) {
+    command.write('cat "\$__fl_probe_dir/$index"; ');
+  }
+  command.write(r'rm -rf "$__fl_probe_dir"; ');
   return command.toString();
 }
 
@@ -1077,10 +1105,25 @@ String _buildWindowsProbeBody(AgentRuntimeDefinition definition) {
 
 String _buildPosixProbeBody(AgentRuntimeDefinition definition) {
   final candidates = definition.executableNames.map(_shellQuote).join(' ');
+  final versionArguments = definition.versionArguments
+      .map(_shellQuote)
+      .join(' ');
+  final versionProbe = definition.kind == AgentRuntimeKind.cli
+      ? '__fl_version_file=\$(mktemp "\u0024{TMPDIR:-/tmp}/monkeyssh-version.XXXXXX" 2>/dev/null || true); '
+            'if [ -n "\$__fl_version_file" ]; then '
+            'version_output=; '
+            'if __fl_agent_version "\$resolved" $versionArguments >"\$__fl_version_file" 2>&1; then '
+            'version_output=\$(head -n 4 "\$__fl_version_file" | tr ${_shellQuote(r'\r\n')} ${_shellQuote('  ')}); '
+            'fi; '
+            'rm -f "\$__fl_version_file"; '
+            'printf ${_shellQuote('$_versionMarker%s\\n')} "\$version_output"; '
+            'fi; '
+      : '';
   return 'for candidate in $candidates; do '
       r'resolved=$(command -v "$candidate" 2>/dev/null || true); '
       r'[ -z "$resolved" ] && continue; '
       'printf ${_shellQuote('$_pathMarker%s\\n')} "\$resolved"; '
+      '$versionProbe'
       'break; done';
 }
 

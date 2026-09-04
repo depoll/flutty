@@ -504,6 +504,57 @@ void main() {
       }
     });
 
+    test('detects versions without waiting for a hanging CLI', () async {
+      final root = await Directory.systemTemp.createTemp(
+        'monkeyssh-agent-version-test-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final bin = Directory('${root.path}/bin')..createSync();
+      final quick = File('${bin.path}/quick-agent')
+        ..writeAsStringSync('#!/bin/sh\necho "quick-agent 1.2.3"\n');
+      final hanging = File('${bin.path}/hanging-agent')
+        ..writeAsStringSync('#!/bin/sh\nsleep 20\n');
+      await Process.run('chmod', ['+x', quick.path, hanging.path]);
+      const definitions = <AgentRuntimeDefinition>[
+        AgentRuntimeDefinition(
+          id: 'cli:quick',
+          label: 'Quick',
+          kind: AgentRuntimeKind.cli,
+          executableNames: ['quick-agent'],
+        ),
+        AgentRuntimeDefinition(
+          id: 'cli:hanging',
+          label: 'Hanging',
+          kind: AgentRuntimeKind.cli,
+          executableNames: ['hanging-agent'],
+        ),
+      ];
+      final script = File('${root.path}/probe.sh')
+        ..writeAsStringSync(
+          buildAgentBatchProbeCommand(definitions, windows: false),
+        );
+      final stopwatch = Stopwatch()..start();
+
+      final result = await Process.run(
+        'bash',
+        [script.path],
+        environment: {
+          'HOME': root.path,
+          'PATH': '${bin.path}:/usr/bin:/bin',
+          'TMPDIR': root.path,
+        },
+      );
+      stopwatch.stop();
+      final snapshots = parseAgentBatchProbeOutput(result.stdout as String);
+
+      expect(result.exitCode, 0, reason: result.stderr as String);
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 6)));
+      expect(snapshots['cli:quick']?.executablePath, quick.path);
+      expect(snapshots['cli:quick']?.versionOutput, 'quick-agent 1.2.3');
+      expect(snapshots['cli:hanging']?.executablePath, hanging.path);
+      expect(snapshots['cli:hanging']?.versionOutput, isNull);
+    });
+
     test('does not query latest versions for ACP adapters', () {
       final command = buildAgentMetadataProbeCommand([
         agentAcpRuntimeDefinitions[1],
@@ -535,8 +586,8 @@ void main() {
       expect(command, contains('~/.zprofile'));
       expect(command, contains("'claude' 'claude-code'"));
       expect(command, contains('command -v'));
-      expect(command, isNot(contains('__monkeyssh_agent_version__=')));
-      expect(command, isNot(contains('--version')));
+      expect(command, contains('__monkeyssh_agent_version__='));
+      expect(command, contains("'--version'"));
     });
 
     test('uses Get-Command and one-line markers on Windows', () {
