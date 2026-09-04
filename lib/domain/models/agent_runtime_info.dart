@@ -52,6 +52,7 @@ class AgentRuntimeDefinition {
     this.registry,
     this.packageName,
     this.homebrewFormula,
+    this.selfUpdateArguments = const [],
     this.sharesCliInstallation = false,
   });
 
@@ -81,6 +82,12 @@ class AgentRuntimeDefinition {
 
   /// Homebrew formula used when an existing installation resolves to Homebrew.
   final String? homebrewFormula;
+
+  /// Arguments for the CLI's own non-interactive updater.
+  final List<String> selfUpdateArguments;
+
+  /// Whether this runtime has a built-in updater.
+  bool get supportsSelfUpdate => selfUpdateArguments.isNotEmpty;
 
   /// Whether this adapter ships as part of its agent CLI.
   final bool sharesCliInstallation;

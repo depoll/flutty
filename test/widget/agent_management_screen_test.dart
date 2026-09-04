@@ -92,6 +92,50 @@ void main() {
     verify(() => service.refreshAll(session)).called(2);
   });
 
+  testWidgets('installed self-updating CLI offers Check & update', (
+    tester,
+  ) async {
+    final installed = AgentRuntimeInfo(
+      definition: agentCliRuntimeDefinitions.first,
+      status: AgentRuntimeStatus.installed,
+      executablePath: '/usr/local/bin/claude',
+      detectionSource: 'PATH',
+      managedByPackageManager: true,
+    );
+    runtimes[0] = installed;
+    when(
+      () => service.installOrUpdate(
+        session,
+        installed.definition,
+        update: true,
+        current: installed,
+        onOutput: any(named: 'onOutput'),
+      ),
+    ).thenAnswer(
+      (_) async => const AgentRuntimeActionResult(
+        succeeded: true,
+        output: 'Already up to date',
+      ),
+    );
+    await pumpScreen(tester);
+
+    expect(find.text('Check & update'), findsOneWidget);
+    await tester.tap(find.text('Check & update'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+
+    verify(
+      () => service.installOrUpdate(
+        session,
+        installed.definition,
+        update: true,
+        current: installed,
+        onOutput: any(named: 'onOutput'),
+      ),
+    ).called(1);
+  });
+
   testWidgets('action errors clear progress and show a failure dialog', (
     tester,
   ) async {

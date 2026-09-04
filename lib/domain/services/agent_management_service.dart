@@ -40,6 +40,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     executableNames: ['claude', 'claude-code'],
     registry: AgentPackageRegistry.npm,
     packageName: '@anthropic-ai/claude-code',
+    selfUpdateArguments: ['update'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:copilot',
@@ -49,6 +50,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     executableNames: ['copilot', 'github-copilot'],
     registry: AgentPackageRegistry.npm,
     packageName: '@github/copilot',
+    selfUpdateArguments: ['update'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:codex',
@@ -58,6 +60,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     executableNames: ['codex', 'codex-cli'],
     registry: AgentPackageRegistry.npm,
     packageName: '@openai/codex',
+    selfUpdateArguments: ['update'],
   ),
   AgentRuntimeDefinition(
     id: 'cli:gemini',
@@ -275,7 +278,21 @@ String? buildAgentInstallCommand(
   required bool windows,
   required bool update,
   String? detectionSource,
+  String? executablePath,
 }) {
+  if (update && executablePath != null && definition.supportsSelfUpdate) {
+    if (windows) {
+      final executable = powerShellSingleQuote(executablePath);
+      final arguments = definition.selfUpdateArguments
+          .map(powerShellSingleQuote)
+          .join(' ');
+      return buildWindowsPowerShellCommand(
+        '$powerShellProfilePathPreamble& $executable $arguments; exit \u0024LASTEXITCODE',
+      );
+    }
+    return '$_profilePrefix${_shellQuote(executablePath)} '
+        '${definition.selfUpdateArguments.map(_shellQuote).join(' ')}';
+  }
   if (update && detectionSource == 'PATH') return null;
   final formula = definition.homebrewFormula;
   if (update && detectionSource == 'Homebrew' && formula != null) {
@@ -584,7 +601,10 @@ class AgentManagementService {
         latest != null &&
         compareAgentVersions(installed, latest) < 0;
     final managed =
-        source == 'Homebrew' || source == 'npm global' || source == 'pipx';
+        definition.supportsSelfUpdate ||
+        source == 'Homebrew' ||
+        source == 'npm global' ||
+        source == 'pipx';
     return AgentRuntimeInfo(
       definition: definition,
       status: hasUpdate
@@ -614,6 +634,7 @@ class AgentManagementService {
       windows: session.remoteIsWindows,
       update: update,
       detectionSource: current?.detectionSource,
+      executablePath: current?.executablePath,
     );
     if (command == null) {
       return const AgentRuntimeActionResult(

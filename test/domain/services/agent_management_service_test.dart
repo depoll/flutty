@@ -123,6 +123,36 @@ void main() {
       expect(script, contains("'@anthropic-ai/claude-code@latest'"));
     });
 
+    test('uses built-in updaters for Claude, Copilot, and Codex', () {
+      for (final entry in <(String, String)>[
+        ('cli:claude', '/opt/tools/claude'),
+        ('cli:copilot', '/opt/tools/copilot'),
+        ('cli:codex', '/opt/tools/codex'),
+      ]) {
+        final definition = agentCliRuntimeDefinitions.firstWhere(
+          (runtime) => runtime.id == entry.$1,
+        );
+        final posix = buildAgentInstallCommand(
+          definition,
+          windows: false,
+          update: true,
+          detectionSource: 'PATH',
+          executablePath: entry.$2,
+        );
+        expect(posix, endsWith("'${entry.$2}' 'update'"));
+
+        final windows = buildAgentInstallCommand(
+          definition,
+          windows: true,
+          update: true,
+          detectionSource: 'PATH',
+          executablePath: entry.$2,
+        );
+        final script = _decodePowerShellCommand(windows!);
+        expect(script, contains("& '${entry.$2}' 'update'"));
+      }
+    });
+
     test('keeps Homebrew updates with the detected package manager', () {
       final definition = agentCliRuntimeDefinitions.firstWhere(
         (runtime) => runtime.label == 'OpenCode',
