@@ -117,7 +117,7 @@ void main() {
       expect(
         posix,
         endsWith(
-          "npm install -g --ignore-scripts=false '@anthropic-ai/claude-code'@latest",
+          "npm install -g --foreground-scripts --ignore-scripts=false '@anthropic-ai/claude-code'@latest",
         ),
       );
       final windows = buildAgentInstallCommand(
@@ -128,7 +128,10 @@ void main() {
       expect(windows, isNotNull);
       final script = _decodePowerShellCommand(windows!);
       expect(script, contains(r'$PROFILE.CurrentUserAllHosts'));
-      expect(script, contains('npm install -g --ignore-scripts=false'));
+      expect(
+        script,
+        contains('npm install -g --foreground-scripts --ignore-scripts=false'),
+      );
       expect(script, contains("'@anthropic-ai/claude-code@latest'"));
     });
 
@@ -145,7 +148,9 @@ void main() {
         );
         expect(
           posix,
-          contains('npm install -g --ignore-scripts=false'),
+          contains(
+            'npm install -g --foreground-scripts --ignore-scripts=false',
+          ),
           reason: definition.id,
         );
 
@@ -156,10 +161,58 @@ void main() {
         );
         expect(
           _decodePowerShellCommand(windows!),
-          contains('npm install -g --ignore-scripts=false'),
+          contains(
+            'npm install -g --foreground-scripts --ignore-scripts=false',
+          ),
           reason: definition.id,
         );
       }
+    });
+
+    test('repair reinstalls broken managed packages', () {
+      final openCode = agentCliRuntimeDefinitions.firstWhere(
+        (definition) => definition.id == 'cli:opencode',
+      );
+      final posix = buildAgentInstallCommand(
+        openCode,
+        windows: false,
+        update: false,
+        repair: true,
+      );
+      expect(posix, contains("npm uninstall -g 'opencode-ai'"));
+      expect(
+        posix,
+        endsWith(
+          "npm install -g --foreground-scripts --ignore-scripts=false 'opencode-ai'@latest",
+        ),
+      );
+
+      final windows = _decodePowerShellCommand(
+        buildAgentInstallCommand(
+          openCode,
+          windows: true,
+          update: false,
+          repair: true,
+        )!,
+      );
+      expect(windows, contains("npm uninstall -g 'opencode-ai'"));
+      expect(
+        windows,
+        contains('npm install -g --foreground-scripts --ignore-scripts=false'),
+      );
+
+      final hermes = agentCliRuntimeDefinitions.firstWhere(
+        (definition) => definition.id == 'cli:hermes',
+      );
+      expect(
+        buildAgentInstallCommand(
+          hermes,
+          windows: false,
+          update: false,
+          repair: true,
+        ),
+        contains("pipx reinstall 'hermes-agent'"),
+      );
     });
 
     test('uses every supported CLI built-in updater', () {
@@ -253,7 +306,7 @@ void main() {
       expect(
         buildAgentInstallCommand(definition, windows: false, update: false),
         endsWith(
-          r"npm install -g --ignore-scripts=false 'it'\''s-agent'@latest",
+          r"npm install -g --foreground-scripts --ignore-scripts=false 'it'\''s-agent'@latest",
         ),
       );
     });

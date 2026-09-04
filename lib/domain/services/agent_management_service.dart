@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/agent_runtime_info.dart';
 import 'agent_session_discovery_service.dart';
+import 'diagnostics_log_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'windows_remote_powershell.dart';
@@ -304,6 +305,7 @@ String? buildAgentInstallCommand(
   AgentRuntimeDefinition definition, {
   required bool windows,
   required bool update,
+  bool repair = false,
   String? detectionSource,
   String? executablePath,
 }) {
@@ -335,18 +337,26 @@ String? buildAgentInstallCommand(
     final script = switch (definition.registry) {
       AgentPackageRegistry.npm => [
         powerShellProfilePathPreamble,
-        '& npm install -g --ignore-scripts=false $quotedLatest;',
+        if (repair) ...[
+          '& npm uninstall -g $quotedPackage;',
+          r'if($LASTEXITCODE -ne 0){exit $LASTEXITCODE};',
+        ],
+        '& npm install -g --foreground-scripts --ignore-scripts=false $quotedLatest;',
         r'exit $LASTEXITCODE',
       ].join(),
       AgentPackageRegistry.pipx => [
         powerShellProfilePathPreamble,
         'if(Get-Command pipx -ErrorAction SilentlyContinue){',
-        if (update)
+        if (repair)
+          '& pipx reinstall $quotedPackage;'
+        else if (update)
           '& pipx upgrade $quotedPackage;'
         else
           '& pipx install $quotedPackage;',
         r'if($LASTEXITCODE -eq 0){exit 0}};',
-        if (update)
+        if (repair)
+          '& py -m pip install --user --upgrade --force-reinstall $quotedPackage;'
+        else if (update)
           '& py -m pip install --user --upgrade $quotedPackage;'
         else
           '& py -m pip install --user $quotedPackage;',
@@ -358,9 +368,13 @@ String? buildAgentInstallCommand(
   }
   return switch (definition.registry) {
     AgentPackageRegistry.npm =>
-      '$_profilePrefix npm install -g --ignore-scripts=false ${_shellQuote(package)}@latest',
+      repair
+          ? '$_profilePrefix npm uninstall -g ${_shellQuote(package)} && npm install -g --foreground-scripts --ignore-scripts=false ${_shellQuote(package)}@latest'
+          : '$_profilePrefix npm install -g --foreground-scripts --ignore-scripts=false ${_shellQuote(package)}@latest',
     AgentPackageRegistry.pipx =>
-      update
+      repair
+          ? '$_profilePrefix pipx reinstall ${_shellQuote(package)} || python3 -m pip install --user --upgrade --force-reinstall ${_shellQuote(package)}'
+          : update
           ? '$_profilePrefix pipx upgrade ${_shellQuote(package)} || python3 -m pip install --user --upgrade ${_shellQuote(package)}'
           : '$_profilePrefix pipx install ${_shellQuote(package)} || python3 -m pip install --user ${_shellQuote(package)}',
     null => null,
@@ -665,6 +679,7 @@ class AgentManagementService {
       definition,
       windows: session.remoteIsWindows,
       update: update,
+      repair: current?.status == AgentRuntimeStatus.needsRepair,
       detectionSource: current?.detectionSource,
       executablePath: current?.executablePath,
     );
@@ -675,12 +690,47 @@ class AgentManagementService {
             'No safe automatic installer is available for this tool. Use its official installation instructions, then tap Re-check.',
       );
     }
-    final result = await _run(
-      session,
-      command,
-      onOutput: onOutput,
-      timeout: null,
+    final repairing = current?.status == AgentRuntimeStatus.needsRepair;
+    DiagnosticsLogService.instance.info(
+      'agent.management',
+      'action_start',
+      fields: {
+        'connectionId': session.connectionId,
+        'agentId': definition.id,
+        'update': update,
+        'repair': repairing,
+        'registry': definition.registry?.name ?? 'none',
+      },
     );
+    late final AgentRuntimeActionResult result;
+    try {
+      result = await _run(session, command, onOutput: onOutput, timeout: null);
+      DiagnosticsLogService.instance.info(
+        'agent.management',
+        'action_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'agentId': definition.id,
+          'update': update,
+          'repair': repairing,
+          'success': result.succeeded,
+          'exitCode': result.exitCode ?? -1,
+        },
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'agent.management',
+        'action_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'agentId': definition.id,
+          'update': update,
+          'repair': repairing,
+          'errorType': error.runtimeType,
+        },
+      );
+      rethrow;
+    }
     _runtimeCache.remove(session.connectionId);
     _discovery.invalidateSession(session);
     return result;
