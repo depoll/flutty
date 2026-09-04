@@ -464,6 +464,18 @@ void main() {
       expect(snapshots['cli:codex']?.executablePath, isNull);
     });
 
+    test('retains a detected path from an interrupted runtime block', () {
+      final snapshots = parseAgentBatchProbeOutput(
+        '__monkeyssh_agent_runtime__=cli:claude\n'
+        '__monkeyssh_agent_path__=/home/dev/bin/claude\n'
+        '__monkeyssh_agent_runtime__=cli:codex\n'
+        '__monkeyssh_agent_runtime_end__\n',
+      );
+
+      expect(snapshots['cli:claude']?.executablePath, '/home/dev/bin/claude');
+      expect(snapshots['cli:codex']?.executablePath, isNull);
+    });
+
     test('parses package ownership and latest versions', () {
       final snapshots = parseAgentMetadataProbeOutput(
         '__monkeyssh_agent_runtime__=cli:claude\n'
@@ -533,26 +545,49 @@ void main() {
         ..writeAsStringSync(
           buildAgentBatchProbeCommand(definitions, windows: false),
         );
-      final stopwatch = Stopwatch()..start();
+      final shells = <String>['bash'];
+      if (File('/bin/zsh').existsSync()) shells.add('/bin/zsh');
+      for (final shell in shells) {
+        final stopwatch = Stopwatch()..start();
+        final result = await Process.run(
+          shell,
+          [script.path],
+          environment: {
+            'HOME': root.path,
+            'PATH': '${bin.path}:/usr/bin:/bin',
+            'TMPDIR': root.path,
+          },
+        );
+        stopwatch.stop();
+        final snapshots = parseAgentBatchProbeOutput(result.stdout as String);
 
-      final result = await Process.run(
-        'bash',
-        [script.path],
-        environment: {
-          'HOME': root.path,
-          'PATH': '${bin.path}:/usr/bin:/bin',
-          'TMPDIR': root.path,
-        },
-      );
-      stopwatch.stop();
-      final snapshots = parseAgentBatchProbeOutput(result.stdout as String);
-
-      expect(result.exitCode, 0, reason: result.stderr as String);
-      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 6)));
-      expect(snapshots['cli:quick']?.executablePath, quick.path);
-      expect(snapshots['cli:quick']?.versionOutput, 'quick-agent 1.2.3');
-      expect(snapshots['cli:hanging']?.executablePath, hanging.path);
-      expect(snapshots['cli:hanging']?.versionOutput, isNull);
+        expect(
+          result.exitCode,
+          0,
+          reason: '$shell: ${result.stderr as String}',
+        );
+        expect(
+          stopwatch.elapsed,
+          lessThan(const Duration(seconds: 6)),
+          reason: shell,
+        );
+        expect(
+          snapshots['cli:quick']?.executablePath,
+          quick.path,
+          reason: shell,
+        );
+        expect(
+          snapshots['cli:quick']?.versionOutput,
+          'quick-agent 1.2.3',
+          reason: shell,
+        );
+        expect(
+          snapshots['cli:hanging']?.executablePath,
+          hanging.path,
+          reason: shell,
+        );
+        expect(snapshots['cli:hanging']?.versionOutput, isNull, reason: shell);
+      }
     });
 
     test('does not query latest versions for ACP adapters', () {

@@ -27,14 +27,10 @@ __fl_agent_version() {
   fi
 }
 ''';
-
 const _profilePrefix =
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
-    '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } >/dev/null 2>&1; '
-    r'case "${SHELL##*/}" in '
-    'zsh) { . ~/.zshrc; } >/dev/null 2>&1;; '
-    'bash) { . ~/.bashrc; } >/dev/null 2>&1;; '
-    'esac; '
+    r'__fl_profile_path=$( set +e; . ~/.profile >/dev/null 2>&1 || true; . ~/.bash_profile >/dev/null 2>&1 || true; . ~/.zprofile >/dev/null 2>&1 || true; if [ "${SHELL##*/}" = zsh ]; then . ~/.zshrc >/dev/null 2>&1 || true; elif [ "${SHELL##*/}" = bash ]; then . ~/.bashrc >/dev/null 2>&1 || true; fi; printf "%s" "$PATH" ) || true; '
+    r'[ -n "$__fl_profile_path" ] && export PATH="$__fl_profile_path:$PATH"; unset __fl_profile_path; '
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _pathMarker = '__monkeyssh_agent_path__=';
 const _versionMarker = '__monkeyssh_agent_version__=';
@@ -866,6 +862,12 @@ Map<String, AgentProbeSnapshot> parseAgentBatchProbeOutput(String output) {
   for (final rawLine in const LineSplitter().convert(output)) {
     final line = rawLine.trim();
     if (line.startsWith(_runtimeMarker)) {
+      if (id != null) {
+        snapshots[id] = AgentProbeSnapshot(
+          executablePath: path == null || path.isEmpty ? null : path,
+          versionOutput: version == null || version.isEmpty ? null : version,
+        );
+      }
       id = line.substring(_runtimeMarker.length);
       path = null;
       version = null;
@@ -908,7 +910,7 @@ String buildAgentBatchProbeCommand(
     );
   }
 
-  final command = StringBuffer('$_profilePrefix$_posixVersionRunner')
+  final command = StringBuffer(_posixVersionRunner)
     ..write(
       r'__fl_probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/monkeyssh-agent.XXXXXX") || exit 1; ',
     )
@@ -930,7 +932,7 @@ String buildAgentBatchProbeCommand(
     command.write('cat "\$__fl_probe_dir/$index"; ');
   }
   command.write(r'rm -rf "$__fl_probe_dir"; ');
-  return command.toString();
+  return '${_profilePrefix}sh -c ${_shellQuote(command.toString())}';
 }
 
 /// Builds one remote command for package ownership and upstream versions.
