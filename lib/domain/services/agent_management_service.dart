@@ -236,11 +236,19 @@ const agentAcpRuntimeDefinitions = <AgentRuntimeDefinition>[
   ),
 ];
 
-/// All managed runtimes in display order.
-const agentRuntimeDefinitions = <AgentRuntimeDefinition>[
+/// ACP adapters that require an installation separate from their agent CLI.
+final agentStandaloneAcpRuntimeDefinitions =
+    List<AgentRuntimeDefinition>.unmodifiable(
+      agentAcpRuntimeDefinitions.where(
+        (definition) => !definition.sharesCliInstallation,
+      ),
+    );
+
+/// All runtimes that need a distinct management row.
+final agentRuntimeDefinitions = List<AgentRuntimeDefinition>.unmodifiable([
   ...agentCliRuntimeDefinitions,
-  ...agentAcpRuntimeDefinitions,
-];
+  ...agentStandaloneAcpRuntimeDefinitions,
+]);
 
 /// Extracts a normalized version from common CLI output.
 String? parseAgentVersion(String output) {
@@ -406,10 +414,7 @@ class AgentManagementService {
   }) async {
     final definitions = <AgentRuntimeDefinition>[
       ...agentCliRuntimeDefinitions,
-      if (includeAdapters)
-        ...agentAcpRuntimeDefinitions.where(
-          (definition) => !definition.sharesCliInstallation,
-        ),
+      if (includeAdapters) ...agentStandaloneAcpRuntimeDefinitions,
     ];
     final AgentRuntimeActionResult batch;
     try {
@@ -485,23 +490,15 @@ class AgentManagementService {
     final byId = {
       for (final runtime in uniqueRuntimes) runtime.definition.id: runtime,
     };
-    final cliByTool = <AgentLaunchTool, AgentRuntimeInfo>{};
     final runtimes = <AgentRuntimeInfo>[];
     for (final definition in agentCliRuntimeDefinitions) {
       final runtime = byId[definition.id];
       if (runtime == null) continue;
       runtimes.add(runtime);
-      final tool = definition.tool;
-      if (tool != null) cliByTool[tool] = runtime;
     }
     if (includeAdapters) {
-      for (final definition in agentAcpRuntimeDefinitions) {
-        final shared = definition.sharesCliInstallation
-            ? cliByTool[definition.tool]
-            : null;
-        final runtime = shared == null
-            ? byId[definition.id]
-            : _copyAcpRuntimeInfo(shared, definition);
+      for (final definition in agentStandaloneAcpRuntimeDefinitions) {
+        final runtime = byId[definition.id];
         if (runtime != null) runtimes.add(runtime);
       }
     }
@@ -765,25 +762,6 @@ class AgentManagementService {
     }
   }, priority: priority);
 }
-
-AgentRuntimeInfo _copyAcpRuntimeInfo(
-  AgentRuntimeInfo source,
-  AgentRuntimeDefinition definition,
-) => AgentRuntimeInfo(
-  definition: definition,
-  status: switch (source.status) {
-    AgentRuntimeStatus.checking => AgentRuntimeStatus.checking,
-    AgentRuntimeStatus.notInstalled => AgentRuntimeStatus.notInstalled,
-    AgentRuntimeStatus.failed => AgentRuntimeStatus.failed,
-    AgentRuntimeStatus.unavailable => AgentRuntimeStatus.unavailable,
-    AgentRuntimeStatus.installed ||
-    AgentRuntimeStatus.updateAvailable => AgentRuntimeStatus.installed,
-  },
-  installedVersion: source.installedVersion,
-  executablePath: source.executablePath,
-  detectionSource: source.detectionSource,
-  managedByPackageManager: source.managedByPackageManager,
-);
 
 String _windowsNpmCommand(List<String> arguments) =>
     _windowsExecutableCommand('npm', arguments);

@@ -81,6 +81,12 @@ void main() {
   test('registers every supported CLI and built-in ACP adapter', () {
     expect(agentCliRuntimeDefinitions, hasLength(11));
     expect(agentAcpRuntimeDefinitions, hasLength(10));
+    expect(agentStandaloneAcpRuntimeDefinitions, hasLength(4));
+    expect(agentRuntimeDefinitions, hasLength(15));
+    expect(
+      agentStandaloneAcpRuntimeDefinitions.map((definition) => definition.id),
+      <String>['acp:claude', 'acp:codex', 'acp:antigravity', 'acp:pi'],
+    );
     expect(
       agentCliRuntimeDefinitions.map((definition) => definition.label),
       containsAll(<String>[
@@ -317,9 +323,7 @@ void main() {
         final output = StringBuffer();
         for (final definition in [
           ...agentCliRuntimeDefinitions,
-          ...agentAcpRuntimeDefinitions.where(
-            (definition) => !definition.sharesCliInstallation,
-          ),
+          ...agentStandaloneAcpRuntimeDefinitions,
         ]) {
           output
             ..writeln('__monkeyssh_agent_runtime__=${definition.id}')
@@ -364,9 +368,7 @@ void main() {
             final output = StringBuffer();
             for (final definition in [
               ...agentCliRuntimeDefinitions,
-              ...agentAcpRuntimeDefinitions.where(
-                (definition) => !definition.sharesCliInstallation,
-              ),
+              ...agentStandaloneAcpRuntimeDefinitions,
             ]) {
               output.writeln('__monkeyssh_agent_runtime__=${definition.id}');
               if (definition.id == 'cli:copilot') {
@@ -394,15 +396,14 @@ void main() {
         final copilot = runtimes.firstWhere(
           (runtime) => runtime.definition.id == 'cli:copilot',
         );
-        final copilotAcp = runtimes.firstWhere(
-          (runtime) => runtime.definition.id == 'acp:copilot',
-        );
         expect(copilot.status, AgentRuntimeStatus.updateAvailable);
         expect(copilot.detectionSource, 'npm global');
         expect(copilot.installedVersion, '1.0.0');
         expect(copilot.latestVersion, '1.1.0');
-        expect(copilotAcp.status, AgentRuntimeStatus.installed);
-        expect(copilotAcp.latestVersion, isNull);
+        expect(
+          runtimes.where((runtime) => runtime.definition.id == 'acp:copilot'),
+          isEmpty,
+        );
         expect(
           runtimes
               .where(
@@ -480,9 +481,7 @@ void main() {
     test('generated POSIX scripts pass bash syntax validation', () async {
       final definitions = <AgentRuntimeDefinition>[
         ...agentCliRuntimeDefinitions,
-        ...agentAcpRuntimeDefinitions.where(
-          (definition) => !definition.sharesCliInstallation,
-        ),
+        ...agentStandaloneAcpRuntimeDefinitions,
       ];
       final scripts = [
         buildAgentBatchProbeCommand(definitions, windows: false),

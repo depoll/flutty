@@ -78,10 +78,7 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
   Future<void> _runAction(AgentRuntimeInfo runtime) async {
     final id = runtime.definition.id;
     if (_runningActions.contains(id)) return;
-    final update =
-        runtime.status == AgentRuntimeStatus.updateAvailable ||
-        (runtime.status == AgentRuntimeStatus.installed &&
-            runtime.definition.supportsSelfUpdate);
+    final update = runtime.status == AgentRuntimeStatus.updateAvailable;
     setState(() {
       _runningActions.add(id);
       _actionOutput[id] = '';
@@ -327,14 +324,10 @@ class _RuntimeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final status = _statusPresentation(runtime, scheme);
-    final canSelfUpdate =
-        runtime.status == AgentRuntimeStatus.installed &&
-        runtime.definition.supportsSelfUpdate;
     final canInstall = runtime.status == AgentRuntimeStatus.notInstalled
         ? runtime.definition.supportsManagedInstall
-        : canSelfUpdate ||
-              (runtime.status == AgentRuntimeStatus.updateAvailable &&
-                  runtime.managedByPackageManager);
+        : runtime.status == AgentRuntimeStatus.updateAvailable &&
+              runtime.managedByPackageManager;
     return Container(
       key: ValueKey('agent-runtime-${runtime.definition.id}'),
       decoration: BoxDecoration(
@@ -441,15 +434,12 @@ class _RuntimeCard extends StatelessWidget {
                   key: ValueKey('agent-action-${runtime.definition.id}'),
                   onPressed: onAction,
                   icon: Icon(
-                    runtime.status == AgentRuntimeStatus.updateAvailable ||
-                            canSelfUpdate
+                    runtime.status == AgentRuntimeStatus.updateAvailable
                         ? Icons.upgrade_rounded
                         : Icons.download_rounded,
                   ),
                   label: Text(
-                    canSelfUpdate
-                        ? 'Check & update'
-                        : runtime.status == AgentRuntimeStatus.updateAvailable
+                    runtime.status == AgentRuntimeStatus.updateAvailable
                         ? 'Update'
                         : 'Install',
                   ),
