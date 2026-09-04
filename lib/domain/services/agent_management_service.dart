@@ -34,6 +34,7 @@ const _profilePrefix =
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _pathMarker = '__monkeyssh_agent_path__=';
 const _versionMarker = '__monkeyssh_agent_version__=';
+const _repairMarker = '__monkeyssh_agent_repair__';
 const _runtimeMarker = '__monkeyssh_agent_runtime__=';
 const _runtimeEndMarker = '__monkeyssh_agent_runtime_end__';
 const _sourceMarker = '__monkeyssh_agent_source__=';
@@ -334,7 +335,7 @@ String? buildAgentInstallCommand(
     final script = switch (definition.registry) {
       AgentPackageRegistry.npm => [
         powerShellProfilePathPreamble,
-        '& npm install -g $quotedLatest;',
+        '& npm install -g --ignore-scripts=false $quotedLatest;',
         r'exit $LASTEXITCODE',
       ].join(),
       AgentPackageRegistry.pipx => [
@@ -357,7 +358,7 @@ String? buildAgentInstallCommand(
   }
   return switch (definition.registry) {
     AgentPackageRegistry.npm =>
-      '$_profilePrefix npm install -g ${_shellQuote(package)}@latest',
+      '$_profilePrefix npm install -g --ignore-scripts=false ${_shellQuote(package)}@latest',
     AgentPackageRegistry.pipx =>
       update
           ? '$_profilePrefix pipx upgrade ${_shellQuote(package)} || python3 -m pip install --user --upgrade ${_shellQuote(package)}'
@@ -534,6 +535,11 @@ class AgentManagementService {
       );
       final snapshot = AgentProbeSnapshot(
         executablePath: _markerValue(probeOutput.output, _pathMarker),
+        versionOutput: _markerValue(probeOutput.output, _versionMarker),
+        needsRepair: const LineSplitter()
+            .convert(probeOutput.output)
+            .map((line) => line.trim())
+            .contains(_repairMarker),
       );
       AgentMetadataSnapshot? metadata;
       if (snapshot.executablePath != null) {
@@ -583,6 +589,17 @@ class AgentManagementService {
         message: definition.supportsManagedInstall
             ? null
             : 'Install this tool using its official installer.',
+      );
+    }
+    if (snapshot.needsRepair) {
+      return AgentRuntimeInfo(
+        definition: definition,
+        status: AgentRuntimeStatus.needsRepair,
+        executablePath: path,
+        detectionSource: _detectionSourceFromPath(path),
+        managedByPackageManager: definition.supportsManagedInstall,
+        message:
+            'Required setup scripts did not run. Repair the installation before launching this agent.',
       );
     }
     var source = metadata?.detectionSource ?? _detectionSourceFromPath(path);
@@ -789,13 +806,20 @@ String _windowsExecutableCommand(String executable, List<String> arguments) {
 /// Parsed executable and version output for one runtime probe.
 class AgentProbeSnapshot {
   /// Creates a probe snapshot.
-  const AgentProbeSnapshot({this.executablePath, this.versionOutput});
+  const AgentProbeSnapshot({
+    this.executablePath,
+    this.versionOutput,
+    this.needsRepair = false,
+  });
 
   /// Resolved remote executable path.
   final String? executablePath;
 
   /// Raw normalized output from the runtime's version command.
   final String? versionOutput;
+
+  /// Whether the executable reports that required install scripts were skipped.
+  final bool needsRepair;
 }
 
 /// Package ownership and latest-version output for one runtime.
@@ -859,6 +883,7 @@ Map<String, AgentProbeSnapshot> parseAgentBatchProbeOutput(String output) {
   String? id;
   String? path;
   String? version;
+  var needsRepair = false;
   for (final rawLine in const LineSplitter().convert(output)) {
     final line = rawLine.trim();
     if (line.startsWith(_runtimeMarker)) {
@@ -866,19 +891,24 @@ Map<String, AgentProbeSnapshot> parseAgentBatchProbeOutput(String output) {
         snapshots[id] = AgentProbeSnapshot(
           executablePath: path == null || path.isEmpty ? null : path,
           versionOutput: version == null || version.isEmpty ? null : version,
+          needsRepair: needsRepair,
         );
       }
       id = line.substring(_runtimeMarker.length);
       path = null;
       version = null;
+      needsRepair = false;
     } else if (id != null && line.startsWith(_pathMarker)) {
       path = line.substring(_pathMarker.length).trim();
     } else if (id != null && line.startsWith(_versionMarker)) {
       version = line.substring(_versionMarker.length).trim();
+    } else if (id != null && line == _repairMarker) {
+      needsRepair = true;
     } else if (id != null && line == _runtimeEndMarker) {
       snapshots[id] = AgentProbeSnapshot(
         executablePath: path == null || path.isEmpty ? null : path,
         versionOutput: version == null || version.isEmpty ? null : version,
+        needsRepair: needsRepair,
       );
       id = null;
     }
@@ -1116,6 +1146,8 @@ String _buildPosixProbeBody(AgentRuntimeDefinition definition) {
             'version_output=; '
             'if __fl_agent_version "\$resolved" $versionArguments >"\$__fl_version_file" 2>&1; then '
             'version_output=\$(head -n 4 "\$__fl_version_file" | tr ${_shellQuote(r'\r\n')} ${_shellQuote('  ')}); '
+            'elif grep -Eiq ${_shellQuote('postinstall (script )?(was )?not run|--ignore-scripts')} "\$__fl_version_file"; then '
+            'printf ${_shellQuote('$_repairMarker\n')}; '
             'fi; '
             'rm -f "\$__fl_version_file"; '
             'printf ${_shellQuote('$_versionMarker%s\\n')} "\$version_output"; '

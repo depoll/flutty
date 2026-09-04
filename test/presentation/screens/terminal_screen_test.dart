@@ -2153,6 +2153,13 @@ void main() {
 
     testWidgets('agent update banner opens agent management', (tester) async {
       final management = _MockAgentManagementService();
+      final tmuxService = _MockTmuxService();
+      when(
+        () => tmuxService.invalidateInstalledAgentTools(any()),
+      ).thenReturn(null);
+      when(
+        () => tmuxService.prefetchInstalledAgentTools(any()),
+      ).thenAnswer((_) async {});
       final update = AgentRuntimeInfo(
         definition: agentCliRuntimeDefinitions.first,
         status: AgentRuntimeStatus.updateAvailable,
@@ -2166,7 +2173,11 @@ void main() {
         () => management.refreshAll(session),
       ).thenAnswer((_) async => [update]);
 
-      await pumpScreen(tester, agentManagementService: management);
+      await pumpScreen(
+        tester,
+        agentManagementService: management,
+        tmuxService: tmuxService,
+      );
       await tester.pump(const Duration(seconds: 10));
       await tester.pumpAndSettle();
 
@@ -2174,7 +2185,11 @@ void main() {
       await tester.tap(find.text('Manage'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Agent management'), findsOneWidget);
+      expect(find.text('Agent Management'), findsOneWidget);
+      verify(
+        () => tmuxService.invalidateInstalledAgentTools(session.connectionId),
+      ).called(1);
+      verify(() => tmuxService.prefetchInstalledAgentTools(session)).called(1);
     });
 
     testWidgets('terminal overflow lists agent management', (tester) async {

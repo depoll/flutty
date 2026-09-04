@@ -96,6 +96,48 @@ void main() {
     );
   });
 
+  testWidgets('repairs an agent with skipped install scripts', (tester) async {
+    final broken = AgentRuntimeInfo(
+      definition: agentCliRuntimeDefinitions.firstWhere(
+        (definition) => definition.id == 'cli:opencode',
+      ),
+      status: AgentRuntimeStatus.needsRepair,
+      executablePath: '/usr/local/bin/opencode',
+      detectionSource: 'npm global',
+      managedByPackageManager: true,
+      message: 'Required setup scripts did not run.',
+    );
+    runtimes[1] = broken;
+    when(
+      () => service.installOrUpdate(
+        session,
+        broken.definition,
+        update: false,
+        current: broken,
+        onOutput: any(named: 'onOutput'),
+      ),
+    ).thenAnswer(
+      (_) async =>
+          const AgentRuntimeActionResult(succeeded: true, output: 'repaired'),
+    );
+    await pumpScreen(tester);
+
+    expect(find.text('Needs repair'), findsOneWidget);
+    await tester.tap(find.text('Repair'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('OpenCode ready'), findsOneWidget);
+    verify(
+      () => service.installOrUpdate(
+        session,
+        broken.definition,
+        update: false,
+        current: broken,
+        onOutput: any(named: 'onOutput'),
+      ),
+    ).called(1);
+  });
+
   testWidgets('pull-to-refresh re-probes all runtimes', (tester) async {
     await pumpScreen(tester);
     clearInteractions(service);

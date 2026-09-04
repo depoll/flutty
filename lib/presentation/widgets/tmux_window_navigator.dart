@@ -760,7 +760,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
-  Future<Set<AgentLaunchTool>>? _installedToolsFuture;
   StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
   String? _error;
@@ -899,7 +898,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session.hostId != widget.session.hostId) {
       _resetWindowReloadRecovery();
-      _installedToolsFuture = null;
       _showSessions = false;
       _hasInitializedSessionProviders = false;
       unawaited(_loadPreferredLaunchTool());
@@ -1280,7 +1278,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   }
 
   Future<void> _showNewWindowPicker() async {
-    final installedToolsFuture = _installedToolsFuture ??= ref
+    final installedToolsFuture = ref
         .read(tmuxServiceProvider)
         .detectInstalledAgentTools(widget.session);
     unawaited(

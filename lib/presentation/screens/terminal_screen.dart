@@ -15720,6 +15720,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         builder: (context) => AgentManagementScreen(
           session: session,
           onProvidersRefreshed: () {
+            _tmuxService.invalidateInstalledAgentTools(session.connectionId);
+            unawaited(_tmuxService.prefetchInstalledAgentTools(session));
             if (mounted) setState(() {});
           },
         ),

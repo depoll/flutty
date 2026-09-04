@@ -466,10 +466,15 @@ class _RuntimeRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final status = _statusPresentation(runtime, scheme);
-    final canInstall = runtime.status == AgentRuntimeStatus.notInstalled
-        ? runtime.definition.supportsManagedInstall
-        : runtime.status == AgentRuntimeStatus.updateAvailable &&
-              runtime.managedByPackageManager;
+    final canRepair =
+        runtime.status == AgentRuntimeStatus.needsRepair &&
+        runtime.definition.supportsManagedInstall;
+    final canInstall =
+        canRepair ||
+        (runtime.status == AgentRuntimeStatus.notInstalled
+            ? runtime.definition.supportsManagedInstall
+            : runtime.status == AgentRuntimeStatus.updateAvailable &&
+                  runtime.managedByPackageManager);
     return Container(
       key: ValueKey('agent-runtime-${runtime.definition.id}'),
       padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
@@ -560,12 +565,16 @@ class _RuntimeRow extends StatelessWidget {
                   icon: Icon(
                     runtime.status == AgentRuntimeStatus.updateAvailable
                         ? Icons.upgrade_rounded
+                        : canRepair
+                        ? Icons.build_outlined
                         : Icons.download_rounded,
                     size: 18,
                   ),
                   label: Text(
                     runtime.status == AgentRuntimeStatus.updateAvailable
                         ? 'Update'
+                        : canRepair
+                        ? 'Repair'
                         : 'Install',
                   ),
                 )
@@ -698,6 +707,11 @@ _StatusPresentation _statusPresentation(
     'Not installed${runtime.latestVersion == null ? '' : ' · latest v${runtime.latestVersion}'}',
     Icons.remove_circle_outline,
     scheme.onSurfaceVariant,
+  ),
+  AgentRuntimeStatus.needsRepair => _StatusPresentation(
+    'Needs repair',
+    Icons.build_circle_outlined,
+    scheme.error,
   ),
   AgentRuntimeStatus.unavailable => _StatusPresentation(
     'Unavailable',

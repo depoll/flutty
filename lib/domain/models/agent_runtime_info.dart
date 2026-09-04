@@ -23,6 +23,9 @@ enum AgentRuntimeStatus {
   /// No candidate executable was found.
   notInstalled,
 
+  /// An executable exists, but its required installation setup is incomplete.
+  needsRepair,
+
   /// The runtime cannot run on the remote platform.
   unavailable,
 

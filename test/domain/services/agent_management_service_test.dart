@@ -116,7 +116,9 @@ void main() {
       expect(posix, contains(r'export PATH="$HOME/.opencode/bin'));
       expect(
         posix,
-        endsWith("npm install -g '@anthropic-ai/claude-code'@latest"),
+        endsWith(
+          "npm install -g --ignore-scripts=false '@anthropic-ai/claude-code'@latest",
+        ),
       );
       final windows = buildAgentInstallCommand(
         definition,
@@ -126,7 +128,38 @@ void main() {
       expect(windows, isNotNull);
       final script = _decodePowerShellCommand(windows!);
       expect(script, contains(r'$PROFILE.CurrentUserAllHosts'));
+      expect(script, contains('npm install -g --ignore-scripts=false'));
       expect(script, contains("'@anthropic-ai/claude-code@latest'"));
+    });
+
+    test('enables lifecycle scripts for every managed npm install', () {
+      final npmDefinitions = agentRuntimeDefinitions.where(
+        (definition) => definition.registry == AgentPackageRegistry.npm,
+      );
+
+      for (final definition in npmDefinitions) {
+        final posix = buildAgentInstallCommand(
+          definition,
+          windows: false,
+          update: false,
+        );
+        expect(
+          posix,
+          contains('npm install -g --ignore-scripts=false'),
+          reason: definition.id,
+        );
+
+        final windows = buildAgentInstallCommand(
+          definition,
+          windows: true,
+          update: false,
+        );
+        expect(
+          _decodePowerShellCommand(windows!),
+          contains('npm install -g --ignore-scripts=false'),
+          reason: definition.id,
+        );
+      }
     });
 
     test('uses every supported CLI built-in updater', () {
@@ -219,7 +252,9 @@ void main() {
       );
       expect(
         buildAgentInstallCommand(definition, windows: false, update: false),
-        endsWith(r"npm install -g 'it'\''s-agent'@latest"),
+        endsWith(
+          r"npm install -g --ignore-scripts=false 'it'\''s-agent'@latest",
+        ),
       );
     });
 
@@ -270,6 +305,41 @@ void main() {
       expect(runtime.latestVersion, '1.1.0');
       expect(runtime.detectionSource, 'npm global');
       expect(runtime.managedByPackageManager, isTrue);
+    });
+
+    test('marks skipped postinstall installations as repairable', () async {
+      final client = _MockSshClient();
+      final discovery = _MockDiscovery();
+      final session = _remoteSession(client);
+      final definition = agentCliRuntimeDefinitions.firstWhere(
+        (runtime) => runtime.id == 'cli:opencode',
+      );
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+      var executeCount = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        executeCount += 1;
+        if (executeCount == 1) {
+          return _execOutput(
+            '__monkeyssh_agent_path__=/usr/local/bin/opencode\n'
+            '__monkeyssh_agent_repair__\n',
+          );
+        }
+        return _execOutput(
+          '__monkeyssh_agent_runtime__=cli:opencode\n'
+          '__monkeyssh_agent_source__=npm global\n'
+          '__monkeyssh_agent_runtime_end__\n',
+        );
+      });
+
+      final runtime = await AgentManagementService(
+        discovery,
+      ).inspect(session, definition);
+
+      expect(runtime.status, AgentRuntimeStatus.needsRepair);
+      expect(runtime.executablePath, '/usr/local/bin/opencode');
+      expect(runtime.message, contains('Required setup scripts'));
     });
 
     test('automatic update checks include CLIs only', () async {
@@ -476,6 +546,17 @@ void main() {
       expect(snapshots['cli:codex']?.executablePath, isNull);
     });
 
+    test('marks skipped postinstall scripts for repair', () {
+      final snapshots = parseAgentBatchProbeOutput(
+        '__monkeyssh_agent_runtime__=cli:opencode\n'
+        '__monkeyssh_agent_path__=/home/dev/bin/opencode\n'
+        '__monkeyssh_agent_repair__\n'
+        '__monkeyssh_agent_runtime_end__\n',
+      );
+
+      expect(snapshots['cli:opencode']?.needsRepair, isTrue);
+    });
+
     test('parses package ownership and latest versions', () {
       final snapshots = parseAgentMetadataProbeOutput(
         '__monkeyssh_agent_runtime__=cli:claude\n'
@@ -505,6 +586,9 @@ void main() {
           detectionSource: 'npm global',
         )!,
       ];
+      expect(scripts.first, contains('__monkeyssh_agent_repair__'));
+      expect(scripts.first, contains('postinstall'));
+      expect(scripts.first, contains('--ignore-scripts'));
       for (var index = 0; index < scripts.length; index += 1) {
         final file = File(
           '${Directory.systemTemp.path}/monkeyssh-agent-$index.sh',
@@ -526,7 +610,13 @@ void main() {
         ..writeAsStringSync('#!/bin/sh\necho "quick-agent 1.2.3"\n');
       final hanging = File('${bin.path}/hanging-agent')
         ..writeAsStringSync('#!/bin/sh\nsleep 20\n');
-      await Process.run('chmod', ['+x', quick.path, hanging.path]);
+      final broken = File('${bin.path}/broken-agent')
+        ..writeAsStringSync(
+          '#!/bin/sh\n'
+          'echo "Error: postinstall script was not run due to --ignore-scripts" >&2\n'
+          'exit 1\n',
+        );
+      await Process.run('chmod', ['+x', quick.path, hanging.path, broken.path]);
       const definitions = <AgentRuntimeDefinition>[
         AgentRuntimeDefinition(
           id: 'cli:quick',
@@ -539,6 +629,12 @@ void main() {
           label: 'Hanging',
           kind: AgentRuntimeKind.cli,
           executableNames: ['hanging-agent'],
+        ),
+        AgentRuntimeDefinition(
+          id: 'cli:broken',
+          label: 'Broken',
+          kind: AgentRuntimeKind.cli,
+          executableNames: ['broken-agent'],
         ),
       ];
       final script = File('${root.path}/probe.sh')
@@ -587,6 +683,12 @@ void main() {
           reason: shell,
         );
         expect(snapshots['cli:hanging']?.versionOutput, isNull, reason: shell);
+        expect(
+          snapshots['cli:broken']?.executablePath,
+          broken.path,
+          reason: shell,
+        );
+        expect(snapshots['cli:broken']?.needsRepair, isTrue, reason: shell);
       }
     });
 
