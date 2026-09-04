@@ -62,13 +62,38 @@ void main() {
   testWidgets('renders CLI and ACP status with source paths', (tester) async {
     await pumpScreen(tester);
 
-    expect(find.text('Agent management'), findsOneWidget);
+    expect(find.text('Agent Management'), findsOneWidget);
     expect(find.text('agent CLIs'), findsOneWidget);
     expect(find.text('ACP adapters'), findsOneWidget);
-    expect(find.text('Update available v1.0.0 -> v1.1.0'), findsOneWidget);
+    expect(find.text('Update v1.0.0 → v1.1.0'), findsOneWidget);
     expect(find.text('Homebrew · /opt/homebrew/bin/claude'), findsOneWidget);
     expect(find.text('Not installed · latest v1.0.0'), findsOneWidget);
     expect(find.text('Installed v1.0.0'), findsOneWidget);
+  });
+
+  testWidgets('compact rows avoid overflow on narrow phones', (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    runtimes[0] = AgentRuntimeInfo(
+      definition: agentCliRuntimeDefinitions.first,
+      status: AgentRuntimeStatus.updateAvailable,
+      installedVersion: '2026.08.12345',
+      latestVersion: '2026.09.67890',
+      executablePath:
+          '/Users/developer/.local/share/version-manager/bin/claude-code',
+      detectionSource: 'npm global package manager',
+      managedByPackageManager: true,
+    );
+
+    await pumpScreen(tester);
+
+    expect(tester.takeException(), isNull);
+    expect(
+      find.byKey(const ValueKey('agent-action-cli:claude')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('pull-to-refresh re-probes all runtimes', (tester) async {

@@ -249,7 +249,7 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: Text('Agent management', style: FluttyTheme.displayMono()),
+        title: Text('Agent Management', style: FluttyTheme.displayMono()),
         actions: [
           IconButton(
             key: const ValueKey('agent-management-refresh'),
@@ -272,15 +272,19 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
         onRefresh: _refresh,
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final horizontalPadding = constraints.maxWidth >= 700 ? 32.0 : 12.0;
+            final horizontalPadding = constraints.maxWidth >= 900
+                ? (constraints.maxWidth - 840) / 2
+                : constraints.maxWidth >= 700
+                ? 32.0
+                : 12.0;
             return ListView(
               key: const ValueKey('agent-management-list'),
               physics: const AlwaysScrollableScrollPhysics(),
               padding: EdgeInsets.fromLTRB(
                 horizontalPadding,
-                12,
+                8,
                 horizontalPadding,
-                32,
+                24,
               ),
               children: [
                 if (_refreshError != null)
@@ -288,20 +292,21 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
                 if (_runtimes.where((runtime) => runtime.hasUpdate).toList()
                     case final updates when updates.isNotEmpty)
                   Container(
-                    margin: const EdgeInsets.only(bottom: 16),
-                    padding: const EdgeInsets.all(14),
+                    margin: const EdgeInsets.only(bottom: 14),
+                    padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
                     decoration: BoxDecoration(
                       color: colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: colorScheme.primary),
                     ),
                     child: Row(
                       children: [
                         Icon(
                           Icons.system_update_alt_rounded,
+                          size: 20,
                           color: colorScheme.onPrimaryContainer,
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             '${updates.length} ${updates.length == 1 ? 'update' : 'updates'} available',
@@ -315,6 +320,10 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
                         FilledButton(
                           key: const ValueKey('agent-update-all'),
                           onPressed: _updatingAll ? null : _updateAll,
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size(0, 44),
+                            padding: const EdgeInsets.symmetric(horizontal: 14),
+                          ),
                           child: Text(
                             _updatingAll ? 'Updating...' : 'Update all',
                           ),
@@ -336,7 +345,7 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
                   onAction: _runAction,
                   onRecheck: _recheck,
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 18),
                 _RuntimeSection(
                   title: 'ACP adapters',
                   subtitle: 'Providers available to native agent windows',
@@ -381,47 +390,70 @@ class _RuntimeSection extends StatelessWidget {
   final ValueChanged<AgentRuntimeInfo> onRecheck;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(4, 4, 4, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: FluttyTheme.displayMono(fontSize: 17)),
-            const SizedBox(height: 3),
-            Text(
-              subtitle,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-      ),
-      for (final runtime in runtimes)
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
         Padding(
-          padding: const EdgeInsets.only(bottom: 10),
-          child: _RuntimeCard(
-            runtime: runtime,
-            busy: runningActions.contains(runtime.definition.id),
-            actionOutput: actionOutput[runtime.definition.id],
-            onAction: () => onAction(runtime),
-            onRecheck: () => onRecheck(runtime),
+          padding: const EdgeInsets.fromLTRB(4, 2, 4, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: FluttyTheme.displayMono(fontSize: 15)),
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ],
           ),
         ),
-    ],
-  );
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(11),
+            child: Column(
+              children: [
+                for (var index = 0; index < runtimes.length; index++) ...[
+                  _RuntimeRow(
+                    runtime: runtimes[index],
+                    busy: runningActions.contains(
+                      runtimes[index].definition.id,
+                    ),
+                    actionOutput: actionOutput[runtimes[index].definition.id],
+                    onAction: () => onAction(runtimes[index]),
+                    onRecheck: () => onRecheck(runtimes[index]),
+                  ),
+                  if (index != runtimes.length - 1)
+                    Divider(
+                      height: 1,
+                      indent: 54,
+                      color: scheme.outlineVariant,
+                    ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
-class _RuntimeCard extends StatelessWidget {
-  const _RuntimeCard({
+class _RuntimeRow extends StatelessWidget {
+  const _RuntimeRow({
     required this.runtime,
     required this.busy,
+    required this.actionOutput,
     required this.onAction,
     required this.onRecheck,
-    this.actionOutput,
   });
 
   final AgentRuntimeInfo runtime;
@@ -440,51 +472,46 @@ class _RuntimeCard extends StatelessWidget {
               runtime.managedByPackageManager;
     return Container(
       key: ValueKey('agent-runtime-${runtime.definition.id}'),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: scheme.outlineVariant),
-      ),
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 42,
-                height: 42,
+                width: 34,
+                height: 34,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   color: scheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(8),
                 ),
                 child: AgentToolIcon(
                   tool: runtime.definition.tool,
-                  size: 23,
                   color: scheme.onSurfaceVariant,
                   fallbackIcon: Icons.hub_outlined,
                 ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       runtime.definition.label,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const SizedBox(height: 5),
+                    const SizedBox(height: 2),
                     _StatusLabel(presentation: status),
                     if (_sourceLine(runtime) case final source?) ...[
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 2),
                       Text(
                         source,
-                        maxLines: 2,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: FluttyTheme.monoStyle.copyWith(
                           fontSize: 11,
@@ -493,9 +520,11 @@ class _RuntimeCard extends StatelessWidget {
                       ),
                     ],
                     if (runtime.message case final message?) ...[
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 3),
                       Text(
                         message,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: scheme.onSurfaceVariant,
                         ),
@@ -504,14 +533,59 @@ class _RuntimeCard extends StatelessWidget {
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
+              if (busy)
+                Semantics(
+                  label: 'Running remote command',
+                  child: const SizedBox.square(
+                    dimension: 44,
+                    child: Center(
+                      child: SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                  ),
+                )
+              else if (canInstall)
+                OutlinedButton.icon(
+                  key: ValueKey('agent-action-${runtime.definition.id}'),
+                  onPressed: onAction,
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 44),
+                    padding: const EdgeInsets.symmetric(horizontal: 11),
+                    visualDensity: VisualDensity.compact,
+                    side: BorderSide(color: scheme.outline),
+                  ),
+                  icon: Icon(
+                    runtime.status == AgentRuntimeStatus.updateAvailable
+                        ? Icons.upgrade_rounded
+                        : Icons.download_rounded,
+                    size: 18,
+                  ),
+                  label: Text(
+                    runtime.status == AgentRuntimeStatus.updateAvailable
+                        ? 'Update'
+                        : 'Install',
+                  ),
+                )
+              else
+                IconButton(
+                  key: ValueKey('agent-recheck-${runtime.definition.id}'),
+                  tooltip: 'Re-check ${runtime.definition.label}',
+                  onPressed: runtime.status == AgentRuntimeStatus.checking
+                      ? null
+                      : onRecheck,
+                  icon: const Icon(Icons.refresh_rounded, size: 20),
+                ),
             ],
           ),
           if (busy && actionOutput != null && actionOutput!.trim().isNotEmpty)
             Container(
               width: double.infinity,
-              constraints: const BoxConstraints(maxHeight: 96),
-              margin: const EdgeInsets.only(top: 12),
-              padding: const EdgeInsets.all(10),
+              constraints: const BoxConstraints(maxHeight: 88),
+              margin: const EdgeInsets.fromLTRB(44, 8, 4, 0),
+              padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
                 color: scheme.surface,
                 borderRadius: BorderRadius.circular(8),
@@ -525,44 +599,6 @@ class _RuntimeCard extends StatelessWidget {
                 ),
               ),
             ),
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              if (busy) ...[
-                const SizedBox.square(
-                  dimension: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  'Running remote command',
-                  style: Theme.of(context).textTheme.labelMedium,
-                ),
-              ] else if (canInstall)
-                FilledButton.tonalIcon(
-                  key: ValueKey('agent-action-${runtime.definition.id}'),
-                  onPressed: onAction,
-                  icon: Icon(
-                    runtime.status == AgentRuntimeStatus.updateAvailable
-                        ? Icons.upgrade_rounded
-                        : Icons.download_rounded,
-                  ),
-                  label: Text(
-                    runtime.status == AgentRuntimeStatus.updateAvailable
-                        ? 'Update'
-                        : 'Install',
-                  ),
-                )
-              else
-                TextButton.icon(
-                  key: ValueKey('agent-recheck-${runtime.definition.id}'),
-                  onPressed: onRecheck,
-                  icon: const Icon(Icons.refresh_rounded),
-                  label: const Text('Re-check'),
-                ),
-            ],
-          ),
         ],
       ),
     );
@@ -578,13 +614,15 @@ class _StatusLabel extends StatelessWidget {
   Widget build(BuildContext context) => Row(
     mainAxisSize: MainAxisSize.min,
     children: [
-      Icon(presentation.icon, size: 16, color: presentation.color),
-      const SizedBox(width: 6),
+      Icon(presentation.icon, size: 14, color: presentation.color),
+      const SizedBox(width: 4),
       Flexible(
         child: Text(
           presentation.label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: FluttyTheme.monoStyle.copyWith(
-            fontSize: 12,
+            fontSize: 11,
             fontWeight: FontWeight.w600,
             color: presentation.color,
           ),
@@ -604,16 +642,16 @@ class _ErrorBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
       decoration: BoxDecoration(
         color: scheme.errorContainer,
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline, color: scheme.onErrorContainer),
-          const SizedBox(width: 10),
+          Icon(Icons.error_outline, size: 20, color: scheme.onErrorContainer),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               'Could not refresh agents. $message',
@@ -649,10 +687,10 @@ _StatusPresentation _statusPresentation(
         ? 'Installed'
         : 'Installed v${runtime.installedVersion}',
     Icons.check_circle_outline,
-    scheme.primary,
+    scheme.onSurfaceVariant,
   ),
   AgentRuntimeStatus.updateAvailable => _StatusPresentation(
-    'Update available v${runtime.installedVersion ?? '?'} -> v${runtime.latestVersion ?? '?'}',
+    'Update v${runtime.installedVersion ?? '?'} → v${runtime.latestVersion ?? '?'}',
     Icons.upgrade_rounded,
     scheme.tertiary,
   ),
