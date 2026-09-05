@@ -141,7 +141,7 @@ file path. A later unowned write in the same working directory marks that match
 ambiguous (including `/new` and `/resume` rotation), so it launches fresh rather
 than risking the wrong conversation. Plain working-directory fallback is used
 only for one live window and one unused session updated during that foreground
-process. Across Copilot, Codex, OpenCode, Claude Code, Gemini, Antigravity, and
+process. Across Copilot, Codex, OpenCode, Claude Code, Antigravity, and
 Cursor Agent, argv, open-file, or live-lock identity wins; cwd/history fallback
 only accepts state updated during that foreground process. Claude Code's cwd
 fallback follows a session that moved: entering a git worktree relocates the

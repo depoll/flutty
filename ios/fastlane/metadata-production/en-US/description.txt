@@ -5,7 +5,7 @@ Choose the right view for each task:
 - Open supported agents in a native window with readable chat, streamed tool progress, permission controls, images, attachments, session history, and a mobile composer.
 - Switch to the full terminal whenever you need direct CLI control, xterm-256color, inline images, gestures, modifier keys, function keys, macros, or IME-friendly typing.
 - Keep agent and shell work running in persistent MonkeyMux windows. Reconnect, switch windows, and share the same session with your desktop.
-- Find recent project-scoped sessions and save launch presets for Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, Antigravity, Cursor Agent, Pi, Hermes, OpenClaw, and Grok Build.
+- Find recent project-scoped sessions and save launch presets for Claude Code, Copilot CLI, Codex, OpenCode, Antigravity, Cursor Agent, Pi, Hermes, OpenClaw, and Grok Build.
 - Browse, upload, download, create, and edit remote files over SFTP.
 - Generate or import Ed25519 and RSA keys, verify host keys, use jump hosts, and cancel slow connection attempts.
 - Forward remote ports, manage live tunnels, and open forwarded services in the in-app browser.

@@ -16,7 +16,7 @@ Reviewers can explore the main app without an account, SSH server, or external a
 4. Tap Load demo data.
 5. Return to Hosts and open either App Review Demo host.
 
-The offline demo uses an in-app local transport. It includes hosts, keys, snippets, SFTP files, port-forward rules, host themes, and local MonkeyMux windows. Reviewers can switch windows and create windows for Copilot CLI, Claude Code, OpenCode, Codex, Gemini CLI, Antigravity, SFTP, and shell workflows.
+The offline demo uses an in-app local transport. It includes hosts, keys, snippets, SFTP files, port-forward rules, host themes, and local MonkeyMux windows. Reviewers can switch windows and create windows for Copilot CLI, Claude Code, OpenCode, Codex, Antigravity, SFTP, and shell workflows.
 
 Native agent windows normally connect through SSH and MonkeyMux to a supported coding agent installed and authenticated on the user's own server. The offline review demo does not contact those third-party agent services, so its panes use fixed sample content. The store screenshots and App Preview were captured separately from a live local SSH and MonkeyMux workspace with authenticated Copilot CLI and Claude Code sessions.
 

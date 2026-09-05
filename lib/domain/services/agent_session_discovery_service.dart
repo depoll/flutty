@@ -35,7 +35,6 @@ const _profileSourcingPrefix =
     'esac; '
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
-const _geminiSessionMetadataMaxBytes = 64 * 1024;
 const _grokSessionMetadataMaxBytes = 64 * 1024;
 const _openCodeStorageSessionMetadataMaxBytes = 64 * 1024;
 const _piSessionLabelExtractorScript = r'''
@@ -1045,100 +1044,6 @@ _parsePartialAntigravitySessionMetadata(String raw) {
   );
 }
 
-/// Parses Gemini session metadata from a saved chat JSON file.
-@visibleForTesting
-({
-  String? sessionId,
-  String? summary,
-  String? workingDirectory,
-  DateTime? updatedAt,
-  bool isSubagent,
-  bool parsedAny,
-})
-parseGeminiSessionMetadata(
-  String raw, {
-  String? activeWorkingDirectory,
-  String? fallbackWorkingDirectory,
-}) {
-  final decoded = _decodeJsonOrJsonlObject(raw);
-  if (decoded == null) {
-    return _parsePartialGeminiSessionMetadata(
-      raw,
-      activeWorkingDirectory: activeWorkingDirectory,
-      fallbackWorkingDirectory: fallbackWorkingDirectory,
-    );
-  }
-
-  final storedSummary = _readStringField(decoded, 'summary');
-  final summary = (storedSummary?.trim().isNotEmpty ?? false)
-      ? _summarizeSessionText(storedSummary!)
-      : _extractGeminiUserSummary(_readListField(decoded, 'messages'));
-  final directories = _readListField(decoded, 'directories');
-  final resolvedWorkingDirectory =
-      _resolveGeminiWorkingDirectory(
-        directories,
-        activeWorkingDirectory: activeWorkingDirectory,
-      ) ??
-      fallbackWorkingDirectory;
-
-  return (
-    sessionId: _readStringField(decoded, 'sessionId'),
-    summary: summary,
-    workingDirectory: resolvedWorkingDirectory,
-    updatedAt:
-        _parseDateTimeValue(decoded['lastUpdated']) ??
-        _parseDateTimeValue(decoded['startTime']),
-    isSubagent: _readStringField(decoded, 'kind') == 'subagent',
-    parsedAny: true,
-  );
-}
-
-({
-  String? sessionId,
-  String? summary,
-  String? workingDirectory,
-  DateTime? updatedAt,
-  bool isSubagent,
-  bool parsedAny,
-})
-_parsePartialGeminiSessionMetadata(
-  String raw, {
-  String? activeWorkingDirectory,
-  String? fallbackWorkingDirectory,
-}) {
-  final sessionId = _readJsonStringFromRaw(raw, 'sessionId');
-  final storedSummary = _readJsonStringFromRaw(raw, 'summary');
-  final kind = _readJsonStringFromRaw(raw, 'kind');
-  final directories = _readJsonStringArrayFromRaw(raw, 'directories');
-  final resolvedWorkingDirectory =
-      _resolveGeminiWorkingDirectory(
-        directories,
-        activeWorkingDirectory: activeWorkingDirectory,
-      ) ??
-      fallbackWorkingDirectory;
-  final summary = (storedSummary?.trim().isNotEmpty ?? false)
-      ? _summarizeSessionText(storedSummary!)
-      : null;
-  final updatedAt =
-      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'lastUpdated')) ??
-      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'startTime'));
-  final parsedAny =
-      sessionId != null ||
-      summary != null ||
-      kind != null ||
-      directories != null ||
-      updatedAt != null;
-
-  return (
-    sessionId: sessionId,
-    summary: summary,
-    workingDirectory: resolvedWorkingDirectory,
-    updatedAt: updatedAt,
-    isSubagent: kind == 'subagent',
-    parsedAny: parsedAny,
-  );
-}
-
 String? _readJsonStringFromRaw(String raw, String key) {
   final pattern = RegExp(
     '"${RegExp.escape(key)}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"',
@@ -1162,34 +1067,6 @@ int? _readJsonNumberFromRaw(String raw, String key) {
   final match = pattern.firstMatch(raw);
   if (match == null) return null;
   return int.tryParse(match.group(1)!);
-}
-
-List<Object?>? _readJsonStringArrayFromRaw(String raw, String key) {
-  final startPattern = RegExp(
-    '"${RegExp.escape(key)}"\\s*:\\s*\\[',
-    multiLine: true,
-  );
-  final startMatch = startPattern.firstMatch(raw);
-  if (startMatch == null) return null;
-  final start = startMatch.end;
-  final closingIndex = raw.indexOf(']', start);
-  final segment = raw.substring(
-    start,
-    closingIndex == -1 ? raw.length : closingIndex,
-  );
-  final values = <Object?>[];
-  final stringPattern = RegExp(r'"((?:\\.|[^"\\])*)"');
-  for (final match in stringPattern.allMatches(segment)) {
-    try {
-      final decoded = jsonDecode('"${match.group(1)}"');
-      if (decoded is String) {
-        values.add(decoded);
-      }
-    } on FormatException {
-      continue;
-    }
-  }
-  return values.isEmpty ? null : values;
 }
 
 /// Parses ACP `session/list` responses into unified session metadata.
@@ -1505,28 +1382,6 @@ bool matchesDiscoveredSessionWorkingDirectory(
   return false;
 }
 
-/// Resolves a Gemini project directory label to a concrete worktree path.
-@visibleForTesting
-String? resolveGeminiProjectWorkingDirectory(
-  String? projectDirectoryName,
-  Iterable<String> relatedWorkingDirectories,
-) {
-  final trimmedProjectDirectoryName = projectDirectoryName?.trim();
-  if (trimmedProjectDirectoryName == null ||
-      trimmedProjectDirectoryName.isEmpty) {
-    return null;
-  }
-
-  for (final directory in relatedWorkingDirectories) {
-    final trimmedDirectory = _trimWorkingDirectory(directory);
-    if (trimmedDirectory == null) continue;
-    if (_pathLastSegment(trimmedDirectory) == trimmedProjectDirectoryName) {
-      return trimmedDirectory;
-    }
-  }
-  return null;
-}
-
 /// Reads the Claude history working directory using only string-typed fields.
 @visibleForTesting
 String? readClaudeHistoryWorkingDirectory(Map<String, dynamic> entry) =>
@@ -1552,65 +1407,6 @@ int calculateRecentSessionMetadataReadLimit(int maxPerTool) =>
       minimum: 24,
       maximum: 48,
     );
-
-/// Builds the Gemini chat project directory names associated with the active
-/// worktree family.
-@visibleForTesting
-List<String> buildGeminiProjectDirectoryNames(
-  Iterable<String> relatedWorkingDirectories,
-) {
-  final directories = relatedWorkingDirectories
-      .map(_trimWorkingDirectory)
-      .whereType<String>()
-      .toSet()
-      .toList(growable: false);
-  final rootDirectories = directories
-      .where(
-        (directory) => !directories.any(
-          (other) => other != directory && directory.startsWith('$other/'),
-        ),
-      )
-      .toList(growable: false);
-
-  return rootDirectories
-      .map(_pathLastSegment)
-      .where((name) => name.isNotEmpty && name != '.' && name != '~')
-      .toSet()
-      .toList(growable: false);
-}
-
-/// Builds the narrow Gemini project directory names that should be preferred
-/// for the active scope before falling back to the broader worktree family.
-@visibleForTesting
-List<String> buildScopedGeminiProjectDirectoryNames(
-  String activeWorkingDirectory,
-  Iterable<String> relatedWorkingDirectories,
-) {
-  final trimmedActive = _trimWorkingDirectory(activeWorkingDirectory);
-  if (trimmedActive == null) {
-    return const <String>[];
-  }
-
-  final activeRootCandidates =
-      relatedWorkingDirectories
-          .map(_trimWorkingDirectory)
-          .whereType<String>()
-          .where(
-            (directory) =>
-                directory == trimmedActive ||
-                trimmedActive.startsWith('$directory/'),
-          )
-          .toList(growable: false)
-        ..sort((a, b) => a.length.compareTo(b.length));
-  final activeRoot = activeRootCandidates.firstOrNull ?? trimmedActive;
-
-  return <String>{
-        _pathLastSegment(activeRoot),
-        _pathLastSegment(normalizeWorkingDirectoryForComparison(activeRoot)),
-      }
-      .where((name) => name.isNotEmpty && name != '.' && name != '~')
-      .toList(growable: false);
-}
 
 /// Sorts merged discovery sessions by recency before applying a scan cap.
 @visibleForTesting
@@ -2046,13 +1842,6 @@ class AgentSessionDiscoveryService {
               useAcp: false,
               previewOnly: previewOnly,
             ),
-            _discoverGeminiSessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              previewOnly: previewOnly,
-            ),
             _discoverClaudeSessions(
               session,
               workingDirectory,
@@ -2127,12 +1916,6 @@ class AgentSessionDiscoveryService {
       maxPerTool,
     ),
     'Copilot CLI' => _discoverCopilotSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-    ),
-    'Gemini CLI' => _discoverGeminiSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
@@ -2841,184 +2624,6 @@ class AgentSessionDiscoveryService {
     } on Object {
       return const _ToolDiscoveryResult.failure('Copilot CLI');
     }
-  }
-
-  // ── Gemini CLI ─────────────────────────────────────────────────────────
-  // Sessions: ~/.gemini/tmp/**/chats/session-*.json*
-  // File-based discovery is substantially faster than `gemini --list-sessions`
-  // on large worktree families, so prefer the stored chat files directly.
-
-  Future<_ToolDiscoveryResult> _discoverGeminiSessions(
-    SshSession session,
-    String? workingDirectory,
-    List<String> relatedWorkingDirectories,
-    int max, {
-    bool previewOnly = false,
-  }) async {
-    try {
-      return await _discoverGeminiSessionsFromFiles(
-        session,
-        workingDirectory,
-        relatedWorkingDirectories,
-        max,
-        previewOnly: previewOnly,
-      );
-    } on Object {
-      return const _ToolDiscoveryResult.failure('Gemini CLI');
-    }
-  }
-
-  Future<_ToolDiscoveryResult> _discoverGeminiSessionsFromFiles(
-    SshSession session,
-    String? workingDirectory,
-    List<String> relatedWorkingDirectories,
-    int max, {
-    bool previewOnly = false,
-  }) async {
-    final scanLimit = previewOnly
-        ? _calculateDiscoveryScanLimit(
-            max,
-            multiplier: 8,
-            minimum: 24,
-            maximum: 40,
-          )
-        : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
-    final metadataReadLimit = previewOnly
-        ? _calculateDiscoveryScanLimit(
-            max,
-            multiplier: 4,
-            minimum: 6,
-            maximum: 12,
-          )
-        : calculateRecentSessionMetadataReadLimit(max);
-    final globalCommand =
-        r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
-        '-path "*/chats/*" -type f '
-        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit';
-    const geminiGlobs = ['session-*.json', 'session-*.jsonl'];
-    var output = '';
-
-    final projectDirectoryNames =
-        workingDirectory != null && workingDirectory.isNotEmpty
-        ? buildScopedGeminiProjectDirectoryNames(
-            workingDirectory,
-            relatedWorkingDirectories,
-          )
-        : buildGeminiProjectDirectoryNames(relatedWorkingDirectories);
-    if (workingDirectory != null &&
-        workingDirectory.isNotEmpty &&
-        projectDirectoryNames.isNotEmpty) {
-      final scopedPathFilters = projectDirectoryNames
-          .map((name) => '-path ${_shellQuote('*/$name/chats/*')}')
-          .join(' -o ');
-      output = session.remoteIsWindows
-          ? await _execWindowsPowerShell(
-              session,
-              windowsListNewestFilesScript(
-                relativeRoot: '.gemini/tmp',
-                includeGlobs: geminiGlobs,
-                limit: scanLimit,
-                pathLikeFilters: projectDirectoryNames
-                    .map((name) => '*/$name/chats/*')
-                    .toList(growable: false),
-              ),
-            )
-          : await _exec(
-              session,
-              r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
-              '-type f '
-              '\\( $scopedPathFilters \\) '
-              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
-            );
-    }
-    if (output.trim().isEmpty) {
-      output = session.remoteIsWindows
-          ? await _execWindowsPowerShell(
-              session,
-              windowsListNewestFilesScript(
-                relativeRoot: '.gemini/tmp',
-                includeGlobs: geminiGlobs,
-                limit: scanLimit,
-                pathLikeFilters: const ['*/chats/*'],
-              ),
-            )
-          : await _exec(session, globalCommand);
-    }
-    if (output.trim().isEmpty) {
-      return const _ToolDiscoveryResult.success('Gemini CLI', []);
-    }
-
-    final sessionPaths = output
-        .trim()
-        .split('\n')
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty)
-        .toList(growable: false);
-    final recentSessionPaths = sessionPaths
-        .take(metadataReadLimit)
-        .toList(growable: false);
-    final sessionSnapshots = await _readRemoteFileSnapshots(
-      session,
-      recentSessionPaths,
-      maxBytes: _geminiSessionMetadataMaxBytes,
-    );
-
-    var hadError = false;
-    final sessions = <ToolSessionInfo>[];
-    for (final filePath in recentSessionPaths) {
-      final fileName = filePath
-          .split('/')
-          .last
-          .replaceAll('.jsonl', '')
-          .replaceAll('.json', '');
-
-      final pathParts = filePath.split('/');
-      final chatsIdx = pathParts.indexOf('chats');
-      final projectDir = chatsIdx > 0 ? pathParts[chatsIdx - 1] : null;
-      final fallbackWorkingDirectory = resolveGeminiProjectWorkingDirectory(
-        projectDir,
-        relatedWorkingDirectories,
-      );
-
-      final snapshot = sessionSnapshots[filePath];
-      if (snapshot == null) {
-        hadError = true;
-        continue;
-      }
-
-      try {
-        final metadata = parseGeminiSessionMetadata(
-          snapshot.content,
-          activeWorkingDirectory: workingDirectory,
-          fallbackWorkingDirectory: fallbackWorkingDirectory,
-        );
-        if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
-          hadError = true;
-          continue;
-        }
-        if (metadata.isSubagent) continue;
-
-        sessions.add(
-          ToolSessionInfo(
-            toolName: 'Gemini CLI',
-            sessionId:
-                metadata.sessionId != null && metadata.sessionId!.isNotEmpty
-                ? metadata.sessionId!
-                : fileName,
-            workingDirectory: metadata.workingDirectory,
-            lastActive: metadata.updatedAt ?? snapshot.modifiedAt,
-            summary: metadata.summary ?? projectDir ?? _truncateId(fileName),
-          ),
-        );
-      } on Object {
-        hadError = true;
-      }
-    }
-    return _ToolDiscoveryResult.success(
-      'Gemini CLI',
-      sortAndLimitDiscoveredSessions(sessions, max),
-      hadError: hadError,
-    );
   }
 
   // ── Antigravity CLI ────────────────────────────────────────────────────
@@ -5593,22 +5198,6 @@ Map<String, dynamic>? _tryDecodeJsonObject(String raw) {
   return null;
 }
 
-Map<String, dynamic>? _decodeJsonOrJsonlObject(String raw) {
-  final direct = _tryDecodeJsonObject(raw.trim());
-  if (direct != null) return direct;
-
-  Map<String, dynamic>? lastObject;
-  for (final line in const LineSplitter().convert(raw)) {
-    final decoded = _tryDecodeJsonObject(line.trim());
-    if (decoded == null) continue;
-    lastObject = decoded;
-    if (decoded.containsKey('sessionId') || decoded.containsKey('messages')) {
-      return decoded;
-    }
-  }
-  return lastObject;
-}
-
 String _buildSqlWorkingDirectoryPrefixPredicate(
   String directory, {
   required String columnName,
@@ -5681,60 +5270,11 @@ String? _extractCodexThreadId(String fileName) {
   return match?.group(1);
 }
 
-String? _extractGeminiUserSummary(List<dynamic>? messages) {
-  if (messages == null) return null;
-  for (final message in messages.whereType<Map>()) {
-    final messageMap = message.map((key, value) => MapEntry('$key', value));
-    if (_readStringField(messageMap, 'type') != 'user') continue;
-
-    final content = _readListField(messageMap, 'content');
-    if (content != null) {
-      for (final part in content.whereType<Map>()) {
-        final partMap = part.map((key, value) => MapEntry('$key', value));
-        final text = _readStringField(partMap, 'text');
-        if (text != null && text.trim().isNotEmpty) {
-          return _summarizeSessionText(text);
-        }
-      }
-    }
-
-    final displayContent = _readStringField(messageMap, 'displayContent');
-    if (displayContent != null && displayContent.trim().isNotEmpty) {
-      return _summarizeSessionText(displayContent);
-    }
-  }
-  return null;
-}
-
 String? _extractClaudeUserSummary(String? value) {
   final trimmed = value?.trim();
   if (trimmed == null || trimmed.isEmpty) return null;
   if (trimmed.startsWith('/') || trimmed.startsWith('<')) return null;
   return _summarizeSessionText(trimmed);
-}
-
-String? _resolveGeminiWorkingDirectory(
-  List<dynamic>? directories, {
-  String? activeWorkingDirectory,
-}) {
-  final values = directories
-      ?.whereType<String>()
-      .map((value) => value.trim())
-      .where((value) => value.isNotEmpty)
-      .toList(growable: false);
-  if (values == null || values.isEmpty) return null;
-
-  if (activeWorkingDirectory != null && activeWorkingDirectory.isNotEmpty) {
-    for (final value in values) {
-      if (value == activeWorkingDirectory ||
-          _pathLastSegment(value) == _pathLastSegment(activeWorkingDirectory)) {
-        return value;
-      }
-    }
-  }
-
-  if (values.length == 1) return values.first;
-  return null;
 }
 
 /// Provider for [AgentSessionDiscoveryService].

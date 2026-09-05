@@ -7,7 +7,7 @@ product
 ## Users
 
 Remote developers who run modern coding agents (Claude Code, Copilot CLI, Codex,
-Gemini CLI, OpenCode, Antigravity) and need to keep that work moving from a
+OpenCode, Antigravity) and need to keep that work moving from a
 phone, away from a laptop. They are comfortable in a terminal and expect power:
 they connect to a box, attach to a persistent MonkeyMux/tmux workspace, resume
 the right agent session, switch remote windows, browse and edit files over SFTP,

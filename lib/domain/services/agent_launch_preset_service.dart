@@ -14,13 +14,25 @@ class AgentLaunchPresetService {
   ///
   /// Returns `null` when the stored payload is missing or references an
   /// unknown agent tool, so stale presets never silently become another CLI.
-  Future<AgentLaunchPreset?> getPresetForHost(int hostId) async {
+  Future<AgentLaunchPreset?> getPresetForHost(int hostId) async =>
+      (await getPresetStateForHost(hostId)).preset;
+
+  /// Loads a preset while distinguishing missing from unsupported saved data.
+  ///
+  /// Callers must not fall back to cached generated commands for an unsupported
+  /// preset. Reading this state leaves the stored payload unchanged.
+  Future<({AgentLaunchPreset? preset, bool isUnsupported})>
+  getPresetStateForHost(int hostId) async {
     final presets = await _readPresetMap();
-    final value = presets[hostId.toString()];
-    if (value is! Map<String, dynamic>) {
-      return null;
-    }
-    return AgentLaunchPreset.tryFromJson(value);
+    final key = hostId.toString();
+    final value = presets[key];
+    final preset = value is Map<String, dynamic>
+        ? AgentLaunchPreset.tryFromJson(value)
+        : null;
+    return (
+      preset: preset,
+      isUnsupported: presets.containsKey(key) && preset == null,
+    );
   }
 
   /// Saves [preset] for [hostId].

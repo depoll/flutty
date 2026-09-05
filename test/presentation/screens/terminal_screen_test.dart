@@ -9325,6 +9325,76 @@ void main() {
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
+    for (final unsupportedPreset in [false, true]) {
+      testWidgets(
+        'auto-connect ${unsupportedPreset ? 'suppresses unsupported preset commands' : 'allows a custom command without a preset'}',
+        (tester) async {
+          final settingsService = SettingsService(db);
+          const command = 'gemini --yolo';
+          const legacy = {'tool': 'geminiCli', 'workingDirectory': '~/legacy'};
+          session = SshSession(
+            connectionId: 7,
+            hostId: host.id,
+            client: sshClient,
+            config: const SshConnectionConfig(
+              hostname: 'terminal.example.com',
+              port: 22,
+              username: 'root',
+            ),
+          );
+          host = _buildHost(id: host.id, autoConnectCommand: command);
+          if (unsupportedPreset) {
+            await settingsService.setJson(SettingKeys.agentLaunchPresets, {
+              '${host.id}': legacy,
+            });
+          }
+          await tester.pumpWidget(
+            ProviderScope(
+              overrides: [
+                databaseProvider.overrideWithValue(db),
+                settingsServiceProvider.overrideWithValue(settingsService),
+                hostRepositoryProvider.overrideWithValue(hostRepository),
+                monetizationServiceProvider.overrideWithValue(
+                  monetizationService,
+                ),
+                monetizationStateProvider.overrideWith(
+                  (ref) => Stream.value(_proMonetizationState),
+                ),
+                sharedClipboardProvider.overrideWith((ref) async => false),
+                activeSessionsProvider.overrideWith(
+                  () => _TestActiveSessionsNotifier(session),
+                ),
+              ],
+              child: MaterialApp(
+                home: TerminalScreen(
+                  hostId: host.id,
+                  connectionId: session.connectionId,
+                ),
+              ),
+            ),
+          );
+          await tester.pump();
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 100));
+          expect(tester.takeException(), isNull);
+          final written = utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          );
+          expect(
+            written,
+            unsupportedPreset ? isNot(contains(command)) : contains(command),
+          );
+          if (unsupportedPreset) {
+            expect(
+              await settingsService.getJson(SettingKeys.agentLaunchPresets),
+              containsPair('${host.id}', legacy),
+            );
+          }
+        },
+        variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      );
+    }
+
     testWidgets(
       'auto-connect rebuilds agent launch commands from the saved preset and host yolo preference',
       (tester) async {

@@ -2573,23 +2573,6 @@ ${_ansi('48;5;23;38;5;231', ' Patch ready ')}
 ${_ansi('38;5;245', '› Ask Codex for a follow-up')}
 ''';
   }
-  if (tool == AgentLaunchTool.geminiCli ||
-      window.name.toLowerCase().contains('gemini')) {
-    return '''
-${_ansi('38;5;99;1', '✦ Gemini CLI (demo)')} ${_ansi('38;5;245', '2.5 Pro')}
-
-${_ansi('38;5;99', 'loaded context')}
- ${_ansi('38;5;45', '✓')} PRODUCT.md
- ${_ansi('38;5;45', '✓')} DESIGN.md
- ${_ansi('38;5;45', '✓')} lib/domain/services
-
-${_ansi('38;5;45;1', 'Gemini summary')}
-  Local MonkeyMux state is active.
-  Window switches repaint the terminal.
-
-${_ansi('48;5;57;38;5;231', '  Enter prompt  ')} ${_ansi('38;5;245', 'ctrl+j newline')}
-''';
-  }
   if (tool == AgentLaunchTool.antigravity ||
       window.name.toLowerCase().contains('antigravity')) {
     return '''
@@ -2644,7 +2627,14 @@ TmuxWindow? _windowFromJson(Object? value) {
   final terminalBracketedPasteMode = explicitTerminalBracketedPasteMode is bool
       ? explicitTerminalBracketedPasteMode
       : _privateModeValue(privateModes, '2004');
-  final agentSessionId = _nonEmpty(value['agentSessionId'] as String?);
+  final storedTool = _nonEmpty(value['agentTool'] as String?);
+  final agentTool = _agentToolFromMonkeyMuxMetadata(storedTool);
+  final unsupportedTool =
+      agentTool == null &&
+      (storedTool != null || value['agentToolConfirmed'] == true);
+  final agentSessionId = unsupportedTool
+      ? null
+      : _nonEmpty(value['agentSessionId'] as String?);
   // The MonkeyMux server only raises the `#` alert flag when a background
   // window emits a terminal bell (agents ring the bell when they need input),
   // and clears it as soon as the window is selected. Parsing it restores the
@@ -2660,7 +2650,8 @@ TmuxWindow? _windowFromJson(Object? value) {
     panePid: value['panePid'] as int?,
     flags: _nonEmpty(value['flags'] as String?),
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
-    agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
+    agentTool: agentTool,
+    hasUnsupportedAgentTool: unsupportedTool,
     activeAgentSessionId: agentSessionId,
     activeAgentSessionConfidence:
         agentSessionId != null && value['agentSessionIdentityExact'] == true

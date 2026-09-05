@@ -15,9 +15,6 @@ enum AgentLaunchTool {
   /// OpenCode CLI.
   openCode,
 
-  /// Google Gemini CLI.
-  geminiCli,
-
   /// Antigravity CLI.
   antigravity,
 
@@ -44,7 +41,6 @@ enum AgentLaunchTool {
     claudeCode,
     copilotCli,
     codex,
-    geminiCli,
     openCode,
     antigravity,
     cursorAgent,
@@ -63,7 +59,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.copilotCli => 'Copilot CLI',
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
-    AgentLaunchTool.geminiCli => 'Gemini CLI',
     AgentLaunchTool.antigravity => 'Antigravity',
     AgentLaunchTool.cursorAgent => 'Cursor Agent',
     AgentLaunchTool.pi => 'Pi',
@@ -78,7 +73,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.copilotCli => 'copilot',
     AgentLaunchTool.codex => 'codex',
     AgentLaunchTool.openCode => 'opencode',
-    AgentLaunchTool.geminiCli => 'gemini',
     AgentLaunchTool.antigravity => 'agy',
     AgentLaunchTool.cursorAgent => 'cursor-agent',
     AgentLaunchTool.pi => 'pi',
@@ -103,7 +97,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.copilotCli => const ['copilot', 'github-copilot'],
     AgentLaunchTool.codex => const ['codex', 'codex-cli'],
     AgentLaunchTool.openCode => const ['opencode', 'open-code'],
-    AgentLaunchTool.geminiCli => const ['gemini', 'gemini-cli'],
     AgentLaunchTool.antigravity => const [
       'agy',
       'antigravity',
@@ -129,7 +122,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.copilotCli => 'Copilot CLI',
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
-    AgentLaunchTool.geminiCli => 'Gemini CLI',
     AgentLaunchTool.antigravity => 'Antigravity',
     AgentLaunchTool.cursorAgent => 'Cursor Agent',
     AgentLaunchTool.pi => 'Pi',
@@ -154,7 +146,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.copilotCli => const ['--yolo'],
     AgentLaunchTool.codex => const ['--yolo'],
     AgentLaunchTool.openCode => const [],
-    AgentLaunchTool.geminiCli => const ['--yolo'],
     AgentLaunchTool.antigravity => const ['--dangerously-skip-permissions'],
     AgentLaunchTool.cursorAgent => const ['--force'],
     // Pi has no approval layer to bypass: it acts with the permissions of the
@@ -205,7 +196,6 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
     'copilot' || 'github-copilot' => AgentLaunchTool.copilotCli,
     'codex' || 'codex-cli' || 'codex-acp' => AgentLaunchTool.codex,
     'opencode' || 'open-code' => AgentLaunchTool.openCode,
-    'gemini' || 'gemini-cli' => AgentLaunchTool.geminiCli,
     'agy' ||
     'antigravity' ||
     'antigravity-cli' ||
@@ -460,7 +450,6 @@ final _copilotAllowAllPathsPattern = RegExp(
   r'(?<!\S)--allow-all-paths(?=\s|$)',
 );
 final _copilotAllowAllUrlsPattern = RegExp(r'(?<!\S)--allow-all-urls(?=\s|$)');
-final _geminiYoloPattern = RegExp(r'(?<!\S)(?:--yolo|-y)(?=\s|$)');
 final _antigravityDangerouslySkipPermissionsPattern = RegExp(
   r'(?<!\S)--dangerously-skip-permissions(?=\s|$)',
 );
@@ -602,7 +591,6 @@ List<String> _buildAgentResumeArguments(
   AgentLaunchTool.claudeCode => ['--resume', _quoteShellArgument(sessionId)],
   AgentLaunchTool.copilotCli => ['--resume', _quoteShellArgument(sessionId)],
   AgentLaunchTool.codex => ['resume', _quoteShellArgument(sessionId)],
-  AgentLaunchTool.geminiCli => ['--resume', _quoteShellArgument(sessionId)],
   AgentLaunchTool.antigravity =>
     sessionId == '_continue'
         ? const ['--continue']
@@ -666,10 +654,6 @@ String? _normalizeAgentToolArguments({
     AgentLaunchTool.openCode => _stripArgumentPatterns(
       trimmedAdditionalArguments,
       [_openCodeDangerouslySkipPermissionsPattern],
-    ),
-    AgentLaunchTool.geminiCli => _stripArgumentPatterns(
-      trimmedAdditionalArguments,
-      [_geminiYoloPattern],
     ),
     AgentLaunchTool.antigravity => _stripArgumentPatterns(
       trimmedAdditionalArguments,

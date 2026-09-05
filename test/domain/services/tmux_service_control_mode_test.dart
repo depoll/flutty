@@ -249,7 +249,10 @@ void main() {
       expect(command, contains('copilot|copilot-*'));
       expect(command, contains('codex|codex-*'));
       expect(command, contains('opencode|opencode-*'));
-      expect(command, contains('gemini|gemini-*'));
+      expect(command, contains('agy|agy-*|antigravity|antigravity-*'));
+      // Gemini CLI is unsupported: it must not be classified as an agent
+      // pane nor receive focus-transition injections.
+      expect(command, isNot(contains('gemini')));
       expect(command, contains('node|nodejs|npm|npx|bun|deno|python|python3'));
       expect(command, isNot(contains(r'case "$pane_title" in')));
       expect(command, isNot(contains('*Copilot*|*copilot*')));
@@ -263,7 +266,7 @@ void main() {
       expect(command, contains(r'if [ -n "$current_agent_tool" ]; then'));
       expect(command, contains(r'case "$agent_tool" in'));
       expect(command, contains('copilot|codex)'));
-      expect(command, contains('gemini|opencode|claude|antigravity)'));
+      expect(command, contains('opencode|claude|antigravity)'));
       final directBranchStart = command.indexOf(
         r'if [ -n "$current_agent_tool" ]; then',
       );
@@ -305,7 +308,7 @@ void main() {
       expect(command, contains('1b 5b 49'));
       final copilotCodexBranchStart = directBranch.indexOf('copilot|codex)');
       final otherAgentBranchStart = directBranch.indexOf(
-        'gemini|opencode|claude|antigravity)',
+        'opencode|claude|antigravity)',
       );
       final focusOutHex = _tmuxSendKeysHex('\x1b[O');
       final focusInHex = _tmuxSendKeysHex('\x1b[I');
@@ -457,7 +460,7 @@ void main() {
       final session = _buildSession(client, connectionId: 21);
       const service = TmuxService();
       final execSession = _buildOpenExecSession(
-        stdout: '/opt/homebrew/bin/gemini\n${_doneMarker()}',
+        stdout: '/opt/homebrew/bin/codex\n${_doneMarker()}',
       );
 
       when(
@@ -467,7 +470,7 @@ void main() {
       await service.prefetchInstalledAgentTools(session);
       final tools = await service.detectInstalledAgentTools(session);
 
-      expect(tools, {AgentLaunchTool.geminiCli});
+      expect(tools, {AgentLaunchTool.codex});
       verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
     });
 
@@ -1032,11 +1035,11 @@ void main() {
         'custom-title',
         '1712930000',
         'sleep 30',
-        'gemini',
+        'copilot',
         '@12',
         '4321',
-        'gemini-session',
-        'Gemini live title',
+        'copilot-session',
+        'Copilot live title',
         'medium',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
@@ -1051,11 +1054,11 @@ void main() {
       expect(snapshot.window.isActive, isTrue);
       expect(snapshot.window.paneTitle, 'custom-title');
       expect(snapshot.window.paneStartCommand, 'sleep 30');
-      expect(snapshot.window.agentTool, AgentLaunchTool.geminiCli);
+      expect(snapshot.window.agentTool, AgentLaunchTool.copilotCli);
       expect(snapshot.window.id, '@12');
       expect(snapshot.window.panePid, 4321);
-      expect(snapshot.window.activeAgentSessionId, 'gemini-session');
-      expect(snapshot.window.agentSessionTitle, 'Gemini live title');
+      expect(snapshot.window.activeAgentSessionId, 'copilot-session');
+      expect(snapshot.window.agentSessionTitle, 'Copilot live title');
       expect(
         snapshot.window.activeAgentSessionConfidence,
         AgentSessionConfidence.medium,
@@ -1479,6 +1482,73 @@ void main() {
         await service.createWindow(
           session,
           'main',
+          command: 'copilot --resume copilot-session --allow-all-tools',
+          name: 'copilot',
+          workingDirectory: '/tmp/project',
+        );
+
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u new-window -P -F '#{window_index}' -t "
+                "'main' -c '/tmp/project' -n 'copilot'",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u set-option -w -t 'main:4' "
+                r"@flutty_agent_tool 'copilot' \; "
+                "set-option -w -t 'main:4' "
+                r"@flutty_agent_session_id 'copilot-session' \; "
+                "set-option -w -t 'main:4' "
+                r"@flutty_agent_session_confidence 'high' \; "
+                "set-option -w -t 'main:4' @flutty_agent_session_updated_at",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u send-keys -t 'main:4' "
+                "'copilot --resume copilot-session --allow-all-tools' Enter",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+      },
+    );
+
+    test(
+      'createWindow does not tag Gemini CLI launches as agent windows',
+      () async {
+        // Gemini CLI support was removed: a window that launches `gemini`
+        // is treated as a plain shell command, so no @flutty_agent_* window
+        // options are written for it.
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.from([
+          _buildOpenExecSession(stdout: '4\n${_doneMarker()}'),
+          _buildOpenExecSession(),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        await service.createWindow(
+          session,
+          'main',
           command: 'gemini --resume gemini-session --yolo',
           name: 'gemini',
           workingDirectory: '/tmp/project',
@@ -1495,22 +1565,12 @@ void main() {
             pty: any(named: 'pty'),
           ),
         ).called(1);
-        verify(
+        verifyNever(
           () => client.execute(
-            any(
-              that: contains(
-                "tmux -u set-option -w -t 'main:4' "
-                r"@flutty_agent_tool 'gemini' \; "
-                "set-option -w -t 'main:4' "
-                r"@flutty_agent_session_id 'gemini-session' \; "
-                "set-option -w -t 'main:4' "
-                r"@flutty_agent_session_confidence 'high' \; "
-                "set-option -w -t 'main:4' @flutty_agent_session_updated_at",
-              ),
-            ),
+            any(that: contains('@flutty_agent_tool')),
             pty: any(named: 'pty'),
           ),
-        ).called(1);
+        );
         verify(
           () => client.execute(
             any(
@@ -1862,8 +1922,8 @@ void main() {
       await service.createWindow(
         session,
         'main',
-        command: 'gemini --resume gemini-session --yolo',
-        name: 'gemini',
+        command: 'copilot --resume copilot-session --allow-all-tools',
+        name: 'copilot',
         workingDirectory: '/tmp/project',
       );
 
@@ -1871,14 +1931,14 @@ void main() {
         writes,
         contains(
           "new-window -P -F '#{window_index}' -t 'main' "
-          "-c '/tmp/project' -n 'gemini'\n",
+          "-c '/tmp/project' -n 'copilot'\n",
         ),
       );
       expect(
         writes.any(
           (write) =>
-              write.contains("@flutty_agent_tool 'gemini'") &&
-              write.contains("@flutty_agent_session_id 'gemini-session'") &&
+              write.contains("@flutty_agent_tool 'copilot'") &&
+              write.contains("@flutty_agent_session_id 'copilot-session'") &&
               write.contains("@flutty_agent_session_confidence 'high'") &&
               write.contains('@flutty_agent_session_updated_at '),
         ),
@@ -1888,7 +1948,7 @@ void main() {
         writes,
         contains(
           "send-keys -t 'main:4' "
-          "'gemini --resume gemini-session --yolo' Enter\n",
+          "'copilot --resume copilot-session --allow-all-tools' Enter\n",
         ),
       );
       verifyNever(

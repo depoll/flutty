@@ -35,7 +35,7 @@ void main() {
       );
 
       final entries = buildAiSessionProviderEntries(
-        orderedTools: const ['Claude Code', 'Codex', 'Gemini CLI'],
+        orderedTools: const ['Claude Code', 'Codex', 'Antigravity'],
         groupedSessions: const {
           'Codex': <ToolSessionInfo>[codexSession],
         },

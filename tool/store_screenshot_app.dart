@@ -495,7 +495,7 @@ Future<int> _seedDatabase(
       name: 'List agent windows',
       command: 'monkeymux control --json $muxSessionName',
       description:
-          'Inspect active Copilot, Gemini, Claude, Codex, OpenCode, and Antigravity windows.',
+          'Inspect active Copilot, Claude, Codex, OpenCode, and Antigravity windows.',
       autoExecute: false,
       usageCount: 7,
     ),

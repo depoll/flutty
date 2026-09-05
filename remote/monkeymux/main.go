@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.180"
+	monkeyMuxVersion                  = "0.1.183"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -453,9 +453,6 @@ var (
 		},
 		"codex": {
 			regexp.MustCompile(`(?:^|\s)resume\s+(?:"([^"]+)"|'([^']+)'|(\S+))`),
-		},
-		"gemini": {
-			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
 		},
 		"opencode": {
 			regexp.MustCompile(`(?:^|\s)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
@@ -3074,7 +3071,6 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 			"codex":    discoverCodexSessionIDs(processes, panePids, paneWorkingDirectories),
 			"opencode": discoverOpenCodeSessionIDs(processes, panePids, paneWorkingDirectories),
 			"claude":   discoverClaudeSessionIDs(processes, panePids, paneWorkingDirectories),
-			"gemini":   discoverGeminiSessionIDs(processes, panePids, paneWorkingDirectories),
 		}
 	}
 	for i := range restore.Windows {
@@ -4572,8 +4568,12 @@ func normalizedPiWorkingDirectory(path string) string {
 }
 
 func agentToolCandidateForRestore(window restoreWindowState) string {
+	// Explicit metadata is authoritative, including confirmed plain shells.
+	// Do not replace a retired tool with one guessed from a window's label.
+	if tool := strings.TrimSpace(window.AgentTool); tool != "" || window.AgentToolConfirmed {
+		return agentToolFromCommandName(tool)
+	}
 	return firstNonEmptyString(
-		window.AgentTool,
 		agentToolFromCommandName(window.CurrentCommand),
 		agentToolFromTerminalTitle(window.PaneTitle),
 		agentToolFromCommandName(window.Name),
@@ -5474,191 +5474,6 @@ func isClaudeProjectSessionPath(path string) bool {
 	return strings.HasSuffix(normalized, ".jsonl")
 }
 
-// ── Gemini CLI ───────────────────────────────────────────────────────────────
-// Gemini stores chats at `~/.gemini/tmp/<project>/chats/session-*.json`, with
-// the resumable `sessionId` and the project `directories` recorded inside the
-// file. Recover the session from the chat file the process holds open, or a
-// non-subagent chat for the pane's directory updated during this process.
-
-var (
-	geminiSessionIDFieldPattern   = regexp.MustCompile(`"sessionId"\s*:\s*"((?:\\.|[^"\\])*)"`)
-	geminiKindFieldPattern        = regexp.MustCompile(`"kind"\s*:\s*"((?:\\.|[^"\\])*)"`)
-	geminiDirectoriesStartPattern = regexp.MustCompile(`"directories"\s*:\s*\[`)
-	geminiQuotedStringPattern     = regexp.MustCompile(`"((?:\\.|[^"\\])*)"`)
-)
-
-type geminiSessionMetadata struct {
-	sessionID   string
-	isSubagent  bool
-	directories []string
-}
-
-func discoverGeminiSessionIDs(
-	processes map[int]processInfo,
-	panePids map[int]struct{},
-	fallbackWorkingDirectories ...map[int]string,
-) map[int]string {
-	type unresolvedGeminiProcess struct {
-		panePid          int
-		workingDirectory string
-		processStarted   time.Time
-	}
-	sessions := map[int]string{}
-	unresolved := []unresolvedGeminiProcess{}
-	unresolvedPanes := map[int]struct{}{}
-	workingDirectoryCounts := map[string]int{}
-	countedWorkingDirectoryPanes := map[int]bool{}
-	for panePid, process := range agentProcessesByPane(processes, panePids, "gemini") {
-		workingDirectory := agentWorkingDirectoryForMetadata(
-			process.pid,
-			panePid,
-			fallbackWorkingDirectories,
-		)
-		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
-			workingDirectoryCounts[workingDirectory]++
-			countedWorkingDirectoryPanes[panePid] = true
-		}
-		if sessionID := agentSessionIDFromArgs("gemini", process.args); sessionID != "" {
-			sessions[panePid] = sessionID
-			continue
-		}
-		if sessionID := geminiSessionIDFromOpenFiles(process.pid); sessionID != "" {
-			sessions[panePid] = sessionID
-			continue
-		}
-		if workingDirectory == "" {
-			continue
-		}
-		if _, ok := unresolvedPanes[panePid]; ok {
-			continue
-		}
-		unresolvedPanes[panePid] = struct{}{}
-		processStarted := processStartedAtForMetadata(process.pid)
-		if processStarted.IsZero() {
-			continue
-		}
-		unresolved = append(unresolved, unresolvedGeminiProcess{
-			panePid:          panePid,
-			workingDirectory: workingDirectory,
-			processStarted:   processStarted,
-		})
-	}
-	for _, candidate := range unresolved {
-		if sessions[candidate.panePid] != "" ||
-			workingDirectoryCounts[candidate.workingDirectory] != 1 {
-			continue
-		}
-		if sessionID := geminiRecentSessionIDForWorkingDirectory(
-			candidate.workingDirectory,
-			candidate.processStarted,
-		); sessionID != "" {
-			sessions[candidate.panePid] = sessionID
-		}
-	}
-	return sessions
-}
-
-func geminiSessionIDFromOpenFiles(pid int) string {
-	for _, path := range processOpenFilePathsForMetadata(pid) {
-		if !isGeminiChatSessionPath(path) {
-			continue
-		}
-		metadata := readGeminiSessionMetadata(path)
-		if metadata.sessionID != "" && !metadata.isSubagent {
-			return metadata.sessionID
-		}
-	}
-	return ""
-}
-
-func geminiRecentSessionIDForWorkingDirectory(
-	workingDirectory string,
-	processStarted time.Time,
-) string {
-	workingDirectory = normalizedMetadataPath(workingDirectory)
-	if workingDirectory == "" || processStarted.IsZero() {
-		return ""
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	tmpDir := filepath.Join(home, ".gemini", "tmp")
-	for _, path := range recentAgentSessionFiles(tmpDir, 60, isGeminiChatSessionPath) {
-		info, err := os.Stat(path)
-		if err != nil || !sessionUpdatedDuringProcess(info.ModTime(), processStarted) {
-			continue
-		}
-		metadata := readGeminiSessionMetadata(path)
-		if metadata.sessionID == "" || metadata.isSubagent {
-			continue
-		}
-		for _, dir := range metadata.directories {
-			if normalizedMetadataPath(dir) == workingDirectory {
-				return metadata.sessionID
-			}
-		}
-	}
-	return ""
-}
-
-func isGeminiChatSessionPath(path string) bool {
-	normalized := filepath.ToSlash(path)
-	if !strings.Contains(normalized, "/.gemini/tmp/") ||
-		!strings.Contains(normalized, "/chats/") {
-		return false
-	}
-	name := filepath.Base(path)
-	return strings.HasPrefix(name, "session-") &&
-		(strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".jsonl"))
-}
-
-func readGeminiSessionMetadata(path string) geminiSessionMetadata {
-	file, err := os.Open(path)
-	if err != nil {
-		return geminiSessionMetadata{}
-	}
-	defer file.Close()
-	const maxBytes = 64 * 1024
-	raw, err := io.ReadAll(io.LimitReader(file, maxBytes))
-	if err != nil {
-		return geminiSessionMetadata{}
-	}
-	return parseGeminiSessionMetadata(string(raw))
-}
-
-func parseGeminiSessionMetadata(text string) geminiSessionMetadata {
-	metadata := geminiSessionMetadata{}
-	if match := geminiSessionIDFieldPattern.FindStringSubmatch(text); match != nil {
-		metadata.sessionID = decodeJSONStringLiteral(match[1])
-	}
-	if match := geminiKindFieldPattern.FindStringSubmatch(text); match != nil {
-		metadata.isSubagent = decodeJSONStringLiteral(match[1]) == "subagent"
-	}
-	metadata.directories = geminiDirectoriesFromText(text)
-	return metadata
-}
-
-func geminiDirectoriesFromText(text string) []string {
-	loc := geminiDirectoriesStartPattern.FindStringIndex(text)
-	if loc == nil {
-		return nil
-	}
-	segment := text[loc[1]:]
-	// Paths never contain ']', so the array ends at the first closing bracket.
-	// When the prefix is truncated mid-array, fall back to the prefix end.
-	if end := strings.IndexByte(segment, ']'); end >= 0 {
-		segment = segment[:end]
-	}
-	directories := []string{}
-	for _, match := range geminiQuotedStringPattern.FindAllStringSubmatch(segment, -1) {
-		if value := decodeJSONStringLiteral(match[1]); value != "" {
-			directories = append(directories, value)
-		}
-	}
-	return directories
-}
-
 // ── Shared agent session-file helpers ────────────────────────────────────────
 
 // sessionUpdatedDuringProcess is the common safety boundary for cwd/history
@@ -5727,14 +5542,6 @@ func recentAgentSessionFiles(
 		paths = append(paths, file.path)
 	}
 	return paths
-}
-
-func decodeJSONStringLiteral(value string) string {
-	var decoded string
-	if err := json.Unmarshal([]byte(`"`+value+`"`), &decoded); err == nil {
-		return strings.TrimSpace(decoded)
-	}
-	return strings.TrimSpace(value)
 }
 
 func jsonStringFieldFromFile(path string, field string) string {
@@ -6325,6 +6132,12 @@ func createWindowOptionsForRestore(
 		}
 	}
 	agentTool := agentToolForRestore(state)
+	if agentTool == "" {
+		state.AgentSessionID = ""
+		state.AgentSessionDir = ""
+		state.AgentSessionPath = ""
+		state.AgentSessionIdentityExact = false
+	}
 	command := ""
 	if agentTool != "" {
 		launch := agentLaunchCommand(agentTool, startInYoloMode)
@@ -6364,6 +6177,7 @@ func createWindowOptionsForRestore(
 		history:                   history,
 		paneTitle:                 firstNonEmptyString(state.PaneTitle, state.Name),
 		agentTool:                 agentTool,
+		agentToolConfirmed:        state.AgentToolConfirmed || strings.TrimSpace(state.AgentTool) != "",
 		agentSessionID:            state.AgentSessionID,
 		agentSessionDir:           state.AgentSessionDir,
 		agentSessionPath:          state.AgentSessionPath,
@@ -6406,6 +6220,7 @@ type createWindowOptions struct {
 	history                   []byte
 	paneTitle                 string
 	agentTool                 string
+	agentToolConfirmed        bool
 	agentSessionID            string
 	agentSessionDir           string
 	agentSessionPath          string
@@ -6428,6 +6243,9 @@ func newWindowAgentTool(
 	options createWindowOptions,
 	name string,
 ) (tool string, confirmed bool) {
+	if options.agentToolConfirmed {
+		return options.agentTool, true
+	}
 	commandTool := agentToolFromCommandText(options.command)
 	tool = firstNonEmptyString(
 		options.agentTool,
@@ -15111,6 +14929,11 @@ func (w *muxWindow) agentToolLocked() string {
 	if tool := strings.TrimSpace(w.agentTool); tool != "" {
 		return tool
 	}
+	// A restored retired agent is now a known shell, even if its retained
+	// title/name resembles another tool. Live commands still win above.
+	if w.agentToolConfirmed {
+		return ""
+	}
 	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
 		return tool
 	}
@@ -15401,10 +15224,6 @@ func agentCommandNameFromProcessArgs(args string) string {
 
 	lowered := strings.ToLower(trimmed)
 	switch {
-	case strings.Contains(lowered, "@google/gemini-cli") ||
-		strings.Contains(lowered, "/gemini-cli/") ||
-		strings.Contains(lowered, "/gemini.js"):
-		return "gemini"
 	case strings.Contains(lowered, "@openai/codex") ||
 		strings.Contains(lowered, "/codex/bin/codex") ||
 		strings.Contains(lowered, "/codex.js"):
@@ -15445,8 +15264,6 @@ func agentToolFromCommandName(command string) string {
 		return "codex"
 	case "opencode", "open-code":
 		return "opencode"
-	case "gemini", "gemini-cli":
-		return "gemini"
 	case "agy", "antigravity", "antigravity-cli":
 		return "antigravity"
 	case "cursor-agent":
@@ -15501,11 +15318,6 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 			return "OPENCODE_PERMISSION=" + shellQuote(`{"*":"allow"}`) + " opencode"
 		}
 		return "opencode"
-	case "gemini":
-		if startInYoloMode {
-			return "gemini --yolo"
-		}
-		return "gemini"
 	case "antigravity":
 		if startInYoloMode {
 			return "agy --dangerously-skip-permissions"
@@ -15583,11 +15395,6 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 			return commandPrefix + "opencode --continue"
 		}
 		return commandPrefix + "opencode --session " + quotedSessionID
-	case "gemini":
-		if startInYoloMode {
-			return "gemini --yolo --resume " + quotedSessionID
-		}
-		return "gemini --resume " + quotedSessionID
 	case "antigravity":
 		commandPrefix := ""
 		if startInYoloMode {
@@ -15658,9 +15465,6 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "opencode" || normalized == "open code" ||
 		strings.HasPrefix(normalized, "opencode "):
 		return "opencode"
-	case normalized == "gemini" || normalized == "gemini cli" ||
-		strings.HasPrefix(normalized, "gemini cli "):
-		return "gemini"
 	case normalized == "agy" || normalized == "antigravity" ||
 		strings.HasPrefix(normalized, "agy ") || strings.HasPrefix(normalized, "antigravity "):
 		return "antigravity"

@@ -645,6 +645,33 @@ class HostEditViewModel extends Notifier<HostEditState> {
     required bool hasAutomationAccess,
     required bool hasAgentPresetAccess,
   }) {
+    // A non-agent startup form may hide an unsupported saved preset. Do not
+    // delete persisted data when the user only edits host metadata.
+    final initial = state.initialDraft;
+    if (initial != null &&
+        initial.selectedStartupMode != HostStartupMode.agent &&
+        (
+              initial.selectedStartupMode,
+              initial.selectedAutoConnectMode,
+              initial.autoConnectCommand,
+              initial.selectedAutoConnectSnippetId,
+              initial.tmuxSession,
+              initial.tmuxWorkingDirectory,
+              initial.tmuxExtraFlags,
+              initial.disableTmuxStatusBar,
+            ) ==
+            (
+              draft.selectedStartupMode,
+              draft.selectedAutoConnectMode,
+              draft.autoConnectCommand,
+              draft.selectedAutoConnectSnippetId,
+              draft.tmuxSession,
+              draft.tmuxWorkingDirectory,
+              draft.tmuxExtraFlags,
+              draft.disableTmuxStatusBar,
+            )) {
+      return const LeaveAgentPresetUnchanged();
+    }
     final preset = buildCurrentAgentLaunchPreset(draft);
     if (draft.selectedStartupMode == HostStartupMode.agent &&
         hasAutomationAccess &&

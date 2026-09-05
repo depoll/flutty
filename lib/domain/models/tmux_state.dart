@@ -113,6 +113,7 @@ class TmuxWindow {
     this.paneTitle,
     this.paneStartCommand,
     this.agentTool,
+    this.hasUnsupportedAgentTool = false,
     this.activeAgentSessionId,
     this.agentSessionTitle,
     this.activeAgentSessionConfidence,
@@ -145,6 +146,9 @@ class TmuxWindow {
     }
 
     final activityEpoch = fields.length > 7 ? int.tryParse(fields[7]) : null;
+    final storedTool = fields.length > 9 ? _nonEmpty(fields[9]) : null;
+    final agentTool = _agentToolFromMetadata(storedTool);
+    final unsupportedTool = storedTool != null && agentTool == null;
 
     return TmuxWindow(
       index: int.tryParse(fields[0]) ?? 0,
@@ -162,12 +166,17 @@ class TmuxWindow {
           ? activityEpoch
           : null,
       paneStartCommand: parsed.paneStartCommand,
-      agentTool: fields.length > 9 ? _agentToolFromMetadata(fields[9]) : null,
-      activeAgentSessionId: fields.length > 12 ? _nonEmpty(fields[12]) : null,
-      agentSessionTitle: fields.length > 13 ? _nonEmpty(fields[13]) : null,
-      activeAgentSessionConfidence: _agentSessionConfidenceFromWindowFields(
-        fields,
-      ),
+      agentTool: agentTool,
+      hasUnsupportedAgentTool: unsupportedTool,
+      activeAgentSessionId: !unsupportedTool && fields.length > 12
+          ? _nonEmpty(fields[12])
+          : null,
+      agentSessionTitle: !unsupportedTool && fields.length > 13
+          ? _nonEmpty(fields[13])
+          : null,
+      activeAgentSessionConfidence: unsupportedTool
+          ? null
+          : _agentSessionConfidenceFromWindowFields(fields),
     );
   }
 
@@ -203,6 +212,9 @@ class TmuxWindow {
 
   /// App-provided agent tool metadata stored on the tmux window, if available.
   final AgentLaunchTool? agentTool;
+
+  /// Explicit tool metadata was rejected; weak labels must not substitute a tool.
+  final bool hasUnsupportedAgentTool;
 
   /// Live coding-agent session id observed from process metadata, if available.
   final String? activeAgentSessionId;
@@ -288,6 +300,7 @@ class TmuxWindow {
     String? paneTitle,
     String? paneStartCommand,
     AgentLaunchTool? agentTool,
+    bool? hasUnsupportedAgentTool,
     String? activeAgentSessionId,
     String? agentSessionTitle,
     AgentSessionConfidence? activeAgentSessionConfidence,
@@ -312,6 +325,9 @@ class TmuxWindow {
     paneTitle: paneTitle ?? this.paneTitle,
     paneStartCommand: paneStartCommand ?? this.paneStartCommand,
     agentTool: agentTool ?? this.agentTool,
+    hasUnsupportedAgentTool:
+        hasUnsupportedAgentTool ??
+        (agentTool == null && this.hasUnsupportedAgentTool),
     activeAgentSessionId: clearActiveAgentSessionMetadata
         ? null
         : activeAgentSessionId ?? this.activeAgentSessionId,
@@ -341,6 +357,7 @@ class TmuxWindow {
   String? get agentSessionId {
     final activeId = activeAgentSessionId;
     if (activeId != null && activeId.isNotEmpty) return activeId;
+    if (hasUnsupportedAgentTool) return null;
     final tool = foregroundAgentTool;
     if (tool == null) return null;
     return _agentSessionIdFromCommand(paneStartCommand, tool: tool);
@@ -593,6 +610,7 @@ class TmuxWindow {
       }
     }
     if (agentTool != null) return agentTool;
+    if (hasUnsupportedAgentTool) return null;
     for (final candidate in [name, paneTitle]) {
       final tool =
           agentLaunchToolForCommandName(candidate) ??
@@ -624,6 +642,7 @@ class TmuxWindow {
           paneTitle == other.paneTitle &&
           paneStartCommand == other.paneStartCommand &&
           agentTool == other.agentTool &&
+          hasUnsupportedAgentTool == other.hasUnsupportedAgentTool &&
           activeAgentSessionId == other.activeAgentSessionId &&
           agentSessionTitle == other.agentSessionTitle &&
           activeAgentSessionConfidence == other.activeAgentSessionConfidence &&
@@ -649,6 +668,7 @@ class TmuxWindow {
     paneTitle,
     paneStartCommand,
     agentTool,
+    hasUnsupportedAgentTool,
     activeAgentSessionId,
     agentSessionTitle,
     activeAgentSessionConfidence,
@@ -749,7 +769,8 @@ TmuxWindow _preserveActiveAgentSessionMetadata(
   TmuxWindow existing,
   TmuxWindow updated,
 ) {
-  if (updated.activeAgentSessionId != null ||
+  if (updated.hasUnsupportedAgentTool ||
+      updated.activeAgentSessionId != null ||
       updated.agentSessionTitle != null) {
     return updated;
   }
@@ -1063,7 +1084,6 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
   },
   AgentLaunchTool.codex => const {'codex'},
   AgentLaunchTool.openCode => const {'opencode', 'open code'},
-  AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
   AgentLaunchTool.antigravity => const {'agy', 'antigravity'},
   AgentLaunchTool.cursorAgent => const {
     'cursor agent',
@@ -1180,9 +1200,6 @@ String? agentSessionIdFromLaunchCommand(
     ],
     AgentLaunchTool.codex => const [
       r'''(?<!\S)resume\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
-    ],
-    AgentLaunchTool.geminiCli => const [
-      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
     ],
     AgentLaunchTool.openCode => const [
       r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',

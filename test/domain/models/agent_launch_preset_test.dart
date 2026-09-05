@@ -30,10 +30,6 @@ void main() {
         r'OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode',
       );
       expect(
-        buildAgentToolCommand(AgentLaunchTool.geminiCli, startInYoloMode: true),
-        'gemini --yolo',
-      );
-      expect(
         buildAgentToolCommand(
           AgentLaunchTool.antigravity,
           startInYoloMode: true,
@@ -104,14 +100,6 @@ void main() {
           startInYoloMode: true,
         ),
         "codex --yolo resume 'codex-session'",
-      );
-      expect(
-        buildAgentResumeCommand(
-          AgentLaunchTool.geminiCli,
-          'gemini-session',
-          startInYoloMode: true,
-        ),
-        "gemini --yolo --resume 'gemini-session'",
       );
       expect(
         buildAgentResumeCommand(
@@ -273,7 +261,7 @@ void main() {
       'builds command for tmux with extra flags and no working directory',
       () {
         const preset = AgentLaunchPreset(
-          tool: AgentLaunchTool.geminiCli,
+          tool: AgentLaunchTool.codex,
           tmuxSessionName: 'nightly review',
           tmuxExtraFlags: '-x 160 -y 48',
         );
@@ -281,7 +269,7 @@ void main() {
         expect(
           buildAgentLaunchCommand(preset),
           'tmux new-session -A -s \'nightly review\' '
-          '-x 160 -y 48 \'gemini\' '
+          '-x 160 -y 48 \'codex\' '
           r'\; set-option -g focus-events on',
         );
       },
@@ -357,11 +345,19 @@ void main() {
       );
     });
 
-    test('builds command for geminiCli tool', () {
-      const preset = AgentLaunchPreset(tool: AgentLaunchTool.geminiCli);
-
-      expect(buildAgentLaunchCommand(preset), 'gemini');
-    });
+    test(
+      'rejects removed Gemini presets without substituting another agent',
+      () {
+        const stored = {'tool': 'geminiCli', 'workingDirectory': '~/project'};
+        expect(AgentLaunchPreset.tryFromJson(stored), isNull);
+        expect(() => AgentLaunchPreset.fromJson(stored), throwsFormatException);
+        expect(agentLaunchToolFromStorageName('geminiCli'), isNull);
+        expect(
+          AgentLaunchTool.uiDisplayOrder.map((tool) => tool.name),
+          isNot(contains('geminiCli')),
+        );
+      },
+    );
 
     test('adds yolo mode to supported presets', () {
       const preset = AgentLaunchPreset(
@@ -455,7 +451,6 @@ void main() {
     for (final tool in [
       AgentLaunchTool.codex,
       AgentLaunchTool.openCode,
-      AgentLaunchTool.geminiCli,
       AgentLaunchTool.antigravity,
       AgentLaunchTool.cursorAgent,
     ]) {
@@ -485,7 +480,6 @@ void main() {
     test('new tool labels are correct', () {
       expect(AgentLaunchTool.codex.label, 'Codex');
       expect(AgentLaunchTool.openCode.label, 'OpenCode');
-      expect(AgentLaunchTool.geminiCli.label, 'Gemini CLI');
       expect(AgentLaunchTool.antigravity.label, 'Antigravity');
       expect(AgentLaunchTool.cursorAgent.label, 'Cursor Agent');
     });
@@ -493,7 +487,6 @@ void main() {
     test('new tool command names are correct', () {
       expect(AgentLaunchTool.codex.commandName, 'codex');
       expect(AgentLaunchTool.openCode.commandName, 'opencode');
-      expect(AgentLaunchTool.geminiCli.commandName, 'gemini');
       expect(AgentLaunchTool.antigravity.commandName, 'agy');
       expect(AgentLaunchTool.cursorAgent.commandName, 'cursor-agent');
     });
@@ -519,14 +512,8 @@ void main() {
         ),
         AgentLaunchTool.copilotCli,
       );
-      expect(
-        agentLaunchToolForCommandName('gemini --yolo'),
-        AgentLaunchTool.geminiCli,
-      );
-      expect(
-        agentLaunchToolForCommandName('gemini-cli'),
-        AgentLaunchTool.geminiCli,
-      );
+      expect(agentLaunchToolForCommandName('gemini --yolo'), isNull);
+      expect(agentLaunchToolForCommandName('gemini-cli'), isNull);
       expect(agentLaunchToolForCommandName('codex-cli'), AgentLaunchTool.codex);
       expect(
         agentLaunchToolForCommandName('agy --dangerously-skip-permissions'),

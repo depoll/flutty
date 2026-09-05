@@ -71,6 +71,7 @@ void main() {
   Future<void> pumpScreen(
     WidgetTester tester, {
     Stream<MonetizationState>? states,
+    TextScaler? textScaler,
   }) async {
     await tester.pumpWidget(
       ProviderScope(
@@ -81,11 +82,55 @@ void main() {
           ),
         ],
         child: MaterialApp(
+          builder: textScaler == null
+              ? null
+              : (context, child) => MediaQuery(
+                  data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+                  child: child!,
+                ),
           home: AgentManagementScreen(session: session, service: service),
         ),
       ),
     );
     await tester.pumpAndSettle();
+  }
+
+  /// Advances frames while indeterminate spinners keep the tree from settling.
+  Future<void> pumpFrames(WidgetTester tester, {int count = 8}) async {
+    for (var i = 0; i < count; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+  }
+
+  Finder inRow(String id, Finder matching) => find.descendant(
+    of: find.byKey(ValueKey('agent-runtime-$id')),
+    matching: matching,
+  );
+
+  VoidCallback? refreshHandler(WidgetTester tester) => tester
+      .widget<IconButton>(
+        find.byKey(const ValueKey('agent-management-refresh')),
+      )
+      .onPressed;
+
+  VoidCallback? recheckHandler(WidgetTester tester, String id) => tester
+      .widget<IconButton>(find.byKey(ValueKey('agent-recheck-$id')))
+      .onPressed;
+
+  AgentRuntimeInfo installedFrom(AgentRuntimeInfo runtime) => AgentRuntimeInfo(
+    definition: runtime.definition,
+    status: AgentRuntimeStatus.installed,
+    installedVersion: runtime.latestVersion,
+    executablePath: runtime.executablePath,
+    detectionSource: runtime.detectionSource,
+    managedByPackageManager: true,
+  );
+
+  void replaceRuntime(AgentRuntimeInfo runtime) {
+    final index = runtimes.indexWhere(
+      (entry) => entry.definition.id == runtime.definition.id,
+    );
+    runtimes[index] = runtime;
   }
 
   testWidgets('free users cannot probe a directly opened manager', (
@@ -415,5 +460,548 @@ void main() {
       ),
     ).called(1);
     verify(() => service.refreshAll(session)).called(2);
+  });
+  for (final returnsFailure in [false, true]) {
+    testWidgets(
+      'recheck ${returnsFailure ? 'returned failure' : 'exception'} shows an error dialog and restores the row',
+      (tester) async {
+        final acp = runtimes[2];
+        final probe = Completer<AgentRuntimeInfo>();
+        when(
+          () => service.inspect(session, acp.definition),
+        ).thenAnswer((_) => probe.future);
+        await pumpScreen(tester);
+        clearInteractions(service);
+        final recheck = find.byKey(const ValueKey('agent-recheck-acp:claude'));
+
+        await tester.ensureVisible(recheck);
+        await tester.pumpAndSettle();
+        await tester.tap(recheck);
+        await pumpFrames(tester);
+
+        expect(
+          inRow('acp:claude', find.byType(CircularProgressIndicator)),
+          findsOneWidget,
+        );
+        expect(inRow('acp:claude', find.text('Checking…')), findsOneWidget);
+        expect(refreshHandler(tester), isNull);
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.byKey(const ValueKey('agent-action-cli:claude')),
+              )
+              .onPressed,
+          isNull,
+        );
+
+        if (returnsFailure) {
+          probe.complete(
+            AgentRuntimeInfo(
+              definition: acp.definition,
+              status: AgentRuntimeStatus.failed,
+              message: 'probe timed out',
+            ),
+          );
+        } else {
+          probe.completeError(StateError('probe timed out'));
+        }
+        await pumpFrames(tester);
+
+        expect(find.byType(AlertDialog), findsOneWidget);
+        expect(find.text('Claude Agent ACP failed'), findsOneWidget);
+        expect(
+          find.textContaining('Could not check this agent.'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('probe timed out'), findsOneWidget);
+
+        await tester.tap(find.text('Close'));
+        await tester.pumpAndSettle();
+
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+        expect(
+          inRow('acp:claude', find.text('Installed v1.0.0')),
+          findsOneWidget,
+        );
+        expect(recheckHandler(tester, 'acp:claude'), isNotNull);
+        expect(refreshHandler(tester), isNotNull);
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.byKey(const ValueKey('agent-action-cli:claude')),
+              )
+              .onPressed,
+          isNotNull,
+        );
+        verify(() => service.inspect(session, acp.definition)).called(1);
+        verifyNever(() => service.refreshAll(session));
+
+        when(() => service.inspect(session, acp.definition)).thenAnswer(
+          (_) async => AgentRuntimeInfo(
+            definition: acp.definition,
+            status: AgentRuntimeStatus.installed,
+            installedVersion: '1.2.0',
+            executablePath: acp.executablePath,
+            detectionSource: acp.detectionSource,
+          ),
+        );
+        await tester.ensureVisible(recheck);
+        await tester.pumpAndSettle();
+        await tester.tap(recheck);
+        await tester.pumpAndSettle();
+
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(
+          inRow('acp:claude', find.text('Installed v1.2.0')),
+          findsOneWidget,
+        );
+        verify(() => service.inspect(session, acp.definition)).called(1);
+      },
+    );
+  }
+
+  testWidgets('Update all queues later agents and locks competing commands', (
+    tester,
+  ) async {
+    final second = AgentRuntimeInfo(
+      definition: agentCliRuntimeDefinitions[1],
+      status: AgentRuntimeStatus.updateAvailable,
+      installedVersion: '2.0.0',
+      latestVersion: '2.1.0',
+      executablePath: '/usr/local/bin/copilot',
+      detectionSource: 'npm global',
+      managedByPackageManager: true,
+    );
+    runtimes[1] = second;
+    final updates = [runtimes.first, second];
+    final started = <String>[];
+    final completers = <String, Completer<AgentRuntimeActionResult>>{};
+    for (final runtime in updates) {
+      final id = runtime.definition.id;
+      completers[id] = Completer<AgentRuntimeActionResult>();
+      when(
+        () => service.installOrUpdate(
+          session,
+          runtime.definition,
+          update: true,
+          current: runtime,
+          onOutput: any(named: 'onOutput'),
+        ),
+      ).thenAnswer((_) {
+        started.add(id);
+        return completers[id]!.future;
+      });
+    }
+    await pumpScreen(tester);
+    expect(find.text('2 updates available'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('agent-update-all')));
+    await pumpFrames(tester);
+    clearInteractions(service);
+
+    expect(started, ['cli:claude']);
+    expect(find.text('Updating 1 of 2'), findsOneWidget);
+    final updateAll = tester.widget<FilledButton>(
+      find.byKey(const ValueKey('agent-update-all')),
+    );
+    expect(updateAll.onPressed, isNull);
+    expect(find.widgetWithText(FilledButton, 'Updating…'), findsOneWidget);
+    expect(
+      inRow('cli:claude', find.byType(CircularProgressIndicator)),
+      findsOneWidget,
+    );
+    expect(inRow('cli:claude', find.text('Updating…')), findsOneWidget);
+    expect(inRow('cli:copilot', find.text('Queued')), findsOneWidget);
+    expect(inRow('cli:copilot', find.text('Updating…')), findsNothing);
+    expect(
+      inRow('cli:copilot', find.byType(CircularProgressIndicator)),
+      findsNothing,
+    );
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byKey(const ValueKey('agent-action-cli:claude')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('agent-action-cli:copilot')),
+      findsNothing,
+    );
+    expect(refreshHandler(tester), isNull);
+    expect(recheckHandler(tester, 'acp:claude'), isNull);
+
+    await tester.tap(find.byKey(const ValueKey('agent-management-refresh')));
+    await tester.drag(
+      find.byKey(const ValueKey('agent-management-list')),
+      const Offset(0, 320),
+    );
+    await pumpFrames(tester, count: 30);
+    final recheck = find.byKey(const ValueKey('agent-recheck-acp:claude'));
+    await tester.ensureVisible(recheck);
+    await pumpFrames(tester);
+    await tester.tap(recheck);
+    await pumpFrames(tester);
+    verifyNever(() => service.refreshAll(session));
+    verifyNever(() => service.inspect(session, runtimes[2].definition));
+    expect(started, ['cli:claude']);
+
+    replaceRuntime(installedFrom(updates[0]));
+    completers['cli:claude']!.complete(
+      const AgentRuntimeActionResult(succeeded: true, output: 'updated'),
+    );
+    await pumpFrames(tester);
+
+    expect(started, ['cli:claude', 'cli:copilot']);
+    expect(find.text('Updating 2 of 2'), findsOneWidget);
+    expect(inRow('cli:claude', find.text('Installed v1.1.0')), findsOneWidget);
+    expect(
+      inRow('cli:claude', find.byType(CircularProgressIndicator)),
+      findsNothing,
+    );
+    expect(
+      inRow('cli:copilot', find.byType(CircularProgressIndicator)),
+      findsOneWidget,
+    );
+    expect(find.text('Queued'), findsNothing);
+    expect(refreshHandler(tester), isNull);
+    expect(recheckHandler(tester, 'acp:claude'), isNull);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const ValueKey('agent-update-all')))
+          .onPressed,
+      isNull,
+    );
+    verify(() => service.refreshAll(session)).called(1);
+
+    replaceRuntime(installedFrom(second));
+    completers['cli:copilot']!.complete(
+      const AgentRuntimeActionResult(succeeded: true, output: 'updated'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text('Queued'), findsNothing);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byKey(const ValueKey('agent-update-all')), findsNothing);
+    expect(inRow('cli:copilot', find.text('Installed v2.1.0')), findsOneWidget);
+    expect(refreshHandler(tester), isNotNull);
+    expect(recheckHandler(tester, 'acp:claude'), isNotNull);
+    verify(() => service.refreshAll(session)).called(1);
+  });
+
+  testWidgets('revoking Pro mid-queue stops the remaining bulk updates', (
+    tester,
+  ) async {
+    final states = StreamController<MonetizationState>();
+    addTearDown(states.close);
+    final second = AgentRuntimeInfo(
+      definition: agentCliRuntimeDefinitions[1],
+      status: AgentRuntimeStatus.updateAvailable,
+      installedVersion: '2.0.0',
+      latestVersion: '2.1.0',
+      executablePath: '/usr/local/bin/copilot',
+      detectionSource: 'npm global',
+      managedByPackageManager: true,
+    );
+    runtimes[1] = second;
+    final first = runtimes.first;
+    final firstUpdate = Completer<AgentRuntimeActionResult>();
+    when(
+      () => service.installOrUpdate(
+        session,
+        first.definition,
+        update: true,
+        current: first,
+        onOutput: any(named: 'onOutput'),
+      ),
+    ).thenAnswer((_) => firstUpdate.future);
+    await pumpScreen(tester, states: states.stream);
+
+    await tester.tap(find.byKey(const ValueKey('agent-update-all')));
+    await pumpFrames(tester);
+    expect(inRow('cli:copilot', find.text('Queued')), findsOneWidget);
+
+    access = access.copyWith(
+      entitlements: const MonetizationEntitlements.free(),
+    );
+    firstUpdate.complete(
+      const AgentRuntimeActionResult(succeeded: true, output: 'updated'),
+    );
+    states.add(access);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Agent Management requires Pro'), findsOneWidget);
+    expect(find.byKey(const ValueKey('agent-update-all')), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byType(AlertDialog), findsNothing);
+    verifyNever(
+      () => service.installOrUpdate(
+        session,
+        second.definition,
+        update: any(named: 'update'),
+        current: any(named: 'current'),
+        onOutput: any(named: 'onOutput'),
+      ),
+    );
+  });
+
+  testWidgets('expanding a row exposes the full path and versions as '
+      'selectable text', (tester) async {
+    const path =
+        '/Users/developer/.local/share/version-manager/installs/'
+        'node/22.4.1/lib/node_modules/@anthropic-ai/claude-code/bin/claude';
+    runtimes[0] = AgentRuntimeInfo(
+      definition: agentCliRuntimeDefinitions.first,
+      status: AgentRuntimeStatus.updateAvailable,
+      installedVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      executablePath: path,
+      detectionSource: 'npm global',
+      managedByPackageManager: true,
+    );
+    await pumpScreen(tester);
+
+    final collapsedSource = find.text('npm global · $path');
+    expect(collapsedSource, findsOneWidget);
+    expect(
+      tester.widget<Text>(collapsedSource).overflow,
+      TextOverflow.ellipsis,
+    );
+    expect(find.byType(SelectableText), findsNothing);
+    final material = tester
+        .element(find.byKey(const ValueKey('agent-details-cli:claude')))
+        .findAncestorWidgetOfExactType<Material>();
+    expect(material!.shape, isA<RoundedRectangleBorder>());
+    expect(material.clipBehavior, Clip.antiAlias);
+
+    await tester.tap(find.byKey(const ValueKey('agent-details-cli:claude')));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(collapsedSource, findsNothing);
+    for (final label in [
+      'Installed version',
+      'Latest version',
+      'Install source',
+      'Executable',
+    ]) {
+      expect(inRow('cli:claude', find.text(label)), findsOneWidget);
+    }
+    for (final value in ['1.0.0', '1.1.0', 'npm global', path]) {
+      final selectable = inRow(
+        'cli:claude',
+        find.widgetWithText(SelectableText, value),
+      );
+      expect(selectable, findsOneWidget, reason: '$value should be selectable');
+      expect(tester.widget<SelectableText>(selectable).maxLines, isNull);
+    }
+    expect(inRow('acp:claude', find.byType(SelectableText)), findsNothing);
+    expect(
+      inRow('cli:claude', find.text('Update v1.0.0 → v1.1.0')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('agent-action-cli:claude')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('agent-details-cli:claude')));
+    await tester.pumpAndSettle();
+
+    expect(collapsedSource, findsOneWidget);
+    expect(inRow('cli:claude', find.byType(SelectableText)), findsNothing);
+  });
+
+  const layouts = <String, Size>{
+    'phone portrait': Size(390, 844),
+    'phone landscape': Size(844, 390),
+    'tablet portrait': Size(820, 1180),
+    'tablet landscape': Size(1180, 820),
+  };
+  for (final layout in layouts.entries) {
+    for (final scale in const [1.0, 2.0]) {
+      testWidgets('${layout.key} at ${scale}x text has no overflow and keeps '
+          'Update all reachable', (tester) async {
+        final size = layout.value;
+        tester.view.physicalSize = size;
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        runtimes[0] = AgentRuntimeInfo(
+          definition: agentCliRuntimeDefinitions.first,
+          status: AgentRuntimeStatus.updateAvailable,
+          installedVersion: '2026.08.12345',
+          latestVersion: '2026.09.67890',
+          executablePath:
+              '/Users/developer/.local/share/version-manager/installs/'
+              'node/22.4.1/lib/node_modules/@anthropic-ai/claude-code/'
+              'bin/claude',
+          detectionSource: 'npm global package manager',
+          managedByPackageManager: true,
+        );
+        runtimes[1] = AgentRuntimeInfo(
+          definition: agentCliRuntimeDefinitions[1],
+          status: AgentRuntimeStatus.needsRepair,
+          executablePath: '/usr/local/bin/copilot',
+          detectionSource: 'npm global',
+          managedByPackageManager: true,
+          message:
+              'Required setup scripts did not run because the package '
+              'was installed with --ignore-scripts.',
+        );
+
+        await pumpScreen(
+          tester,
+          textScaler: scale == 1.0 ? null : TextScaler.linear(scale),
+        );
+
+        expect(tester.takeException(), isNull);
+        final updateAll = find.byKey(const ValueKey('agent-update-all'));
+        expect(updateAll, findsOneWidget);
+        expect(tester.widget<FilledButton>(updateAll).onPressed, isNotNull);
+        final bar = tester.getRect(updateAll);
+        expect(bar.top, greaterThanOrEqualTo(0));
+        expect(bar.left, greaterThanOrEqualTo(0));
+        expect(bar.right, lessThanOrEqualTo(size.width));
+        expect(bar.bottom, lessThanOrEqualTo(size.height));
+        expect(updateAll.hitTestable(), findsOneWidget);
+
+        final lastRow = find.byKey(const ValueKey('agent-runtime-acp:claude'));
+        await tester.scrollUntilVisible(
+          lastRow,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(lastRow.hitTestable(), findsOneWidget);
+        expect(updateAll.hitTestable(), findsOneWidget);
+        final recheck = find.byKey(const ValueKey('agent-recheck-acp:claude'));
+        await tester.ensureVisible(recheck);
+        await tester.pumpAndSettle();
+        expect(recheck.hitTestable(), findsOneWidget);
+        expect(updateAll.hitTestable(), findsOneWidget);
+
+        final details = find.byKey(const ValueKey('agent-details-cli:claude'));
+        await tester.scrollUntilVisible(
+          details,
+          -200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(details);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(inRow('cli:claude', find.text('Executable')), findsOneWidget);
+        expect(updateAll.hitTestable(), findsOneWidget);
+        expect(
+          tester.getRect(updateAll).bottom,
+          lessThanOrEqualTo(size.height),
+        );
+      });
+    }
+  }
+
+  testWidgets('Update all skips updates MonkeySSH cannot manage', (
+    tester,
+  ) async {
+    final managed = runtimes.first;
+    final unmanaged = AgentRuntimeInfo(
+      definition: agentCliRuntimeDefinitions[1],
+      status: AgentRuntimeStatus.updateAvailable,
+      installedVersion: '2.0.0',
+      latestVersion: '2.1.0',
+      executablePath: '/opt/copilot/bin/copilot',
+      detectionSource: 'manual install',
+    );
+    final unsupported = AgentRuntimeInfo(
+      definition: agentCliRuntimeDefinitions.firstWhere(
+        (definition) => !definition.supportsManagedInstall,
+      ),
+      status: AgentRuntimeStatus.updateAvailable,
+      installedVersion: '0.9.0',
+      latestVersion: '1.0.0',
+      executablePath: '/usr/local/bin/cursor-agent',
+      detectionSource: 'PATH',
+    );
+    final unavailable = AgentRuntimeInfo(
+      definition: agentStandaloneAcpRuntimeDefinitions.first,
+      status: AgentRuntimeStatus.unavailable,
+      latestVersion: '1.0.0',
+      message: 'Requires a supported platform.',
+    );
+    runtimes
+      ..clear()
+      ..addAll([managed, unmanaged, unsupported, unavailable]);
+    when(
+      () => service.installOrUpdate(
+        session,
+        managed.definition,
+        update: true,
+        current: managed,
+        onOutput: any(named: 'onOutput'),
+      ),
+    ).thenAnswer((_) async {
+      replaceRuntime(installedFrom(managed));
+      return const AgentRuntimeActionResult(succeeded: true, output: 'ok');
+    });
+    await pumpScreen(tester);
+
+    expect(find.byKey(const ValueKey('agent-update-all')), findsOneWidget);
+    expect(find.text('3 updates available'), findsOneWidget);
+    expect(find.text('2 require a manual update on the host.'), findsOneWidget);
+    expect(find.text('Update 1'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('agent-action-cli:copilot')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(ValueKey('agent-action-${unsupported.definition.id}')),
+      findsNothing,
+    );
+    expect(find.byKey(const ValueKey('agent-action-acp:claude')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('agent-recheck-cli:copilot')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('agent-details-cli:copilot')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text(
+        'Update this installation on the host, then re-check its version.',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('agent-update-all')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(inRow('cli:claude', find.text('Installed v1.1.0')), findsOneWidget);
+    expect(find.text('2 updates available'), findsOneWidget);
+    expect(find.text('2 require a manual update on the host.'), findsOneWidget);
+    expect(find.byKey(const ValueKey('agent-update-all')), findsNothing);
+    expect(
+      inRow('cli:copilot', find.text('Update v2.0.0 → v2.1.0')),
+      findsOneWidget,
+    );
+    verify(
+      () => service.installOrUpdate(
+        session,
+        managed.definition,
+        update: true,
+        current: managed,
+        onOutput: any(named: 'onOutput'),
+      ),
+    ).called(1);
+    for (final excluded in [unmanaged, unsupported, unavailable]) {
+      verifyNever(
+        () => service.installOrUpdate(
+          session,
+          excluded.definition,
+          update: any(named: 'update'),
+          current: any(named: 'current'),
+          onOutput: any(named: 'onOutput'),
+        ),
+      );
+    }
   });
 }

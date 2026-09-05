@@ -89,6 +89,102 @@ void main() {
       expect(window.hasAlert, false);
     });
 
+    test('drops session metadata only for explicitly unsupported tools', () {
+      for (final tool in ['gemini', 'future-agent', 'copilot', '']) {
+        final window = TmuxWindow.fromTmuxFormat(
+          [
+            '0',
+            'Project shell',
+            '1',
+            'zsh',
+            '/tmp/project',
+            '',
+            '',
+            '',
+            '',
+            tool,
+            '@1',
+            '123',
+            'legacy-session',
+            'Stale conversation title',
+            'high',
+          ].join(tmuxWindowFieldSeparator),
+        );
+        if (tool == 'gemini' || tool == 'future-agent') {
+          expect(window.agentTool, isNull);
+          expect(window.activeAgentSessionId, isNull);
+          expect(window.agentSessionTitle, isNull);
+          expect(window.activeAgentSessionConfidence, isNull);
+          expect(window.displayTitle, 'Project shell');
+        } else {
+          expect(window.activeAgentSessionId, 'legacy-session');
+          expect(window.agentSessionTitle, 'Stale conversation title');
+          expect(
+            window.activeAgentSessionConfidence,
+            AgentSessionConfidence.high,
+          );
+        }
+      }
+    });
+
+    test(
+      'unsupported tool markers block weak inference and survive updates',
+      () {
+        for (final command in ['node', 'zsh', 'copilot']) {
+          final window = TmuxWindow.fromTmuxFormat(
+            [
+              '0',
+              'Codex',
+              '1',
+              command,
+              '/tmp/project',
+              '',
+              'Claude Code',
+              '',
+              'gemini --resume old-session',
+              'gemini',
+              '@1',
+              '123',
+              'legacy-session',
+              'Stale title',
+              'high',
+            ].join(tmuxWindowFieldSeparator),
+          );
+          final expected = command == 'copilot'
+              ? AgentLaunchTool.copilotCli
+              : null;
+          expect(window.hasUnsupportedAgentTool, isTrue);
+          expect(window.agentSessionId, isNull);
+          expect(window.foregroundAgentTool, expected);
+          expect(window.activeAgentSessionId, isNull);
+          expect(window.agentSessionTitle, isNull);
+          expect(
+            window.copyWith(isActive: false).foregroundAgentTool,
+            expected,
+          );
+          expect(window.copyWith(), window);
+          expect(window.copyWith().hashCode, window.hashCode);
+          final supported = window.copyWith(agentTool: AgentLaunchTool.codex);
+          expect(supported.hasUnsupportedAgentTool, isFalse);
+          expect(supported, isNot(window));
+          final old = window.copyWith(
+            hasUnsupportedAgentTool: false,
+            activeAgentSessionId: 'old-session',
+            agentSessionTitle: 'Old title',
+          );
+          for (final event in [
+            TmuxWindowSnapshotEvent(window),
+            TmuxWindowListEvent([window]),
+          ]) {
+            final merged = applyTmuxWindowChangeEvent([old], event).single;
+            expect(merged.hasUnsupportedAgentTool, isTrue);
+            expect(merged.activeAgentSessionId, isNull);
+            expect(merged.agentSessionTitle, isNull);
+          }
+        }
+      },
+    );
+
     test('still parses legacy pipe-delimited window snapshots', () {
       const line = '0|vim|1|vim|/home/user/project|*|Editing main.dart';
       final window = TmuxWindow.fromTmuxFormat(line);
@@ -277,10 +373,10 @@ void main() {
       expect(window.secondaryTitle, isNull);
     });
 
-    test('uses agent context when Gemini only reports ready status', () {
+    test('uses agent context when an agent only reports ready status', () {
       const window = TmuxWindow(
         index: 1,
-        name: 'gemini',
+        name: 'cursor-agent',
         isActive: false,
         currentCommand: 'node',
         currentPath: '/Users/depoll/Code/flutty',
@@ -288,8 +384,8 @@ void main() {
             '◇  Ready (flutty)                                                               ',
       );
 
-      expect(window.displayTitle, 'Gemini CLI · flutty');
-      expect(window.handleTitle, 'Gemini CLI · flutty');
+      expect(window.displayTitle, 'Cursor Agent · flutty');
+      expect(window.handleTitle, 'Cursor Agent · flutty');
       expect(window.secondaryTitle, isNull);
     });
 
@@ -305,14 +401,14 @@ void main() {
         'mac-mini.home',
         '1712930000',
         'zsh',
-        'gemini',
+        'cursor-agent',
       ].join(sep);
       final window = TmuxWindow.fromTmuxFormat(line);
 
-      expect(window.agentTool, AgentLaunchTool.geminiCli);
-      expect(window.foregroundAgentTool, AgentLaunchTool.geminiCli);
-      expect(window.displayTitle, 'Gemini CLI · flutty');
-      expect(window.handleTitle, 'Gemini CLI · flutty');
+      expect(window.agentTool, AgentLaunchTool.cursorAgent);
+      expect(window.foregroundAgentTool, AgentLaunchTool.cursorAgent);
+      expect(window.displayTitle, 'Cursor Agent · flutty');
+      expect(window.handleTitle, 'Cursor Agent · flutty');
     });
 
     test('shows resumed agent session metadata from pane start commands', () {
