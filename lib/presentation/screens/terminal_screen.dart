@@ -4033,6 +4033,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // Theme state
   Host? _host;
   AgentLaunchPreset? _autoConnectAgentPreset;
+  bool _hasUnsupportedAutoConnectAgentPreset = false;
   bool _startClisInYoloMode = false;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
@@ -7439,9 +7440,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Load host data first for theme
     final hostRepo = ref.read(hostRepositoryProvider);
     _host = await hostRepo.getById(widget.hostId);
-    _autoConnectAgentPreset = await ref
+    final presetState = await ref
         .read(agentLaunchPresetServiceProvider)
-        .getPresetForHost(widget.hostId);
+        .getPresetStateForHost(widget.hostId);
+    _autoConnectAgentPreset = presetState.preset;
+    _hasUnsupportedAutoConnectAgentPreset = presetState.isUnsupported;
     final cliLaunchPreferences = await ref
         .read(hostCliLaunchPreferencesServiceProvider)
         .getPreferencesForHost(widget.hostId);
@@ -11188,6 +11191,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     if (host.autoConnectSnippetId != null) {
       return host.autoConnectCommand;
+    }
+    if (_hasUnsupportedAutoConnectAgentPreset) {
+      return null;
     }
     final preset = _autoConnectAgentPreset;
     if (preset == null) {

@@ -56,6 +56,8 @@ void main() {
       const legacy = {'tool': 'geminiCli', 'workingDirectory': '~/legacy'};
       await settings.setJson(SettingKeys.agentLaunchPresets, {'9': legacy});
       expect(await service.getPresetForHost(9), isNull);
+      expect((await service.getPresetStateForHost(9)).isUnsupported, isTrue);
+      expect((await service.getPresetStateForHost(11)).isUnsupported, isFalse);
       await service.setPresetForHost(
         10,
         const AgentLaunchPreset(tool: AgentLaunchTool.antigravity),
@@ -68,6 +70,9 @@ void main() {
         (await service.getPresetForHost(10))!.tool,
         AgentLaunchTool.antigravity,
       );
+      expect((await service.getPresetStateForHost(10)).isUnsupported, isFalse);
+      await service.deletePresetForHost(9);
+      expect((await service.getPresetStateForHost(9)).isUnsupported, isFalse);
     },
   );
 
