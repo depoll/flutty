@@ -625,7 +625,7 @@ final terminalNotificationsNotifierProvider =
       TerminalNotificationsNotifier.new,
     );
 
-/// Notifier for coding-agent update prompts.
+/// Notifier for coding-agent update indicators.
 class AgentUpdateNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
   @override
   bool get _defaultValue => true;
@@ -636,7 +636,7 @@ class AgentUpdateNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
     defaultValue: true,
   );
 
-  /// Sets whether active terminals may prompt for agent updates.
+  /// Sets whether active terminals show agent update indicators.
   Future<void> setEnabled({required bool enabled}) async {
     await _settingsService.setBool(
       SettingKeys.agentUpdateNotifications,
@@ -646,7 +646,7 @@ class AgentUpdateNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
   }
 }
 
-/// Provider for coding-agent update prompts.
+/// Provider for coding-agent update indicators.
 final agentUpdateNotificationsNotifierProvider =
     NotifierProvider<AgentUpdateNotificationsNotifier, bool>(
       AgentUpdateNotificationsNotifier.new,

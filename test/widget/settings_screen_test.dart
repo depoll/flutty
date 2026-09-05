@@ -203,7 +203,7 @@ void main() {
       );
     });
 
-    testWidgets('shows and persists the agent update prompt toggle', (
+    testWidgets('shows and persists the agent update indicator toggle', (
       tester,
     ) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -220,7 +220,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Agent update prompts'), findsOneWidget);
+      expect(find.text('Agent update indicators'), findsOneWidget);
       expect(tester.widget<SwitchListTile>(tile).value, isTrue);
       await tester.tap(tile);
       await tester.pumpAndSettle();

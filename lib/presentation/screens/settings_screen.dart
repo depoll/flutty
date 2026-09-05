@@ -771,9 +771,9 @@ class _TerminalSection extends ConsumerWidget {
         SwitchListTile(
           key: const ValueKey('settings-agent-update-notifications'),
           secondary: const Icon(Icons.system_update_alt_rounded),
-          title: const Text('Agent update prompts'),
+          title: const Text('Agent update indicators'),
           subtitle: const Text(
-            'Show one agent update prompt when opening a new SSH connection',
+            'Show a dot on the terminal menu when agent updates are available',
           ),
           value: agentUpdateNotifications,
           onChanged: (value) {
