@@ -293,16 +293,23 @@ void main() {
 
   group('parseMonkeyMuxWindowSnapshotForTesting', () {
     test('ignores legacy Gemini agent metadata from older helpers', () {
-      final window = parseMonkeyMuxWindowSnapshotForTesting({
-        'id': '@1',
-        'index': 0,
-        'name': 'Gemini CLI',
-        'active': true,
-        'currentCommand': 'node',
-        'agentTool': 'gemini',
-      });
-      expect(window, isNotNull);
-      expect(window!.foregroundAgentTool, isNull);
+      for (final name in ['Gemini CLI', 'Codex']) {
+        final window = parseMonkeyMuxWindowSnapshotForTesting({
+          'id': '@1',
+          'index': 0,
+          'name': name,
+          'active': true,
+          'currentCommand': 'node',
+          'agentTool': 'gemini',
+          'agentSessionId': 'legacy-gemini-session',
+          'agentSessionIdentityExact': true,
+        });
+        expect(window, isNotNull);
+        expect(window!.agentTool, isNull);
+        expect(window.activeAgentSessionId, isNull);
+        expect(window.activeAgentSessionConfidence, isNull);
+        if (name == 'Gemini CLI') expect(window.foregroundAgentTool, isNull);
+      }
     });
 
     test('maps helper agentTool metadata onto tmux windows', () {

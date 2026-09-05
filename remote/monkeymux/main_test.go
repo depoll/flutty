@@ -11434,34 +11434,46 @@ func TestCreateWindowOptionsForRestorePreservesShellHistory(t *testing.T) {
 }
 
 func TestRestoreDropsUnsupportedAgentMetadata(t *testing.T) {
-	for _, command := range []string{"gemini", "zsh"} {
-		t.Run(command, func(t *testing.T) {
-			state := restoreWindowState{
-				Name: "Gemini CLI", CurrentCommand: command, AgentTool: "gemini",
-				AgentToolConfirmed: true, AgentSessionID: "legacy-session",
-				AgentSessionDir: "/tmp/legacy", AgentSessionPath: "/tmp/legacy/session.json",
-				AgentSessionIdentityExact: true,
-				HistoryBase64:             base64.StdEncoding.EncodeToString([]byte("shell history")),
-				HistoryStartsAtGround:     true,
-			}
-			options := createWindowOptionsForRestore(state, false)
-			if options.command != "" || options.agentTool != "" {
-				t.Fatalf("restored unsupported agent: command=%q tool=%q", options.command, options.agentTool)
-			}
-			if options.agentSessionID != "" || options.agentSessionDir != "" || options.agentSessionPath != "" || options.agentSessionIdentityExact {
-				t.Fatal("unsupported agent session identity survived restore")
-			}
-			tool, confirmed := newWindowAgentTool(options, state.Name)
-			if tool != "" || confirmed {
-				t.Fatalf("new window would persist unsupported tool %q (confirmed=%v)", tool, confirmed)
-			}
-			if command == "zsh" && string(options.history) != "shell history" {
-				t.Fatalf("shell history lost: %q", options.history)
-			}
-			if command == "gemini" && len(options.history) != 0 {
-				t.Fatal("unsupported TUI history should not replay into a new shell")
-			}
-		})
+	for _, name := range []string{"Gemini CLI", "Codex"} {
+		for _, command := range []string{"gemini", "zsh", "copilot"} {
+			t.Run(name+"/"+command, func(t *testing.T) {
+				state := restoreWindowState{
+					Name: name, CurrentCommand: command, PaneTitle: "Claude Code", AgentTool: "gemini",
+					AgentToolConfirmed: true, AgentSessionID: "legacy-session",
+					AgentSessionDir: "/tmp/legacy", AgentSessionPath: "/tmp/legacy/session.json",
+					AgentSessionIdentityExact: true,
+					HistoryBase64:             base64.StdEncoding.EncodeToString([]byte("shell history")),
+					HistoryStartsAtGround:     true,
+				}
+				options := createWindowOptionsForRestore(state, false)
+				if options.command != "" || options.agentTool != "" {
+					t.Fatalf("restored unsupported agent: command=%q tool=%q", options.command, options.agentTool)
+				}
+				if options.agentSessionID != "" || options.agentSessionDir != "" || options.agentSessionPath != "" || options.agentSessionIdentityExact {
+					t.Fatal("unsupported agent session identity survived restore")
+				}
+				tool, confirmed := newWindowAgentTool(options, state.Name)
+				if tool != "" || !confirmed {
+					t.Fatalf("new window should confirm a plain shell, got tool=%q confirmed=%v", tool, confirmed)
+				}
+				if command == "zsh" && string(options.history) != "shell history" {
+					t.Fatalf("shell history lost: %q", options.history)
+				}
+				if command != "zsh" && len(options.history) != 0 {
+					t.Fatal("unsupported TUI history should not replay into a new shell")
+				}
+				window := &muxWindow{name: name, paneTitle: state.PaneTitle, command: "zsh", agentTool: tool, agentToolConfirmed: confirmed}
+				nextState := restoreWindowState{Name: name, PaneTitle: window.paneTitle, CurrentCommand: window.currentCommandLocked(), AgentTool: window.agentToolLocked(), AgentToolConfirmed: window.agentToolConfirmedLocked()}
+				next := createWindowOptionsForRestore(nextState, false)
+				if next.command != "" || next.agentTool != "" {
+					t.Fatalf("second restore substituted an agent: command=%q tool=%q", next.command, next.agentTool)
+				}
+				window.foregroundCommand = "copilot"
+				if window.agentToolLocked() != "copilot" {
+					t.Fatal("explicit plain-shell identity must not block later live agent detection")
+				}
+			})
+		}
 	}
 }
 

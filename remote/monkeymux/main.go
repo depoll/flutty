@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.181"
+	monkeyMuxVersion                  = "0.1.182"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -4568,8 +4568,12 @@ func normalizedPiWorkingDirectory(path string) string {
 }
 
 func agentToolCandidateForRestore(window restoreWindowState) string {
+	// Explicit metadata is authoritative, including confirmed plain shells.
+	// Do not replace a retired tool with one guessed from a window's label.
+	if tool := strings.TrimSpace(window.AgentTool); tool != "" || window.AgentToolConfirmed {
+		return agentToolFromCommandName(tool)
+	}
 	return firstNonEmptyString(
-		agentToolFromCommandName(window.AgentTool),
 		agentToolFromCommandName(window.CurrentCommand),
 		agentToolFromTerminalTitle(window.PaneTitle),
 		agentToolFromCommandName(window.Name),
@@ -6173,6 +6177,7 @@ func createWindowOptionsForRestore(
 		history:                   history,
 		paneTitle:                 firstNonEmptyString(state.PaneTitle, state.Name),
 		agentTool:                 agentTool,
+		agentToolConfirmed:        state.AgentToolConfirmed || strings.TrimSpace(state.AgentTool) != "",
 		agentSessionID:            state.AgentSessionID,
 		agentSessionDir:           state.AgentSessionDir,
 		agentSessionPath:          state.AgentSessionPath,
@@ -6215,6 +6220,7 @@ type createWindowOptions struct {
 	history                   []byte
 	paneTitle                 string
 	agentTool                 string
+	agentToolConfirmed        bool
 	agentSessionID            string
 	agentSessionDir           string
 	agentSessionPath          string
@@ -6237,6 +6243,9 @@ func newWindowAgentTool(
 	options createWindowOptions,
 	name string,
 ) (tool string, confirmed bool) {
+	if options.agentToolConfirmed {
+		return options.agentTool, true
+	}
 	commandTool := agentToolFromCommandText(options.command)
 	tool = firstNonEmptyString(
 		options.agentTool,
@@ -14919,6 +14928,12 @@ func (w *muxWindow) agentToolLocked() string {
 	}
 	if tool := strings.TrimSpace(w.agentTool); tool != "" {
 		return tool
+	}
+	// A restored retired agent is now a known shell, even if its retained
+	// title/name resembles another tool. Live commands still win above.
+	command := strings.TrimSpace(w.currentCommandLocked())
+	if w.agentToolConfirmed && (command == "" || isShellCommandName(command)) {
+		return ""
 	}
 	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
 		return tool
