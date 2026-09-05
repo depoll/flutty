@@ -2,6 +2,7 @@
 
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -35,6 +36,43 @@ class ProCaptionTest(unittest.TestCase):
                     self.assertIsNone(ImageChops.difference(actual, app).getbbox())
                     badge = (round(width * 0.88), height - band_height + round(width * 0.04))
                     self.assertEqual(result.getpixel(badge), (88, 163, 140))
+
+    def test_gallery_uses_current_capture_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / 'ios/fastlane/screenshots/en-US'
+            folder.mkdir(parents=True)
+            for index, color in ((7, '#123456'), (8, '#654321')):
+                Image.new('RGB', (1320, 2868), color).save(folder / f'{index:02d}_iphone_6_9.png')
+            with patch.object(capture, 'ROOT', root):
+                output = capture._write_iphone_gallery()
+                with Image.open(output) as image:
+                    self.assertEqual(image.size, (1356, 1458))
+                    self.assertEqual(image.getpixel((100, 100)), (18, 52, 86))
+                    self.assertEqual(image.getpixel((800, 100)), (101, 67, 33))
+                (folder / '08_iphone_6_9.png').unlink()
+                with self.assertRaises(FileNotFoundError):
+                    capture._write_iphone_gallery()
+
+    def test_scene_option_matches_registered_app_scenes(self):
+        source = (ROOT / 'tool/store_screenshot_app.dart').read_text()
+        block = source.split('const _sceneNames = <String>[', 1)[1].split('];', 1)[0]
+        scenes = re.findall(r"'([^']+)'", block)
+        for scene in scenes:
+            with patch.object(sys, 'argv', ['capture', 'ios', '--scene', scene]):
+                self.assertEqual(capture._parse_args().scene, scene)
+        self.assertIn('_sceneNames[index] != _selectedScene', source)
+        script = (ROOT / 'scripts/generate_store_screenshots.py').read_text()
+        self.assertIn('STORE_SCREENSHOT_SCENE={scene}', script)
+        self.assertIn('--bare --model sonnet', script)
+
+    def test_gallery_only_never_launches_a_demo_workspace(self):
+        with patch.object(sys, 'argv', ['capture', '--gallery-only']):
+            with patch.object(capture, '_write_iphone_gallery') as gallery:
+                with patch.object(capture, 'StoreDemoEnvironment') as environment:
+                    capture.main()
+                    gallery.assert_called_once_with()
+                    environment.assert_not_called()
 
     def test_caption_text_fits_every_target(self):
         for target in capture.TARGETS.values():

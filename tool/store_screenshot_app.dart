@@ -38,6 +38,7 @@ import 'package:monkeyssh/presentation/screens/terminal_screen.dart'
     show storeDemoImagePasteCompleter;
 
 const _targetName = String.fromEnvironment('STORE_SCREENSHOT_TARGET');
+const _selectedScene = String.fromEnvironment('STORE_SCREENSHOT_SCENE');
 const _sshPort = int.fromEnvironment('STORE_SCREENSHOT_SSH_PORT');
 const _sshUsername = String.fromEnvironment('STORE_SCREENSHOT_SSH_USERNAME');
 const _sshPrivateKeyB64 = String.fromEnvironment(
@@ -679,6 +680,15 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     // the full window list and Claude selection lands, even on slower devices.
     await _ensureMuxReady();
 
+    // A targeted Claude retry needs no native session or unrelated navigation.
+    if (_selectedScene == 'terminal_claude') {
+      await _selectClaudeWindow();
+      _go('/terminal/$terminalHostId?connectionId=$_connectionId');
+      await Future<void>.delayed(const Duration(seconds: 4));
+      await _announceScene(_sceneNames.indexOf(_selectedScene));
+      return;
+    }
+
     final nativeKey = await _ensureNativeCopilotSession();
     _clearNativeFocus();
     await _selectMonkeyMuxWindow('copilot');
@@ -952,6 +962,9 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   }
 
   Future<void> _announceScene(int index) async {
+    if (_selectedScene.isNotEmpty && _sceneNames[index] != _selectedScene) {
+      return;
+    }
     FocusManager.instance.primaryFocus?.unfocus();
     final payload = {
       'scene': _sceneNames[index],

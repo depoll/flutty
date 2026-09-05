@@ -128,10 +128,13 @@ TARGETS = {
 def main() -> None:
     _prefer_stable_xcode()
     args = _parse_args()
+    if args.gallery_only:
+        _write_iphone_gallery()
+        return
     targets = _targets_for_platform(args.platform)
     with StoreDemoEnvironment(seed_platform=args.platform) as demo:
         for target in targets:
-            _run_target(target, demo)
+            _run_target(target, demo, scene=args.scene)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -144,6 +147,16 @@ def _parse_args() -> argparse.Namespace:
         nargs='?',
         default='both',
         help='Which store screenshot set to generate.',
+    )
+    parser.add_argument(
+        '--scene',
+        choices=['terminal_copilot', 'hosts', 'snippets', 'monkeymux_windows',
+                 'sftp', 'terminal_claude', 'native_copilot', 'agent_management'],
+        help='Recapture one scene in place, preserving the other screenshots.',
+    )
+    parser.add_argument(
+        '--gallery-only', action='store_true',
+        help='Compose the README gallery from existing iPhone captures, without launching the app.',
     )
     return parser.parse_args()
 
@@ -160,7 +173,9 @@ def _targets_for_platform(platform: str) -> list[ScreenshotTarget]:
     return list(TARGETS.values())
 
 
-def _run_target(target: ScreenshotTarget, demo: StoreDemoEnvironment) -> None:
+def _run_target(
+    target: ScreenshotTarget, demo: StoreDemoEnvironment, *, scene: str | None = None,
+) -> None:
     print(f'Generating {target.name} screenshots...')
     demo.reset_monkeymux()
     if target.platform == 'ios':
@@ -172,7 +187,7 @@ def _run_target(target: ScreenshotTarget, demo: StoreDemoEnvironment) -> None:
         restore_android = _configure_android_display(target, device_id)
 
     try:
-        _run_flutter_capture(target, device_id, demo)
+        _run_flutter_capture(target, device_id, demo, scene=scene)
     finally:
         if restore_android is not None:
             restore_android()
@@ -182,6 +197,8 @@ def _run_flutter_capture(
     target: ScreenshotTarget,
     device_id: str,
     demo: StoreDemoEnvironment,
+    *,
+    scene: str | None = None,
 ) -> None:
     env = os.environ.copy()
     java_home = _java_home_17()
@@ -201,6 +218,8 @@ def _run_flutter_capture(
         '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
         '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
     ]
+    if scene is not None:
+        dart_defines.append(f'--dart-define=STORE_SCREENSHOT_SCENE={scene}')
     if demo.demo_image_b64:
         dart_defines.append(
             f'--dart-define=STORE_SCREENSHOT_DEMO_IMAGE_B64={demo.demo_image_b64}',
@@ -570,7 +589,7 @@ class StoreDemoEnvironment:
               CLAUDE_CODE_HIDE_CWD=1 \\
               ANTHROPIC_API_KEY={dummy_anthropic_key} \\
               {self._shell_quote(self._claude)} \\
-              --bare \\
+              --bare --model sonnet \\
               --name 'Claude Code Workspace'
             """,
         )
@@ -2013,6 +2032,22 @@ def _add_pro_caption(screenshot: Image.Image, scene: str) -> Image.Image:
     )
     return canvas
 
+
+def _write_iphone_gallery() -> Path:
+    folder = ROOT / 'ios/fastlane/screenshots/en-US'
+    width, height, margin = 660, 1434, 12
+    canvas = Image.new('RGB', (width * 2 + margin * 3, height + margin * 2), '#0D0D12')
+    for column, index in enumerate((7, 8)):
+        with Image.open(folder / f'{index:02d}_iphone_6_9.png') as image:
+            shot = ImageOps.contain(
+                image.convert('RGB'), (width, height), Image.Resampling.LANCZOS,
+            )
+            canvas.paste(shot, (margin + column * (width + margin), margin))
+    output = ROOT / 'build/store-screenshots/monkeyssh-agent-workspace.png'
+    output.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output, optimize=True)
+    print(f'Wrote {output.relative_to(ROOT)}')
+    return output
 
 def _capture_native_screenshot(
     *,

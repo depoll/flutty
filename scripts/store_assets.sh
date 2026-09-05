@@ -716,6 +716,11 @@ cmd_publish() {
   fi
   cmd_package -o "$output" "${package_args[@]}"
 
+  # Rebuild the release-hosted README image from the exact captured files we
+  # just packaged, never a stale contact sheet left in the build directory.
+  "$(validation_python)" scripts/generate_store_screenshots.py --gallery-only
+  local gallery="$ROOT_DIR/build/store-screenshots/monkeyssh-agent-workspace.png"
+
   local notes
   notes="$(mktemp)"
   cat >"$notes" <<EOF
@@ -744,8 +749,9 @@ EOF
       --prerelease \
       --latest=false
   fi
+  gh release upload "$RELEASE_TAG" "$gallery" --repo "$repo" --clobber
   rm -f "$notes"
-  echo "Published $output to release $RELEASE_TAG on $repo"
+  echo "Published $output and README gallery to release $RELEASE_TAG on $repo"
 
   if [ "$dispatch_workflow" = true ]; then
     local sync_value=false
