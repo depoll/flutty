@@ -2049,6 +2049,21 @@ def _write_iphone_gallery() -> Path:
     print(f'Wrote {output.relative_to(ROOT)}')
     return output
 
+def _assert_android_capture_foreground(device_id: str) -> None:
+    activities = subprocess.check_output(
+        [str(_adb_path()), '-s', device_id, 'shell', 'dumpsys', 'activity', 'activities'],
+        text=True, timeout=10,
+    )
+    lines = activities.splitlines()
+    resumed = [line for line in lines if 'topResumedActivity=' in line]
+    if not resumed:
+        resumed = [line for line in lines if 'mResumedActivity:' in line]
+    if not resumed or not all('xyz.depollsoft.monkeyssh/' in line for line in resumed):
+        raise RuntimeError(
+            'Android capture lost the MonkeySSH foreground activity. '
+            'Use a dedicated emulator selected with ANDROID_SERIAL.',
+        )
+
 def _capture_native_screenshot(
     *,
     target: ScreenshotTarget,
@@ -2065,6 +2080,7 @@ def _capture_native_screenshot(
                 check=True,
             )
         else:
+            _assert_android_capture_foreground(device_id)
             result = subprocess.run(
                 [str(_adb_path()), '-s', device_id, 'exec-out', 'screencap', '-p'],
                 cwd=ROOT,

@@ -37,6 +37,25 @@ class ProCaptionTest(unittest.TestCase):
                     badge = (round(width * 0.88), height - band_height + round(width * 0.04))
                     self.assertEqual(result.getpixel(badge), (88, 163, 140))
 
+    def test_android_capture_rejects_another_foreground_app(self):
+        states = [
+            ('topResumedActivity=ActivityRecord{ xyz.depollsoft.monkeyssh/.MainActivity }', True),
+            ('mResumedActivity: ActivityRecord{ xyz.depollsoft.monkeyssh/.MainActivity }', True),
+            ('topResumedActivity=ActivityRecord{ another.app/.MainActivity }', False),
+            ('mResumedActivity: ActivityRecord{ xyz.depollsoft.monkeyssh/.MainActivity }\n'
+             'topResumedActivity=ActivityRecord{ another.app/.MainActivity }', False),
+            ('', False),
+        ]
+        for activity, valid in states:
+            with self.subTest(activity=activity):
+                with patch.object(capture, '_adb_path', return_value=Path('/test/adb')):
+                    with patch.object(capture.subprocess, 'check_output', return_value=activity):
+                        if valid:
+                            capture._assert_android_capture_foreground('emulator-5580')
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, 'dedicated emulator'):
+                                capture._assert_android_capture_foreground('emulator-5580')
+
     def test_gallery_uses_current_capture_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
