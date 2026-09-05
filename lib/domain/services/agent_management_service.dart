@@ -18,11 +18,11 @@ import 'windows_remote_powershell.dart';
 const _posixVersionRunner = r'''
 __fl_agent_version() {
   if command -v timeout >/dev/null 2>&1; then
-    timeout 2 "$@"
+    timeout 5 "$@"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout 2 "$@"
+    gtimeout 5 "$@"
   elif command -v perl >/dev/null 2>&1; then
-    perl -e '$t=shift; alarm $t; exec @ARGV' 2 "$@"
+    perl -e '$t=shift; alarm $t; exec @ARGV' 5 "$@"
   else
     return 124
   fi
@@ -300,6 +300,40 @@ int compareAgentVersions(String left, String right) {
   return a.pre!.compareTo(b.pre!);
 }
 
+// Repair the package behind the detected launcher, not a different npm prefix.
+// Bun and npm installations can coexist, with Bun's broken shim first on PATH.
+const _openCodeRepairScript = '''
+const fs = require('fs');
+const path = require('path');
+const cp = require('child_process');
+const launcher = fs.realpathSync(process.argv[1]);
+let dir = path.dirname(launcher);
+let root;
+while (true) {
+  const candidates = [dir];
+  if (process.platform === 'win32') candidates.push(path.join(dir, 'node_modules', 'opencode-ai'));
+  for (const candidate of candidates) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(candidate, 'package.json'), 'utf8'));
+      if (pkg.name === 'opencode-ai' && fs.existsSync(path.join(candidate, 'postinstall.mjs'))) {
+        root = candidate;
+        break;
+      }
+    } catch {}
+  }
+  if (root || path.dirname(dir) === dir) break;
+  dir = path.dirname(dir);
+}
+if (!root) {
+  console.error('Cannot locate the OpenCode package behind the detected launcher. Reinstall it with its original package manager.');
+  process.exit(1);
+}
+const result = cp.spawnSync(process.execPath, [path.join(root, 'postinstall.mjs')], {
+  cwd: root, stdio: 'inherit', windowsHide: true,
+});
+process.exit(result.status === null ? 1 : result.status);
+''';
+
 /// Builds the remote install or update command for [definition].
 String? buildAgentInstallCommand(
   AgentRuntimeDefinition definition, {
@@ -309,6 +343,17 @@ String? buildAgentInstallCommand(
   String? detectionSource,
   String? executablePath,
 }) {
+  if (repair && definition.id == 'cli:opencode' && executablePath != null) {
+    if (windows) {
+      return buildWindowsPowerShellCommand(
+        '$powerShellProfilePathPreamble& node -e '
+        '${powerShellSingleQuote(_openCodeRepairScript)} '
+        '${powerShellSingleQuote(executablePath)}; exit \u0024LASTEXITCODE',
+      );
+    }
+    return '${_profilePrefix}node -e ${_shellQuote(_openCodeRepairScript)} '
+        '${_shellQuote(executablePath)}';
+  }
   if (update && executablePath != null && definition.supportsSelfUpdate) {
     if (windows) {
       final executable = powerShellSingleQuote(executablePath);
@@ -450,7 +495,7 @@ class AgentManagementService {
           windows: session.remoteIsWindows,
         ),
         priority: priority,
-        timeout: const Duration(seconds: 5),
+        timeout: const Duration(seconds: 8),
       );
     } on Object catch (error) {
       final failed = [
@@ -482,6 +527,7 @@ class AgentManagementService {
           ),
           priority: priority,
           timeout: const Duration(seconds: 10),
+          keepPartialOutputOnTimeout: true,
         );
         metadata = parseAgentMetadataProbeOutput(metadataOutput.output);
       } on Object {
@@ -545,7 +591,7 @@ class AgentManagementService {
         session,
         buildAgentProbeCommand(definition, windows: session.remoteIsWindows),
         priority: priority,
-        timeout: const Duration(seconds: 5),
+        timeout: const Duration(seconds: 8),
       );
       final snapshot = AgentProbeSnapshot(
         executablePath: _markerValue(probeOutput.output, _pathMarker),
@@ -557,17 +603,22 @@ class AgentManagementService {
       );
       AgentMetadataSnapshot? metadata;
       if (snapshot.executablePath != null) {
-        final metadataOutput = await _run(
-          session,
-          buildAgentMetadataProbeCommand([
-            definition,
-          ], windows: session.remoteIsWindows),
-          priority: priority,
-          timeout: const Duration(seconds: 10),
-        );
-        metadata = parseAgentMetadataProbeOutput(
-          metadataOutput.output,
-        )[definition.id];
+        try {
+          final metadataOutput = await _run(
+            session,
+            buildAgentMetadataProbeCommand([
+              definition,
+            ], windows: session.remoteIsWindows),
+            priority: priority,
+            timeout: const Duration(seconds: 10),
+            keepPartialOutputOnTimeout: true,
+          );
+          metadata = parseAgentMetadataProbeOutput(
+            metadataOutput.output,
+          )[definition.id];
+        } on Object {
+          // Registry failures must not erase a working executable's version.
+        }
       }
       return _resolveRuntimeInfo(
         session,
@@ -706,9 +757,38 @@ class AgentManagementService {
         'registry': definition.registry?.name ?? 'none',
       },
     );
-    late final AgentRuntimeActionResult result;
+    late AgentRuntimeActionResult result;
     try {
       result = await _run(session, command, onOutput: onOutput, timeout: null);
+      if (result.succeeded && definition.kind == AgentRuntimeKind.cli) {
+        final verified = await inspect(session, definition);
+        final healthy =
+            (verified.status == AgentRuntimeStatus.installed ||
+                verified.status == AgentRuntimeStatus.updateAvailable) &&
+            verified.installedVersion != null;
+        DiagnosticsLogService.instance.info(
+          'agent.management',
+          'action_verification',
+          fields: {
+            'connectionId': session.connectionId,
+            'agentId': definition.id,
+            'status': verified.status.name,
+            'hasVersion': verified.installedVersion != null,
+            'success': healthy,
+          },
+        );
+        if (!healthy) {
+          result = AgentRuntimeActionResult(
+            succeeded: false,
+            exitCode: result.exitCode,
+            output:
+                '${result.output}\nThe command finished, but '
+                '${definition.label} could not be verified. '
+                '${verified.message ?? 'Re-check the detected installation before launching it.'}',
+          );
+        }
+      }
+
       DiagnosticsLogService.instance.info(
         'agent.management',
         'action_complete',
@@ -808,6 +888,7 @@ class AgentManagementService {
     String command, {
     ValueChanged<String>? onOutput,
     Duration? timeout = const Duration(seconds: 15),
+    bool keepPartialOutputOnTimeout = false,
     SshExecPriority priority = SshExecPriority.normal,
   }) => session.runQueuedExec(() async {
     final exec = await session.execute(command);
@@ -830,7 +911,11 @@ class AgentManagementService {
       if (timeout == null) {
         await completion;
       } else {
-        await completion.timeout(timeout);
+        try {
+          await completion.timeout(timeout);
+        } on TimeoutException {
+          if (!keepPartialOutputOnTimeout) rethrow;
+        }
       }
       final exitCode = exec.exitCode;
       return AgentRuntimeActionResult(
@@ -1172,7 +1257,8 @@ String buildAgentProbeCommand(
       ),
     );
   }
-  return '$_profilePrefix${_buildPosixProbeBody(definition)}';
+  return '${_profilePrefix}sh -c '
+      '${_shellQuote('$_posixVersionRunner${_buildPosixProbeBody(definition)}')}';
 }
 
 String _buildWindowsProbeBody(AgentRuntimeDefinition definition) {

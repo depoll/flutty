@@ -49,6 +49,7 @@ import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/controllers/system_keyboard_visibility_controller.dart';
+import 'package:monkeyssh/presentation/screens/agent_management_screen.dart';
 import 'package:monkeyssh/presentation/screens/port_forward_browser_screen.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/acp_native_badge.dart';
@@ -2231,6 +2232,23 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Agent Management'), findsOneWidget);
+      final screen = tester.widget<AgentManagementScreen>(
+        find.byType(AgentManagementScreen),
+      );
+      screen.onRuntimesRefreshed!([updates.first]);
+      await tester.pumpAndSettle();
+      expect(find.text('1 update waiting: Claude Code'), findsOneWidget);
+      expect(
+        find.text('5 updates waiting: Claude Code, Copilot CLI, and 3 more'),
+        findsNothing,
+      );
+      screen.onRuntimesRefreshed!([]);
+      await tester.pumpAndSettle();
+      expect(find.byType(MaterialBanner), findsNothing);
+      // A later refresh cannot resurrect an already dismissed session notice.
+      screen.onRuntimesRefreshed!(updates);
+      await tester.pumpAndSettle();
+      expect(find.byType(MaterialBanner), findsNothing);
       verify(
         () => tmuxService.invalidateInstalledAgentTools(session.connectionId),
       ).called(1);
@@ -2271,6 +2289,7 @@ void main() {
       when(
         () => management.checkForUpdates(session),
       ).thenAnswer((_) async => updates);
+      when(() => management.refreshAll(session)).thenAnswer((_) async => []);
       for (final update in updates) {
         when(
           () => management.installOrUpdate(
@@ -2295,20 +2314,9 @@ void main() {
       await tester.pump(const Duration(seconds: 10));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Update now'));
-      for (var attempt = 0; attempt < 20; attempt++) {
-        await tester.pump(const Duration(milliseconds: 50));
-        if (find.text('2 agents updated').evaluate().isNotEmpty) break;
-      }
-
-      expect(
-        find.text('2 agents updated'),
-        findsOneWidget,
-        reason: tester
-            .widgetList<Text>(find.byType(Text))
-            .map((text) => text.data)
-            .whereType<String>()
-            .join(' | '),
-      );
+      await tester.pumpAndSettle();
+      expect(find.byType(MaterialBanner), findsNothing);
+      verify(() => management.refreshAll(session)).called(1);
       for (final update in updates) {
         verify(
           () => management.installOrUpdate(
@@ -2323,6 +2331,93 @@ void main() {
         () => tmuxService.invalidateInstalledAgentTools(session.connectionId),
       ).called(1);
     });
+
+    for (final hideProgress in [false, true]) {
+      testWidgets(
+        'update notice tracks progress and remaining updates, hide=$hideProgress',
+        (tester) async {
+          session = SshSession(
+            connectionId: session.connectionId,
+            hostId: session.hostId,
+            client: sshClient,
+            config: session.config,
+          );
+          final management = _MockAgentManagementService();
+          final tmuxService = _MockTmuxService();
+          when(
+            () => tmuxService.invalidateInstalledAgentTools(any()),
+          ).thenReturn(null);
+          when(
+            () => tmuxService.prefetchInstalledAgentTools(any()),
+          ).thenAnswer((_) async {});
+          final updates = [
+            for (final definition in agentCliRuntimeDefinitions.take(2))
+              AgentRuntimeInfo(
+                definition: definition,
+                status: AgentRuntimeStatus.updateAvailable,
+                installedVersion: '1.0.0',
+                latestVersion: '1.1.0',
+                managedByPackageManager: true,
+              ),
+          ];
+          final completions = [
+            Completer<AgentRuntimeActionResult>(),
+            Completer<AgentRuntimeActionResult>(),
+          ];
+          when(
+            () => management.checkForUpdates(session),
+          ).thenAnswer((_) async => updates);
+          when(
+            () => management.refreshAll(session),
+          ).thenAnswer((_) async => [updates.last]);
+          for (var i = 0; i < updates.length; i++) {
+            final completion = completions[i];
+            when(
+              () => management.installOrUpdate(
+                session,
+                updates[i].definition,
+                update: true,
+                current: updates[i],
+              ),
+            ).thenAnswer((_) => completion.future);
+          }
+          await pumpScreen(
+            tester,
+            agentManagementService: management,
+            tmuxService: tmuxService,
+          );
+          await tester.pump(const Duration(seconds: 10));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Update now'));
+          await tester.pump();
+          expect(find.text('Updating 1 of 2: Claude Code'), findsOneWidget);
+          completions[0].complete(
+            const AgentRuntimeActionResult(succeeded: true, output: ''),
+          );
+          await tester.pump();
+          expect(find.text('Updating 2 of 2: Copilot CLI'), findsOneWidget);
+          if (hideProgress) {
+            await tester.pump(const Duration(milliseconds: 300));
+            await tester.tap(find.text('Hide'));
+            await tester.pump(const Duration(seconds: 1));
+          }
+          completions[1].complete(
+            const AgentRuntimeActionResult(succeeded: false, output: ''),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            find.text('1 update waiting: Copilot CLI'),
+            hideProgress ? findsNothing : findsOneWidget,
+          );
+          expect(find.textContaining('Updating '), findsNothing);
+          // Leaving the terminal must not leave its banner on the next screen.
+          await tester.pumpWidget(const MaterialApp(home: Scaffold()));
+          await tester.pumpAndSettle();
+          expect(find.byType(MaterialBanner), findsNothing);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
 
     testWidgets('resuming a live terminal does not show update prompts', (
       tester,

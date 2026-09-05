@@ -16,6 +16,7 @@ class AgentManagementScreen extends ConsumerStatefulWidget {
     required this.session,
     this.service,
     this.onProvidersRefreshed,
+    this.onRuntimesRefreshed,
     super.key,
   });
 
@@ -27,6 +28,9 @@ class AgentManagementScreen extends ConsumerStatefulWidget {
 
   /// Called after remote probes invalidate and refresh provider discovery.
   final VoidCallback? onProvidersRefreshed;
+
+  /// Publishes the latest runtime state for an existing update notice.
+  final ValueChanged<List<AgentRuntimeInfo>>? onRuntimesRefreshed;
 
   @override
   ConsumerState<AgentManagementScreen> createState() =>
@@ -67,6 +71,7 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
       final runtimes = await _service.refreshAll(widget.session);
       if (!mounted) return;
       setState(() => _runtimes = runtimes);
+      widget.onRuntimesRefreshed?.call(runtimes);
       widget.onProvidersRefreshed?.call();
     } on Object catch (error) {
       if (!mounted) return;
@@ -114,7 +119,10 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
       } on Object {
         failures.add(runtime.definition.label);
       } finally {
-        if (mounted) setState(() => _runningActions.remove(id));
+        if (mounted) {
+          setState(() => _runningActions.remove(id));
+          await _refresh();
+        }
       }
     }
     if (!mounted) return;
@@ -197,6 +205,8 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
       );
       if (index >= 0) _runtimes[index] = updated;
     });
+    widget.onRuntimesRefreshed?.call(_runtimes);
+    widget.onProvidersRefreshed?.call();
   }
 
   Future<void> _showActionResult(

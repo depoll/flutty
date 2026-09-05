@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -575,14 +576,193 @@ void main() {
       },
     );
 
+    test(
+      'repairs the detected Bun package without touching another npm copy',
+      () async {
+        final root = await Directory.systemTemp.createTemp('agent-repair-');
+        addTearDown(() => root.delete(recursive: true));
+        final bin = Directory('${root.path}/.bun/bin')
+          ..createSync(recursive: true);
+        final package = Directory(
+          '${root.path}/.bun/install/global/node_modules/opencode-ai',
+        )..createSync(recursive: true);
+        final packageBin = Directory('${package.path}/bin')..createSync();
+        final executable = File('${packageBin.path}/opencode.exe');
+        const broken =
+            '#!/bin/sh\necho "postinstall script was not run due to --ignore-scripts" >&2\nexit 1\n';
+        File(
+          '${package.path}/package.json',
+        ).writeAsStringSync('{"name":"opencode-ai"}');
+        File('${package.path}/postinstall.mjs').writeAsStringSync(
+          "import fs from 'node:fs';\n"
+          'fs.writeFileSync("bin/opencode.exe", ${jsonEncode('#!/bin/sh\necho 1.2.3\n')});\n'
+          'fs.chmodSync("bin/opencode.exe", 0o755);\n',
+        );
+        final launcher = Link('${bin.path}/opencode')
+          ..createSync(executable.path);
+        final node = await Process.run('which', ['node']);
+        Link('${bin.path}/node').createSync((node.stdout as String).trim());
+        final definition = agentCliRuntimeDefinitions.firstWhere(
+          (d) => d.id == 'cli:opencode',
+        );
+        final command = buildAgentInstallCommand(
+          definition,
+          windows: false,
+          update: false,
+          repair: true,
+          executablePath: launcher.path,
+        )!;
+        final script = File('${root.path}/repair.sh')
+          ..writeAsStringSync(command);
+        final probe = File('${root.path}/probe.sh')
+          ..writeAsStringSync(
+            buildAgentProbeCommand(definition, windows: false),
+          );
+        for (final shell in [
+          'bash',
+          if (File('/bin/zsh').existsSync()) '/bin/zsh',
+        ]) {
+          executable.writeAsStringSync(broken);
+          await Process.run('chmod', ['+x', executable.path]);
+          final environment = {
+            'HOME': root.path,
+            'PATH': '/usr/bin:/bin',
+            'TMPDIR': root.path,
+          };
+          final before = await Process.run(shell, [
+            probe.path,
+          ], environment: environment);
+          expect(before.stdout, contains('__monkeyssh_agent_repair__'));
+          final result = await Process.run(shell, [
+            script.path,
+          ], environment: environment);
+          expect(result.exitCode, 0, reason: '${result.stderr}');
+          final after = await Process.run(shell, [
+            probe.path,
+          ], environment: environment);
+          expect(
+            after.stdout,
+            contains('__monkeyssh_agent_version__=1.2.3'),
+            reason: shell,
+          );
+          expect(after.stdout, isNot(contains('__monkeyssh_agent_repair__')));
+        }
+        // Refuse an unrelated package rather than reporting a repair elsewhere.
+        File(
+          '${package.path}/package.json',
+        ).writeAsStringSync('{"name":"other"}');
+        final refused = await Process.run(
+          'bash',
+          [script.path],
+          environment: {'HOME': root.path},
+        );
+        expect(refused.exitCode, isNot(0));
+      },
+    );
+
+    test('zero exit does not mean a broken CLI was repaired', () async {
+      final client = _MockSshClient();
+      final discovery = _MockDiscovery();
+      final session = _remoteSession(client);
+      final definition = agentCliRuntimeDefinitions.firstWhere(
+        (d) => d.id == 'cli:opencode',
+      );
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+      var count = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        count++;
+        return _execOutput(
+          count == 2
+              ? '__monkeyssh_agent_path__=/home/dev/.bun/bin/opencode\n__monkeyssh_agent_repair__\n'
+              : '',
+        );
+      });
+      when(() => discovery.invalidateSession(session)).thenReturn(null);
+      final result = await AgentManagementService(discovery).installOrUpdate(
+        session,
+        definition,
+        update: false,
+        current: AgentRuntimeInfo(
+          definition: definition,
+          status: AgentRuntimeStatus.needsRepair,
+          executablePath: '/home/dev/.bun/bin/opencode',
+        ),
+      );
+      expect(result.succeeded, isFalse);
+      expect(result.output, contains('could not be verified'));
+    });
+
+    test(
+      'keeps completed metadata when a later registry lookup times out',
+      () async {
+        final client = _MockSshClient();
+        final session = _remoteSession(client);
+        final done = Completer<void>();
+        when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+        var count = 0;
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          if (++count == 1) {
+            return _execOutput(
+              '__monkeyssh_agent_runtime__=cli:claude\n'
+              '__monkeyssh_agent_path__=/bin/claude\n'
+              '__monkeyssh_agent_runtime_end__\n',
+            );
+          }
+          final exec = _execOutput(
+            '__monkeyssh_agent_runtime__=cli:claude\n'
+            '__monkeyssh_agent_installed__=2.0.0\n'
+            '__monkeyssh_agent_runtime_end__\n',
+          );
+          when(() => exec.done).thenAnswer((_) => done.future);
+          when(exec.close).thenAnswer((_) {
+            if (!done.isCompleted) done.complete();
+          });
+          return exec;
+        });
+        final runtimes = await AgentManagementService(
+          _MockDiscovery(),
+        ).refreshAll(session);
+        expect(runtimes.first.installedVersion, '2.0.0');
+        expect(runtimes.first.status, AgentRuntimeStatus.installed);
+      },
+    );
+
+    test('registry failure does not hide the installed version', () async {
+      final client = _MockSshClient();
+      final session = _remoteSession(client);
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+      var count = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        if (++count == 2) throw StateError('registry unavailable');
+        return _execOutput(
+          '__monkeyssh_agent_path__=/bin/claude\n__monkeyssh_agent_version__=2.0.0\n',
+        );
+      });
+      final info = await AgentManagementService(
+        _MockDiscovery(),
+      ).inspect(session, agentCliRuntimeDefinitions.first);
+      expect(info.status, AgentRuntimeStatus.installed);
+      expect(info.installedVersion, '2.0.0');
+    });
+
     test('streams install output and invalidates provider discovery', () async {
       final client = _MockSshClient();
       final discovery = _MockDiscovery();
       final session = _remoteSession(client);
       when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => _execOutput('installed 1 package'));
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+        (_) async => _execOutput(
+          'installed 1 package\n'
+          '__monkeyssh_agent_path__=/bin/claude\n'
+          '__monkeyssh_agent_version__=2.0.0\n',
+        ),
+      );
       when(() => discovery.invalidateSession(session)).thenReturn(null);
       final streamed = StringBuffer();
 
@@ -752,7 +932,7 @@ void main() {
         );
         expect(
           stopwatch.elapsed,
-          lessThan(const Duration(seconds: 6)),
+          lessThan(const Duration(seconds: 8)),
           reason: shell,
         );
         expect(
@@ -809,10 +989,13 @@ void main() {
         windows: false,
       );
       expect(command, contains('~/.zprofile'));
-      expect(command, contains("'claude' 'claude-code'"));
+      expect(
+        command.replaceAll(r"'\''", "'"),
+        contains("'claude' 'claude-code'"),
+      );
       expect(command, contains('command -v'));
       expect(command, contains('__monkeyssh_agent_version__='));
-      expect(command, contains("'--version'"));
+      expect(command.replaceAll(r"'\''", "'"), contains("'--version'"));
     });
 
     test('uses Get-Command and one-line markers on Windows', () {
