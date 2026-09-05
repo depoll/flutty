@@ -78,6 +78,15 @@ void main() {
       );
     });
 
+    test('does not probe for the unsupported Gemini CLI', () {
+      // Gemini CLI support was removed; the probe loop must not keep
+      // querying its binary so a stale install is never reported.
+      final command = buildAgentToolDetectionCommand();
+      expect(command, isNot(contains('gemini')));
+      final script = buildWindowsAgentToolDetectionScript();
+      expect(script, isNot(contains('gemini')));
+    });
+
     test('tolerates missing binaries without failing the outer shell', () {
       final command = buildAgentToolDetectionCommand();
       // 2>/dev/null suppresses noisy "not found" messages from rc files
@@ -120,13 +129,13 @@ void main() {
           'C:/Users/demo/AppData/Roaming/npm/copilot.cmd\n'
           r'C:\tools\codex.exe'
           '\n'
-          r'\\server\share\gemini.bat'
+          r'\\server\share\opencode.bat'
           '\n';
       expect(parseInstalledAgentTools(output), {
         AgentLaunchTool.claudeCode,
         AgentLaunchTool.copilotCli,
         AgentLaunchTool.codex,
-        AgentLaunchTool.geminiCli,
+        AgentLaunchTool.openCode,
       });
     });
 
@@ -142,8 +151,17 @@ void main() {
     });
 
     test('ignores unknown binaries', () {
-      const output = '/usr/bin/cat\n/usr/bin/grep\n/opt/bin/gemini\n';
-      expect(parseInstalledAgentTools(output), {AgentLaunchTool.geminiCli});
+      const output = '/usr/bin/cat\n/usr/bin/grep\n/opt/bin/opencode\n';
+      expect(parseInstalledAgentTools(output), {AgentLaunchTool.openCode});
+    });
+
+    test('ignores an installed Gemini CLI now that it is unsupported', () {
+      const output =
+          '/opt/homebrew/bin/gemini\n'
+          r'C:\Users\demo\AppData\Roaming\npm\gemini.cmd'
+          '\n'
+          '/usr/local/bin/claude\n';
+      expect(parseInstalledAgentTools(output), {AgentLaunchTool.claudeCode});
     });
 
     test('handles all supported CLIs', () {
@@ -151,7 +169,6 @@ void main() {
           '/b/claude\n'
           '/b/copilot\n'
           '/b/codex\n'
-          '/b/gemini\n'
           '/b/opencode\n'
           '/b/antigravity\n'
           '/b/cursor-agent\n'
@@ -188,6 +205,12 @@ void main() {
       expect(agentToolForBinaryName('vim'), isNull);
       expect(agentToolForBinaryName(''), isNull);
     });
+
+    test('returns null for the unsupported Gemini CLI', () {
+      expect(agentToolForBinaryName('gemini'), isNull);
+      expect(agentToolForBinaryName('gemini.cmd'), isNull);
+      expect(agentToolForBinaryName('gemini-cli'), isNull);
+    });
   });
 
   group('Copilot active session metadata', () {
@@ -202,7 +225,6 @@ void main() {
         expect(command, contains('flutty_lsof_session_match'));
         expect(command, contains('flutty_claude_session_title'));
         expect(command, contains('flutty_codex_session_title'));
-        expect(command, contains('flutty_gemini_session_title'));
         expect(command, contains('flutty_process_cwd'));
         expect(command, contains('flutty_process_start_epoch'));
         expect(command, contains('flutty_file_is_newer_than_process'));
@@ -211,7 +233,6 @@ void main() {
         expect(command, contains('flutty_codex_index_resume_match'));
         expect(command, contains('flutty_codex_logs_resume_match'));
         expect(command, contains('flutty_codex_recent_session_match'));
-        expect(command, contains('flutty_gemini_recent_session_match'));
         expect(command, contains('flutty_antigravity_recent_session_match'));
         expect(command, contains('flutty_antigravity_session_title'));
         expect(command, contains('customTitle'));
@@ -219,9 +240,8 @@ void main() {
         expect(command, contains('summary'));
         expect(command, contains('.claude'));
         expect(command, contains('.codex'));
-        expect(command, contains('.gemini'));
+        expect(command, contains('.gemini/antigravity-cli'));
         expect(command, contains(r'find "$home/.codex/sessions"'));
-        expect(command, contains(r'find "$home/.gemini/tmp"'));
         expect(command, contains('session_index.jsonl'));
         expect(command, contains('logs_2.sqlite'));
         expect(command, contains(r'sqlite3 "$logs_db"'));
@@ -232,7 +252,6 @@ void main() {
           command,
           contains(r'process_start_epoch=$(flutty_process_start_epoch "$pid")'),
         );
-        expect(command, contains('sessionId'));
         expect(command, contains(r'inuse."$pid".lock'));
         expect(command, contains('workspace.yaml'));
         expect(command, contains(r'[ -d "$state_dir" ]'));
@@ -358,6 +377,26 @@ void main() {
       skip: Platform.isWindows ? 'Requires a POSIX shell.' : false,
     );
 
+    test('command no longer identifies or resolves Gemini CLI sessions', () {
+      final command = buildAgentActiveSessionMetadataCommand(const {42});
+
+      // Process classification must not map a gemini process to a tool.
+      expect(command, isNot(contains('tool = "gemini"')));
+      // Gemini chat storage must not be scanned or matched via lsof.
+      expect(command, isNot(contains('flutty_gemini_session_title')));
+      expect(command, isNot(contains('flutty_gemini_session_id')));
+      expect(command, isNot(contains('flutty_gemini_file_line')));
+      expect(command, isNot(contains('flutty_gemini_recent_session_match')));
+      expect(command, isNot(contains('.gemini/tmp')));
+      expect(command, isNot(contains('gemini:*/')));
+      // Gemini must not participate in the --resume fallback either.
+      expect(command, isNot(contains('claude|copilot|gemini)')));
+      expect(command, contains('claude|copilot) session_id='));
+      // Antigravity still stores its state under ~/.gemini.
+      expect(command, contains('.gemini/antigravity-cli/history.jsonl'));
+      expect(command, contains('.gemini/antigravity-cli/annotations'));
+    });
+
     test('command prefers Antigravity history title before annotation title', () {
       final command = buildAgentActiveSessionMetadataCommand(const {42});
 
@@ -394,16 +433,14 @@ void main() {
       final metadata = parseAgentActiveSessionMetadataOutput(
         'claude${sep}claude-1${sep}501${sep}42${sep}medium$sep\n'
         'codex${sep}codex-1${sep}502${sep}43${sep}medium$sep\n'
-        'gemini${sep}gemini-1${sep}503${sep}44${sep}medium$sep\n'
         'opencode${sep}opencode-1${sep}504${sep}45${sep}medium$sep\n'
         'antigravity${sep}antigravity-1${sep}506${sep}47${sep}medium${sep}Anti Title\n'
         'copilot${sep}copilot-1${sep}505${sep}46${sep}medium${sep}Title\n',
-        const {42, 43, 44, 45, 46, 47},
+        const {42, 43, 45, 46, 47},
       );
 
       expect(metadata[42]?.tool, AgentLaunchTool.claudeCode);
       expect(metadata[43]?.tool, AgentLaunchTool.codex);
-      expect(metadata[44]?.tool, AgentLaunchTool.geminiCli);
       expect(metadata[45]?.tool, AgentLaunchTool.openCode);
       expect(metadata[46]?.tool, AgentLaunchTool.copilotCli);
       expect(metadata[46]?.title, 'Title');
@@ -411,6 +448,19 @@ void main() {
       expect(metadata[47]?.tool, AgentLaunchTool.antigravity);
       expect(metadata[47]?.sessionId, 'antigravity-1');
       expect(metadata[47]?.title, 'Anti Title');
+    });
+
+    test('drops Gemini rows from live metadata output', () {
+      const sep = tmuxWindowFieldSeparator;
+
+      final metadata = parseAgentActiveSessionMetadataOutput(
+        'gemini${sep}gemini-1${sep}503${sep}44${sep}medium${sep}Gemini title\n'
+        'claude${sep}claude-1${sep}501${sep}42${sep}medium$sep\n',
+        const {42, 44},
+      );
+
+      expect(metadata.keys, [42]);
+      expect(metadata[42]?.tool, AgentLaunchTool.claudeCode);
     });
 
     test(

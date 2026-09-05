@@ -49,6 +49,28 @@ void main() {
     expect(await service.getPresetForHost(7), isNull);
   });
 
+  test(
+    'ignores a retired Gemini preset without rewriting saved settings',
+    () async {
+      final settings = SettingsService(database);
+      const legacy = {'tool': 'geminiCli', 'workingDirectory': '~/legacy'};
+      await settings.setJson(SettingKeys.agentLaunchPresets, {'9': legacy});
+      expect(await service.getPresetForHost(9), isNull);
+      await service.setPresetForHost(
+        10,
+        const AgentLaunchPreset(tool: AgentLaunchTool.antigravity),
+      );
+      expect(
+        (await settings.getJson(SettingKeys.agentLaunchPresets))!['9'],
+        legacy,
+      );
+      expect(
+        (await service.getPresetForHost(10))!.tool,
+        AgentLaunchTool.antigravity,
+      );
+    },
+  );
+
   test('returns null for stored presets with unknown tool names', () async {
     final settings = SettingsService(database);
     await settings.setJson(SettingKeys.agentLaunchPresets, {

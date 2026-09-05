@@ -292,19 +292,32 @@ void main() {
   });
 
   group('parseMonkeyMuxWindowSnapshotForTesting', () {
-    test('maps helper agentTool metadata onto tmux windows', () {
+    test('ignores legacy Gemini agent metadata from older helpers', () {
       final window = parseMonkeyMuxWindowSnapshotForTesting({
         'id': '@1',
         'index': 0,
         'name': 'Gemini CLI',
         'active': true,
         'currentCommand': 'node',
-        'panePid': 1234,
         'agentTool': 'gemini',
+      });
+      expect(window, isNotNull);
+      expect(window!.foregroundAgentTool, isNull);
+    });
+
+    test('maps helper agentTool metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Cursor Agent',
+        'active': true,
+        'currentCommand': 'node',
+        'panePid': 1234,
+        'agentTool': 'cursor-agent',
       });
 
       expect(window, isNotNull);
-      expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
+      expect(window!.foregroundAgentTool, AgentLaunchTool.cursorAgent);
     });
 
     test('maps server-owned native ACP identity onto real windows', () {
@@ -513,9 +526,9 @@ void main() {
         ),
         TmuxWindow(
           index: 1,
-          name: 'Gemini',
+          name: 'Cursor',
           isActive: false,
-          currentCommand: 'gemini',
+          currentCommand: 'cursor-agent',
           panePid: 43,
         ),
       ];
@@ -523,7 +536,7 @@ void main() {
       final enriched = applyMonkeyMuxAgentMetadataForTesting(
         windows,
         'codex${sep}codex-session${sep}501${sep}42${sep}medium$sep\n'
-        'gemini${sep}gemini-session${sep}502${sep}43${sep}medium${sep}Gemini title\n',
+        'cursor-agent${sep}cursor-agent-session${sep}502${sep}43${sep}medium${sep}Cursor title\n',
       );
 
       expect(enriched[0].activeAgentSessionId, 'codex-session');
@@ -531,8 +544,8 @@ void main() {
         enriched[0].activeAgentSessionConfidence,
         AgentSessionConfidence.medium,
       );
-      expect(enriched[1].activeAgentSessionId, 'gemini-session');
-      expect(enriched[1].agentSessionTitle, 'Gemini title');
+      expect(enriched[1].activeAgentSessionId, 'cursor-agent-session');
+      expect(enriched[1].agentSessionTitle, 'Cursor title');
       expect(
         enriched[1].activeAgentSessionConfidence,
         AgentSessionConfidence.medium,

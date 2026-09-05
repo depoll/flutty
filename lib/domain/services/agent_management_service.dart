@@ -77,16 +77,6 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     selfUpdateArguments: ['update'],
   ),
   AgentRuntimeDefinition(
-    id: 'cli:gemini',
-    label: 'Gemini CLI',
-    kind: AgentRuntimeKind.cli,
-    tool: AgentLaunchTool.geminiCli,
-    executableNames: ['gemini', 'gemini-cli'],
-    registry: AgentPackageRegistry.npm,
-    packageName: '@google/gemini-cli',
-    selfUpdateArguments: ['update'],
-  ),
-  AgentRuntimeDefinition(
     id: 'cli:opencode',
     label: 'OpenCode',
     kind: AgentRuntimeKind.cli,

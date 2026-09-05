@@ -2573,23 +2573,6 @@ ${_ansi('48;5;23;38;5;231', ' Patch ready ')}
 ${_ansi('38;5;245', '› Ask Codex for a follow-up')}
 ''';
   }
-  if (tool == AgentLaunchTool.geminiCli ||
-      window.name.toLowerCase().contains('gemini')) {
-    return '''
-${_ansi('38;5;99;1', '✦ Gemini CLI (demo)')} ${_ansi('38;5;245', '2.5 Pro')}
-
-${_ansi('38;5;99', 'loaded context')}
- ${_ansi('38;5;45', '✓')} PRODUCT.md
- ${_ansi('38;5;45', '✓')} DESIGN.md
- ${_ansi('38;5;45', '✓')} lib/domain/services
-
-${_ansi('38;5;45;1', 'Gemini summary')}
-  Local MonkeyMux state is active.
-  Window switches repaint the terminal.
-
-${_ansi('48;5;57;38;5;231', '  Enter prompt  ')} ${_ansi('38;5;245', 'ctrl+j newline')}
-''';
-  }
   if (tool == AgentLaunchTool.antigravity ||
       window.name.toLowerCase().contains('antigravity')) {
     return '''

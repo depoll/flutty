@@ -265,7 +265,7 @@ def _validate_ocr_content(paths: list[Path]) -> None:
         _require_ocr_markers(
             paths_description,
             ' '.join(text for _, text in grouped_texts),
-            ['copilot', 'gemini', 'claude', 'codex', 'opencode', 'antigravity'],
+            ['copilot', 'claude', 'codex', 'opencode', 'antigravity'],
         )
 
 

@@ -202,6 +202,26 @@ void main() {
       expect(find.text('Detecting installed CLIs…'), findsNothing);
     });
 
+    testWidgets('omits Gemini while keeping Antigravity selectable', (
+      tester,
+    ) async {
+      AgentLaunchTool? selected;
+      await tester.pumpWidget(
+        _wrap(
+          TmuxToolPickerSheet(
+            installedToolsFuture: Future.value(AgentLaunchTool.values.toSet()),
+            onToolSelected: (tool) => selected = tool,
+            onEmptyWindow: () {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Gemini CLI'), findsNothing);
+      await tester.ensureVisible(find.text('Antigravity'));
+      await tester.tap(find.text('Antigravity'));
+      expect(selected, AgentLaunchTool.antigravity);
+    });
+
     testWidgets('renders only detected tools', (tester) async {
       await tester.pumpWidget(
         _wrap(

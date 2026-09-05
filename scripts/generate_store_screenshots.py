@@ -573,14 +573,6 @@ class StoreDemoEnvironment:
             """,
         )
         self._write_pane_script(
-            'gemini',
-            """
-            clear
-            printf 'Gemini agent session ready\\n'
-            printf 'Open inside MonkeySSH when you need a second reviewer.\\n'
-            """,
-        )
-        self._write_pane_script(
             'codex',
             """
             clear
@@ -650,11 +642,10 @@ class StoreDemoEnvironment:
                     '',
                     'Windows:',
                     '1. copilot - GitHub Copilot CLI',
-                    '2. gemini  - Gemini CLI workspace',
-                    '3. claude  - Claude Code workspace',
-                    '4. codex   - Codex CLI workspace',
-                    '5. opencode - OpenCode CLI workspace',
-                    '6. antigravity - Antigravity CLI workspace',
+                    '2. claude  - Claude Code workspace',
+                    '3. codex   - Codex CLI workspace',
+                    '4. opencode - OpenCode CLI workspace',
+                    '5. antigravity - Antigravity CLI workspace',
                     '',
                 ]
             )
@@ -920,7 +911,7 @@ class StoreDemoEnvironment:
         )
         self._monkeymux_control = self._open_monkeymux_control()
         self._refresh_monkeymux_windows()
-        for window in ('gemini', 'claude', 'codex', 'opencode', 'antigravity'):
+        for window in ('claude', 'codex', 'opencode', 'antigravity'):
             response = self._monkeymux_request(
                 {
                     'type': 'create_window',

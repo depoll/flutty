@@ -84,10 +84,10 @@ void main() {
   });
 
   test('registers every supported CLI and built-in ACP adapter', () {
-    expect(agentCliRuntimeDefinitions, hasLength(11));
+    expect(agentCliRuntimeDefinitions, hasLength(10));
     expect(agentAcpRuntimeDefinitions, hasLength(10));
     expect(agentStandaloneAcpRuntimeDefinitions, hasLength(4));
-    expect(agentRuntimeDefinitions, hasLength(15));
+    expect(agentRuntimeDefinitions, hasLength(14));
     expect(
       agentStandaloneAcpRuntimeDefinitions.map((definition) => definition.id),
       <String>['acp:claude', 'acp:codex', 'acp:antigravity', 'acp:pi'],
@@ -102,7 +102,6 @@ void main() {
         'Claude Code',
         'Copilot CLI',
         'Codex',
-        'Gemini CLI',
         'OpenCode',
         'Antigravity',
         'Cursor Agent',
@@ -229,7 +228,6 @@ void main() {
         ('cli:claude', '/opt/tools/claude', ['update']),
         ('cli:copilot', '/opt/tools/copilot', ['update']),
         ('cli:codex', '/opt/tools/codex', ['update']),
-        ('cli:gemini', '/opt/tools/gemini', ['update']),
         ('cli:opencode', '/opt/tools/opencode', ['upgrade']),
         ('cli:antigravity', '/opt/tools/agy', ['update']),
         ('cli:cursor', '/opt/tools/cursor-agent', ['update']),

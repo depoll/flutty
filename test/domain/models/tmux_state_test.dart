@@ -277,10 +277,10 @@ void main() {
       expect(window.secondaryTitle, isNull);
     });
 
-    test('uses agent context when Gemini only reports ready status', () {
+    test('uses agent context when an agent only reports ready status', () {
       const window = TmuxWindow(
         index: 1,
-        name: 'gemini',
+        name: 'cursor-agent',
         isActive: false,
         currentCommand: 'node',
         currentPath: '/Users/depoll/Code/flutty',
@@ -288,8 +288,8 @@ void main() {
             '◇  Ready (flutty)                                                               ',
       );
 
-      expect(window.displayTitle, 'Gemini CLI · flutty');
-      expect(window.handleTitle, 'Gemini CLI · flutty');
+      expect(window.displayTitle, 'Cursor Agent · flutty');
+      expect(window.handleTitle, 'Cursor Agent · flutty');
       expect(window.secondaryTitle, isNull);
     });
 
@@ -305,14 +305,14 @@ void main() {
         'mac-mini.home',
         '1712930000',
         'zsh',
-        'gemini',
+        'cursor-agent',
       ].join(sep);
       final window = TmuxWindow.fromTmuxFormat(line);
 
-      expect(window.agentTool, AgentLaunchTool.geminiCli);
-      expect(window.foregroundAgentTool, AgentLaunchTool.geminiCli);
-      expect(window.displayTitle, 'Gemini CLI · flutty');
-      expect(window.handleTitle, 'Gemini CLI · flutty');
+      expect(window.agentTool, AgentLaunchTool.cursorAgent);
+      expect(window.foregroundAgentTool, AgentLaunchTool.cursorAgent);
+      expect(window.displayTitle, 'Cursor Agent · flutty');
+      expect(window.handleTitle, 'Cursor Agent · flutty');
     });
 
     test('shows resumed agent session metadata from pane start commands', () {

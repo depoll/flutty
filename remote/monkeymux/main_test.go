@@ -10266,9 +10266,9 @@ func TestWindowSnapshotIncludesLaunchAgentTool(t *testing.T) {
 	window := &muxWindow{
 		id:                "@1",
 		index:             0,
-		name:              "Gemini CLI",
+		name:              "Cursor Agent",
 		command:           "zsh",
-		agentTool:         "gemini",
+		agentTool:         "cursor-agent",
 		foregroundPid:     23456,
 		foregroundCommand: "zsh",
 		lastActivity:      time.Now(),
@@ -10278,8 +10278,8 @@ func TestWindowSnapshotIncludesLaunchAgentTool(t *testing.T) {
 
 	snapshot := server.snapshot(window)
 
-	if snapshot.AgentTool != "gemini" {
-		t.Fatalf("agent tool = %q, want gemini", snapshot.AgentTool)
+	if snapshot.AgentTool != "cursor-agent" {
+		t.Fatalf("agent tool = %q, want cursor-agent", snapshot.AgentTool)
 	}
 }
 
@@ -10291,12 +10291,6 @@ func TestCommandNameFromProcessFieldsDetectsNodeBackedAgents(t *testing.T) {
 		want    string
 	}{
 		{
-			name:    "gemini node shim",
-			command: "node",
-			args:    "node /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js",
-			want:    "gemini",
-		},
-		{
 			name:    "codex node shim",
 			command: "node",
 			args:    "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js",
@@ -10306,6 +10300,13 @@ func TestCommandNameFromProcessFieldsDetectsNodeBackedAgents(t *testing.T) {
 			name:    "plain node script",
 			command: "node",
 			args:    "node /tmp/build.js",
+			want:    "node",
+		},
+		{
+			// Gemini CLI support was dropped; its node shim is a plain script.
+			name:    "unsupported gemini node shim",
+			command: "node",
+			args:    "node /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js",
 			want:    "node",
 		},
 	}
@@ -10325,10 +10326,12 @@ func TestFirstShellWordSkipsWrappers(t *testing.T) {
 		want    string
 	}{
 		{command: "cd ~/repo && codex resume abc", want: "codex"},
-		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: "gemini"},
-		{command: `GEMINI_API_KEY=redacted gemini --yolo`, want: "gemini"},
+		{command: "cd ~/repo && npx @anthropic-ai/claude-code --resume abc", want: "claude"},
+		{command: `CODEX_HOME=/tmp/codex codex --yolo`, want: "codex"},
 		{command: `OPENCODE_PERMISSION='{"*":"allow"}' opencode`, want: "opencode"},
 		{command: "cd ~/repo && cursor-agent --resume abc", want: "cursor-agent"},
+		// Gemini CLI support was dropped: the npx wrapper is just npx now.
+		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: "npx"},
 	}
 
 	for _, tt := range tests {
@@ -10343,8 +10346,11 @@ func TestAgentToolFromCommandTextDetectsWrappedNodeAgents(t *testing.T) {
 		command string
 		want    string
 	}{
-		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: "gemini"},
+		{command: "cd ~/repo && npx @anthropic-ai/claude-code --resume abc", want: "claude"},
 		{command: "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js", want: "codex"},
+		// Gemini CLI support was dropped, so its wrapper is not an agent.
+		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: ""},
+		{command: "node /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js", want: ""},
 	}
 
 	for _, tt := range tests {
@@ -10363,7 +10369,8 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 		{tool: "claude", args: "claude --resume abc123", want: "abc123"},
 		{tool: "copilot", args: "copilot --resume 'session one'", want: "session one"},
 		{tool: "codex", args: "codex resume run-42", want: "run-42"},
-		{tool: "gemini", args: `gemini --resume="gemini session"`, want: "gemini session"},
+		// Gemini CLI support was dropped, so no resume pattern is registered.
+		{tool: "gemini", args: `gemini --resume="gemini session"`, want: ""},
 		{tool: "opencode", args: "opencode --session opencode-9", want: "opencode-9"},
 		{tool: "antigravity", args: `agy --conversation "antigravity session"`, want: "antigravity session"},
 		{tool: "cursor-agent", args: "cursor-agent --resume chat-7", want: "chat-7"},
@@ -11143,140 +11150,6 @@ func TestDiscoverClaudeSessionIDsDoesNotResumeSessionFromBeforeFreshProcess(t *t
 	}
 }
 
-func TestDiscoverGeminiSessionIDsUsesOpenChatFile(t *testing.T) {
-	originalOpenFiles := processOpenFilePathsForMetadata
-	originalWorkingDirectory := processWorkingDirectoryForMetadata
-	t.Cleanup(func() {
-		processOpenFilePathsForMetadata = originalOpenFiles
-		processWorkingDirectoryForMetadata = originalWorkingDirectory
-	})
-
-	sessionID := "bc1ced23-25ac-4971-8f30-8af35ce2f2f1"
-	chatsDir := filepath.Join(t.TempDir(), ".gemini", "tmp", "proj", "chats")
-	if err := os.MkdirAll(chatsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	chatPath := filepath.Join(chatsDir, "session-abc.json")
-	if err := os.WriteFile(
-		chatPath,
-		[]byte(`{"sessionId":"`+sessionID+`","kind":"main","directories":["/work/project"]}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	processOpenFilePathsForMetadata = func(pid int) []string {
-		if pid != 200 {
-			return nil
-		}
-		return []string{chatPath}
-	}
-	processWorkingDirectoryForMetadata = func(pid int) string {
-		if pid == 200 {
-			return "/work/project"
-		}
-		return ""
-	}
-	processes := map[int]processInfo{
-		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
-		200: {pid: 200, ppid: 100, comm: "gemini", args: "gemini"},
-	}
-
-	sessions := discoverGeminiSessionIDs(processes, map[int]struct{}{100: {}})
-
-	if got := sessions[100]; got != sessionID {
-		t.Fatalf("gemini session id = %q, want %q", got, sessionID)
-	}
-}
-
-func TestDiscoverGeminiSessionIDsFallsBackToRecentChatForCwd(t *testing.T) {
-	originalOpenFiles := processOpenFilePathsForMetadata
-	originalWorkingDirectory := processWorkingDirectoryForMetadata
-	originalProcessStart := processStartedAtForMetadata
-	t.Cleanup(func() {
-		processOpenFilePathsForMetadata = originalOpenFiles
-		processWorkingDirectoryForMetadata = originalWorkingDirectory
-		processStartedAtForMetadata = originalProcessStart
-	})
-
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	sessionID := "bc1ced23-25ac-4971-8f30-8af35ce2f2f1"
-	chatsDir := filepath.Join(home, ".gemini", "tmp", "proj", "chats")
-	if err := os.MkdirAll(chatsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(chatsDir, "session-abc.json"),
-		[]byte(`{"sessionId":"`+sessionID+`","kind":"main","directories":["/work/project"],"messages":[`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	processOpenFilePathsForMetadata = func(int) []string { return nil }
-	processWorkingDirectoryForMetadata = func(pid int) string {
-		if pid == 200 {
-			return "/work/project"
-		}
-		return ""
-	}
-	processStartedAtForMetadata = func(pid int) time.Time {
-		if pid == 200 {
-			return time.Now().Add(-time.Minute)
-		}
-		return time.Time{}
-	}
-	processes := map[int]processInfo{
-		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
-		200: {pid: 200, ppid: 100, comm: "gemini", args: "gemini"},
-	}
-
-	sessions := discoverGeminiSessionIDs(processes, map[int]struct{}{100: {}})
-
-	if got := sessions[100]; got != sessionID {
-		t.Fatalf("gemini session id = %q, want %q", got, sessionID)
-	}
-}
-
-func TestDiscoverGeminiSessionIDsSkipsSubagentChats(t *testing.T) {
-	originalOpenFiles := processOpenFilePathsForMetadata
-	originalWorkingDirectory := processWorkingDirectoryForMetadata
-	t.Cleanup(func() {
-		processOpenFilePathsForMetadata = originalOpenFiles
-		processWorkingDirectoryForMetadata = originalWorkingDirectory
-	})
-
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	chatsDir := filepath.Join(home, ".gemini", "tmp", "proj", "chats")
-	if err := os.MkdirAll(chatsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(chatsDir, "session-sub.json"),
-		[]byte(`{"sessionId":"sub-1","kind":"subagent","directories":["/work/project"]}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	processOpenFilePathsForMetadata = func(int) []string { return nil }
-	processWorkingDirectoryForMetadata = func(pid int) string {
-		if pid == 200 {
-			return "/work/project"
-		}
-		return ""
-	}
-	processes := map[int]processInfo{
-		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
-		200: {pid: 200, ppid: 100, comm: "gemini", args: "gemini"},
-	}
-
-	sessions := discoverGeminiSessionIDs(processes, map[int]struct{}{100: {}})
-
-	if len(sessions) != 0 {
-		t.Fatalf("gemini sessions = %#v, want none for subagent chats", sessions)
-	}
-}
-
 func TestAgentStoreFallbacksRejectSessionsFromBeforeProcess(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -11320,41 +11193,6 @@ func TestAgentStoreFallbacksRejectSessionsFromBeforeProcess(t *testing.T) {
 	}
 	if got := codexRecentSessionIDForWorkingDirectory(project, processStarted); got != "" {
 		t.Fatalf("fresh Codex process inherited stale session %q", got)
-	}
-
-	geminiDir := filepath.Join(home, ".gemini", "tmp", "project", "chats")
-	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	geminiPath := filepath.Join(geminiDir, "session-stale.json")
-	geminiData := fmt.Sprintf(`{"sessionId":"stale-gemini","kind":"main","directories":[%q]}`, project)
-	if err := os.WriteFile(geminiPath, []byte(geminiData), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(geminiPath, stale, stale); err != nil {
-		t.Fatal(err)
-	}
-	if got := geminiRecentSessionIDForWorkingDirectory(project, processStarted); got != "" {
-		t.Fatalf("fresh Gemini process inherited stale session %q", got)
-	}
-}
-
-func TestParseGeminiSessionMetadataFromTruncatedPrefix(t *testing.T) {
-	metadata := parseGeminiSessionMetadata(`{
-  "sessionId": "session-large",
-  "kind": "main",
-  "directories": ["/Users/depoll/Code/flutty"],
-  "messages": [
-`)
-	if metadata.sessionID != "session-large" {
-		t.Fatalf("sessionID = %q, want session-large", metadata.sessionID)
-	}
-	if metadata.isSubagent {
-		t.Fatal("isSubagent = true, want false")
-	}
-	if len(metadata.directories) != 1 ||
-		metadata.directories[0] != "/Users/depoll/Code/flutty" {
-		t.Fatalf("directories = %#v, want [/Users/depoll/Code/flutty]", metadata.directories)
 	}
 }
 
@@ -11633,7 +11471,6 @@ func TestEnrichRestoreClearsUnvalidatedCarriedAgentSessions(t *testing.T) {
 		{Name: "Codex", AgentTool: "codex", AgentSessionID: "stale-codex"},
 		{Name: "OpenCode", AgentTool: "opencode", AgentSessionID: "stale-opencode"},
 		{Name: "Claude Code", AgentTool: "claude", AgentSessionID: "stale-claude"},
-		{Name: "Gemini", AgentTool: "gemini", AgentSessionID: "stale-gemini"},
 		{Name: "Antigravity", AgentTool: "antigravity", AgentSessionID: "stale-antigravity"},
 		{Name: "Cursor Agent", AgentTool: "cursor-agent", AgentSessionID: "stale-cursor"},
 		{Name: "Pi", AgentTool: "pi", AgentSessionID: "stale-pi"},
@@ -12046,15 +11883,17 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			agentTool: "claude",
 		},
 		{
-			name: "gemini resume",
+			// Gemini CLI support was dropped: a Gemini window restores as a
+			// plain shell instead of relaunching or resuming the agent.
+			name: "unsupported gemini window",
 			state: restoreWindowState{
 				Name:           "Gemini CLI",
 				CurrentCommand: "gemini",
-				AgentTool:      "gemini",
+				PaneTitle:      "Gemini CLI",
 				AgentSessionID: "bc1ced23-25ac-4971-8f30-8af35ce2f2f1",
 			},
-			want:      `gemini --yolo --resume 'bc1ced23-25ac-4971-8f30-8af35ce2f2f1' || gemini --yolo`,
-			agentTool: "gemini",
+			want:      "",
+			agentTool: "",
 		},
 		{
 			name: "antigravity resume",
@@ -12478,11 +12317,12 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 		{name: "copilot", command: "copilot", wantFocusTransition: true, wantBackground: true},
 		{name: "cursor-agent", command: "cursor-agent", wantFocusTransition: true, wantBackground: true},
 		{name: "claude", command: "claude", wantFocusTransition: true, wantBackground: true},
-		{name: "gemini", command: "gemini", wantFocusTransition: true, wantBackground: true},
 		{name: "opencode", command: "opencode", wantFocusTransition: true, wantBackground: true},
 		{name: "antigravity", command: "antigravity", wantFocusTransition: true, wantBackground: true},
 		{name: "codex", command: "codex", wantFocusTransition: true, wantBackground: true},
 		{name: "unknown-tui", command: "unknown-tui", wantFocusTransition: true, wantBackground: false},
+		// Gemini CLI support was dropped, so it is treated like any other TUI.
+		{name: "unsupported gemini", command: "gemini", wantFocusTransition: true, wantBackground: false},
 		{name: "zsh", command: "zsh", wantFocusTransition: true, wantBackground: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -12597,7 +12437,6 @@ func TestThemeHintSendsModeReportWhenColorSchemeUpdatesMode(t *testing.T) {
 		{name: "copilot", command: "copilot", enableFocus: true, wantBackground: true, wantFocusTransition: true},
 		{name: "cursor-agent", command: "cursor-agent", enableFocus: true, wantBackground: true, wantFocusTransition: true},
 		{name: "claude", command: "claude", enableFocus: true, wantBackground: true, wantFocusTransition: true},
-		{name: "gemini", command: "gemini", enableFocus: true, wantBackground: true, wantFocusTransition: true},
 		{name: "opencode", command: "opencode", enableFocus: true, wantBackground: true, wantFocusTransition: true},
 		{name: "antigravity", command: "antigravity", enableFocus: true, wantBackground: true, wantFocusTransition: true},
 		{name: "codex-2031-focus", command: "codex", enableFocus: true, wantBackground: true, wantFocusTransition: true},

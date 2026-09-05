@@ -246,31 +246,6 @@ branch refs/heads/fix/session-resumption
     });
   });
 
-  group('resolveGeminiProjectWorkingDirectory', () {
-    test('maps project folder names back to the right worktree paths', () {
-      final relatedDirectories = buildRelatedWorkingDirectories(
-        '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
-        gitRoot: '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
-        gitWorktreeRoots: const [
-          '/Users/depoll/Code/flutty',
-          '/Users/depoll/Code/flutty.worktrees/feature-other',
-        ],
-      );
-
-      expect(
-        resolveGeminiProjectWorkingDirectory('flutty', relatedDirectories),
-        '/Users/depoll/Code/flutty',
-      );
-      expect(
-        resolveGeminiProjectWorkingDirectory(
-          'feature-other',
-          relatedDirectories,
-        ),
-        '/Users/depoll/Code/flutty.worktrees/feature-other',
-      );
-    });
-  });
-
   group('resolveAgentSessionScopeWorkingDirectory', () {
     test('keeps the active project path when it already looks valid', () {
       expect(
@@ -421,43 +396,12 @@ branch refs/heads/fix/session-resumption
     });
   });
 
-  group('buildGeminiProjectDirectoryNames', () {
-    test('keeps only worktree roots and ignores nested subdirectories', () {
-      expect(
-        buildGeminiProjectDirectoryNames(const [
-          '/Users/depoll/Code/flutty.worktrees/feature-other/lib',
-          '/Users/depoll/Code/flutty/lib',
-          '/Users/depoll/Code/flutty.worktrees/feature-other',
-          '/Users/depoll/Code/flutty',
-        ]),
-        ['feature-other', 'flutty'],
-      );
-    });
-  });
-
-  group('buildScopedGeminiProjectDirectoryNames', () {
-    test('keeps the active worktree name plus the canonical checkout name', () {
-      expect(
-        buildScopedGeminiProjectDirectoryNames(
-          '/Users/depoll/Code/flutty.worktrees/session-resumption-all-providers',
-          const [
-            '/Users/depoll/Code/flutty',
-            '/Users/depoll/Code/flutty.worktrees/session-resumption-all-providers',
-            '/Users/depoll/Code/flutty.worktrees/feature-other',
-          ],
-        ),
-        ['session-resumption-all-providers', 'flutty'],
-      );
-    });
-  });
-
   group('scopeDiscoveredSessionsToWorkingDirectory', () {
     test('keeps Git worktree sessions for every discovered agent', () {
       const tools = <String>[
         'Claude Code',
         'Copilot CLI',
         'Codex',
-        'Gemini CLI',
         'Antigravity',
         'Cursor Agent',
         'OpenCode',
@@ -548,13 +492,13 @@ branch refs/heads/fix/session-resumption
     test('sorts by recency before applying the cap', () {
       final limitedSessions = sortAndLimitDiscoveredSessions([
         ToolSessionInfo(
-          toolName: 'Gemini CLI',
+          toolName: 'Claude Code',
           sessionId: 'older',
           summary: 'older',
           lastActive: DateTime(2026, 4, 12),
         ),
         ToolSessionInfo(
-          toolName: 'Gemini CLI',
+          toolName: 'Claude Code',
           sessionId: 'newer',
           summary: 'newer',
           lastActive: DateTime(2026, 4, 13),
@@ -572,14 +516,13 @@ branch refs/heads/fix/session-resumption
           'Claude Code': const <ToolSessionInfo>[],
           'Codex': const <ToolSessionInfo>[],
         },
-        const ['Gemini CLI'],
+        const ['Antigravity'],
       );
 
       expect(ordered, [
         'Claude Code',
         'Copilot CLI',
         'Codex',
-        'Gemini CLI',
         'OpenCode',
         'Antigravity',
         'Cursor Agent',
@@ -600,7 +543,6 @@ branch refs/heads/fix/session-resumption
         'Codex',
         'Claude Code',
         'Copilot CLI',
-        'Gemini CLI',
         'OpenCode',
         'Antigravity',
         'Cursor Agent',
@@ -659,7 +601,7 @@ branch refs/heads/fix/session-resumption
       'drops directory fallback when the active working directory already matches',
       () {
         const info = ToolSessionInfo(
-          toolName: 'Gemini CLI',
+          toolName: 'Claude Code',
           sessionId: 'abcdef',
           workingDirectory: '/Users/depoll/Code/flutty',
         );
@@ -829,12 +771,12 @@ cwd: /tmp/demo
     test('formats a readable failure message', () {
       final result = DiscoveredSessionsResult(
         sessions: const [],
-        failedTools: const {'Codex', 'Gemini CLI'},
+        failedTools: const {'Codex', 'Antigravity'},
       );
 
       expect(
         result.failureMessage,
-        'Could not load Codex and Gemini CLI sessions.',
+        'Could not load Antigravity and Codex sessions.',
       );
     });
 
@@ -1334,77 +1276,6 @@ cwd: /tmp/demo
       final metadata = parseCursorSessionMetadata('not json');
       expect(metadata.parsedAny, isFalse);
       expect(metadata.hasConversation, isTrue);
-    });
-  });
-
-  group('parseGeminiSessionMetadata', () {
-    test('uses stored summary and lastUpdated for main sessions', () {
-      final metadata = parseGeminiSessionMetadata('''
-{
-  "sessionId": "bc1ced23-25ac-4971-8f30-8af35ce2f2f1",
-  "summary": "List available commands.",
-  "lastUpdated": "2026-04-12T21:29:53.292Z",
-  "kind": "main",
-  "messages": []
-}
-''', fallbackWorkingDirectory: '/Users/depoll/Code/flutty');
-
-      expect(metadata.parsedAny, isTrue);
-      expect(metadata.isSubagent, isFalse);
-      expect(metadata.sessionId, 'bc1ced23-25ac-4971-8f30-8af35ce2f2f1');
-      expect(metadata.summary, 'List available commands.');
-      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
-      expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:29:53.292Z'));
-    });
-
-    test('falls back to the first user message and filters subagents', () {
-      final metadata = parseGeminiSessionMetadata(
-        '''
-{
-  "sessionId": "session-1",
-  "kind": "subagent",
-  "messages": [
-    {
-      "type": "info",
-      "content": "Gemini update available"
-    },
-    {
-      "type": "user",
-      "content": [{"text": "can i rename this session?"}]
-    }
-  ]
-}
-''',
-        activeWorkingDirectory: '/Users/depoll/Code/flutty',
-        fallbackWorkingDirectory: '/Users/depoll/Code/flutty',
-      );
-
-      expect(metadata.parsedAny, isTrue);
-      expect(metadata.isSubagent, isTrue);
-      expect(metadata.summary, 'can i rename this session?');
-      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
-    });
-
-    test('extracts metadata from a truncated large JSON prefix', () {
-      final metadata = parseGeminiSessionMetadata('''
-{
-  "sessionId": "session-large",
-  "summary": "Investigate MonkeyMux agent detection hardening",
-  "lastUpdated": "2026-04-12T21:29:53.292Z",
-  "kind": "main",
-  "directories": ["/Users/depoll/Code/flutty"],
-  "messages": [
-''', activeWorkingDirectory: '/Users/depoll/Code/flutty');
-
-      expect(metadata.parsedAny, isTrue);
-      expect(metadata.isSubagent, isFalse);
-      expect(metadata.sessionId, 'session-large');
-      expect(
-        metadata.summary,
-        'Investigate MonkeyMux agent detection hardening',
-      );
-      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
-      expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:29:53.292Z'));
     });
   });
 
@@ -2116,25 +1987,27 @@ branch refs/heads/main
 
     test('parses large remote snapshots off the UI isolate', () async {
       final client = _MockSshClient();
-      const geminiPath =
-          '/Users/demo/.gemini/tmp/flutty/chats/session-large.json';
-      final largeSessionJson = jsonEncode({
-        'sessionId': 'session-large',
-        'summary': 'Large Gemini session',
-        'lastUpdated': '2026-04-12T21:29:53.292Z',
-        'kind': 'main',
-        'messages': const <Object?>[],
+      const metaPath =
+          '/Users/demo/.cursor/chats/workspace/'
+          '0d8d2b7c-6f1e-4d0f-9c1a-2b3c4d5e6f70/meta.json';
+      final largeMetaJson = jsonEncode({
+        'schemaVersion': 1,
+        'createdAtMs': 1783404550969,
+        'hasConversation': true,
+        'title': 'Large Cursor session',
+        'updatedAtMs': 1783405351095,
+        'cwd': '/Users/depoll/Code/flutty',
         'padding': List<String>.filled(9000, 'x').join(),
       });
 
       when(() => client.execute(any())).thenAnswer((invocation) async {
         final command = invocation.positionalArguments.first as String;
-        if (command.contains('find ~/.gemini/tmp')) {
-          return _buildExecSession(stdout: geminiPath);
+        if (command.contains('find ~/.cursor/chats')) {
+          return _buildExecSession(stdout: metaPath);
         }
-        if (command.contains(geminiPath)) {
+        if (command.contains(metaPath)) {
           return _buildExecSession(
-            stdout: _remoteSnapshotLine(geminiPath, largeSessionJson),
+            stdout: _remoteSnapshotLine(metaPath, largeMetaJson),
           );
         }
         return _buildExecSession();
@@ -2145,35 +2018,37 @@ branch refs/heads/main
 
       final result = await discovery.discoverSessions(
         session,
-        toolName: 'Gemini CLI',
+        toolName: 'Cursor Agent',
       );
 
       expect(result.sessions.map((session) => session.sessionId), [
-        'session-large',
+        '0d8d2b7c-6f1e-4d0f-9c1a-2b3c4d5e6f70',
       ]);
-      expect(result.sessions.single.summary, 'Large Gemini session');
+      expect(result.sessions.single.summary, 'Large Cursor session');
     });
 
     test('returns when SSH exec stdout stays open after done marker', () async {
       final client = _MockSshClient();
-      const geminiPath =
-          '/Users/demo/.gemini/tmp/flutty/chats/session-open.json';
-      final sessionJson = jsonEncode({
-        'sessionId': 'session-open',
-        'summary': 'Open stream Gemini session',
-        'lastUpdated': '2026-04-12T21:29:53.292Z',
-        'kind': 'main',
-        'messages': const <Object?>[],
+      const metaPath =
+          '/Users/demo/.cursor/chats/workspace/'
+          '1e9f3c8d-7a2b-4e1c-8d2b-3c4d5e6f7a81/meta.json';
+      final metaJson = jsonEncode({
+        'schemaVersion': 1,
+        'createdAtMs': 1783404550969,
+        'hasConversation': true,
+        'title': 'Open stream Cursor session',
+        'updatedAtMs': 1783405351095,
+        'cwd': '/Users/depoll/Code/flutty',
       });
 
       when(() => client.execute(any())).thenAnswer((invocation) async {
         final command = invocation.positionalArguments.first as String;
-        if (command.contains('find ~/.gemini/tmp')) {
-          return _buildOpenMarkerExecSession(stdout: geminiPath);
+        if (command.contains('find ~/.cursor/chats')) {
+          return _buildOpenMarkerExecSession(stdout: metaPath);
         }
-        if (command.contains(geminiPath)) {
+        if (command.contains(metaPath)) {
           return _buildOpenMarkerExecSession(
-            stdout: _remoteSnapshotLine(geminiPath, sessionJson),
+            stdout: _remoteSnapshotLine(metaPath, metaJson),
           );
         }
         return _buildOpenMarkerExecSession();
@@ -2183,12 +2058,101 @@ branch refs/heads/main
       final session = _buildDiscoverySession(client);
 
       final result = await discovery
-          .discoverSessions(session, toolName: 'Gemini CLI')
+          .discoverSessions(session, toolName: 'Cursor Agent')
           .timeout(const Duration(seconds: 2));
 
       expect(result.sessions.map((session) => session.sessionId), [
-        'session-open',
+        '1e9f3c8d-7a2b-4e1c-8d2b-3c4d5e6f7a81',
       ]);
+    });
+
+    test('global discovery never probes Gemini CLI storage', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      final result = await discovery.discoverSessions(session);
+
+      expect(commands, isNotEmpty);
+      expect(commands, isNot(anyElement(contains('.gemini/tmp'))));
+      expect(commands, isNot(anyElement(contains('session-*.json'))));
+      expect(commands, isNot(anyElement(contains('gemini --list-sessions'))));
+      expect(result.attemptedTools, isNot(contains('Gemini CLI')));
+      expect(result.failedTools, isNot(contains('Gemini CLI')));
+      expect(
+        result.sessions.map((info) => info.toolName),
+        isNot(contains('Gemini CLI')),
+      );
+      // Antigravity storage under ~/.gemini/antigravity-cli must stay probed.
+      expect(commands, anyElement(contains('antigravity-cli')));
+      expect(result.attemptedTools, contains('Antigravity'));
+    });
+
+    test('scoped discovery never probes Gemini CLI storage', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('worktree list --porcelain')) {
+          return _buildExecSession(
+            stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      final result = await discovery.discoverSessions(
+        session,
+        workingDirectory: '/Users/depoll/Code/flutty',
+      );
+
+      expect(commands, isNotEmpty);
+      expect(commands, isNot(anyElement(contains('.gemini/tmp'))));
+      expect(commands, isNot(anyElement(contains('session-*.json'))));
+      expect(commands, isNot(anyElement(contains('/flutty/chats/'))));
+      expect(result.attemptedTools, isNot(contains('Gemini CLI')));
+      expect(result.failedTools, isNot(contains('Gemini CLI')));
+      expect(
+        result.sessions.map((info) => info.toolName),
+        isNot(contains('Gemini CLI')),
+      );
+      expect(commands, anyElement(contains('antigravity-cli')));
+      expect(result.attemptedTools, contains('Antigravity'));
+    });
+
+    test('requesting the Gemini CLI provider yields no sessions', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        return _buildExecSession();
+      });
+
+      final result = await AgentSessionDiscoveryService().discoverSessions(
+        _buildDiscoverySession(client),
+        toolName: 'Gemini CLI',
+      );
+
+      expect(result.sessions, isEmpty);
+      expect(result.failedTools, isEmpty);
+      expect(commands, isNot(anyElement(contains('.gemini'))));
     });
 
     test(
