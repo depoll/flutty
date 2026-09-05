@@ -108,6 +108,9 @@ jobs:
           .venv/bin/python -m pip install --quiet --upgrade pip
           .venv/bin/python -m pip install --quiet Pillow
 
+      - name: Test store screenshot contracts
+        run: .venv/bin/python -m unittest discover -s test/scripts -p 'store_screenshots_test.py'
+
       - name: Validate store screenshots
         if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios' || steps.inputs.outputs.platform == 'android'
         run: |

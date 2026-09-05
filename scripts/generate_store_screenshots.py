@@ -28,7 +28,7 @@ import termios
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 ADB: Path | None = None
@@ -41,6 +41,7 @@ ANSI_ESCAPE_PATTERN = re.compile(
 KEY_BYTES = {
     'Enter': '\r',
     'Up': '\x1b[A',
+    'Down': '\x1b[B',
     'C-l': '\x0c',
 }
 CLEAR_SCREEN_SEQUENCES = (
@@ -253,6 +254,7 @@ def _run_flutter_capture(
                     target=target,
                     device_id=device_id,
                     paths=[ROOT / path for path in payload['paths']],
+                    scene=payload.get('scene'),
                 )
             if ERROR_MARKER in line:
                 failure = line.split(ERROR_MARKER, 1)[1].strip()
@@ -670,7 +672,7 @@ class StoreDemoEnvironment:
                     '',
                     '| Platform | Form factors | Scenes |',
                     '| --- | --- | --- |',
-                    '| App Store | iPhone 6.9, iPad 13 | Native Copilot, Copilot terminal, hosts, snippets, MonkeyMux selector with all supported agent windows, SFTP, Claude Code |',
+                    '| App Store | iPhone 6.9, iPad 13 | Copilot terminal, hosts, snippets, MonkeyMux selector, SFTP, Claude Code, native chat (Pro caption), Agent Management (Pro) |',
                     '| Google Play | Phone, 7-inch tablet, 10-inch tablet | Same scene order for production and private tracks |',
                     '',
                     'Validation checklist:',
@@ -1045,6 +1047,10 @@ class StoreDemoEnvironment:
             elif _visible_text_contains_marker(text, 'Detected a custom API key'):
                 self._monkeymux_send_keys('claude', 'Up', 'Enter')
             elif _visible_text_contains_marker(text, 'Yes, I trust this folder'):
+                # Newer Claude versions default to No, exit. Only trust the
+                # disposable workspace created and owned by this generator.
+                if re.search(r'❯\s*No,\s*exit', _strip_terminal_output(text)):
+                    self._monkeymux_send_keys('claude', 'Down')
                 self._monkeymux_send_keys('claude', 'Enter')
             elif _visible_text_contains_marker(text, 'Press Ente'):
                 self._monkeymux_send_keys('claude', 'Enter')
@@ -1960,11 +1966,60 @@ def _free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
+# Store-only captions sit outside the real app capture. Keep the free native
+# chat allowance explicit rather than implying all native chat requires Pro.
+PRO_SCENE_CAPTIONS = {
+    'native_copilot': (
+        'Native chats',
+        'Parallel chats & forks. One native chat is free.',
+    ),
+    'agent_management': (
+        'Agent Management',
+        'Check versions. Install, update & repair remote agents.',
+    ),
+}
+
+
+def _add_pro_caption(screenshot: Image.Image, scene: str) -> Image.Image:
+    title, subtitle = PRO_SCENE_CAPTIONS[scene]
+    width, height = screenshot.size
+    band_height = round(width * 0.16)
+    canvas = Image.new('RGB', screenshot.size, '#0D0D12')
+    app = ImageOps.contain(
+        screenshot, (width, height - band_height), Image.Resampling.LANCZOS,
+    )
+    canvas.paste(app, ((width - app.width) // 2, 0))
+    draw = ImageDraw.Draw(canvas)
+    margin = round(width * 0.035)
+    top = height - band_height
+    draw.line((margin, top, width - margin, top), fill='#2A2A3A', width=2)
+    title_font = ImageFont.load_default(size=round(width * 0.035))
+    subtitle_font = ImageFont.load_default(size=round(width * 0.023))
+    badge_font = ImageFont.load_default(size=round(width * 0.026))
+    badge_width, badge_height = round(width * 0.105), round(width * 0.05)
+    badge_x, badge_y = width - margin - badge_width, top + margin
+    draw.rounded_rectangle(
+        (badge_x, badge_y, badge_x + badge_width, badge_y + badge_height),
+        radius=round(width * 0.009), fill='#58A38C',
+    )
+    draw.text(
+        (badge_x + badge_width / 2, badge_y + badge_height / 2),
+        'PRO', font=badge_font, fill='#0D0D12', anchor='mm',
+    )
+    draw.text((margin, badge_y), title, font=title_font, fill='#F0F0F5')
+    draw.text(
+        (margin, top + round(width * 0.103)), subtitle,
+        font=subtitle_font, fill='#B8BDC8',
+    )
+    return canvas
+
+
 def _capture_native_screenshot(
     *,
     target: ScreenshotTarget,
     device_id: str,
     paths: list[Path],
+    scene: str | None = None,
 ) -> None:
     with tempfile.NamedTemporaryFile(suffix='.png') as tmp:
         tmp_path = Path(tmp.name)
@@ -1991,6 +2046,13 @@ def _capture_native_screenshot(
                     target.size,
                     method=Image.Resampling.LANCZOS,
                 )
+            if scene in PRO_SCENE_CAPTIONS:
+                raw_path = (
+                    ROOT / 'build/store-screenshots/raw' / target.name / f'{scene}.png'
+                )
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                screenshot.save(raw_path)
+                screenshot = _add_pro_caption(screenshot, scene)
             for path in paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 screenshot.save(path, optimize=True)
