@@ -711,6 +711,69 @@ void main() {
     expect(transport.didSkipHistoricalReplay(), isFalse);
   });
 
+  test(
+    'replacement transport queues input before its initial handshake',
+    () async {
+      final helloSent = Completer<void>();
+      late _TestChannel channel;
+      channel = _TestChannel(
+        onWrite: (value) {
+          final message = jsonDecode(value) as Map<String, dynamic>;
+          if (message['type'] == 'hello' && !helloSent.isCompleted) {
+            helloSent.complete();
+          }
+        },
+      );
+      final client = _MockSshClient();
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => channel.session);
+      final transport =
+          MonkeyMuxAcpBridgeService(
+            installer: _FakeInstaller(
+              const MonkeyMuxInstallation(
+                executablePath: '/helper',
+                platform: 'linux-amd64',
+                version: 'test',
+              ),
+            ),
+          ).connect(
+            sessionProvider: () async => _sshSession(client),
+            bridgeId: _bridgeId,
+            providerId: 'copilot',
+            lastAcknowledgedSequence: 23,
+          );
+      addTearDown(transport.close);
+
+      await helloSent.future;
+      await transport.write(
+        utf8.encode(
+          '${jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'})}\n',
+        ),
+      );
+      expect(
+        channel.writes.map(_decodeFrame),
+        isNot(contains(containsPair('type', 'input'))),
+      );
+
+      channel.addText(
+        _frame({
+          'version': 1,
+          'type': 'hello',
+          'bridgeId': _bridgeId,
+          'clientId': _otherBridgeId,
+          'canSend': true,
+          'bridge': _metadata(nextSequence: 23),
+        }),
+      );
+      await _waitUntil(
+        () => channel.writes
+            .map(_decodeFrame)
+            .any((message) => message['type'] == 'input'),
+      );
+    },
+  );
+
   test('safe short direct replay holds client input until high-water', () async {
     late _TestChannel channel;
     channel = _TestChannel(

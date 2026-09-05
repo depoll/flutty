@@ -538,6 +538,10 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   var _pendingOnlyHandshakeRequested = false;
   var _acceptsPendingFrames = false;
   var _directReplayInProgress = false;
+  // A replacement transport may queue its setup request before its first
+  // handshake. After any completed handshake, rejecting disconnected writes
+  // prevents an already-sent request from being duplicated on reconnect.
+  var _hasCompletedHandshake = false;
   var _connected = false;
   var _closed = false;
   var _terminalFailure = false;
@@ -581,7 +585,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
         'The ACP bridge transport is closed.',
       );
     }
-    if (!_connected && _freshBaselineEstablished) {
+    if (!_connected && _hasCompletedHandshake) {
       throw const MonkeyMuxAcpBridgeException(
         MonkeyMuxAcpBridgeErrorKind.sshChannel,
         'The ACP bridge is reconnecting; retry the request after reattach.',
@@ -981,6 +985,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
+    _hasCompletedHandshake = true;
     _emitState(
       MonkeyMuxAcpTransportStatus.connected,
       providerState: metadata.state,
