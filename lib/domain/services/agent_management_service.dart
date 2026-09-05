@@ -439,9 +439,14 @@ class AgentManagementService {
   final Map<int, Future<List<AgentRuntimeInfo>>> _inFlightUpdateChecks = {};
 
   /// Returns cached update information or probes the active host.
-  Future<List<AgentRuntimeInfo>> checkForUpdates(SshSession session) {
+  /// Periodic checks bypass the cache with [forceRefresh], but share in-flight work.
+  Future<List<AgentRuntimeInfo>> checkForUpdates(
+    SshSession session, {
+    bool forceRefresh = false,
+  }) {
     final cached = _runtimeCache[session.connectionId];
-    if (cached != null &&
+    if (!forceRefresh &&
+        cached != null &&
         DateTime.now().difference(cached.checkedAt) < _updateCheckTtl) {
       return Future.value(cached.runtimes);
     }

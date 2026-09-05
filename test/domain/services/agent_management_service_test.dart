@@ -431,6 +431,31 @@ void main() {
       expect(runtime.detectionSource, 'npx on demand');
     });
 
+    test(
+      'forced update checks bypass cache and share in-flight probes',
+      () async {
+        final client = _MockSshClient();
+        final session = _remoteSession(client);
+        when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+        var calls = 0;
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          calls++;
+          return _execOutput('');
+        });
+        final service = AgentManagementService(_MockDiscovery());
+        await service.checkForUpdates(session);
+        await service.checkForUpdates(session);
+        expect(calls, 1);
+        await Future.wait([
+          service.checkForUpdates(session, forceRefresh: true),
+          service.checkForUpdates(session, forceRefresh: true),
+        ]);
+        expect(calls, 2);
+      },
+    );
+
     test('automatic update checks include CLIs only', () async {
       final client = _MockSshClient();
       final discovery = _MockDiscovery();

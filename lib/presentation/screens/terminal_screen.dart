@@ -7738,6 +7738,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           forceShowSystemKeyboard: widget.initiallyShowKeyboard,
         );
         _maybePasteStoreDemoImage();
+        _scheduleAgentUpdateCheck(session, initialCheck: false);
 
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
@@ -15766,13 +15767,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _scheduleAgentUpdateCheck(SshSession session) {
+  void _scheduleAgentUpdateCheck(
+    SshSession session, {
+    bool initialCheck = true,
+  }) {
     _agentUpdateCheckTimer?.cancel();
-    _agentUpdateCheckTimer = Timer(const Duration(seconds: 10), () {
-      if (mounted && _connectionId == session.connectionId) {
-        unawaited(_checkAgentUpdateStatus(session));
-      }
-    });
+    _agentUpdateCheckTimer = Timer(
+      initialCheck ? const Duration(seconds: 10) : const Duration(minutes: 5),
+      () async {
+        if (!mounted || _connectionId != session.connectionId) return;
+        if (!_wasBackgrounded &&
+            (ModalRoute.of(context)?.isCurrent ?? false) &&
+            _sessionsNotifier?.getState(session.connectionId) ==
+                SshConnectionState.connected) {
+          await _checkAgentUpdateStatus(session, forceRefresh: !initialCheck);
+        }
+        // Schedule after completion so slow SSH/registry calls cannot overlap.
+        if (mounted && _connectionId == session.connectionId) {
+          _scheduleAgentUpdateCheck(session, initialCheck: false);
+        }
+      },
+    );
   }
 
   void _syncAgentUpdateStatus(
@@ -15784,23 +15799,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (mounted && _connectionId == session.connectionId) setState(() {});
   }
 
-  Future<void> _checkAgentUpdateStatus(SshSession session) async {
-    if (_agentUpdateRuntimes[session] != null ||
+  Future<void> _checkAgentUpdateStatus(
+    SshSession session, {
+    bool forceRefresh = false,
+  }) async {
+    if ((!forceRefresh && _agentUpdateRuntimes[session] != null) ||
         !ref.read(agentUpdateNotificationsNotifierProvider)) {
       return;
     }
-    final pending = <AgentRuntimeInfo>[];
-    _agentUpdateRuntimes[session] = pending;
+    final previous = _agentUpdateRuntimes[session];
     try {
-      final runtimes = await ref
-          .read(agentManagementServiceProvider)
-          .checkForUpdates(session);
+      final service = ref.read(agentManagementServiceProvider);
+      final runtimes = forceRefresh
+          ? await service.checkForUpdates(session, forceRefresh: true)
+          : await service.checkForUpdates(session);
+      // Keep the existing dot while checking, or if the remote probe failed.
       // A manager refresh is newer than this background check.
-      if (identical(_agentUpdateRuntimes[session], pending)) {
+      if (identical(_agentUpdateRuntimes[session], previous) &&
+          (runtimes.isEmpty ||
+              !runtimes.every(
+                (runtime) => runtime.status == AgentRuntimeStatus.failed,
+              ))) {
         _syncAgentUpdateStatus(session, runtimes);
       }
     } on Object {
-      // Background checks are best-effort; the manager can explicitly re-check.
+      // Retry on the next interval without discarding the last known status.
     }
   }
 

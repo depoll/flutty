@@ -2304,6 +2304,93 @@ void main() {
       },
     );
 
+    testWidgets(
+      'agent update dot polls without overlap and pauses when hidden',
+      (tester) async {
+        final management = _MockAgentManagementService();
+        final definition = agentCliRuntimeDefinitions.first;
+        final update = AgentRuntimeInfo(
+          definition: definition,
+          status: AgentRuntimeStatus.updateAvailable,
+          installedVersion: '1.0.0',
+          latestVersion: '1.1.0',
+        );
+        final first = Completer<List<AgentRuntimeInfo>>();
+        var calls = 0;
+        when(
+          () => management.checkForUpdates(session, forceRefresh: true),
+        ).thenAnswer((_) {
+          calls++;
+          if (calls == 1) return first.future;
+          if (calls == 2) return Future.error(StateError('offline'));
+          return Future.value(<AgentRuntimeInfo>[]);
+        });
+        bool dotVisible() => tester
+            .widget<Badge>(
+              find.byKey(const ValueKey('terminal-agent-updates-dot')),
+            )
+            .isLabelVisible;
+        await pumpScreen(tester, agentManagementService: management);
+        await tester.pump(const Duration(minutes: 5));
+        expect(calls, 1);
+        await tester.pump(const Duration(minutes: 5));
+        expect(calls, 1);
+        first.complete([update]);
+        await tester.pumpAndSettle();
+        expect(dotVisible(), isTrue);
+        await tester.pump(const Duration(minutes: 5));
+        await tester.pumpAndSettle();
+        expect(calls, 2);
+        expect(dotVisible(), isTrue);
+        final context = tester.element(find.byType(TerminalScreen));
+        unawaited(
+          Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(body: Text('Other screen')),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.pump(const Duration(minutes: 5));
+        expect(calls, 2);
+        Navigator.of(tester.element(find.text('Other screen'))).pop();
+        await tester.pumpAndSettle();
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump(const Duration(minutes: 5));
+        expect(calls, 2);
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pumpAndSettle();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        unawaited(
+          container
+              .read(agentUpdateNotificationsNotifierProvider.notifier)
+              .setEnabled(enabled: false),
+        );
+        await tester.pumpAndSettle();
+        await tester.pump(const Duration(minutes: 5));
+        expect(calls, 2);
+        unawaited(
+          container
+              .read(agentUpdateNotificationsNotifierProvider.notifier)
+              .setEnabled(enabled: true),
+        );
+        await tester.pumpAndSettle();
+        await tester.pump(const Duration(minutes: 5));
+        await tester.pumpAndSettle();
+        expect(calls, 3);
+        expect(dotVisible(), isFalse);
+        expect(find.byType(MaterialBanner), findsNothing);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(const Duration(minutes: 5));
+        expect(calls, 3);
+      },
+    );
+
     testWidgets('terminal overflow lists agent management', (tester) async {
       await pumpScreen(tester);
 
