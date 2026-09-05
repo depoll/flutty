@@ -594,7 +594,7 @@ class _UpdateBar extends StatelessWidget {
                     if (manualCount > 0) ...[
                       const SizedBox(height: 4),
                       Text(
-                        "$manualCount ${manualCount == 1 ? 'requires' : 'require'} a manual update on the host.",
+                        '$manualCount ${manualCount == 1 ? 'requires' : 'require'} a manual update on the host.',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: scheme.onSurfaceVariant,
                         ),
@@ -701,11 +701,12 @@ class _RuntimeSection extends StatelessWidget {
             ],
           ),
         ),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerLow,
+        Material(
+          color: scheme.surfaceContainerLow,
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: scheme.outlineVariant),
+            side: BorderSide(color: scheme.outlineVariant),
           ),
           child: Column(
             children: [

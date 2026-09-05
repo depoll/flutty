@@ -1,12 +1,16 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-
+import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/view_models/host_edit_view_model.dart';
 
 HostEditDraft _draft({
@@ -62,6 +66,90 @@ HostEditDraft _draft({
 
 void main() {
   group('HostEditViewModel', () {
+    test(
+      'unrelated host saves preserve ignored presets until explicit changes',
+      () async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(database.close);
+        final repository = HostRepository(
+          database,
+          SecretEncryptionService.forTesting(),
+        );
+        final id = await repository.insert(
+          HostsCompanion.insert(
+            label: 'Host',
+            hostname: 'example.com',
+            username: 'root',
+          ),
+        );
+        final settings = SettingsService(database);
+        const legacy = {'tool': 'geminiCli', 'workingDirectory': '~/legacy'};
+        await settings.setJson(SettingKeys.agentLaunchPresets, {'$id': legacy});
+        final container = ProviderContainer(
+          overrides: [
+            databaseProvider.overrideWithValue(database),
+            hostRepositoryProvider.overrideWithValue(repository),
+          ],
+        );
+        addTearDown(container.dispose);
+        final viewModel = container.read(
+          hostEditViewModelProvider(id).notifier,
+        );
+        final loaded = await viewModel.loadHost();
+        expect(loaded!.preset, isNull);
+        viewModel.markInitialDraft(_draft());
+        Future<void> save(HostEditDraft draft) async {
+          await viewModel.save(
+            HostEditSaveRequest(
+              draft: draft,
+              hasAutomationAccess: true,
+              hasAgentPresetAccess: true,
+            ),
+          );
+        }
+
+        await save(_draft(label: 'Renamed host'));
+        expect(
+          (await settings.getJson(SettingKeys.agentLaunchPresets))!['$id'],
+          legacy,
+        );
+        await save(
+          _draft(
+            label: 'Renamed host',
+            startupMode: HostStartupMode.customCommand,
+            autoConnectMode: AutoConnectCommandMode.custom,
+            autoConnectCommand: 'echo ready',
+          ),
+        );
+        expect(await settings.getJson(SettingKeys.agentLaunchPresets), isNull);
+        await settings.setJson(SettingKeys.agentLaunchPresets, {'$id': legacy});
+        await save(
+          _draft(
+            label: 'Renamed again',
+            startupMode: HostStartupMode.customCommand,
+            autoConnectMode: AutoConnectCommandMode.custom,
+            autoConnectCommand: 'echo ready',
+          ),
+        );
+        expect(
+          (await settings.getJson(SettingKeys.agentLaunchPresets))!['$id'],
+          legacy,
+        );
+        await save(
+          _draft(
+            label: 'Renamed again',
+            startupMode: HostStartupMode.agent,
+            autoConnectMode: AutoConnectCommandMode.custom,
+            agentTmuxSession: 'codex',
+          ),
+        );
+        expect(
+          (await settings.getJson(SettingKeys.agentLaunchPresets))!['$id'],
+          containsPair('tool', 'codex'),
+        );
+      },
+    );
+
     test('reports stable validation targets and messages', () {
       final container = ProviderContainer();
       addTearDown(container.dispose);

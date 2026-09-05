@@ -463,7 +463,7 @@ void main() {
   });
   for (final returnsFailure in [false, true]) {
     testWidgets(
-      'recheck ${returnsFailure ? "returned failure" : "exception"} shows an error dialog and restores the row',
+      'recheck ${returnsFailure ? 'returned failure' : 'exception'} shows an error dialog and restores the row',
       (tester) async {
         final acp = runtimes[2];
         final probe = Completer<AgentRuntimeInfo>();
@@ -765,6 +765,11 @@ void main() {
       TextOverflow.ellipsis,
     );
     expect(find.byType(SelectableText), findsNothing);
+    final material = tester
+        .element(find.byKey(const ValueKey('agent-details-cli:claude')))
+        .findAncestorWidgetOfExactType<Material>();
+    expect(material!.shape, isA<RoundedRectangleBorder>());
+    expect(material.clipBehavior, Clip.antiAlias);
 
     await tester.tap(find.byKey(const ValueKey('agent-details-cli:claude')));
     await tester.pumpAndSettle();
