@@ -461,83 +461,105 @@ void main() {
     ).called(1);
     verify(() => service.refreshAll(session)).called(2);
   });
-  testWidgets('recheck failure shows an error dialog and restores the row', (
-    tester,
-  ) async {
-    final acp = runtimes[2];
-    final probe = Completer<AgentRuntimeInfo>();
-    when(
-      () => service.inspect(session, acp.definition),
-    ).thenAnswer((_) => probe.future);
-    await pumpScreen(tester);
-    clearInteractions(service);
-    final recheck = find.byKey(const ValueKey('agent-recheck-acp:claude'));
+  for (final returnsFailure in [false, true]) {
+    testWidgets(
+      'recheck ${returnsFailure ? "returned failure" : "exception"} shows an error dialog and restores the row',
+      (tester) async {
+        final acp = runtimes[2];
+        final probe = Completer<AgentRuntimeInfo>();
+        when(
+          () => service.inspect(session, acp.definition),
+        ).thenAnswer((_) => probe.future);
+        await pumpScreen(tester);
+        clearInteractions(service);
+        final recheck = find.byKey(const ValueKey('agent-recheck-acp:claude'));
 
-    await tester.ensureVisible(recheck);
-    await tester.pumpAndSettle();
-    await tester.tap(recheck);
-    await pumpFrames(tester);
+        await tester.ensureVisible(recheck);
+        await tester.pumpAndSettle();
+        await tester.tap(recheck);
+        await pumpFrames(tester);
 
-    expect(
-      inRow('acp:claude', find.byType(CircularProgressIndicator)),
-      findsOneWidget,
+        expect(
+          inRow('acp:claude', find.byType(CircularProgressIndicator)),
+          findsOneWidget,
+        );
+        expect(inRow('acp:claude', find.text('Checking…')), findsOneWidget);
+        expect(refreshHandler(tester), isNull);
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.byKey(const ValueKey('agent-action-cli:claude')),
+              )
+              .onPressed,
+          isNull,
+        );
+
+        if (returnsFailure) {
+          probe.complete(
+            AgentRuntimeInfo(
+              definition: acp.definition,
+              status: AgentRuntimeStatus.failed,
+              message: 'probe timed out',
+            ),
+          );
+        } else {
+          probe.completeError(StateError('probe timed out'));
+        }
+        await pumpFrames(tester);
+
+        expect(find.byType(AlertDialog), findsOneWidget);
+        expect(find.text('Claude Agent ACP failed'), findsOneWidget);
+        expect(
+          find.textContaining('Could not check this agent.'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('probe timed out'), findsOneWidget);
+
+        await tester.tap(find.text('Close'));
+        await tester.pumpAndSettle();
+
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+        expect(
+          inRow('acp:claude', find.text('Installed v1.0.0')),
+          findsOneWidget,
+        );
+        expect(recheckHandler(tester, 'acp:claude'), isNotNull);
+        expect(refreshHandler(tester), isNotNull);
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.byKey(const ValueKey('agent-action-cli:claude')),
+              )
+              .onPressed,
+          isNotNull,
+        );
+        verify(() => service.inspect(session, acp.definition)).called(1);
+        verifyNever(() => service.refreshAll(session));
+
+        when(() => service.inspect(session, acp.definition)).thenAnswer(
+          (_) async => AgentRuntimeInfo(
+            definition: acp.definition,
+            status: AgentRuntimeStatus.installed,
+            installedVersion: '1.2.0',
+            executablePath: acp.executablePath,
+            detectionSource: acp.detectionSource,
+          ),
+        );
+        await tester.ensureVisible(recheck);
+        await tester.pumpAndSettle();
+        await tester.tap(recheck);
+        await tester.pumpAndSettle();
+
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(
+          inRow('acp:claude', find.text('Installed v1.2.0')),
+          findsOneWidget,
+        );
+        verify(() => service.inspect(session, acp.definition)).called(1);
+      },
     );
-    expect(inRow('acp:claude', find.text('Checking…')), findsOneWidget);
-    expect(refreshHandler(tester), isNull);
-    expect(
-      tester
-          .widget<OutlinedButton>(
-            find.byKey(const ValueKey('agent-action-cli:claude')),
-          )
-          .onPressed,
-      isNull,
-    );
-
-    probe.completeError(StateError('probe timed out'));
-    await pumpFrames(tester);
-
-    expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.text('Claude Agent ACP failed'), findsOneWidget);
-    expect(find.textContaining('Could not check this agent.'), findsOneWidget);
-    expect(find.textContaining('probe timed out'), findsOneWidget);
-
-    await tester.tap(find.text('Close'));
-    await tester.pumpAndSettle();
-
-    expect(find.byType(AlertDialog), findsNothing);
-    expect(find.byType(CircularProgressIndicator), findsNothing);
-    expect(inRow('acp:claude', find.text('Installed v1.0.0')), findsOneWidget);
-    expect(recheckHandler(tester, 'acp:claude'), isNotNull);
-    expect(refreshHandler(tester), isNotNull);
-    expect(
-      tester
-          .widget<OutlinedButton>(
-            find.byKey(const ValueKey('agent-action-cli:claude')),
-          )
-          .onPressed,
-      isNotNull,
-    );
-    verify(() => service.inspect(session, acp.definition)).called(1);
-    verifyNever(() => service.refreshAll(session));
-
-    when(() => service.inspect(session, acp.definition)).thenAnswer(
-      (_) async => AgentRuntimeInfo(
-        definition: acp.definition,
-        status: AgentRuntimeStatus.installed,
-        installedVersion: '1.2.0',
-        executablePath: acp.executablePath,
-        detectionSource: acp.detectionSource,
-      ),
-    );
-    await tester.ensureVisible(recheck);
-    await tester.pumpAndSettle();
-    await tester.tap(recheck);
-    await tester.pumpAndSettle();
-
-    expect(find.byType(AlertDialog), findsNothing);
-    expect(inRow('acp:claude', find.text('Installed v1.2.0')), findsOneWidget);
-    verify(() => service.inspect(session, acp.definition)).called(1);
-  });
+  }
 
   testWidgets('Update all queues later agents and locks competing commands', (
     tester,

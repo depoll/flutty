@@ -308,7 +308,36 @@ void main() {
         expect(window!.agentTool, isNull);
         expect(window.activeAgentSessionId, isNull);
         expect(window.activeAgentSessionConfidence, isNull);
-        if (name == 'Gemini CLI') expect(window.foregroundAgentTool, isNull);
+        expect(window.foregroundAgentTool, isNull);
+        expect(window.hasUnsupportedAgentTool, isTrue);
+        expect(
+          window.copyWith(currentCommand: 'copilot').foregroundAgentTool,
+          AgentLaunchTool.copilotCli,
+        );
+      }
+    });
+
+    test('confirmed plain shells do not regain identity from their names', () {
+      for (final storedTool in [null, '']) {
+        final window = parseMonkeyMuxWindowSnapshotForTesting({
+          'id': '@1',
+          'index': 0,
+          'name': 'Codex',
+          'paneTitle': 'Claude Code',
+          'currentCommand': 'zsh',
+          'agentTool': storedTool,
+          'agentToolConfirmed': true,
+          'agentSessionId': 'stale-session',
+          'agentSessionIdentityExact': true,
+        })!;
+        expect(window.foregroundAgentTool, isNull);
+        expect(window.activeAgentSessionId, isNull);
+        expect(window.agentSessionId, isNull);
+        expect(window.activeAgentSessionConfidence, isNull);
+        expect(
+          window.copyWith(currentCommand: 'copilot').foregroundAgentTool,
+          AgentLaunchTool.copilotCli,
+        );
       }
     });
 

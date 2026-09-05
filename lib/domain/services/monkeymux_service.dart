@@ -2629,7 +2629,9 @@ TmuxWindow? _windowFromJson(Object? value) {
       : _privateModeValue(privateModes, '2004');
   final storedTool = _nonEmpty(value['agentTool'] as String?);
   final agentTool = _agentToolFromMonkeyMuxMetadata(storedTool);
-  final unsupportedTool = storedTool != null && agentTool == null;
+  final unsupportedTool =
+      agentTool == null &&
+      (storedTool != null || value['agentToolConfirmed'] == true);
   final agentSessionId = unsupportedTool
       ? null
       : _nonEmpty(value['agentSessionId'] as String?);
@@ -2649,6 +2651,7 @@ TmuxWindow? _windowFromJson(Object? value) {
     flags: _nonEmpty(value['flags'] as String?),
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: agentTool,
+    hasUnsupportedAgentTool: unsupportedTool,
     activeAgentSessionId: agentSessionId,
     activeAgentSessionConfidence:
         agentSessionId != null && value['agentSessionIdentityExact'] == true

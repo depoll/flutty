@@ -236,6 +236,17 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
         runtime.definition,
       );
       if (!mounted) return;
+      if (updated.status == AgentRuntimeStatus.failed) {
+        await _showActionResult(
+          runtime,
+          AgentRuntimeActionResult(
+            succeeded: false,
+            output:
+                'Could not check this agent. ${updated.message ?? 'The probe failed.'}',
+          ),
+        );
+        return;
+      }
       setState(() {
         final index = _runtimes.indexWhere(
           (entry) => entry.definition.id == id,

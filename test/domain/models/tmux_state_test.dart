@@ -127,6 +127,64 @@ void main() {
       }
     });
 
+    test(
+      'unsupported tool markers block weak inference and survive updates',
+      () {
+        for (final command in ['node', 'zsh', 'copilot']) {
+          final window = TmuxWindow.fromTmuxFormat(
+            [
+              '0',
+              'Codex',
+              '1',
+              command,
+              '/tmp/project',
+              '',
+              'Claude Code',
+              '',
+              'gemini --resume old-session',
+              'gemini',
+              '@1',
+              '123',
+              'legacy-session',
+              'Stale title',
+              'high',
+            ].join(tmuxWindowFieldSeparator),
+          );
+          final expected = command == 'copilot'
+              ? AgentLaunchTool.copilotCli
+              : null;
+          expect(window.hasUnsupportedAgentTool, isTrue);
+          expect(window.agentSessionId, isNull);
+          expect(window.foregroundAgentTool, expected);
+          expect(window.activeAgentSessionId, isNull);
+          expect(window.agentSessionTitle, isNull);
+          expect(
+            window.copyWith(isActive: false).foregroundAgentTool,
+            expected,
+          );
+          expect(window.copyWith(), window);
+          expect(window.copyWith().hashCode, window.hashCode);
+          final supported = window.copyWith(agentTool: AgentLaunchTool.codex);
+          expect(supported.hasUnsupportedAgentTool, isFalse);
+          expect(supported, isNot(window));
+          final old = window.copyWith(
+            hasUnsupportedAgentTool: false,
+            activeAgentSessionId: 'old-session',
+            agentSessionTitle: 'Old title',
+          );
+          for (final event in [
+            TmuxWindowSnapshotEvent(window),
+            TmuxWindowListEvent([window]),
+          ]) {
+            final merged = applyTmuxWindowChangeEvent([old], event).single;
+            expect(merged.hasUnsupportedAgentTool, isTrue);
+            expect(merged.activeAgentSessionId, isNull);
+            expect(merged.agentSessionTitle, isNull);
+          }
+        }
+      },
+    );
+
     test('still parses legacy pipe-delimited window snapshots', () {
       const line = '0|vim|1|vim|/home/user/project|*|Editing main.dart';
       final window = TmuxWindow.fromTmuxFormat(line);
