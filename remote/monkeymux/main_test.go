@@ -11468,6 +11468,15 @@ func TestRestoreDropsUnsupportedAgentMetadata(t *testing.T) {
 				if next.command != "" || next.agentTool != "" {
 					t.Fatalf("second restore substituted an agent: command=%q tool=%q", next.command, next.agentTool)
 				}
+				for _, unsupported := range []string{"gemini", "node"} {
+					window.foregroundCommand = unsupported
+					nextState.CurrentCommand = window.currentCommandLocked()
+					nextState.AgentTool = window.agentToolLocked()
+					next = createWindowOptionsForRestore(nextState, false)
+					if next.command != "" || next.agentTool != "" {
+						t.Fatalf("unsupported live command %q substituted an agent: command=%q tool=%q", unsupported, next.command, next.agentTool)
+					}
+				}
 				window.foregroundCommand = "copilot"
 				if window.agentToolLocked() != "copilot" {
 					t.Fatal("explicit plain-shell identity must not block later live agent detection")

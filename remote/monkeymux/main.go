@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.182"
+	monkeyMuxVersion                  = "0.1.183"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -14931,8 +14931,7 @@ func (w *muxWindow) agentToolLocked() string {
 	}
 	// A restored retired agent is now a known shell, even if its retained
 	// title/name resembles another tool. Live commands still win above.
-	command := strings.TrimSpace(w.currentCommandLocked())
-	if w.agentToolConfirmed && (command == "" || isShellCommandName(command)) {
+	if w.agentToolConfirmed {
 		return ""
 	}
 	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
