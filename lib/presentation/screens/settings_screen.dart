@@ -686,6 +686,12 @@ class _TerminalSection extends ConsumerWidget {
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
+    final agentAccess =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final canManageAgents = agentAccess.allowsFeature(
+      MonetizationFeature.agentManagement,
+    );
     final agentUpdateNotifications = ref.watch(
       agentUpdateNotificationsNotifierProvider,
     );
@@ -771,17 +777,28 @@ class _TerminalSection extends ConsumerWidget {
         SwitchListTile(
           key: const ValueKey('settings-agent-update-notifications'),
           secondary: const Icon(Icons.system_update_alt_rounded),
-          title: const Text('Agent update indicators'),
+          title: Row(
+            children: [
+              const Expanded(child: Text('Agent update indicators')),
+              if (!canManageAgents) const PremiumBadge(),
+            ],
+          ),
           subtitle: const Text(
             'Show a dot on the terminal menu when agent updates are available',
           ),
-          value: agentUpdateNotifications,
-          onChanged: (value) {
-            unawaited(
-              ref
-                  .read(agentUpdateNotificationsNotifierProvider.notifier)
-                  .setEnabled(enabled: value),
-            );
+          value: canManageAgents && agentUpdateNotifications,
+          onChanged: (value) async {
+            if (!await requireMonetizationFeatureAccess(
+                  context: context,
+                  ref: ref,
+                  feature: MonetizationFeature.agentManagement,
+                ) ||
+                !context.mounted) {
+              return;
+            }
+            await ref
+                .read(agentUpdateNotificationsNotifierProvider.notifier)
+                .setEnabled(enabled: value);
           },
         ),
         ListTile(

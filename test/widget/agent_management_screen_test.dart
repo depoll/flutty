@@ -1,11 +1,15 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/agent_runtime_info.dart';
+import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/agent_management_service.dart';
+import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/agent_management_screen.dart';
 
@@ -14,12 +18,28 @@ class _MockAgentManagementService extends Mock
 
 class _MockSshSession extends Mock implements SshSession {}
 
+class _MockMonetizationService extends Mock implements MonetizationService {}
+
 void main() {
   late _MockAgentManagementService service;
   late _MockSshSession session;
   late List<AgentRuntimeInfo> runtimes;
+  late MonetizationState access;
+  late _MockMonetizationService billing;
 
   setUp(() {
+    access = const MonetizationState(
+      billingAvailability: MonetizationBillingAvailability.available,
+      entitlements: MonetizationEntitlements.pro(),
+      offers: [],
+      debugUnlockAvailable: false,
+      debugUnlocked: false,
+    );
+    billing = _MockMonetizationService();
+    when(() => billing.currentState).thenAnswer((_) => access);
+    when(
+      () => billing.canUseFeature(MonetizationFeature.agentManagement),
+    ).thenAnswer((_) async => access.isProUnlocked);
     service = _MockAgentManagementService();
     session = _MockSshSession();
     runtimes = [
@@ -48,9 +68,18 @@ void main() {
     when(() => service.refreshAll(session)).thenAnswer((_) async => runtimes);
   });
 
-  Future<void> pumpScreen(WidgetTester tester) async {
+  Future<void> pumpScreen(
+    WidgetTester tester, {
+    Stream<MonetizationState>? states,
+  }) async {
     await tester.pumpWidget(
       ProviderScope(
+        overrides: [
+          monetizationServiceProvider.overrideWithValue(billing),
+          monetizationStateProvider.overrideWith(
+            (ref) => states ?? Stream.value(access),
+          ),
+        ],
         child: MaterialApp(
           home: AgentManagementScreen(session: session, service: service),
         ),
@@ -58,6 +87,59 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets('free users cannot probe a directly opened manager', (
+    tester,
+  ) async {
+    access = access.copyWith(
+      entitlements: const MonetizationEntitlements.free(),
+    );
+    await pumpScreen(tester);
+    expect(find.text('Agent Management requires Pro'), findsOneWidget);
+    expect(find.text('Unlock Pro'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('agent-management-refresh')),
+      findsNothing,
+    );
+    expect(find.byKey(const ValueKey('agent-update-all')), findsNothing);
+    verifyNever(() => service.refreshAll(session));
+    await tester.tap(find.text('Unlock Pro'));
+    await tester.pumpAndSettle();
+    expect(find.text('Manage remote coding agents'), findsOneWidget);
+    verifyNever(() => service.refreshAll(session));
+  });
+
+  testWidgets('revoking Pro hides manager controls and blocks stale actions', (
+    tester,
+  ) async {
+    final states = StreamController<MonetizationState>();
+    addTearDown(states.close);
+    await pumpScreen(tester, states: states.stream);
+    final action = tester
+        .widget<OutlinedButton>(
+          find.byKey(const ValueKey('agent-action-cli:claude')),
+        )
+        .onPressed!;
+    clearInteractions(service);
+    access = access.copyWith(
+      entitlements: const MonetizationEntitlements.free(),
+    );
+    action();
+    states.add(access);
+    await tester.pumpAndSettle();
+    expect(find.text('Agent Management requires Pro'), findsOneWidget);
+    expect(find.byKey(const ValueKey('agent-action-cli:claude')), findsNothing);
+    verifyNever(
+      () => service.installOrUpdate(
+        session,
+        runtimes.first.definition,
+        update: true,
+        current: runtimes.first,
+        onOutput: any(named: 'onOutput'),
+      ),
+    );
+    verifyNever(() => service.refreshAll(session));
+  });
 
   testWidgets('renders CLI and ACP status with source paths', (tester) async {
     await pumpScreen(tester);

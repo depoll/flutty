@@ -5,9 +5,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../domain/models/agent_runtime_info.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/services/agent_management_service.dart';
+import '../../domain/services/monetization_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../widgets/agent_tool_icon.dart';
+import '../widgets/premium_access.dart';
 
 /// Manages coding-agent CLIs and ACP adapters on an active remote host.
 class AgentManagementScreen extends ConsumerStatefulWidget {
@@ -61,7 +64,12 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
     unawaited(_refresh());
   }
 
+  Future<bool> _canManageAgents() => ref
+      .read(monetizationServiceProvider)
+      .canUseFeature(MonetizationFeature.agentManagement);
+
   Future<void> _refresh() async {
+    if (!await _canManageAgents() || !mounted) return;
     if (_refreshing) return;
     setState(() {
       _refreshing = true;
@@ -82,6 +90,7 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
   }
 
   Future<void> _updateAll() async {
+    if (!await _canManageAgents() || !mounted) return;
     final updates = _runtimes
         .where(
           (runtime) => runtime.status == AgentRuntimeStatus.updateAvailable,
@@ -98,6 +107,7 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
     });
     final failures = <String>[];
     for (final runtime in updates) {
+      if (!mounted || !await _canManageAgents()) break;
       final id = runtime.definition.id;
       try {
         final result = await _service.installOrUpdate(
@@ -149,6 +159,7 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
   }
 
   Future<void> _runAction(AgentRuntimeInfo runtime) async {
+    if (!await _canManageAgents() || !mounted) return;
     final id = runtime.definition.id;
     if (_runningActions.contains(id)) return;
     final update = runtime.status == AgentRuntimeStatus.updateAvailable;
@@ -193,6 +204,7 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
   }
 
   Future<void> _recheck(AgentRuntimeInfo runtime) async {
+    if (!await _canManageAgents() || !mounted) return;
     final id = runtime.definition.id;
     if (_runningActions.contains(id)) return;
     setState(() => _runningActions.add(id));
@@ -250,6 +262,51 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final access =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    if (!access.allowsFeature(MonetizationFeature.agentManagement)) {
+      return Scaffold(
+        appBar: AppBar(
+          title: Text('Agent Management', style: FluttyTheme.displayMono()),
+        ),
+        body: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.lock_outline_rounded, size: 32),
+                const SizedBox(height: 16),
+                Text(
+                  'Agent Management requires Pro',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Install, repair, and update coding agents on your remote hosts.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () async {
+                    if (await requireMonetizationFeatureAccess(
+                          context: context,
+                          ref: ref,
+                          feature: MonetizationFeature.agentManagement,
+                        ) &&
+                        mounted) {
+                      await _refresh();
+                    }
+                  },
+                  child: const Text('Unlock Pro'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(

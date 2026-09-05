@@ -121,6 +121,14 @@ void main() {
         'feature': 'agent_launch_presets',
         'source': 'feature_gate',
       });
+      await service.logPaywallShown(
+        feature: 'agentManagement',
+        source: 'feature_gate',
+      );
+      expect(analytics.events[3].parameters, {
+        'feature': 'agent_management',
+        'source': 'feature_gate',
+      });
     });
 
     test('logs connection funnel with coarse buckets', () async {

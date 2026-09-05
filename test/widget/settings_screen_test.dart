@@ -9,12 +9,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/app/app_metadata.dart';
 import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
+import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
@@ -96,14 +98,32 @@ class _ThrowingChangePinAuthService extends FakeAuthService {
   }
 }
 
+class _MockMonetizationService extends Mock implements MonetizationService {}
+
 Future<void> _pumpSettingsScreen(
   WidgetTester tester, {
   required AppDatabase db,
+  bool? pro,
 }) async {
+  final access = MonetizationState.initial(debugUnlockAvailable: false)
+      .copyWith(
+        entitlements: pro ?? false
+            ? const MonetizationEntitlements.pro()
+            : const MonetizationEntitlements.free(),
+      );
+  final billing = _MockMonetizationService();
+  when(() => billing.currentState).thenReturn(access);
+  when(
+    () => billing.canUseFeature(MonetizationFeature.agentManagement),
+  ).thenAnswer((_) async => pro ?? false);
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
         databaseProvider.overrideWithValue(db),
+        if (pro != null) ...[
+          monetizationServiceProvider.overrideWithValue(billing),
+          monetizationStateProvider.overrideWith((ref) => Stream.value(access)),
+        ],
         authServiceProvider.overrideWithValue(FakeAuthService()),
         authStateProvider.overrideWith(MockAuthStateNotifier.new),
       ],
@@ -203,13 +223,41 @@ void main() {
       );
     });
 
+    testWidgets(
+      'free users must upgrade before enabling agent update indicators',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        await _pumpSettingsScreen(tester, db: db, pro: false);
+        final tile = find.byKey(
+          const ValueKey('settings-agent-update-notifications'),
+        );
+        await tester.scrollUntilVisible(
+          tile,
+          300,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.pumpAndSettle();
+        expect(tester.widget<SwitchListTile>(tile).value, isFalse);
+        await tester.tap(tile);
+        await tester.pumpAndSettle();
+        expect(find.text('Manage remote coding agents'), findsOneWidget);
+        expect(
+          await SettingsService(
+            db,
+          ).getBool(SettingKeys.agentUpdateNotifications, defaultValue: true),
+          isTrue,
+        );
+      },
+    );
+
     testWidgets('shows and persists the agent update indicator toggle', (
       tester,
     ) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
 
-      await _pumpSettingsScreen(tester, db: db);
+      await _pumpSettingsScreen(tester, db: db, pro: true);
       final tile = find.byKey(
         const ValueKey('settings-agent-update-notifications'),
       );

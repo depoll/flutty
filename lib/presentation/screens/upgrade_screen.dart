@@ -362,6 +362,12 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                 'Discover agent work across windows and jump back in without hunting for it.',
           ),
           const _UpgradeBenefitTile(
+            icon: Icons.system_update_alt_rounded,
+            title: 'Agent Management',
+            subtitle:
+                'Install, repair, and update remote coding agents, with automatic update checks.',
+          ),
+          const _UpgradeBenefitTile(
             icon: Icons.rocket_launch_outlined,
             title: 'Agent launch presets',
             subtitle:

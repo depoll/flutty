@@ -20,6 +20,10 @@ class _MockExecSession extends Mock implements SSHSession {}
 
 class _MockDiscovery extends Mock implements AgentSessionDiscoveryService {}
 
+AgentManagementService _unlockedManagementService(
+  AgentSessionDiscoveryService discovery,
+) => AgentManagementService(discovery, canManageAgents: () async => true);
+
 SSHSession _execOutput(String output, {int exitCode = 0}) {
   final exec = _MockExecSession();
   when(() => exec.stdout).thenAnswer(
@@ -354,7 +358,7 @@ void main() {
         return _execOutput('', exitCode: 1);
       });
 
-      final runtime = await AgentManagementService(
+      final runtime = await _unlockedManagementService(
         discovery,
       ).inspect(session, agentCliRuntimeDefinitions.first);
 
@@ -391,7 +395,7 @@ void main() {
         );
       });
 
-      final runtime = await AgentManagementService(
+      final runtime = await _unlockedManagementService(
         discovery,
       ).inspect(session, definition);
 
@@ -422,7 +426,7 @@ void main() {
         );
       });
 
-      final runtime = await AgentManagementService(
+      final runtime = await _unlockedManagementService(
         discovery,
       ).inspect(session, definition);
 
@@ -444,7 +448,7 @@ void main() {
           calls++;
           return _execOutput('');
         });
-        final service = AgentManagementService(_MockDiscovery());
+        final service = _unlockedManagementService(_MockDiscovery());
         await service.checkForUpdates(session);
         await service.checkForUpdates(session);
         expect(calls, 1);
@@ -455,6 +459,62 @@ void main() {
         expect(calls, 2);
       },
     );
+
+    test('free access blocks every management operation before SSH', () async {
+      final client = _MockSshClient();
+      final session = _remoteSession(client);
+      final discovery = _MockDiscovery();
+      var allowed = false;
+      final service = AgentManagementService(
+        discovery,
+        canManageAgents: () async => allowed,
+      );
+      final definition = agentCliRuntimeDefinitions.first;
+      expect(await service.checkForUpdates(session), isEmpty);
+      expect(
+        await service.checkForUpdates(session, forceRefresh: true),
+        isEmpty,
+      );
+      expect(await service.refreshAll(session), isEmpty);
+      expect(
+        (await service.inspect(session, definition)).status,
+        AgentRuntimeStatus.unavailable,
+      );
+      for (final update in [false, true]) {
+        expect(
+          (await service.installOrUpdate(
+            session,
+            definition,
+            update: update,
+          )).succeeded,
+          isFalse,
+        );
+      }
+      final repair = await service.installOrUpdate(
+        session,
+        definition,
+        update: false,
+        current: AgentRuntimeInfo(
+          definition: definition,
+          status: AgentRuntimeStatus.needsRepair,
+        ),
+      );
+      expect(repair.succeeded, isFalse);
+      verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+      verifyNever(() => discovery.invalidateSession(session));
+      // Revoked access must not return cached Pro results or issue new probes.
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => _execOutput(''));
+      allowed = true;
+      expect(await service.checkForUpdates(session), isNotEmpty);
+      clearInteractions(client);
+      allowed = false;
+      expect(await service.checkForUpdates(session), isEmpty);
+      expect(await service.refreshAll(session), isEmpty);
+      verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+    });
 
     test('automatic update checks include CLIs only', () async {
       final client = _MockSshClient();
@@ -475,7 +535,7 @@ void main() {
         return _execOutput(output.toString());
       });
 
-      final runtimes = await AgentManagementService(
+      final runtimes = await _unlockedManagementService(
         discovery,
       ).checkForUpdates(session);
 
@@ -516,7 +576,7 @@ void main() {
         return _execOutput(output.toString());
       });
 
-      final runtimes = await AgentManagementService(
+      final runtimes = await _unlockedManagementService(
         discovery,
       ).refreshAll(session);
 
@@ -573,7 +633,7 @@ void main() {
           );
         });
 
-        final runtimes = await AgentManagementService(
+        final runtimes = await _unlockedManagementService(
           discovery,
         ).refreshAll(session);
 
@@ -705,16 +765,17 @@ void main() {
         );
       });
       when(() => discovery.invalidateSession(session)).thenReturn(null);
-      final result = await AgentManagementService(discovery).installOrUpdate(
-        session,
-        definition,
-        update: false,
-        current: AgentRuntimeInfo(
-          definition: definition,
-          status: AgentRuntimeStatus.needsRepair,
-          executablePath: '/home/dev/.bun/bin/opencode',
-        ),
-      );
+      final result = await _unlockedManagementService(discovery)
+          .installOrUpdate(
+            session,
+            definition,
+            update: false,
+            current: AgentRuntimeInfo(
+              definition: definition,
+              status: AgentRuntimeStatus.needsRepair,
+              executablePath: '/home/dev/.bun/bin/opencode',
+            ),
+          );
       expect(result.succeeded, isFalse);
       expect(result.output, contains('could not be verified'));
     });
@@ -748,7 +809,7 @@ void main() {
           });
           return exec;
         });
-        final runtimes = await AgentManagementService(
+        final runtimes = await _unlockedManagementService(
           _MockDiscovery(),
         ).refreshAll(session);
         expect(runtimes.first.installedVersion, '2.0.0');
@@ -769,7 +830,7 @@ void main() {
           '__monkeyssh_agent_path__=/bin/claude\n__monkeyssh_agent_version__=2.0.0\n',
         );
       });
-      final info = await AgentManagementService(
+      final info = await _unlockedManagementService(
         _MockDiscovery(),
       ).inspect(session, agentCliRuntimeDefinitions.first);
       expect(info.status, AgentRuntimeStatus.installed);
@@ -791,18 +852,19 @@ void main() {
       when(() => discovery.invalidateSession(session)).thenReturn(null);
       final streamed = StringBuffer();
 
-      final result = await AgentManagementService(discovery).installOrUpdate(
-        session,
-        agentCliRuntimeDefinitions.first,
-        update: true,
-        current: AgentRuntimeInfo(
-          definition: agentCliRuntimeDefinitions.first,
-          status: AgentRuntimeStatus.updateAvailable,
-          detectionSource: 'npm global',
-          managedByPackageManager: true,
-        ),
-        onOutput: streamed.write,
-      );
+      final result = await _unlockedManagementService(discovery)
+          .installOrUpdate(
+            session,
+            agentCliRuntimeDefinitions.first,
+            update: true,
+            current: AgentRuntimeInfo(
+              definition: agentCliRuntimeDefinitions.first,
+              status: AgentRuntimeStatus.updateAvailable,
+              detectionSource: 'npm global',
+              managedByPackageManager: true,
+            ),
+            onOutput: streamed.write,
+          );
 
       expect(result.succeeded, isTrue);
       expect(streamed.toString(), contains('installed 1 package'));

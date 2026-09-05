@@ -96,6 +96,7 @@ import '../widgets/device_debug_sheet.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
+import '../widgets/premium_badge.dart';
 import '../widgets/system_bottom_inset.dart';
 import '../widgets/terminal_menu_style.dart';
 import '../widgets/terminal_overlay_focus.dart';
@@ -4352,6 +4353,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String action,
     bool enabled = true,
     bool showStatusDot = false,
+    bool showProBadge = false,
   }) => MenuItemButton(
     style: TerminalMenuStyles.itemButtonStyle(context),
     leadingIcon: Semantics(
@@ -4364,6 +4366,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         child: Icon(icon, size: TerminalMenuStyles.iconSize),
       ),
     ),
+    trailingIcon: showProBadge ? const PremiumBadge() : null,
     onPressed: enabled ? () => unawaited(_handleMenuAction(action)) : null,
     child: _terminalOverflowMenuLabel(label),
   );
@@ -14096,10 +14099,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final activeSession = _connectionId == null
         ? null
         : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
+    final agentAccess =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final canManageAgents = agentAccess.allowsFeature(
+      MonetizationFeature.agentManagement,
+    );
     final agentUpdateIndicators = ref.watch(
       agentUpdateNotificationsNotifierProvider,
     );
     final hasAgentUpdates =
+        canManageAgents &&
         agentUpdateIndicators &&
         connectionState == SshConnectionState.connected &&
         activeSession != null &&
@@ -14372,6 +14382,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   label: 'Agent Management',
                   action: 'agent_management',
                   showStatusDot: hasAgentUpdates,
+                  showProBadge: !canManageAgents,
                   enabled:
                       _connectionId != null &&
                       connectionState == SshConnectionState.connected,
@@ -15746,6 +15757,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _openAgentManagement() async {
+    if (!await requireMonetizationFeatureAccess(
+          context: context,
+          ref: ref,
+          feature: MonetizationFeature.agentManagement,
+        ) ||
+        !mounted) {
+      return;
+    }
+
     final connectionId = _connectionId;
     if (connectionId == null) return;
     final session = _sessionsNotifier?.getSession(connectionId);
@@ -15805,6 +15825,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) async {
     if ((!forceRefresh && _agentUpdateRuntimes[session] != null) ||
         !ref.read(agentUpdateNotificationsNotifierProvider)) {
+      return;
+    }
+    if (!await ref
+            .read(monetizationServiceProvider)
+            .canUseFeature(MonetizationFeature.agentManagement) ||
+        !mounted) {
       return;
     }
     final previous = _agentUpdateRuntimes[session];

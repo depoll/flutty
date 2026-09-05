@@ -9,8 +9,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/agent_launch_preset.dart';
 import '../models/agent_runtime_info.dart';
+import '../models/monetization.dart';
 import 'agent_session_discovery_service.dart';
 import 'diagnostics_log_service.dart';
+import 'monetization_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'windows_remote_powershell.dart';
@@ -429,7 +431,12 @@ String? buildAgentInstallCommand(
 /// Inspects and manages coding-agent runtimes over non-interactive SSH exec.
 class AgentManagementService {
   /// Creates the service.
-  AgentManagementService(this._discovery);
+  AgentManagementService(
+    this._discovery, {
+    required Future<bool> Function() canManageAgents,
+  }) : _canManageAgents = canManageAgents;
+
+  final Future<bool> Function() _canManageAgents;
 
   static const _updateCheckTtl = Duration(minutes: 15);
 
@@ -443,7 +450,8 @@ class AgentManagementService {
   Future<List<AgentRuntimeInfo>> checkForUpdates(
     SshSession session, {
     bool forceRefresh = false,
-  }) {
+  }) async {
+    if (!await _canManageAgents()) return const [];
     final cached = _runtimeCache[session.connectionId];
     if (!forceRefresh &&
         cached != null &&
@@ -470,6 +478,7 @@ class AgentManagementService {
 
   /// Invalidates session discovery and probes every supported runtime.
   Future<List<AgentRuntimeInfo>> refreshAll(SshSession session) async {
+    if (!await _canManageAgents()) return const [];
     final inFlight = _inFlightUpdateChecks[session.connectionId];
     if (inFlight != null) {
       try {
@@ -591,6 +600,13 @@ class AgentManagementService {
     AgentRuntimeDefinition definition, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
+    if (!await _canManageAgents()) {
+      return AgentRuntimeInfo(
+        definition: definition,
+        status: AgentRuntimeStatus.unavailable,
+        message: 'Agent Management requires MonkeySSH Pro.',
+      );
+    }
     try {
       final probeOutput = await _run(
         session,
@@ -735,6 +751,12 @@ class AgentManagementService {
     AgentRuntimeInfo? current,
     ValueChanged<String>? onOutput,
   }) async {
+    if (!await _canManageAgents()) {
+      return const AgentRuntimeActionResult(
+        succeeded: false,
+        output: 'Agent Management requires MonkeySSH Pro.',
+      );
+    }
     final command = buildAgentInstallCommand(
       definition,
       windows: session.remoteIsWindows,
@@ -1328,6 +1350,10 @@ String _shellQuote(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
 /// Provider for [AgentManagementService].
 final agentManagementServiceProvider = Provider<AgentManagementService>(
-  (ref) =>
-      AgentManagementService(ref.watch(agentSessionDiscoveryServiceProvider)),
+  (ref) => AgentManagementService(
+    ref.watch(agentSessionDiscoveryServiceProvider),
+    canManageAgents: () => ref
+        .read(monetizationServiceProvider)
+        .canUseFeature(MonetizationFeature.agentManagement),
+  ),
 );

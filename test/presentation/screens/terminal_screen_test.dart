@@ -1489,6 +1489,7 @@ void main() {
       AndroidDeviceDebugPlatform? deviceDebugPlatform,
       RemoteAdbCommandRunner? remoteAdbCommandRunner,
       AgentManagementService? agentManagementService,
+      MonetizationState monetizationState = _proMonetizationState,
     }) async {
       await tester.pumpWidget(
         ProviderScope(
@@ -1497,7 +1498,7 @@ void main() {
             hostRepositoryProvider.overrideWithValue(hostRepository),
             monetizationServiceProvider.overrideWithValue(monetizationService),
             monetizationStateProvider.overrideWith(
-              (ref) => Stream.value(_proMonetizationState),
+              (ref) => Stream.value(monetizationState),
             ),
             themeModeNotifierProvider.overrideWith(
               () => _TestThemeModeNotifier(themeMode),
@@ -2388,6 +2389,54 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump(const Duration(minutes: 5));
         expect(calls, 3);
+      },
+    );
+
+    testWidgets(
+      'free users get an Agent Management paywall and no update checks',
+      (tester) async {
+        final free = _proMonetizationState.copyWith(
+          entitlements: const MonetizationEntitlements.free(),
+        );
+        when(() => monetizationService.currentState).thenReturn(free);
+        when(
+          () => monetizationService.canUseFeature(
+            MonetizationFeature.agentManagement,
+          ),
+        ).thenAnswer((_) async => false);
+        final management = _MockAgentManagementService();
+        await pumpScreen(
+          tester,
+          agentManagementService: management,
+          monetizationState: free,
+        );
+        await tester.pump(const Duration(minutes: 5));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<Badge>(
+                find.byKey(const ValueKey('terminal-agent-updates-dot')),
+              )
+              .isLabelVisible,
+          isFalse,
+        );
+        verifyNever(() => management.checkForUpdates(session));
+        verifyNever(
+          () => management.checkForUpdates(session, forceRefresh: true),
+        );
+        await openTerminalOverflowMenu(tester);
+        final item = tester.widget<MenuItemButton>(
+          terminalMenuItemButton('Agent Management'),
+        );
+        expect(item.trailingIcon, isNotNull);
+        await tester.tap(terminalMenuItemButton('Agent Management'));
+        await tester.pumpAndSettle();
+        expect(find.text('Manage remote coding agents'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('agent-management-refresh')),
+          findsNothing,
+        );
+        verifyNever(() => management.refreshAll(session));
       },
     );
 
