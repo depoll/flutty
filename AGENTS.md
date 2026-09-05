@@ -107,7 +107,7 @@ python3 scripts/validate_play_store_metadata.py
 
 Regenerated store **media** (screenshots, App Previews, demo videos) is not committed. Publish it with `scripts/store_assets.sh publish` to the rolling `store-assets` GitHub Release; CI re-hosts the archive as Actions artifacts and Sync Store Metadata / production releases download it before Fastlane upload. Restore locally with `scripts/store_assets.sh download`.
 
-The screenshot set has eight scenes per device. Native chat and Agent Management have Pro captions outside the real app capture. Keep the native-chat caption explicit that one chat is free; Pro adds parallel chats and forks. Agent Management captures live version checks only, without installing or updating the developer's tools.
+The screenshot set has eight scenes per device. Only entirely Pro-only features get screenshot badges. Native chat is available free, so its screenshots stay unbadged. Agent Management has a Pro caption outside the real app capture. Agent Management captures live version checks only, without installing or updating the developer's tools.
 
 Regenerate screenshots with `python3 scripts/generate_store_screenshots.py [ios|android|both]` and short demo videos with `python3 scripts/generate_store_demo_videos.py [ios|android|both]`, then publish:
 

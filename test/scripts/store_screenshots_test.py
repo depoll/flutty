@@ -136,14 +136,16 @@ class ProCaptionTest(unittest.TestCase):
                             [('claude', key) for key in keys],
                         )
 
-    def test_native_scene_requires_pro_badge_and_free_chat_disclosure(self):
+    def test_native_scene_has_no_badge_when_available_free(self):
+        self.assertNotIn('native_copilot', capture.PRO_SCENE_CAPTIONS)
+        self.assertEqual(set(capture.PRO_SCENE_CAPTIONS), {'agent_management'})
         path = ROOT / 'ios/fastlane/screenshots/en-US/07_iphone_6_9.png'
-        valid = 'Message the agent reconnect PRO Parallel chats One native chat is free'
+        valid = 'Message the agent reconnect'
         with patch.object(validate, '_ocr_texts', return_value={path: valid}):
             validate._validate_ocr_content([path])
-        for missing in ('PRO', 'One native chat is free'):
+        for missing in ('Message the agent', 'reconnect'):
             with self.subTest(missing=missing):
-                with patch.object(validate, '_ocr_texts', return_value={path: valid.replace(missing, '') + ' prompt progress provider'}):
+                with patch.object(validate, '_ocr_texts', return_value={path: valid.replace(missing, '')}):
                     with self.assertRaisesRegex(ValueError, 'missing expected'):
                         validate._validate_ocr_content([path])
 

@@ -61,9 +61,9 @@ Core SSH, terminal, SFTP, the agent window mode choice, and one connected native
 
 ## Screenshots
 
-Native chat and Agent Management on iPhone. The Pro captions distinguish paid workflows from the free single-chat allowance.
+Native chat and Agent Management on iPhone. Only Agent Management is badged Pro; native chat is available free.
 
-![Native chat and Agent Management with Pro captions](https://github.com/depollsoft/MonkeySSH/releases/download/store-assets/monkeyssh-agent-workspace.png)
+![Native chat and Pro Agent Management](https://github.com/depollsoft/MonkeySSH/releases/download/store-assets/monkeyssh-agent-workspace.png)
 
 [Download the full iPhone, iPad, and Android screenshot sets and demo videos](https://github.com/depollsoft/MonkeySSH/releases/tag/store-assets).
 

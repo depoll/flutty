@@ -1985,13 +1985,9 @@ def _free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
-# Store-only captions sit outside the real app capture. Keep the free native
-# chat allowance explicit rather than implying all native chat requires Pro.
+# Only entirely Pro-only features get store badges. Features with any free
+# access, including native chat, use the unbadged app capture.
 PRO_SCENE_CAPTIONS = {
-    'native_copilot': (
-        'Native chats',
-        'Parallel chats & forks. One native chat is free.',
-    ),
     'agent_management': (
         'Agent Management',
         'Check versions. Install, update & repair remote agents.',

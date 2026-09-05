@@ -258,8 +258,7 @@ def _validate_ocr_content(paths: list[Path]) -> None:
         elif filename in {'07_iphone_6_9.png', '07_ipad_13.png', '7.png'}:
             _require_ocr_markers(
                 path, text,
-                ['Message the agent', 'reconnect', 'PRO',
-                 'Parallel chats', 'One native chat is free'],
+                ['Message the agent', 'reconnect'],
             )
         elif filename in {'08_iphone_6_9.png', '08_ipad_13.png', '8.png'}:
             _require_ocr_markers(
