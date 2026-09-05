@@ -1263,7 +1263,7 @@ class StoreDemoEnvironment:
     def _capture_monkeymux_attach_replay(self) -> bytes:
         master_fd = -1
         slave_fd = -1
-        process: subprocess.Popen[str] | None = None
+        process: subprocess.Popen[bytes] | None = None
         try:
             master_fd, slave_fd = pty.openpty()
             _set_pty_size(slave_fd, rows=40, columns=120)

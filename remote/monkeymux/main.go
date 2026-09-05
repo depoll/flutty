@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.180"
+	monkeyMuxVersion                  = "0.1.181"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -4569,7 +4569,7 @@ func normalizedPiWorkingDirectory(path string) string {
 
 func agentToolCandidateForRestore(window restoreWindowState) string {
 	return firstNonEmptyString(
-		window.AgentTool,
+		agentToolFromCommandName(window.AgentTool),
 		agentToolFromCommandName(window.CurrentCommand),
 		agentToolFromTerminalTitle(window.PaneTitle),
 		agentToolFromCommandName(window.Name),
@@ -6128,6 +6128,12 @@ func createWindowOptionsForRestore(
 		}
 	}
 	agentTool := agentToolForRestore(state)
+	if agentTool == "" {
+		state.AgentSessionID = ""
+		state.AgentSessionDir = ""
+		state.AgentSessionPath = ""
+		state.AgentSessionIdentityExact = false
+	}
 	command := ""
 	if agentTool != "" {
 		launch := agentLaunchCommand(agentTool, startInYoloMode)

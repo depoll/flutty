@@ -28,6 +28,28 @@ const capabilityHintFixture = "da1\x1f\x1b[?62;22c" +
 	"\x1e" + "xtversion\x1f\x1bP>|kitty(0.32.0)\x1b\\" +
 	"\x1e" + "dsr\x1f\x1b[0n"
 
+// Keep the terminal attached until queued writes have been observed. An empty
+// reader disconnects immediately and races the asynchronous query flush.
+func startCapabilityTestAttach(t *testing.T, server *muxServer, hello controlMessage) (*recordingConn, func()) {
+	t.Helper()
+	input, writer := io.Pipe()
+	attach := &recordingConn{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleAttach(attach, bufio.NewReader(input), hello)
+	}()
+	return attach, func() {
+		_ = writer.Close()
+		defer input.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("attach handler did not stop after disconnect")
+		}
+	}
+}
+
 func TestXtversionClassifiedAsReplayUnsafeQuery(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -92,12 +114,8 @@ func TestPendingCapabilityQueriesDeliveredOnAttach(t *testing.T) {
 	restore := stubForegroundResize(t)
 	defer restore()
 
-	attach := &recordingConn{}
-	server.handleAttach(
-		attach,
-		bufio.NewReader(strings.NewReader("")),
-		controlMessage{Width: 80, Height: 24},
-	)
+	attach, detach := startCapabilityTestAttach(t, server, controlMessage{Width: 80, Height: 24})
+	defer detach()
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -946,12 +964,8 @@ func TestBufferedColorSchemeQueryDroppedOnFlush(t *testing.T) {
 	restore := stubForegroundResize(t)
 	defer restore()
 
-	attach := &recordingConn{}
-	server.handleAttach(
-		attach,
-		bufio.NewReader(strings.NewReader("")),
-		controlMessage{Width: 80, Height: 24, Data: themeHintFixture},
-	)
+	attach, detach := startCapabilityTestAttach(t, server, controlMessage{Width: 80, Height: 24, Data: themeHintFixture})
+	defer detach()
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

@@ -89,6 +89,44 @@ void main() {
       expect(window.hasAlert, false);
     });
 
+    test('drops session metadata only for explicitly unsupported tools', () {
+      for (final tool in ['gemini', 'future-agent', 'copilot', '']) {
+        final window = TmuxWindow.fromTmuxFormat(
+          [
+            '0',
+            'Project shell',
+            '1',
+            'zsh',
+            '/tmp/project',
+            '',
+            '',
+            '',
+            '',
+            tool,
+            '@1',
+            '123',
+            'legacy-session',
+            'Stale conversation title',
+            'high',
+          ].join(tmuxWindowFieldSeparator),
+        );
+        if (tool == 'gemini' || tool == 'future-agent') {
+          expect(window.agentTool, isNull);
+          expect(window.activeAgentSessionId, isNull);
+          expect(window.agentSessionTitle, isNull);
+          expect(window.activeAgentSessionConfidence, isNull);
+          expect(window.displayTitle, 'Project shell');
+        } else {
+          expect(window.activeAgentSessionId, 'legacy-session');
+          expect(window.agentSessionTitle, 'Stale conversation title');
+          expect(
+            window.activeAgentSessionConfidence,
+            AgentSessionConfidence.high,
+          );
+        }
+      }
+    });
+
     test('still parses legacy pipe-delimited window snapshots', () {
       const line = '0|vim|1|vim|/home/user/project|*|Editing main.dart';
       final window = TmuxWindow.fromTmuxFormat(line);

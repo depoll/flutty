@@ -145,6 +145,9 @@ class TmuxWindow {
     }
 
     final activityEpoch = fields.length > 7 ? int.tryParse(fields[7]) : null;
+    final storedTool = fields.length > 9 ? _nonEmpty(fields[9]) : null;
+    final agentTool = _agentToolFromMetadata(storedTool);
+    final unsupportedTool = storedTool != null && agentTool == null;
 
     return TmuxWindow(
       index: int.tryParse(fields[0]) ?? 0,
@@ -162,12 +165,16 @@ class TmuxWindow {
           ? activityEpoch
           : null,
       paneStartCommand: parsed.paneStartCommand,
-      agentTool: fields.length > 9 ? _agentToolFromMetadata(fields[9]) : null,
-      activeAgentSessionId: fields.length > 12 ? _nonEmpty(fields[12]) : null,
-      agentSessionTitle: fields.length > 13 ? _nonEmpty(fields[13]) : null,
-      activeAgentSessionConfidence: _agentSessionConfidenceFromWindowFields(
-        fields,
-      ),
+      agentTool: agentTool,
+      activeAgentSessionId: !unsupportedTool && fields.length > 12
+          ? _nonEmpty(fields[12])
+          : null,
+      agentSessionTitle: !unsupportedTool && fields.length > 13
+          ? _nonEmpty(fields[13])
+          : null,
+      activeAgentSessionConfidence: unsupportedTool
+          ? null
+          : _agentSessionConfidenceFromWindowFields(fields),
     );
   }
 

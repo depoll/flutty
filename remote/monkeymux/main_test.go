@@ -11433,6 +11433,38 @@ func TestCreateWindowOptionsForRestorePreservesShellHistory(t *testing.T) {
 	}
 }
 
+func TestRestoreDropsUnsupportedAgentMetadata(t *testing.T) {
+	for _, command := range []string{"gemini", "zsh"} {
+		t.Run(command, func(t *testing.T) {
+			state := restoreWindowState{
+				Name: "Gemini CLI", CurrentCommand: command, AgentTool: "gemini",
+				AgentToolConfirmed: true, AgentSessionID: "legacy-session",
+				AgentSessionDir: "/tmp/legacy", AgentSessionPath: "/tmp/legacy/session.json",
+				AgentSessionIdentityExact: true,
+				HistoryBase64:             base64.StdEncoding.EncodeToString([]byte("shell history")),
+				HistoryStartsAtGround:     true,
+			}
+			options := createWindowOptionsForRestore(state, false)
+			if options.command != "" || options.agentTool != "" {
+				t.Fatalf("restored unsupported agent: command=%q tool=%q", options.command, options.agentTool)
+			}
+			if options.agentSessionID != "" || options.agentSessionDir != "" || options.agentSessionPath != "" || options.agentSessionIdentityExact {
+				t.Fatal("unsupported agent session identity survived restore")
+			}
+			tool, confirmed := newWindowAgentTool(options, state.Name)
+			if tool != "" || confirmed {
+				t.Fatalf("new window would persist unsupported tool %q (confirmed=%v)", tool, confirmed)
+			}
+			if command == "zsh" && string(options.history) != "shell history" {
+				t.Fatalf("shell history lost: %q", options.history)
+			}
+			if command == "gemini" && len(options.history) != 0 {
+				t.Fatal("unsupported TUI history should not replay into a new shell")
+			}
+		})
+	}
+}
+
 func TestCreateWindowOptionsForRestoreSanitizesLegacyKittyPayload(t *testing.T) {
 	history := append(bytes.Repeat([]byte("A"), 512), "\x1b\\\r\nprompt"...)
 	state := restoreWindowState{
@@ -11888,6 +11920,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			name: "unsupported gemini window",
 			state: restoreWindowState{
 				Name:           "Gemini CLI",
+				AgentTool:      "gemini",
 				CurrentCommand: "gemini",
 				PaneTitle:      "Gemini CLI",
 				AgentSessionID: "bc1ced23-25ac-4971-8f30-8af35ce2f2f1",
