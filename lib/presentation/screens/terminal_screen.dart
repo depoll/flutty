@@ -34,6 +34,7 @@ import '../../domain/models/acp_recent_session.dart';
 import '../../domain/models/acp_session_keys.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
+import '../../domain/models/agent_runtime_info.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
@@ -47,6 +48,7 @@ import '../../domain/models/tmux_state.dart';
 import '../../domain/services/acp_launch_profile_service.dart';
 import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
+import '../../domain/services/agent_management_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/app_review_demo_service.dart';
 import '../../domain/services/clipboard_content_service.dart';
@@ -94,6 +96,7 @@ import '../widgets/device_debug_sheet.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
+import '../widgets/premium_badge.dart';
 import '../widgets/system_bottom_inset.dart';
 import '../widgets/terminal_menu_style.dart';
 import '../widgets/terminal_overlay_focus.dart';
@@ -106,6 +109,7 @@ import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
 import 'agent_chat_screen.dart';
+import 'agent_management_screen.dart';
 import 'port_forward_browser_screen.dart';
 import 'sftp_screen.dart';
 import 'snippet_edit_screen.dart';
@@ -3614,6 +3618,9 @@ class _NativeAcpLaunchState {
       );
 }
 
+final Expando<List<AgentRuntimeInfo>> _agentUpdateRuntimes =
+    Expando<List<AgentRuntimeInfo>>('agentUpdateRuntimes');
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -4060,6 +4067,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _deviceDebugConnectionId;
   RemoteMuxBackend _activeMuxBackend = RemoteMuxBackend.tmux;
   AgentLaunchTool? _remoteMuxStartupTool;
+  Timer? _agentUpdateCheckTimer;
 
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
@@ -4344,9 +4352,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String label,
     required String action,
     bool enabled = true,
+    bool showStatusDot = false,
+    bool showProBadge = false,
   }) => MenuItemButton(
     style: TerminalMenuStyles.itemButtonStyle(context),
-    leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
+    leadingIcon: Semantics(
+      label: showStatusDot ? 'Agent updates available' : null,
+      child: Badge(
+        key: ValueKey('$action-updates-dot'),
+        isLabelVisible: showStatusDot,
+        backgroundColor: Theme.of(context).colorScheme.primary,
+        smallSize: 8,
+        child: Icon(icon, size: TerminalMenuStyles.iconSize),
+      ),
+    ),
+    trailingIcon: showProBadge ? const PremiumBadge() : null,
     onPressed: enabled ? () => unawaited(_handleMenuAction(action)) : null,
     child: _terminalOverflowMenuLabel(label),
   );
@@ -7721,6 +7741,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           forceShowSystemKeyboard: widget.initiallyShowKeyboard,
         );
         _maybePasteStoreDemoImage();
+        _scheduleAgentUpdateCheck(session, initialCheck: false);
 
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
@@ -7853,6 +7874,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         forceShowSystemKeyboard: widget.initiallyShowKeyboard,
       );
       _maybePasteStoreDemoImage();
+      _scheduleAgentUpdateCheck(session);
 
       // Start port forwards
       await _startPortForwards(session);
@@ -13821,6 +13843,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalThemeSettingsSubscription.close();
     _themeModeSubscription.close();
     _shellCompletionsSubscription.close();
+    _agentUpdateCheckTimer?.cancel();
+
     _cancelTerminalThemeRefreshTimers();
     _sessionController.dispose();
     _stopSharedClipboardSync();
@@ -14075,6 +14099,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final activeSession = _connectionId == null
         ? null
         : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
+    final agentAccess =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final canManageAgents = agentAccess.allowsFeature(
+      MonetizationFeature.agentManagement,
+    );
+    final agentUpdateIndicators = ref.watch(
+      agentUpdateNotificationsNotifierProvider,
+    );
+    final hasAgentUpdates =
+        canManageAgents &&
+        agentUpdateIndicators &&
+        connectionState == SshConnectionState.connected &&
+        activeSession != null &&
+        (_agentUpdateRuntimes[activeSession]?.any(
+              (runtime) =>
+                  runtime.definition.kind == AgentRuntimeKind.cli &&
+                  runtime.hasUpdate,
+            ) ??
+            false);
     final showsNativeAgent =
         _activeNativeAcpSessionKey != null || _nativeAcpLaunchState != null;
     final showsTerminalViewportMenuActions =
@@ -14334,6 +14378,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
                 _terminalOverflowMenuItem(
                   context: context,
+                  icon: Icons.smart_toy_outlined,
+                  label: 'Agent Management',
+                  action: 'agent_management',
+                  showStatusDot: hasAgentUpdates,
+                  showProBadge: !canManageAgents,
+                  enabled:
+                      _connectionId != null &&
+                      connectionState == SshConnectionState.connected,
+                ),
+                _terminalOverflowMenuItem(
+                  context: context,
                   icon: Icons.alt_route_rounded,
                   label: 'Port Forwards',
                   action: 'port_forwards',
@@ -14427,7 +14482,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ],
               builder: (context, controller, _) => IconButton(
-                icon: const Icon(Icons.more_vert),
+                icon: Semantics(
+                  label: hasAgentUpdates ? 'Agent updates available' : null,
+                  child: Badge(
+                    key: const ValueKey('terminal-agent-updates-dot'),
+                    isLabelVisible: hasAgentUpdates,
+                    backgroundColor: theme.colorScheme.primary,
+                    smallSize: 8,
+                    child: const Icon(Icons.more_vert),
+                  ),
+                ),
                 tooltip: MaterialLocalizations.of(context).showMenuTooltip,
                 onPressed: () {
                   if (controller.isOpen) {
@@ -15692,6 +15756,103 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<void> _openAgentManagement() async {
+    if (!await requireMonetizationFeatureAccess(
+          context: context,
+          ref: ref,
+          feature: MonetizationFeature.agentManagement,
+        ) ||
+        !mounted) {
+      return;
+    }
+
+    final connectionId = _connectionId;
+    if (connectionId == null) return;
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null || !mounted) return;
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => AgentManagementScreen(
+          session: session,
+          onRuntimesRefreshed: (runtimes) =>
+              _syncAgentUpdateStatus(session, runtimes),
+          onProvidersRefreshed: () {
+            _tmuxService.invalidateInstalledAgentTools(session.connectionId);
+            unawaited(_tmuxService.prefetchInstalledAgentTools(session));
+            if (mounted) setState(() {});
+          },
+        ),
+      ),
+    );
+  }
+
+  void _scheduleAgentUpdateCheck(
+    SshSession session, {
+    bool initialCheck = true,
+  }) {
+    _agentUpdateCheckTimer?.cancel();
+    _agentUpdateCheckTimer = Timer(
+      initialCheck ? const Duration(seconds: 10) : const Duration(minutes: 5),
+      () async {
+        if (!mounted || _connectionId != session.connectionId) return;
+        if (!_wasBackgrounded &&
+            (ModalRoute.of(context)?.isCurrent ?? false) &&
+            _sessionsNotifier?.getState(session.connectionId) ==
+                SshConnectionState.connected) {
+          await _checkAgentUpdateStatus(session, forceRefresh: !initialCheck);
+        }
+        // Schedule after completion so slow SSH/registry calls cannot overlap.
+        if (mounted && _connectionId == session.connectionId) {
+          _scheduleAgentUpdateCheck(session, initialCheck: false);
+        }
+      },
+    );
+  }
+
+  void _syncAgentUpdateStatus(
+    SshSession session,
+    List<AgentRuntimeInfo> runtimes,
+  ) {
+    // Session-owned state survives reopening a live terminal without rechecking.
+    _agentUpdateRuntimes[session] = List.unmodifiable(runtimes);
+    if (mounted && _connectionId == session.connectionId) setState(() {});
+  }
+
+  Future<void> _checkAgentUpdateStatus(
+    SshSession session, {
+    bool forceRefresh = false,
+  }) async {
+    if ((!forceRefresh && _agentUpdateRuntimes[session] != null) ||
+        !ref.read(agentUpdateNotificationsNotifierProvider)) {
+      return;
+    }
+    if (!await ref
+            .read(monetizationServiceProvider)
+            .canUseFeature(MonetizationFeature.agentManagement) ||
+        !mounted) {
+      return;
+    }
+    final previous = _agentUpdateRuntimes[session];
+    try {
+      final service = ref.read(agentManagementServiceProvider);
+      final runtimes = forceRefresh
+          ? await service.checkForUpdates(session, forceRefresh: true)
+          : await service.checkForUpdates(session);
+      // Keep the existing dot while checking, or if the remote probe failed.
+      // A manager refresh is newer than this background check.
+      if (identical(_agentUpdateRuntimes[session], previous) &&
+          (runtimes.isEmpty ||
+              !runtimes.every(
+                (runtime) => runtime.status == AgentRuntimeStatus.failed,
+              ))) {
+        _syncAgentUpdateStatus(session, runtimes);
+      }
+    } on Object {
+      // Retry on the next interval without discarding the last known status.
+    }
+  }
+
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
       case 'snippets':
@@ -15699,6 +15860,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'change_theme':
         unawaited(_showThemePicker());
+        break;
+      case 'agent_management':
+        await _openAgentManagement();
         break;
       case 'open_port_forward_browser':
         await _openPortForwardBrowserFromTerminal();

@@ -2816,6 +2816,30 @@ HEAD b
     });
 
     test(
+      'invalidateSession forces the next load to re-probe providers',
+      () async {
+        final client = _MockSshClient();
+        final commands = <String>[];
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          commands.add(invocation.positionalArguments.first as String);
+          return _buildExecSession();
+        });
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+
+        await discovery.discoverSessionsStream(session).drain<void>();
+        final firstCommandCount = commands.length;
+        await discovery.discoverSessionsStream(session).drain<void>();
+        expect(commands.length, firstCommandCount);
+
+        discovery.invalidateSession(session);
+        await discovery.discoverSessionsStream(session).drain<void>();
+
+        expect(commands.length, greaterThan(firstCommandCount));
+      },
+    );
+
+    test(
       'reuses related worktree lookups across max-per-tool refreshes',
       () async {
         final client = _MockSshClient();

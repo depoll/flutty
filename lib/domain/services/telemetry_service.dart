@@ -143,6 +143,7 @@ class TelemetryService {
   static const _allowedMuxBackends = <String>{'auto', 'monkeymux', 'tmux'};
   static final Set<String> _allowedAgentTools = _buildAllowedAgentTools();
   static const _allowedPaywallFeatures = <String>{
+    'agent_management',
     'agent_launch_presets',
     'auto_connect_automation',
     'encrypted_transfers',

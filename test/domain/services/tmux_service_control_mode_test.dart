@@ -426,6 +426,32 @@ void main() {
       verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
     });
 
+    test('invalidation forces a fresh installed-agent probe', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 22);
+      const service = TmuxService();
+      var call = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        call += 1;
+        return _buildOpenExecSession(
+          stdout: call == 1
+              ? '/opt/homebrew/bin/claude\n${_doneMarker()}'
+              : '/opt/homebrew/bin/opencode\n${_doneMarker()}',
+        );
+      });
+
+      final before = await service.detectInstalledAgentTools(session);
+      service.invalidateInstalledAgentTools(session.connectionId);
+      final after = await service.detectInstalledAgentTools(session);
+
+      expect(before, {AgentLaunchTool.claudeCode});
+      expect(after, {AgentLaunchTool.openCode});
+      verify(() => client.execute(any(), pty: any(named: 'pty'))).called(2);
+      service.invalidateInstalledAgentTools(session.connectionId);
+    });
+
     test('prefetchInstalledAgentTools warms the detection cache', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 21);

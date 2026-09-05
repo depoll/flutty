@@ -107,6 +107,7 @@ class TmuxService {
 
   static final _installedAgentToolRequests =
       <int, Future<Set<AgentLaunchTool>>>{};
+  static final _installedAgentToolCacheGenerations = <int, int>{};
 
   static final _windowObservers =
       <_TmuxWindowWatchKey, _TmuxWindowChangeObserver>{};
@@ -194,6 +195,22 @@ class TmuxService {
   static bool hasInstalledAgentToolsCacheEntry(int connectionId) =>
       _installedAgentToolsCache.containsKey(connectionId);
 
+  /// Invalidates installed-agent detection for [connectionId].
+  ///
+  /// Any in-flight result from before this call is prevented from repopulating
+  /// the cache. The next detection or prefetch starts a fresh remote probe.
+  void invalidateInstalledAgentTools(int connectionId) {
+    _installedAgentToolCacheGenerations[connectionId] =
+        (_installedAgentToolCacheGenerations[connectionId] ?? 0) + 1;
+    _installedAgentToolsCache.remove(connectionId);
+    _installedAgentToolRequests.remove(connectionId)?.ignore();
+    DiagnosticsLogService.instance.info(
+      'tmux.agent',
+      'tool_detection_invalidated',
+      fields: {'connectionId': connectionId},
+    );
+  }
+
   /// Returns whether a window snapshot cache entry exists for [connectionId].
   @visibleForTesting
   static bool hasWindowSnapshotCacheEntry(int connectionId) =>
@@ -228,8 +245,7 @@ class TmuxService {
     _hasSessionRequests.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
-    _installedAgentToolsCache.remove(connectionId);
-    _installedAgentToolRequests.remove(connectionId)?.ignore();
+    invalidateInstalledAgentTools(connectionId);
     _activeAgentSessionMetadataCache.remove(connectionId);
     _activeAgentSessionMetadataRequests.remove(connectionId)?.ignore();
     _activeAgentSessionMetadataRequestTokens.remove(connectionId);
@@ -540,6 +556,8 @@ class TmuxService {
       return existingRequest;
     }
 
+    final cacheGeneration =
+        _installedAgentToolCacheGenerations[session.connectionId] ?? 0;
     DiagnosticsLogService.instance.info(
       'tmux.agent',
       'tool_detection_start',
@@ -558,11 +576,14 @@ class TmuxService {
               priority: priority,
             );
       final installed = parseInstalledAgentTools(output);
-      _installedAgentToolsCache[session.connectionId] =
-          _CachedInstalledAgentTools(
-            tools: Set<AgentLaunchTool>.unmodifiable(installed),
-            cachedAt: DateTime.now(),
-          );
+      if ((_installedAgentToolCacheGenerations[session.connectionId] ?? 0) ==
+          cacheGeneration) {
+        _installedAgentToolsCache[session.connectionId] =
+            _CachedInstalledAgentTools(
+              tools: Set<AgentLaunchTool>.unmodifiable(installed),
+              cachedAt: DateTime.now(),
+            );
+      }
       DiagnosticsLogService.instance.info(
         'tmux.agent',
         'tool_detection_complete',
