@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/acp_json.dart';
 import 'package:monkeyssh/domain/services/acp_json_rpc_connection.dart';
 import 'package:monkeyssh/domain/services/acp_transport.dart';
 
@@ -28,6 +29,24 @@ final class _MemoryTransport implements AcpTransport {
   }
 }
 
+final class _DecodedMemoryTransport extends _MemoryTransport
+    implements AcpDecodedTransport {
+  final frames = StreamController<AcpDecodedFrame>();
+
+  @override
+  Stream<List<int>> get incoming => throw StateError('Do not decode twice');
+
+  @override
+  Stream<AcpDecodedFrame> get incomingFrames => frames.stream;
+
+  @override
+  Future<void> close() async {
+    if (closed) return;
+    closed = true;
+    await frames.close();
+  }
+}
+
 Map<String, Object?> _decodeWrite(List<int> bytes) {
   final decoded = jsonDecode(utf8.decode(bytes).trim());
   return (decoded as Map).map((key, value) => MapEntry(key as String, value));
@@ -37,6 +56,51 @@ List<int> _encodeMessage(Map<String, Object?> message) =>
     utf8.encode('${jsonEncode(message)}\n');
 
 void main() {
+  test(
+    'decoded input skips byte parsing and preserves immutable identity',
+    () async {
+      final transport = _DecodedMemoryTransport();
+      final connection = AcpJsonRpcConnection(transport: transport);
+      addTearDown(connection.close);
+      final message = AcpJson.immutableObject({
+        'jsonrpc': '2.0',
+        'method': 'history',
+        'params': {'text': 'hello'},
+      });
+      final received = connection.notifications.first;
+      transport.frames.add(AcpDecodedFrame(message: message, byteLength: 80));
+      expect(identical((await received).raw, message), isTrue);
+    },
+  );
+
+  test('decoded input still validates size, version and request IDs', () async {
+    for (final frame in [
+      const AcpDecodedFrame(
+        message: {'jsonrpc': '2.0', 'method': 'history'},
+        byteLength: 129,
+      ),
+      const AcpDecodedFrame(
+        message: {'jsonrpc': '1.0', 'method': 'history'},
+        byteLength: 64,
+      ),
+      const AcpDecodedFrame(
+        message: {'jsonrpc': '2.0', 'method': 'permission', 'id': true},
+        byteLength: 64,
+      ),
+    ]) {
+      final transport = _DecodedMemoryTransport();
+      final connection = AcpJsonRpcConnection(
+        transport: transport,
+        maxFrameSize: 128,
+      );
+      final error = connection.errors.first;
+      transport.frames.add(frame);
+      expect(await error, isA<AcpProtocolException>());
+      expect(connection.isClosed, isTrue);
+      await connection.close();
+    }
+  });
+
   test('generates UUID string request IDs by default', () async {
     final transport = _MemoryTransport();
     final connection = AcpJsonRpcConnection(transport: transport);
