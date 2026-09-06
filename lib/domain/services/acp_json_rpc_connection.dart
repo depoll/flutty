@@ -198,12 +198,19 @@ final class AcpJsonRpcConnection {
     if (maxFrameSize <= 0) {
       throw ArgumentError.value(maxFrameSize, 'maxFrameSize');
     }
-    _incomingSubscription = transport.incoming.listen(
-      _handleBytes,
-      onError: _handleTransportError,
-      onDone: _handleTransportDone,
-      cancelOnError: false,
-    );
+    _incomingSubscription = transport is AcpDecodedTransport
+        ? transport.incomingFrames.listen(
+            _handleDecodedFrame,
+            onError: _handleTransportError,
+            onDone: _handleTransportDone,
+            cancelOnError: false,
+          )
+        : transport.incoming.listen(
+            _handleBytes,
+            onError: _handleTransportError,
+            onDone: _handleTransportDone,
+            cancelOnError: false,
+          );
   }
 
   /// Default deadline applied to requests.
@@ -223,7 +230,7 @@ final class AcpJsonRpcConnection {
     sync: true,
   );
   final _errors = StreamController<AcpJsonRpcException>.broadcast(sync: true);
-  late final StreamSubscription<List<int>> _incomingSubscription;
+  late final StreamSubscription<Object?> _incomingSubscription;
   Future<void> _writeTail = Future<void>.value();
   Future<void>? _closeFuture;
   var _closed = false;
@@ -369,7 +376,23 @@ final class AcpJsonRpcConnection {
       _protocolFailure(const AcpProtocolException('Invalid ACP JSON frame'));
       return;
     }
-    final message = AcpJson.object(decoded);
+    _handleMessage(AcpJson.object(decoded));
+  }
+
+  void _handleDecodedFrame(AcpDecodedFrame frame) {
+    if (_closed) return;
+    if (frame.byteLength > maxFrameSize || frame.byteLength < 0) {
+      _protocolFailure(
+        AcpProtocolException(
+          'ACP frame exceeds maximum size of $maxFrameSize bytes',
+        ),
+      );
+      return;
+    }
+    _handleMessage(frame.message, immutable: true);
+  }
+
+  void _handleMessage(AcpJsonMap? message, {bool immutable = false}) {
     if (message == null || message['jsonrpc'] != '2.0') {
       _protocolFailure(
         const AcpProtocolException('Invalid JSON-RPC 2.0 message'),
@@ -384,7 +407,7 @@ final class AcpJsonRpcConnection {
           AcpJsonRpcNotification(
             method: method,
             params: message['params'],
-            raw: AcpJson.immutableObject(message),
+            raw: immutable ? message : AcpJson.immutableObject(message),
           ),
         );
         return;
@@ -399,7 +422,7 @@ final class AcpJsonRpcConnection {
         id: id,
         method: method,
         params: message['params'],
-        raw: AcpJson.immutableObject(message),
+        raw: immutable ? message : AcpJson.immutableObject(message),
         respond: (result) => _writeMessage(<String, Object?>{
           'jsonrpc': '2.0',
           'id': id,

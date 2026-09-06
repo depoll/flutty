@@ -5,8 +5,10 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/acp_json.dart';
 import '../models/monkeymux_acp_bridge.dart';
 import '../models/remote_multiplexer.dart';
 import 'acp_transport.dart';
@@ -473,8 +475,8 @@ final class MonkeyMuxAcpBridgeService {
   });
 }
 
-/// Reconnecting MonkeyMux bridge transport that exposes only ACP NDJSON bytes.
-final class MonkeyMuxAcpTransport implements AcpTransport {
+/// Reconnecting MonkeyMux bridge transport with byte and decoded ACP input.
+final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
   MonkeyMuxAcpTransport._({
     required MonkeyMuxInstallerService installer,
     required Future<SshSession> Function() sessionProvider,
@@ -507,13 +509,14 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
   final List<Duration> _reconnectBackoff;
   final Duration _handshakeTimeout;
   final _incoming = StreamController<List<int>>(sync: true);
+  final _incomingFrames = StreamController<AcpDecodedFrame>(sync: true);
   final _states = StreamController<MonkeyMuxAcpTransportState>.broadcast(
     sync: true,
   );
   final _errors = StreamController<MonkeyMuxAcpBridgeException>.broadcast(
     sync: true,
   );
-  final _wireFrame = <int>[];
+  final _wireFrame = BytesBuilder(copy: false);
   final _wireInputChunks = Queue<({int generation, Uint8List bytes})>();
   final _outgoingFrame = <int>[];
   static const _maxPendingInputFrames = 32;
@@ -521,7 +524,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
 
   final _pendingInputFrames = Queue<Uint8List>();
   var _pendingInputBytes = 0;
-  final _pendingReplayFrames = Queue<Uint8List>();
+  final _pendingReplayFrames = Queue<_PreparedAcpOutput>();
 
   SSHSession? _channel;
   StreamSubscription<Uint8List>? _stdoutSubscription;
@@ -576,6 +579,9 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
 
   @override
   Stream<List<int>> get incoming => _incoming.stream;
+
+  @override
+  Stream<AcpDecodedFrame> get incomingFrames => _incomingFrames.stream;
 
   @override
   Future<void> write(List<int> bytes) async {
@@ -714,18 +720,20 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
             _activeWireInputChunk = chunk;
           }
 
-          final byte = chunk[_activeWireInputOffset++];
-          processedBytes += 1;
-          if (byte == 0x0a) {
-            final frame = List<int>.of(_wireFrame);
-            _wireFrame.clear();
-            if (frame.isNotEmpty && frame.last == 0x0d) frame.removeLast();
-            if (frame.isNotEmpty) _handleWireFrame(frame);
-            if (_closed || _terminalFailure) return;
-            if (turn.elapsed >= _wireInputTimeBudget) break;
-            continue;
+          // Retain typed slices rather than expanding every byte into a Dart
+          // int list. Scan at most one turn's budget before yielding.
+          final start = _activeWireInputOffset;
+          final end = (start + _wireInputByteBudget - processedBytes).clamp(
+            start,
+            chunk.length,
+          );
+          var cursor = start;
+          while (cursor < end && chunk[cursor] != 0x0a) {
+            cursor += 1;
           }
-          _wireFrame.add(byte);
+          _wireFrame.add(Uint8List.sublistView(chunk, start, cursor));
+          processedBytes += cursor - start;
+          _activeWireInputOffset = cursor;
           if (_wireFrame.length > monkeyMuxAcpBridgeMaxFrameBytes) {
             _wireFrame.clear();
             _failTerminal(
@@ -736,10 +744,17 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
             );
             return;
           }
-          if ((processedBytes & 0x7ff) == 0 &&
-              turn.elapsed >= _wireInputTimeBudget) {
-            break;
+          if (cursor < end) {
+            _activeWireInputOffset += 1;
+            processedBytes += 1;
+            var frame = _wireFrame.takeBytes();
+            if (frame.isNotEmpty && frame.last == 0x0d) {
+              frame = Uint8List.sublistView(frame, 0, frame.length - 1);
+            }
+            if (frame.isNotEmpty) await _handleWireFrame(frame);
+            if (_closed || _terminalFailure) return;
           }
+          if (turn.elapsed >= _wireInputTimeBudget) break;
         }
         _wireInputPumpYieldCount += 1;
         await Future<void>.delayed(Duration.zero);
@@ -784,17 +799,48 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     _wireInputPumpByteCount = 0;
   }
 
-  void _handleWireFrame(List<int> bytes) {
-    Map<String, Object?> message;
+  Future<void> _handleWireFrame(Uint8List bytes) async {
+    final generation = _generation;
+    final channel = _channel;
+    late final _PreparedWireFrame prepared;
     try {
-      message = _decodeSingleFrame(
-        bytes,
-        maxBytes: monkeyMuxAcpBridgeMaxFrameBytes,
-      );
+      // Yielding while collecting bytes cannot interrupt jsonDecode itself.
+      // Decode, freeze and encode large payloads on a worker instead.
+      if (bytes.length >= _metadataMaxBytes) {
+        final stopwatch = Stopwatch()..start();
+        _diagnostics.debug(
+          'acp.transport',
+          'large_frame_decode_started',
+          fields: {'byteCount': bytes.length, 'offloaded': !kIsWeb},
+        );
+        prepared = await compute(_prepareWireFrame, bytes);
+        _diagnostics.debug(
+          'acp.transport',
+          'large_frame_decoded',
+          fields: {
+            'byteCount': bytes.length,
+            'durationMs': stopwatch.elapsedMilliseconds,
+            'offloaded': !kIsWeb,
+          },
+        );
+      } else {
+        prepared = _prepareWireFrame(bytes);
+      }
     } on MonkeyMuxAcpBridgeException catch (error) {
-      _failTerminal(error);
+      if (generation == _generation && identical(channel, _channel)) {
+        _failTerminal(error);
+      }
       return;
     }
+    // A channel may close or be replaced while its worker is running. Never
+    // deliver or acknowledge that stale result on the replacement channel.
+    if (_closed ||
+        _terminalFailure ||
+        generation != _generation ||
+        !identical(channel, _channel)) {
+      return;
+    }
+    final message = prepared.message;
     if (message['version'] != monkeyMuxAcpBridgeProtocolVersion) {
       _failTerminal(
         const MonkeyMuxAcpBridgeException(
@@ -829,9 +875,9 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
         case 'hello':
           _handleHello(message);
         case 'output':
-          _handleOutput(message);
+          _handleOutput(message, prepared.output);
         case 'pending':
-          _handlePending(message);
+          _handlePending(message, prepared.output);
         case 'replay_end':
           _handleReplayEnd(message);
         case 'state':
@@ -1047,12 +1093,12 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     );
     _pendingHandshakeRequestCount = 0;
     while (_pendingReplayFrames.isNotEmpty && !_closed && !_terminalFailure) {
-      _incoming.add(_pendingReplayFrames.removeFirst());
+      _deliverOutput(_pendingReplayFrames.removeFirst());
     }
     _flushPendingInput();
   }
 
-  void _handleOutput(Map<String, Object?> message) {
+  void _handleOutput(Map<String, Object?> message, _PreparedAcpOutput? output) {
     if (!_matchesCurrentBridge(message)) return;
     if (!_connected) {
       _failTerminal(
@@ -1084,7 +1130,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
-    final encoded = utf8.encode('${jsonEncode(data)}\n');
+    final encoded = output!.bytes;
     if (encoded.length > monkeyMuxAcpBridgeMaxFrameBytes) {
       _failTerminal(
         const MonkeyMuxAcpBridgeException(
@@ -1095,12 +1141,15 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       return;
     }
     _commitSequence(sequence);
-    _incoming.add(encoded);
+    _deliverOutput(output);
     _sendAck(sequence);
     _finishDirectReplayIfComplete();
   }
 
-  void _handlePending(Map<String, Object?> message) {
+  void _handlePending(
+    Map<String, Object?> message,
+    _PreparedAcpOutput? output,
+  ) {
     if (!_matchesCurrentBridge(message)) return;
     if (!_connected || !_acceptsPendingFrames) {
       _failTerminal(
@@ -1121,7 +1170,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
       );
       return;
     }
-    final encoded = utf8.encode('${jsonEncode(data)}\n');
+    final encoded = output!.bytes;
     if (encoded.length > monkeyMuxAcpBridgeMaxFrameBytes) {
       _failTerminal(
         const MonkeyMuxAcpBridgeException(
@@ -1135,7 +1184,15 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     // baseline. Otherwise an automatic response could release it remotely,
     // followed by a channel loss that leaves the client at ACK 0 with nothing
     // left for the helper to replay.
-    _pendingReplayFrames.add(Uint8List.fromList(encoded));
+    _pendingReplayFrames.add(output);
+  }
+
+  void _deliverOutput(_PreparedAcpOutput output) {
+    if (_incomingFrames.hasListener) {
+      _incomingFrames.add(output.frame);
+    } else {
+      _incoming.add(output.bytes);
+    }
   }
 
   void _handleProviderState(Map<String, Object?> message) {
@@ -1563,6 +1620,7 @@ final class MonkeyMuxAcpTransport implements AcpTransport {
     _pendingInputBytes = 0;
     if (closeStreams) {
       if (!_incoming.isClosed) unawaited(_incoming.close());
+      if (!_incomingFrames.isClosed) unawaited(_incomingFrames.close());
       if (!_errors.isClosed) unawaited(_errors.close());
       if (!_states.isClosed) unawaited(_states.close());
     }
@@ -1613,6 +1671,38 @@ String _buildHelperCommand(
     r'if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}',
   ].join();
   return buildWindowsPowerShellCommand(script);
+}
+
+typedef _PreparedAcpOutput = ({AcpDecodedFrame frame, Uint8List bytes});
+typedef _PreparedWireFrame = ({
+  Map<String, Object?> message,
+  _PreparedAcpOutput? output,
+});
+
+// Top-level callback deliberately captures no SSH or UI state. compute uses
+// isolate exit to transfer the result without copying its large object graph.
+_PreparedWireFrame _prepareWireFrame(Uint8List bytes) {
+  final message = _decodeSingleFrame(
+    bytes,
+    maxBytes: monkeyMuxAcpBridgeMaxFrameBytes,
+  );
+  _PreparedAcpOutput? output;
+  final data = message['data'];
+  if ((message['type'] == 'output' || message['type'] == 'pending') &&
+      data is Map) {
+    final encoded = utf8.encode('${jsonEncode(data)}\n');
+    final immutable = AcpJson.immutableObject(AcpJson.object(data)!);
+    output = (
+      frame: AcpDecodedFrame(
+        message: immutable,
+        byteLength: encoded.length - 1,
+      ),
+      bytes: encoded,
+    );
+    // Do not retain both the mutable decode and its immutable copy.
+    message['data'] = immutable;
+  }
+  return (message: message, output: output);
 }
 
 Map<String, Object?> _decodeSingleFrame(
