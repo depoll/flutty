@@ -1635,6 +1635,102 @@ void main() {
     );
   });
 
+  test(
+    'late decoded subscriber receives already-acknowledged output',
+    () async {
+      final (:transport, :channel) = await _openHistoryTransport(
+        _DecodeDiagnostics(),
+      );
+      channel.addText(
+        _historyOutput(1, {
+              'jsonrpc': '2.0',
+              'method': 'history',
+              'params': {'text': 'kept'},
+            }) +
+            _historyOutput(2, {
+              'jsonrpc': '2.0',
+              'id': 'permission-1',
+              'method': 'permission',
+            }),
+      );
+      await _waitUntil(() => transport.lastDeliveredSequence == 2);
+
+      final rpc = AcpJsonRpcConnection(transport: transport);
+      addTearDown(rpc.close);
+      final notification = rpc.notifications.first;
+      final permission = rpc.serverRequests.first;
+      expect((await notification).params, {'text': 'kept'});
+      expect((await permission).id, 'permission-1');
+      // The alternative view cannot silently capture later output.
+      expect(() => transport.incoming.listen((_) {}), throwsStateError);
+    },
+  );
+
+  test('late byte subscriber receives buffered output in order', () async {
+    final (:transport, :channel) = await _openHistoryTransport(
+      _DecodeDiagnostics(),
+    );
+    channel.addText(
+      _historyOutput(1, {'jsonrpc': '2.0', 'method': 'first'}) +
+          _historyOutput(2, {'jsonrpc': '2.0', 'method': 'second'}),
+    );
+    await _waitUntil(() => transport.lastDeliveredSequence == 2);
+    final frames = await transport.incoming.take(2).map(_decodeFrame).toList();
+    expect(frames.map((frame) => frame['method']), ['first', 'second']);
+    expect(() => transport.incomingFrames.listen((_) {}), throwsStateError);
+  });
+
+  test('worker pauses stdout and resumes queued frames in order', () async {
+    final diagnostics = _DecodeDiagnostics();
+    final (:transport, :channel) = await _openHistoryTransport(diagnostics);
+    final received = transport.incomingFrames.take(3).toList();
+    var pausedDuringDecode = false;
+    var resumeCount = 0;
+    channel.stdout.onResume = () => resumeCount += 1;
+    diagnostics.onStarted = () {
+      pausedDuringDecode = channel.stdout.isPaused;
+      channel.addText(
+        _historyOutput(2, {'jsonrpc': '2.0', 'method': 'second'}) +
+            _historyOutput(3, {'jsonrpc': '2.0', 'method': 'third'}),
+      );
+    };
+    channel.addText(
+      _historyOutput(1, {
+        'jsonrpc': '2.0',
+        'method': 'first',
+        'params': {'text': 'x' * (4 * 1024 * 1024)},
+      }),
+    );
+    final frames = await received;
+    expect(pausedDuringDecode, isTrue);
+    expect(resumeCount, 1);
+    expect(channel.stdout.isPaused, isFalse);
+    expect(frames.map((frame) => frame.message['method']), [
+      'first',
+      'second',
+      'third',
+    ]);
+    expect(transport.lastDeliveredSequence, 3);
+  });
+
+  test('EOF during paused decoding drains the complete frame first', () async {
+    final diagnostics = _DecodeDiagnostics();
+    final (:transport, :channel) = await _openHistoryTransport(diagnostics);
+    final frame = transport.incomingFrames.first;
+    final failed = transport.errors.first;
+    diagnostics.onStarted = () => unawaited(channel.remoteClose());
+    channel.addText(
+      _historyOutput(1, {
+        'jsonrpc': '2.0',
+        'method': 'last',
+        'params': {'text': 'x' * (4 * 1024 * 1024)},
+      }),
+    );
+    expect((await frame).message['method'], 'last');
+    expect((await failed).kind, MonkeyMuxAcpBridgeErrorKind.sshChannel);
+    expect(transport.lastDeliveredSequence, 1);
+  });
+
   test('close stays responsive while a large frame is decoding', () async {
     final diagnostics = _DecodeDiagnostics();
     final (:transport, :channel) = await _openHistoryTransport(diagnostics);
@@ -1675,7 +1771,16 @@ void main() {
       final subscription = transport.incomingFrames.listen(frames.add);
       addTearDown(subscription.cancel);
       diagnostics.onStarted = () {
-        Timer.run(() => unawaited(channel.remoteClose()));
+        Timer.run(() async {
+          // A write failure observes channel loss independently of paused
+          // stdout. EOF is intentionally held until buffered input drains.
+          when(
+            () => channel.session.write(any()),
+          ).thenThrow(StateError('channel closed'));
+          await transport.write(
+            utf8.encode('{"jsonrpc":"2.0","method":"ping"}\n'),
+          );
+        });
       };
       final failed = transport.errors.first;
       channel.addText(

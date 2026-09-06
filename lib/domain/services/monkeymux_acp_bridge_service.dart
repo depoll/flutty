@@ -508,8 +508,9 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
   final DiagnosticsLogger _diagnostics;
   final List<Duration> _reconnectBackoff;
   final Duration _handshakeTimeout;
-  final _incoming = StreamController<List<int>>(sync: true);
-  final _incomingFrames = StreamController<AcpDecodedFrame>(sync: true);
+  // Both input views share one single-subscription buffer. Outputs received
+  // before subscription must remain available to whichever view is chosen.
+  final _incoming = StreamController<_PreparedAcpOutput>(sync: true);
   final _states = StreamController<MonkeyMuxAcpTransportState>.broadcast(
     sync: true,
   );
@@ -578,10 +579,12 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
   bool didSkipHistoricalReplay() => _skippedHistoricalReplay;
 
   @override
-  Stream<List<int>> get incoming => _incoming.stream;
+  Stream<List<int>> get incoming =>
+      _incoming.stream.map((output) => output.bytes);
 
   @override
-  Stream<AcpDecodedFrame> get incomingFrames => _incomingFrames.stream;
+  Stream<AcpDecodedFrame> get incomingFrames =>
+      _incoming.stream.map((output) => output.frame);
 
   @override
   Future<void> write(List<int> bytes) async {
@@ -807,22 +810,35 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
       // Yielding while collecting bytes cannot interrupt jsonDecode itself.
       // Decode, freeze and encode large payloads on a worker instead.
       if (bytes.length >= _metadataMaxBytes) {
-        final stopwatch = Stopwatch()..start();
-        _diagnostics.debug(
-          'acp.transport',
-          'large_frame_decode_started',
-          fields: {'byteCount': bytes.length, 'offloaded': !kIsWeb},
-        );
-        prepared = await compute(_prepareWireFrame, bytes);
-        _diagnostics.debug(
-          'acp.transport',
-          'large_frame_decoded',
-          fields: {
-            'byteCount': bytes.length,
-            'durationMs': stopwatch.elapsedMilliseconds,
-            'offloaded': !kIsWeb,
-          },
-        );
+        final stdout = _stdoutSubscription;
+        // Stop accepting later chunks while the worker owns this frame. Keep
+        // the captured subscription so a stale worker cannot resume a new one.
+        stdout?.pause();
+        try {
+          final stopwatch = Stopwatch()..start();
+          _diagnostics.debug(
+            'acp.transport',
+            'large_frame_decode_started',
+            fields: {'byteCount': bytes.length, 'offloaded': !kIsWeb},
+          );
+          prepared = await compute(_prepareWireFrame, bytes);
+          _diagnostics.debug(
+            'acp.transport',
+            'large_frame_decoded',
+            fields: {
+              'byteCount': bytes.length,
+              'durationMs': stopwatch.elapsedMilliseconds,
+              'offloaded': !kIsWeb,
+            },
+          );
+        } finally {
+          if (!_closed &&
+              !_terminalFailure &&
+              generation == _generation &&
+              identical(stdout, _stdoutSubscription)) {
+            stdout?.resume();
+          }
+        }
       } else {
         prepared = _prepareWireFrame(bytes);
       }
@@ -1187,13 +1203,7 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
     _pendingReplayFrames.add(output);
   }
 
-  void _deliverOutput(_PreparedAcpOutput output) {
-    if (_incomingFrames.hasListener) {
-      _incomingFrames.add(output.frame);
-    } else {
-      _incoming.add(output.bytes);
-    }
-  }
+  void _deliverOutput(_PreparedAcpOutput output) => _incoming.add(output);
 
   void _handleProviderState(Map<String, Object?> message) {
     if (!_matchesCurrentBridge(message)) return;
@@ -1620,7 +1630,6 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
     _pendingInputBytes = 0;
     if (closeStreams) {
       if (!_incoming.isClosed) unawaited(_incoming.close());
-      if (!_incomingFrames.isClosed) unawaited(_incomingFrames.close());
       if (!_errors.isClosed) unawaited(_errors.close());
       if (!_states.isClosed) unawaited(_states.close());
     }

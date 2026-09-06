@@ -16,6 +16,8 @@ abstract interface class AcpTransport {
 ///
 /// Consumers subscribe to this OR [AcpTransport.incoming], not both. This avoids
 /// encoding and parsing large history payloads a second time on the UI isolate.
+/// Input received before subscription must be retained for either view; choosing
+/// one view must not strand earlier output in the other view.
 abstract interface class AcpDecodedTransport implements AcpTransport {
   /// Ordered, deeply immutable JSON objects with their encoded frame size.
   Stream<AcpDecodedFrame> get incomingFrames;
