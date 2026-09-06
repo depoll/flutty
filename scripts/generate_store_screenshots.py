@@ -28,7 +28,7 @@ import termios
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 ADB: Path | None = None
@@ -41,6 +41,7 @@ ANSI_ESCAPE_PATTERN = re.compile(
 KEY_BYTES = {
     'Enter': '\r',
     'Up': '\x1b[A',
+    'Down': '\x1b[B',
     'C-l': '\x0c',
 }
 CLEAR_SCREEN_SEQUENCES = (
@@ -127,10 +128,13 @@ TARGETS = {
 def main() -> None:
     _prefer_stable_xcode()
     args = _parse_args()
+    if args.gallery_only:
+        _write_iphone_gallery()
+        return
     targets = _targets_for_platform(args.platform)
     with StoreDemoEnvironment(seed_platform=args.platform) as demo:
         for target in targets:
-            _run_target(target, demo)
+            _run_target(target, demo, scene=args.scene)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -143,6 +147,16 @@ def _parse_args() -> argparse.Namespace:
         nargs='?',
         default='both',
         help='Which store screenshot set to generate.',
+    )
+    parser.add_argument(
+        '--scene',
+        choices=['terminal_copilot', 'hosts', 'snippets', 'monkeymux_windows',
+                 'sftp', 'terminal_claude', 'native_copilot', 'agent_management'],
+        help='Recapture one scene in place, preserving the other screenshots.',
+    )
+    parser.add_argument(
+        '--gallery-only', action='store_true',
+        help='Compose the README gallery from existing iPhone captures, without launching the app.',
     )
     return parser.parse_args()
 
@@ -159,7 +173,9 @@ def _targets_for_platform(platform: str) -> list[ScreenshotTarget]:
     return list(TARGETS.values())
 
 
-def _run_target(target: ScreenshotTarget, demo: StoreDemoEnvironment) -> None:
+def _run_target(
+    target: ScreenshotTarget, demo: StoreDemoEnvironment, *, scene: str | None = None,
+) -> None:
     print(f'Generating {target.name} screenshots...')
     demo.reset_monkeymux()
     if target.platform == 'ios':
@@ -171,7 +187,7 @@ def _run_target(target: ScreenshotTarget, demo: StoreDemoEnvironment) -> None:
         restore_android = _configure_android_display(target, device_id)
 
     try:
-        _run_flutter_capture(target, device_id, demo)
+        _run_flutter_capture(target, device_id, demo, scene=scene)
     finally:
         if restore_android is not None:
             restore_android()
@@ -181,6 +197,8 @@ def _run_flutter_capture(
     target: ScreenshotTarget,
     device_id: str,
     demo: StoreDemoEnvironment,
+    *,
+    scene: str | None = None,
 ) -> None:
     env = os.environ.copy()
     java_home = _java_home_17()
@@ -200,6 +218,8 @@ def _run_flutter_capture(
         '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
         '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
     ]
+    if scene is not None:
+        dart_defines.append(f'--dart-define=STORE_SCREENSHOT_SCENE={scene}')
     if demo.demo_image_b64:
         dart_defines.append(
             f'--dart-define=STORE_SCREENSHOT_DEMO_IMAGE_B64={demo.demo_image_b64}',
@@ -253,6 +273,7 @@ def _run_flutter_capture(
                     target=target,
                     device_id=device_id,
                     paths=[ROOT / path for path in payload['paths']],
+                    scene=payload.get('scene'),
                 )
             if ERROR_MARKER in line:
                 failure = line.split(ERROR_MARKER, 1)[1].strip()
@@ -568,7 +589,7 @@ class StoreDemoEnvironment:
               CLAUDE_CODE_HIDE_CWD=1 \\
               ANTHROPIC_API_KEY={dummy_anthropic_key} \\
               {self._shell_quote(self._claude)} \\
-              --bare \\
+              --bare --model sonnet \\
               --name 'Claude Code Workspace'
             """,
         )
@@ -670,7 +691,7 @@ class StoreDemoEnvironment:
                     '',
                     '| Platform | Form factors | Scenes |',
                     '| --- | --- | --- |',
-                    '| App Store | iPhone 6.9, iPad 13 | Native Copilot, Copilot terminal, hosts, snippets, MonkeyMux selector with all supported agent windows, SFTP, Claude Code |',
+                    '| App Store | iPhone 6.9, iPad 13 | Copilot terminal, hosts, snippets, MonkeyMux selector, SFTP, Claude Code, native chat (Pro caption), Agent Management (Pro) |',
                     '| Google Play | Phone, 7-inch tablet, 10-inch tablet | Same scene order for production and private tracks |',
                     '',
                     'Validation checklist:',
@@ -1045,6 +1066,10 @@ class StoreDemoEnvironment:
             elif _visible_text_contains_marker(text, 'Detected a custom API key'):
                 self._monkeymux_send_keys('claude', 'Up', 'Enter')
             elif _visible_text_contains_marker(text, 'Yes, I trust this folder'):
+                # Newer Claude versions default to No, exit. Only trust the
+                # disposable workspace created and owned by this generator.
+                if re.search(r'❯\s*No,\s*exit', _strip_terminal_output(text)):
+                    self._monkeymux_send_keys('claude', 'Down')
                 self._monkeymux_send_keys('claude', 'Enter')
             elif _visible_text_contains_marker(text, 'Press Ente'):
                 self._monkeymux_send_keys('claude', 'Enter')
@@ -1960,11 +1985,87 @@ def _free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
+# Only entirely Pro-only features get store badges. Features with any free
+# access, including native chat, use the unbadged app capture.
+PRO_SCENE_CAPTIONS = {
+    'agent_management': (
+        'Agent Management',
+        'Check versions. Install, update & repair remote agents.',
+    ),
+}
+
+
+def _add_pro_caption(screenshot: Image.Image, scene: str) -> Image.Image:
+    title, subtitle = PRO_SCENE_CAPTIONS[scene]
+    width, height = screenshot.size
+    band_height = round(width * 0.16)
+    canvas = Image.new('RGB', screenshot.size, '#0D0D12')
+    app = ImageOps.contain(
+        screenshot, (width, height - band_height), Image.Resampling.LANCZOS,
+    )
+    canvas.paste(app, ((width - app.width) // 2, 0))
+    draw = ImageDraw.Draw(canvas)
+    margin = round(width * 0.035)
+    top = height - band_height
+    draw.line((margin, top, width - margin, top), fill='#2A2A3A', width=2)
+    title_font = ImageFont.load_default(size=round(width * 0.035))
+    subtitle_font = ImageFont.load_default(size=round(width * 0.023))
+    badge_font = ImageFont.load_default(size=round(width * 0.026))
+    badge_width, badge_height = round(width * 0.105), round(width * 0.05)
+    badge_x, badge_y = width - margin - badge_width, top + margin
+    draw.rounded_rectangle(
+        (badge_x, badge_y, badge_x + badge_width, badge_y + badge_height),
+        radius=round(width * 0.009), fill='#58A38C',
+    )
+    draw.text(
+        (badge_x + badge_width / 2, badge_y + badge_height / 2),
+        'PRO', font=badge_font, fill='#0D0D12', anchor='mm',
+    )
+    draw.text((margin, badge_y), title, font=title_font, fill='#F0F0F5')
+    draw.text(
+        (margin, top + round(width * 0.103)), subtitle,
+        font=subtitle_font, fill='#B8BDC8',
+    )
+    return canvas
+
+
+def _write_iphone_gallery() -> Path:
+    folder = ROOT / 'ios/fastlane/screenshots/en-US'
+    width, height, margin = 660, 1434, 12
+    canvas = Image.new('RGB', (width * 2 + margin * 3, height + margin * 2), '#0D0D12')
+    for column, index in enumerate((7, 8)):
+        with Image.open(folder / f'{index:02d}_iphone_6_9.png') as image:
+            shot = ImageOps.contain(
+                image.convert('RGB'), (width, height), Image.Resampling.LANCZOS,
+            )
+            canvas.paste(shot, (margin + column * (width + margin), margin))
+    output = ROOT / 'build/store-screenshots/monkeyssh-agent-workspace.png'
+    output.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output, optimize=True)
+    print(f'Wrote {output.relative_to(ROOT)}')
+    return output
+
+def _assert_android_capture_foreground(device_id: str) -> None:
+    activities = subprocess.check_output(
+        [str(_adb_path()), '-s', device_id, 'shell', 'dumpsys', 'activity', 'activities'],
+        text=True, timeout=10,
+    )
+    lines = activities.splitlines()
+    resumed = [line for line in lines if 'topResumedActivity=' in line]
+    if not resumed:
+        resumed = [line for line in lines if 'mResumedActivity:' in line]
+    if not resumed or not all('xyz.depollsoft.monkeyssh/' in line for line in resumed):
+        raise RuntimeError(
+            'Android capture lost the MonkeySSH foreground activity. '
+            'Use a dedicated emulator selected with ANDROID_SERIAL.',
+        )
+
 def _capture_native_screenshot(
     *,
     target: ScreenshotTarget,
     device_id: str,
     paths: list[Path],
+    scene: str | None = None,
 ) -> None:
     with tempfile.NamedTemporaryFile(suffix='.png') as tmp:
         tmp_path = Path(tmp.name)
@@ -1975,6 +2076,7 @@ def _capture_native_screenshot(
                 check=True,
             )
         else:
+            _assert_android_capture_foreground(device_id)
             result = subprocess.run(
                 [str(_adb_path()), '-s', device_id, 'exec-out', 'screencap', '-p'],
                 cwd=ROOT,
@@ -1991,6 +2093,13 @@ def _capture_native_screenshot(
                     target.size,
                     method=Image.Resampling.LANCZOS,
                 )
+            if scene in PRO_SCENE_CAPTIONS:
+                raw_path = (
+                    ROOT / 'build/store-screenshots/raw' / target.name / f'{scene}.png'
+                )
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                screenshot.save(raw_path)
+                screenshot = _add_pro_caption(screenshot, scene)
             for path in paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 screenshot.save(path, optimize=True)

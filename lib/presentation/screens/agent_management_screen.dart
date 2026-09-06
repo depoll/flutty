@@ -12,6 +12,10 @@ import '../../domain/services/ssh_service.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/premium_access.dart';
 
+const _redactStoreScreenshotIdentities = bool.fromEnvironment(
+  'STORE_SCREENSHOT_REDACT_IDENTITIES',
+);
+
 /// Manages coding-agent CLIs and ACP adapters on an active remote host.
 class AgentManagementScreen extends ConsumerStatefulWidget {
   /// Creates the management screen for [session].
@@ -953,7 +957,10 @@ class _RuntimeRowState extends State<_RuntimeRow> {
                 if (runtime.detectionSource case final value?)
                   _DetailLine(label: 'Install source', value: value),
                 if (runtime.executablePath case final value?)
-                  _DetailLine(label: 'Executable', value: value),
+                  _DetailLine(
+                    label: 'Executable',
+                    value: _displayExecutablePath(value),
+                  ),
                 if (runtime.hasUpdate && !runtime.managedByPackageManager)
                   const Text(
                     'Update this installation on the host, then re-check its version.',
@@ -1133,5 +1140,9 @@ String? _sourceLine(AgentRuntimeInfo runtime) {
   final path = runtime.executablePath;
   if (path == null) return null;
   final source = runtime.detectionSource;
-  return source == null ? path : '$source · $path';
+  final displayPath = _displayExecutablePath(path);
+  return source == null ? displayPath : '$source · $displayPath';
 }
+
+String _displayExecutablePath(String path) =>
+    _redactStoreScreenshotIdentities ? path.split(RegExp(r'[/\\]')).last : path;

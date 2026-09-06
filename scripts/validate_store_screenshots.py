@@ -13,7 +13,7 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-SCREENSHOT_COUNT = 7
+SCREENSHOT_COUNT = 8
 IOS_SCREENSHOTS = {
     ROOT / 'ios/fastlane/screenshots/en-US': {
         'iphone_6_9': (1320, 2868),
@@ -256,7 +256,15 @@ def _validate_ocr_content(paths: list[Path]) -> None:
         elif filename in {'06_iphone_6_9.png', '06_ipad_13.png', '6.png'}:
             _require_ocr_markers(path, text, ['Claude Code'])
         elif filename in {'07_iphone_6_9.png', '07_ipad_13.png', '7.png'}:
-            _require_ocr_markers(path, text, ['Message the agent', 'native agent window'])
+            _require_ocr_markers(
+                path, text,
+                ['Message the agent', 'reconnect'],
+            )
+        elif filename in {'08_iphone_6_9.png', '08_ipad_13.png', '8.png'}:
+            _require_ocr_markers(
+                path, text,
+                ['Agent Management', 'PRO', 'Copilot CLI', 'Claude Code'],
+            )
 
     for grouped_texts in monkeymux_texts.values():
         paths_description = ', '.join(
@@ -312,6 +320,10 @@ def _text_contains_marker(
     normalized_text: str,
     compacted_text: str,
 ) -> bool:
+    if marker == 'PRO':
+        # A substring match would accept "prompt", "progress" or "provider"
+        # even when the store-only badge was accidentally omitted.
+        return re.search(r'\bpro\b', normalized_text) is not None
     return (
         marker.casefold() in normalized_text
         or _compact_ocr_text(marker) in compacted_text

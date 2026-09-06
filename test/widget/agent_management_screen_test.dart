@@ -186,6 +186,35 @@ void main() {
     verifyNever(() => service.refreshAll(session));
   });
 
+  testWidgets('store capture redacts executable paths in rows and details', (
+    tester,
+  ) async {
+    const redacted = bool.fromEnvironment('STORE_SCREENSHOT_REDACT_IDENTITIES');
+    const path = '/Users/private-owner/.local/bin/claude';
+    runtimes = [
+      AgentRuntimeInfo(
+        definition: agentCliRuntimeDefinitions.first,
+        status: AgentRuntimeStatus.installed,
+        installedVersion: '2.1.0',
+        executablePath: path,
+        detectionSource: 'PATH',
+      ),
+    ];
+    await pumpScreen(tester);
+    expect(
+      find.text(redacted ? 'PATH · claude' : 'PATH · $path'),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('agent-details-cli:claude')));
+    await tester.pumpAndSettle();
+    expect(find.text(redacted ? 'claude' : path), findsOneWidget);
+    expect(
+      find.textContaining('private-owner'),
+      redacted ? findsNothing : findsWidgets,
+    );
+    expect(find.text('Installed v2.1.0'), findsOneWidget);
+  });
+
   testWidgets('renders CLI and ACP status with source paths', (tester) async {
     await pumpScreen(tester);
 
@@ -193,7 +222,14 @@ void main() {
     expect(find.text('agent CLIs'), findsOneWidget);
     expect(find.text('ACP adapters'), findsOneWidget);
     expect(find.text('Update v1.0.0 → v1.1.0'), findsOneWidget);
-    expect(find.text('Homebrew · /opt/homebrew/bin/claude'), findsOneWidget);
+    expect(
+      find.text(
+        const bool.fromEnvironment('STORE_SCREENSHOT_REDACT_IDENTITIES')
+            ? 'Homebrew · claude'
+            : 'Homebrew · /opt/homebrew/bin/claude',
+      ),
+      findsOneWidget,
+    );
     expect(find.text('Not installed · latest v1.0.0'), findsOneWidget);
     expect(find.text('Installed v1.0.0'), findsOneWidget);
   });
@@ -758,7 +794,11 @@ void main() {
     );
     await pumpScreen(tester);
 
-    final collapsedSource = find.text('npm global · $path');
+    const displayPath =
+        bool.fromEnvironment('STORE_SCREENSHOT_REDACT_IDENTITIES')
+        ? 'claude'
+        : path;
+    final collapsedSource = find.text('npm global · $displayPath');
     expect(collapsedSource, findsOneWidget);
     expect(
       tester.widget<Text>(collapsedSource).overflow,
@@ -784,7 +824,7 @@ void main() {
     ]) {
       expect(inRow('cli:claude', find.text(label)), findsOneWidget);
     }
-    for (final value in ['1.0.0', '1.1.0', 'npm global', path]) {
+    for (final value in ['1.0.0', '1.1.0', 'npm global', displayPath]) {
       final selectable = inRow(
         'cli:claude',
         find.widgetWithText(SelectableText, value),
@@ -871,7 +911,9 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
-        expect(lastRow.hitTestable(), findsOneWidget);
+        // The center of a tall row need not be visible at large text scales.
+        // Check that its actual recheck control is reachable below.
+        expect(lastRow, findsOneWidget);
         expect(updateAll.hitTestable(), findsOneWidget);
         final recheck = find.byKey(const ValueKey('agent-recheck-acp:claude'));
         await tester.ensureVisible(recheck);
