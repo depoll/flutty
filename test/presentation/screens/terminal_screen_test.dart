@@ -9000,7 +9000,7 @@ void main() {
     );
 
     testWidgets(
-      'applies and clears inactive MonkeyMux progress from live window events',
+      'applies and clears active and inactive MonkeyMux progress from window events',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 800));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -9086,6 +9086,34 @@ void main() {
         windowEvents.add(const TmuxWindowListEvent(initialWindows));
         await tester.pump();
         expect(find.byKey(progressKey), findsNothing);
+
+        const taskProgressKey = ValueKey('terminal-osc-progress');
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 0,
+              id: '@1',
+              name: 'Pi',
+              isActive: true,
+              terminalProgress: TerminalProgress(
+                state: TerminalProgressState.indeterminate,
+              ),
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(taskProgressKey), findsOneWidget);
+        expect(
+          session.terminalProgress?.state,
+          TerminalProgressState.indeterminate,
+        );
+
+        // A helper restore that restarts Pi omits the previous process's
+        // progress. The authoritative idle snapshot must clear the top bar.
+        windowEvents.add(const TmuxWindowListEvent(initialWindows));
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(session.terminalProgress, isNull);
+        expect(find.byKey(taskProgressKey), findsNothing);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

@@ -16,7 +16,7 @@ Areas traced included:
 
 ### ACP and MonkeyMux
 
-The helper version is bumped to `0.1.185`, keeping the compiled version and generated manifest aligned so the normal update path recognizes the patched helper.
+The helper version is bumped to `0.1.186`, keeping the compiled version and generated manifest aligned so the normal update path recognizes the patched helper.
 
 - **Shutdown could wait forever for a blocked provider write.** `remote/monkeymux/acp_bridge.go` now protects stdin ownership separately from frame serialization. Closing the pipe can interrupt a blocked write rather than waiting for the writer's lock.
 - **A fast provider response could arrive before request registration.** The bridge registers requests before writing, removes registrations on write failure, and does not overwrite the provider's returned session ID with stale request metadata. This prevents completed requests from remaining in flight and preserves session identity.
@@ -63,11 +63,11 @@ These changes do not alter valid protocol formats or intended UI behavior. Bug f
 | Check | Result |
 | --- | --- |
 | `flutter analyze --no-pub` | No issues |
-| `flutter test --no-pub --reporter expanded` | 4,039 passed; one opt-in localhost SSH test skipped |
+| `flutter test --no-pub --reporter expanded` | 4,046 passed; one opt-in localhost SSH test skipped |
 | Full vendored xterm suite, run from `third_party/xterm` with its own dependencies | 358 passed before the 12 new CSI cases were moved into the root suite |
 | `GOTOOLCHAIN=go1.26.5 go test -race ./...`, in `remote/monkeymux` | Passed on macOS arm64 |
 | Go 1.26.5 Linux amd64 and Windows amd64 test-binary compilation | Passed; not runtime execution |
-| Bundled MonkeyMux `0.1.185` assets | Built all six OS/architecture targets; generated assets remain untracked |
+| Bundled MonkeyMux `0.1.186` assets | Built all six OS/architecture targets; generated assets remain untracked |
 | `GOTOOLCHAIN=go1.26.5 go vet ./...` and changed Go formatting | Passed |
 | `python3 -m unittest discover -s test/scripts -p 'store_assets_test.py'` | 20 passed |
 | Release version resolver and release-note metadata tests | 21 tests / 42 assertions and 4 tests / 15 assertions passed |
@@ -89,6 +89,13 @@ A further Astra subagent reviewed all 37 changed files in [PR #808](https://gith
 - Bind RPC timeout, cancellation, and deferred write/encoding cleanup to the original pending record rather than its reusable ID. Old callbacks and cancellation handles cannot remove a newer request.
 
 These runtime regressions were reproduced before fixing them. A separate Astra follow-up review found no remaining blocking issue, with 33 targeted Dart tests/probes, 20 archive tests, and repeated Go race probes passing independently. The final integrated checks passed 4,039 app tests, the complete Go 1.26.5 race suite, analysis, and Linux/Windows test-binary cross-compilation. The helper was bumped to `0.1.185` and all six bundles rebuilt. The earlier PR commit also passed hosted CI, including Linux/Windows Go execution and all five native build targets; those results do not substitute for CI on the follow-up commits.
+
+## User-reported resume bugs
+
+- **iOS requested clipboard access immediately on app resume.** With local clipboard sharing enabled, terminal startup/resume took an initial local clipboard snapshot and started a 750 ms polling timer. Native iOS now skips both automatic read paths, including the callback guard. Explicit Paste still reads text/images/files; permitted OSC 52 queries, remote-to-local updates, and Android opt-in polling remain supported. Settings explain the iOS behavior. A platform-channel regression reproduced the unsolicited read before the change. Seven new widget cases cover iOS/Android startup and resume with sharing on/off, explicit iOS paste, and settings copy at phone width. The affected suites passed 277 tests.
+- **The progress bar above a resumed Pi terminal kept spinning after a helper update.** The old process's OSC 9;4 busy marker was saved before shutdown, copied into the new window, and never cleared when Pi resumed idle. Ordinary CLI/shell restore options now discard process-owned progress. Restore-only shell history also strips OSC 9;4 markers so late scrollback replay cannot resurrect the bar after an idle control snapshot. The filter reuses existing terminal-aware parsing and preserves unrelated OSC, links, UTF-8 text, and opaque DCS payloads. Four framing regressions failed before this additional correction and pass afterward. Resume identity and commands are unchanged; normal reconnects and native ACP handoffs that retain the running agent keep their progress. Sixteen portable regression cases failed before the correction and now pass, covering four CLI/shell types and all four progress states. Fresh busy/clear updates still work. The app's control-stream widget test confirms that an idle authoritative snapshot clears the top progress bar.
+
+Independent Astra review caught the history-replay edge case, and a follow-up review found no remaining blocking issue after it was addressed. MonkeyMux `0.1.186` includes the restore correction. All six helper targets were rebuilt. Combined validation passed 4,046 app tests, the complete Go 1.26.5 race suite, analysis, and Linux/Windows test-binary compilation. One opt-in localhost SSH test remains skipped; the native iOS permission popup itself was not exercised on a physical device.
 
 ## Limits and follow-up areas
 
