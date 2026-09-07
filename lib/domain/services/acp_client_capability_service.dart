@@ -782,6 +782,7 @@ final class AcpClientCapabilityService {
     }
     if (_autoApproveForSession(sessionId)) {
       await _writeFile(path, content);
+      _ensureRequestActive(request);
       await request.respond();
       _diagnostics.info('acp.capability', 'write_auto_approved');
       return;

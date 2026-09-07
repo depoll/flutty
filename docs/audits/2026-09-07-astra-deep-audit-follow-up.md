@@ -72,12 +72,14 @@ Flutter tests ran serially across invocations after concurrent startup generated
 
 ## PR feedback follow-up
 
-Both findings in [PR #809](https://github.com/depollsoft/MonkeySSH/pull/809) are addressed:
+Review findings in [PR #809](https://github.com/depollsoft/MonkeySSH/pull/809) are addressed:
 
 - [ACP teardown admission](https://github.com/depollsoft/MonkeySSH/pull/809#discussion_r3951388859): a reference-counted closing-session guard rejects new terminal, write, permission, and read requests until every overlapping cleanup finishes. A `finally` block restores admission after success or failure. Six gated tests exercise terminal release, registry cancellation, failure paths, both overlap completion orders, sibling requests, and later resume. This is a transient guard, not a permanent session denylist.
 - [Paragraph capacity eviction](https://github.com/depollsoft/MonkeySSH/pull/809#discussion_r3951388886): insertion-ordered map storage promotes hits by remove/reinsert and disposes the oldest entry before inserting into a full cache. This preserves LRU order without scanning Quiver's MRU-to-LRU iterable for its final entry. The two eviction regressions failed before the correction. Tests now assert disposal directly, cover sustained capacity-one churn, replacement promotion, and misses without manual paragraph disposal. Nonpositive capacity is rejected so a returned paragraph always has a cache owner; every production caller already uses positive capacity.
 
-Follow-up validation passed clean Flutter analysis, all 4,115 app tests with the same one opt-in SSH skip, and all 346 vendored xterm tests. An independent Astra review found no blockers in these corrections. Earlier hosted CI also passed all five native build targets and Linux/Windows Go execution on the original PR commit; the follow-up commit must pass its own required checks before merge.
+- [Late auto-approved write response](https://github.com/depollsoft/MonkeySSH/pull/809#discussion_r3951500794): recheck request activity after the awaited remote write, before returning success. Two regressions failed before the guard when the service or owning session closed during the write. Soft-detach and sibling-close controls continue to succeed. An already issued remote write cannot be undone; the change prevents a stale success response. After this final guard, all 134 affected capability/session-manager/lifecycle tests and fresh Flutter analysis passed.
+
+Before that final single-guard correction, follow-up validation passed clean Flutter analysis, all 4,115 app tests with the same one opt-in SSH skip, and all 346 vendored xterm tests. An independent Astra review found no blockers in these corrections. Earlier hosted CI also passed all five native build targets and Linux/Windows Go execution on the original PR commit; the follow-up commit must pass its own required checks before merge.
 
 ## Limits and follow-up areas
 

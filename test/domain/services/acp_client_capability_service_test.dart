@@ -861,6 +861,50 @@ void main() {
       }
     }
 
+    for (final boundary in ['service', 'session', 'detach', 'sibling']) {
+      test(
+        'auto-approved write completion respects $boundary teardown',
+        () async {
+          final gate = Completer<void>();
+          files.writeGate = gate.future;
+          service.setSessionAutoApprovePermissions('session-1', enabled: true);
+          transport.sendRequest('gated-write', 'fs/write_text_file', {
+            'sessionId': 'session-1',
+            'path': '/workspace/a.txt',
+            'content': 'written',
+          });
+          await _settle();
+          expect(files.writePaths, ['/workspace/a.txt']);
+          expect(files.files, isEmpty);
+
+          switch (boundary) {
+            case 'service':
+              await service.close();
+            case 'session':
+              await service.closeSession('session-1');
+            case 'detach':
+              await service.detach();
+            case 'sibling':
+              await service.closeSession('session-2');
+          }
+          gate.complete();
+          await _settle();
+
+          // Teardown cannot undo an already issued remote write, but a canceled
+          // request must not send a success reply after the write finishes.
+          expect(utf8.decode(files.files['/workspace/a.txt']!), 'written');
+          final response = transport.responseFor('gated-write');
+          if (boundary == 'service' || boundary == 'session') {
+            expect(response['error'], isNotNull);
+            expect(response.containsKey('result'), isFalse);
+          } else {
+            expect(response['error'], isNull);
+            expect(response.containsKey('result'), isTrue);
+          }
+        },
+      );
+    }
+
     test(
       'does not start a terminal after its cwd validation is closed',
       () async {
@@ -1255,6 +1299,8 @@ final class _FakeFileSystem implements AcpRemoteFileSystem {
   Exception? writeFailure;
   Future<void>? canonicalizeGate;
   Future<void>? readGate;
+  Future<void>? writeGate;
+  final writePaths = <String>[];
 
   @override
   Future<String> canonicalizeExistingPath(String path) async {
@@ -1286,6 +1332,8 @@ final class _FakeFileSystem implements AcpRemoteFileSystem {
 
   @override
   Future<void> write(String path, Uint8List bytes) async {
+    writePaths.add(path);
+    if (writeGate case final gate?) await gate;
     final failure = writeFailure;
     if (failure != null) throw failure;
     files[path] = bytes;
