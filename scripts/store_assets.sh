@@ -455,6 +455,12 @@ def main() -> None:
                 entries = payload.get('files') or []
                 if not isinstance(entries, list) or not entries:
                     raise SystemExit('store-assets-manifest.json is missing file entries')
+                file_count = payload.get('file_count')
+                if type(file_count) is not int or file_count != len(entries):
+                    raise SystemExit(
+                        'store-assets-manifest.json file_count must be an integer '
+                        'matching its file entries',
+                    )
                 by_path = {}
                 for entry in entries:
                     if not isinstance(entry, dict) or not isinstance(

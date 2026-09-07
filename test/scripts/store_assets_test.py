@@ -148,6 +148,31 @@ class StoreAssetsTest(unittest.TestCase):
         result = self.download(self.archive({}, self.manifest({MEDIA: b'missing'})))
         self.assert_rejected_without_changes(result)
 
+    def test_manifest_file_count_mismatch_preserves_existing_media(self):
+        files = {MEDIA: b'new screenshot'}
+        for count in [0, 2]:
+            with self.subTest(count=count):
+                manifest = self.manifest(files)
+                manifest['file_count'] = count
+                self.assert_rejected_without_changes(
+                    self.download(self.archive(files, manifest)))
+
+    def test_manifest_file_count_requires_an_integer(self):
+        files = {MEDIA: b'new screenshot'}
+        for count in [True, False, 1.0, '1', None, [], {}]:
+            with self.subTest(count=count):
+                manifest = self.manifest(files)
+                manifest['file_count'] = count
+                self.assert_rejected_without_changes(
+                    self.download(self.archive(files, manifest)))
+
+    def test_missing_manifest_file_count_preserves_existing_media(self):
+        files = {MEDIA: b'new screenshot'}
+        manifest = self.manifest(files)
+        del manifest['file_count']
+        self.assert_rejected_without_changes(
+            self.download(self.archive(files, manifest)))
+
     def test_duplicate_manifest_entries_are_rejected(self):
         files = {MEDIA: b'new screenshot'}
         manifest = self.manifest(files)
