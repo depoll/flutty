@@ -1161,6 +1161,109 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
+    for (final replacementReady in [false, true]) {
+      for (final oldOutcome in ['client', 'error', 'timeout']) {
+        testWidgets('failed SFTP browser waiter preserves '
+            '${replacementReady ? 'cached' : 'pending'} replacement '
+            'after late $oldOutcome and Retry', (tester) async {
+          final sshClient = _MockSshClient();
+          final oldClient = _MockSftpClient();
+          final replacement = _MockSftpClient();
+          final oldOpen = Completer<SftpClient>();
+          final newOpen = Completer<SftpClient>();
+          final monetizationService = _MockMonetizationService();
+          final session = SshSession(
+            connectionId: 7,
+            hostId: 1,
+            client: sshClient,
+            config: const SshConnectionConfig(
+              hostname: 'demo.example.com',
+              port: 22,
+              username: 'demo',
+            ),
+          );
+          addTearDown(session.close);
+          when(
+            () => monetizationService.currentState,
+          ).thenReturn(_proMonetizationState);
+          var opens = 0;
+          when(
+            sshClient.sftp,
+          ).thenAnswer((_) => opens++ == 0 ? oldOpen.future : newOpen.future);
+          when(
+            () => replacement.absolute('.'),
+          ).thenAnswer((_) async => '/home/demo');
+          when(
+            () => replacement.listdir('/home/demo'),
+          ).thenAnswer((_) async => [_fileEntry('replacement.txt')]);
+
+          // The browser joins another consumer's shared pending open.
+          final oldFuture = session.sftp();
+          await tester.pumpWidget(
+            _buildSftpTestApp(
+              session: session,
+              monetizationService: monetizationService,
+              child: const SftpScreen(hostId: 1, connectionId: 7),
+            ),
+          );
+          await tester.pump();
+          expect(opens, 1);
+
+          // That consumer times out and starts a replacement while the
+          // browser still awaits the old open.
+          session.discardSftpOpen(oldFuture);
+          final next = session.sftp();
+          if (replacementReady) {
+            newOpen.complete(replacement);
+            await tester.pump();
+            expect(await next, same(replacement));
+          }
+
+          if (oldOutcome == 'timeout') {
+            await tester.pump(const Duration(seconds: 11));
+          } else if (oldOutcome == 'error') {
+            oldOpen.completeError(SSHStateError('Old channel failed'));
+          } else {
+            oldOpen.complete(oldClient);
+          }
+          await tester.pumpAndSettle();
+
+          // Exercise _handleConnectFailure, including its null-client
+          // cleanup, rather than stopping at the service's rejected future.
+          expect(
+            find.text(
+              oldOutcome == 'timeout'
+                  ? sftpTimeoutMessage('opening the SFTP browser')
+                  : 'SFTP connection failed. Check the connection and try again.',
+            ),
+            findsOneWidget,
+          );
+          if (!replacementReady) {
+            expect(session.sftp(), same(next));
+            newOpen.complete(replacement);
+            await tester.pump();
+          }
+          expect(await next, same(replacement));
+          if (oldOutcome == 'timeout') {
+            oldOpen.complete(oldClient);
+            await tester.pump();
+          }
+          expect(await session.sftp(), same(replacement));
+          verifyNever(replacement.close);
+          if (oldOutcome != 'error') {
+            verify(oldClient.close).called(1);
+          }
+
+          await tester.tap(find.text('Retry'));
+          await tester.pumpAndSettle();
+          expect(find.text('replacement.txt'), findsOneWidget);
+          expect(opens, 2);
+          verifyNever(replacement.close);
+          await tester.pumpWidget(const SizedBox.shrink());
+        });
+      }
+    }
+
     testWidgets('reopens SFTP when the directory channel goes stale', (
       tester,
     ) async {

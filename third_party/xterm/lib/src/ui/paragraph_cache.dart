@@ -5,6 +5,9 @@ import 'package:quiver/collection.dart';
 
 /// A cache of laid out [Paragraph]s. This is used to avoid laying out the same
 /// text multiple times, which is expensive.
+///
+/// The cache owns its paragraphs. Callers must not retain them after [clear]
+/// or replacement, or dispose them themselves.
 class ParagraphCache {
   ParagraphCache(int maximumSize)
       : _cache = LruMap<int, Paragraph>(maximumSize: maximumSize);
@@ -33,14 +36,17 @@ class ParagraphCache {
     final paragraph = builder.build();
     paragraph.layout(ParagraphConstraints(width: double.infinity));
 
+    _cache.remove(key)?.dispose();
     _cache[key] = paragraph;
     return paragraph;
   }
 
-  /// Clears the cache. This should be called when the same text and style
-  /// pair no longer produces the same layout. For example, when a font is
-  /// loaded.
+  /// Releases all cached paragraphs. This should be called when the same text
+  /// and style pair no longer produces the same layout, or the owner is disposed.
   void clear() {
+    for (final paragraph in _cache.values) {
+      paragraph.dispose();
+    }
     _cache.clear();
   }
 

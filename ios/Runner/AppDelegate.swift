@@ -334,7 +334,7 @@ import UniformTypeIdentifiers
     }
 
     do {
-      let temporaryURL = try writeTemporarySyncVaultFile(
+      let temporaryURL = try SyncVaultFileIO.writeTemporaryFile(
         contents: encryptedVault,
         suggestedFileName: suggestedFileName
       )
@@ -754,41 +754,8 @@ import UniformTypeIdentifiers
     }
   }
 
-  private func writeTemporarySyncVaultFile(
-    contents: String,
-    suggestedFileName: String
-  ) throws -> URL {
-    let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      UUID().uuidString,
-      isDirectory: true
-    )
-    try FileManager.default.createDirectory(
-      at: tempDirectory,
-      withIntermediateDirectories: true
-    )
-    let normalizedFileName = normalizedSyncVaultFileName(suggestedFileName)
-    let temporaryURL = tempDirectory.appendingPathComponent(normalizedFileName)
-    try Data(contents.utf8).write(to: temporaryURL, options: .atomic)
-    return temporaryURL
-  }
-
-  private func normalizedSyncVaultFileName(_ fileName: String) -> String {
-    let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
-    let baseName = trimmed.isEmpty ? "monkeyssh-sync-vault" : trimmed
-    if baseName.lowercased().hasSuffix(".monkeysync") {
-      return baseName
-    }
-    return "\(baseName).monkeysync"
-  }
-
   private func readSyncVaultContents(from url: URL) throws -> String {
     let data = try coordinatedReadData(from: url)
-    if data.count > maxSyncVaultBytes {
-      throw syncVaultError(
-        code: .fileTooLarge,
-        message: "Sync vault file is too large"
-      )
-    }
     guard let contents = String(data: data, encoding: .utf8) else {
       throw syncVaultError(
         code: .invalidFormat,
@@ -806,7 +773,7 @@ import UniformTypeIdentifiers
     coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) {
       coordinatedURL in
       do {
-        data = try Data(contentsOf: coordinatedURL, options: [.mappedIfSafe])
+        data = try SyncVaultFileIO.readData(from: coordinatedURL, maxBytes: maxSyncVaultBytes)
       } catch {
         readError = error
       }

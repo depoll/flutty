@@ -1705,7 +1705,9 @@ class AgentSessionDiscoveryService {
               previewSnapshot,
               previewResult,
             );
-            _inFlightDiscoverySnapshots[key] = previewSnapshot;
+            if (identical(_inFlightDiscoveries[key], stream)) {
+              _inFlightDiscoverySnapshots[key] = previewSnapshot;
+            }
             controller.add(previewResult);
             await Future<void>.delayed(Duration.zero);
           }
@@ -1717,7 +1719,11 @@ class AgentSessionDiscoveryService {
           relatedWorkingDirectories: relatedWorkingDirectories,
           maxPerTool: maxPerTool,
         );
-        _inFlightDiscoverySnapshots[key] = latestResult;
+        // Invalidated work may finish for its original listeners, but must not
+        // restore a stale snapshot or overwrite a replacement discovery's one.
+        if (identical(_inFlightDiscoveries[key], stream)) {
+          _inFlightDiscoverySnapshots[key] = latestResult;
+        }
         controller.add(latestResult);
 
         if (cacheGeneration == _cacheGeneration) {

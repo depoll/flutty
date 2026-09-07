@@ -5665,8 +5665,11 @@ while($true){
     throw StateError('Remote listener scan ended before its completion marker');
   }
 
-  /// Start an SFTP session.
-  Future<SftpClient> sftp() async {
+  /// Start an SFTP session, sharing the same future while an open is pending.
+  Future<SftpClient> sftp() {
+    if (_isClosing) {
+      return Future<SftpClient>.error(SSHStateError('SSH session is closing'));
+    }
     final cachedSftp = _sftpClient;
     if (cachedSftp != null) {
       DiagnosticsLogService.instance.debug(
@@ -5674,7 +5677,7 @@ while($true){
         'reuse_client',
         fields: {'connectionId': connectionId, 'hostId': hostId},
       );
-      return cachedSftp;
+      return Future.value(cachedSftp);
     }
 
     final inFlight = _sftpClientFuture;
@@ -5682,19 +5685,27 @@ while($true){
       return inFlight;
     }
 
-    final future = _openSftpClient();
+    // Share the ownership check with every waiter, not just the caller that
+    // initiated the open. A timed-out open may finish after its replacement.
+    late final Future<SftpClient> future;
+    future = _openSftpClient()
+        .then((sftpClient) {
+          if (_isClosing || !identical(_sftpClientFuture, future)) {
+            _closeSftpClientBestEffort(sftpClient);
+            // dartssh2 errors do not implement Exception or Error.
+            // ignore: only_throw_errors
+            throw SSHStateError('SFTP open was superseded');
+          }
+          _sftpClient = sftpClient;
+          return sftpClient;
+        })
+        .whenComplete(() {
+          if (identical(_sftpClientFuture, future)) {
+            _sftpClientFuture = null;
+          }
+        });
     _sftpClientFuture = future;
-    try {
-      final sftpClient = await future;
-      if (identical(_sftpClientFuture, future)) {
-        _sftpClient = sftpClient;
-      }
-      return sftpClient;
-    } finally {
-      if (identical(_sftpClientFuture, future)) {
-        _sftpClientFuture = null;
-      }
-    }
+    return future;
   }
 
   /// Open a one-off SFTP client without using the session cache.
@@ -5704,21 +5715,34 @@ while($true){
   /// install superseding a probe-only install.
   Future<SftpClient> openStandaloneSftp() => _openSftpClient();
 
-  /// Discard the cached SFTP client for this session.
+  /// Abandon a timed-out [sftp] open without invalidating a replacement.
+  ///
+  /// Pass the original future returned by [sftp], not a timeout wrapper.
+  void discardSftpOpen(Future<SftpClient> open) {
+    if (identical(_sftpClientFuture, open)) {
+      _sftpClientFuture = null;
+    }
+    // Also release a client that finished opening just before timeout cleanup.
+    // Superseded opens close their own late client and reject this callback.
+    open.then(discardSftpClient).ignore();
+  }
+
+  /// Discard only the supplied SFTP client. A null client is a no-op.
   ///
   /// Use this only when an SFTP operation timed out or failed in a way that may
-  /// have left pending requests behind. Normal consumers should leave the
-  /// session-owned client open so future SFTP work can reuse the same channel.
+  /// have left pending requests behind. For an open that timed out before
+  /// returning a client, use [discardSftpOpen]. Normal consumers should leave
+  /// the session-owned client open so future SFTP work can reuse the channel.
   void discardSftpClient(SftpClient? sftpClient) {
+    if (sftpClient == null) {
+      return;
+    }
     final cachedSftp = _sftpClient;
-    if (sftpClient != null) {
-      if (cachedSftp == null) {
-        _closeSftpClientBestEffort(sftpClient);
-        return;
-      }
-      if (!identical(sftpClient, cachedSftp)) {
-        return;
-      }
+    if (!identical(sftpClient, cachedSftp)) {
+      // A late timeout callback must release its client without invalidating
+      // a newer cached client or an in-flight replacement.
+      _closeSftpClientBestEffort(sftpClient);
+      return;
     }
     _sftpClient = null;
     _sftpClientFuture = null;
@@ -5760,8 +5784,19 @@ while($true){
     );
 
     for (var attempt = 0; ; attempt += 1) {
+      if (_isClosing) {
+        // dartssh2 errors do not implement Exception or Error.
+        // ignore: only_throw_errors
+        throw SSHStateError('SSH session is closing');
+      }
       try {
         final sftpClient = await client.sftp();
+        if (_isClosing) {
+          _closeSftpClientBestEffort(sftpClient);
+          // dartssh2 errors do not implement Exception or Error.
+          // ignore: only_throw_errors
+          throw SSHStateError('SSH session is closing');
+        }
         DiagnosticsLogService.instance.info(
           'ssh.sftp',
           'open_success',
@@ -6431,7 +6466,8 @@ while($true){
     }
     await stopAllForwards();
     await closeShell();
-    discardSftpClient(null);
+    _sftpClientFuture = null;
+    discardSftpClient(_sftpClient);
     await _portForwardChanges.close();
     await _connectionHealthFailures.close();
     await _terminalNotifications.close();

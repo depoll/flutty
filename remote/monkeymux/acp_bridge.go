@@ -619,6 +619,8 @@ func newAcpBridge(
 }
 
 func serveAcpBridge(bridge *acpBridge) error {
+	// The provider is already running, so even socket setup failures must stop it.
+	defer bridge.stop()
 	socket, err := acpSocketPath(bridge.id)
 	if err != nil {
 		return err
@@ -635,7 +637,6 @@ func serveAcpBridge(bridge *acpBridge) error {
 	defer func() {
 		_ = listener.Close()
 		_ = os.Remove(socket)
-		bridge.stop()
 	}()
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
@@ -1214,6 +1215,12 @@ func (b *acpBridge) handleAttach(
 		return
 	}
 	b.mu.Lock()
+	// A connection accepted before stop may not send its hello until afterward.
+	// Pair registration with stop's state transition under the same lock.
+	if b.state == "stopped" {
+		b.mu.Unlock()
+		return
+	}
 	if b.writerClientID == "" {
 		b.writerClientID = clientID
 	}

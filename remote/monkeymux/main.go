@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.186"
+	monkeyMuxVersion                  = "0.1.187"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -11684,11 +11684,12 @@ func (s *muxServer) writeWindowInput(
 ) error {
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
-	win32InputMode := window != nil && window.win32InputMode
-	s.mu.Unlock()
 	if window == nil || window.closed {
+		s.mu.Unlock()
 		return fmt.Errorf("window %q not found", windowID)
 	}
+	win32InputMode := window.win32InputMode
+	s.mu.Unlock()
 	if win32InputMode {
 		// ConPTY's input parser cannot disambiguate a bare ESC and drops raw
 		// OSC/DCS sequences, so a standalone Escape keystroke and synthetic
