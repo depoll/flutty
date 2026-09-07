@@ -6442,10 +6442,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Map<int, SshConnectionState> states,
   ) => _sessionController.selectTrackedConnectionState(states);
 
+  // iOS can prompt for paste permission on any clipboard content read. Never
+  // poll it on startup, resume, or a timer, even when remote reads are allowed.
+  // Explicit paste and opted-in OSC 52 queries use their own read paths.
+  bool _canPollLocalClipboard(SshSession session) =>
+      session.clipboardSharingEnabled &&
+      session.localClipboardReadEnabled &&
+      (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS);
+
   Future<void> _startSharedClipboardSync(SshSession session) async {
     _stopSharedClipboardSync();
     _remoteClipboardUnsupported = false;
-    _lastObservedLocalClipboardText = session.localClipboardReadEnabled
+    _lastObservedLocalClipboardText = _canPollLocalClipboard(session)
         ? await _readSystemClipboardText()
         : null;
     try {
@@ -6467,7 +6475,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    if (session.localClipboardReadEnabled) {
+    if (_canPollLocalClipboard(session)) {
       _localClipboardSyncTimer = Timer.periodic(
         _localClipboardSyncInterval,
         (_) => unawaited(_syncLocalClipboardToRemote(session)),
@@ -6515,8 +6523,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _syncLocalClipboardToRemote(SshSession session) async {
     if (!mounted ||
-        !session.clipboardSharingEnabled ||
-        !session.localClipboardReadEnabled ||
+        !_canPollLocalClipboard(session) ||
         !_sessionController.isObservingSession(session) ||
         _remoteClipboardUnsupported ||
         _isPushingLocalClipboard) {

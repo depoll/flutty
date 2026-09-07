@@ -162,6 +162,38 @@ void main() {
           .setMockMethodCallHandler(_backgroundSshChannel, null);
     });
 
+    for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+      testWidgets(
+        'explains platform-specific local clipboard reads',
+        (tester) async {
+          final db = AppDatabase.forTesting(NativeDatabase.memory());
+          addTearDown(db.close);
+          tester.view.physicalSize = const Size(390, 844);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          await _pumpSettingsScreen(tester, db: db);
+          await tester.scrollUntilVisible(
+            find.text('Remote can read clipboard'),
+            300,
+            scrollable: find.byType(Scrollable).first,
+          );
+          await tester.pumpAndSettle();
+          expect(
+            find.text(
+              platform == TargetPlatform.iOS
+                  ? 'Allow remote OSC 52 queries to read local clipboard text. '
+                        'The clipboard is not polled automatically on iOS.'
+                  : 'Allow remote OSC 52 queries and clipboard sync to send local clipboard text to the connected host',
+            ),
+            findsOneWidget,
+          );
+          expect(tester.takeException(), isNull);
+        },
+        variant: TargetPlatformVariant.only(platform),
+      );
+    }
+
     testWidgets('displays all sections', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);

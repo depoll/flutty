@@ -1490,6 +1490,8 @@ void main() {
       RemoteAdbCommandRunner? remoteAdbCommandRunner,
       AgentManagementService? agentManagementService,
       MonetizationState monetizationState = _proMonetizationState,
+      bool sharedClipboard = false,
+      bool sharedClipboardLocalRead = false,
     }) async {
       await tester.pumpWidget(
         ProviderScope(
@@ -1503,7 +1505,12 @@ void main() {
             themeModeNotifierProvider.overrideWith(
               () => _TestThemeModeNotifier(themeMode),
             ),
-            sharedClipboardProvider.overrideWith((ref) async => false),
+            sharedClipboardProvider.overrideWith(
+              (ref) async => sharedClipboard,
+            ),
+            sharedClipboardLocalReadProvider.overrideWith(
+              (ref) async => sharedClipboardLocalRead,
+            ),
             activeSessionsProvider.overrideWith(
               () => activeSessions ?? _TestActiveSessionsNotifier(session),
             ),
@@ -1544,6 +1551,151 @@ void main() {
       await tester.pump();
       await tester.pump();
     }
+
+    for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+      for (final sharingEnabled in [false, true]) {
+        testWidgets(
+          'clipboard sync respects passive read policy on start and resume, '
+          'sharing=$sharingEnabled',
+          (tester) async {
+            var localReads = 0;
+            var remoteReads = 0;
+            var remoteText = 'initial remote clipboard';
+            final clipboardWrites = <String>[];
+            tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+              SystemChannels.platform,
+              (call) async {
+                if (call.method == 'Clipboard.getData') {
+                  localReads++;
+                  return {'text': 'local clipboard text'};
+                }
+                if (call.method == 'Clipboard.setData') {
+                  clipboardWrites.add(
+                    (call.arguments as Map<Object?, Object?>)['text']!
+                        as String,
+                  );
+                }
+                if (call.method == 'Clipboard.hasStrings') {
+                  return {'value': true};
+                }
+                return null;
+              },
+            );
+            addTearDown(
+              () => tester.binding.defaultBinaryMessenger
+                  .setMockMethodCallHandler(SystemChannels.platform, null),
+            );
+            when(() => sshClient.execute(any())).thenAnswer((invocation) async {
+              final command = invocation.positionalArguments.single as String;
+              final isRead = command.contains('pbpaste');
+              if (isRead) remoteReads++;
+              final channel = _MockShellChannel();
+              when(() => channel.stdout).thenAnswer(
+                (_) => Stream.value(
+                  Uint8List.fromList(
+                    utf8.encode(
+                      isRead ? base64Encode(utf8.encode(remoteText)) : '',
+                    ),
+                  ),
+                ),
+              );
+              when(
+                () => channel.stderr,
+              ).thenAnswer((_) => const Stream<Uint8List>.empty());
+              when(() => channel.done).thenAnswer((_) async {});
+              return channel;
+            });
+
+            await pumpScreen(
+              tester,
+              sharedClipboard: sharingEnabled,
+              sharedClipboardLocalRead: true,
+            );
+            await tester.pumpAndSettle();
+            expect(session.clipboardSharingEnabled, sharingEnabled);
+            expect(session.localClipboardReadEnabled, sharingEnabled);
+            final shouldReadLocally =
+                sharingEnabled && platform != TargetPlatform.iOS;
+            expect(localReads, shouldReadLocally ? greaterThan(0) : 0);
+            final readsBeforeResume = remoteReads;
+
+            for (final lifecycle in [
+              AppLifecycleState.inactive,
+              AppLifecycleState.paused,
+              AppLifecycleState.resumed,
+            ]) {
+              tester.binding.handleAppLifecycleStateChanged(lifecycle);
+              await tester.pump();
+            }
+            await tester.pump(const Duration(seconds: 2));
+            await tester.pumpAndSettle();
+            expect(localReads, shouldReadLocally ? greaterThan(0) : 0);
+            expect(
+              remoteReads,
+              sharingEnabled ? greaterThan(readsBeforeResume) : 0,
+            );
+
+            if (sharingEnabled) {
+              remoteText = 'updated by remote';
+              await tester.pump(const Duration(seconds: 1));
+              await tester.pumpAndSettle();
+              expect(clipboardWrites, contains(remoteText));
+            }
+            await tester.pumpWidget(const SizedBox.shrink());
+            await tester.pump();
+          },
+          variant: TargetPlatformVariant.only(platform),
+        );
+      }
+    }
+
+    testWidgets(
+      'explicit iOS paste still reads clipboard text',
+      (tester) async {
+        var localReads = 0;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.getData') {
+              localReads++;
+              return {'text': 'pasted text'};
+            }
+            if (call.method == 'Clipboard.hasStrings') return {'value': true};
+            return null;
+          },
+        );
+        const pasteboard = MethodChannel('pasteboard');
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          pasteboard,
+          (call) async => call.method == 'files' ? <String>[] : null,
+        );
+        addTearDown(() {
+          tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          );
+          tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            pasteboard,
+            null,
+          );
+        });
+        await pumpScreen(tester);
+        await tester.pumpAndSettle();
+        expect(localReads, 0);
+        shellWrites.clear();
+        await tester.ensureVisible(find.byTooltip('Paste'));
+        await tester.tap(find.byTooltip('Paste'));
+        await tester.pumpAndSettle();
+        expect(localReads, 1);
+        expect(
+          utf8.decode(shellWrites.expand((chunk) => chunk).toList()),
+          contains('pasted text'),
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
 
     Future<void> openTerminalOverflowMenu(WidgetTester tester) async {
       await tester.tap(find.byIcon(Icons.more_vert));

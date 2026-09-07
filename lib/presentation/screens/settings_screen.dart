@@ -937,8 +937,11 @@ class _TerminalSection extends ConsumerWidget {
         SwitchListTile(
           secondary: const Icon(Icons.content_paste_search_outlined),
           title: const Text('Remote can read clipboard'),
-          subtitle: const Text(
-            'Allow remote OSC 52 queries and clipboard sync to send local clipboard text to the connected host',
+          subtitle: Text(
+            Theme.of(context).platform == TargetPlatform.iOS
+                ? 'Allow remote OSC 52 queries to read local clipboard text. '
+                      'The clipboard is not polled automatically on iOS.'
+                : 'Allow remote OSC 52 queries and clipboard sync to send local clipboard text to the connected host',
           ),
           value: sharedClipboard && sharedClipboardLocalRead,
           onChanged: sharedClipboard
