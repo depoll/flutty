@@ -59,7 +59,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.183"
+	monkeyMuxVersion                  = "0.1.186"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -6169,7 +6169,11 @@ func createWindowOptionsForRestore(
 			history,
 			terminalOutputParserSnapshot{},
 		)
+		history = stripTerminalProgressFromRestoreHistory(history)
 	}
+	// CLI and shell restoration starts a new process. Its old task progress is
+	// stale until the new process reports its own OSC 9;4 state. The native ACP
+	// branch above preserves progress because its agent process keeps running.
 	return createWindowOptions{
 		name:                      firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
 		cwd:                       state.Cwd,
@@ -6185,7 +6189,6 @@ func createWindowOptionsForRestore(
 		cursorVisible:             state.CursorVisible,
 		cursorVisibilityKnown:     state.CursorVisibilityKnown,
 		privateModes:              privateModesForRestore(state.PrivateModes),
-		terminalProgress:          copyTerminalProgressSnapshot(state.TerminalProgress),
 	}
 }
 

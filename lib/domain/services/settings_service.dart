@@ -219,6 +219,22 @@ class SettingsService {
   Future<void> setJson(String key, Map<String, dynamic> value) =>
       setString(key, jsonEncode(value));
 
+  /// Atomically reads and updates a JSON setting.
+  ///
+  /// Returning null from [update] removes the setting. The transaction also
+  /// serializes updates made through other services using this database.
+  Future<void> updateJson(
+    String key,
+    Map<String, dynamic>? Function(Map<String, dynamic>? current) update,
+  ) => _db.transaction(() async {
+    final value = update(await getJson(key));
+    if (value == null) {
+      await delete(key);
+    } else {
+      await setJson(key, value);
+    }
+  });
+
   /// Delete a setting.
   Future<void> delete(String key) async {
     await (_db.delete(_db.settings)..where((s) => s.key.equals(key))).go();

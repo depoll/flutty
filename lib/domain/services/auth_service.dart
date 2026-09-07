@@ -298,13 +298,14 @@ class AuthService {
   }
 
   /// Disable authentication.
-  Future<void> disableAuth() async {
+  Future<void> disableAuth() => _withPinWriteLock(() async {
+    // A pending setup must finish before its salt and hash are removed.
     await _deleteStorageValue(_pinKey);
     await _deleteStorageValue(_pinSaltKey);
     await _deleteStorageValue(_pinMetadataKey);
     await _deleteStorageValue(_authEnabledKey);
     await _deleteStorageValue(_biometricEnabledKey);
-  }
+  });
 
   /// Change PIN.
   Future<bool> changePin(String currentPin, String newPin) async {

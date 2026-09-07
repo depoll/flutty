@@ -9407,7 +9407,7 @@ func TestTerminalProgressChangeBroadcastsWindowUpdate(t *testing.T) {
 	}
 }
 
-func TestTerminalProgressSurvivesRestoreSnapshot(t *testing.T) {
+func TestTerminalProgressSnapshotDoesNotSeedRestartedProcess(t *testing.T) {
 	percentage := 73
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{{
@@ -9431,9 +9431,8 @@ func TestTerminalProgressSurvivesRestoreSnapshot(t *testing.T) {
 	}
 
 	options := createWindowOptionsForRestore(restore.Windows[0], false)
-	if options.terminalProgress == nil || options.terminalProgress.State != 2 ||
-		options.terminalProgress.Percentage == nil || *options.terminalProgress.Percentage != 73 {
-		t.Fatalf("restored options progress = %#v, want state 2 at 73", options.terminalProgress)
+	if options.terminalProgress != nil {
+		t.Fatalf("restarted process inherited progress: %#v", options.terminalProgress)
 	}
 }
 

@@ -271,21 +271,24 @@ final class AcpJsonRpcConnection {
     final effectiveTimeout = noTimeout
         ? null
         : timeout ?? defaultRequestTimeout;
+    late final _PendingResponse pending;
     final timer = effectiveTimeout == null
         ? null
         : Timer(effectiveTimeout, () {
-            final pending = _pending.remove(requestId);
-            if (pending == null || pending.completer.isCompleted) return;
+            if (!_removePending(pending) || pending.completer.isCompleted) {
+              return;
+            }
             pending.completer.completeError(
               AcpRequestTimeoutException(requestId, method, effectiveTimeout),
             );
           });
-    _pending[requestId] = _PendingResponse(
+    pending = _PendingResponse(
       id: requestId,
       method: method,
       completer: completer,
       timer: timer,
     );
+    _pending[requestId] = pending;
     unawaited(
       _writeMessage(<String, Object?>{
         'jsonrpc': '2.0',
@@ -293,9 +296,7 @@ final class AcpJsonRpcConnection {
         'method': method,
         'params': ?params,
       }).catchError((Object error, StackTrace stackTrace) {
-        final pending = _pending.remove(requestId);
-        pending?.timer?.cancel();
-        if (pending != null && !pending.completer.isCompleted) {
+        if (_removePending(pending) && !pending.completer.isCompleted) {
           pending.completer.completeError(error, stackTrace);
         }
       }),
@@ -304,7 +305,7 @@ final class AcpJsonRpcConnection {
       id: requestId,
       method: method,
       future: completer.future,
-      cancel: () => _cancelRequest(requestId),
+      cancel: () => _cancelRequest(pending),
     );
   }
 
@@ -334,8 +335,7 @@ final class AcpJsonRpcConnection {
   }
 
   /// Closes the connection and fails all pending requests.
-  Future<void> close() =>
-      _closeFuture ??= _terminate(const AcpConnectionClosedException());
+  Future<void> close() => _terminate(const AcpConnectionClosedException());
 
   void _handleBytes(List<int> bytes) {
     if (_closed) return;
@@ -482,10 +482,16 @@ final class AcpJsonRpcConnection {
     pending.completer.complete(message['result']);
   }
 
-  void _cancelRequest(AcpRequestId id) {
-    final pending = _pending.remove(id);
-    if (pending == null) return;
+  bool _removePending(_PendingResponse pending) {
+    // An ID may have been reused since this request's callback was scheduled.
+    if (!identical(_pending[pending.id], pending)) return false;
+    _pending.remove(pending.id);
     pending.timer?.cancel();
+    return true;
+  }
+
+  void _cancelRequest(_PendingResponse pending) {
+    if (!_removePending(pending)) return;
     if (!pending.completer.isCompleted) {
       pending.completer.completeError(
         AcpRequestCancelledException(pending.id, pending.method),
@@ -493,7 +499,7 @@ final class AcpJsonRpcConnection {
     }
   }
 
-  Future<void> _writeMessage(AcpJsonMap message) {
+  Future<void> _writeMessage(AcpJsonMap message) async {
     _ensureOpen();
     final bytes = utf8.encode('${jsonEncode(message)}\n');
     if (bytes.length > maxFrameSize) {
@@ -503,7 +509,10 @@ final class AcpJsonRpcConnection {
         ),
       );
     }
-    final operation = _writeTail.then((_) => _transport.write(bytes));
+    final operation = _writeTail.then((_) {
+      _ensureOpen();
+      return _transport.write(bytes);
+    });
     _writeTail = operation.then<void>(
       (_) {},
       onError: (Object _, StackTrace _) {},
@@ -541,7 +550,12 @@ final class AcpJsonRpcConnection {
   Future<void> _terminate(
     AcpJsonRpcException reason, [
     StackTrace? stackTrace,
-  ]) async {
+  ]) => _closeFuture ??= _performTermination(reason, stackTrace);
+
+  Future<void> _performTermination(
+    AcpJsonRpcException reason,
+    StackTrace? stackTrace,
+  ) async {
     if (_closed) return;
     _closed = true;
     for (final pending in _pending.values) {

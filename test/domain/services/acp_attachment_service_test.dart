@@ -393,6 +393,105 @@ void main() {
       );
     });
 
+    test(
+      'image upload fallback preserves bytes beyond the sniff prefix',
+      () async {
+        final uploader = _RecordingUploader();
+        final payload = <int>[..._pngHeader, 1, 2, 3, 4, 5, 6, 7, 8];
+        final blocks =
+            await const AcpAttachmentPreparationService(
+              limits: AcpAttachmentLimits(
+                maxImageBytes: 32,
+                maxEmbeddedBytes: 10,
+                mimeSniffBytes: 8,
+              ),
+            ).prepare(
+              draft: AcpPromptDraft([
+                AcpAttachmentDraft(
+                  candidate: AcpAttachmentCandidate.localFile(
+                    name: 'image.png',
+                    openRead: () => Stream<List<int>>.fromIterable([
+                      payload.sublist(0, 8),
+                      payload.sublist(8),
+                    ]),
+                  ),
+                  fallback: AcpAttachmentFallback.remoteUpload,
+                ),
+              ]),
+              capabilities: const AcpPromptCapabilities(embeddedContext: true),
+              uploader: uploader,
+            );
+        expect(uploader.uploadedPayloads, [payload]);
+        expect((blocks.single as AcpResourceLinkContent).size, payload.length);
+      },
+    );
+
+    test(
+      'local images can use the larger advertised embedded budget',
+      () async {
+        final payload = <int>[..._pngHeader, 1, 2, 3, 4];
+        final blocks =
+            await const AcpAttachmentPreparationService(
+              limits: AcpAttachmentLimits(
+                maxImageBytes: 8,
+                maxEmbeddedBytes: 32,
+                mimeSniffBytes: 8,
+              ),
+            ).prepare(
+              draft: AcpPromptDraft([
+                AcpAttachmentDraft(
+                  candidate: AcpAttachmentCandidate.localFile(
+                    name: 'image.png',
+                    sizeBytes: payload.length,
+                    openRead: () => Stream<List<int>>.value(payload),
+                  ),
+                ),
+              ]),
+              capabilities: capabilities,
+            );
+        final resource =
+            (blocks.single as AcpResourceContent).resource as AcpBlobResource;
+        expect(base64Decode(resource.blob), payload);
+      },
+    );
+
+    test(
+      'cancellation during the final local read rejects preparation',
+      () async {
+        final token = AcpAttachmentCancellationToken();
+        var sourceClosed = false;
+        await expectLater(
+          const AcpAttachmentPreparationService().prepare(
+            draft: AcpPromptDraft([
+              AcpAttachmentDraft(
+                candidate: AcpAttachmentCandidate.localFile(
+                  name: 'notes.txt',
+                  openRead: () async* {
+                    try {
+                      yield utf8.encode('hello');
+                      token.cancel();
+                    } finally {
+                      sourceClosed = true;
+                    }
+                  },
+                ),
+              ),
+            ]),
+            capabilities: const AcpPromptCapabilities(embeddedContext: true),
+            cancellationToken: token,
+          ),
+          throwsA(
+            isA<AcpAttachmentException>().having(
+              (error) => error.failure,
+              'failure',
+              AcpAttachmentFailure.cancelled,
+            ),
+          ),
+        );
+        expect(sourceClosed, isTrue);
+      },
+    );
+
     test('reads local candidates lazily and accepts chunked streams', () async {
       var opens = 0;
       final candidate = AcpAttachmentCandidate.localFile(

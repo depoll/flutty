@@ -89,7 +89,7 @@ jobs:
           go_changed=$(matches '(^remote/monkeymux/|^\.github/workflows/ci\.yml$|^scripts/(build|ensure)_monkeymux_assets\.sh$)')
           echo "go=$go_changed" >> "$GITHUB_OUTPUT"
 
-          run_check=$(matches '(\.dart$|^pubspec\.(yaml|lock)$|^analysis_options\.yaml$|^\.github/workflows/|^scripts/|^assets/|^remote/monkeymux/|^(android|ios|macos|windows|linux|web)/)')
+          run_check=$(matches '(\.dart$|^pubspec\.(yaml|lock)$|^analysis_options\.yaml$|^\.github/workflows/|^scripts/|^test/scripts/|^assets/|^remote/monkeymux/|^(android|ios|macos|windows|linux|web)/)')
           echo "run_check=$run_check" >> "$GITHUB_OUTPUT"
 
           if [ "$run_check" != "true" ]; then
@@ -192,6 +192,9 @@ jobs:
 
       - name: Test release-note metadata
         run: ruby test/scripts/preview_release_notes_test.rb
+
+      - name: Test store-assets archive safety
+        run: python3 -m unittest discover -s test/scripts -p 'store_assets_test.py'
 
   test:
     name: Test (Shard ${{ matrix.shard-index }}/4)

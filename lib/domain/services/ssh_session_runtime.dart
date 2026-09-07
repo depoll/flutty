@@ -10,6 +10,8 @@ class _SshSessionRuntime {
   static const _stdinCloseTimeout = Duration(milliseconds: 250);
 
   SSHSession? _shell;
+  Future<SSHSession>? _shellOpening;
+  Future<void>? _shellClosing;
   StreamController<String>? _shellStdoutController;
   StreamController<String>? _shellStderrController;
   StreamController<void>? _shellDoneController;
@@ -275,13 +277,34 @@ if(!$__flResolved){$__flResolved='cmd'}
     }
     if (forceNew) {
       await closeShell();
+    } else {
+      final closing = _shellClosing;
+      if (closing != null) await closing;
     }
+    final opening = _shellOpening ??= _getOrOpenShell(
+      pty: pty,
+      requestPty: requestPty,
+      command: command,
+      returnToLoginShell: returnToLoginShell,
+    );
+    try {
+      return await opening;
+    } finally {
+      // A cancelled older negotiation must not clear a replacement's future.
+      if (identical(_shellOpening, opening)) _shellOpening = null;
+    }
+  }
+
+  Future<SSHSession> _getOrOpenShell({
+    required bool requestPty,
+    required bool returnToLoginShell,
+    SSHPtyConfig? pty,
+    String? command,
+  }) async {
     if (_shell == null) {
+      final generation = _shellGeneration;
       _isReplacingShell = true;
       final shellPty = pty ?? const SSHPtyConfig();
-      _shellPty = shellPty;
-      _shellHasPty = requestPty;
-      _syncKittyGraphicsAvailability();
       final commandKind = command == null
           ? 'interactive_shell'
           : _diagnosticSshCommandKind(command);
@@ -302,6 +325,14 @@ if(!$__flResolved){$__flResolved='cmd'}
           pty: requestPty ? shellPty : null,
           command: command,
         );
+        // Closing or replacing the shell while channel negotiation is pending
+        // invalidates this result. Never install it over a newer shell.
+        if (generation != _shellGeneration || _session._isClosing) {
+          throw StateError('Shell opening was cancelled');
+        }
+        _shellPty = shellPty;
+        _shellHasPty = requestPty;
+        _syncKittyGraphicsAvailability();
         if (requestPty) {
           _applyLatestTerminalWindowMetrics(openedShell);
         }
@@ -321,8 +352,10 @@ if(!$__flResolved){$__flResolved='cmd'}
         if (openedShell != null) {
           _closeShellBestEffort(openedShell);
         }
-        _isReplacingShell = false;
-        _pendingReplacementInput.clear();
+        if (generation == _shellGeneration) {
+          _isReplacingShell = false;
+          _pendingReplacementInput.clear();
+        }
         DiagnosticsLogService.instance.error(
           'ssh.shell',
           'open_failed',
@@ -519,8 +552,14 @@ if(!$__flResolved){$__flResolved='cmd'}
   }
 
   /// Close only the interactive shell channel while keeping the SSH client.
-  Future<void> closeShell({bool waitForStreams = true}) async {
+  Future<void> closeShell({bool waitForStreams = true}) => _shellClosing ??=
+      _closeShell(waitForStreams: waitForStreams).whenComplete(() {
+        _shellClosing = null;
+      });
+
+  Future<void> _closeShell({required bool waitForStreams}) async {
     _shellGeneration += 1;
+    _shellOpening = null;
     _returnToLoginShell = false;
     _isReplacingShell = false;
     _pendingReplacementInput.clear();
