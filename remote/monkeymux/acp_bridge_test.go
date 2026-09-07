@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -193,7 +192,7 @@ func TestAcpCachedInitializeResponseAvoidsDuplicateProviderRequest(t *testing.T)
 	providerInput := &testWriteCloser{}
 	bridge.stdin = providerInput
 	firstInitialize := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
-	if _, ok := bridge.trackInitializeRequest(firstInitialize); !ok {
+	if _, ok := bridge.trackClientRequest(firstInitialize); !ok {
 		t.Fatal("first initialize request was not tracked")
 	}
 	bridge.publish(
@@ -612,7 +611,7 @@ func TestAcpBridgeCapturesSessionIdentityForDurableListing(t *testing.T) {
 	bridge := newOrderingTestBridge()
 	bridge.providerID = "builtin:pi-acp"
 	bridge.cwd = "/repo"
-	bridge.observeClientMessage(json.RawMessage(
+	bridge.trackClientRequest(json.RawMessage(
 		`{"jsonrpc":"2.0","id":7,"method":"session/new","params":{"cwd":"/repo"}}`,
 	))
 	bridge.publish("output", json.RawMessage(
@@ -856,7 +855,7 @@ func newOrderingTestBridge() *acpBridge {
 		clients:              map[string]*acpBridgeClient{},
 		pendingRequests:      map[string]struct{}{},
 		inFlightTurns:        map[string]struct{}{},
-		sessionSetupRequests: map[string]struct{}{},
+		sessionSetupRequests: map[string]string{},
 	}
 }
 
@@ -1091,51 +1090,41 @@ func TestAcpProviderForceWaitsForProcessGroupExit(t *testing.T) {
 	reaped = true
 }
 
-func TestAcpConcurrentStopAndProviderWrite(t *testing.T) {
+func TestAcpConcurrentProviderWritesKeepFramesIntact(t *testing.T) {
 	providerInput, peer := net.Pipe()
 	defer peer.Close()
-	bridge := &acpBridge{
-		stdin:        providerInput,
-		clients:      map[string]*acpBridgeClient{},
-		providerDone: make(chan struct{}),
-		done:         make(chan struct{}),
+	bridge := &acpBridge{stdin: providerInput}
+	defer bridge.closeProviderInput()
+	payloads := []json.RawMessage{
+		json.RawMessage(`{"jsonrpc":"2.0","method":"first"}`),
+		json.RawMessage(`{"jsonrpc":"2.0","method":"second"}`),
 	}
-	payload := json.RawMessage(`{"jsonrpc":"2.0","method":"session/prompt"}`)
-	writerDone := make(chan struct{})
-	go func() {
-		defer close(writerDone)
-		_ = bridge.writeProvider(payload)
-	}()
-
-	// net.Pipe writes block until the peer reads, deterministically overlapping
-	// the provider write with stop's attempt to close stdin.
-	select {
-	case <-writerDone:
-		t.Fatal("provider write unexpectedly completed before peer read")
-	case <-time.After(20 * time.Millisecond):
+	writerDone := make(chan error, len(payloads))
+	for _, payload := range payloads {
+		go func() { writerDone <- bridge.writeProvider(payload) }()
 	}
-	stopDone := make(chan struct{})
-	go func() {
-		bridge.stop()
-		close(stopDone)
-	}()
-	got := make([]byte, len(payload)+1)
-	if _, err := io.ReadFull(peer, got); err != nil {
-		t.Fatal(err)
+	peer.SetReadDeadline(time.Now().Add(time.Second))
+	reader := bufio.NewReader(peer)
+	seen := make(map[string]bool)
+	for range payloads {
+		line, err := readBoundedAcpLine(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[string(line)] = true
 	}
-	if !bytes.Equal(got, append(append([]byte(nil), payload...), '\n')) {
-		t.Fatalf("provider input = %q", got)
-	}
-
-	select {
-	case <-writerDone:
-	case <-time.After(time.Second):
-		t.Fatal("provider write did not finish after peer read")
-	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("provider stop did not finish after write")
+	for _, payload := range payloads {
+		if !seen[string(payload)] {
+			t.Fatalf("provider did not receive intact frame %s", payload)
+		}
+		select {
+		case err := <-writerDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("provider write did not finish")
+		}
 	}
 }
 

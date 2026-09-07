@@ -489,13 +489,16 @@ class RemoteFileService {
     required String localPath,
   }) async {
     final remoteFile = await sftp.open(remotePath);
-    final sink = File(localPath).openWrite();
     try {
-      await for (final chunk in remoteFile.read()) {
-        sink.add(chunk);
+      final localFile = await File(localPath).open(mode: FileMode.write);
+      try {
+        await for (final chunk in remoteFile.read()) {
+          await localFile.writeFrom(chunk);
+        }
+      } finally {
+        await localFile.close();
       }
     } finally {
-      await sink.close();
       await remoteFile.close();
     }
   }

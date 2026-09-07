@@ -278,7 +278,7 @@ class EscapeParser {
   final _csi = _Csi(finalByte: 0, params: []);
 
   /// Parse a CSI from the head of the queue. Returns [_SeqParse.incomplete] if
-  /// the CSI isn't complete and [_SeqParse.aborted] if an ESC cut it short.
+  /// the CSI isn't complete and [_SeqParse.aborted] if ESC, CAN or SUB cut it short.
   /// After a CSI is successfully parsed, [_csi] is updated.
   _SeqParse _consumeCsi() {
     if (_queue.isEmpty) {
@@ -335,6 +335,12 @@ class EscapeParser {
       // letting a truncated CSI swallow the sequence that follows it.
       if (char == Ascii.ESC) {
         _queue.rollback();
+        return _SeqParse.aborted;
+      }
+
+      // CAN and SUB cancel the sequence and return to ground state. Unlike
+      // ESC, the cancellation byte is consumed rather than reprocessed.
+      if (char == Ascii.CAN || char == Ascii.SUB) {
         return _SeqParse.aborted;
       }
 

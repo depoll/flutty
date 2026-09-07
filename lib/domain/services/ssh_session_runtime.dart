@@ -277,6 +277,7 @@ if(!$__flResolved){$__flResolved='cmd'}
       await closeShell();
     }
     if (_shell == null) {
+      final generation = _shellGeneration;
       _isReplacingShell = true;
       final shellPty = pty ?? const SSHPtyConfig();
       _shellPty = shellPty;
@@ -302,6 +303,11 @@ if(!$__flResolved){$__flResolved='cmd'}
           pty: requestPty ? shellPty : null,
           command: command,
         );
+        // Closing or replacing the shell while channel negotiation is pending
+        // invalidates this result. Never install it over a newer shell.
+        if (generation != _shellGeneration || _session._isClosing) {
+          throw StateError('Shell opening was cancelled');
+        }
         if (requestPty) {
           _applyLatestTerminalWindowMetrics(openedShell);
         }
@@ -321,8 +327,10 @@ if(!$__flResolved){$__flResolved='cmd'}
         if (openedShell != null) {
           _closeShellBestEffort(openedShell);
         }
-        _isReplacingShell = false;
-        _pendingReplacementInput.clear();
+        if (generation == _shellGeneration) {
+          _isReplacingShell = false;
+          _pendingReplacementInput.clear();
+        }
         DiagnosticsLogService.instance.error(
           'ssh.shell',
           'open_failed',

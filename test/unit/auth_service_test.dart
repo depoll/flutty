@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs, directives_ordering
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -628,6 +629,45 @@ void main() {
     });
 
     group('disableAuth', () {
+      test('waits for pending PIN setup before removing credentials', () async {
+        final storage = <String, String>{};
+        final saltWritten = Completer<void>();
+        final resumeSetup = Completer<void>();
+        when(() => mockStorage.read(key: any(named: 'key'))).thenAnswer(
+          (invocation) async => storage[invocation.namedArguments[#key]],
+        );
+        when(
+          () => mockStorage.write(
+            key: any(named: 'key'),
+            value: any(named: 'value'),
+          ),
+        ).thenAnswer((invocation) async {
+          final key = invocation.namedArguments[#key] as String;
+          storage[key] = invocation.namedArguments[#value] as String;
+          if (key == 'flutty_pin_salt') {
+            saltWritten.complete();
+            await resumeSetup.future;
+          }
+        });
+        when(() => mockStorage.delete(key: any(named: 'key'))).thenAnswer((
+          invocation,
+        ) async {
+          storage.remove(invocation.namedArguments[#key]);
+        });
+
+        final setup = authService.setupPin('1234');
+        await saltWritten.future;
+        final disable = authService.disableAuth();
+        // Let deletion run if it is not serialized behind setup.
+        await Future<void>.delayed(Duration.zero);
+        resumeSetup.complete();
+        await Future.wait([setup, disable]);
+
+        expect(await authService.isAuthEnabled(), isFalse);
+        expect(storage, isEmpty);
+        expect(await authService.verifyPin('1234'), isFalse);
+      });
+
       test('clears all auth data', () async {
         when(
           () => mockStorage.delete(key: any(named: 'key')),

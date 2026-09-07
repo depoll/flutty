@@ -334,8 +334,7 @@ final class AcpJsonRpcConnection {
   }
 
   /// Closes the connection and fails all pending requests.
-  Future<void> close() =>
-      _closeFuture ??= _terminate(const AcpConnectionClosedException());
+  Future<void> close() => _terminate(const AcpConnectionClosedException());
 
   void _handleBytes(List<int> bytes) {
     if (_closed) return;
@@ -493,7 +492,7 @@ final class AcpJsonRpcConnection {
     }
   }
 
-  Future<void> _writeMessage(AcpJsonMap message) {
+  Future<void> _writeMessage(AcpJsonMap message) async {
     _ensureOpen();
     final bytes = utf8.encode('${jsonEncode(message)}\n');
     if (bytes.length > maxFrameSize) {
@@ -503,7 +502,10 @@ final class AcpJsonRpcConnection {
         ),
       );
     }
-    final operation = _writeTail.then((_) => _transport.write(bytes));
+    final operation = _writeTail.then((_) {
+      _ensureOpen();
+      return _transport.write(bytes);
+    });
     _writeTail = operation.then<void>(
       (_) {},
       onError: (Object _, StackTrace _) {},
@@ -541,7 +543,12 @@ final class AcpJsonRpcConnection {
   Future<void> _terminate(
     AcpJsonRpcException reason, [
     StackTrace? stackTrace,
-  ]) async {
+  ]) => _closeFuture ??= _performTermination(reason, stackTrace);
+
+  Future<void> _performTermination(
+    AcpJsonRpcException reason,
+    StackTrace? stackTrace,
+  ) async {
     if (_closed) return;
     _closed = true;
     for (final pending in _pending.values) {

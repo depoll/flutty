@@ -55,7 +55,82 @@ Map<String, Object?> _decodeWrite(List<int> bytes) {
 List<int> _encodeMessage(Map<String, Object?> message) =>
     utf8.encode('${jsonEncode(message)}\n');
 
+final class _GatedTransport extends _MemoryTransport {
+  final writeStarted = Completer<void>();
+  final finishWrite = Completer<void>();
+  final closeStarted = Completer<void>();
+  final finishClose = Completer<void>();
+
+  @override
+  Future<void> write(List<int> bytes) async {
+    await super.write(bytes);
+    if (!writeStarted.isCompleted) writeStarted.complete();
+    await finishWrite.future;
+  }
+
+  @override
+  Future<void> close() async {
+    if (!closeStarted.isCompleted) closeStarted.complete();
+    await finishClose.future;
+    await super.close();
+  }
+}
+
 void main() {
+  test('queued writes do not reach the transport after close', () async {
+    final transport = _GatedTransport();
+    final connection = AcpJsonRpcConnection(transport: transport);
+    final first = connection.notify('first');
+    await transport.writeStarted.future;
+    final second = connection.notify('second');
+    final rejected = expectLater(
+      second,
+      throwsA(isA<AcpConnectionClosedException>()),
+    );
+    final closing = connection.close();
+    transport.finishClose.complete();
+    await closing;
+    transport.finishWrite.complete();
+    await first;
+    await rejected;
+    expect(transport.writes, hasLength(1));
+  });
+
+  test('close awaits cleanup already started by a protocol failure', () async {
+    final transport = _GatedTransport();
+    final connection = AcpJsonRpcConnection(transport: transport);
+    transport.add(utf8.encode('not json\n'));
+    await transport.closeStarted.future;
+    var finished = false;
+    final closing = connection.close().then((_) => finished = true);
+    await Future<void>.delayed(Duration.zero);
+    final finishedBeforeCleanup = finished;
+    transport.finishClose.complete();
+    await closing;
+    expect(finishedBeforeCleanup, isFalse);
+    expect(transport.closed, isTrue);
+  });
+
+  test('encoding failures settle and remove the pending request', () async {
+    final transport = _MemoryTransport();
+    final connection = AcpJsonRpcConnection(transport: transport);
+    addTearDown(connection.close);
+    final cyclic = <Object?>[];
+    cyclic.add(cyclic);
+    await expectLater(
+      Future<Object?>.sync(
+        () => connection.request('invalid', id: 'reusable', params: cyclic),
+      ),
+      throwsA(isA<JsonCyclicError>()),
+    );
+    final next = connection.sendRequest('valid', id: 'reusable');
+    final cancelled = expectLater(
+      next.future,
+      throwsA(isA<AcpRequestCancelledException>()),
+    );
+    next.cancel();
+    await cancelled;
+  });
   test(
     'decoded input skips byte parsing and preserves immutable identity',
     () async {

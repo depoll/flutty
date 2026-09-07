@@ -826,12 +826,21 @@ class SecureTransferService {
     List<SshKey>? existingKeysCache,
   }) async {
     final publicKey = _requiredString(keyData, 'publicKey');
-    final privateKey = _requiredString(keyData, 'privateKey');
+    // Public-only reference keys deliberately store an empty private key.
+    final privateKey = keyData['privateKey'];
+    if (privateKey is! String) {
+      throw const FormatException('Missing required field: privateKey');
+    }
     final fingerprint = computeOpenSshPublicKeyFingerprint(publicKey);
     final existingKeys = existingKeysCache ?? await _keyRepository.getAll();
     if (fingerprint.isNotEmpty) {
       for (final key in existingKeys) {
-        if (key.fingerprint == fingerprint && key.publicKey == publicKey) {
+        // A reference key and a signing key are not interchangeable. Keep
+        // both records so replacement imports preserve private material and
+        // each host's choice of a public-only or private-bearing key.
+        if (key.fingerprint == fingerprint &&
+            key.publicKey == publicKey &&
+            key.privateKey.isEmpty == privateKey.isEmpty) {
           return key;
         }
       }

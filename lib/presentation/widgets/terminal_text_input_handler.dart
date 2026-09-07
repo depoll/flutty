@@ -515,6 +515,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void didUpdateWidget(TerminalTextInputHandler oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(widget.terminal, oldWidget.terminal)) {
+      // Key repeats and IME deltas belong to the terminal that received the input.
+      // Reset in place so switching sessions does not dismiss the keyboard.
+      _stopHardwareKeyRepeat();
+      _clearImeBufferForFreshInput(flushPlatformContext: true);
+    }
     if (widget.focusNode != oldWidget.focusNode) {
       oldWidget.focusNode.removeListener(_onFocusChange);
       widget.focusNode.addListener(_onFocusChange);

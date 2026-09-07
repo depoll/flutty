@@ -127,6 +127,128 @@ void main() {
   });
 
   group('SecureTransferService', () {
+    test(
+      'imports a public-only key payload without inventing a private key',
+      () async {
+        final payload = TransferPayload(
+          type: TransferPayloadType.key,
+          schemaVersion: 1,
+          createdAt: DateTime.now().toUtc(),
+          data: {
+            'key': {
+              'name': 'Public reference',
+              'keyType': 'ed25519',
+              'publicKey': _publicKeyA,
+              'privateKey': '',
+            },
+          },
+        );
+
+        final imported = await transferService.importKeyPayload(payload);
+        expect(imported.privateKey, isEmpty);
+        expect(imported.publicKey, _publicKeyA);
+        expect(imported.fingerprint, _publicKeyAFingerprint);
+        expect((await db.select(db.sshKeys).getSingle()).privateKey, isEmpty);
+      },
+    );
+
+    test('roundtrips public-only keys through replacement migration', () async {
+      await keyRepository.insert(
+        SshKeysCompanion.insert(
+          name: 'Public reference',
+          keyType: 'ed25519',
+          publicKey: _publicKeyA,
+          privateKey: '',
+        ),
+      );
+      final data = await transferService.createMigrationData();
+
+      await transferService.importMigrationData(
+        data: data,
+        mode: MigrationImportMode.replace,
+      );
+
+      final keys = await keyRepository.getAll();
+      expect(keys, hasLength(1));
+      expect(keys.single.privateKey, isEmpty);
+      expect(keys.single.publicKey, _publicKeyA);
+      expect(hostsChangedCount, 1);
+    });
+
+    for (final publicOnlyFirst in [true, false]) {
+      test('replacement preserves matching public and private keys '
+          'with public-only first=$publicOnlyFirst', () async {
+        final publicId = await keyRepository.insert(
+          SshKeysCompanion.insert(
+            name: 'Public reference',
+            keyType: 'ed25519',
+            publicKey: _publicKeyA,
+            privateKey: '',
+            fingerprint: const Value(_publicKeyAFingerprint),
+          ),
+        );
+        final privateId = await keyRepository.insert(
+          SshKeysCompanion.insert(
+            name: 'Private key',
+            keyType: 'ed25519',
+            publicKey: _publicKeyA,
+            privateKey: 'private-key-material',
+            passphrase: const Value('key-passphrase'),
+            fingerprint: const Value(_publicKeyAFingerprint),
+          ),
+        );
+        for (final entry in {
+          'Public host': publicId,
+          'Private host': privateId,
+        }.entries) {
+          await hostRepository.insert(
+            HostsCompanion.insert(
+              label: entry.key,
+              hostname: 'example.com',
+              username: 'test',
+              keyId: Value(entry.value),
+            ),
+          );
+        }
+        final data = await transferService.createMigrationData();
+        final exportedKeys = (data['keys'] as List)
+            .cast<Map<String, dynamic>>();
+        final publicKey = exportedKeys.singleWhere(
+          (key) => key['privateKey'] == '',
+        );
+        final privateKey = exportedKeys.singleWhere(
+          (key) => key['privateKey'] != '',
+        );
+        data['keys'] = publicOnlyFirst
+            ? [publicKey, privateKey]
+            : [privateKey, publicKey];
+
+        await transferService.importMigrationData(
+          data: data,
+          mode: MigrationImportMode.replace,
+        );
+
+        expect(await keyRepository.getAll(), hasLength(2));
+        final hosts = await hostRepository.getAll();
+        final publicHost = hosts.singleWhere(
+          (host) => host.label == 'Public host',
+        );
+        final privateHost = hosts.singleWhere(
+          (host) => host.label == 'Private host',
+        );
+        expect(publicHost.keyId, isNot(privateHost.keyId));
+        expect(
+          (await keyRepository.getById(publicHost.keyId!))!.privateKey,
+          isEmpty,
+        );
+        final importedPrivate = (await keyRepository.getById(
+          privateHost.keyId!,
+        ))!;
+        expect(importedPrivate.privateKey, 'private-key-material');
+        expect(importedPrivate.passphrase, 'key-passphrase');
+      });
+    }
+
     test('encrypts and decrypts host payload roundtrip', () async {
       final snippetId = await db
           .into(db.snippets)
